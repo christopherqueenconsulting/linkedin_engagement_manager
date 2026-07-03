@@ -21,7 +21,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
 
 from cqc_lem.utilities.env_constants import *
-from cqc_lem.utilities.logger import myprint
+from cqc_lem.utilities.logger import myprint, log_warning
 from cqc_lem.utilities.utils import get_aws_device_farm_url
 
 
@@ -428,6 +428,97 @@ def get_visible_element_wait_retry(driver: WebDriver, wait: WebDriverWait,
             raise se
         myprint(f"Failed to find visible element: {wait_text}")
         return None
+
+
+def find_first(driver: WebDriver, wait: WebDriverWait, locators: list[tuple[str, str]], label: str,
+               *, required: bool = True, parent_element: WebElement = None,
+               max_try: int = MAX_WAIT_RETRY, visible_only: bool = False,
+               user_id: int = None, post_id: int = None) -> WebElement | None:
+    """Return the first element matching any locator in `locators` (ordered, most-stable first).
+
+    LinkedIn ships hashed CSS classes that churn, so callers pass an ordered fallback chain
+    (aria-label/role → data-* → visible text → semantic → legacy class). On a total miss:
+    if `required`, raise (like the other helpers); else emit a STRUCTURED warning naming the
+    tried selectors + current URL and return None — turning today's silent skips into greppable
+    signal. `visible_only` restricts to displayed elements (duplicate hidden+visible copies).
+    """
+    root = parent_element if parent_element is not None else driver
+
+    def _find(_d):
+        for find_by, value in locators:
+            try:
+                if visible_only:
+                    for el in root.find_elements(find_by, value):
+                        try:
+                            if el.is_displayed():
+                                return el
+                        except StaleElementReferenceException:
+                            continue
+                else:
+                    els = root.find_elements(find_by, value)
+                    if els:
+                        return els[0]
+            except (StaleElementReferenceException, NoSuchElementException):
+                continue
+        return False
+
+    try:
+        return wait.until(_find, label)
+    except (StaleElementReferenceException, TimeoutException) as se:
+        if max_try > 1:
+            myprint(label + " | not found | .....retrying")
+            time.sleep(5)
+            return find_first(driver, wait, locators, label, required=required,
+                              parent_element=parent_element, max_try=max_try - 1,
+                              visible_only=visible_only, user_id=user_id, post_id=post_id)
+        if required:
+            raise se
+        try:
+            current_url = driver.current_url
+        except Exception:
+            current_url = "?"
+        log_warning(f"Selector miss: {label}", action_type="scrape", user_id=user_id, post_id=post_id,
+                    selectors=[f"{by}={val}" for by, val in locators], url=current_url)
+        return None
+
+
+def click_first(driver: WebDriver, wait: WebDriverWait, locators: list[tuple[str, str]], label: str,
+                *, required: bool = True, parent_element: WebElement = None,
+                use_action_chain: bool = False, max_try: int = MAX_WAIT_RETRY,
+                user_id: int = None, post_id: int = None) -> WebElement | None:
+    """Find (via `find_first`) then click the first matching element, with the same resilient
+    fallback + structured-miss-logging behavior. Returns the clicked element or None."""
+    element = find_first(driver, wait, locators, label, required=required,
+                         parent_element=parent_element, max_try=max_try, visible_only=True,
+                         user_id=user_id, post_id=post_id)
+    if element is None:
+        return None
+    try:
+        element = wait.until(EC.element_to_be_clickable(element))
+        if use_action_chain:
+            ActionChains(driver).move_to_element(element).click().perform()
+            wait_for_ajax(driver)
+        else:
+            element.click()
+    except (ElementNotInteractableException, StaleElementReferenceException, TimeoutException) as se:
+        if required:
+            raise se
+        log_warning(f"Click miss: {label}", action_type="scrape", user_id=user_id, post_id=post_id)
+        return None
+    return element
+
+
+def find_all_first(driver: WebDriver, locators: list[tuple[str, str]]) -> list[WebElement]:
+    """Return the element list from the FIRST locator that yields any matches (ordered fallback
+    for collections, e.g. a comment list). Empty list if none match — caller logs if needed."""
+    for find_by, value in locators:
+        try:
+            els = driver.find_elements(find_by, value)
+            if els:
+                return els
+        except (StaleElementReferenceException, NoSuchElementException):
+            continue
+    return []
 
 
 def get_elements_as_list_wait_stale(wait: WebDriverWait, find_by_value: str, wait_text: str,

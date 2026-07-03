@@ -1,3 +1,4 @@
+import hashlib
 import inspect
 import json
 import random
@@ -25,7 +26,7 @@ from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.logger import myprint, log_error, log_info, log_warning
 from cqc_lem.utilities.selenium_util import click_element_wait_retry, \
     get_element_wait_retry, get_elements_as_list_wait_stale, getText, close_tab, get_driver_wait_pair, quit_gracefully, \
-    wait_for_ajax
+    wait_for_ajax, find_first, click_first
 from dotenv import load_dotenv
 from selenium.common import NoSuchElementException, JavascriptException
 from selenium.webdriver import ActionChains, Keys
@@ -396,6 +397,125 @@ def check_commented(driver, wait, user_id: int = None, post_url: str = None):
     return already_commented
 
 
+# --- SDUI feed engine (LinkedIn's 2026 redesign) -----------------------------------------
+# LinkedIn moved the feed to a server-driven-UI framework: the old urn:li:activity data-ids,
+# feed-shared-* / comments-comment-* classes and permalink navigation are gone. Posts are now
+# anchored by stable data-testid / aria-label attributes and commenting happens INLINE on the
+# feed card (no per-post permalink). Verified live 2026-07-03.
+_FEED_POST_TEXT_SEL = "[data-testid='expandable-text-box']"
+
+
+def _card_for_textbox(driver, box):
+    """Nearest ancestor of a post's text box that contains its Comment button — i.e. the post card."""
+    return driver.execute_script(
+        "let el=arguments[0],d=0;while(el&&d<15){"
+        "if(el.querySelector&&el.querySelector(\"button[aria-label='Comment']\"))return el;"
+        "el=el.parentElement;d++;}return null;", box)
+
+
+def _post_author_from_card(card) -> str:
+    """Author name is embedded in the card's 'Hide post by <Name>' control's aria-label."""
+    try:
+        label = card.find_element(By.CSS_SELECTOR, "button[aria-label^='Hide post by']").get_attribute("aria-label") or ""
+        return label.replace("Hide post by ", "").strip()
+    except Exception:
+        return ""
+
+
+def _feed_post_key(author: str, content: str) -> str:
+    """Stable-ish dedup key for a feed post (no permalink/urn exists in the SDUI DOM anymore)."""
+    digest = hashlib.sha1(f"{author}|{content[:200]}".encode("utf-8", "ignore")).hexdigest()[:20]
+    return f"feedpost://{digest}"
+
+
+def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = None) -> bool:
+    """Open the card's inline comment composer, type the comment, and submit. Returns True if it
+    appears posted. Ctrl+Enter is the reliable submit in the new composer (verified live), with the
+    'Comment'/'Post' button as the primary path."""
+    try:
+        if click_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label='Comment']")],
+                       "Open comment composer", parent_element=card, required=False, user_id=user_id) is None:
+            return False
+        time.sleep(random.uniform(1.5, 3))
+        composer = find_first(driver, wait,
+                              [(By.CSS_SELECTOR, "div[role='textbox'][aria-label*='creating comment']"),
+                               (By.CSS_SELECTOR, "div[role='textbox']")],
+                              "Comment composer", visible_only=True, required=False, user_id=user_id)
+        if composer is None:
+            return False
+        composer.click()
+        composer.send_keys(comment_text)
+        time.sleep(random.uniform(1, 2))
+        submitted = False
+        form = driver.execute_script(
+            "let e=arguments[0];while(e){if(e.tagName==='FORM')return e;e=e.parentElement;}return null;", composer)
+        if form is not None:
+            for b in form.find_elements(By.XPATH, ".//button[normalize-space()='Comment' or normalize-space()='Post']"):
+                try:
+                    if b.is_displayed() and not b.get_attribute("disabled"):
+                        driver.execute_script("arguments[0].click();", b)
+                        submitted = True
+                        break
+                except Exception:
+                    continue
+        if not submitted:
+            composer.send_keys(Keys.CONTROL, Keys.RETURN)
+        time.sleep(random.uniform(3, 5))
+        return comment_text[:22] in driver.find_element(By.TAG_NAME, "body").text
+    except Exception as e:
+        log_warning("Inline comment post failed", exc=e, action_type="comment", user_id=user_id)
+        return False
+
+
+def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: int,
+                           max_posts: int = 10, deadline_ts: float = None) -> int:
+    """Walk the SDUI feed, generate an AI comment per fresh/relevant post, and comment inline.
+    Returns the number of comments posted. Re-queries the feed after each action (the DOM
+    re-renders) and scrolls to load more when the current batch is exhausted."""
+    from selenium.common.exceptions import StaleElementReferenceException
+    posted, seen, scrolls = 0, set(), 0
+    while posted < max_posts and scrolls < 15:
+        if deadline_ts and time.time() >= deadline_ts:
+            break
+        boxes = driver.find_elements(By.CSS_SELECTOR, _FEED_POST_TEXT_SEL)
+        acted = False
+        for box in boxes:
+            try:
+                content = (box.text or "").strip()
+            except StaleElementReferenceException:
+                continue
+            if len(content) < 20:
+                continue
+            card = _card_for_textbox(driver, box)
+            if card is None:
+                continue
+            author = _post_author_from_card(card)
+            key = _feed_post_key(author, content)
+            if key in seen:
+                continue
+            seen.add(key)
+            if has_user_commented_on_post_url(user_id, key):
+                continue
+            comment_text = generate_ai_response(content, my_profile, None)
+            if not comment_text:
+                continue
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", card)
+            time.sleep(simulate_reading_time(content) / 2 + simulate_thinking_time())
+            if post_comment_inline(driver, wait, card, comment_text, user_id=user_id):
+                insert_new_log(user_id=user_id, action_type=LogActionType.COMMENT,
+                               result=LogResultType.SUCCESS, post_url=key, message=comment_text)
+                posted += 1
+                myprint(f"Commented on {author or 'a'}'s post ({posted}/{max_posts})")
+                time.sleep(random.uniform(6, 14))  # human pacing between comments
+            acted = True
+            break  # DOM re-rendered after commenting — re-query from the top
+        if not acted:
+            driver.execute_script("window.scrollBy(0, 1200);")
+            scrolls += 1
+            time.sleep(random.uniform(2.5, 4))
+    return posted
+
+
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
                   queue='selenium')
 def automate_commenting(self, user_id: int, loop_for_duration: int = None, future_forward: int = 60):
@@ -416,44 +536,11 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
         navigate_to_feed(driver, wait)
 
         start_time = datetime.now()
+        deadline_ts = (start_time.timestamp() + loop_for_duration) if loop_for_duration else None
 
-        # Get 10 posts from the feed
-        posts = get_feed_posts(driver, wait, num_posts=10)
-
-        current_tab = driver.current_window_handle
-        handles = driver.window_handles
-
-        post_commented_count = 0
-
-        for post in posts:
-            # break if it has been loop_for_duration seconds since the start time
-            if loop_for_duration:
-                elapsed_time = datetime.now() - start_time
-                if elapsed_time.total_seconds() >= loop_for_duration:
-                    myprint("Loop duration reached. Stopping Automate Commenting thread...")
-                    break
-
-            # Switch back to tab
-            driver.switch_to.window(current_tab)
-
-            post_link = post['link']
-            myprint(f"Post Link: {post_link}")
-
-            # Wait for the new window or tab
-            driver.switch_to.new_window('tab')
-            wait.until(EC.new_window_is_opened(handles))
-
-            # Generate and post comment
-            successful = generate_and_post_comment(driver, wait, post_link, my_profile)
-
-            if successful:
-                post_commented_count += 1
-
-            # Close tab when done
-            close_tab(driver)
-
-        # Switch back to tab
-        driver.switch_to.window(current_tab)
+        # Comment inline on the SDUI feed (no per-post permalink navigation anymore).
+        post_commented_count = comment_on_feed_inline(driver, wait, my_profile, user_id,
+                                                      max_posts=10, deadline_ts=deadline_ts)
 
         result = f"Automate Commenting Task Completed. Commented on {post_commented_count} posts."
 
