@@ -18,7 +18,8 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     get_engagement_preferences, count_comments_today, \
     LogResultType, has_user_commented_on_post_url, get_post_url_from_log_for_user, get_post_message_from_log_for_user, \
     has_engaged_url_with_x_days, get_post_content, get_post_video_url, update_db_post_status, PostStatus, PostType, \
-    get_dm_history_for_profile, get_post_status, get_user_blog_url, get_post_type, get_carousel_slides
+    get_dm_history_for_profile, get_post_status, get_user_blog_url, get_post_type, get_carousel_slides, \
+    get_dm_template
 from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
     load_profile_for_user
@@ -865,6 +866,29 @@ def get_recent_collaborators(driver, wait) -> dict[str, str]:
     return {}
 
 
+def build_dm_from_template(user_id: int, event_type: str, first_name: str,
+                           my_profile: LinkedInProfile, step: int = 0, blog_url: str = "") -> "str | None":
+    """Render the user's DM template for an event (filling {first_name}/{headline}/{blog_url})
+    and LLM-refine it to their voice (<=300 chars). Falls back to the code-default template;
+    returns None only when no template exists for that (event, step)."""
+    tmpl = get_dm_template(user_id, event_type, step)
+    if not tmpl:
+        return None
+    headline = getattr(my_profile, "job_title", None) or "my professional field"
+    ctx = {"first_name": first_name or "there", "headline": headline, "blog_url": blog_url or ""}
+    try:
+        rendered = tmpl["template_text"].format(**ctx)
+    except (KeyError, IndexError, ValueError):
+        # user template referenced an unknown {placeholder} — degrade to a minimal fill
+        rendered = tmpl["template_text"].replace("{first_name}", ctx["first_name"])
+    try:
+        refined = get_ai_message_refinement(rendered, character_limit=300)
+        return (refined or rendered).strip()
+    except Exception as e:
+        log_warning("DM refinement failed; sending rendered template", exc=e, action_type="dm", user_id=user_id)
+        return rendered.strip()
+
+
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
                   reject_on_worker_lost=True, rate_limit='2/m', queue='selenium')
 def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: int = None, future_forward: int = 60):
@@ -885,30 +909,25 @@ def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: in
         invitations_accepted = accept_connection_request(user_id)
         for profile_url, name in invitations_accepted.items():
             first_name = name.split(" ")[0]
-            message = f"Hi {first_name}, I appreciate you connecting with me on LinkedIn. I look forward to learning more about you and your work."
-            send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": profile_url, "message": message})
+            message = build_dm_from_template(user_id, "connection_accepted", first_name, my_profile)
+            if message:
+                send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": profile_url, "message": message})
 
         # After Receiving a Recommendation — thank the recommender
         recommendations_received = get_recent_recommendations(driver, wait)
         for profile_url, name in recommendations_received.items():
             first_name = name.split(" ")[0]
-            message = (
-                f"Hi {first_name}, thank you so much for the kind recommendation on LinkedIn! "
-                "I really appreciate you taking the time to share your experience working with me. "
-                "I hope we have the opportunity to collaborate again in the future."
-            )
-            send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": profile_url, "message": message})
+            message = build_dm_from_template(user_id, "recommendation_received", first_name, my_profile)
+            if message:
+                send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": profile_url, "message": message})
 
         # After a Successful Collaboration — express gratitude and offer to connect further
         recent_collaborators = get_recent_collaborators(driver, wait)
         for profile_url, name in recent_collaborators.items():
             first_name = name.split(" ")[0]
-            message = (
-                f"Hi {first_name}, it was a pleasure collaborating with you! "
-                "Your contributions made a real difference and I'm grateful for the opportunity. "
-                "Let's stay in touch — I'd love to explore future opportunities to work together."
-            )
-            send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": profile_url, "message": message})
+            message = build_dm_from_template(user_id, "collaboration", first_name, my_profile)
+            if message:
+                send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": profile_url, "message": message})
 
         # Re-schedule the task in the queue for the future
         if loop_for_duration:
@@ -1250,14 +1269,12 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
                         else:
                             main_focus = "Offer something of value—insights, resources, or potential collaboration—to the viewer and start a genuine conversation."
 
-                        message = (
-                            f"Hi {first_name}, I noticed you viewed my LinkedIn profile and wanted to reach out. "
-                            f"I share insights on {my_profile.headline or 'my professional field'} and thought there might be synergy between our work. "
-                            "Would love to connect more directly — feel free to share what you're working on!"
-                        )
+                        message = build_dm_from_template(acting_user_id, "profile_viewer", first_name,
+                                                         my_profile, blog_url=blog_url or "")
 
                         # Skip if an equivalent message has already been sent to this person
-                        message = ai_check_message_history(message_history_json, main_focus, message, user_name=first_name)
+                        if message:
+                            message = ai_check_message_history(message_history_json, main_focus, message, user_name=first_name)
 
 
                         if message:

@@ -2111,6 +2111,88 @@ def count_dms_sent_today(user_id: int) -> int:
     return _count_actions_today(user_id, LogActionType.DM)
 
 
+# Default DM templates = today's hard-coded strings, so behaviour is unchanged until a user
+# customizes. {first_name},{headline},{blog_url} are filled at send time.
+_DM_DEFAULT_TEMPLATES = {
+    "connection_accepted": "Hi {first_name}, I appreciate you connecting with me on LinkedIn. "
+                           "I look forward to learning more about you and your work.",
+    "recommendation_received": "Hi {first_name}, thank you so much for the kind recommendation on LinkedIn! "
+                               "I really appreciate you taking the time to share your experience working with me. "
+                               "I hope we have the opportunity to collaborate again in the future.",
+    "collaboration": "Hi {first_name}, it was a pleasure collaborating with you! "
+                     "Your contributions made a real difference and I'm grateful for the opportunity. "
+                     "Let's stay in touch — I'd love to explore future opportunities to work together.",
+    "profile_viewer": "Hi {first_name}, I noticed you viewed my LinkedIn profile and wanted to reach out. "
+                      "I share insights on {headline} and thought there might be synergy between our work. "
+                      "Would love to connect more directly — feel free to share what you're working on!",
+    "manual": "Hi {first_name}, thanks for connecting!",
+}
+
+
+def get_dm_template(user_id: int, event_type: str, step: int = 0) -> Optional[dict]:
+    """Return {template_text, delay_hours, step} for (user, event, step). Falls back to the
+    code default for step 0; None for higher steps that aren't configured."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT template_text, delay_hours, step FROM dm_templates "
+            "WHERE user_id=%s AND event_type=%s AND step=%s AND is_active=1",
+            (user_id, str(event_type), step))
+        row = cursor.fetchone()
+        if row:
+            return row
+    except mysql.connector.Error as err:
+        myprint(f"Could not get dm template for user_id {user_id} | Error: {err}")
+    finally:
+        cursor.close()
+        connection.close()
+    if step == 0 and event_type in _DM_DEFAULT_TEMPLATES:
+        return {"template_text": _DM_DEFAULT_TEMPLATES[event_type], "delay_hours": 0, "step": 0}
+    return None
+
+
+def get_dm_templates(user_id: int) -> list:
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT event_type, step, delay_hours, template_text, is_active "
+            "FROM dm_templates WHERE user_id=%s ORDER BY event_type, step", (user_id,))
+        rows = cursor.fetchall() or []
+        for r in rows:
+            r["is_active"] = bool(r.get("is_active"))
+        return rows
+    except mysql.connector.Error as err:
+        myprint(f"Could not list dm templates for user_id {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def upsert_dm_templates(user_id: int, templates: list) -> bool:
+    """Upsert a list of {event_type, step, delay_hours, template_text, is_active} for a user."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        for t in templates:
+            cursor.execute(
+                "INSERT INTO dm_templates (user_id, event_type, step, delay_hours, template_text, is_active) "
+                "VALUES (%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE "
+                "delay_hours=VALUES(delay_hours), template_text=VALUES(template_text), is_active=VALUES(is_active)",
+                (user_id, str(t.get("event_type")), int(t.get("step", 0)), int(t.get("delay_hours", 0)),
+                 t.get("template_text", ""), 1 if t.get("is_active", True) else 0))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not upsert dm templates for user_id {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_user_geo(user_id: int) -> Optional[dict]:
     """Return the user's full geo profile for Selenium spoofing.
 
