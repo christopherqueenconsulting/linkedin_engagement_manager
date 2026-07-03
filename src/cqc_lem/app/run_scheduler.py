@@ -109,6 +109,18 @@ def auto_appreciate_dms():
 
 
 @shared_task.task
+def auto_send_due_followups():
+    """Dispatch a per-user Selenium task to send due DM follow-ups (each gated by reply-detection)."""
+    from cqc_lem.app.run_automation import process_user_followups
+    from cqc_lem.utilities.db import get_due_followups
+    due = get_due_followups(datetime.now())
+    user_ids = sorted({f["user_id"] for f in due})
+    for uid in user_ids:
+        process_user_followups.apply_async(kwargs={"user_id": uid})
+    return f"Dispatched follow-ups for {len(user_ids)} user(s)"
+
+
+@shared_task.task
 def auto_notify_missing_linkedin_session():
     """Email active users who have no validated LinkedIn session cookie, prompting them
     to connect — automation can't run without one. Throttled per-user inside
