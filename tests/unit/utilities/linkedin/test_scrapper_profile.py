@@ -42,6 +42,28 @@ class TestParseProfileHeader:
         with pytest.raises(ProfileUnavailableError):
             parse_profile_header(None, "https://www.linkedin.com/in/x/")
 
+    def test_name_from_title_when_no_h1(self):
+        # LinkedIn dropped the profile <h1> and uses hashed CSS classes; the name is only
+        # reliably in the <title>. Must extract it instead of raising.
+        from cqc_lem.utilities.linkedin.scrapper import parse_profile_header
+        page = _soup(
+            "<html><head><title>Christopher Queen | LinkedIn</title></head>"
+            "<body><div class='_9d763823 ca9510cb'>Christopher Queen</div>"
+            "<div class='text-body-medium'>Applied AI Engineer</div></body></html>")
+        prof = parse_profile_header(page, "https://www.linkedin.com/in/christopherqueen/")
+        assert prof["full_name"] == "Christopher Queen"
+
+    def test_name_from_title_strips_unread_count_prefix(self):
+        from cqc_lem.utilities.linkedin.scrapper import _name_from_title
+        page = _soup("<html><head><title>(7) Christopher Queen | LinkedIn</title></head><body></body></html>")
+        assert _name_from_title(page) == "Christopher Queen"
+
+    def test_generic_title_not_treated_as_name(self):
+        from cqc_lem.utilities.linkedin.scrapper import parse_profile_header, ProfileUnavailableError
+        page = _soup("<html><head><title>Feed | LinkedIn</title></head><body><div>x</div></body></html>")
+        with pytest.raises(ProfileUnavailableError):
+            parse_profile_header(page, "https://www.linkedin.com/in/x/")
+
     def test_extracts_name_and_title_with_fallback_selectors(self):
         # No 'mt2 relative' container — must still find the h1 + title via fallbacks.
         from cqc_lem.utilities.linkedin.scrapper import parse_profile_header
