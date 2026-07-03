@@ -44,6 +44,33 @@ class TestExtractPin:
         assert extract_pin_from_text("no digits here") is None
 
 
+class TestPinReplyAddress:
+    def test_explicit_env_wins(self, monkeypatch):
+        monkeypatch.setenv("LINKEDIN_PARSE_DOMAIN", "parse.custom.io")
+        from cqc_lem.utilities.linkedin.verification_pin import pin_reply_address
+        assert pin_reply_address("tok9") == "pin+tok9@parse.custom.io"
+
+    def test_derives_from_sendgrid_from_email(self, monkeypatch):
+        monkeypatch.delenv("LINKEDIN_PARSE_DOMAIN", raising=False)
+        monkeypatch.setenv("SENDGRID_FROM_EMAIL", "no-reply@christopherqueenconsulting.com")
+        from cqc_lem.utilities.linkedin.verification_pin import pin_reply_address
+        assert pin_reply_address("t") == "pin+t@parse.christopherqueenconsulting.com"
+
+    def test_derives_from_public_base_url_when_no_from_email(self, monkeypatch):
+        monkeypatch.delenv("LINKEDIN_PARSE_DOMAIN", raising=False)
+        monkeypatch.setenv("SENDGRID_FROM_EMAIL", "")
+        monkeypatch.setenv("PUBLIC_BASE_URL", "https://lem.christopherqueenconsulting.com")
+        from cqc_lem.utilities.linkedin.verification_pin import _default_parse_domain
+        assert _default_parse_domain() == "parse.christopherqueenconsulting.com"
+
+    def test_falls_back_to_example_when_nothing_configured(self, monkeypatch):
+        monkeypatch.delenv("LINKEDIN_PARSE_DOMAIN", raising=False)
+        monkeypatch.setenv("SENDGRID_FROM_EMAIL", "")
+        monkeypatch.setenv("PUBLIC_BASE_URL", "")
+        from cqc_lem.utilities.linkedin.verification_pin import _default_parse_domain
+        assert _default_parse_domain() == "parse.example.com"
+
+
 class TestTokenRoundTrip:
     def test_create_then_submit_by_token(self, fake_redis):
         store = {}

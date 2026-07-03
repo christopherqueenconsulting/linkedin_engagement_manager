@@ -31,9 +31,28 @@ _PIN_RE = re.compile(r"(?<!\d)(\d{6})(?!\d)")
 _TOKEN_RE = re.compile(r"pin\+([A-Za-z0-9]+)@")
 
 
+def _default_parse_domain() -> str:
+    """Derive `parse.<base-domain>` from existing domain config so the Reply-To uses the
+    real domain, not a placeholder, when LINKEDIN_PARSE_DOMAIN isn't set explicitly.
+
+    Prefers the SENDGRID_FROM_EMAIL domain (e.g. no-reply@christopherqueenconsulting.com
+    → parse.christopherqueenconsulting.com), falling back to the registrable domain of
+    PUBLIC_BASE_URL's host.
+    """
+    from_email = os.getenv("SENDGRID_FROM_EMAIL", "")
+    base = from_email.rsplit("@", 1)[-1].strip().lower() if "@" in from_email else ""
+    if not base:
+        from urllib.parse import urlparse
+        host = (urlparse(os.getenv("PUBLIC_BASE_URL", "")).hostname or "").lower()
+        labels = [p for p in host.split(".") if p]
+        base = ".".join(labels[-2:]) if len(labels) >= 2 else ""
+    return f"parse.{base}" if base else "parse.example.com"
+
+
 def pin_reply_address(token: str) -> str:
-    """Tokenized Reply-To used in the PIN-request email (host set by LINKEDIN_PARSE_DOMAIN)."""
-    domain = os.getenv("LINKEDIN_PARSE_DOMAIN", "parse.example.com")
+    """Tokenized Reply-To used in the PIN-request email. Host is LINKEDIN_PARSE_DOMAIN if
+    set, else derived from the configured domain (see _default_parse_domain)."""
+    domain = os.getenv("LINKEDIN_PARSE_DOMAIN") or _default_parse_domain()
     return f"pin+{token}@{domain}"
 
 
