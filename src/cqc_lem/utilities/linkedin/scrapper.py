@@ -102,6 +102,26 @@ def get_page_source(driver, url, scroll_times=0):
     return BeautifulSoup(driver.page_source, "html.parser")
 
 
+_TITLE_PREFIX_RE = re.compile(r"^\(\d+\+?\)\s*")               # "(7) " unread-count prefix
+_TITLE_SUFFIX_RE = re.compile(r"\s*[|\-–—]\s*LinkedIn\s*$", re.IGNORECASE)
+
+
+def _name_from_title(source) -> str:
+    """Fallback name extraction from the page <title>.
+
+    LinkedIn dropped the profile <h1> and moved to hashed/obfuscated CSS classes, but the
+    member's name is still reliably in the title ("Name | LinkedIn", sometimes prefixed
+    with a "(N)" unread-notification count). Guard against generic non-profile titles.
+    """
+    title = source.title.get_text(strip=True) if source and source.title else ""
+    if not title:
+        return ""
+    name = _TITLE_SUFFIX_RE.sub("", _TITLE_PREFIX_RE.sub("", title)).strip()
+    if not name or name.lower() in ("linkedin", "feed", "search", "messaging", "notifications"):
+        return ""
+    return name
+
+
 def parse_profile_header(source, profile_url, company_name=None) -> dict:
     """Extract name/title/connection from a parsed profile page (pure, no Selenium).
 
@@ -117,14 +137,17 @@ def parse_profile_header(source, profile_url, company_name=None) -> dict:
     # rename doesn't break extraction. Then guard every lookup.
     info = source.find('div', class_='mt2 relative') or source
 
+    # LinkedIn removed the profile <h1> and uses hashed CSS classes now, so fall back to
+    # the page <title> (which still carries the name) before giving up.
     name_el = info.find('h1') or source.find('h1')
-    if name_el is None:
+    full_name = name_el.get_text().strip() if name_el is not None else _name_from_title(source)
+    if not full_name:
         raise ProfileUnavailableError(f"Could not locate profile name (DOM changed?) for {profile_url}")
 
     title_el = info.find('div', class_='text-body-medium') or source.select_one('div.text-body-medium')
     connection = info.find('span', class_='dist-value') or source.find('span', class_='dist-value')
 
-    profile = {'full_name': name_el.get_text().strip()}
+    profile = {'full_name': full_name}
     if company_name:
         profile['company_name'] = company_name
     profile['job_title'] = title_el.get_text().lstrip().strip() if title_el else ""
