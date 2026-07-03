@@ -45,7 +45,9 @@ parse.christopherqueenconsulting.com.  MX  10  mx.sendgrid.net.
 SendGrid → Settings → **Inbound Parse** → Add Host & URL:
 - **Receiving domain:** `parse.christopherqueenconsulting.com`
 - **Destination URL:** `https://lem.christopherqueenconsulting.com/api/linkedin/verification-pin/inbound`
-- POST the raw, full MIME message: not required (we read the parsed `to`/`text`/`envelope` fields).
+- **⚠️ Leave "POST the raw, full MIME message" UNCHECKED.** The webhook reads SendGrid's *parsed*
+  fields (`to` / `text` / `envelope`); if this box is checked, SendGrid sends one raw-MIME blob
+  instead and the token/code can't be extracted (the reply silently never lands).
 
 The webhook is under `/api/linkedin/verification-pin` (a public prefix — no bearer auth), and
 always returns `200` so SendGrid doesn't retry-storm on unrelated mail.
