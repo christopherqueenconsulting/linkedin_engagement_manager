@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.18.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.17.3...v0.18.0) (2026-07-01)
+
+
+### Features
+
+* **login:** email-reply verification-PIN flow for LinkedIn challenges ([c7afa96](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c7afa96534180dced9284e7ac880adc5452a4c1b))
+* **login:** email-reply verification-PIN flow for LinkedIn challenges ([58c5cd1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/58c5cd115a380845071954e0d7fcec1be2af136b))
+* **proxy:** support credentialed proxies via MV3 auth extension ([dfd1281](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/dfd128133e6c83f7895c3082436225b67d6d0029))
+* **proxy:** support credentialed proxies via MV3 auth extension ([b9df844](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b9df8447f12b42c50f7294e4ace80aaf28bd82ee))
+
+
+### Bug Fixes
+
+* **api:** dashboard stats 500s in the first days of a month ([fa7a213](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/fa7a213ba3fd680add299b515fe6fd690b6468a3))
+* **automation:** add shared 429 circuit breaker to pause Selenium engagement ([27b09a8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/27b09a821ae81909db8b2691ff9b3e864bac1b9f))
+* **automation:** shared 429 circuit breaker to pause Selenium engagement ([0a24259](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0a24259d3d44e988a2de9a42b207b607a24eeaac))
+* **login:** recover from stale-cookie redirect loop after egress-IP change ([2dbc19c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2dbc19c5a24f4f628fc053daee84d30bf648fe79))
+* **login:** recover from stale-cookie redirect loop after egress-IP change ([9cb2968](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9cb2968b490209b343d846e378d5132a5fbaa658))
+
+
+### Documentation
+
+* add egress & LinkedIn access at-scale build-vs-buy decision doc ([df8f80d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/df8f80d1af4d0cc87240289efe90b04df083d5e5))
+* egress & LinkedIn access at-scale decision doc ([d1f62ee](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d1f62eeb25f2eb9dc33c883b05f4dd39e5526964))
+
 ## [0.17.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.17.2...v0.17.3) (2026-06-30)
 
 
