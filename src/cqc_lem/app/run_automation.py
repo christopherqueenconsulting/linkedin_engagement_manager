@@ -12,9 +12,10 @@ from urllib.parse import urlparse
 from celery_once import QueueOnce
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.utilities.ai.ai_helper import generate_ai_response, get_ai_message_refinement, summarize_recent_activity, \
-    ai_check_message_history
+    ai_check_message_history, post_is_relevant
 from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, insert_new_log, LogActionType, \
+    get_engagement_preferences, count_comments_today, \
     LogResultType, has_user_commented_on_post_url, get_post_url_from_log_for_user, get_post_message_from_log_for_user, \
     has_engaged_url_with_x_days, get_post_content, get_post_video_url, update_db_post_status, PostStatus, PostType, \
     get_dm_history_for_profile, get_post_status, get_user_blog_url, get_post_type, get_carousel_slides
@@ -467,12 +468,50 @@ def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = No
         return False
 
 
+def post_matches_preferences(content: str, author: str, prefs: dict) -> bool:
+    """Decide whether a post should be engaged given the user's targeting preferences.
+
+    Exclude keywords/topics/authors always kill it (case-insensitive substring). If any
+    include constraint is set, the post must match at least one: a literal include keyword
+    or author, OR (only if literal misses) LLM topic relevance to include_topics. With no
+    include constraints, engage everything not excluded.
+    """
+    if not prefs:
+        return True
+    text = (content or "").lower()
+    auth = (author or "").lower()
+    if any(str(k).lower() in text for k in (prefs.get("exclude_keywords") or []) + (prefs.get("exclude_topics") or []) if k):
+        return False
+    if any(str(a).lower() in auth for a in (prefs.get("exclude_authors") or []) if a):
+        return False
+    incl_kw = [k for k in (prefs.get("include_keywords") or []) if k]
+    incl_auth = [a for a in (prefs.get("include_authors") or []) if a]
+    incl_topics = [t for t in (prefs.get("include_topics") or []) if t]
+    if not (incl_kw or incl_auth or incl_topics):
+        return True
+    if any(str(k).lower() in text for k in incl_kw):
+        return True
+    if any(str(a).lower() in auth for a in incl_auth):
+        return True
+    if incl_topics and post_is_relevant(content, incl_topics):
+        return True
+    return False
+
+
 def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: int,
-                           max_posts: int = 10, deadline_ts: float = None) -> int:
+                           max_posts: int = 10, deadline_ts: float = None, prefs: dict = None) -> int:
     """Walk the SDUI feed, generate an AI comment per fresh/relevant post, and comment inline.
-    Returns the number of comments posted. Re-queries the feed after each action (the DOM
-    re-renders) and scrolls to load more when the current batch is exhausted."""
+    Applies the user's targeting preferences (topic/keyword/author filters + per-day cap) and
+    voice/tone. Returns the number of comments posted. Re-queries the feed after each action."""
     from selenium.common.exceptions import StaleElementReferenceException
+    if prefs is None:
+        prefs = get_engagement_preferences(user_id)
+    daily_cap = prefs.get("max_comments_per_day") or 20
+    remaining_today = max(0, daily_cap - count_comments_today(user_id))
+    if remaining_today <= 0:
+        myprint(f"Daily comment cap reached ({daily_cap}) — skipping")
+        return 0
+    max_posts = min(max_posts, remaining_today)
     posted, seen, scrolls = 0, set(), 0
     while posted < max_posts and scrolls < 15:
         if deadline_ts and time.time() >= deadline_ts:
@@ -496,7 +535,9 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             seen.add(key)
             if has_user_commented_on_post_url(user_id, key):
                 continue
-            comment_text = generate_ai_response(content, my_profile, None)
+            if not post_matches_preferences(content, author, prefs):
+                continue  # doesn't match targeting; DOM unchanged, try the next post
+            comment_text = generate_ai_response(content, my_profile, None, prefs=prefs)
             if not comment_text:
                 continue
             driver.execute_script("arguments[0].scrollIntoView({block:'center'});", card)

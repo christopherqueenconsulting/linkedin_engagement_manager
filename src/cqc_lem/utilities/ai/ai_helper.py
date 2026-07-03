@@ -104,17 +104,41 @@ def generate_ai_response_test():
     return comment
 
 
-def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=None, post_comment: str = None):
+_COMMENT_LENGTH_CHARS = {"short": 300, "medium": 600, "long": 1100}
+
+
+def _style_directive(prefs: dict = None) -> str:
+    """Turn the user's engagement preferences into an explicit style directive that overrides
+    the profile-inferred defaults (tone, length, emoji/hashtag rules, freeform style)."""
+    if not prefs:
+        return ""
+    parts = []
+    tone = prefs.get("tone")
+    if tone:
+        parts.append(f"Write in a {tone} tone.")
+    length = prefs.get("comment_length") or "medium"
+    parts.append(f"Keep it {length} — around {_COMMENT_LENGTH_CHARS.get(length, 600)} characters.")
+    parts.append("You may use tasteful emojis." if prefs.get("use_emojis") else "Do not use emojis.")
+    parts.append("Relevant hashtags are okay." if prefs.get("use_hashtags") else "Do not use any hashtags.")
+    if prefs.get("comment_style"):
+        parts.append(f"Style guidance: {prefs['comment_style']}.")
+    return "\n\nStyle requirements (follow these):\n- " + "\n- ".join(parts) + "\n"
+
+
+def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=None, post_comment: str = None,
+                         prefs: dict = None):
     image_attached = "(image attached)" if post_img_url else ""
-    user_comment = f"\n\nRespond to this Comment Directly: <comment>{post_comment}</comment>\n\nYou are responding as the author of the LinkedIn Content. Keep your response short and sweet without using any hashtags.\n\n" if post_comment else ""
+    _no_hashtags = "" if (prefs and prefs.get("use_hashtags")) else " without using any hashtags"
+    user_comment = f"\n\nRespond to this Comment Directly: <comment>{post_comment}</comment>\n\nYou are responding as the author of the LinkedIn Content. Keep your response short and sweet{_no_hashtags}.\n\n" if post_comment else ""
 
     prompt = (f"""Please give me a comment in response to the following LinkedIn Content as the following LinkedIn User,"
-              
+
                 LinkedIn User Profile:\n\n{profile.model_dump_json()}\n\n"
-              
+
                 LinkedIn Content{image_attached}: <content>'{post_content}'</content>
-                
+
                 {user_comment}
+                {_style_directive(prefs)}
 
                 Only provide the final comment once it perfectly reflects the LinkedIn user’s style
                 
@@ -183,6 +207,31 @@ def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=No
 
     content = response.choices[0].message.content
     return content.strip() if content is not None else None
+
+
+def post_is_relevant(post_content: str, include_topics: list) -> bool:
+    """LLM relevance gate: is this post about any of the user's include_topics? Used on top of
+    literal keyword matching so targeting catches topical fit beyond exact words. Fails OPEN
+    (returns True) on any error so a classifier hiccup never silently blocks all engagement."""
+    if not include_topics:
+        return True
+    try:
+        topics = ", ".join(str(t) for t in include_topics if t)
+        resp = _call_llm(
+            model="lem-simple",
+            messages=[
+                {"role": "system", "content": "You classify whether a LinkedIn post is topically "
+                                              "relevant to a set of topics. Answer with only 'yes' or 'no'."},
+                {"role": "user", "content": f"Topics: {topics}\n\nPost:\n{post_content[:1200]}\n\n"
+                                            f"Is this post relevant to ANY of the topics? Answer yes or no."},
+            ],
+            temperature=0,
+        )
+        ans = (resp.choices[0].message.content or "").strip().lower()
+        return ans.startswith("y")
+    except Exception as e:
+        myprint(f"post_is_relevant classifier failed (allowing): {e}")
+        return True
 
 
 def get_ai_description_of_profile(linked_in_profile: LinkedInProfile):

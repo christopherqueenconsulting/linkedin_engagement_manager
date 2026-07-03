@@ -1999,6 +1999,118 @@ def update_user_preferences(
         connection.close()
 
 
+_ENGAGEMENT_DEFAULTS: dict = {
+    "tone": None, "comment_length": "medium", "comment_style": None,
+    "use_emojis": True, "use_hashtags": False,
+    "include_topics": [], "exclude_topics": [], "include_keywords": [], "exclude_keywords": [],
+    "include_authors": [], "exclude_authors": [], "post_types": [],
+    "min_reactions": None, "reply_to_own_comments": True,
+    "max_comments_per_day": 20, "max_dms_per_day": 20, "default_buyer_stage": None,
+}
+_ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
+                           "exclude_keywords", "include_authors", "exclude_authors", "post_types")
+_ENGAGEMENT_BOOL_FIELDS = ("use_emojis", "use_hashtags", "reply_to_own_comments")
+_ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "use_hashtags",
+                    "include_topics", "exclude_topics", "include_keywords", "exclude_keywords",
+                    "include_authors", "exclude_authors", "post_types", "min_reactions",
+                    "reply_to_own_comments", "max_comments_per_day", "max_dms_per_day",
+                    "default_buyer_stage")
+
+
+def _coerce_json_list(value) -> list:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    try:
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, list) else []
+    except (ValueError, TypeError):
+        return []
+
+
+def get_engagement_preferences(user_id: int) -> dict:
+    """Return the user's engagement preferences (voice/targeting/caps) with code-level
+    defaults when no row exists — so behaviour is unchanged until the user customizes."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            f"SELECT {', '.join(_ENGAGEMENT_COLS)} FROM engagement_preferences WHERE user_id = %s",
+            (user_id,))
+        row = cursor.fetchone()
+        if row is None:
+            return dict(_ENGAGEMENT_DEFAULTS)
+        for f in _ENGAGEMENT_JSON_FIELDS:
+            row[f] = _coerce_json_list(row.get(f))
+        for f in _ENGAGEMENT_BOOL_FIELDS:
+            row[f] = bool(row.get(f))
+        return row
+    except mysql.connector.Error as err:
+        myprint(f"Could not get engagement prefs for user_id {user_id} | Error: {err}")
+        return dict(_ENGAGEMENT_DEFAULTS)
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
+    """Upsert the user's engagement preferences (INSERT ... ON DUPLICATE KEY UPDATE)."""
+    merged = {**_ENGAGEMENT_DEFAULTS, **{k: v for k, v in prefs.items() if k in _ENGAGEMENT_DEFAULTS}}
+
+    def _val(col):
+        v = merged[col]
+        if col in _ENGAGEMENT_JSON_FIELDS:
+            return json.dumps(v or [])
+        if col in _ENGAGEMENT_BOOL_FIELDS:
+            return 1 if v else 0
+        return v
+
+    values = [user_id] + [_val(c) for c in _ENGAGEMENT_COLS]
+    placeholders = ", ".join(["%s"] * (len(_ENGAGEMENT_COLS) + 1))
+    updates = ", ".join(f"{c}=VALUES({c})" for c in _ENGAGEMENT_COLS)
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            f"INSERT INTO engagement_preferences (user_id, {', '.join(_ENGAGEMENT_COLS)}) "
+            f"VALUES ({placeholders}) ON DUPLICATE KEY UPDATE {updates}", values)
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not update engagement prefs for user_id {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def _count_actions_today(user_id: int, action_type: "LogActionType") -> int:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM logs WHERE user_id=%s AND action_type=%s AND result=%s "
+            "AND created_at >= CURDATE()",
+            (user_id, str(action_type), str(LogResultType.SUCCESS)))
+        r = cursor.fetchone()
+        return int(r[0]) if r else 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not count actions for user_id {user_id} | Error: {err}")
+        return 0
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def count_comments_today(user_id: int) -> int:
+    return _count_actions_today(user_id, LogActionType.COMMENT)
+
+
+def count_dms_sent_today(user_id: int) -> int:
+    return _count_actions_today(user_id, LogActionType.DM)
+
+
 def get_user_geo(user_id: int) -> Optional[dict]:
     """Return the user's full geo profile for Selenium spoofing.
 
