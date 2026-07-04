@@ -44,3 +44,25 @@ def sanitize_for_linkedin(text: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
 
     return text.strip()
+
+
+# Classic engagement-bait patterns LinkedIn's 2026 algorithm penalizes. Deliberately does NOT match
+# generic "comment <keyword>" so it never strips a legitimate lead-magnet CTA (Phase 4).
+_BAIT_PATTERNS = [
+    r"tag (a friend|someone|three|3|your)",
+    r"like if you",
+    r"(hit|smash)\s+(the\s+)?like",
+    r"double[- ]tap",
+    r"(repost|share)\s+(this\s+)?if",
+    r"comment\s+[\"']?(yes|agree|below|amen|me|👇)\b",
+]
+_BAIT_RE = re.compile("|".join(_BAIT_PATTERNS), re.IGNORECASE)
+
+
+def strip_engagement_bait(text: str) -> str:
+    """Drop lines containing classic engagement-bait CTAs (penalized). Conservative and line-level:
+    bait is almost always its own CTA line, and we avoid touching 'comment <keyword>' lead magnets."""
+    if not text:
+        return text
+    kept = [line for line in text.split("\n") if not _BAIT_RE.search(line)]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
