@@ -2,10 +2,10 @@ name: Dependabot Merge Reconciler
 
 # Safety net for the event-driven "Dependabot Auto-Merge" workflow. GitHub disables a PR's
 # auto-merge whenever it briefly becomes conflicted (e.g. while another Dependabot PR merges
-# and this one is being rebased); the re-enable can then be missed. This job periodically
-# re-enables auto-merge on every mergeable Dependabot PR so the backlog always drains on its
-# own — no manual babysitting. Grouped, per-ecosystem PRs touch different lockfiles, so
-# enqueuing all mergeable ones at once is safe.
+# and this one is rebased); the re-enqueue can then be missed, and GITHUB_TOKEN-enabled
+# auto-merge doesn't reliably enter the merge queue. This job re-enqueues Dependabot PRs that
+# ALREADY have auto-merge enabled (the auto-merge workflow only enables it for minor/patch —
+# MAJOR bumps never get it, so this never merges a major) using GHCR_PAT.
 
 on:
   schedule:
@@ -18,26 +18,32 @@ permissions:
 
 jobs:
   reconcile:
-    name: Re-enable auto-merge on ready Dependabot PRs
+    name: Re-enqueue ready Dependabot PRs
     runs-on: ubuntu-latest
+    env:
+      # Actions context → reads GHCR_PAT (contents+PR write) directly. Falls back to GITHUB_TOKEN.
+      GH_TOKEN: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
     steps:
-      - name: Enqueue mergeable Dependabot PRs
-        env:
-          # Runs in the Actions context, so it reads GHCR_PAT (contents+PR write) directly —
-          # no Dependabot-store copy needed. Falls back to GITHUB_TOKEN if unset.
-          GH_TOKEN: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
+      - name: Verify merge-token scope
+        run: |
+          echo "Authenticated as: $(gh api user --jq .login 2>&1 || echo '<unknown>')"
+          echo "Token permissions on $REPO: $(gh api "repos/$REPO" --jq '.permissions' 2>&1 || echo '<none>')"
+          echo "(push=true or admin=true means the token can merge; false ⇒ GHCR_PAT lacks contents/PR write.)"
+
+      - name: Re-enqueue auto-merge-enabled Dependabot PRs
         run: |
           set -euo pipefail
-          # CLEAN = mergeable & checks passed; UNSTABLE = mergeable, only non-required checks pending.
+          # Only PRs already flagged for auto-merge (minor/patch, approved by the auto-merge
+          # workflow) and mergeable. Majors never have auto-merge enabled → never touched here.
           prs=$(gh pr list --repo "$REPO" --author "app/dependabot" --state open \
-                  --json number,mergeStateStatus \
-                  --jq '.[] | select(.mergeStateStatus == "CLEAN" or .mergeStateStatus == "UNSTABLE") | .number')
+                  --json number,mergeStateStatus,autoMergeRequest \
+                  --jq '.[] | select((.mergeStateStatus=="CLEAN" or .mergeStateStatus=="UNSTABLE") and .autoMergeRequest != null) | .number')
           if [ -z "$prs" ]; then
-            echo "No mergeable Dependabot PRs to reconcile."
+            echo "No auto-merge-enabled Dependabot PRs to reconcile."
             exit 0
           fi
           for pr in $prs; do
-            echo "Re-enabling auto-merge on Dependabot PR #$pr"
+            echo "Re-enqueuing Dependabot PR #$pr"
             gh pr merge "$pr" --repo "$REPO" --auto || echo "  (could not enqueue #$pr; will retry next run)"
           done
