@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.19.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.19.0...v0.19.1) (2026-07-04)
+
+
+### Bug Fixes
+
+* resolve v0.19.0 runtime errors from celery/PostHog logs ([8b78cba](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8b78cbada8d2e8abab091b6a4701ba65bb13fbbf))
+* resolve v0.19.0 runtime errors surfaced in celery/PostHog logs ([efdb4e2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/efdb4e2401552f129cb126c329a3d987795db99a))
+
 ## [0.19.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.18.0...v0.19.0) (2026-07-04)
 
 
