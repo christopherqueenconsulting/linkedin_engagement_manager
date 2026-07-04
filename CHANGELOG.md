@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.21.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.20.0...v0.21.0) (2026-07-04)
+
+
+### Features
+
+* **engagement:** daily golden-hour commenting on top of pre-post ([9819ace](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9819ace0aff7280ac8e7107c061f9b73f58fa4c5))
+* **engagement:** daily golden-hour commenting on top of pre-post ([aa5fc71](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/aa5fc716dfec22503a501be36d04d85dbe14ffcb))
+
 ## [0.20.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.19.2...v0.20.0) (2026-07-04)
 
 
