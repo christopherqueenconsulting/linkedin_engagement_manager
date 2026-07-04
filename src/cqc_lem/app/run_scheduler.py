@@ -170,6 +170,19 @@ def auto_group_posts():
 
 
 @shared_task.task
+def auto_scrape_stats():
+    """Daily: capture engagement stats on each active user's recent posts (powers post-time recs)."""
+    from cqc_lem.app.run_automation import auto_scrape_post_stats
+    users = get_active_user_ids()
+    n = 0
+    for uid in users:
+        if has_linkedin_session(uid):
+            auto_scrape_post_stats.apply_async(kwargs={'user_id': uid})
+            n += 1
+    return f"Stats scrape dispatched for {n}/{len(users)} user(s)"
+
+
+@shared_task.task
 def auto_send_due_followups():
     """Dispatch a per-user Selenium task to send due DM follow-ups (each gated by reply-detection)."""
     from cqc_lem.app.run_automation import process_user_followups

@@ -27,7 +27,7 @@ from cqc_lem.utilities.db import (
     get_company_linked_in_url_for_user, update_company_linked_in_url_for_user,
     get_user_subscription_info, get_user_preferences, update_user_preferences,
     get_engagement_preferences, update_engagement_preferences,
-    get_user_groups, set_groups_enabled,
+    get_user_groups, set_groups_enabled, get_post_engagement_rows,
     get_dm_templates, upsert_dm_templates,
     update_subscription_from_stripe, update_user_linkedin_token,
     get_users_with_stripe_subscriptions,
@@ -1082,6 +1082,20 @@ def update_user_groups_endpoint(request: GroupTogglesRequest) -> ResponseModel:
     if not set_groups_enabled(user_id, request.groups):
         raise HTTPException(status_code=500, detail="Could not update group settings")
     return ResponseModel(status_code=200, detail="Group settings updated")
+
+
+@router.get("/user/post-stats")
+def get_post_stats_endpoint(session_token: str) -> ResponseModel:
+    """Personalized best-times-to-post recommendations derived from the user's own post stats."""
+    from cqc_lem.utilities.post_stats import recommend_post_times
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    rows = get_post_engagement_rows(user_id)
+    return ResponseModel(status_code=200, detail={
+        "recommendations": recommend_post_times(rows),
+        "sample_size": len(rows),
+    })
 
 
 @router.get("/user/dm-templates")

@@ -2247,6 +2247,61 @@ def set_groups_enabled(user_id: int, group_states: dict) -> bool:
         connection.close()
 
 
+def record_post_stats(user_id: int, post_id: int, reactions: int, comments: int,
+                      reposts: int = 0, impressions: int = None) -> bool:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO post_stats (user_id, post_id, reactions, comments, reposts, impressions) "
+            "VALUES (%s,%s,%s,%s,%s,%s)",
+            (user_id, post_id, int(reactions or 0), int(comments or 0), int(reposts or 0), impressions))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not record post stats for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_recent_posted_post_ids(user_id: int, days: int = 21) -> list:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT id FROM posts WHERE user_id=%s AND status='posted' "
+            "AND scheduled_time >= (NOW() - INTERVAL %s DAY)", (user_id, days))
+        return [r[0] for r in cursor.fetchall()]
+    except mysql.connector.Error:
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_post_engagement_rows(user_id: int) -> list:
+    """Latest stats per post joined with when it was posted → rows of
+    (scheduled_time, reactions, comments, reposts) for post-time analysis."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT p.scheduled_time, s.reactions, s.comments, s.reposts "
+            "FROM posts p JOIN post_stats s ON s.post_id=p.id AND s.user_id=p.user_id "
+            "WHERE p.user_id=%s AND s.id IN "
+            "(SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id)",
+            (user_id, user_id))
+        return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        myprint(f"Could not get post engagement rows for user {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
 # Default DM templates = today's hard-coded strings, so behaviour is unchanged until a user
 # customizes. {first_name},{headline},{blog_url} are filled at send time.
 _DM_DEFAULT_TEMPLATES = {

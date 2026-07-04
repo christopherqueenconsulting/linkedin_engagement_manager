@@ -18,7 +18,7 @@ from cqc_lem.utilities.ai.ai_helper import generate_ai_response, get_ai_message_
 from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, insert_new_log, LogActionType, \
     get_engagement_preferences, count_comments_today, get_recent_engagers, upsert_engager, \
-    upsert_user_group, get_enabled_group_ids, \
+    upsert_user_group, get_enabled_group_ids, record_post_stats, get_recent_posted_post_ids, \
     LogResultType, has_user_commented_on_post_url, get_post_url_from_log_for_user, get_post_message_from_log_for_user, \
     has_engaged_url_with_x_days, get_post_content, get_post_video_url, update_db_post_status, PostStatus, PostType, \
     get_dm_history_for_profile, get_post_status, get_user_blog_url, get_post_type, get_carousel_slides, \
@@ -795,6 +795,39 @@ def _comment_items_from_thread(driver):
         if item is not None:
             items.append(item)
     return items
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
+                  queue='selenium')
+def auto_scrape_post_stats(self, user_id: int):
+    """Capture reactions/comments for each of the user's recent posts (feeds personalized
+    post-time recommendations). Reuses the social-count extraction on each post's detail page."""
+    post_ids = get_recent_posted_post_ids(user_id)
+    if not post_ids:
+        return "No recent posts to scrape"
+    try:
+        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Post Stats")
+    except Exception as e:
+        log_error("Error getting profile for post stats", exc=e, user_id=user_id, task_name="auto_scrape_post_stats")
+        return f"Failed: {e}"
+    scraped = 0
+    try:
+        for pid in post_ids:
+            url = get_post_url_from_log_for_user(user_id, pid)
+            if not url:
+                continue
+            driver.get(url)
+            time.sleep(random.uniform(4, 6))
+            try:
+                container = driver.find_element(By.TAG_NAME, "main")
+            except Exception:
+                container = None
+            counts = _post_social_counts(container) if container is not None else {"reactions": 0, "comments": 0}
+            record_post_stats(user_id, pid, counts["reactions"], counts["comments"])
+            scraped += 1
+        return f"Scraped stats for {scraped} post(s)"
+    finally:
+        quit_gracefully(driver)
 
 
 _GROUP_ID_RE = re.compile(r"/groups/(\d+)")

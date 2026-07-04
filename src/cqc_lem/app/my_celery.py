@@ -104,6 +104,10 @@ app.conf.update(
             'task': 'cqc_lem.app.run_scheduler.auto_group_posts',
             'schedule': crontab(hour='15', minute='0', day_of_week='tuesday')  # Weekly value-add group post
         },
+        'scrape-post-stats': {
+            'task': 'cqc_lem.app.run_scheduler.auto_scrape_stats',
+            'schedule': crontab(hour='23', minute='0')  # Nightly: capture post engagement for time recs
+        },
         'clen-up-stale-profiles': {
             'task': 'cqc_lem.app.run_scheduler.auto_clean_stale_profiles',
             'schedule': crontab(hour='3', minute='0', )  # Run every day at 3:00 AM
