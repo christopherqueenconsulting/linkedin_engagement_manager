@@ -72,15 +72,17 @@ def get_top_level_domain(url: str) -> str:
 
 
 def get_best_posting_times():
-    # Determine the best time for posting based on the selected date
+    # 2026 peak-engagement windows shifted to afternoons, strongest Tue–Thu (Wed ~4pm is the peak);
+    # weekends taper. Times are user-local (the scheduler converts to UTC). Superseded per-user by
+    # the data-driven recommend_post_times once enough post-stats data exists (see get_post_time).
     best_times = {
-        0: time(14, 0),  # Monday
-        1: time(9, 0),  # Tuesday
-        2: time(12, 0),  # Wednesday
-        3: time(17, 0),  # Thursday
-        4: time(23, 0),  # Friday
-        5: time(7, 0),  # Saturday
-        6: time(9, 0)  # Sunday
+        0: time(16, 0),  # Monday — 4pm
+        1: time(15, 0),  # Tuesday — 3pm
+        2: time(16, 0),  # Wednesday — 4pm (peak)
+        3: time(17, 0),  # Thursday — 5pm
+        4: time(11, 0),  # Friday — late morning (afternoon drop-off into the weekend)
+        5: time(10, 0),  # Saturday — mid-morning
+        6: time(18, 0),  # Sunday — early evening
     }
 
     return best_times
@@ -93,6 +95,25 @@ def get_best_posting_time(selected_date: date):
     best_time = best_times[selected_date.weekday()]
 
     return best_time
+
+
+def get_post_time(selected_date: date, user_id: int = None):
+    """Best posting time for a date. Prefers the user's own data-driven best hour for that weekday
+    (learned by recommend_post_times, Phase 3) and falls back to the 2026 default model until enough
+    data exists. Keeps the default's minutes so times aren't all on the hour."""
+    default = get_best_posting_time(selected_date)
+    if user_id is None:
+        return default
+    try:
+        from cqc_lem.utilities.db import get_post_engagement_rows
+        from cqc_lem.utilities.post_stats import recommend_post_times
+        recs = recommend_post_times(get_post_engagement_rows(user_id), top_n=7)
+        for r in recs:
+            if r["weekday_num"] == selected_date.weekday():
+                return time(r["hour"], default.minute)
+    except Exception:
+        pass
+    return default
 
 
 def get_12h_format_best_time(best_time: time):

@@ -96,6 +96,22 @@ app.conf.update(
             'task': 'cqc_lem.app.run_scheduler.auto_publish_due_newsletters',
             'schedule': crontab(hour='12', minute='30')  # Daily check; publishes editions whose cadence is due
         },
+        'sync-user-groups': {
+            'task': 'cqc_lem.app.run_scheduler.auto_sync_groups',
+            'schedule': crontab(hour='7', minute='0', day_of_week='monday')  # Refresh joined groups weekly
+        },
+        'group-engagement': {
+            'task': 'cqc_lem.app.run_scheduler.auto_group_engagement',
+            'schedule': crontab(hour='16', minute='0')  # Daily value-add commenting in enabled groups
+        },
+        'group-posts': {
+            'task': 'cqc_lem.app.run_scheduler.auto_group_posts',
+            'schedule': crontab(hour='15', minute='0', day_of_week='tuesday')  # Weekly value-add group post
+        },
+        'scrape-post-stats': {
+            'task': 'cqc_lem.app.run_scheduler.auto_scrape_stats',
+            'schedule': crontab(hour='23', minute='0')  # Nightly: capture post engagement for time recs
+        },
         'clen-up-stale-profiles': {
             'task': 'cqc_lem.app.run_scheduler.auto_clean_stale_profiles',
             'schedule': crontab(hour='3', minute='0', )  # Run every day at 3:00 AM

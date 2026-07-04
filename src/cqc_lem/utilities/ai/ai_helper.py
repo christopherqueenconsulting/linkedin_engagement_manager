@@ -239,6 +239,70 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
     return {"title": parts[0].strip()[:255], "body": (parts[1].strip() if len(parts) > 1 else content.strip())}
 
 
+def generate_group_post(profile: "LinkedInProfile", group_name: str = None, prefs: dict = None) -> "str | None":
+    """A short, value-add post for a LinkedIn Group — a genuine insight or open question for that
+    community, NEVER promotional (groups penalize/moderate self-promo). Ends inviting discussion."""
+    ctx = f"for the LinkedIn group \"{group_name}\"" if group_name else "for a professional LinkedIn group"
+    system_prompt = {
+        "role": "system",
+        "content": f"""You are the profile user posting {ctx}. Write ONE short, genuinely useful
+        post that helps the community: a specific insight, lesson, or an open question that sparks
+        discussion. Absolutely NO self-promotion, NO links, NO hashtags. Sound human, in the user's
+        voice, and end by inviting members to weigh in. Output ONLY the post text.""",
+    }
+    user_prompt = {"role": "user", "content": f"Author profile:\n{profile.model_dump_json()}\n{_style_directive(prefs)}"}
+    response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt],
+                         temperature=round(random.uniform(0.5, 0.7), 2))
+    content = response.choices[0].message.content
+    return content.strip() if content is not None else None
+
+
+def generate_thread_reply(post_content: str, comment_text: str, profile: "LinkedInProfile",
+                          prefs: dict = None) -> "str | None":
+    """Reply to a commenter on the AUTHOR's own post so the thread KEEPS GOING: acknowledge their
+    specific point, add one useful thought, and END with a genuine, easy follow-up question directed
+    back to them. First-hour thread depth is the top 2026 reach signal. Short."""
+    system_prompt = {
+        "role": "system",
+        "content": """You are the post AUTHOR replying to a comment on YOUR OWN post. Keep the
+        conversation going: briefly acknowledge their SPECIFIC point, add ONE useful thought, and END
+        with a genuine, easy-to-answer follow-up question directed back to THEM. Warm, human, in the
+        author's voice, 1–3 sentences. No links, no hashtags, no generic 'thanks for sharing'.""",
+    }
+    user_prompt = {"role": "user", "content":
+        f"Author profile:\n{profile.model_dump_json()}\n\nMy post:\n{post_content}\n\n"
+        f"Their comment:\n{comment_text}\n{_style_directive(prefs)}"}
+    response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt],
+                         temperature=round(random.uniform(0.5, 0.7), 2))
+    content = response.choices[0].message.content
+    return content.strip() if content is not None else None
+
+
+def optimize_post_hook(post_content: str, prefs: dict = None) -> str:
+    """Rewrite a generated post so it opens with a scroll-stopping hook within the first ~210
+    characters (before LinkedIn's '…more' fold) and, when the topic fits, frames it as save-worthy
+    (a framework/checklist) with ONE soft 'save this' invite. Preserves substance + voice. Returns
+    the original text on any failure."""
+    if not post_content:
+        return post_content
+    system_prompt = {
+        "role": "system",
+        "content": """You are a LinkedIn post editor. Rewrite the post so its FIRST LINE is a
+        scroll-stopping hook that lands within the first 210 characters (before the '…more' fold) —
+        a bold claim, a surprising stat, or a sharp question. Keep the author's substance and voice.
+        If the content lends itself to it, shape the body as a save-worthy framework or checklist and
+        add ONE short, soft 'worth saving for later' style invite near the end. NO engagement-bait
+        (no 'comment YES'), NO external links, do not add hashtags. Return ONLY the rewritten post.""",
+    }
+    user_prompt = {"role": "user", "content": post_content}
+    try:
+        response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt], temperature=0.5)
+        out = response.choices[0].message.content
+        return out.strip() if out else post_content
+    except Exception:
+        return post_content
+
+
 def post_is_relevant(post_content: str, include_topics: list) -> bool:
     """LLM relevance gate: is this post about any of the user's include_topics? Used on top of
     literal keyword matching so targeting catches topical fit beyond exact words. Fails OPEN

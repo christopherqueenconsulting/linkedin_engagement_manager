@@ -1,0 +1,3 @@
+{
+  "enabledMcpjsonServers": ["selenium-lem", "playwright"]
+}

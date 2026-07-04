@@ -14,11 +14,13 @@ from urllib.parse import urlparse
 from celery_once import QueueOnce
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.utilities.ai.ai_helper import generate_ai_response, get_ai_message_refinement, summarize_recent_activity, \
-    ai_check_message_history, post_is_relevant, generate_newsletter_edition
+    ai_check_message_history, post_is_relevant, generate_newsletter_edition, generate_group_post, generate_thread_reply
 from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, insert_new_log, LogActionType, \
     get_engagement_preferences, count_comments_today, get_recent_engagers, upsert_engager, \
     get_newsletter_settings, mark_newsletter_published, \
+    upsert_user_group, get_enabled_group_ids, record_post_stats, get_recent_posted_post_ids, \
+    get_lead_magnet_settings, has_received_lead_magnet, record_lead_magnet_sent, \
     LogResultType, has_user_commented_on_post_url, get_post_url_from_log_for_user, get_post_message_from_log_for_user, \
     has_engaged_url_with_x_days, get_post_content, get_post_video_url, update_db_post_status, PostStatus, PostType, \
     get_dm_history_for_profile, get_post_status, get_user_blog_url, get_post_type, get_carousel_slides, \
@@ -862,6 +864,145 @@ def auto_publish_newsletter_edition(self, user_id: int):
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
                   queue='selenium')
+def auto_scrape_post_stats(self, user_id: int):
+    """Capture reactions/comments for each of the user's recent posts (feeds personalized
+    post-time recommendations). Reuses the social-count extraction on each post's detail page."""
+    post_ids = get_recent_posted_post_ids(user_id)
+    if not post_ids:
+        return "No recent posts to scrape"
+    try:
+        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Post Stats")
+    except Exception as e:
+        log_error("Error getting profile for post stats", exc=e, user_id=user_id, task_name="auto_scrape_post_stats")
+        return f"Failed: {e}"
+    scraped = 0
+    try:
+        for pid in post_ids:
+            url = get_post_url_from_log_for_user(user_id, pid)
+            if not url:
+                continue
+            driver.get(url)
+            time.sleep(random.uniform(4, 6))
+            try:
+                container = driver.find_element(By.TAG_NAME, "main")
+            except Exception:
+                container = None
+            counts = _post_social_counts(container) if container is not None else {"reactions": 0, "comments": 0}
+            record_post_stats(user_id, pid, counts["reactions"], counts["comments"])
+            scraped += 1
+        return f"Scraped stats for {scraped} post(s)"
+    finally:
+        quit_gracefully(driver)
+
+
+_GROUP_ID_RE = re.compile(r"/groups/(\d+)")
+
+
+def _enumerate_joined_groups(driver) -> list:
+    """Scrape the user's joined groups from /groups/ → list of (group_id, name). Best-effort."""
+    driver.get("https://www.linkedin.com/groups/")
+    time.sleep(random.uniform(5, 8))
+    for y in (600, 1200, 1800):
+        driver.execute_script(f"window.scrollTo(0,{y});")
+        time.sleep(1.5)
+    items = driver.execute_script(
+        "const out=[]; const seen=new Set();"
+        "for(const a of document.querySelectorAll(\"a[href*='/groups/']\")){"
+        "  const m=(a.getAttribute('href')||'').match(/\\/groups\\/(\\d+)/); if(!m) continue;"
+        "  const id=m[1]; if(seen.has(id)) continue;"
+        "  const name=(a.innerText||'').trim().split('\\n')[0];"
+        "  if(name && name.length>1){ seen.add(id); out.push([id, name.slice(0,255)]); }"
+        "} return out.slice(0,60);")
+    return [(str(i[0]), i[1]) for i in (items or []) if i and i[0]]
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
+                  queue='selenium')
+def auto_sync_user_groups(self, user_id: int):
+    """Refresh the user's joined-groups list (new groups default to enabled)."""
+    try:
+        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Sync Groups")
+    except Exception as e:
+        log_error("Error getting profile for group sync", exc=e, user_id=user_id, task_name="auto_sync_user_groups")
+        return f"Failed: {e}"
+    try:
+        groups = _enumerate_joined_groups(driver)
+        for gid, name in groups:
+            upsert_user_group(user_id, gid, name)
+        return f"Synced {len(groups)} group(s)"
+    finally:
+        quit_gracefully(driver)
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
+                  queue='selenium')
+def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
+    """Comment (value-add, scored) on posts in each of the user's ENABLED groups. Reuses the feed
+    commenting engine pointed at each group's feed. Shares the per-day comment cap."""
+    enabled = get_enabled_group_ids(user_id)
+    if not enabled:
+        return "No enabled groups"
+    try:
+        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Group Commenting")
+    except Exception as e:
+        log_error("Error getting profile for group commenting", exc=e, user_id=user_id, task_name="auto_comment_in_groups")
+        return f"Failed: {e}"
+    prefs = get_engagement_preferences(user_id)
+    engagers = get_recent_engagers(user_id)
+    total = 0
+    try:
+        for gid in enabled:
+            driver.get(f"https://www.linkedin.com/groups/{gid}/")
+            time.sleep(random.uniform(4, 7))
+            total += comment_on_feed_inline(driver, wait, my_profile, user_id,
+                                            max_posts=max_per_group, prefs=prefs, engagers=engagers)
+        return f"Commented {total} time(s) across {len(enabled)} group(s)"
+    finally:
+        quit_gracefully(driver)
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id', 'group_id']},
+                  queue='selenium')
+def auto_post_to_group(self, user_id: int, group_id: str):
+    """Publish one short, value-add (non-promotional) post into a group via its share box.
+    Best-effort — the group composer selectors are validated in the live pass."""
+    try:
+        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Group Post")
+    except Exception as e:
+        log_error("Error getting profile for group post", exc=e, user_id=user_id, task_name="auto_post_to_group")
+        return f"Failed: {e}"
+    try:
+        driver.get(f"https://www.linkedin.com/groups/{group_id}/")
+        time.sleep(random.uniform(4, 7))
+        text = _strip_non_bmp(generate_group_post(my_profile, prefs=get_engagement_preferences(user_id)) or "")
+        if not text.strip():
+            return "No group post generated"
+        # Open the group share box, type, and post (best-effort SDUI selectors).
+        if click_first(driver, wait, [(By.XPATH, "//button[contains(normalize-space(),'Start a post') or contains(@aria-label,'Start a post') or contains(@aria-label,'Create a post')]")],
+                       "Group share box", required=False) is None:
+            return "Group share box not found"
+        time.sleep(random.uniform(2, 3))
+        box = find_first(driver, wait, [(By.CSS_SELECTOR, "div[role='textbox']")], "Group post editor",
+                         visible_only=True, required=False)
+        if box is None:
+            return "Group post editor not found"
+        box.click()
+        box.send_keys(text)
+        time.sleep(random.uniform(1, 2))
+        if click_first(driver, wait, [(By.XPATH, "//button[normalize-space()='Post']")], "Group Post button",
+                       required=False) is None:
+            return "Group Post button not found"
+        time.sleep(random.uniform(3, 5))
+        return "Posted to group"
+    except Exception as e:
+        log_error("Group post error", exc=e, user_id=user_id, task_name="auto_post_to_group")
+        return f"Error: {e}"
+    finally:
+        quit_gracefully(driver)
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
+                  queue='selenium')
 def automate_commenting(self, user_id: int, loop_for_duration: int = None, future_forward: int = 60):
     global stop_all_thread
 
@@ -972,6 +1113,7 @@ def automate_reply_commenting(self, user_id: int, post_id: int, loop_for_duratio
             unique_url_name = path.split("/")[2] if len(path.split("/")) > 2 else None
 
             comments_replied_count = 0
+            lead_magnet = get_lead_magnet_settings(user_id)
             for comment in comments:
                 try:
                     tb = comment.find_elements(By.CSS_SELECTOR, "[data-testid='expandable-text-box']")
@@ -979,13 +1121,21 @@ def automate_reply_commenting(self, user_id: int, post_id: int, loop_for_duratio
                 except Exception:
                     continue
                 short_comment_text = comment_text[:75]
-                # Reciprocity: record whoever engaged on our post so the feed scorer can prioritize
-                # commenting back on their recent posts. Skip our own name.
+                # Reciprocity + lead-magnet: read the commenter, record them as an engager, and
+                # (if enabled) DM them the resource when their comment contains the trigger keyword.
                 try:
                     _link = comment.find_element(By.CSS_SELECTOR, "a[href*='/in/']")
                     _ename = ((_link.text or "") or (_link.get_attribute("aria-label") or "")).strip().split("\n")[0]
+                    _eprofile = (_link.get_attribute("href") or "").split("?")[0]
                     if _ename and _ename.lower() != (my_profile.full_name or "").lower():
-                        upsert_engager(user_id, _ename, (_link.get_attribute("href") or "").split("?")[0])
+                        upsert_engager(user_id, _ename, _eprofile)
+                        if (lead_magnet.get("enabled") and lead_magnet.get("keyword") and lead_magnet.get("message")
+                                and lead_magnet["keyword"].lower() in comment_text.lower()
+                                and _eprofile and not has_received_lead_magnet(user_id, _eprofile)):
+                            send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": _eprofile,
+                                                                "message": lead_magnet["message"]})
+                            record_lead_magnet_sent(user_id, _eprofile, post_id)
+                            myprint(f"Lead magnet DM queued to {_ename} (keyword '{lead_magnet['keyword']}')")
                 except Exception:
                     pass
                 # Already replied if our own profile link already appears in this comment's replies.
@@ -999,7 +1149,10 @@ def automate_reply_commenting(self, user_id: int, post_id: int, loop_for_duratio
                     myprint(f"We already replied to this comment: {short_comment_text}...")
                     continue
                 myprint(f"Responding to this comment: {short_comment_text}...")
-                response = generate_ai_response(post_message, my_profile, post_comment=comment_text)
+                # Thread-builder: reply in a way that ends with a follow-up question so the commenter
+                # replies again — first-hour thread depth is the top 2026 reach signal.
+                response = generate_thread_reply(post_message, comment_text, my_profile,
+                                                 prefs=get_engagement_preferences(user_id))
                 myprint(f"AI Generated Response to Comment: {response}")
                 if response and _reply_to_comment_inline(driver, wait, comment, response, user_id=user_id):
                     insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.REPLY,
