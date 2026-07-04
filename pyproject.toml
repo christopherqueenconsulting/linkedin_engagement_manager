@@ -77,7 +77,7 @@ stripe = "^15.2.1"
 #   poetry install --with streamlit
 # Add packages here if they are only needed for Streamlit pages.
 # ---------------------------------------------------------------------------
-timezonefinder = "^6.5"
+timezonefinder = ">=6.5,<9.0"
 [tool.poetry.group.streamlit]
 optional = true
 
