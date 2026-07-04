@@ -127,6 +127,17 @@ def auto_daily_engagement():
 
 
 @shared_task.task
+def auto_publish_due_newsletters():
+    """Publish a newsletter edition for each user whose enabled newsletter is due per its cadence."""
+    from cqc_lem.app.run_automation import auto_publish_newsletter_edition
+    from cqc_lem.utilities.db import get_newsletter_due_user_ids
+    due = get_newsletter_due_user_ids(datetime.utcnow())
+    for uid in due:
+        auto_publish_newsletter_edition.apply_async(kwargs={'user_id': uid})
+    return f"Dispatched newsletter edition for {len(due)} user(s)"
+
+
+@shared_task.task
 def auto_send_due_followups():
     """Dispatch a per-user Selenium task to send due DM follow-ups (each gated by reply-detection)."""
     from cqc_lem.app.run_automation import process_user_followups
