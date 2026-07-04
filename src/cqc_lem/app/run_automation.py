@@ -900,12 +900,22 @@ def enqueue_next_followup(user_id: int, profile_url: str, first_name: str, event
         log_warning("Failed to enqueue next follow-up", exc=e, action_type="followup", user_id=user_id)
 
 
-def check_dm_replied(driver, wait, profile_url: str) -> bool:
+# JS: walk the message list backwards for the most recent group's sender name. LinkedIn tags
+# each message *group* with .msg-s-message-group__name; the outer li.msg-s-message-list__event
+# carries no inbound/outbound marker, so the sender name is the reliable signal (confirmed on a
+# live thread 2026-07-04). Continuation bubbles have no name → we scan back to the last named one.
+_LAST_SENDER_JS = (
+    "const ev=[...document.querySelectorAll('li.msg-s-message-list__event, .msg-s-event-listitem')];"
+    "for(let i=ev.length-1;i>=0;i--){const n=ev[i].querySelector('.msg-s-message-group__name');"
+    "if(n&&n.innerText.trim())return n.innerText.trim();}return null;")
+
+
+def check_dm_replied(driver, wait, profile_url: str, my_name: str = None) -> bool:
     """Best-effort: has this person replied since our last message? Opens their message thread
-    and checks whether the latest message bubble is inbound (not ours). Defensive — returns
-    False (proceed with the follow-up) when it can't tell, logging a miss so the messaging
-    selectors can be refreshed. (Messaging DOM not yet reverse-engineered; validate before
-    relying on it to suppress follow-ups.)"""
+    and finds the sender of the most recent message group — if it isn't us, they replied.
+    Defensive — returns False (proceed with the follow-up) when it can't tell, logging a miss.
+    DOM structure confirmed live; the full profile->Message->detect flow (and self-name match)
+    still needs E2E validation before this is trusted to suppress follow-ups (see tracking issue)."""
     try:
         driver.get(profile_url)
         time.sleep(random.uniform(2, 4))
@@ -916,14 +926,14 @@ def check_dm_replied(driver, wait, profile_url: str) -> bool:
         if msg_btn is None:
             return False
         driver.execute_script("arguments[0].click();", msg_btn)
-        time.sleep(random.uniform(2, 4))
-        events = find_all_first(driver, [
-            (By.CSS_SELECTOR, "li.msg-s-message-list__event"),
-            (By.CSS_SELECTOR, ".msg-s-event-listitem")])
-        if not events:
+        time.sleep(random.uniform(3, 5))
+        last_sender = driver.execute_script(_LAST_SENDER_JS)
+        if not last_sender:
+            log_warning("Reply-detection: no message sender found", action_type="followup")
             return False
-        cls = (events[-1].get_attribute("class") or "").lower()
-        return "other" in cls or "inbound" in cls
+        if my_name and my_name.strip().lower() in last_sender.strip().lower():
+            return False  # we spoke last → no reply yet
+        return True  # someone other than us spoke last → they replied
     except Exception as e:
         log_warning("Reply-detection failed (assuming no reply)", exc=e, action_type="followup")
         return False
@@ -946,7 +956,7 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
     sent = 0
     try:
         for f in due[:max_per_run]:
-            if check_dm_replied(driver, wait, f["profile_url"]):
+            if check_dm_replied(driver, wait, f["profile_url"], my_name=getattr(my_profile, "full_name", None)):
                 stop_followups_for_profile(user_id, f["profile_url"])
                 mark_followup(f["id"], "stopped")
                 continue
