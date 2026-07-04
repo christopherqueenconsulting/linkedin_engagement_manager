@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.19.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.19.1...v0.19.2) (2026-07-04)
+
+
+### Bug Fixes
+
+* **automation:** actually post inline comments/replies (submit + verify were broken) ([208d5fe](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/208d5fe2ac0d09d47bb79be99ea9f766d82ad01c))
+* **automation:** actually post inline comments/replies (submit was broken) ([799e946](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/799e946dedbc717cfbf21273db5594f6f11b7db6))
+* **ci:** make Dependabot reconciler major-safe on main ([8dcc2a8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8dcc2a8bc7beed3e147873c8bb8ab3775cb9b001))
+* **ci:** make Dependabot reconciler major-safe on main ([b9bfbcb](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b9bfbcb9f26a78d51c7cdcfc2aaba6f151c20cd3))
+
 ## [0.19.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.19.0...v0.19.1) (2026-07-04)
 
 
