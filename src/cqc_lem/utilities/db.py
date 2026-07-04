@@ -2302,6 +2302,76 @@ def get_post_engagement_rows(user_id: int) -> list:
         connection.close()
 
 
+_LEAD_MAGNET_DEFAULTS: dict = {"enabled": False, "keyword": None, "message": None}
+
+
+def get_lead_magnet_settings(user_id: int) -> dict:
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT enabled, keyword, message FROM lead_magnet_settings WHERE user_id=%s", (user_id,))
+        row = cursor.fetchone()
+        if row is None:
+            return dict(_LEAD_MAGNET_DEFAULTS)
+        row["enabled"] = bool(row.get("enabled"))
+        return row
+    except mysql.connector.Error as err:
+        myprint(f"Could not get lead magnet for user {user_id} | Error: {err}")
+        return dict(_LEAD_MAGNET_DEFAULTS)
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_lead_magnet_settings(user_id: int, settings: dict) -> bool:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO lead_magnet_settings (user_id, enabled, keyword, message) VALUES (%s,%s,%s,%s) "
+            "ON DUPLICATE KEY UPDATE enabled=VALUES(enabled), keyword=VALUES(keyword), message=VALUES(message)",
+            (user_id, 1 if settings.get("enabled") else 0, settings.get("keyword"), settings.get("message")))
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not update lead magnet for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def has_received_lead_magnet(user_id: int, recipient_profile: str) -> bool:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT 1 FROM lead_magnet_sent WHERE user_id=%s AND recipient_profile=%s LIMIT 1",
+                       (user_id, recipient_profile))
+        return cursor.fetchone() is not None
+    except mysql.connector.Error:
+        return True   # fail safe: assume sent (don't double-DM on error)
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def record_lead_magnet_sent(user_id: int, recipient_profile: str, post_id: int = None) -> bool:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT IGNORE INTO lead_magnet_sent (user_id, recipient_profile, post_id) VALUES (%s,%s,%s)",
+            (user_id, recipient_profile, post_id))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not record lead magnet sent for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
 # Default DM templates = today's hard-coded strings, so behaviour is unchanged until a user
 # customizes. {first_name},{headline},{blog_url} are filled at send time.
 _DM_DEFAULT_TEMPLATES = {

@@ -19,6 +19,7 @@ from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, insert_new_log, LogActionType, \
     get_engagement_preferences, count_comments_today, get_recent_engagers, upsert_engager, \
     upsert_user_group, get_enabled_group_ids, record_post_stats, get_recent_posted_post_ids, \
+    get_lead_magnet_settings, has_received_lead_magnet, record_lead_magnet_sent, \
     LogResultType, has_user_commented_on_post_url, get_post_url_from_log_for_user, get_post_message_from_log_for_user, \
     has_engaged_url_with_x_days, get_post_content, get_post_video_url, update_db_post_status, PostStatus, PostType, \
     get_dm_history_for_profile, get_post_status, get_user_blog_url, get_post_type, get_carousel_slides, \
@@ -1048,6 +1049,7 @@ def automate_reply_commenting(self, user_id: int, post_id: int, loop_for_duratio
             unique_url_name = path.split("/")[2] if len(path.split("/")) > 2 else None
 
             comments_replied_count = 0
+            lead_magnet = get_lead_magnet_settings(user_id)
             for comment in comments:
                 try:
                     tb = comment.find_elements(By.CSS_SELECTOR, "[data-testid='expandable-text-box']")
@@ -1055,13 +1057,21 @@ def automate_reply_commenting(self, user_id: int, post_id: int, loop_for_duratio
                 except Exception:
                     continue
                 short_comment_text = comment_text[:75]
-                # Reciprocity: record whoever engaged on our post so the feed scorer can prioritize
-                # commenting back on their recent posts. Skip our own name.
+                # Reciprocity + lead-magnet: read the commenter, record them as an engager, and
+                # (if enabled) DM them the resource when their comment contains the trigger keyword.
                 try:
                     _link = comment.find_element(By.CSS_SELECTOR, "a[href*='/in/']")
                     _ename = ((_link.text or "") or (_link.get_attribute("aria-label") or "")).strip().split("\n")[0]
+                    _eprofile = (_link.get_attribute("href") or "").split("?")[0]
                     if _ename and _ename.lower() != (my_profile.full_name or "").lower():
-                        upsert_engager(user_id, _ename, (_link.get_attribute("href") or "").split("?")[0])
+                        upsert_engager(user_id, _ename, _eprofile)
+                        if (lead_magnet.get("enabled") and lead_magnet.get("keyword") and lead_magnet.get("message")
+                                and lead_magnet["keyword"].lower() in comment_text.lower()
+                                and _eprofile and not has_received_lead_magnet(user_id, _eprofile)):
+                            send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": _eprofile,
+                                                                "message": lead_magnet["message"]})
+                            record_lead_magnet_sent(user_id, _eprofile, post_id)
+                            myprint(f"Lead magnet DM queued to {_ename} (keyword '{lead_magnet['keyword']}')")
                 except Exception:
                     pass
                 # Already replied if our own profile link already appears in this comment's replies.
