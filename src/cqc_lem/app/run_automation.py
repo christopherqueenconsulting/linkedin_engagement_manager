@@ -26,7 +26,7 @@ from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.logger import myprint, log_error, log_info, log_warning
 from cqc_lem.utilities.selenium_util import click_element_wait_retry, \
     get_element_wait_retry, get_elements_as_list_wait_stale, getText, close_tab, get_driver_wait_pair, quit_gracefully, \
-    wait_for_ajax, find_first, click_first
+    wait_for_ajax, find_first, click_first, find_all_first
 from dotenv import load_dotenv
 from selenium.common import NoSuchElementException, JavascriptException
 from selenium.webdriver import ActionChains, Keys
@@ -516,6 +516,62 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     return posted
 
 
+def _reply_to_comment_inline(driver, wait, comment_el, reply_text: str, user_id: int = None) -> bool:
+    """Open a comment's inline reply box, type the reply, and submit (same SDUI pattern as
+    post_comment_inline: role=textbox composer + Ctrl+Enter fallback). Returns True if posted."""
+    try:
+        if click_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label='Reply']")],
+                       "Open reply box", parent_element=comment_el, required=False, user_id=user_id) is None:
+            return False
+        time.sleep(random.uniform(1.5, 3))
+        composer = find_first(driver, wait,
+                              [(By.CSS_SELECTOR, "div[role='textbox'][aria-label*='reply']"),
+                               (By.CSS_SELECTOR, "div[role='textbox'][aria-label*='comment']"),
+                               (By.CSS_SELECTOR, "div[role='textbox']")],
+                              "Reply composer", visible_only=True, required=False, user_id=user_id)
+        if composer is None:
+            return False
+        composer.click()
+        composer.send_keys(reply_text)
+        time.sleep(random.uniform(1, 2))
+        submitted = False
+        form = driver.execute_script(
+            "let e=arguments[0];while(e){if(e.tagName==='FORM')return e;e=e.parentElement;}return null;", composer)
+        if form is not None:
+            for b in form.find_elements(By.XPATH, ".//button[normalize-space()='Reply' or normalize-space()='Comment' or normalize-space()='Post']"):
+                try:
+                    if b.is_displayed() and not b.get_attribute("disabled"):
+                        driver.execute_script("arguments[0].click();", b)
+                        submitted = True
+                        break
+                except Exception:
+                    continue
+        if not submitted:
+            composer.send_keys(Keys.CONTROL, Keys.RETURN)
+        time.sleep(random.uniform(3, 5))
+        return reply_text[:22] in driver.find_element(By.TAG_NAME, "body").text
+    except Exception as e:
+        log_warning("Inline reply post failed", exc=e, action_type="reply", user_id=user_id)
+        return False
+
+
+def _comment_items_from_thread(driver):
+    """Comment items on the SDUI thread — walk up from each Reply button to the container that
+    also holds the author link + text (comments are no longer <article> elements)."""
+    items = []
+    reply_btns = find_all_first(driver, [
+        (By.CSS_SELECTOR, "[data-testid*='-commentList'] button[aria-label='Reply']"),
+        (By.CSS_SELECTOR, "button[aria-label='Reply']")])
+    for rb in reply_btns:
+        item = driver.execute_script(
+            "let el=arguments[0],d=0;while(el&&d<8){"
+            "if(el.querySelector&&el.querySelector(\"a[href*='/in/']\"))return el;"
+            "el=el.parentElement;d++;}return arguments[0].parentElement;", rb)
+        if item is not None:
+            items.append(item)
+    return items
+
+
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
                   queue='selenium')
 def automate_commenting(self, user_id: int, loop_for_duration: int = None, future_forward: int = 60):
@@ -607,127 +663,55 @@ def automate_reply_commenting(self, user_id: int, post_id: int, loop_for_duratio
             if driver.current_url != post_url:
                 driver.get(post_url)
 
-            # If load more comments button exists click it until its gone
-            while True:
-                load_more_comments_button = click_element_wait_retry(driver, wait,
-                                                                     '//button[contains(@class,"load-more-comments")]',
-                                                                     "Finding Load More Comments Button",
-                                                                     use_action_chain=True,
-                                                                     max_retry=0,
-                                                                     element_always_expected=False)
-                if load_more_comments_button:
-                    myprint("Loading More Comments....")
-                    time.sleep(2)
-                else:
+            # SDUI: expand more replies where available, then collect comment items from the
+            # new data-testid comment list (comments are no longer article.comments-comment-entity).
+            for _ in range(5):
+                more = click_first(driver, wait,
+                                   [(By.XPATH, "//button[contains(@aria-label,'more comment') or "
+                                               "contains(normalize-space(),'Load more') or "
+                                               "contains(normalize-space(),'more repl')]")],
+                                   "Load more comments", required=False)
+                if not more:
                     break
+                time.sleep(2)
 
-            try:
-
-                # Get all the comments
-                comments = get_elements_as_list_wait_stale(wait,
-                                                           "//div[contains(@class,'comments-comment-list__container')]/article[contains(@class,'comments-comment-entity')]",
-                                                           "Finding Comments",
-                                                           max_retry=0,
-                                                           )
-            except Exception as e:
-                log_warning("Error while finding comments", exc=e, user_id=user_id)
-                comments = []
-
-            # Print how many comments found
+            comments = _comment_items_from_thread(driver)
             myprint(f"Comments Found: {len(comments)}")
             result = f"Comments Found: {len(comments)}"
 
-            # Get the unique_url_name after "in/" and before / or end or profile url
+            # our profile slug — used to detect comments we've already replied to
             path = urlparse(str(my_profile.profile_url)).path
             unique_url_name = path.split("/")[2] if len(path.split("/")) > 2 else None
-            # myprint(f"Unique URL Name: {unique_url_name}")
 
             comments_replied_count = 0
-
-            # For each comment element see if we have already replied; if so skip it
             for comment in comments:
-                # Get the comment text
-                comment_text = getText(comment.find_element(By.XPATH,
-                                                            './/span[contains(@class,"comments-comment-item__main-content")][1]'))
-
-                # Search the comment element using xpath for a child span that contains the text "Author"
-                author_element = get_element_wait_retry(driver, wait,
-                                                        f'.//a[contains(@href,"{unique_url_name}") and contains(@aria-label,"View")]',
-                                                        "Finding Author Element", element_always_expected=False,
-                                                        max_try=0,
-                                                        parent_element=comment)
-
-                if len(comment_text) > 75:
-                    short_comment_text = comment_text[:75]
-                else:
-                    short_comment_text = comment_text
-                if author_element:
+                try:
+                    tb = comment.find_elements(By.CSS_SELECTOR, "[data-testid='expandable-text-box']")
+                    comment_text = ((tb[0].text if tb else comment.text) or "").strip()
+                except Exception:
+                    continue
+                short_comment_text = comment_text[:75]
+                # Already replied if our own profile link already appears in this comment's replies.
+                already_replied = False
+                if unique_url_name:
+                    try:
+                        already_replied = bool(comment.find_elements(By.CSS_SELECTOR, f"a[href*='{unique_url_name}']"))
+                    except Exception:
+                        already_replied = False
+                if already_replied:
                     myprint(f"We already replied to this comment: {short_comment_text}...")
                     continue
+                myprint(f"Responding to this comment: {short_comment_text}...")
+                response = generate_ai_response(post_message, my_profile, post_comment=comment_text)
+                myprint(f"AI Generated Response to Comment: {response}")
+                if response and _reply_to_comment_inline(driver, wait, comment, response, user_id=user_id):
+                    insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.REPLY,
+                                   result=LogResultType.SUCCESS, post_url=post_url, message=response)
+                    comments_replied_count += 1
+                    time.sleep(random.uniform(5, 12))
                 else:
-                    myprint(f"Responding to this comment: {short_comment_text}...")
-
-                    # Use the context of the post, and the comment to generate a response
-                    response = generate_ai_response(post_message, my_profile, post_comment=comment_text)
-                    myprint(f"AI Generated Response to Comment: {response}")
-
-                    try:
-
-                        # Find and click the Reply Button
-                        reply_button = click_element_wait_retry(driver, wait,
-                                                                './/button[contains(@class,"reply")][1]',
-                                                                "Finding Reply Button",
-                                                                use_action_chain=True,
-                                                                parent_element=comment)
-
-                        # Find the text box (should be the element that now has focus)
-                        text_box = driver.switch_to.active_element
-
-                        # Simulate superfast typing the comment in the text box
-                        simulate_typing(driver, text_box, response, allow_pauses=False)
-
-                        # Sleep so post button shows up
-                        time.sleep(2)
-
-                        # Click the send button
-                        # Find the parent element of the current text_box element where the parent element is a div with a class containing "comments-comment-texteditor"
-                        parent_element = text_box.find_element(By.XPATH,
-                                                               './ancestor::form')
-
-                        # From this parent element, find the child button element with a span element containing the text "Reply"
-                        send_reply_button = click_element_wait_retry(driver, wait,
-                                                                     './/button[contains(@class, "submit")]',
-                                                                     "Finding Send Reply Button",
-                                                                     parent_element=parent_element,
-                                                                     max_retry=1, use_action_chain=True)
-
-                        # Sleep 5 seconds to let the click register
-                        time.sleep(5)
-
-                        # Update DB with log entry
-                        insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.REPLY,
-                                       result=LogResultType.SUCCESS,
-                                       post_url=post_url, message=response)
-
-                        # From the parent element, find the like button and click it
-                        like_button = click_element_wait_retry(driver, wait,
-                                                               './/button[contains(@aria-label,"Like") and contains(@class,"react-button__trigger")][1]',
-                                                               "Finding Like Comment Button",
-                                                               parent_element=comment,
-                                                               max_retry=1, use_action_chain=True)
-
-                        comments_replied_count += 1
-
-                        # Sleep so like click registers
-                        time.sleep(5)
-
-
-                    except Exception as e:
-                        log_error("Error while replying to comment", exc=e, user_id=user_id, post_id=post_id, action_type="reply_comment")
-                        # Update DB with log entry
-                        insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.REPLY,
-                                       result=LogResultType.FAILURE,
-                                       post_url=post_url, message=response)
+                    insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.REPLY,
+                                   result=LogResultType.FAILURE, post_url=post_url, message=response)
                 result = f"Replied to {comments_replied_count} comments"
 
         else:
