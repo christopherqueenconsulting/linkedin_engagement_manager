@@ -47,6 +47,7 @@ from cqc_lem.utilities.db import (
 from cqc_lem.utilities.email import generate_pin, hash_pin, send_pin_email
 from cqc_lem.utilities.linkedin.verification_pin import (
     extract_pin_from_text, extract_token_from_address, submit_pin_by_token)
+from cqc_lem.utilities.geocoding import geocode_city, GeocodeError
 from cqc_lem.utilities.linkedin.token_refresh import (
     get_token_expiry, is_token_expired, is_token_expiring_soon, attempt_token_refresh,
 )
@@ -298,6 +299,20 @@ class LocationRequest(BaseModel):
 
 class LocationAutocaptureRequest(BaseModel):
     session_token: str
+
+
+class LocationByCityRequest(BaseModel):
+    session_token: str
+    city: str
+    state: Optional[str] = None
+    country: Optional[str] = None
+
+
+class AdminLocationByCityRequest(BaseModel):
+    user_id: int
+    city: str
+    state: Optional[str] = None
+    country: Optional[str] = None
 
 
 class LinkedInCookieRequest(BaseModel):
@@ -1143,6 +1158,30 @@ def autocapture_user_location_endpoint(request: LocationAutocaptureRequest, http
     })
 
 
+@router.post("/user/location/by-city")
+def set_user_location_by_city_endpoint(request: LocationByCityRequest) -> ResponseModel:
+    """Geocode a user-selected city/state (free OSM Nominatim) and persist it as their login
+    location, so the automation browser's emulated geo/timezone matches where they intend to
+    appear. Complementary to /autocapture (IP-based)."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    try:
+        geo = geocode_city(request.city, request.state, request.country)
+    except GeocodeError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        log_warning("Geocoding failed", exc=e, user_id=user_id)
+        raise HTTPException(status_code=502, detail="Geocoding service unavailable")
+    saved = update_user_location(
+        user_id, geo["latitude"], geo["longitude"],
+        city=geo["city"], country=geo["country"], locale=geo["locale"],
+        timezone=geo["timezone"], source="manual")
+    if not saved:
+        raise HTTPException(status_code=500, detail="Could not save location")
+    return ResponseModel(status_code=200, detail=geo)
+
+
 @router.post("/user/linkedin-cookie")
 def store_linkedin_cookie_endpoint(request: LinkedInCookieRequest) -> ResponseModel:
     """Store the user's existing LinkedIn session cookie (li_at) so automation resumes
@@ -1777,6 +1816,36 @@ def admin_fix_video_urls(
     updated = replace_video_url_base(request.old_base, request.new_base, request.user_id)
     myprint(f"admin/fix-video-urls: replaced {updated} row(s) — {request.old_base!r} → {request.new_base!r}")
     return ResponseModel(status_code=200, detail={"updated_rows": updated})
+
+
+@router.post("/admin/user/location", responses={
+    200: {"description": "User login location updated"},
+    403: {"description": "Forbidden"},
+    404: {"description": "User not found"},
+    422: {"description": "Could not geocode the city"},
+})
+def admin_set_user_location(
+    request: AdminLocationByCityRequest,
+    x_admin_secret: Optional[str] = Header(default=None),
+) -> ResponseModel:
+    """Align a user's login location to their purchased proxy's city (admin-only). Geocodes the
+    city/state and persists it so the automation browser's geo matches the proxy IP."""
+    _require_admin(x_admin_secret)
+    if get_user_geo(request.user_id) is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    try:
+        geo = geocode_city(request.city, request.state, request.country)
+    except GeocodeError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    saved = update_user_location(
+        request.user_id, geo["latitude"], geo["longitude"],
+        city=geo["city"], country=geo["country"], locale=geo["locale"],
+        timezone=geo["timezone"], source="manual")
+    if not saved:
+        raise HTTPException(status_code=500, detail="Could not save location")
+    myprint(f"admin/user/location: set user {request.user_id} -> {geo['city']}, {geo.get('country')} "
+            f"({geo['latitude']},{geo['longitude']} {geo.get('timezone')})")
+    return ResponseModel(status_code=200, detail=geo)
 
 
 @router.post("/admin/regenerate-carousel", responses={

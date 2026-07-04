@@ -117,3 +117,30 @@ class TestAutocaptureLocation:
         with patch("cqc_lem.api.main.get_session_user_id", return_value=None):
             resp = client.post("/api/user/location/autocapture", json={"session_token": "bad"})
         assert resp.status_code == 401
+
+
+class TestLocationByCity:
+    BASE = "/api/user/location/by-city"
+    GEO = {"latitude": 28.5384, "longitude": -81.3789, "city": "Orlando",
+           "country": "US", "timezone": "America/New_York", "locale": "en-US"}
+
+    def test_geocodes_and_saves_manual(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
+             patch("cqc_lem.api.main.geocode_city", return_value=self.GEO), \
+             patch("cqc_lem.api.main.update_user_location", return_value=True) as save:
+            resp = client.post(self.BASE, json={"session_token": _SESSION, "city": "Orlando", "state": "Florida"})
+        assert resp.status_code == 200
+        assert resp.json()["detail"]["timezone"] == "America/New_York"
+        assert save.call_args.kwargs["source"] == "manual"
+
+    def test_bad_city_returns_422(self, client):
+        from cqc_lem.utilities.geocoding import GeocodeError
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
+             patch("cqc_lem.api.main.geocode_city", side_effect=GeocodeError("no match")):
+            resp = client.post(self.BASE, json={"session_token": _SESSION, "city": "Nowhere"})
+        assert resp.status_code == 422
+
+    def test_invalid_session_401(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=None):
+            resp = client.post(self.BASE, json={"session_token": "bad", "city": "Orlando"})
+        assert resp.status_code == 401
