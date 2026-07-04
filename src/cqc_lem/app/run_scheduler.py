@@ -110,20 +110,20 @@ def auto_appreciate_dms():
 
 @shared_task.task
 def auto_daily_engagement():
-    """Standalone feed-commenting run for reciprocity on days with NO scheduled post. Days that
-    do have a post are already covered by the pre-post commenting trigger (auto_check_scheduled_posts),
-    so we skip them to avoid double-commenting. The per-day comment cap still applies inside
-    comment_on_feed_inline."""
+    """Daily golden-hour feed-commenting run — fires EVERY day at a peak engagement window, on
+    top of the pre-post commenting that already runs around each scheduled post. This gives a
+    consistent daily reciprocity burst even when a post is (or isn't) scheduled. Volume stays safe
+    because both this run and the pre-post runs share the per-day comment cap (enforced in
+    comment_on_feed_inline), and QueueOnce (keys=['user_id']) prevents overlapping double-runs for
+    the same user."""
     users = get_active_user_ids()
     dispatched = 0
     for user_id in users:
-        if has_scheduled_post_today(user_id):
-            continue  # pre-post commenting already engages the feed today
         if not has_linkedin_session(user_id):
             continue  # no session → the Selenium task would just fail and waste a Chrome slot
         automate_commenting.apply_async(kwargs={'user_id': user_id, 'loop_for_duration': 60 * 15})
         dispatched += 1
-    return f"Daily engagement dispatched for {dispatched}/{len(users)} active user(s)"
+    return f"Golden-hour engagement dispatched for {dispatched}/{len(users)} active user(s)"
 
 
 @shared_task.task

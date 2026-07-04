@@ -88,9 +88,9 @@ app.conf.update(
             'task': 'cqc_lem.app.run_scheduler.auto_send_due_followups',
             'schedule': crontab(minute='*/30')  # Send due multi-touch DM follow-ups every 30 min
         },
-        'daily-engagement-no-post-days': {
+        'daily-golden-hour-engagement': {
             'task': 'cqc_lem.app.run_scheduler.auto_daily_engagement',
-            'schedule': crontab(hour='14', minute='0')  # Comment on the feed on days with no scheduled post
+            'schedule': crontab(hour='13', minute='0')  # Daily peak-hour feed commenting (~9am ET), on top of pre-post
         },
         'clen-up-stale-profiles': {
             'task': 'cqc_lem.app.run_scheduler.auto_clean_stale_profiles',

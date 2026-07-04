@@ -27,14 +27,12 @@ class TestHasScheduledPostToday:
 
 
 class TestAutoDailyEngagement:
-    def test_dispatches_only_for_no_post_connected_users(self):
+    def test_dispatches_daily_for_all_connected_users(self):
         from cqc_lem.app.run_scheduler import auto_daily_engagement
+        # Runs every day now (no post-day skip); only the no-session user is excluded.
         with patch(f"{_RS}.get_active_user_ids", return_value=[1, 2, 3]), \
-             patch(f"{_RS}.has_scheduled_post_today", side_effect=lambda u: u == 1), \
              patch(f"{_RS}.has_linkedin_session", side_effect=lambda u: u != 3), \
              patch(f"{_RS}.automate_commenting") as ac:
             result = auto_daily_engagement()
-        # user 1 has a post today (skip), user 3 has no session (skip) → only user 2 dispatched
-        ac.apply_async.assert_called_once()
-        assert ac.apply_async.call_args.kwargs["kwargs"]["user_id"] == 2
-        assert "1/3" in result
+        assert ac.apply_async.call_count == 2                 # users 1 & 2 (3 has no session)
+        assert "2/3" in result
