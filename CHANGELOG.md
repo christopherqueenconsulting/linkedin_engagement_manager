@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.20.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.19.2...v0.20.0) (2026-07-04)
+
+
+### Features
+
+* **comments:** recency-dominant scoring matrix + signal extraction ([2cdac4c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2cdac4cb4f1182f1b1e8ff3f1da07b10afc5cfb5))
+* **comments:** rewrite generation for engagement — short, specific, question-ending ([9b373a6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9b373a6d0ba0ecac8804acff4b7ab34188eb4586))
+* **engagement:** comment quality + recency scoring + reciprocity + no-post-day runs ([a650229](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a650229acbf1b5cf16052804864455ab1aae8c0c))
+* **engagement:** reciprocity loop — prioritize people who engage with us ([09bb763](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/09bb7635f7b551a239a13af4a105faf932e5c373))
+* **engagement:** standalone feed commenting on no-post days ([f9e27ee](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f9e27eea27a2dda01f24686f069e794c121fcd9c))
+
 ## [0.19.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.19.1...v0.19.2) (2026-07-04)
 
 
