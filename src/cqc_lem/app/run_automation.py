@@ -1,6 +1,8 @@
 import hashlib
 import inspect
 import json
+import math
+import re
 import random
 import sys
 import threading
@@ -15,7 +17,7 @@ from cqc_lem.utilities.ai.ai_helper import generate_ai_response, get_ai_message_
     ai_check_message_history, post_is_relevant
 from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, insert_new_log, LogActionType, \
-    get_engagement_preferences, count_comments_today, \
+    get_engagement_preferences, count_comments_today, get_recent_engagers, \
     LogResultType, has_user_commented_on_post_url, get_post_url_from_log_for_user, get_post_message_from_log_for_user, \
     has_engaged_url_with_x_days, get_post_content, get_post_video_url, update_db_post_status, PostStatus, PostType, \
     get_dm_history_for_profile, get_post_status, get_user_blog_url, get_post_type, get_carousel_slides, \
@@ -430,6 +432,124 @@ def _feed_post_key(author: str, content: str) -> str:
     return f"feedpost://{digest}"
 
 
+# Relative-age units → minutes. The SDUI card shows a token like "3h •", "5d •", "2w •", "10mo •".
+_AGE_UNIT_MIN = {"s": 0, "m": 1, "h": 60, "d": 1440, "w": 10080, "mo": 43200, "y": 525600}
+_AGE_TOKEN_RE = re.compile(r"^(\d+)\s?(mo|[smhdwy])", re.I)
+_COMMENTS_RE = re.compile(r"([\d,]+)\s+comments?", re.I)
+_REACTIONS_RE = re.compile(r"([\d,]+)\s+(?:reactions?|likes?)", re.I)
+
+
+def _post_age_minutes(driver, card) -> "int | None":
+    """Minutes since the post was published, from the card's relative timestamp span ('now', '3h',
+    '5d', '2w', '10mo'). None if not found — the caller treats unknown age as mid-priority, not top."""
+    try:
+        token = driver.execute_script(
+            "const root=arguments[0];"
+            "for(const el of root.querySelectorAll('span,time')){"
+            "  const t=(el.innerText||el.textContent||'').trim();"
+            "  if(t.length<20 && /^(now|\\d+\\s?(mo|[smhdwy])(\\s*[•·].*)?)$/i.test(t)) return t;"
+            "}return null;", card)
+    except Exception:
+        return None
+    if not token:
+        return None
+    token = token.strip().lower()
+    if token.startswith("now"):
+        return 0
+    m = _AGE_TOKEN_RE.match(token)
+    if not m:
+        return None
+    return int(m.group(1)) * _AGE_UNIT_MIN.get(m.group(2), 60)
+
+
+def _post_social_counts(card) -> dict:
+    """Best-effort reaction/comment counts parsed from the card's social-counts bar text. Returns
+    {reactions, comments} (0 on miss) — used only for the low-weight 'activity' scoring signal."""
+    try:
+        text = card.text or ""
+    except Exception:
+        return {"reactions": 0, "comments": 0}
+
+    def _num(rx):
+        m = rx.search(text)
+        return int(m.group(1).replace(",", "")) if m else 0
+
+    return {"reactions": _num(_REACTIONS_RE), "comments": _num(_COMMENTS_RE)}
+
+
+# Feed-post prioritization weights (tunable). Recency dominates: golden-hour posts get 4–10× the
+# algorithmic weight and the author is online to reply — which is the whole point (earn a thread).
+_SCORE_W_RECENCY = 0.5
+_SCORE_W_RELEVANCE = 0.2
+_SCORE_W_RECIPROCITY = 0.2
+_SCORE_W_ACTIVITY = 0.1
+_RECENCY_HALFLIFE_MIN = 180.0  # exp decay: ~1.0 under an hour, ~0.37 at 3h, small by a day
+
+
+def _recency_score(age_minutes) -> float:
+    if age_minutes is None:
+        return 0.4  # unknown age → mid-priority, never top
+    return math.exp(-max(0, age_minutes) / _RECENCY_HALFLIFE_MIN)
+
+
+def _activity_score(comments: int) -> float:
+    # Reward a *forming* thread (still repliable, some signal); mildly penalize 0-traction and
+    # heavily penalize oversaturated posts where our comment just gets buried.
+    if comments <= 0:
+        return 0.4
+    if comments <= 15:
+        return 1.0
+    if comments <= 50:
+        return 0.6
+    return 0.3
+
+
+def _passes_hard_excludes(content: str, author: str, prefs: dict) -> bool:
+    """Cheap (no-LLM) exclude gate for candidate gathering."""
+    if not prefs:
+        return True
+    text = (content or "").lower()
+    auth = (author or "").lower()
+    if any(str(k).lower() in text for k in (prefs.get("exclude_keywords") or []) + (prefs.get("exclude_topics") or []) if k):
+        return False
+    if any(str(a).lower() in auth for a in (prefs.get("exclude_authors") or []) if a):
+        return False
+    return True
+
+
+def _literal_relevant(content: str, author: str, prefs: dict) -> bool:
+    """Positive relevance signal without an LLM call: no include constraints (everything on-topic
+    by config) OR a literal include keyword/author match. Topic-only relevance is confirmed by the
+    LLM on the selected post, so this is just the scoring hint."""
+    if not prefs:
+        return True
+    incl_kw = [k for k in (prefs.get("include_keywords") or []) if k]
+    incl_auth = [a for a in (prefs.get("include_authors") or []) if a]
+    incl_topics = [t for t in (prefs.get("include_topics") or []) if t]
+    if not (incl_kw or incl_auth or incl_topics):
+        return True
+    text = (content or "").lower()
+    auth = (author or "").lower()
+    if any(str(k).lower() in text for k in incl_kw):
+        return True
+    return any(str(a).lower() in auth for a in incl_auth)
+
+
+def _score_feed_post(meta: dict, prefs: dict, engagers: set = None) -> float:
+    """Prioritize which feed post to comment on: recency-dominant, then relevance, reciprocity
+    (author engaged with us / is a target), and a healthy-activity bonus. Higher = comment first."""
+    engagers = engagers or set()
+    recency = _recency_score(meta.get("age_minutes"))
+    relevance = 1.0 if meta.get("relevant") else 0.6
+    author = (meta.get("author") or "").strip().lower()
+    incl_auth = {str(a).strip().lower() for a in ((prefs or {}).get("include_authors") or []) if a}
+    reciprocal = bool(author) and (author in engagers or any(a and a in author for a in incl_auth))
+    reciprocity = 1.0 if reciprocal else 0.0
+    activity = _activity_score(meta.get("comments", 0))
+    return (_SCORE_W_RECENCY * recency + _SCORE_W_RELEVANCE * relevance
+            + _SCORE_W_RECIPROCITY * reciprocity + _SCORE_W_ACTIVITY * activity)
+
+
 def _strip_non_bmp(text: str) -> str:
     # ChromeDriver's send_keys raises WebDriverException on non-BMP characters (most emoji), so
     # drop them — otherwise emoji-flavoured AI comments fail to type at all.
@@ -525,27 +645,56 @@ def post_matches_preferences(content: str, author: str, prefs: dict) -> bool:
     return False
 
 
+def _switch_feed_to_recent(driver, wait) -> None:
+    """Best-effort: flip the feed sort from 'Top' to 'Recent' so golden-hour posts surface for
+    commenting. Silent no-op if the 'Sort by' control isn't present."""
+    try:
+        btn = find_first(driver, wait, [(By.XPATH, "//button[contains(normalize-space(),'Sort by')]")],
+                         "Feed sort control", required=False)
+        if btn is None:
+            return
+        driver.execute_script("arguments[0].click();", btn)
+        time.sleep(random.uniform(1, 2))
+        opt = find_first(driver, wait,
+                         [(By.XPATH, "//*[self::button or @role='menuitem' or @role='menuitemradio'][normalize-space()='Recent']"),
+                          (By.XPATH, "//*[normalize-space()='Recent']")],
+                         "Recent sort option", required=False)
+        if opt is not None:
+            driver.execute_script("arguments[0].click();", opt)
+            time.sleep(random.uniform(2, 3.5))
+    except Exception as e:
+        log_warning("Feed recent-sort failed", exc=e, action_type="scrape")
+
+
 def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: int,
-                           max_posts: int = 10, deadline_ts: float = None, prefs: dict = None) -> int:
-    """Walk the SDUI feed, generate an AI comment per fresh/relevant post, and comment inline.
-    Applies the user's targeting preferences (topic/keyword/author filters + per-day cap) and
-    voice/tone. Returns the number of comments posted. Re-queries the feed after each action."""
+                           max_posts: int = 10, deadline_ts: float = None, prefs: dict = None,
+                           engagers: set = None) -> int:
+    """Walk the SDUI feed and comment inline, prioritizing by a scoring matrix instead of DOM
+    order: recency-dominant (golden hour), then relevance, reciprocity (people who engaged with
+    us), and healthy activity. Applies targeting filters + per-day cap + a max-post-age gate.
+    Returns the number of comments posted."""
     from selenium.common.exceptions import StaleElementReferenceException
     if prefs is None:
         prefs = get_engagement_preferences(user_id)
+    if engagers is None:
+        engagers = get_recent_engagers(user_id)
     daily_cap = prefs.get("max_comments_per_day") or 20
     remaining_today = max(0, daily_cap - count_comments_today(user_id))
     if remaining_today <= 0:
         myprint(f"Daily comment cap reached ({daily_cap}) — skipping")
         return 0
     max_posts = min(max_posts, remaining_today)
+    max_age_min = (prefs.get("max_post_age_hours") or 24) * 60
+    min_reactions = prefs.get("min_reactions") or 0
+    _switch_feed_to_recent(driver, wait)  # surface golden-hour posts; scoring still ranks them
+
     posted, seen, scrolls = 0, set(), 0
     while posted < max_posts and scrolls < 15:
         if deadline_ts and time.time() >= deadline_ts:
             break
-        boxes = driver.find_elements(By.CSS_SELECTOR, _FEED_POST_TEXT_SEL)
-        acted = False
-        for box in boxes:
+        # Gather + score every fresh candidate currently in view (cheap, no-LLM gates).
+        candidates = []
+        for box in driver.find_elements(By.CSS_SELECTOR, _FEED_POST_TEXT_SEL):
             try:
                 content = (box.text or "").strip()
             except StaleElementReferenceException:
@@ -559,28 +708,44 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             key = _feed_post_key(author, content)
             if key in seen:
                 continue
-            seen.add(key)
-            if has_user_commented_on_post_url(user_id, key):
+            if has_user_commented_on_post_url(user_id, key) or not _passes_hard_excludes(content, author, prefs):
+                seen.add(key)
                 continue
+            age = _post_age_minutes(driver, card)
+            counts = _post_social_counts(card)
+            if age is not None and age > max_age_min:           # recency hard gate
+                seen.add(key)
+                continue
+            if min_reactions and counts["reactions"] < min_reactions:
+                seen.add(key)
+                continue
+            meta = {"author": author, "age_minutes": age, "comments": counts["comments"],
+                    "reactions": counts["reactions"], "relevant": _literal_relevant(content, author, prefs)}
+            candidates.append((_score_feed_post(meta, prefs, engagers), key, card, content, author, age))
+
+        if candidates:
+            candidates.sort(key=lambda c: c[0], reverse=True)
+            score, key, card, content, author, age = candidates[0]
+            seen.add(key)  # decided on this one either way
+            # Full include check (may use the LLM topic classifier) only on the chosen post.
             if not post_matches_preferences(content, author, prefs):
-                continue  # doesn't match targeting; DOM unchanged, try the next post
-            comment_text = generate_ai_response(content, my_profile, None, prefs=prefs)
-            if not comment_text:
                 continue
-            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", card)
-            time.sleep(simulate_reading_time(content) / 2 + simulate_thinking_time())
-            if post_comment_inline(driver, wait, card, comment_text, user_id=user_id):
-                insert_new_log(user_id=user_id, action_type=LogActionType.COMMENT,
-                               result=LogResultType.SUCCESS, post_url=key, message=comment_text)
-                posted += 1
-                myprint(f"Commented on {author or 'a'}'s post ({posted}/{max_posts})")
-                time.sleep(random.uniform(6, 14))  # human pacing between comments
-            acted = True
-            break  # DOM re-rendered after commenting — re-query from the top
-        if not acted:
-            driver.execute_script("window.scrollBy(0, 1200);")
-            scrolls += 1
-            time.sleep(random.uniform(2.5, 4))
+            comment_text = generate_ai_response(content, my_profile, None, prefs=prefs)
+            if comment_text:
+                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", card)
+                time.sleep(simulate_reading_time(content) / 2 + simulate_thinking_time())
+                if post_comment_inline(driver, wait, card, comment_text, user_id=user_id):
+                    insert_new_log(user_id=user_id, action_type=LogActionType.COMMENT,
+                                   result=LogResultType.SUCCESS, post_url=key, message=comment_text)
+                    posted += 1
+                    myprint(f"Commented on {author or 'a'}'s post "
+                            f"(score {score:.2f}, age {'?' if age is None else str(age) + 'm'}) ({posted}/{max_posts})")
+                    time.sleep(random.uniform(6, 14))  # human pacing between comments
+            continue  # DOM re-rendered / candidate consumed — re-gather from the top
+        # nothing actionable in view — scroll to load more
+        driver.execute_script("window.scrollBy(0, 1200);")
+        scrolls += 1
+        time.sleep(random.uniform(2.5, 4))
     return posted
 
 

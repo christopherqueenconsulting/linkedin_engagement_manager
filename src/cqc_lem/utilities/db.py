@@ -2005,7 +2005,7 @@ _ENGAGEMENT_DEFAULTS: dict = {
     "use_emojis": True, "use_hashtags": False,
     "include_topics": [], "exclude_topics": [], "include_keywords": [], "exclude_keywords": [],
     "include_authors": [], "exclude_authors": [], "post_types": [],
-    "min_reactions": None, "reply_to_own_comments": True,
+    "min_reactions": None, "max_post_age_hours": 24, "reply_to_own_comments": True,
     "max_comments_per_day": 20, "max_dms_per_day": 20, "default_buyer_stage": None,
 }
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
@@ -2014,8 +2014,8 @@ _ENGAGEMENT_BOOL_FIELDS = ("use_emojis", "use_hashtags", "reply_to_own_comments"
 _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "use_hashtags",
                     "include_topics", "exclude_topics", "include_keywords", "exclude_keywords",
                     "include_authors", "exclude_authors", "post_types", "min_reactions",
-                    "reply_to_own_comments", "max_comments_per_day", "max_dms_per_day",
-                    "default_buyer_stage")
+                    "max_post_age_hours", "reply_to_own_comments", "max_comments_per_day",
+                    "max_dms_per_day", "default_buyer_stage")
 
 
 def _coerce_json_list(value) -> list:
@@ -2110,6 +2110,24 @@ def count_comments_today(user_id: int) -> int:
 
 def count_dms_sent_today(user_id: int) -> int:
     return _count_actions_today(user_id, LogActionType.DM)
+
+
+def get_recent_engagers(user_id: int, days: int = 14) -> set:
+    """Lowercased names of people who recently commented on the user's OWN posts — reciprocity
+    targets to prioritize commenting back on. Empty set if the tracking table isn't present yet."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT LOWER(engager_name) FROM post_engagers "
+            "WHERE user_id=%s AND last_engaged_at >= (NOW() - INTERVAL %s DAY)",
+            (user_id, days))
+        return {r[0] for r in cursor.fetchall() if r and r[0]}
+    except mysql.connector.Error:
+        return set()
+    finally:
+        cursor.close()
+        connection.close()
 
 
 # Default DM templates = today's hard-coded strings, so behaviour is unchanged until a user
