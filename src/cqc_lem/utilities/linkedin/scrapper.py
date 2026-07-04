@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup, PageElement
 from cqc_lem.utilities.date import convert_datetime_to_start_of_day
 from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.date import get_linkedin_datetime_from_text
+from cqc_lem.utilities.logger import myprint
 from cqc_lem.utilities.selenium_util import window_scroll, click_element_wait_retry, get_driver_wait, \
     get_elements_as_list_wait_stale, \
     getText, wait_for_ajax

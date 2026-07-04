@@ -82,8 +82,19 @@ if _posthog_handler is not None:
 
 # ── Internal helpers ─────────────────────────────────────────────────────────
 
+_PRIMITIVE_TYPES = (bool, str, bytes, int, float)
+
+
 def _extra(**kwargs) -> dict:
-    return {k: v for k, v in kwargs.items() if v is not None}
+    # Structured-log backends (PostHog/OTel) only accept primitive attribute values, so coerce
+    # anything else (e.g. an exception or WebElement passed as context) to str rather than
+    # emitting an "Invalid type ... for attribute" warning and dropping the field.
+    out = {}
+    for k, v in kwargs.items():
+        if v is None:
+            continue
+        out[k] = v if isinstance(v, _PRIMITIVE_TYPES) else str(v)
+    return out
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -106,9 +117,17 @@ def log_info(message: str, **context) -> None:
     logger.info(message, extra=_extra(**context))
 
 
-def log_warning(message: str, **context) -> None:
-    """Log at WARNING level with optional structured context."""
-    logger.warning(message, extra=_extra(**context))
+def log_warning(
+    message: str,
+    exc: Optional[BaseException] = None,
+    **context,
+) -> None:
+    """Log at WARNING level with optional structured context. Pass exc= to capture the
+    exception's stack trace (via exc_info) instead of passing it as a raw attribute."""
+    if exc is not None:
+        logger.warning(message, exc_info=exc, extra=_extra(**context))
+    else:
+        logger.warning(message, extra=_extra(**context))
 
 
 def log_error(
