@@ -14,25 +14,28 @@ def _no_sleep():
         yield
 
 
-def _driver_body(text):
-    driver = MagicMock()
-    driver.execute_script.return_value = None  # no <form> ancestor → Ctrl+Enter path
-    body = MagicMock(); body.text = text
-    driver.find_element.return_value = body
-    return driver
-
-
 class TestReplyInline:
-    def test_posts_reply_via_ctrl_enter(self):
+    def test_posts_reply_and_confirms_via_cleared_composer(self):
         from cqc_lem.app import run_automation as ra
-        composer = MagicMock()
-        driver = _driver_body("... hello this is my reply text ...")
+        composer = MagicMock(); composer.text = ""          # composer cleared after a real post
+        driver = MagicMock(); driver.execute_script.return_value = True  # submit button clicked
         with patch(f"{_RA}.click_first", return_value=MagicMock()), \
              patch(f"{_RA}.find_first", return_value=composer):
             ok = ra._reply_to_comment_inline(driver, MagicMock(), MagicMock(),
                                              "hello this is my reply text", user_id=1)
         assert ok is True
         composer.send_keys.assert_called()  # typed the reply
+
+    def test_returns_false_when_composer_still_full(self):
+        # Submit failed: composer keeps the text and it's not in the list → NOT a false positive.
+        from cqc_lem.app import run_automation as ra
+        composer = MagicMock(); composer.text = "hello this is my reply text still here"
+        driver = MagicMock(); driver.execute_script.side_effect = [False, False]  # no button; not in list
+        with patch(f"{_RA}.click_first", return_value=MagicMock()), \
+             patch(f"{_RA}.find_first", return_value=composer):
+            ok = ra._reply_to_comment_inline(driver, MagicMock(), MagicMock(),
+                                             "hello this is my reply text", user_id=1)
+        assert ok is False
 
     def test_returns_false_when_no_reply_button(self):
         from cqc_lem.app import run_automation as ra
