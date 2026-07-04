@@ -8,7 +8,7 @@ from cqc_lem import assets_dir
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.app.run_automation import automate_commenting, automate_profile_viewer_engagement, \
     automate_appreciation_dms_for_user, clean_stale_invites, update_stale_profile, post_to_linkedin, \
-    automate_invites_to_company_page_for_user
+    automate_invites_to_company_page_for_user, auto_seed_comment_on_post
 from cqc_lem.utilities.db import (
     get_ready_to_post_posts, get_orphaned_scheduled_posts, update_db_post_status,
     get_active_user_ids, PostStatus, has_linkedin_session, has_scheduled_post_today,
@@ -54,6 +54,11 @@ def auto_check_scheduled_posts(self):
 
             # Start the pre-post commenting task 15 minutes before scheduled post (loop for 15 minutes)
             automate_commenting.apply_async(kwargs=base_kwargs, eta=scheduled_time - timedelta(minutes=15))
+
+            # Seed a pinned first comment ~3 min after the post publishes (its golden hour) so the
+            # post has a value-adding comment thread started from the author.
+            auto_seed_comment_on_post.apply_async(kwargs={'user_id': user_id, 'post_id': post_id},
+                                                  eta=scheduled_time + timedelta(minutes=3))
 
             # Schedule the pre-post profile viewer dm task 10 minutes before scheduled post (loop for 10 minutes)
             base_kwargs['loop_for_duration'] = 60 * 10
