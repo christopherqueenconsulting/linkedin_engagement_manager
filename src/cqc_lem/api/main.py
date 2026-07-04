@@ -26,6 +26,7 @@ from cqc_lem.utilities.db import (
     has_linkedin_session, get_user_password_pair_by_id,
     get_company_linked_in_url_for_user, update_company_linked_in_url_for_user,
     get_user_subscription_info, get_user_preferences, update_user_preferences,
+    get_engagement_preferences, update_engagement_preferences,
     update_subscription_from_stripe, update_user_linkedin_token,
     get_users_with_stripe_subscriptions,
     update_user_linkedin_password,
@@ -252,6 +253,27 @@ class UserPreferencesRequest(BaseModel):
     session_token: str
     last_login_inactivate_delay: Optional[int] = 90
     auto_schedule_posts: bool = False
+
+
+class EngagementPreferencesRequest(BaseModel):
+    session_token: str
+    tone: Optional[str] = None
+    comment_length: str = "medium"
+    comment_style: Optional[str] = None
+    use_emojis: bool = True
+    use_hashtags: bool = False
+    include_topics: List[str] = []
+    exclude_topics: List[str] = []
+    include_keywords: List[str] = []
+    exclude_keywords: List[str] = []
+    include_authors: List[str] = []
+    exclude_authors: List[str] = []
+    post_types: List[str] = []
+    min_reactions: Optional[int] = None
+    reply_to_own_comments: bool = True
+    max_comments_per_day: int = 20
+    max_dms_per_day: int = 20
+    default_buyer_stage: Optional[str] = None
 
 
 class LinkedInPasswordRequest(BaseModel):
@@ -987,6 +1009,25 @@ def update_user_settings_endpoint(request: UserPreferencesRequest) -> ResponseMo
     if not updated:
         raise HTTPException(status_code=500, detail="Could not update preferences")
     return ResponseModel(status_code=200, detail="Preferences updated")
+
+
+@router.get("/user/engagement-preferences")
+def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel:
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return ResponseModel(status_code=200, detail=get_engagement_preferences(user_id))
+
+
+@router.put("/user/engagement-preferences")
+def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest) -> ResponseModel:
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    prefs = request.model_dump(exclude={"session_token"})
+    if not update_engagement_preferences(user_id, prefs):
+        raise HTTPException(status_code=500, detail="Could not update engagement preferences")
+    return ResponseModel(status_code=200, detail="Engagement preferences updated")
 
 
 @router.put("/user/linkedin-password")
