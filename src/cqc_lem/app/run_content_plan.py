@@ -14,7 +14,7 @@ from cqc_lem import assets_dir
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.utilities.ai.ai_helper import get_blog_summary_post_from_ai, get_website_content_post_from_ai, \
     get_flux_image_prompt_from_ai, generate_flux1_image_from_prompt, get_runway_ml_video_prompt_from_ai, \
-    create_runway_video, get_ai_linked_post_refinement
+    create_runway_video, get_ai_linked_post_refinement, optimize_post_hook
 from cqc_lem.utilities.ai.ai_helper import get_thought_leadership_post_from_ai, \
     get_industry_news_post_from_ai, get_personal_story_post_from_ai, generate_engagement_prompt_post
 from cqc_lem.utilities.db import get_post_type_counts, insert_planned_post, update_db_post_content, \
@@ -573,6 +573,8 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
 
     if refine_final_post:
         final_content = get_ai_linked_post_refinement(final_content)
+        # Hook + save-worthy pass: strong first line before the '…more' fold; save-worthy framing.
+        final_content = optimize_post_hook(final_content)
         final_content = sanitize_for_linkedin(final_content)
         final_content = final_content.strip()
 

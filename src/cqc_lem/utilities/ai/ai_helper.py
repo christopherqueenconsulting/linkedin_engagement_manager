@@ -223,6 +223,31 @@ def generate_group_post(profile: "LinkedInProfile", group_name: str = None, pref
     return content.strip() if content is not None else None
 
 
+def optimize_post_hook(post_content: str, prefs: dict = None) -> str:
+    """Rewrite a generated post so it opens with a scroll-stopping hook within the first ~210
+    characters (before LinkedIn's '…more' fold) and, when the topic fits, frames it as save-worthy
+    (a framework/checklist) with ONE soft 'save this' invite. Preserves substance + voice. Returns
+    the original text on any failure."""
+    if not post_content:
+        return post_content
+    system_prompt = {
+        "role": "system",
+        "content": """You are a LinkedIn post editor. Rewrite the post so its FIRST LINE is a
+        scroll-stopping hook that lands within the first 210 characters (before the '…more' fold) —
+        a bold claim, a surprising stat, or a sharp question. Keep the author's substance and voice.
+        If the content lends itself to it, shape the body as a save-worthy framework or checklist and
+        add ONE short, soft 'worth saving for later' style invite near the end. NO engagement-bait
+        (no 'comment YES'), NO external links, do not add hashtags. Return ONLY the rewritten post.""",
+    }
+    user_prompt = {"role": "user", "content": post_content}
+    try:
+        response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt], temperature=0.5)
+        out = response.choices[0].message.content
+        return out.strip() if out else post_content
+    except Exception:
+        return post_content
+
+
 def post_is_relevant(post_content: str, include_topics: list) -> bool:
     """LLM relevance gate: is this post about any of the user's include_topics? Used on top of
     literal keyword matching so targeting catches topical fit beyond exact words. Fails OPEN
