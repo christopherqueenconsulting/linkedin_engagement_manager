@@ -216,6 +216,13 @@ class TestSyncStripeSubscriptions:
 # ---------------------------------------------------------------------------
 
 class TestAutoCheckScheduledPosts:
+    @pytest.fixture(autouse=True)
+    def _mock_seed_task(self):
+        # auto_check_scheduled_posts now also schedules a seed comment; mock that Celery task so
+        # tests don't touch Redis. It doesn't affect the post/commenting/profile-viewer assertions.
+        with patch(f"{_MOD}.auto_seed_comment_on_post", _async_task_mock()):
+            yield
+
     def test_no_posts_returns_no_post_to_schedule(self):
         with patch(_PATCH_GET_POSTS, return_value=[]), \
              patch(_PATCH_GET_ORPHANED, return_value=[]):

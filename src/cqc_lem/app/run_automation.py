@@ -14,7 +14,8 @@ from urllib.parse import urlparse
 from celery_once import QueueOnce
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.utilities.ai.ai_helper import generate_ai_response, get_ai_message_refinement, summarize_recent_activity, \
-    ai_check_message_history, post_is_relevant, generate_newsletter_edition, generate_group_post, generate_thread_reply
+    ai_check_message_history, post_is_relevant, generate_newsletter_edition, generate_group_post, \
+    generate_thread_reply, generate_seed_comment
 from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, insert_new_log, LogActionType, \
     get_engagement_preferences, count_comments_today, get_recent_engagers, upsert_engager, \
@@ -858,6 +859,66 @@ def auto_publish_newsletter_edition(self, user_id: int):
     except Exception as e:
         log_error("Newsletter publish error", exc=e, user_id=user_id, task_name="auto_publish_newsletter_edition")
         return f"Newsletter error: {e}"
+    finally:
+        quit_gracefully(driver)
+
+
+def _pin_own_comment(driver) -> bool:
+    """Best-effort: pin our just-posted comment on our own post. The comment's overflow control
+    (aria-label 'View more options for <name>'s comment.') is hover-hidden, so we JS-click it,
+    then click 'Pin comment' in the menu. Non-fatal — the seed comment's value stands without it."""
+    try:
+        opened = driver.execute_script(
+            "const b=[...document.querySelectorAll('button[aria-label]')].find(x=>{"
+            "const a=(x.getAttribute('aria-label')||'').toLowerCase();"
+            "return a.includes('options for') && a.includes('comment');});"
+            "if(b){b.scrollIntoView({block:'center'}); b.click(); return true;} return false;")
+        if not opened:
+            return False
+        time.sleep(random.uniform(1, 2))
+        return bool(driver.execute_script(
+            "const el=[...document.querySelectorAll(\"[role=menuitem],[role=menuitemradio],button,div,span,li,h5\")]"
+            ".find(e=>/^pin\\b/i.test((e.innerText||'').trim()) && (e.innerText||'').trim().length<20);"
+            "if(el){(el.closest('[role=menuitem]')||el).click(); return true;} return false;"))
+    except Exception as e:
+        log_warning("Pin own comment failed", exc=e, action_type="comment")
+        return False
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id', 'post_id']},
+                  queue='selenium')
+def auto_seed_comment_on_post(self, user_id: int, post_id: int):
+    """After the user's post publishes, leave a value-adding FIRST comment on it (an open question
+    or a behind-the-scenes insight — no links) and pin it. Seeds the comment thread that drives
+    reach, and beats LinkedIn's suppression of link-in-first-comment by adding real value instead."""
+    post_url = get_post_url_from_log_for_user(user_id, post_id)
+    post_message = get_post_message_from_log_for_user(user_id, post_id)
+    if not post_url:
+        return "No post URL yet for seed comment"
+    try:
+        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Seed Comment")
+    except Exception as e:
+        log_error("Error getting profile for seed comment", exc=e, user_id=user_id, task_name="auto_seed_comment_on_post")
+        return f"Failed to start seed comment: {e}"
+    try:
+        driver.get(post_url)
+        time.sleep(random.uniform(4, 7))
+        seed = generate_seed_comment(post_message, my_profile, get_engagement_preferences(user_id))
+        if not seed:
+            return "No seed comment generated"
+        card = find_first(driver, wait, [(By.CSS_SELECTOR, "div.feed-shared-update-v2"), (By.TAG_NAME, "main")],
+                          "Post container", required=False) or driver.find_element(By.TAG_NAME, "body")
+        if post_comment_inline(driver, wait, card, seed, user_id=user_id):
+            insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.COMMENT,
+                           result=LogResultType.SUCCESS, post_url=post_url, message=seed)
+            time.sleep(random.uniform(2, 4))
+            pinned = _pin_own_comment(driver)
+            myprint(f"Seed comment posted on post {post_id} (pinned={pinned})")
+            return f"Seed comment posted (pinned={pinned})"
+        return "Seed comment failed to post"
+    except Exception as e:
+        log_error("Seed comment error", exc=e, user_id=user_id, post_id=post_id, task_name="auto_seed_comment_on_post")
+        return f"Seed comment error: {e}"
     finally:
         quit_gracefully(driver)
 

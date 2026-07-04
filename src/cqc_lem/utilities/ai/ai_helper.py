@@ -257,6 +257,33 @@ def generate_group_post(profile: "LinkedInProfile", group_name: str = None, pref
     return content.strip() if content is not None else None
 
 
+def generate_seed_comment(post_content, profile: "LinkedInProfile", prefs: dict = None):
+    """The author's own FIRST comment on their post, to seed a discussion thread (threads drive
+    reach). The model picks whatever fits the post — an open question to the audience OR a short
+    behind-the-scenes insight/context the post didn't cover — and always invites replies. No
+    links (link-in-first-comment is penalized in 2026), no hashtags, short and human."""
+    system_prompt = {
+        "role": "system",
+        "content": """You are the AUTHOR of the LinkedIn post below, writing the FIRST comment on
+        your OWN post to kick off a discussion thread (back-and-forth threads are the biggest reach
+        driver on LinkedIn). Choose whichever fits the post best:
+        (a) an open, specific question to your audience that begs a response, or
+        (b) a short behind-the-scenes insight, nuance, or piece of context the post itself didn't cover —
+        and end it in a way that invites people to reply.
+        Rules: sound like a real person in your own voice; NO links; NO hashtags; no generic filler;
+        keep it short (1–3 sentences). Output ONLY the comment text.""",
+    }
+    user_prompt = {
+        "role": "user",
+        "content": f"My LinkedIn profile:\n{profile.model_dump_json()}\n\n"
+                   f"My post:\n<content>{post_content}</content>\n{_style_directive(prefs)}",
+    }
+    response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt],
+                         temperature=round(random.uniform(0.5, 0.7), 2))
+    content = response.choices[0].message.content
+    return content.strip() if content is not None else None
+
+
 def generate_thread_reply(post_content: str, comment_text: str, profile: "LinkedInProfile",
                           prefs: dict = None) -> "str | None":
     """Reply to a commenter on the AUTHOR's own post so the thread KEEPS GOING: acknowledge their
