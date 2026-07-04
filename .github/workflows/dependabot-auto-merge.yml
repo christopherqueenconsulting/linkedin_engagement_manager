@@ -1,5 +1,16 @@
 name: Dependabot Auto-Merge
 
+# Auto-approves and enables auto-merge for Dependabot minor/patch updates (majors are left
+# for manual review). Works with grouped updates: fetch-metadata reports the highest semver
+# change in the group, and our dependabot.yml groups are minor/patch-only, so grouped PRs
+# match the condition below while any major arrives as its own ungrouped PR.
+#
+# Token: uses DEPENDABOT_MERGE_TOKEN (a fine-grained PAT with contents:write +
+# pull-requests:write) when present, falling back to GITHUB_TOKEN. A PAT is recommended
+# because auto-merge enabled via the built-in GITHUB_TOKEN does not reliably enter this
+# repo's merge queue (bot-token actions don't kick the queue) — the PAT behaves like a human
+# enqueue, which is what actually drains the queue.
+
 on:
   pull_request:
 
@@ -14,8 +25,6 @@ jobs:
       pull-requests: write
 
     steps:
-      - uses: actions/checkout@v7
-
       - name: Fetch Dependabot metadata
         id: metadata
         uses: dependabot/fetch-metadata@v2
@@ -31,11 +40,12 @@ jobs:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # No `--merge`: the strategy is fixed by the merge queue and passing one is rejected.
       - name: Enable auto-merge for minor and patch updates
         if: |
           steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
           steps.metadata.outputs.update-type == 'version-update:semver-minor'
-        run: gh pr merge --auto --merge "$PR_URL"
+        run: gh pr merge --auto "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.DEPENDABOT_MERGE_TOKEN || secrets.GITHUB_TOKEN }}
