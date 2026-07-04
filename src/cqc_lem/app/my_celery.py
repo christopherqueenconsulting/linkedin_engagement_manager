@@ -92,6 +92,18 @@ app.conf.update(
             'task': 'cqc_lem.app.run_scheduler.auto_daily_engagement',
             'schedule': crontab(hour='13', minute='0')  # Daily peak-hour feed commenting (~9am ET), on top of pre-post
         },
+        'sync-user-groups': {
+            'task': 'cqc_lem.app.run_scheduler.auto_sync_groups',
+            'schedule': crontab(hour='7', minute='0', day_of_week='monday')  # Refresh joined groups weekly
+        },
+        'group-engagement': {
+            'task': 'cqc_lem.app.run_scheduler.auto_group_engagement',
+            'schedule': crontab(hour='16', minute='0')  # Daily value-add commenting in enabled groups
+        },
+        'group-posts': {
+            'task': 'cqc_lem.app.run_scheduler.auto_group_posts',
+            'schedule': crontab(hour='15', minute='0', day_of_week='tuesday')  # Weekly value-add group post
+        },
         'clen-up-stale-profiles': {
             'task': 'cqc_lem.app.run_scheduler.auto_clean_stale_profiles',
             'schedule': crontab(hour='3', minute='0', )  # Run every day at 3:00 AM

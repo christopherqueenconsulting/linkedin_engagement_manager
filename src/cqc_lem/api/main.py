@@ -27,6 +27,7 @@ from cqc_lem.utilities.db import (
     get_company_linked_in_url_for_user, update_company_linked_in_url_for_user,
     get_user_subscription_info, get_user_preferences, update_user_preferences,
     get_engagement_preferences, update_engagement_preferences,
+    get_user_groups, set_groups_enabled,
     get_dm_templates, upsert_dm_templates,
     update_subscription_from_stripe, update_user_linkedin_token,
     get_users_with_stripe_subscriptions,
@@ -1058,6 +1059,29 @@ def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest
     if not update_engagement_preferences(user_id, prefs):
         raise HTTPException(status_code=500, detail="Could not update engagement preferences")
     return ResponseModel(status_code=200, detail="Engagement preferences updated")
+
+
+class GroupTogglesRequest(BaseModel):
+    session_token: str
+    groups: dict = {}  # {group_id: enabled}
+
+
+@router.get("/user/groups")
+def get_user_groups_endpoint(session_token: str) -> ResponseModel:
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return ResponseModel(status_code=200, detail=get_user_groups(user_id))
+
+
+@router.put("/user/groups")
+def update_user_groups_endpoint(request: GroupTogglesRequest) -> ResponseModel:
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if not set_groups_enabled(user_id, request.groups):
+        raise HTTPException(status_code=500, detail="Could not update group settings")
+    return ResponseModel(status_code=200, detail="Group settings updated")
 
 
 @router.get("/user/dm-templates")

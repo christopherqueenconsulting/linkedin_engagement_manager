@@ -205,6 +205,24 @@ def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=No
     return content.strip() if content is not None else None
 
 
+def generate_group_post(profile: "LinkedInProfile", group_name: str = None, prefs: dict = None) -> "str | None":
+    """A short, value-add post for a LinkedIn Group — a genuine insight or open question for that
+    community, NEVER promotional (groups penalize/moderate self-promo). Ends inviting discussion."""
+    ctx = f"for the LinkedIn group \"{group_name}\"" if group_name else "for a professional LinkedIn group"
+    system_prompt = {
+        "role": "system",
+        "content": f"""You are the profile user posting {ctx}. Write ONE short, genuinely useful
+        post that helps the community: a specific insight, lesson, or an open question that sparks
+        discussion. Absolutely NO self-promotion, NO links, NO hashtags. Sound human, in the user's
+        voice, and end by inviting members to weigh in. Output ONLY the post text.""",
+    }
+    user_prompt = {"role": "user", "content": f"Author profile:\n{profile.model_dump_json()}\n{_style_directive(prefs)}"}
+    response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt],
+                         temperature=round(random.uniform(0.5, 0.7), 2))
+    content = response.choices[0].message.content
+    return content.strip() if content is not None else None
+
+
 def post_is_relevant(post_content: str, include_topics: list) -> bool:
     """LLM relevance gate: is this post about any of the user's include_topics? Used on top of
     literal keyword matching so targeting catches topical fit beyond exact words. Fails OPEN

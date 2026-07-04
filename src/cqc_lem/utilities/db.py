@@ -2174,6 +2174,79 @@ def get_recent_engagers(user_id: int, days: int = 14) -> set:
         connection.close()
 
 
+def upsert_user_group(user_id: int, group_id: str, group_name: str = None) -> bool:
+    """Record a joined group (new groups default to enabled=1). Refreshes name + last_synced_at
+    without clobbering the user's enabled choice on an existing row."""
+    if not group_id:
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO user_groups (user_id, group_id, group_name, enabled, last_synced_at) "
+            "VALUES (%s,%s,%s,1,NOW()) ON DUPLICATE KEY UPDATE "
+            "group_name=COALESCE(VALUES(group_name), group_name), last_synced_at=NOW()",
+            (user_id, str(group_id), group_name))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not upsert group for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_user_groups(user_id: int) -> list:
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT group_id, group_name, enabled FROM user_groups WHERE user_id=%s ORDER BY group_name",
+            (user_id,))
+        rows = cursor.fetchall() or []
+        for r in rows:
+            r["enabled"] = bool(r.get("enabled"))
+        return rows
+    except mysql.connector.Error as err:
+        myprint(f"Could not list groups for user {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_enabled_group_ids(user_id: int) -> list:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT group_id FROM user_groups WHERE user_id=%s AND enabled=1", (user_id,))
+        return [r[0] for r in cursor.fetchall()]
+    except mysql.connector.Error:
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def set_groups_enabled(user_id: int, group_states: dict) -> bool:
+    """Bulk-update per-group enabled flags: {group_id: bool}."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        for gid, enabled in group_states.items():
+            cursor.execute("UPDATE user_groups SET enabled=%s WHERE user_id=%s AND group_id=%s",
+                           (1 if enabled else 0, user_id, str(gid)))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not update group states for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
 # Default DM templates = today's hard-coded strings, so behaviour is unchanged until a user
 # customizes. {first_name},{headline},{blog_url} are filled at send time.
 _DM_DEFAULT_TEMPLATES = {

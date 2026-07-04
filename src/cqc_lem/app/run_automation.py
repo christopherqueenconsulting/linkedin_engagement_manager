@@ -14,10 +14,11 @@ from urllib.parse import urlparse
 from celery_once import QueueOnce
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.utilities.ai.ai_helper import generate_ai_response, get_ai_message_refinement, summarize_recent_activity, \
-    ai_check_message_history, post_is_relevant
+    ai_check_message_history, post_is_relevant, generate_group_post
 from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, insert_new_log, LogActionType, \
     get_engagement_preferences, count_comments_today, get_recent_engagers, upsert_engager, \
+    upsert_user_group, get_enabled_group_ids, \
     LogResultType, has_user_commented_on_post_url, get_post_url_from_log_for_user, get_post_message_from_log_for_user, \
     has_engaged_url_with_x_days, get_post_content, get_post_video_url, update_db_post_status, PostStatus, PostType, \
     get_dm_history_for_profile, get_post_status, get_user_blog_url, get_post_type, get_carousel_slides, \
@@ -794,6 +795,112 @@ def _comment_items_from_thread(driver):
         if item is not None:
             items.append(item)
     return items
+
+
+_GROUP_ID_RE = re.compile(r"/groups/(\d+)")
+
+
+def _enumerate_joined_groups(driver) -> list:
+    """Scrape the user's joined groups from /groups/ → list of (group_id, name). Best-effort."""
+    driver.get("https://www.linkedin.com/groups/")
+    time.sleep(random.uniform(5, 8))
+    for y in (600, 1200, 1800):
+        driver.execute_script(f"window.scrollTo(0,{y});")
+        time.sleep(1.5)
+    items = driver.execute_script(
+        "const out=[]; const seen=new Set();"
+        "for(const a of document.querySelectorAll(\"a[href*='/groups/']\")){"
+        "  const m=(a.getAttribute('href')||'').match(/\\/groups\\/(\\d+)/); if(!m) continue;"
+        "  const id=m[1]; if(seen.has(id)) continue;"
+        "  const name=(a.innerText||'').trim().split('\\n')[0];"
+        "  if(name && name.length>1){ seen.add(id); out.push([id, name.slice(0,255)]); }"
+        "} return out.slice(0,60);")
+    return [(str(i[0]), i[1]) for i in (items or []) if i and i[0]]
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
+                  queue='selenium')
+def auto_sync_user_groups(self, user_id: int):
+    """Refresh the user's joined-groups list (new groups default to enabled)."""
+    try:
+        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Sync Groups")
+    except Exception as e:
+        log_error("Error getting profile for group sync", exc=e, user_id=user_id, task_name="auto_sync_user_groups")
+        return f"Failed: {e}"
+    try:
+        groups = _enumerate_joined_groups(driver)
+        for gid, name in groups:
+            upsert_user_group(user_id, gid, name)
+        return f"Synced {len(groups)} group(s)"
+    finally:
+        quit_gracefully(driver)
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
+                  queue='selenium')
+def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
+    """Comment (value-add, scored) on posts in each of the user's ENABLED groups. Reuses the feed
+    commenting engine pointed at each group's feed. Shares the per-day comment cap."""
+    enabled = get_enabled_group_ids(user_id)
+    if not enabled:
+        return "No enabled groups"
+    try:
+        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Group Commenting")
+    except Exception as e:
+        log_error("Error getting profile for group commenting", exc=e, user_id=user_id, task_name="auto_comment_in_groups")
+        return f"Failed: {e}"
+    prefs = get_engagement_preferences(user_id)
+    engagers = get_recent_engagers(user_id)
+    total = 0
+    try:
+        for gid in enabled:
+            driver.get(f"https://www.linkedin.com/groups/{gid}/")
+            time.sleep(random.uniform(4, 7))
+            total += comment_on_feed_inline(driver, wait, my_profile, user_id,
+                                            max_posts=max_per_group, prefs=prefs, engagers=engagers)
+        return f"Commented {total} time(s) across {len(enabled)} group(s)"
+    finally:
+        quit_gracefully(driver)
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id', 'group_id']},
+                  queue='selenium')
+def auto_post_to_group(self, user_id: int, group_id: str):
+    """Publish one short, value-add (non-promotional) post into a group via its share box.
+    Best-effort — the group composer selectors are validated in the live pass."""
+    try:
+        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Group Post")
+    except Exception as e:
+        log_error("Error getting profile for group post", exc=e, user_id=user_id, task_name="auto_post_to_group")
+        return f"Failed: {e}"
+    try:
+        driver.get(f"https://www.linkedin.com/groups/{group_id}/")
+        time.sleep(random.uniform(4, 7))
+        text = _strip_non_bmp(generate_group_post(my_profile, prefs=get_engagement_preferences(user_id)) or "")
+        if not text.strip():
+            return "No group post generated"
+        # Open the group share box, type, and post (best-effort SDUI selectors).
+        if click_first(driver, wait, [(By.XPATH, "//button[contains(normalize-space(),'Start a post') or contains(@aria-label,'Start a post') or contains(@aria-label,'Create a post')]")],
+                       "Group share box", required=False) is None:
+            return "Group share box not found"
+        time.sleep(random.uniform(2, 3))
+        box = find_first(driver, wait, [(By.CSS_SELECTOR, "div[role='textbox']")], "Group post editor",
+                         visible_only=True, required=False)
+        if box is None:
+            return "Group post editor not found"
+        box.click()
+        box.send_keys(text)
+        time.sleep(random.uniform(1, 2))
+        if click_first(driver, wait, [(By.XPATH, "//button[normalize-space()='Post']")], "Group Post button",
+                       required=False) is None:
+            return "Group Post button not found"
+        time.sleep(random.uniform(3, 5))
+        return "Posted to group"
+    except Exception as e:
+        log_error("Group post error", exc=e, user_id=user_id, task_name="auto_post_to_group")
+        return f"Error: {e}"
+    finally:
+        quit_gracefully(driver)
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
