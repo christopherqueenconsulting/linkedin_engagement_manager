@@ -1,4 +1,10 @@
 version: 2
+
+# Grouping strategy: batch each ecosystem's minor+patch bumps into ONE PR per week so a
+# single lockfile change carries them all — this eliminates the poetry.lock/package-lock
+# race where N separate PRs each rewrite the lockfile and mutually conflict. MAJOR bumps are
+# intentionally left OUT of the version groups so they arrive as individual PRs for manual
+# review (they can break APIs / test collection). github-actions & docker are grouped wholesale.
 updates:
   - package-ecosystem: "pip"
     directory: "/"
@@ -13,6 +19,12 @@ updates:
     commit-message:
       prefix: "chore(deps)"
       include: "scope"
+    groups:
+      python-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -27,6 +39,11 @@ updates:
     commit-message:
       prefix: "chore(deps)"
       include: "scope"
+    groups:
+      github-actions:
+        applies-to: version-updates
+        patterns:
+          - "*"
 
   - package-ecosystem: "docker"
     directory: "/"
@@ -41,6 +58,11 @@ updates:
     commit-message:
       prefix: "chore(deps)"
       include: "scope"
+    groups:
+      docker:
+        applies-to: version-updates
+        patterns:
+          - "*"
 
   - package-ecosystem: "npm"
     directory: "/src/cqc_lem/ui"
@@ -55,3 +77,9 @@ updates:
     commit-message:
       prefix: "chore(deps)"
       include: "scope"
+    groups:
+      npm-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"

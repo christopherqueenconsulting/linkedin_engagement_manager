@@ -1,0 +1,42 @@
+name: Dependabot Merge Reconciler
+
+# Safety net for the event-driven "Dependabot Auto-Merge" workflow. GitHub disables a PR's
+# auto-merge whenever it briefly becomes conflicted (e.g. while another Dependabot PR merges
+# and this one is being rebased); the re-enable can then be missed. This job periodically
+# re-enables auto-merge on every mergeable Dependabot PR so the backlog always drains on its
+# own — no manual babysitting. Grouped, per-ecosystem PRs touch different lockfiles, so
+# enqueuing all mergeable ones at once is safe.
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"   # every 6 hours
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  reconcile:
+    name: Re-enable auto-merge on ready Dependabot PRs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enqueue mergeable Dependabot PRs
+        env:
+          # PAT recommended (see dependabot-auto-merge.yml); falls back to GITHUB_TOKEN.
+          GH_TOKEN: ${{ secrets.DEPENDABOT_MERGE_TOKEN || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # CLEAN = mergeable & checks passed; UNSTABLE = mergeable, only non-required checks pending.
+          prs=$(gh pr list --repo "$REPO" --author "app/dependabot" --state open \
+                  --json number,mergeStateStatus \
+                  --jq '.[] | select(.mergeStateStatus == "CLEAN" or .mergeStateStatus == "UNSTABLE") | .number')
+          if [ -z "$prs" ]; then
+            echo "No mergeable Dependabot PRs to reconcile."
+            exit 0
+          fi
+          for pr in $prs; do
+            echo "Re-enabling auto-merge on Dependabot PR #$pr"
+            gh pr merge "$pr" --repo "$REPO" --auto || echo "  (could not enqueue #$pr; will retry next run)"
+          done
