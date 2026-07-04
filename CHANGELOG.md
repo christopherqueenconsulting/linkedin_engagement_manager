@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.22.0...v0.23.0) (2026-07-04)
+
+
+### Features
+
+* **engagement:** auto seed + pin first comment on own posts ([4dda534](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4dda5343af941be456f63aa619e5b98d3b953b7b))
+
 ## [0.22.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.21.0...v0.22.0) (2026-07-04)
 
 
