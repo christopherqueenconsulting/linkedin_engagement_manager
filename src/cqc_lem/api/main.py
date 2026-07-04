@@ -27,6 +27,7 @@ from cqc_lem.utilities.db import (
     get_company_linked_in_url_for_user, update_company_linked_in_url_for_user,
     get_user_subscription_info, get_user_preferences, update_user_preferences,
     get_engagement_preferences, update_engagement_preferences,
+    get_dm_templates, upsert_dm_templates,
     update_subscription_from_stripe, update_user_linkedin_token,
     get_users_with_stripe_subscriptions,
     update_user_linkedin_password,
@@ -275,6 +276,19 @@ class EngagementPreferencesRequest(BaseModel):
     max_comments_per_day: int = 20
     max_dms_per_day: int = 20
     default_buyer_stage: Optional[str] = None
+
+
+class DmTemplateItem(BaseModel):
+    event_type: str
+    step: int = 0
+    delay_hours: int = 0
+    template_text: str
+    is_active: bool = True
+
+
+class DmTemplatesRequest(BaseModel):
+    session_token: str
+    templates: List[DmTemplateItem] = []
 
 
 class LinkedInPasswordRequest(BaseModel):
@@ -1043,6 +1057,24 @@ def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest
     if not update_engagement_preferences(user_id, prefs):
         raise HTTPException(status_code=500, detail="Could not update engagement preferences")
     return ResponseModel(status_code=200, detail="Engagement preferences updated")
+
+
+@router.get("/user/dm-templates")
+def get_dm_templates_endpoint(session_token: str) -> ResponseModel:
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return ResponseModel(status_code=200, detail=get_dm_templates(user_id))
+
+
+@router.put("/user/dm-templates")
+def update_dm_templates_endpoint(request: DmTemplatesRequest) -> ResponseModel:
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if not upsert_dm_templates(user_id, [t.model_dump() for t in request.templates]):
+        raise HTTPException(status_code=500, detail="Could not update DM templates")
+    return ResponseModel(status_code=200, detail="DM templates updated")
 
 
 @router.put("/user/linkedin-password")
