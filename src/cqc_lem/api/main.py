@@ -28,6 +28,8 @@ from cqc_lem.utilities.db import (
     get_user_subscription_info, get_user_preferences, update_user_preferences,
     get_engagement_preferences, update_engagement_preferences,
     get_newsletter_settings, update_newsletter_settings,
+    get_user_groups, set_groups_enabled, get_post_engagement_rows,
+    get_lead_magnet_settings, update_lead_magnet_settings,
     get_dm_templates, upsert_dm_templates,
     update_subscription_from_stripe, update_user_linkedin_token,
     get_users_with_stripe_subscriptions,
@@ -1086,6 +1088,68 @@ def update_newsletter_settings_endpoint(request: NewsletterSettingsRequest) -> R
     if not update_newsletter_settings(user_id, request.model_dump(exclude={"session_token"})):
         raise HTTPException(status_code=500, detail="Could not update newsletter settings")
     return ResponseModel(status_code=200, detail="Newsletter settings updated")
+
+
+class GroupTogglesRequest(BaseModel):
+    session_token: str
+    groups: dict = {}  # {group_id: enabled}
+
+
+@router.get("/user/groups")
+def get_user_groups_endpoint(session_token: str) -> ResponseModel:
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return ResponseModel(status_code=200, detail=get_user_groups(user_id))
+
+
+@router.put("/user/groups")
+def update_user_groups_endpoint(request: GroupTogglesRequest) -> ResponseModel:
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if not set_groups_enabled(user_id, request.groups):
+        raise HTTPException(status_code=500, detail="Could not update group settings")
+    return ResponseModel(status_code=200, detail="Group settings updated")
+
+
+@router.get("/user/post-stats")
+def get_post_stats_endpoint(session_token: str) -> ResponseModel:
+    """Personalized best-times-to-post recommendations derived from the user's own post stats."""
+    from cqc_lem.utilities.post_stats import recommend_post_times
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    rows = get_post_engagement_rows(user_id)
+    return ResponseModel(status_code=200, detail={
+        "recommendations": recommend_post_times(rows),
+        "sample_size": len(rows),
+    })
+
+
+class LeadMagnetRequest(BaseModel):
+    session_token: str
+    enabled: bool = False
+    keyword: Optional[str] = None
+    message: Optional[str] = None
+
+
+@router.get("/user/lead-magnet")
+def get_lead_magnet_endpoint(session_token: str) -> ResponseModel:
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return ResponseModel(status_code=200, detail=get_lead_magnet_settings(user_id))
+
+
+@router.put("/user/lead-magnet")
+def update_lead_magnet_endpoint(request: LeadMagnetRequest) -> ResponseModel:
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if not update_lead_magnet_settings(user_id, request.model_dump(exclude={"session_token"})):
+        raise HTTPException(status_code=500, detail="Could not update lead magnet")
+    return ResponseModel(status_code=200, detail="Lead magnet updated")
 
 
 @router.get("/user/dm-templates")

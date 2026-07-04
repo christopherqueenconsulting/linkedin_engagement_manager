@@ -2174,6 +2174,204 @@ def get_recent_engagers(user_id: int, days: int = 14) -> set:
         connection.close()
 
 
+def upsert_user_group(user_id: int, group_id: str, group_name: str = None) -> bool:
+    """Record a joined group (new groups default to enabled=1). Refreshes name + last_synced_at
+    without clobbering the user's enabled choice on an existing row."""
+    if not group_id:
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO user_groups (user_id, group_id, group_name, enabled, last_synced_at) "
+            "VALUES (%s,%s,%s,1,NOW()) ON DUPLICATE KEY UPDATE "
+            "group_name=COALESCE(VALUES(group_name), group_name), last_synced_at=NOW()",
+            (user_id, str(group_id), group_name))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not upsert group for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_user_groups(user_id: int) -> list:
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT group_id, group_name, enabled FROM user_groups WHERE user_id=%s ORDER BY group_name",
+            (user_id,))
+        rows = cursor.fetchall() or []
+        for r in rows:
+            r["enabled"] = bool(r.get("enabled"))
+        return rows
+    except mysql.connector.Error as err:
+        myprint(f"Could not list groups for user {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_enabled_group_ids(user_id: int) -> list:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT group_id FROM user_groups WHERE user_id=%s AND enabled=1", (user_id,))
+        return [r[0] for r in cursor.fetchall()]
+    except mysql.connector.Error:
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def set_groups_enabled(user_id: int, group_states: dict) -> bool:
+    """Bulk-update per-group enabled flags: {group_id: bool}."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        for gid, enabled in group_states.items():
+            cursor.execute("UPDATE user_groups SET enabled=%s WHERE user_id=%s AND group_id=%s",
+                           (1 if enabled else 0, user_id, str(gid)))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not update group states for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def record_post_stats(user_id: int, post_id: int, reactions: int, comments: int,
+                      reposts: int = 0, impressions: int = None) -> bool:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO post_stats (user_id, post_id, reactions, comments, reposts, impressions) "
+            "VALUES (%s,%s,%s,%s,%s,%s)",
+            (user_id, post_id, int(reactions or 0), int(comments or 0), int(reposts or 0), impressions))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not record post stats for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_recent_posted_post_ids(user_id: int, days: int = 21) -> list:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT id FROM posts WHERE user_id=%s AND status='posted' "
+            "AND scheduled_time >= (NOW() - INTERVAL %s DAY)", (user_id, days))
+        return [r[0] for r in cursor.fetchall()]
+    except mysql.connector.Error:
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_post_engagement_rows(user_id: int) -> list:
+    """Latest stats per post joined with when it was posted → rows of
+    (scheduled_time, reactions, comments, reposts) for post-time analysis."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT p.scheduled_time, s.reactions, s.comments, s.reposts "
+            "FROM posts p JOIN post_stats s ON s.post_id=p.id AND s.user_id=p.user_id "
+            "WHERE p.user_id=%s AND s.id IN "
+            "(SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id)",
+            (user_id, user_id))
+        return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        myprint(f"Could not get post engagement rows for user {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+_LEAD_MAGNET_DEFAULTS: dict = {"enabled": False, "keyword": None, "message": None}
+
+
+def get_lead_magnet_settings(user_id: int) -> dict:
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT enabled, keyword, message FROM lead_magnet_settings WHERE user_id=%s", (user_id,))
+        row = cursor.fetchone()
+        if row is None:
+            return dict(_LEAD_MAGNET_DEFAULTS)
+        row["enabled"] = bool(row.get("enabled"))
+        return row
+    except mysql.connector.Error as err:
+        myprint(f"Could not get lead magnet for user {user_id} | Error: {err}")
+        return dict(_LEAD_MAGNET_DEFAULTS)
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_lead_magnet_settings(user_id: int, settings: dict) -> bool:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO lead_magnet_settings (user_id, enabled, keyword, message) VALUES (%s,%s,%s,%s) "
+            "ON DUPLICATE KEY UPDATE enabled=VALUES(enabled), keyword=VALUES(keyword), message=VALUES(message)",
+            (user_id, 1 if settings.get("enabled") else 0, settings.get("keyword"), settings.get("message")))
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not update lead magnet for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def has_received_lead_magnet(user_id: int, recipient_profile: str) -> bool:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT 1 FROM lead_magnet_sent WHERE user_id=%s AND recipient_profile=%s LIMIT 1",
+                       (user_id, recipient_profile))
+        return cursor.fetchone() is not None
+    except mysql.connector.Error:
+        return True   # fail safe: assume sent (don't double-DM on error)
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def record_lead_magnet_sent(user_id: int, recipient_profile: str, post_id: int = None) -> bool:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT IGNORE INTO lead_magnet_sent (user_id, recipient_profile, post_id) VALUES (%s,%s,%s)",
+            (user_id, recipient_profile, post_id))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not record lead magnet sent for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
 _NEWSLETTER_DEFAULTS: dict = {
     "enabled": False, "title": None, "topic": None, "cadence": "weekly",
     "align_with_blog": True, "newsletter_url": None, "last_published_at": None,

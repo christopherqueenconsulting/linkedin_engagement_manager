@@ -124,6 +124,18 @@ type NewsletterSettings = {
   align_with_blog: boolean
 }
 
+type UserGroup = {
+  group_id: string
+  group_name: string | null
+  enabled: boolean
+}
+
+type LeadMagnet = {
+  enabled: boolean
+  keyword: string | null
+  message: string | null
+}
+
 function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
   return (
     <button
@@ -183,6 +195,11 @@ export default function Account() {
   const [dmMsg, setDmMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [newsletter, setNewsletter] = useState<NewsletterSettings | null>(null)
   const [nlMsg, setNlMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [groups, setGroups] = useState<UserGroup[]>([])
+  const [groupsInit, setGroupsInit] = useState(false)
+  const [groupsMsg, setGroupsMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [leadMagnet, setLeadMagnet] = useState<LeadMagnet | null>(null)
+  const [lmMsg, setLmMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   // Handle LinkedIn OAuth callback: ?li_connected=1 or ?li_error=... in URL
   useEffect(() => {
@@ -523,6 +540,17 @@ export default function Account() {
     enabled: !!sessionToken,
     staleTime: 60 * 1000,
   })
+
+  // LinkedIn Groups — per-group on/off for LEM engagement
+  const { data: groupsData } = useQuery({
+    queryKey: ['user-groups', sessionToken],
+    queryFn: () =>
+      api
+        .get(`/user/groups?session_token=${encodeURIComponent(sessionToken!)}`)
+        .then((r) => r.data.detail as UserGroup[]),
+    enabled: !!sessionToken,
+    staleTime: 60 * 1000,
+  })
   useEffect(() => {
     if (nlData && !newsletter) setNewsletter(nlData)
   }, [nlData])
@@ -540,6 +568,68 @@ export default function Account() {
       setNlMsg({ ok: false, text: 'Could not save — try again.' })
       setTimeout(() => setNlMsg(null), 5000)
     },
+  })
+
+  useEffect(() => {
+    if (groupsData && !groupsInit) {
+      setGroups(groupsData)
+      setGroupsInit(true)
+    }
+  }, [groupsData, groupsInit])
+
+  const toggleGroup = (gid: string) =>
+    setGroups((gs) => gs.map((g) => (g.group_id === gid ? { ...g, enabled: !g.enabled } : g)))
+
+  const groupsMutation = useMutation({
+    mutationFn: () =>
+      api.put('/user/groups', {
+        session_token: sessionToken,
+        groups: Object.fromEntries(groups.map((g) => [g.group_id, g.enabled])),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['user-groups'] })
+      setGroupsMsg({ ok: true, text: 'Saved.' })
+      setTimeout(() => setGroupsMsg(null), 3000)
+    },
+    onError: () => {
+      setGroupsMsg({ ok: false, text: 'Could not save — try again.' })
+      setTimeout(() => setGroupsMsg(null), 5000)
+    },
+  })
+
+  // Lead magnet (comment→DM)
+  const { data: lmData } = useQuery({
+    queryKey: ['lead-magnet', sessionToken],
+    queryFn: () =>
+      api.get(`/user/lead-magnet?session_token=${encodeURIComponent(sessionToken!)}`).then((r) => r.data.detail as LeadMagnet),
+    enabled: !!sessionToken,
+    staleTime: 60 * 1000,
+  })
+  useEffect(() => {
+    if (lmData && !leadMagnet) setLeadMagnet(lmData)
+  }, [lmData])
+  const setLm = (patch: Partial<LeadMagnet>) => setLeadMagnet((p) => (p ? { ...p, ...patch } : p))
+  const lmMutation = useMutation({
+    mutationFn: () => api.put('/user/lead-magnet', { session_token: sessionToken, ...leadMagnet }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['lead-magnet'] })
+      setLmMsg({ ok: true, text: 'Saved.' }); setTimeout(() => setLmMsg(null), 3000)
+    },
+    onError: () => { setLmMsg({ ok: false, text: 'Could not save — try again.' }); setTimeout(() => setLmMsg(null), 5000) },
+  })
+
+  // Personalized best-times-to-post recommendations (read-only)
+  const { data: postStats } = useQuery({
+    queryKey: ['post-stats', sessionToken],
+    queryFn: () =>
+      api
+        .get(`/user/post-stats?session_token=${encodeURIComponent(sessionToken!)}`)
+        .then((r) => r.data.detail as {
+          recommendations: { weekday: string; hour: number; avg_engagement: number; sample: number }[]
+          sample_size: number
+        }),
+    enabled: !!sessionToken,
+    staleTime: 5 * 60 * 1000,
   })
 
   // Stripe checkout redirect
@@ -1182,6 +1272,81 @@ export default function Account() {
           <button type="button" onClick={() => nlMutation.mutate()} disabled={nlMutation.isPending}
             className="w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
             {nlMutation.isPending ? 'Saving…' : 'Save Newsletter Settings'}
+          </button>
+        </div>
+      )}
+
+      {/* Lead magnet card */}
+      {leadMagnet && (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-base font-semibold text-gray-700">Comment → DM Lead Magnet</h2>
+              <p className="text-xs text-gray-500">When someone comments your keyword on your post, auto-DM them a resource. The compliant way to share links (links in posts are penalized).</p>
+            </div>
+            <Toggle on={leadMagnet.enabled} onClick={() => setLm({ enabled: !leadMagnet.enabled })} />
+          </div>
+          {leadMagnet.enabled && (
+            <>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Trigger keyword</label>
+                <input type="text" value={leadMagnet.keyword || ''} onChange={(e) => setLm({ keyword: e.target.value })}
+                  placeholder="e.g. GUIDE" className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">DM message (may include your link)</label>
+                <textarea value={leadMagnet.message || ''} onChange={(e) => setLm({ message: e.target.value })} rows={3}
+                  placeholder="Thanks for the interest! Here's the resource: …" className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+              </div>
+            </>
+          )}
+          {lmMsg && <p className={`text-sm font-medium ${lmMsg.ok ? 'text-green-600' : 'text-red-600'}`}>{lmMsg.text}</p>}
+          <button type="button" onClick={() => lmMutation.mutate()} disabled={lmMutation.isPending}
+            className="w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
+            {lmMutation.isPending ? 'Saving…' : 'Save Lead Magnet'}
+          </button>
+        </div>
+      )}
+
+      {/* Best times to post (data-driven) */}
+      {postStats && (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-3">
+          <h2 className="text-base font-semibold text-gray-700">Your Best Times to Post</h2>
+          {postStats.recommendations.length > 0 ? (
+            <>
+              <p className="text-xs text-gray-500">Learned from your own post engagement — scheduling leans toward these.</p>
+              <ul className="text-sm text-gray-700 space-y-1">
+                {postStats.recommendations.map((r, i) => (
+                  <li key={i} className="flex justify-between">
+                    <span>{r.weekday} @ {String(r.hour).padStart(2, '0')}:00</span>
+                    <span className="text-gray-400">avg engagement {r.avg_engagement} · {r.sample} post(s)</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <p className="text-xs text-gray-500">Gathering data — recommendations appear after a few posts have engagement stats (currently {postStats.sample_size}).</p>
+          )}
+        </div>
+      )}
+
+      {/* Groups card */}
+      {groupsInit && groups.length > 0 && (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-4">
+          <h2 className="text-base font-semibold text-gray-700">LinkedIn Groups</h2>
+          <p className="text-xs text-gray-500">Choose which of your joined groups LEM engages in (value-add comments + occasional posts). All on by default.</p>
+          <div className="divide-y divide-gray-100">
+            {groups.map((g) => (
+              <div key={g.group_id} className="flex items-center justify-between py-2">
+                <span className="text-sm text-gray-700 truncate pr-3">{g.group_name || `Group ${g.group_id}`}</span>
+                <Toggle on={g.enabled} onClick={() => toggleGroup(g.group_id)} />
+              </div>
+            ))}
+          </div>
+          {groupsMsg && <p className={`text-sm font-medium ${groupsMsg.ok ? 'text-green-600' : 'text-red-600'}`}>{groupsMsg.text}</p>}
+          <button type="button" onClick={() => groupsMutation.mutate()} disabled={groupsMutation.isPending}
+            className="w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
+            {groupsMutation.isPending ? 'Saving…' : 'Save Group Settings'}
           </button>
         </div>
       )}

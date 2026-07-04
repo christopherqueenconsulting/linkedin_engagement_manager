@@ -138,6 +138,62 @@ def auto_publish_due_newsletters():
 
 
 @shared_task.task
+def auto_sync_groups():
+    """Refresh each active user's joined-groups list (new groups default to enabled)."""
+    from cqc_lem.app.run_automation import auto_sync_user_groups
+    users = get_active_user_ids()
+    n = 0
+    for uid in users:
+        if has_linkedin_session(uid):
+            auto_sync_user_groups.apply_async(kwargs={'user_id': uid})
+            n += 1
+    return f"Group sync dispatched for {n}/{len(users)} user(s)"
+
+
+@shared_task.task
+def auto_group_engagement():
+    """Daily value-add commenting in each active user's ENABLED groups (shares the per-day cap)."""
+    from cqc_lem.app.run_automation import auto_comment_in_groups
+    users = get_active_user_ids()
+    n = 0
+    for uid in users:
+        if has_linkedin_session(uid):
+            auto_comment_in_groups.apply_async(kwargs={'user_id': uid})
+            n += 1
+    return f"Group commenting dispatched for {n}/{len(users)} user(s)"
+
+
+@shared_task.task
+def auto_group_posts():
+    """Weekly: publish one value-add post into an enabled group per active user."""
+    from cqc_lem.app.run_automation import auto_post_to_group
+    from cqc_lem.utilities.db import get_enabled_group_ids
+    users = get_active_user_ids()
+    n = 0
+    for uid in users:
+        if not has_linkedin_session(uid):
+            continue
+        groups = get_enabled_group_ids(uid)
+        if groups:
+            auto_post_to_group.apply_async(kwargs={'user_id': uid, 'group_id': groups[0]})
+            n += 1
+    return f"Group posts dispatched for {n}/{len(users)} user(s)"
+
+
+@shared_task.task
+def auto_scrape_stats():
+    """Daily: capture engagement stats on each active user's recent posts (powers post-time recs)."""
+    from cqc_lem.app.run_automation import auto_scrape_post_stats
+    users = get_active_user_ids()
+    n = 0
+    for uid in users:
+        if has_linkedin_session(uid):
+            auto_scrape_post_stats.apply_async(kwargs={'user_id': uid})
+            n += 1
+    return f"Stats scrape dispatched for {n}/{len(users)} user(s)"
+
+
+@shared_task.task
 def auto_send_due_followups():
     """Dispatch a per-user Selenium task to send due DM follow-ups (each gated by reply-detection)."""
     from cqc_lem.app.run_automation import process_user_followups

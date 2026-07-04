@@ -14,7 +14,7 @@ from cqc_lem import assets_dir
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.utilities.ai.ai_helper import get_blog_summary_post_from_ai, get_website_content_post_from_ai, \
     get_flux_image_prompt_from_ai, generate_flux1_image_from_prompt, get_runway_ml_video_prompt_from_ai, \
-    create_runway_video, get_ai_linked_post_refinement
+    create_runway_video, get_ai_linked_post_refinement, optimize_post_hook
 from cqc_lem.utilities.ai.ai_helper import get_thought_leadership_post_from_ai, \
     get_industry_news_post_from_ai, get_personal_story_post_from_ai, generate_engagement_prompt_post
 from cqc_lem.utilities.db import get_post_type_counts, insert_planned_post, update_db_post_content, \
@@ -27,11 +27,11 @@ from cqc_lem.utilities.env_constants import API_URL_FINAL, DEFAULT_VIDEO_RATIO, 
     STANDARD_VIDEO_MODEL, PREMIUM_VIDEO_MODEL, PREMIUM_TOP_VIDEO_MODEL, \
     PREMIUM_VIDEO_CREDITS, PREMIUM_TOP_VIDEO_CREDITS
 from cqc_lem.utilities.linkedin.helper import get_my_profile, load_profile_for_user
-from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin
+from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin, strip_engagement_bait
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.logger import myprint
 from cqc_lem.utilities.selenium_util import get_driver_wait_pair, quit_gracefully
-from cqc_lem.utilities.utils import get_best_posting_time, create_folder_if_not_exists, save_video_url_to_dir
+from cqc_lem.utilities.utils import get_best_posting_time, get_post_time, create_folder_if_not_exists, save_video_url_to_dir
 from requests.adapters import HTTPAdapter
 from urllib3 import Retry
 
@@ -166,8 +166,9 @@ def plan_content_for_user(self, user_id: int):
         # Add this post to the daily plan
         post_date = start_date + timedelta(days=day)
 
-        # Get the best time for the selected date
-        post_time = get_best_posting_time(post_date.date())
+        # Get the best time for the selected date — the user's data-driven best hour when we have
+        # enough post-stats, else the 2026 default peak model.
+        post_time = get_post_time(post_date.date(), user_id)
 
         # get_best_posting_time returns the user's LOCAL audience time (e.g. 2pm). Convert
         # it from the user's timezone to UTC for storage, because the scheduler treats
@@ -573,7 +574,11 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
 
     if refine_final_post:
         final_content = get_ai_linked_post_refinement(final_content)
+        # Hook + save-worthy pass: strong first line before the '…more' fold; save-worthy framing.
+        final_content = optimize_post_hook(final_content)
         final_content = sanitize_for_linkedin(final_content)
+        # Guardrail: strip classic engagement-bait CTAs (penalized), keeping lead-magnet CTAs.
+        final_content = strip_engagement_bait(final_content)
         final_content = final_content.strip()
 
     return final_content
