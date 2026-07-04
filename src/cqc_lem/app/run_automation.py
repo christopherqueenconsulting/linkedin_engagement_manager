@@ -430,11 +430,49 @@ def _feed_post_key(author: str, content: str) -> str:
     return f"feedpost://{digest}"
 
 
-def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = None) -> bool:
-    """Open the card's inline comment composer, type the comment, and submit. Returns True if it
-    appears posted. Ctrl+Enter is the reliable submit in the new composer (verified live), with the
-    'Comment'/'Post' button as the primary path."""
+def _strip_non_bmp(text: str) -> str:
+    # ChromeDriver's send_keys raises WebDriverException on non-BMP characters (most emoji), so
+    # drop them — otherwise emoji-flavoured AI comments fail to type at all.
+    return ''.join(c for c in (text or "") if ord(c) <= 0xFFFF)
+
+
+# The SDUI comment/reply composer has NO <form> ancestor, so walk up from the textbox and click
+# the enabled submit button whose text is Comment/Post/Reply — excluding the aria-label
+# Comment/Reply buttons that OPEN a composer. Returns True if a button was clicked.
+_SUBMIT_NEAR_COMPOSER_JS = (
+    "let root=arguments[0]; for(let i=0;i<7 && root.parentElement;i++) root=root.parentElement;"
+    "const b=[...root.querySelectorAll('button')].find(x=>!x.disabled && x.offsetParent!==null &&"
+    "['comment','post','reply'].includes((x.innerText||'').trim().toLowerCase()) &&"
+    "!['comment','reply'].includes((x.getAttribute('aria-label')||'').toLowerCase()));"
+    "if(b){b.click(); return true;} return false;")
+
+
+def _composer_submitted(driver, composer, text: str) -> bool:
+    """True only if the text actually posted: the composer cleared (or detached), or the text now
+    shows in the nearby comment list — NOT merely still sitting in a full composer (the old
+    'text in body' check false-positived on that, so comments silently never posted)."""
     try:
+        if (composer.text or "").strip() == "":
+            return True
+    except Exception:
+        return True  # composer detached/re-rendered after posting
+    try:
+        return bool(driver.execute_script(
+            "let r=arguments[0]; for(let i=0;i<9 && r.parentElement;i++) r=r.parentElement;"
+            "const cl=r.querySelector(\"[data-testid*='-commentList']\");"
+            "return cl ? cl.innerText.includes(arguments[1]) : false;", composer, text[:25]))
+    except Exception:
+        return False
+
+
+def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = None) -> bool:
+    """Open the card's inline comment composer, type the comment, and submit via the composer's
+    own Comment/Post button (the SDUI composer has no <form>). Returns True only if the comment
+    actually lands (composer clears / appears in the list), not just because text was typed."""
+    try:
+        comment_text = _strip_non_bmp(comment_text)
+        if not comment_text.strip():
+            return False
         if click_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label='Comment']")],
                        "Open comment composer", parent_element=card, required=False, user_id=user_id) is None:
             return False
@@ -448,22 +486,10 @@ def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = No
         composer.click()
         composer.send_keys(comment_text)
         time.sleep(random.uniform(1, 2))
-        submitted = False
-        form = driver.execute_script(
-            "let e=arguments[0];while(e){if(e.tagName==='FORM')return e;e=e.parentElement;}return null;", composer)
-        if form is not None:
-            for b in form.find_elements(By.XPATH, ".//button[normalize-space()='Comment' or normalize-space()='Post']"):
-                try:
-                    if b.is_displayed() and not b.get_attribute("disabled"):
-                        driver.execute_script("arguments[0].click();", b)
-                        submitted = True
-                        break
-                except Exception:
-                    continue
-        if not submitted:
-            composer.send_keys(Keys.CONTROL, Keys.RETURN)
+        if not driver.execute_script(_SUBMIT_NEAR_COMPOSER_JS, composer):
+            composer.send_keys(Keys.CONTROL, Keys.RETURN)  # fallback
         time.sleep(random.uniform(3, 5))
-        return comment_text[:22] in driver.find_element(By.TAG_NAME, "body").text
+        return _composer_submitted(driver, composer, comment_text)
     except Exception as e:
         log_warning("Inline comment post failed", exc=e, action_type="comment", user_id=user_id)
         return False
@@ -573,25 +599,16 @@ def _reply_to_comment_inline(driver, wait, comment_el, reply_text: str, user_id:
                               "Reply composer", visible_only=True, required=False, user_id=user_id)
         if composer is None:
             return False
+        reply_text = _strip_non_bmp(reply_text)
+        if not reply_text.strip():
+            return False
         composer.click()
         composer.send_keys(reply_text)
         time.sleep(random.uniform(1, 2))
-        submitted = False
-        form = driver.execute_script(
-            "let e=arguments[0];while(e){if(e.tagName==='FORM')return e;e=e.parentElement;}return null;", composer)
-        if form is not None:
-            for b in form.find_elements(By.XPATH, ".//button[normalize-space()='Reply' or normalize-space()='Comment' or normalize-space()='Post']"):
-                try:
-                    if b.is_displayed() and not b.get_attribute("disabled"):
-                        driver.execute_script("arguments[0].click();", b)
-                        submitted = True
-                        break
-                except Exception:
-                    continue
-        if not submitted:
-            composer.send_keys(Keys.CONTROL, Keys.RETURN)
+        if not driver.execute_script(_SUBMIT_NEAR_COMPOSER_JS, composer):
+            composer.send_keys(Keys.CONTROL, Keys.RETURN)  # fallback
         time.sleep(random.uniform(3, 5))
-        return reply_text[:22] in driver.find_element(By.TAG_NAME, "body").text
+        return _composer_submitted(driver, composer, reply_text)
     except Exception as e:
         log_warning("Inline reply post failed", exc=e, action_type="reply", user_id=user_id)
         return False
