@@ -88,6 +88,10 @@ app.conf.update(
             'task': 'cqc_lem.app.run_scheduler.auto_send_due_followups',
             'schedule': crontab(minute='*/30')  # Send due multi-touch DM follow-ups every 30 min
         },
+        'daily-engagement-no-post-days': {
+            'task': 'cqc_lem.app.run_scheduler.auto_daily_engagement',
+            'schedule': crontab(hour='14', minute='0')  # Comment on the feed on days with no scheduled post
+        },
         'clen-up-stale-profiles': {
             'task': 'cqc_lem.app.run_scheduler.auto_clean_stale_profiles',
             'schedule': crontab(hour='3', minute='0', )  # Run every day at 3:00 AM

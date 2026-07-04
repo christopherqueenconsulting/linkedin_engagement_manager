@@ -2112,6 +2112,26 @@ def count_dms_sent_today(user_id: int) -> int:
     return _count_actions_today(user_id, LogActionType.DM)
 
 
+def has_scheduled_post_today(user_id: int) -> bool:
+    """True if the user has a post going out today (UTC) — those days are already covered by the
+    pre-post commenting trigger, so the standalone daily engagement run should skip them. Fails
+    safe to True (skip the standalone run) so an error never causes double-commenting."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM posts WHERE user_id=%s AND DATE(scheduled_time)=UTC_DATE() "
+            "AND status IN ('approved','scheduled','posted')", (user_id,))
+        r = cursor.fetchone()
+        return bool(r and r[0])
+    except mysql.connector.Error as err:
+        myprint(f"Could not check today's posts for user {user_id} | Error: {err}")
+        return True
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_recent_engagers(user_id: int, days: int = 14) -> set:
     """Lowercased names of people who recently commented on the user's OWN posts — reciprocity
     targets to prioritize commenting back on. Empty set if the tracking table isn't present yet."""
