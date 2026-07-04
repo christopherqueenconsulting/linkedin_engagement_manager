@@ -2001,11 +2001,11 @@ def update_user_preferences(
 
 
 _ENGAGEMENT_DEFAULTS: dict = {
-    "tone": None, "comment_length": "medium", "comment_style": None,
+    "tone": None, "comment_length": "short", "comment_style": None,
     "use_emojis": True, "use_hashtags": False,
     "include_topics": [], "exclude_topics": [], "include_keywords": [], "exclude_keywords": [],
     "include_authors": [], "exclude_authors": [], "post_types": [],
-    "min_reactions": None, "reply_to_own_comments": True,
+    "min_reactions": None, "max_post_age_hours": 24, "reply_to_own_comments": True,
     "max_comments_per_day": 20, "max_dms_per_day": 20, "default_buyer_stage": None,
 }
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
@@ -2014,8 +2014,8 @@ _ENGAGEMENT_BOOL_FIELDS = ("use_emojis", "use_hashtags", "reply_to_own_comments"
 _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "use_hashtags",
                     "include_topics", "exclude_topics", "include_keywords", "exclude_keywords",
                     "include_authors", "exclude_authors", "post_types", "min_reactions",
-                    "reply_to_own_comments", "max_comments_per_day", "max_dms_per_day",
-                    "default_buyer_stage")
+                    "max_post_age_hours", "reply_to_own_comments", "max_comments_per_day",
+                    "max_dms_per_day", "default_buyer_stage")
 
 
 def _coerce_json_list(value) -> list:
@@ -2110,6 +2110,68 @@ def count_comments_today(user_id: int) -> int:
 
 def count_dms_sent_today(user_id: int) -> int:
     return _count_actions_today(user_id, LogActionType.DM)
+
+
+def has_scheduled_post_today(user_id: int) -> bool:
+    """True if the user has a post going out today (UTC) — those days are already covered by the
+    pre-post commenting trigger, so the standalone daily engagement run should skip them. Fails
+    safe to True (skip the standalone run) so an error never causes double-commenting."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM posts WHERE user_id=%s AND DATE(scheduled_time)=UTC_DATE() "
+            "AND status IN ('approved','scheduled','posted')", (user_id,))
+        r = cursor.fetchone()
+        return bool(r and r[0])
+    except mysql.connector.Error as err:
+        myprint(f"Could not check today's posts for user {user_id} | Error: {err}")
+        return True
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def upsert_engager(user_id: int, engager_name: str, engager_profile_url: str = None) -> bool:
+    """Record that `engager_name` engaged with the user's post (or refresh their last-engaged
+    time). No-op on a blank name or if the table isn't present yet."""
+    if not engager_name or not engager_name.strip():
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO post_engagers (user_id, engager_name, engager_profile_url, last_engaged_at) "
+            "VALUES (%s,%s,%s,NOW()) ON DUPLICATE KEY UPDATE "
+            "engager_profile_url=COALESCE(VALUES(engager_profile_url), engager_profile_url), "
+            "last_engaged_at=NOW()",
+            (user_id, engager_name.strip()[:255], (engager_profile_url or None)))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not upsert engager for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_recent_engagers(user_id: int, days: int = 14) -> set:
+    """Lowercased names of people who recently commented on the user's OWN posts — reciprocity
+    targets to prioritize commenting back on. Empty set if the tracking table isn't present yet."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT LOWER(engager_name) FROM post_engagers "
+            "WHERE user_id=%s AND last_engaged_at >= (NOW() - INTERVAL %s DAY)",
+            (user_id, days))
+        return {r[0] for r in cursor.fetchall() if r and r[0]}
+    except mysql.connector.Error:
+        return set()
+    finally:
+        cursor.close()
+        connection.close()
 
 
 # Default DM templates = today's hard-coded strings, so behaviour is unchanged until a user

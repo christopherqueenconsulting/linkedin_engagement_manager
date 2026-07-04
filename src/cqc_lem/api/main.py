@@ -260,7 +260,7 @@ class UserPreferencesRequest(BaseModel):
 class EngagementPreferencesRequest(BaseModel):
     session_token: str
     tone: Optional[str] = None
-    comment_length: str = "medium"
+    comment_length: str = "short"
     comment_style: Optional[str] = None
     use_emojis: bool = True
     use_hashtags: bool = False
@@ -272,6 +272,7 @@ class EngagementPreferencesRequest(BaseModel):
     exclude_authors: List[str] = []
     post_types: List[str] = []
     min_reactions: Optional[int] = None
+    max_post_age_hours: Optional[int] = 24
     reply_to_own_comments: bool = True
     max_comments_per_day: int = 20
     max_dms_per_day: int = 20

@@ -102,6 +102,7 @@ type EngPrefs = {
   include_authors: string[]
   exclude_authors: string[]
   min_reactions: number | null
+  max_post_age_hours: number | null
   reply_to_own_comments: boolean
   max_comments_per_day: number
   max_dms_per_day: number
@@ -1063,6 +1064,13 @@ export default function Account() {
               <label className="block text-sm font-medium text-gray-700 mb-1">Min. reactions</label>
               <input type="number" min={0} value={engPrefs.min_reactions ?? ''}
                 onChange={(e) => setEng({ min_reactions: e.target.value === '' ? null : Number(e.target.value) })}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Max post age (hrs)</label>
+              <input type="number" min={1} value={engPrefs.max_post_age_hours ?? ''}
+                onChange={(e) => setEng({ max_post_age_hours: e.target.value === '' ? null : Number(e.target.value) })}
+                placeholder="24"
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
             </div>
             <div>

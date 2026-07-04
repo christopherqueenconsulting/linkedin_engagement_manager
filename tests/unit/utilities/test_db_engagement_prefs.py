@@ -24,7 +24,7 @@ class TestGetEngagementPreferences:
         with patch(f"{_DB}.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
             prefs = get_engagement_preferences(1)
-        assert prefs["comment_length"] == "medium"
+        assert prefs["comment_length"] == "short"
         assert prefs["include_topics"] == [] and prefs["max_comments_per_day"] == 20
         assert prefs["reply_to_own_comments"] is True
 

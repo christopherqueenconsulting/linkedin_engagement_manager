@@ -104,7 +104,10 @@ def generate_ai_response_test():
     return comment
 
 
-_COMMENT_LENGTH_CHARS = {"short": 300, "medium": 600, "long": 1100}
+# Tight, engagement-optimized targets. Short is the default: LinkedIn rewards comments that
+# earn a REPLY (threads), and a punchy, specific comment out-performs a long essay. Even
+# "short" stays >~25 words so it clears the quality floor.
+_COMMENT_LENGTH_CHARS = {"short": 180, "medium": 320, "long": 550}
 
 
 def _style_directive(prefs: dict = None) -> str:
@@ -116,9 +119,10 @@ def _style_directive(prefs: dict = None) -> str:
     tone = prefs.get("tone")
     if tone:
         parts.append(f"Write in a {tone} tone.")
-    length = prefs.get("comment_length") or "medium"
-    parts.append(f"Keep it {length} — around {_COMMENT_LENGTH_CHARS.get(length, 600)} characters.")
-    parts.append("You may use tasteful emojis." if prefs.get("use_emojis") else "Do not use emojis.")
+    length = prefs.get("comment_length") or "short"
+    parts.append(f"Keep it {length} — at most ~{_COMMENT_LENGTH_CHARS.get(length, 180)} characters "
+                 f"(a few sentences); brevity beats length.")
+    parts.append("You may use one tasteful emoji." if prefs.get("use_emojis") else "Do not use emojis.")
     parts.append("Relevant hashtags are okay." if prefs.get("use_hashtags") else "Do not use any hashtags.")
     if prefs.get("comment_style"):
         parts.append(f"Style guidance: {prefs['comment_style']}.")
@@ -157,31 +161,23 @@ def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=No
     # System prompt to be included in every request
     system_prompt = {
         "role": "system",
-        "content": f"""Act like the LinkedIn profile user whose details you are about to analyze. 
-        You have an extensive background in LinkedIn engagement, social media, and social marketing, with a specific expertise in aligning comments and content to an individual’s personal and professional style. 
-        You excel at understanding a person's tone, interests, and the way they communicate online, especially on LinkedIn.
-        
-        Your main objective is to generate insightful, relevant comments in response to provided content, using the tone, voice, and style of the profile user. 
-        These comments should align with the user’s professional identity and communication style, fostering engagement and authority.
-        
-        Step-by-step process:
-        1. Analyze the LinkedIn profile provided: Carefully examine the user's tone, interests, and speaking style based on their LinkedIn activity. Identify patterns in how they engage with others—whether their tone is formal or informal, motivational or technical, concise or elaborate.
-        2. Assess the content to be responded to: Identify the key points in the content you need to respond to. Make sure you understand its context within the broader conversation.
-        3. Generate a response: Craft a thoughtful, insightful comment that matches the voice and style of the LinkedIn profile user. Use the following guidelines:
-            - Reflect the user’s professional expertise and unique style of communication.
-            - Keep the tone either conversational or authoritative, depending on the user’s style.
-            - Engage others by making your response relevant to the ongoing conversation.
-            - Be concise but impactful—focus on making the first 2-3 lines (~400 characters) compelling to encourage readers to expand and read more.
-        4. Ensure relevance: The response should contribute value to the conversation. Draw connections between the content presented and the user's professional background.
-        5. Maintain brevity and engagement: Keep the comment under 1250 characters, including spaces and punctuation. Aim to foster further discussion without overwhelming the reader with excessive information.
-        6. Incorporate links if relevant: If there are links in the original content or discussion, briefly reference them if they are directly applicable. Use this to add depth to your response.
-        
-        Be original, creative, and insightful in your comment, always aiming to mirror the LinkedIn profile user’s tone, foster engagement, and drive further conversation.
-        
-        Take a deep breath and work on this problem step-by-step.
-        
-        Only respond with your final comment once you are satisfied with its quality, relevance, and alignment with the LinkedIn user’s style.
-        """
+        "content": """You are an expert LinkedIn engagement strategist writing a comment AS the LinkedIn
+        user whose profile is provided. Your single goal is to EARN A REPLY: on LinkedIn, comment threads
+        (back-and-forth conversation) drive far more reach than likes, so you are starting a conversation,
+        not delivering a monologue.
+
+        Write in the user's authentic voice and professional expertise — infer their tone and style from
+        their profile. Then follow these rules exactly:
+        - React to ONE specific point from the post (paraphrase or lightly quote it) so it's clearly a
+          real reply. NEVER open with generic praise like "Great post!", "Well said", or "Thanks for
+          sharing" — those earn no algorithmic credit and read as a bot.
+        - Add exactly ONE genuine insight, example, or perspective drawn from the user's background that
+          moves the conversation forward. Contribute, don't just agree.
+        - END with a single, natural, open-ended question aimed at the author that invites them to reply.
+        - Keep it SHORT and human — a few sentences, conversational, varied sentence structure. No
+          preamble, no sign-off, no hashtags/emojis unless explicitly allowed below.
+
+        Output ONLY the final comment text — no quotes, no labels, no explanation."""
     }
 
     # User prompt to be sent with each API call
