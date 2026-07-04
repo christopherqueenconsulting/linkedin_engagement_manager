@@ -79,6 +79,56 @@ function daysUntil(iso: string | null | undefined): number | null {
   return Math.max(0, Math.floor(diff / (1000 * 60 * 60 * 24)))
 }
 
+const DM_EVENTS: { key: string; label: string }[] = [
+  { key: 'connection_accepted', label: 'Connection accepted' },
+  { key: 'recommendation_received', label: 'Recommendation received' },
+  { key: 'collaboration', label: 'After a collaboration' },
+  { key: 'profile_viewer', label: 'Profile viewer outreach' },
+]
+
+const csv = (arr: string[] | undefined | null) => (arr && arr.length ? arr.join(', ') : '')
+const parseCsv = (s: string) => s.split(',').map((x) => x.trim()).filter(Boolean)
+
+type EngPrefs = {
+  tone: string | null
+  comment_length: string
+  comment_style: string | null
+  use_emojis: boolean
+  use_hashtags: boolean
+  include_topics: string[]
+  exclude_topics: string[]
+  include_keywords: string[]
+  exclude_keywords: string[]
+  include_authors: string[]
+  exclude_authors: string[]
+  min_reactions: number | null
+  reply_to_own_comments: boolean
+  max_comments_per_day: number
+  max_dms_per_day: number
+}
+
+type DmTemplate = {
+  event_type: string
+  step: number
+  delay_hours: number
+  template_text: string
+  is_active: boolean
+}
+
+function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${on ? 'bg-blue-600' : 'bg-gray-200'}`}
+      role="switch"
+      aria-checked={on}
+    >
+      <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${on ? 'translate-x-5' : 'translate-x-0'}`} />
+    </button>
+  )
+}
+
 export default function Account() {
   const { user, sessionToken } = useAuth()
   const email = user?.email ?? ''
@@ -115,6 +165,13 @@ export default function Account() {
   const [locCity, setLocCity] = useState('')
   const [locState, setLocState] = useState('')
   const [locCountry, setLocCountry] = useState('US')
+
+  // Engagement config (targeting + voice) and DM templates
+  const [engPrefs, setEngPrefs] = useState<EngPrefs | null>(null)
+  const [engMsg, setEngMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [dmTemplates, setDmTemplates] = useState<DmTemplate[]>([])
+  const [dmInit, setDmInit] = useState(false)
+  const [dmMsg, setDmMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   // Handle LinkedIn OAuth callback: ?li_connected=1 or ?li_error=... in URL
   useEffect(() => {
@@ -363,6 +420,85 @@ export default function Account() {
       const detail = e?.response?.data?.detail
       setLocationMsg({ ok: false, text: typeof detail === 'string' ? detail : 'Could not set that location — check the city/state.' })
       setTimeout(() => setLocationMsg(null), 5000)
+    },
+  })
+
+  // Engagement preferences — targeting + voice for AI comments/DMs
+  const { data: engData } = useQuery({
+    queryKey: ['engagement-preferences', sessionToken],
+    queryFn: () =>
+      api
+        .get(`/user/engagement-preferences?session_token=${encodeURIComponent(sessionToken!)}`)
+        .then((r) => r.data.detail as EngPrefs),
+    enabled: !!sessionToken,
+    staleTime: 60 * 1000,
+  })
+  useEffect(() => {
+    if (engData && !engPrefs) setEngPrefs(engData)
+  }, [engData])
+
+  const setEng = (patch: Partial<EngPrefs>) => setEngPrefs((p) => (p ? { ...p, ...patch } : p))
+
+  const engMutation = useMutation({
+    mutationFn: () => api.put('/user/engagement-preferences', { session_token: sessionToken, ...engPrefs }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['engagement-preferences'] })
+      setEngMsg({ ok: true, text: 'Saved.' })
+      setTimeout(() => setEngMsg(null), 3000)
+    },
+    onError: () => {
+      setEngMsg({ ok: false, text: 'Could not save — try again.' })
+      setTimeout(() => setEngMsg(null), 5000)
+    },
+  })
+
+  // DM templates (per event, with optional follow-up steps)
+  const { data: dmData } = useQuery({
+    queryKey: ['dm-templates', sessionToken],
+    queryFn: () =>
+      api
+        .get(`/user/dm-templates?session_token=${encodeURIComponent(sessionToken!)}`)
+        .then((r) => r.data.detail as DmTemplate[]),
+    enabled: !!sessionToken,
+    staleTime: 60 * 1000,
+  })
+  useEffect(() => {
+    if (dmData && !dmInit) {
+      const seeded: DmTemplate[] = [...dmData]
+      for (const ev of DM_EVENTS) {
+        if (!seeded.some((t) => t.event_type === ev.key && t.step === 0)) {
+          seeded.push({ event_type: ev.key, step: 0, delay_hours: 0, template_text: '', is_active: true })
+        }
+      }
+      setDmTemplates(seeded)
+      setDmInit(true)
+    }
+  }, [dmData, dmInit])
+
+  const updateTemplate = (event_type: string, step: number, patch: Partial<DmTemplate>) =>
+    setDmTemplates((ts) => ts.map((t) => (t.event_type === event_type && t.step === step ? { ...t, ...patch } : t)))
+  const addFollowupStep = (event_type: string) =>
+    setDmTemplates((ts) => {
+      const nextStep = ts.filter((t) => t.event_type === event_type).reduce((m, t) => Math.max(m, t.step), -1) + 1
+      return [...ts, { event_type, step: nextStep, delay_hours: 24, template_text: '', is_active: true }]
+    })
+  const removeStep = (event_type: string, step: number) =>
+    setDmTemplates((ts) => ts.filter((t) => !(t.event_type === event_type && t.step === step)))
+
+  const dmMutation = useMutation({
+    mutationFn: () =>
+      api.put('/user/dm-templates', {
+        session_token: sessionToken,
+        templates: dmTemplates.filter((t) => t.template_text.trim()),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dm-templates'] })
+      setDmMsg({ ok: true, text: 'DM templates saved.' })
+      setTimeout(() => setDmMsg(null), 3000)
+    },
+    onError: () => {
+      setDmMsg({ ok: false, text: 'Could not save — try again.' })
+      setTimeout(() => setDmMsg(null), 5000)
     },
   })
 
@@ -849,6 +985,165 @@ export default function Account() {
           {prefsMutation.isPending ? 'Saving…' : 'Save Preferences'}
         </button>
       </form>
+
+      {/* Voice & Tone card */}
+      {engPrefs && (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-5">
+          <h2 className="text-base font-semibold text-gray-700">Voice &amp; Tone</h2>
+          <p className="text-xs text-gray-500">
+            How AI comments and DMs should sound. Leave blank to infer purely from your profile.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Tone</label>
+              <input type="text" value={engPrefs.tone || ''} onChange={(e) => setEng({ tone: e.target.value })}
+                placeholder="e.g. warm, authoritative"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Comment length</label>
+              <select value={engPrefs.comment_length} onChange={(e) => setEng({ comment_length: e.target.value })}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                <option value="short">Short (~300 chars)</option>
+                <option value="medium">Medium (~600 chars)</option>
+                <option value="long">Long (~1100 chars)</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Style guidance</label>
+            <input type="text" value={engPrefs.comment_style || ''} onChange={(e) => setEng({ comment_style: e.target.value })}
+              placeholder="e.g. ask a question, avoid buzzwords"
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+          </div>
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium text-gray-700">Use emojis</p>
+            <Toggle on={engPrefs.use_emojis} onClick={() => setEng({ use_emojis: !engPrefs.use_emojis })} />
+          </div>
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium text-gray-700">Use hashtags</p>
+            <Toggle on={engPrefs.use_hashtags} onClick={() => setEng({ use_hashtags: !engPrefs.use_hashtags })} />
+          </div>
+          {engMsg && (
+            <p className={`text-sm font-medium ${engMsg.ok ? 'text-green-600' : 'text-red-600'}`}>{engMsg.text}</p>
+          )}
+          <button type="button" onClick={() => engMutation.mutate()} disabled={engMutation.isPending}
+            className="w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
+            {engMutation.isPending ? 'Saving…' : 'Save Voice & Tone'}
+          </button>
+        </div>
+      )}
+
+      {/* Engagement Targeting card */}
+      {engPrefs && (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-5">
+          <h2 className="text-base font-semibold text-gray-700">Engagement Targeting</h2>
+          <p className="text-xs text-gray-500">
+            Control which posts LEM comments on. Comma-separated. Exclusions always win; if any
+            "include" is set, a post must match one (keyword/author literal, or a topic via AI relevance).
+          </p>
+          {([
+            ['include_topics', 'Include topics (AI relevance)'],
+            ['exclude_topics', 'Exclude topics'],
+            ['include_keywords', 'Include keywords'],
+            ['exclude_keywords', 'Exclude keywords'],
+            ['include_authors', 'Include authors'],
+            ['exclude_authors', 'Exclude authors'],
+          ] as [keyof EngPrefs, string][]).map(([field, label]) => (
+            <div key={field}>
+              <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
+              <input type="text" value={csv(engPrefs[field] as string[])}
+                onChange={(e) => setEng({ [field]: parseCsv(e.target.value) } as Partial<EngPrefs>)}
+                placeholder="comma, separated, values"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+            </div>
+          ))}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Min. reactions</label>
+              <input type="number" min={0} value={engPrefs.min_reactions ?? ''}
+                onChange={(e) => setEng({ min_reactions: e.target.value === '' ? null : Number(e.target.value) })}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Max comments/day</label>
+              <input type="number" min={0} value={engPrefs.max_comments_per_day}
+                onChange={(e) => setEng({ max_comments_per_day: Number(e.target.value) })}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Max DMs/day</label>
+              <input type="number" min={0} value={engPrefs.max_dms_per_day}
+                onChange={(e) => setEng({ max_dms_per_day: Number(e.target.value) })}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+            </div>
+          </div>
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium text-gray-700">Reply to comments on my posts</p>
+            <Toggle on={engPrefs.reply_to_own_comments} onClick={() => setEng({ reply_to_own_comments: !engPrefs.reply_to_own_comments })} />
+          </div>
+          {engMsg && (
+            <p className={`text-sm font-medium ${engMsg.ok ? 'text-green-600' : 'text-red-600'}`}>{engMsg.text}</p>
+          )}
+          <button type="button" onClick={() => engMutation.mutate()} disabled={engMutation.isPending}
+            className="w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
+            {engMutation.isPending ? 'Saving…' : 'Save Targeting'}
+          </button>
+        </div>
+      )}
+
+      {/* DM Templates card */}
+      {dmInit && (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-4">
+          <h2 className="text-base font-semibold text-gray-700">DM Templates</h2>
+          <p className="text-xs text-gray-500">
+            Placeholders: <code>{'{first_name}'}</code>, <code>{'{headline}'}</code>, <code>{'{blog_url}'}</code>.
+            Blank uses the built-in default. Add follow-up steps to message again after a delay — the
+            sequence stops automatically if they reply.
+          </p>
+          {DM_EVENTS.map((ev) => {
+            const steps = dmTemplates.filter((t) => t.event_type === ev.key).sort((a, b) => a.step - b.step)
+            return (
+              <div key={ev.key} className="border-t border-gray-100 pt-4">
+                <p className="text-sm font-semibold text-gray-700">{ev.label}</p>
+                {steps.map((t) => (
+                  <div key={t.step} className="mt-2 space-y-1">
+                    <div className="flex items-center gap-2 text-xs text-gray-500">
+                      <span>{t.step === 0 ? 'Initial message' : `Follow-up ${t.step}`}</span>
+                      {t.step > 0 && (
+                        <label className="flex items-center">
+                          after
+                          <input type="number" min={1} value={t.delay_hours}
+                            onChange={(e) => updateTemplate(ev.key, t.step, { delay_hours: Number(e.target.value) })}
+                            className="mx-1 w-16 border border-gray-300 rounded px-1 py-0.5" />
+                          h
+                        </label>
+                      )}
+                      {t.step > 0 && (
+                        <button type="button" onClick={() => removeStep(ev.key, t.step)}
+                          className="ml-auto text-red-500 hover:text-red-600">Remove</button>
+                      )}
+                    </div>
+                    <textarea value={t.template_text} rows={2}
+                      onChange={(e) => updateTemplate(ev.key, t.step, { template_text: e.target.value })}
+                      placeholder="Leave blank for the default message"
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+                  </div>
+                ))}
+                <button type="button" onClick={() => addFollowupStep(ev.key)}
+                  className="mt-2 text-xs text-blue-600 font-medium hover:text-blue-700">+ Add follow-up</button>
+              </div>
+            )
+          })}
+          {dmMsg && (
+            <p className={`text-sm font-medium ${dmMsg.ok ? 'text-green-600' : 'text-red-600'}`}>{dmMsg.text}</p>
+          )}
+          <button type="button" onClick={() => dmMutation.mutate()} disabled={dmMutation.isPending}
+            className="w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
+            {dmMutation.isPending ? 'Saving…' : 'Save DM Templates'}
+          </button>
+        </div>
+      )}
 
       {/* Timezone card */}
       <form
