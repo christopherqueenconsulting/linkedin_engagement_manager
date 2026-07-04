@@ -77,6 +77,7 @@ class LogActionType(StrEnum):
     REPLY = 'reply'
     POST = 'post'
     ENGAGED = 'engaged'
+    FOLLOWUP = 'followup'
 
 
 # ENum for log result options
@@ -2188,6 +2189,76 @@ def upsert_dm_templates(user_id: int, templates: list) -> bool:
     except mysql.connector.Error as err:
         myprint(f"Could not upsert dm templates for user_id {user_id} | Error: {err}")
         return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def enqueue_followup(user_id: int, profile_url: str, first_name: str, event_type: str,
+                     next_step: int, due_at) -> bool:
+    """Schedule a follow-up DM touch. `due_at` is a datetime."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO dm_followups (user_id, profile_url, first_name, event_type, next_step, due_at, status) "
+            "VALUES (%s,%s,%s,%s,%s,%s,'pending')",
+            (user_id, profile_url, first_name, str(event_type), next_step, due_at))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not enqueue followup for user_id {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_due_followups(now) -> list:
+    """Pending follow-ups whose due_at has passed. `now` is a datetime."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT id, user_id, profile_url, first_name, event_type, next_step "
+            "FROM dm_followups WHERE status='pending' AND due_at <= %s ORDER BY due_at", (now,))
+        return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        myprint(f"Could not get due followups | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def mark_followup(followup_id: int, status: str) -> bool:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("UPDATE dm_followups SET status=%s WHERE id=%s", (str(status), followup_id))
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not mark followup {followup_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def stop_followups_for_profile(user_id: int, profile_url: str) -> int:
+    """Stop all pending follow-ups to a profile (e.g. once they've replied). Returns count."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("UPDATE dm_followups SET status='stopped' "
+                       "WHERE user_id=%s AND profile_url=%s AND status='pending'",
+                       (user_id, profile_url))
+        connection.commit()
+        return cursor.rowcount
+    except mysql.connector.Error as err:
+        myprint(f"Could not stop followups for user_id {user_id} | Error: {err}")
+        return 0
     finally:
         cursor.close()
         connection.close()

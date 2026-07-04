@@ -5,7 +5,7 @@ import random
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Tuple
 from urllib.parse import urlparse
 
@@ -19,7 +19,7 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     LogResultType, has_user_commented_on_post_url, get_post_url_from_log_for_user, get_post_message_from_log_for_user, \
     has_engaged_url_with_x_days, get_post_content, get_post_video_url, update_db_post_status, PostStatus, PostType, \
     get_dm_history_for_profile, get_post_status, get_user_blog_url, get_post_type, get_carousel_slides, \
-    get_dm_template
+    get_dm_template, enqueue_followup, get_due_followups, mark_followup, stop_followups_for_profile
 from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
     load_profile_for_user
@@ -889,6 +889,93 @@ def build_dm_from_template(user_id: int, event_type: str, first_name: str,
         return rendered.strip()
 
 
+def enqueue_next_followup(user_id: int, profile_url: str, first_name: str, event_type: str, current_step: int) -> None:
+    """If a follow-up template exists for the next step, schedule it at now + its delay_hours."""
+    try:
+        nxt = get_dm_template(user_id, event_type, current_step + 1)
+        if nxt:
+            due = datetime.now() + timedelta(hours=int(nxt.get("delay_hours", 24) or 24))
+            enqueue_followup(user_id, profile_url, first_name, event_type, current_step + 1, due)
+    except Exception as e:
+        log_warning("Failed to enqueue next follow-up", exc=e, action_type="followup", user_id=user_id)
+
+
+# JS: walk the message list backwards for the most recent group's sender name. LinkedIn tags
+# each message *group* with .msg-s-message-group__name; the outer li.msg-s-message-list__event
+# carries no inbound/outbound marker, so the sender name is the reliable signal (confirmed on a
+# live thread 2026-07-04). Continuation bubbles have no name → we scan back to the last named one.
+_LAST_SENDER_JS = (
+    "const ev=[...document.querySelectorAll('li.msg-s-message-list__event, .msg-s-event-listitem')];"
+    "for(let i=ev.length-1;i>=0;i--){const n=ev[i].querySelector('.msg-s-message-group__name');"
+    "if(n&&n.innerText.trim())return n.innerText.trim();}return null;")
+
+
+def check_dm_replied(driver, wait, profile_url: str, my_name: str = None) -> bool:
+    """Best-effort: has this person replied since our last message? Opens their message thread
+    and finds the sender of the most recent message group — if it isn't us, they replied.
+    Defensive — returns False (proceed with the follow-up) when it can't tell, logging a miss.
+    DOM structure confirmed live; the full profile->Message->detect flow (and self-name match)
+    still needs E2E validation before this is trusted to suppress follow-ups (see tracking issue)."""
+    try:
+        driver.get(profile_url)
+        time.sleep(random.uniform(2, 4))
+        msg_btn = find_first(driver, wait,
+                             [(By.CSS_SELECTOR, "button[aria-label^='Message']"),
+                              (By.XPATH, "//button[normalize-space()='Message']")],
+                             "Open message thread", required=False)
+        if msg_btn is None:
+            return False
+        driver.execute_script("arguments[0].click();", msg_btn)
+        time.sleep(random.uniform(3, 5))
+        last_sender = driver.execute_script(_LAST_SENDER_JS)
+        if not last_sender:
+            log_warning("Reply-detection: no message sender found", action_type="followup")
+            return False
+        if my_name and my_name.strip().lower() in last_sender.strip().lower():
+            return False  # we spoke last → no reply yet
+        return True  # someone other than us spoke last → they replied
+    except Exception as e:
+        log_warning("Reply-detection failed (assuming no reply)", exc=e, action_type="followup")
+        return False
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
+                  queue='selenium')
+def process_user_followups(self, user_id: int, max_per_run: int = 20):
+    """Send this user's due DM follow-ups: skip (and stop the sequence) anyone who has replied,
+    otherwise render the next-step template in the user's voice, send it, mark it sent, and
+    schedule the following step."""
+    due = [f for f in get_due_followups(datetime.now()) if f["user_id"] == user_id]
+    if not due:
+        return "No due follow-ups"
+    try:
+        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Follow-ups")
+    except Exception as e:
+        log_error("Error getting profile for follow-ups", exc=e, user_id=user_id, task_name="process_user_followups")
+        return f"Failed to start follow-ups: {e}"
+    sent = 0
+    try:
+        for f in due[:max_per_run]:
+            if check_dm_replied(driver, wait, f["profile_url"], my_name=getattr(my_profile, "full_name", None)):
+                stop_followups_for_profile(user_id, f["profile_url"])
+                mark_followup(f["id"], "stopped")
+                continue
+            msg = build_dm_from_template(user_id, f["event_type"], f["first_name"], my_profile, step=f["next_step"])
+            if not msg:
+                mark_followup(f["id"], "stopped")
+                continue
+            send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": f["profile_url"], "message": msg})
+            insert_new_log(user_id=user_id, action_type=LogActionType.FOLLOWUP, result=LogResultType.SUCCESS,
+                           post_url=f["profile_url"], message=msg)
+            mark_followup(f["id"], "sent")
+            sent += 1
+            enqueue_next_followup(user_id, f["profile_url"], f["first_name"], f["event_type"], f["next_step"])
+            time.sleep(random.uniform(5, 12))
+    finally:
+        quit_gracefully(driver)
+    return f"Sent {sent} follow-up(s)"
+
+
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
                   reject_on_worker_lost=True, rate_limit='2/m', queue='selenium')
 def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: int = None, future_forward: int = 60):
@@ -912,6 +999,7 @@ def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: in
             message = build_dm_from_template(user_id, "connection_accepted", first_name, my_profile)
             if message:
                 send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": profile_url, "message": message})
+                enqueue_next_followup(user_id, profile_url, first_name, "connection_accepted", 0)
 
         # After Receiving a Recommendation — thank the recommender
         recommendations_received = get_recent_recommendations(driver, wait)
@@ -920,6 +1008,7 @@ def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: in
             message = build_dm_from_template(user_id, "recommendation_received", first_name, my_profile)
             if message:
                 send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": profile_url, "message": message})
+                enqueue_next_followup(user_id, profile_url, first_name, "recommendation_received", 0)
 
         # After a Successful Collaboration — express gratitude and offer to connect further
         recent_collaborators = get_recent_collaborators(driver, wait)
@@ -928,6 +1017,7 @@ def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: in
             message = build_dm_from_template(user_id, "collaboration", first_name, my_profile)
             if message:
                 send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": profile_url, "message": message})
+                enqueue_next_followup(user_id, profile_url, first_name, "collaboration", 0)
 
         # Re-schedule the task in the queue for the future
         if loop_for_duration:
@@ -1284,6 +1374,7 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
                                       'profile_url': profile_url_str,
                                       'message': message}
                             send_private_dm.apply_async(kwargs=kwargs)
+                            enqueue_next_followup(acting_user_id, profile_url_str, first_name, "profile_viewer", 0)
                             result = f"Profile Viewer Engagement Completed. Sent DM to {viewer_name}"
                             engagement_successful = True
                         else:
