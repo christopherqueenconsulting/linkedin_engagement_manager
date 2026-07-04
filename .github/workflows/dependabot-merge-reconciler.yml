@@ -23,8 +23,9 @@ jobs:
     steps:
       - name: Enqueue mergeable Dependabot PRs
         env:
-          # PAT recommended (see dependabot-auto-merge.yml); falls back to GITHUB_TOKEN.
-          GH_TOKEN: ${{ secrets.DEPENDABOT_MERGE_TOKEN || secrets.GITHUB_TOKEN }}
+          # Runs in the Actions context, so it reads GHCR_PAT (contents+PR write) directly —
+          # no Dependabot-store copy needed. Falls back to GITHUB_TOKEN if unset.
+          GH_TOKEN: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
