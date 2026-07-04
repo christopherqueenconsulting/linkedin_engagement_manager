@@ -49,15 +49,9 @@ model_list:
       api_key: os.environ/OPENAI_API_KEY
 
   # ── COMPLEX tier: long-form, high-quality content ────────────────────────────
-  - model_name: lem-complex
-    litellm_params:
-      model: openai/kimi-k2:1t
-      api_base: os.environ/OLLAMA_CLOUD_URL
-      api_key: os.environ/OLLAMA_CLOUD_API_KEY
-      max_parallel_requests: 4
-      request_timeout: 300
-      rpm: 30
-
+  # NOTE: openai/kimi-k2:1t was RETIRED 2026-06-16 (returns 410) and was removed — it was
+  # the primary here, so content generation fell through to the OpenAI/Anthropic fallbacks,
+  # which fail when those keys aren't set. qwen3.5:397b (OLLAMA) is now primary.
   - model_name: lem-complex
     litellm_params:
       model: openai/qwen3.5:397b

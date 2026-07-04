@@ -456,7 +456,6 @@ def regenerate_post_video_task(post_id: int):
     return regenerate_video_for_post(post_id)
 
 
-@shared_task.task
 def _carousel_slides_are_real_images(slides) -> bool:
     """True if carousel slides reference real images (URLs/paths), not plain text titles."""
     if not slides:
@@ -465,6 +464,7 @@ def _carousel_slides_are_real_images(slides) -> bool:
     return any(marker in blob for marker in ("http", "/assets", ".png", ".jpg"))
 
 
+@shared_task.task
 def regenerate_post_carousel_task(post_id: int):
     """Regenerate a carousel post's slide images (used by the asset-backfill safety net).
 
