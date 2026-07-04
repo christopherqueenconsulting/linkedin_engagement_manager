@@ -2,7 +2,14 @@
 
 ## Project Overview
 
-LinkedIn Engagement Manager (LEM) automates LinkedIn engagement: Selenium-based scraping, AI-generated content (via LiteLLM proxy routing to OpenAI / Claude / Ollama / OpenRouter), Celery task queue, React SPA frontend, MySQL persistence, and FastAPI backend.
+LinkedIn Engagement Manager (LEM) automates LinkedIn engagement end to end: Selenium-based scraping and feed interaction, AI-generated content (via LiteLLM proxy routing to OpenAI / Claude / Ollama / OpenRouter), Celery task queue, React SPA frontend, MySQL persistence, and FastAPI backend.
+
+Two pillars:
+
+- **Content generation & scheduling** — a 30-day content plan of buyer-journey-staged posts (thought leadership, industry-news commentary, personal story, engagement prompts, carousels, native video, blog summaries) auto-scheduled around peak/golden hours, with sentiment checks and a preview/approval workflow.
+- **Engagement automation** — feed commenting, replies on the user's own posts, seed-and-pin first comments, appreciation/outreach DMs with multi-touch follow-ups, and monthly company-page invitations — all driven by per-user targeting, voice/tone, and per-day cap preferences.
+
+See **Feature Areas** below for the code paths behind each capability.
 
 ## Tech Stack
 
@@ -23,20 +30,34 @@ LinkedIn Engagement Manager (LEM) automates LinkedIn engagement: Selenium-based 
 
 ```
 src/cqc_lem/
-├── api/           FastAPI app (main.py, routers)
-├── app/           Celery tasks (run_scheduler.py, run_automation.py, my_celery.py)
+├── api/           FastAPI app (main.py, routers) — engagement_preferences, DM template, PIN endpoints
+├── app/           Celery tasks
+│   ├── run_scheduler.py     post scheduling around golden/peak hours
+│   ├── run_automation.py    feed commenting, replies, seed/pin, DMs + follow-ups
+│   ├── run_content_plan.py  30-day buyer-journey content plan
+│   ├── generate_variants.py media variant generation
+│   └── my_celery.py         Celery app + beat schedule
 ├── utilities/
 │   ├── ai/        LiteLLM-backed AI helpers (ai_helper.py, client.py)
-│   ├── linkedin/  Selenium automation (scrapper.py, poster.py, commenter.py)
+│   ├── linkedin/  Selenium automation
+│   │   ├── scrapper.py            profile/feed scraping
+│   │   ├── poster.py              publishing posts/carousels/video
+│   │   ├── company_page_inviter.py  monthly company-page invites
+│   │   ├── verification_pin.py    email-PIN LinkedIn verification flow
+│   │   ├── rate_limit.py          429/auth-wall backoff
+│   │   └── helper.py, profile.py, token_refresh.py
 │   ├── db.py      All database access (no raw SQL outside this file)
+│   ├── proxy.py   Per-user static residential proxy resolution
+│   ├── geocoding.py  Login Location city/state geocoding
 │   ├── logger.py  Structured logger — log_info/log_error/etc. preferred over myprint()
-│   └── selenium_util.py  get_docker_driver() — always use this for WebDriver
-├── ui/            React SPA (src/, dist/ is built output)
+│   └── selenium_util.py  get_docker_driver() + MV3 proxy-auth extension builder
+├── ui/            React SPA (src/, dist/ is built output) — Account.tsx holds engagement prefs
 └── aws/           AWS CDK stacks
 tests/
 ├── unit/          Fast tests — mock all I/O
 ├── integration/   Require MySQL + Redis service containers
 └── e2e/           Require selenium/standalone-chrome
+compose/local/database/migrations/  Flyway migrations (through V39)
 .litellm/
 ├── config.yaml    LiteLLM model aliases and routing config
 └── complexity_router.py  Pre-call hook for lem-router model
@@ -103,6 +124,31 @@ Always use `get_docker_driver()` from `selenium_util.py`. It connects to `seleni
 
 Use `click_element_wait_retry()` for all click interactions — it handles transient DOM timing issues.
 
+## Feature Areas
+
+### Content generation & scheduling (`app/run_content_plan.py`, `app/run_scheduler.py`, `utilities/ai/ai_helper.py`)
+- AI content by buyer-journey stage (awareness / consideration / decision): thought-leadership, industry-news commentary, personal-story, engagement-prompt posts, carousels (educational / case-study / product-demo / insights), native video, and blog summaries.
+- 30-day content plan with balanced post-type distribution; auto-scheduling around golden/peak hours.
+- Self-healing carousels (stale/errored carousels re-generated into branded slides) and asset backfill.
+- `PostType` is `text` / `carousel` / `video`; `PostStatus` includes `error` for generation/posting failures needing manual fix.
+
+### Engagement automation (`app/run_automation.py`)
+- **Feed commenting** rebuilt for LinkedIn's SDUI: resilient `find_first`/`click_first`/`find_all_first` selectors (`utilities/linkedin/helper.py`); inline compose + submit; **recency-dominant scoring matrix** (`_score_feed_post` = recency + relevance + reciprocity + activity) with post-age (`_post_age_minutes`) and social-count (`_post_social_counts`) extraction, best-effort "Recent" feed sort (`_switch_feed_to_recent`); targeting filters + per-day caps + voice/tone. Runs pre-post (≈15 min before each scheduled post) and daily at a golden hour.
+- **Replies** to comments on the user's own posts (`automate_reply_commenting`); **seed + pin a first comment** on own posts (`auto_seed_comment_on_post` → `_pin_own_comment`).
+- **Reciprocity tracking** via the `post_engagers` table — boosts commenting back on people who engaged with us (`get_recent_engagers`).
+- **DMs**: appreciation (connection / recommendation / collaboration), profile-viewer outreach, and **multi-touch follow-up sequences** — all templated and voice-aligned (`build_dm_from_template`, `dm_templates`, `dm_followups`, `process_user_followups`).
+- Monthly **company-page invitations** (`utilities/linkedin/company_page_inviter.py`).
+
+### Engagement configuration (`engagement_preferences` table, API in `api/main.py`, SPA in `ui/.../Account.tsx`)
+- Targeting: include/exclude topics/keywords/authors, `min_reactions`, `max_post_age_hours`, plus LLM topic-relevance scoring.
+- Voice: tone, `comment_length` (short/medium/long; default short), style, emoji/hashtag toggles.
+- Caps: `max_comments_per_day`, `max_dms_per_day`; DM template editor with follow-up steps; Login Location (city/state geocoding via `utilities/geocoding.py`, with admin override).
+
+### Anti-bot / session infra
+- Per-user static residential proxy (`utilities/proxy.py`) + an in-memory **MV3 proxy-auth extension** (`selenium_util.py`, MV2 background pages are disabled in current Chrome).
+- Cookie persistence and an email-PIN LinkedIn verification flow (`utilities/linkedin/verification_pin.py`).
+- 429 / auth-wall backoff and resilience (`utilities/linkedin/rate_limit.py`).
+
 ## Testing Standards
 
 - All new/modified code: ≥80% patch coverage enforced by Codecov.
@@ -140,3 +186,7 @@ Before merging any PR, all of the following must pass:
 - `run_scheduler.py:22` previously had a `raise ValueError("This is a test error")` — this was removed in M3.
 - PostHog replaces Prometheus + Jaeger (both removed from docker-compose).
 - `linkedin-preview` service (external) was removed — preview is now the native `LinkedInPostPreview.tsx` component.
+- **LinkedIn SDUI:** the old `urn:`, `feed-shared-*`, and `comments-comment-*` DOM anchors are gone. Prefer `data-testid` / `aria-label` selectors via `find_first`/`click_first`. The comment composer has NO `<form>` — "submit" means clicking the Comment/Post button next to the composer (`_composer_submitted`), and the comment overflow "…" menu is hover-hidden.
+- **Emoji in Selenium:** ChromeDriver `send_keys` throws on non-BMP emoji — strip them before typing with `_strip_non_bmp()`.
+- **ENUM columns:** `logs.action_type` (and other status columns) are MySQL ENUMs. Adding a new value requires a migration — e.g. V37 added `'followup'` to `logs.action_type`. Migrations live in `compose/local/database/migrations/` and currently run through **V39** (V38 added recency prefs, V39 added the `post_engagers` table).
+- **Proxy auth:** proxies are authenticated by the runtime MV3 extension (`_build_proxy_auth_extension_b64`), not by URL-embedded credentials — MV2 background pages that used to do this are disabled in Chrome 149+.

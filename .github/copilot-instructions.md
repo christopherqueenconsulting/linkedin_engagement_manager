@@ -4,6 +4,8 @@
 
 LinkedIn Engagement Manager (LEM) automates LinkedIn engagement: Selenium-based scraping, AI-generated content (via LiteLLM proxy routing to OpenAI / Claude / Ollama / OpenRouter), Celery task queue, React SPA frontend, MySQL persistence, and FastAPI backend.
 
+Two pillars: (1) **content generation & scheduling** — a 30-day buyer-journey content plan (thought leadership, industry-news commentary, personal story, engagement prompts, carousels, native video, blog summaries) auto-scheduled around peak hours with sentiment checks and a preview/approval workflow; (2) **engagement automation** — SDUI-resilient feed commenting with a recency-dominant scoring matrix, replies + seed/pin on own posts, reciprocity tracking, appreciation/outreach DMs with multi-touch follow-ups, and monthly company-page invites. All shaped by per-user targeting, voice/tone, and per-day caps (`engagement_preferences`). Code paths: `app/run_content_plan.py`, `app/run_scheduler.py`, `app/run_automation.py`, `utilities/ai/ai_helper.py`.
+
 ## Tech Stack
 
 | Layer | Technology |
@@ -24,7 +26,7 @@ LinkedIn Engagement Manager (LEM) automates LinkedIn engagement: Selenium-based 
 ```
 src/cqc_lem/
 ├── api/           FastAPI app (main.py, routers)
-├── app/           Celery tasks (run_scheduler.py, run_automation.py, my_celery.py)
+├── app/           Celery tasks (run_scheduler.py, run_automation.py, run_content_plan.py, my_celery.py)
 ├── utilities/
 │   ├── ai/        LiteLLM-backed AI helpers (ai_helper.py, client.py)
 │   ├── linkedin/  Selenium automation (scrapper.py, poster.py, commenter.py)
@@ -105,6 +107,12 @@ response = client.chat.completions.create(model="lem-simple", messages=[...])
 ## Selenium Pattern
 
 Always use `get_docker_driver()` from `selenium_util.py`. Connect to `selenium-chrome:4444`. Never instantiate `webdriver.Chrome()` directly. Use `click_element_wait_retry()` for all clicks.
+
+**LinkedIn SDUI gotchas:**
+- Old `urn:` / `feed-shared-*` / `comments-comment-*` DOM anchors are gone — prefer `data-testid` / `aria-label` via `find_first`/`click_first`. The comment composer has NO `<form>`; submit = the Comment/Post button next to it.
+- ChromeDriver `send_keys` throws on non-BMP emoji — strip with `_strip_non_bmp()` before typing.
+- Proxies authenticate via a runtime MV3 extension (`_build_proxy_auth_extension_b64`), not URL credentials.
+- `logs.action_type` and other status columns are MySQL ENUMs — add values via a Flyway migration (`compose/local/database/migrations/`, currently through V39; V37 added `'followup'`).
 
 ## Testing Standards
 
