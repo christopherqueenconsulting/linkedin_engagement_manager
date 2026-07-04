@@ -223,6 +223,27 @@ def generate_group_post(profile: "LinkedInProfile", group_name: str = None, pref
     return content.strip() if content is not None else None
 
 
+def generate_thread_reply(post_content: str, comment_text: str, profile: "LinkedInProfile",
+                          prefs: dict = None) -> "str | None":
+    """Reply to a commenter on the AUTHOR's own post so the thread KEEPS GOING: acknowledge their
+    specific point, add one useful thought, and END with a genuine, easy follow-up question directed
+    back to them. First-hour thread depth is the top 2026 reach signal. Short."""
+    system_prompt = {
+        "role": "system",
+        "content": """You are the post AUTHOR replying to a comment on YOUR OWN post. Keep the
+        conversation going: briefly acknowledge their SPECIFIC point, add ONE useful thought, and END
+        with a genuine, easy-to-answer follow-up question directed back to THEM. Warm, human, in the
+        author's voice, 1–3 sentences. No links, no hashtags, no generic 'thanks for sharing'.""",
+    }
+    user_prompt = {"role": "user", "content":
+        f"Author profile:\n{profile.model_dump_json()}\n\nMy post:\n{post_content}\n\n"
+        f"Their comment:\n{comment_text}\n{_style_directive(prefs)}"}
+    response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt],
+                         temperature=round(random.uniform(0.5, 0.7), 2))
+    content = response.choices[0].message.content
+    return content.strip() if content is not None else None
+
+
 def optimize_post_hook(post_content: str, prefs: dict = None) -> str:
     """Rewrite a generated post so it opens with a scroll-stopping hook within the first ~210
     characters (before LinkedIn's '…more' fold) and, when the topic fits, frames it as save-worthy

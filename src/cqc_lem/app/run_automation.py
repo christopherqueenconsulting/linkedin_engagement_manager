@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 from celery_once import QueueOnce
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.utilities.ai.ai_helper import generate_ai_response, get_ai_message_refinement, summarize_recent_activity, \
-    ai_check_message_history, post_is_relevant, generate_group_post
+    ai_check_message_history, post_is_relevant, generate_group_post, generate_thread_reply
 from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, insert_new_log, LogActionType, \
     get_engagement_preferences, count_comments_today, get_recent_engagers, upsert_engager, \
@@ -1085,7 +1085,10 @@ def automate_reply_commenting(self, user_id: int, post_id: int, loop_for_duratio
                     myprint(f"We already replied to this comment: {short_comment_text}...")
                     continue
                 myprint(f"Responding to this comment: {short_comment_text}...")
-                response = generate_ai_response(post_message, my_profile, post_comment=comment_text)
+                # Thread-builder: reply in a way that ends with a follow-up question so the commenter
+                # replies again — first-hour thread depth is the top 2026 reach signal.
+                response = generate_thread_reply(post_message, comment_text, my_profile,
+                                                 prefs=get_engagement_preferences(user_id))
                 myprint(f"AI Generated Response to Comment: {response}")
                 if response and _reply_to_comment_inline(driver, wait, comment, response, user_id=user_id):
                     insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.REPLY,

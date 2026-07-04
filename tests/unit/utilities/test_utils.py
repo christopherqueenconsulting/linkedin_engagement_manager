@@ -37,21 +37,21 @@ class TestGetBestPostingTimes:
         for t in get_best_posting_times().values():
             assert isinstance(t, datetime.time)
 
-    def test_monday_is_14_00(self):
+    def test_monday_is_16_00(self):
         from cqc_lem.utilities.utils import get_best_posting_times
-        assert get_best_posting_times()[0] == datetime.time(14, 0)
+        assert get_best_posting_times()[0] == datetime.time(16, 0)  # 2026 afternoon-peak model
 
 
 class TestGetBestPostingTime:
-    def test_monday_returns_14_00(self):
+    def test_monday_returns_16_00(self):
         from cqc_lem.utilities.utils import get_best_posting_time
         monday = datetime.date(2024, 1, 1)  # weekday() == 0
-        assert get_best_posting_time(monday) == datetime.time(14, 0)
+        assert get_best_posting_time(monday) == datetime.time(16, 0)
 
-    def test_tuesday_returns_09_00(self):
+    def test_wednesday_returns_16_00(self):
         from cqc_lem.utilities.utils import get_best_posting_time
-        tuesday = datetime.date(2024, 1, 2)  # weekday() == 1
-        assert get_best_posting_time(tuesday) == datetime.time(9, 0)
+        wednesday = datetime.date(2024, 1, 3)  # weekday() == 2 (peak day)
+        assert get_best_posting_time(wednesday) == datetime.time(16, 0)
 
     def test_all_weekdays_return_time(self):
         from cqc_lem.utilities.utils import get_best_posting_time
