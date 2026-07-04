@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.19.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.18.0...v0.19.0) (2026-07-04)
+
+
+### Features
+
+* **dm:** configurable voice-aligned DM templates (4b) ([5402f26](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5402f266a881baaee46d40101035074105261bd8))
+* **dm:** configurable, voice-aligned DM templates (replaces hard-coded messages) ([3ae21a5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3ae21a5d42598370e388223d6339d82e86c9ef88))
+* **dm:** multi-touch DM follow-up sequences ([09e019c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/09e019cdfa7bf0c912305a3880f98527a0c91687))
+* **dm:** multi-touch DM follow-up sequences (4c) ([7feec98](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7feec988d3b82a1c84ef03a32dd0e9d84b6293b5))
+* **engagement:** configurable targeting + voice/tone (4a) ([a14ff00](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a14ff0063d3e0619e80abfb687cc8b5c8c14267a))
+* **engagement:** configurable targeting + voice/tone (engagement preferences) ([ccc6200](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ccc62003690dc30bb09245c62d31fa1d2920d775))
+* **location:** city/state login-location picker + admin override ([7fc2a0d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7fc2a0d91c7e7d4c762b72eed51175da14ab2a57))
+* **location:** city/state login-location picker + admin override ([5afbf72](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5afbf722a0494682baf1879951a5f13e3427af74))
+* **ui:** engagement config cards — voice/tone, targeting, DM templates ([9bf2507](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9bf250745c6898fb81a4ae609409e5fa0a48dea2))
+* **ui:** engagement config cards (voice, targeting, DM templates) ([ed2fa8e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ed2fa8e0a266957d82ea40f88e6f55932a605c68))
+
+
+### Bug Fixes
+
+* **dm:** reply-detection uses message-group sender, not a nonexistent class marker ([046e564](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/046e56451a561bae40a0c9e7de237fdfc7efa804))
+* **login:** derive PIN Reply-To domain from configured env, not example.com ([6af92b4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6af92b4a3805a34f1073dcd65caf5a82b5798479))
+* **login:** derive PIN Reply-To domain from configured env, not example.com ([8c78efe](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8c78efe5b79f4e96e7c462a694a6430234fd956a))
+* **scraper:** extract profile name from &lt;title&gt; after LinkedIn DOM change ([2a7e201](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2a7e2016f3ef0d30e84042009be51e20e2a15208))
+* **scraper:** extract profile name from &lt;title&gt; after LinkedIn DOM change ([7aa7a89](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7aa7a8963de4e9d582afaab6aa967236612dab7e))
+* **scraper:** rebuild feed commenting for LinkedIn's SDUI redesign ([9318e45](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9318e45e62e8e3c6a4ea3beb1f2caf7e06faf84c))
+* **scraper:** rebuild feed commenting for LinkedIn's SDUI redesign ([79eb92b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/79eb92b580cd5fe25cfc290af9339a2368487029))
+* **scraper:** rebuild reply-to-comments flow for LinkedIn's SDUI redesign ([8e11bb8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8e11bb87a31b35abfe571f85315389651d3bac0c))
+* **scraper:** rebuild reply-to-comments flow for SDUI ([765a722](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/765a722c1e2581eaf2fff6cc217b9371aec7d29d))
+
+
+### Documentation
+
+* clarify SendGrid Inbound Parse "raw MIME" must be UNCHECKED ([d9dfbf9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d9dfbf92765a82cdc6367f4dcf9b8039ef15f775))
+* clarify SendGrid Inbound Parse raw-MIME must be unchecked ([351c5e4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/351c5e4c1c1ef777bc5fd10110456ddd1c6b8398))
+
 ## [0.18.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.17.3...v0.18.0) (2026-07-01)
 
 
