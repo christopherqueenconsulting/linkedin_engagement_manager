@@ -2132,6 +2132,30 @@ def has_scheduled_post_today(user_id: int) -> bool:
         connection.close()
 
 
+def upsert_engager(user_id: int, engager_name: str, engager_profile_url: str = None) -> bool:
+    """Record that `engager_name` engaged with the user's post (or refresh their last-engaged
+    time). No-op on a blank name or if the table isn't present yet."""
+    if not engager_name or not engager_name.strip():
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO post_engagers (user_id, engager_name, engager_profile_url, last_engaged_at) "
+            "VALUES (%s,%s,%s,NOW()) ON DUPLICATE KEY UPDATE "
+            "engager_profile_url=COALESCE(VALUES(engager_profile_url), engager_profile_url), "
+            "last_engaged_at=NOW()",
+            (user_id, engager_name.strip()[:255], (engager_profile_url or None)))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not upsert engager for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_recent_engagers(user_id: int, days: int = 14) -> set:
     """Lowercased names of people who recently commented on the user's OWN posts — reciprocity
     targets to prioritize commenting back on. Empty set if the tracking table isn't present yet."""
