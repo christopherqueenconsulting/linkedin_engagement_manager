@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.22.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.21.0...v0.22.0) (2026-07-04)
+
+
+### Features
+
+* **newsletter:** LinkedIn newsletter engine (P1 of growth roadmap) ([627305a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/627305a2a853cd9d536c47284eded41bc3971e3b))
+* **newsletter:** LinkedIn newsletter engine (roadmap P1) ([cbea5a1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/cbea5a1b799de54e12f4b46b95b91c5f910c6362))
+
 ## [0.21.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.20.0...v0.21.0) (2026-07-04)
 
 
