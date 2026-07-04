@@ -12,8 +12,8 @@ packages = [
 python = ">=3.12,<4.0"
 
 # --- Web / API ---
-fastapi = ">=0.115.4,<0.139.0"
-uvicorn = ">=0.32,<0.50"
+fastapi = ">=0.115.4,<0.140.0"
+uvicorn = ">=0.32,<0.51"
 pydantic-extra-types = "^2.10.0"
 python-dotenv = "^1.0"
 python-multipart = ">=0.0.9,<1.0"
