@@ -2001,7 +2001,7 @@ def update_user_preferences(
 
 
 _ENGAGEMENT_DEFAULTS: dict = {
-    "tone": None, "comment_length": "medium", "comment_style": None,
+    "tone": None, "comment_length": "short", "comment_style": None,
     "use_emojis": True, "use_hashtags": False,
     "include_topics": [], "exclude_topics": [], "include_keywords": [], "exclude_keywords": [],
     "include_authors": [], "exclude_authors": [], "post_types": [],

@@ -16,7 +16,7 @@ class TestStyleDirective:
     def test_emojis_and_hashtags_allowed(self):
         from cqc_lem.utilities.ai.ai_helper import _style_directive
         d = _style_directive({"comment_length": "long", "use_emojis": True, "use_hashtags": True})
-        assert "tasteful emojis" in d and "hashtags are okay" in d.lower()
+        assert "tasteful emoji" in d and "hashtags are okay" in d.lower()
 
     def test_empty_without_prefs(self):
         from cqc_lem.utilities.ai.ai_helper import _style_directive

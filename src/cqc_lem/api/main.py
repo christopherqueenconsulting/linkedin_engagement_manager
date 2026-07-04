@@ -260,7 +260,7 @@ class UserPreferencesRequest(BaseModel):
 class EngagementPreferencesRequest(BaseModel):
     session_token: str
     tone: Optional[str] = None
-    comment_length: str = "medium"
+    comment_length: str = "short"
     comment_style: Optional[str] = None
     use_emojis: bool = True
     use_hashtags: bool = False
