@@ -92,6 +92,10 @@ app.conf.update(
             'task': 'cqc_lem.app.run_scheduler.auto_daily_engagement',
             'schedule': crontab(hour='13', minute='0')  # Daily peak-hour feed commenting (~9am ET), on top of pre-post
         },
+        'publish-due-newsletters': {
+            'task': 'cqc_lem.app.run_scheduler.auto_publish_due_newsletters',
+            'schedule': crontab(hour='12', minute='30')  # Daily check; publishes editions whose cadence is due
+        },
         'clen-up-stale-profiles': {
             'task': 'cqc_lem.app.run_scheduler.auto_clean_stale_profiles',
             'schedule': crontab(hour='3', minute='0', )  # Run every day at 3:00 AM

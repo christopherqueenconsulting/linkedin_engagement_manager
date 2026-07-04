@@ -2174,6 +2174,99 @@ def get_recent_engagers(user_id: int, days: int = 14) -> set:
         connection.close()
 
 
+_NEWSLETTER_DEFAULTS: dict = {
+    "enabled": False, "title": None, "topic": None, "cadence": "weekly",
+    "align_with_blog": True, "newsletter_url": None, "last_published_at": None,
+}
+_NEWSLETTER_COLS = ("enabled", "title", "topic", "cadence", "align_with_blog", "newsletter_url")
+
+
+def get_newsletter_settings(user_id: int) -> dict:
+    """Return the user's newsletter config with defaults (disabled) when no row exists."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT enabled, title, topic, cadence, align_with_blog, newsletter_url, last_published_at "
+            "FROM newsletter_settings WHERE user_id = %s", (user_id,))
+        row = cursor.fetchone()
+        if row is None:
+            return dict(_NEWSLETTER_DEFAULTS)
+        row["enabled"] = bool(row.get("enabled"))
+        row["align_with_blog"] = bool(row.get("align_with_blog"))
+        return row
+    except mysql.connector.Error as err:
+        myprint(f"Could not get newsletter settings for user {user_id} | Error: {err}")
+        return dict(_NEWSLETTER_DEFAULTS)
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_newsletter_settings(user_id: int, settings: dict) -> bool:
+    """Upsert the user's newsletter config (title/topic/cadence/enabled/align_with_blog)."""
+    merged = {**_NEWSLETTER_DEFAULTS, **{k: v for k, v in settings.items() if k in _NEWSLETTER_COLS}}
+    values = [user_id] + [
+        (1 if merged[c] else 0) if c in ("enabled", "align_with_blog") else merged[c]
+        for c in _NEWSLETTER_COLS]
+    placeholders = ", ".join(["%s"] * (len(_NEWSLETTER_COLS) + 1))
+    updates = ", ".join(f"{c}=VALUES({c})" for c in _NEWSLETTER_COLS)
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            f"INSERT INTO newsletter_settings (user_id, {', '.join(_NEWSLETTER_COLS)}) "
+            f"VALUES ({placeholders}) ON DUPLICATE KEY UPDATE {updates}", values)
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not update newsletter settings for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def mark_newsletter_published(user_id: int, newsletter_url: str = None) -> bool:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        if newsletter_url:
+            cursor.execute("UPDATE newsletter_settings SET last_published_at=NOW(), newsletter_url=%s "
+                           "WHERE user_id=%s", (newsletter_url, user_id))
+        else:
+            cursor.execute("UPDATE newsletter_settings SET last_published_at=NOW() WHERE user_id=%s", (user_id,))
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not mark newsletter published for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_newsletter_due_user_ids(now) -> list:
+    """User IDs whose newsletter is enabled and due per its cadence (weekly/biweekly/monthly)."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT user_id FROM newsletter_settings WHERE enabled=1 AND ("
+            "last_published_at IS NULL "
+            "OR (cadence='weekly'   AND last_published_at <= %s - INTERVAL 7 DAY) "
+            "OR (cadence='biweekly' AND last_published_at <= %s - INTERVAL 14 DAY) "
+            "OR (cadence='monthly'  AND last_published_at <= %s - INTERVAL 1 MONTH))",
+            (now, now, now))
+        return [r[0] for r in cursor.fetchall()]
+    except mysql.connector.Error as err:
+        myprint(f"Could not get newsletter-due users | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
 # Default DM templates = today's hard-coded strings, so behaviour is unchanged until a user
 # customizes. {first_name},{headline},{blog_url} are filled at send time.
 _DM_DEFAULT_TEMPLATES = {

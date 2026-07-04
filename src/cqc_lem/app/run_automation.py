@@ -14,10 +14,11 @@ from urllib.parse import urlparse
 from celery_once import QueueOnce
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.utilities.ai.ai_helper import generate_ai_response, get_ai_message_refinement, summarize_recent_activity, \
-    ai_check_message_history, post_is_relevant
+    ai_check_message_history, post_is_relevant, generate_newsletter_edition
 from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, insert_new_log, LogActionType, \
     get_engagement_preferences, count_comments_today, get_recent_engagers, upsert_engager, \
+    get_newsletter_settings, mark_newsletter_published, \
     LogResultType, has_user_commented_on_post_url, get_post_url_from_log_for_user, get_post_message_from_log_for_user, \
     has_engaged_url_with_x_days, get_post_content, get_post_video_url, update_db_post_status, PostStatus, PostType, \
     get_dm_history_for_profile, get_post_status, get_user_blog_url, get_post_type, get_carousel_slides, \
@@ -794,6 +795,69 @@ def _comment_items_from_thread(driver):
         if item is not None:
             items.append(item)
     return items
+
+
+def _fill_and_publish_article(driver, wait, title: str, body: str) -> "str | None":
+    """Fill LinkedIn's article editor (title textarea + contenteditable body) and run the
+    Next → Publish flow. Returns the published article URL, or None. Best-effort — the multi-step
+    publish dialog varies, so this is validated on a supervised first real run."""
+    title_el = find_first(driver, wait, [(By.CSS_SELECTOR, "textarea[placeholder='Title']")],
+                          "Article title", required=False)
+    body_el = find_first(driver, wait, [(By.CSS_SELECTOR, "div[role='textbox'][aria-label*='Article editor']"),
+                                        (By.CSS_SELECTOR, "div[role='textbox']")],
+                         "Article body", visible_only=True, required=False)
+    if title_el is None or body_el is None:
+        return None
+    title_el.click()
+    title_el.send_keys(_strip_non_bmp(title))
+    time.sleep(random.uniform(1, 2))
+    body_el.click()
+    body_el.send_keys(_strip_non_bmp(body))
+    time.sleep(random.uniform(2, 3))
+    if click_first(driver, wait, [(By.XPATH, "//button[normalize-space()='Next']")],
+                   "Article Next", required=False) is None:
+        return None
+    time.sleep(random.uniform(2, 4))
+    if click_first(driver, wait, [(By.XPATH, "//button[normalize-space()='Publish']")],
+                   "Article Publish", required=False) is None:
+        return None
+    time.sleep(random.uniform(4, 7))
+    return driver.current_url
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
+                  queue='selenium')
+def auto_publish_newsletter_edition(self, user_id: int):
+    """Generate and publish a newsletter edition for the user (opt-in via newsletter_settings).
+    Best-effort — the article publish flow is multi-step; the first real publish should be
+    supervised. Repurposes the user's blog when align_with_blog is set."""
+    settings = get_newsletter_settings(user_id)
+    if not settings.get("enabled"):
+        return "Newsletter not enabled"
+    try:
+        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Newsletter")
+    except Exception as e:
+        log_error("Error getting profile for newsletter", exc=e, user_id=user_id, task_name="auto_publish_newsletter_edition")
+        return f"Failed to start newsletter: {e}"
+    try:
+        # TODO(blog-align): when align_with_blog, fetch recent blog/sitemap content to pass as
+        # blog_content. For now the edition is generated from topic + profile.
+        edition = generate_newsletter_edition(my_profile, topic=settings.get("topic"), blog_content=None)
+        if not edition:
+            return "No newsletter edition generated"
+        driver.get("https://www.linkedin.com/article/new/")
+        time.sleep(random.uniform(6, 9))
+        url = _fill_and_publish_article(driver, wait, edition["title"], edition["body"])
+        if url:
+            mark_newsletter_published(user_id, url)
+            myprint(f"Published newsletter edition for user {user_id}: {edition['title']}")
+            return f"Published newsletter: {edition['title']}"
+        return "Newsletter publish flow did not complete"
+    except Exception as e:
+        log_error("Newsletter publish error", exc=e, user_id=user_id, task_name="auto_publish_newsletter_edition")
+        return f"Newsletter error: {e}"
+    finally:
+        quit_gracefully(driver)
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},

@@ -205,6 +205,40 @@ def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=No
     return content.strip() if content is not None else None
 
 
+def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
+                                blog_content: str = None, prefs: dict = None) -> "dict | None":
+    """Generate one LinkedIn newsletter edition (title + body) in the author's voice, repurposing
+    the author's blog content when provided. Save-worthy, structured, native (no reliance on an
+    external link). Returns {'title','body'} or None."""
+    import json as _json
+    src = f"\n\nSource material to repurpose (from the author's blog):\n{blog_content[:4000]}" if blog_content else ""
+    topic_line = f"Topic/theme for this edition: {topic}\n" if topic else ""
+    system_prompt = {
+        "role": "system",
+        "content": """You are a LinkedIn newsletter ghostwriter for the profile user. Write ONE
+        newsletter edition that builds authority and is SAVE-WORTHY — a framework, checklist, or
+        clear how-to the reader will bookmark. Structure: a scroll-stopping title; a 1–2 line hook;
+        3–5 short sections with subheads; a concise takeaway; and a soft CTA that invites replies or
+        subscribing (NOT an external link — LinkedIn penalizes those). Native, skimmable, in the
+        author's authentic voice. Return ONLY valid JSON: {"title": "...", "body": "..."} where body
+        is the full article text with line breaks (\\n).""",
+    }
+    user_prompt = {"role": "user", "content": f"Author profile:\n{profile.model_dump_json()}\n\n{topic_line}{src}"}
+    response = _call_llm(model="lem-complex", messages=[system_prompt, user_prompt],
+                         temperature=round(random.uniform(0.5, 0.7), 2))
+    content = response.choices[0].message.content
+    if not content:
+        return None
+    try:
+        data = _json.loads(content)
+        if data.get("title") and data.get("body"):
+            return {"title": str(data["title"]).strip()[:255], "body": str(data["body"]).strip()}
+    except (ValueError, TypeError, AttributeError):
+        pass
+    parts = content.strip().split("\n", 1)   # fallback: first line = title, remainder = body
+    return {"title": parts[0].strip()[:255], "body": (parts[1].strip() if len(parts) > 1 else content.strip())}
+
+
 def post_is_relevant(post_content: str, include_topics: list) -> bool:
     """LLM relevance gate: is this post about any of the user's include_topics? Used on top of
     literal keyword matching so targeting catches topical fit beyond exact words. Fails OPEN

@@ -27,6 +27,7 @@ from cqc_lem.utilities.db import (
     get_company_linked_in_url_for_user, update_company_linked_in_url_for_user,
     get_user_subscription_info, get_user_preferences, update_user_preferences,
     get_engagement_preferences, update_engagement_preferences,
+    get_newsletter_settings, update_newsletter_settings,
     get_dm_templates, upsert_dm_templates,
     update_subscription_from_stripe, update_user_linkedin_token,
     get_users_with_stripe_subscriptions,
@@ -255,6 +256,15 @@ class UserPreferencesRequest(BaseModel):
     session_token: str
     last_login_inactivate_delay: Optional[int] = 90
     auto_schedule_posts: bool = False
+
+
+class NewsletterSettingsRequest(BaseModel):
+    session_token: str
+    enabled: bool = False
+    title: Optional[str] = None
+    topic: Optional[str] = None
+    cadence: str = "weekly"
+    align_with_blog: bool = True
 
 
 class EngagementPreferencesRequest(BaseModel):
@@ -1058,6 +1068,24 @@ def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest
     if not update_engagement_preferences(user_id, prefs):
         raise HTTPException(status_code=500, detail="Could not update engagement preferences")
     return ResponseModel(status_code=200, detail="Engagement preferences updated")
+
+
+@router.get("/user/newsletter-settings")
+def get_newsletter_settings_endpoint(session_token: str) -> ResponseModel:
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return ResponseModel(status_code=200, detail=get_newsletter_settings(user_id))
+
+
+@router.put("/user/newsletter-settings")
+def update_newsletter_settings_endpoint(request: NewsletterSettingsRequest) -> ResponseModel:
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if not update_newsletter_settings(user_id, request.model_dump(exclude={"session_token"})):
+        raise HTTPException(status_code=500, detail="Could not update newsletter settings")
+    return ResponseModel(status_code=200, detail="Newsletter settings updated")
 
 
 @router.get("/user/dm-templates")
