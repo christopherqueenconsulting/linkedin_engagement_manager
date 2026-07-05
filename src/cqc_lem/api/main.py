@@ -167,6 +167,30 @@ def _parse_slides(raw) -> Optional[List[str]]:
         return None
 
 
+def _utc_iso(dt) -> Optional[str]:
+    """Serialize a datetime as an explicit-UTC ISO string (trailing 'Z') so clients localize it
+    correctly. Stored datetimes are UTC but historically naive — assume naive means UTC. Without the
+    offset the browser parses the string as local time and every displayed value is off by its
+    UTC offset."""
+    if dt is None:
+        return None
+    if isinstance(dt, str):
+        try:
+            dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+        except ValueError:
+            return dt
+    dt = dt.replace(tzinfo=timezone.utc) if getattr(dt, "tzinfo", None) is None else dt.astimezone(timezone.utc)
+    return dt.isoformat().replace("+00:00", "Z")
+
+
+def _public_post_url(value) -> Optional[str]:
+    """Only surface real http(s) permalinks. Home-feed comments have no LinkedIn permalink and are
+    logged under a synthetic 'feedpost://<hash>' dedup key — never expose that raw string to the UI."""
+    if isinstance(value, str) and value.lower().startswith(("http://", "https://")):
+        return value
+    return None
+
+
 class PostRequest(BaseModel):
     content: str
     video_url: Optional[str] = None
@@ -470,9 +494,9 @@ def get_activity(email: str, limit: int = 20) -> ResponseModel:
             "action_type": row["action_type"],
             "result": row["result"],
             "post_id": row["post_id"],
-            "post_url": row["post_url"],
+            "post_url": _public_post_url(row["post_url"]),
             "message": row["message"],
-            "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+            "created_at": _utc_iso(row.get("created_at")),
         }
         for row in logs
     ]
@@ -653,7 +677,7 @@ def get_posts_for_email(
             "post_id": post["id"],
             "content": post["content"],
             "video_url": post["video_url"],
-            "scheduled_time": post["scheduled_time"],
+            "scheduled_time": _utc_iso(post["scheduled_time"]),
             "post_type": post["post_type"],
             "status": post["status"],
             "carousel_slides": _parse_slides(post.get("carousel_slides")),

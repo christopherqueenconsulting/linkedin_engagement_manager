@@ -1,6 +1,7 @@
-// Only http(s) values are safe to render as a clickable link. Legacy activity rows may carry a
-// synthetic dedup key (e.g. "feedpost://<hash>") as post_url — those must render as plain text.
-export function isHttpUrl(value: string | null | undefined): boolean {
+// Only http(s) values are safe to render as a clickable link. The API blanks non-http post_url
+// values (e.g. the synthetic "feedpost://<hash>" dedup key for permalink-less feed comments), so
+// this narrows post_url to a real URL string for the link branch.
+export function isHttpUrl(value: string | null | undefined): value is string {
   return typeof value === 'string' && /^https?:\/\//i.test(value)
 }
 

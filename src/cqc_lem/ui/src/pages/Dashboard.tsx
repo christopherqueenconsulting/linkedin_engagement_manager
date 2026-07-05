@@ -235,29 +235,28 @@ export default function Dashboard() {
                     {entry.message && (
                       <p className="text-xs text-gray-500 mt-0.5 line-clamp-1">{entry.message}</p>
                     )}
-                    {entry.post_url &&
-                      (isHttpUrl(entry.post_url) ? (
-                        <a
-                          href={entry.post_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-xs text-blue-500 hover:underline truncate block"
-                        >
-                          {entry.post_url}
-                        </a>
-                      ) : commentsUrl ? (
-                        <a
-                          href={commentsUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          title="View your LinkedIn comments"
-                          className="text-xs text-blue-500 hover:underline truncate block"
-                        >
-                          View your LinkedIn comments
-                        </a>
-                      ) : (
-                        <span className="text-xs text-gray-400 truncate block">{entry.post_url}</span>
-                      ))}
+                    {isHttpUrl(entry.post_url) ? (
+                      <a
+                        href={entry.post_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-blue-500 hover:underline truncate block"
+                      >
+                        {entry.post_url}
+                      </a>
+                    ) : commentsUrl && (entry.action_type === 'comment' || entry.action_type === 'reply') ? (
+                      // Feed comments/replies have no permalink (post_url is blanked server-side) —
+                      // link to the user's own LinkedIn "recent activity → comments" page instead.
+                      <a
+                        href={commentsUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title="View your LinkedIn comments"
+                        className="text-xs text-blue-500 hover:underline truncate block"
+                      >
+                        View your LinkedIn comments
+                      </a>
+                    ) : null}
                   </div>
                   <span className="text-xs text-gray-400 flex-shrink-0 whitespace-nowrap">
                     {formatInTimezone(entry.created_at, userTimezone)}
