@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.24.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.23.2...v0.24.0) (2026-07-05)
+
+
+### Features
+
+* **newsletter:** richer, best-practice editions + subtitle field ([cc87056](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/cc87056218bf5b8d4fc4029d0c2e84abbbe7bb64))
+* **newsletter:** richer, best-practice editions + subtitle field ([73cbe76](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/73cbe76f6ca936c27f6c134aa4a70054a7c4e69e))
+
+
+### Bug Fixes
+
+* **feed:** log real /feed/update/ permalinks for inline comments ([e224be7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e224be7642fb62a708bfec810b8584ffb859d819))
+* **feed:** log real /feed/update/ permalinks so activity feed links work ([212b552](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/212b552f1165880efa1fd9e70a59031882ea55d0))
+
+
+### Documentation
+
+* refresh capabilities in CLAUDE.md, README, and copilot-instructions ([0f77d26](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0f77d267c5ca490ac660e759290485a7d8aeffed))
+
 ## [0.23.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.23.1...v0.23.2) (2026-07-05)
 
 
