@@ -205,6 +205,64 @@ def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=No
     return content.strip() if content is not None else None
 
 
+# LinkedIn's reaction set, safest-first (also the random-fallback preference order). 'Funny' is
+# omitted by default — it reads poorly on most professional posts; callers can pass it via `allowed`.
+POST_REACTIONS = ["Like", "Celebrate", "Support", "Love", "Insightful"]
+
+
+def _match_reaction(text: str, options: list[str]) -> "str | None":
+    """Normalize a model's one-word answer to one of `options` (case-insensitive), else None."""
+    words = (text or "").strip().strip(".!?\"'").split()
+    if not words:
+        return None
+    pick = words[0]
+    for opt in options:
+        if opt.lower() == pick.lower():
+            return opt
+    return None
+
+
+def choose_post_reaction(post_content: str, comment_text: str = None,
+                         allowed: list[str] = None) -> str:
+    """Pick the single most fitting LinkedIn reaction for a post we just commented on.
+
+    Light + fast: one short `lem-simple` call with minimal context (a post snippet + our comment).
+    If the LiteLLM proxy fails it retries once directly against OpenAI; if that also fails it returns
+    a random choice — so a valid reaction is always returned."""
+    options = allowed or POST_REACTIONS
+    messages = [
+        {"role": "system",
+         "content": ("You pick the single best LinkedIn reaction for a post. Reply with EXACTLY one "
+                     f"word from this list and nothing else: {', '.join(options)}. Choose what a "
+                     "thoughtful professional would leave, matching the post's tone — celebratory news "
+                     "-> Celebrate, hardship or something vulnerable -> Support, a strong data point or "
+                     "lesson -> Insightful, heartfelt or personal -> Love, otherwise -> Like.")},
+        {"role": "user",
+         "content": (f"Post: {(post_content or '').strip()[:600]}\n\n"
+                     f"My comment: {(comment_text or '').strip()[:300]}\n\nReaction:")},
+    ]
+
+    try:
+        resp = _call_llm(model="lem-simple", messages=messages, temperature=0, max_tokens=3)
+        pick = _match_reaction(resp.choices[0].message.content, options)
+        if pick:
+            return pick
+    except Exception as exc:
+        log_warning("Reaction pick via LiteLLM failed; trying OpenAI fallback", exc=exc, api_provider="litellm")
+        try:
+            fallback = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            resp = fallback.chat.completions.create(
+                model=os.getenv("OPENAI_FALLBACK_MODEL", "gpt-4o-mini"),
+                messages=messages, temperature=0, max_tokens=3)
+            pick = _match_reaction(resp.choices[0].message.content, options)
+            if pick:
+                return pick
+        except Exception as exc2:
+            log_warning("Reaction pick via OpenAI fallback failed; using random", exc=exc2, api_provider="openai")
+
+    return random.choice(options)
+
+
 def _clean_newsletter_body(body: str) -> str:
     """Safety net: strip stray markdown the model may slip in (headers, bold, bullet markers) so the
     body typed via Selenium send_keys is clean — LinkedIn's article editor does NOT render markdown.
