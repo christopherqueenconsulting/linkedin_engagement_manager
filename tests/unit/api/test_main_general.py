@@ -52,15 +52,14 @@ class TestDashboardStats:
             resp = client.get(self.BASE, params={"email": "ghost@example.com"})
         assert resp.status_code == 403
 
+    _ZEROS = {"scheduled_this_week": 0, "pending_review": 0, "posted_total": 0}
+
     def test_known_user_with_no_posts_returns_zeros(self, client):
         with patch(f"{_MAIN}.get_user_id", return_value=1), \
-             patch(f"{_MAIN}.get_posts", return_value=([], 0)):
+             patch(f"{_MAIN}.get_dashboard_counts", return_value=dict(self._ZEROS)):
             resp = client.get(self.BASE, params={"email": "user@example.com"})
         assert resp.status_code == 200
-        detail = resp.json()["detail"]
-        assert detail["scheduled_this_week"] == 0
-        assert detail["pending_review"] == 0
-        assert detail["posted_total"] == 0
+        assert resp.json()["detail"] == self._ZEROS
 
     def test_start_of_month_does_not_crash(self, client):
         # Regression: week_start was computed with replace(day=day-weekday()), which
@@ -71,25 +70,23 @@ class TestDashboardStats:
                 return datetime(2026, 7, 1, tzinfo=tz)  # Wednesday the 1st
 
         with patch(f"{_MAIN}.get_user_id", return_value=1), \
-             patch(f"{_MAIN}.get_posts", return_value=([], 0)), \
+             patch(f"{_MAIN}.get_dashboard_counts", return_value=dict(self._ZEROS)), \
              patch(f"{_MAIN}.datetime", _FixedDatetime):
             resp = client.get(self.BASE, params={"email": "user@example.com"})
         assert resp.status_code == 200
 
-    def test_posted_total_counted_correctly(self, client):
-        from cqc_lem.utilities.db import PostStatus
-        posts = [
-            {"status": PostStatus.POSTED, "scheduled_time": None},
-            {"status": PostStatus.POSTED, "scheduled_time": None},
-            {"status": PostStatus.PENDING, "scheduled_time": None},
-        ]
+    def test_returns_counts_from_db_helper_over_all_posts(self, client):
+        # The endpoint now delegates to the SQL-aggregate helper (counts over ALL posts, not the
+        # 10-oldest get_posts() slice that made these stale). It passes a tz-aware Monday week_start.
+        counts = {"scheduled_this_week": 4, "pending_review": 1, "posted_total": 37}
         with patch(f"{_MAIN}.get_user_id", return_value=1), \
-             patch(f"{_MAIN}.get_posts", return_value=(posts, 3)):
+             patch(f"{_MAIN}.get_dashboard_counts", return_value=counts) as gdc:
             resp = client.get(self.BASE, params={"email": "user@example.com"})
         assert resp.status_code == 200
-        detail = resp.json()["detail"]
-        assert detail["posted_total"] == 2
-        assert detail["pending_review"] == 1
+        assert resp.json()["detail"] == counts
+        user_id_arg, week_start_arg = gdc.call_args[0][0], gdc.call_args[0][1]
+        assert user_id_arg == 1
+        assert week_start_arg.weekday() == 0 and week_start_arg.hour == 0  # Monday 00:00
 
 
 # ---------------------------------------------------------------------------

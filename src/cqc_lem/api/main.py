@@ -18,7 +18,7 @@ from celery import chain as celery_chain
 from cqc_lem.app.run_content_plan import auto_create_weekly_content, plan_content_for_user
 from cqc_lem.utilities.db import (
     insert_post, get_post_by_email, get_user_id, update_db_post, get_post_user_id,
-    add_user_with_access_token, update_user, PostType, PostStatus, get_posts,
+    add_user_with_access_token, update_user, PostType, PostStatus, get_posts, get_dashboard_counts,
     get_recent_logs, bulk_update_posts, soft_delete_posts,
     create_pin_for_email, verify_pin_for_email, delete_pin_for_email,
     create_session, get_session_user_id, delete_session,
@@ -425,26 +425,16 @@ def get_dashboard_stats(email: str) -> ResponseModel:
     if not user_id:
         raise HTTPException(status_code=403, detail="User not found")
 
-    posts, _ = get_posts(user_id)
     now = datetime.now(timezone.utc)
     week_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     # Back up to Monday. Use timedelta, not replace(day=...): naive day subtraction
     # goes out of range in the first days of a month (e.g. Wed the 1st → day=-1).
     week_start = week_start - timedelta(days=week_start.weekday())
 
-    scheduled_this_week = sum(
-        1 for p in posts
-        if p.get("status") in (PostStatus.APPROVED, PostStatus.PENDING)
-        and p.get("scheduled_time") and p["scheduled_time"] >= week_start
-    )
-    pending_review = sum(1 for p in posts if p.get("status") == PostStatus.PENDING)
-    posted_total = sum(1 for p in posts if p.get("status") == PostStatus.POSTED)
-
-    stats: Dict[str, int] = {
-        "scheduled_this_week": scheduled_this_week,
-        "pending_review": pending_review,
-        "posted_total": posted_total,
-    }
+    # SQL aggregates over ALL posts — the old code counted in Python over get_posts()'s 10-oldest
+    # slice, so 'posted' capped near 10 and 'scheduled this week' read ~0 (and a naive/aware
+    # datetime compare could 500 the endpoint → all-zeros fallback in the UI).
+    stats: Dict[str, int] = get_dashboard_counts(user_id, week_start)
     return ResponseModel(status_code=200, detail=stats)
 
 
