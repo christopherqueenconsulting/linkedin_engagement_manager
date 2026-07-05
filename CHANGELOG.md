@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.23.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.23.0...v0.23.1) (2026-07-05)
+
+
+### Bug Fixes
+
+* **dashboard:** correct stale top stats via SQL aggregates ([9eba7c2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9eba7c26c46b7ce69084e46041118e873eca6296))
+* **dashboard:** correct stale/incorrect top stats via SQL aggregates ([5439af1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5439af19dffe739eb6f557a89f5d733bef1d4f2d))
+* **engagement:** ground group + post-stats selectors from live sweep ([7548a40](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7548a40f5a854cd201422f7b4d8ba8cc86a2a8d3))
+* **engagement:** ground group + post-stats selectors from live sweep ([1d67793](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1d6779364dc85b619ca4dc365231e705eab32ae8))
+
 ## [0.23.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.22.0...v0.23.0) (2026-07-04)
 
 
