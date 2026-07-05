@@ -131,7 +131,7 @@ optional = true
 # The only dependencies that should be added are
 # dependencies used for running tests (e.g., pytest, freezegun, response).
 # Any dependencies that do not meet that criteria will be removed.
-pytest = ">=7.3,<9.0"
+pytest = ">=9.1,<10.0"
 pytest-cov = ">=4.1,<8.0"
 freezegun = "^1.2.2"
 pytest-mock = "^3.10.0"
