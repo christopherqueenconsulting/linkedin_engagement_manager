@@ -410,7 +410,10 @@ def check_commented(driver, wait, user_id: int = None, post_url: str = None):
 # feed-shared-* / comments-comment-* classes and permalink navigation are gone. Posts are now
 # anchored by stable data-testid / aria-label attributes and commenting happens INLINE on the
 # feed card (no per-post permalink). Verified live 2026-07-03.
-_FEED_POST_TEXT_SEL = "[data-testid='expandable-text-box']"
+# SDUI home feed uses data-testid='expandable-text-box'; classic Group feeds still render posts as
+# feed-shared-update-v2 with .update-components-text — include both so group commenting finds posts.
+# Content-hash dedup (_feed_post_key) covers any overlap between the two selectors on a page.
+_FEED_POST_TEXT_SEL = "[data-testid='expandable-text-box'], .feed-shared-update-v2 .update-components-text"
 
 
 def _card_for_textbox(driver, box):
@@ -441,6 +444,7 @@ _AGE_UNIT_MIN = {"s": 0, "m": 1, "h": 60, "d": 1440, "w": 10080, "mo": 43200, "y
 _AGE_TOKEN_RE = re.compile(r"^(\d+)\s?(mo|[smhdwy])", re.I)
 _COMMENTS_RE = re.compile(r"([\d,]+)\s+comments?", re.I)
 _REACTIONS_RE = re.compile(r"([\d,]+)\s+(?:reactions?|likes?)", re.I)
+_IMPRESSIONS_RE = re.compile(r"([\d,]+)\s+impressions?", re.I)
 
 
 def _post_age_minutes(driver, card) -> "int | None":
@@ -467,18 +471,20 @@ def _post_age_minutes(driver, card) -> "int | None":
 
 
 def _post_social_counts(card) -> dict:
-    """Best-effort reaction/comment counts parsed from the card's social-counts bar text. Returns
-    {reactions, comments} (0 on miss) — used only for the low-weight 'activity' scoring signal."""
+    """Best-effort reaction/comment/impression counts parsed from the card's social-counts bar text.
+    Returns {reactions, comments, impressions} (0 on miss). Impressions show only on the author's own
+    post detail page; reactions/comments feed the low-weight feed 'activity' scoring signal."""
     try:
         text = card.text or ""
     except Exception:
-        return {"reactions": 0, "comments": 0}
+        return {"reactions": 0, "comments": 0, "impressions": 0}
 
     def _num(rx):
         m = rx.search(text)
         return int(m.group(1).replace(",", "")) if m else 0
 
-    return {"reactions": _num(_REACTIONS_RE), "comments": _num(_COMMENTS_RE)}
+    return {"reactions": _num(_REACTIONS_RE), "comments": _num(_COMMENTS_RE),
+            "impressions": _num(_IMPRESSIONS_RE)}
 
 
 # Feed-post prioritization weights (tunable). Recency dominates: golden-hour posts get 4–10× the
@@ -948,8 +954,9 @@ def auto_scrape_post_stats(self, user_id: int):
                 container = driver.find_element(By.TAG_NAME, "main")
             except Exception:
                 container = None
-            counts = _post_social_counts(container) if container is not None else {"reactions": 0, "comments": 0}
-            record_post_stats(user_id, pid, counts["reactions"], counts["comments"])
+            counts = _post_social_counts(container) if container is not None else {"reactions": 0, "comments": 0, "impressions": 0}
+            record_post_stats(user_id, pid, counts["reactions"], counts["comments"],
+                              impressions=counts.get("impressions") or None)
             scraped += 1
         return f"Scraped stats for {scraped} post(s)"
     finally:
@@ -1039,7 +1046,10 @@ def auto_post_to_group(self, user_id: int, group_id: str):
         if not text.strip():
             return "No group post generated"
         # Open the group share box, type, and post (best-effort SDUI selectors).
-        if click_first(driver, wait, [(By.XPATH, "//button[contains(normalize-space(),'Start a post') or contains(@aria-label,'Start a post') or contains(@aria-label,'Create a post')]")],
+        if click_first(driver, wait, [(By.XPATH,
+                "//button[contains(normalize-space(),'Start a post') or contains(normalize-space(),'Start a public post') "
+                "or contains(@aria-label,'Start a post') or contains(@aria-label,'Create a post') "
+                "or (contains(normalize-space(),'Start a') and contains(normalize-space(),'post'))]")],
                        "Group share box", required=False) is None:
             return "Group share box not found"
         time.sleep(random.uniform(2, 3))
