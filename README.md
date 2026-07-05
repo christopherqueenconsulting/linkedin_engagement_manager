@@ -2,19 +2,33 @@
 
 ## Overview
 
-LinkedIn Engagement Manager (LEM) is an automated solution for managing engagement and post interactions on LinkedIn. This tool automates commenting, sending direct messages (DMs), responding to comments, and scheduling posts. All content (text, carousels, videos) is AI-generated via a LiteLLM proxy and passes through sentiment analysis for appropriateness. LEM includes a preview and approval system enabling manual or automated content approval before publishing.
+LinkedIn Engagement Manager (LEM) is an automated solution for managing engagement and post interactions on LinkedIn. It builds a 30-day content plan, publishes AI-generated posts (text, carousels, native video) around peak hours, and runs the day-to-day engagement — feed commenting, replies, direct messages, and follow-ups — on your behalf. All content is AI-generated via a LiteLLM proxy, passes through sentiment analysis, and can flow through a preview/approval workflow before publishing. Engagement is shaped by per-user targeting, voice/tone, and daily-cap preferences.
 
 ## Key Features
-- **Automated Engagement**: Commenting, messaging profile viewers, and replying to post comments with scheduled engagement tasks.
-- **AI-Generated Content**: LiteLLM-proxied AI services generate carousel, text, and video content with tiered model routing (`lem-simple`, `lem-medium`, `lem-complex`).
-- **Sentiment Analysis**: Ensures content is appropriate and aligned with user preferences.
-- **Approval Workflow**: Preview and approve content before publishing or allow automatic approval.
-- **Video Creation**: Generate videos from prompts using AI.
-- **Summarizing Recent Activity**: Summarize recent LinkedIn activities and craft personalized responses.
-- **Date-Time Picker for Scheduled Posts**: Edit scheduled posts with a date-time picker for easy scheduling.
-- **Dockerized Environment**: Easily deployable locally or to the cloud using Docker Compose.
-- **Modular Design**: Content generation modules can be swapped out for any SaaS services via LiteLLM aliases.
-- **React SPA Dashboard**: Mobile and web-friendly React dashboard for monitoring and controlling the engagement process.
+
+### Content generation & scheduling
+- **Buyer-journey content plan**: A balanced 30-day plan across awareness / consideration / decision stages — thought-leadership, industry-news commentary, personal-story, and engagement-prompt posts, carousels (educational / case-study / product-demo / insights), native video, and blog summaries.
+- **AI-Generated Content**: LiteLLM-proxied models generate text, carousel, and video content with tiered routing (`lem-simple`, `lem-medium`, `lem-complex`, `lem-image`).
+- **Peak-hour scheduling**: Auto-schedules posts around golden/peak hours, with self-healing carousels and media asset backfill.
+- **Sentiment Analysis & Approval Workflow**: Checks content appropriateness; preview and approve manually or let it auto-approve. Native `LinkedInPostPreview` component and a date-time picker for editing scheduled posts.
+
+### Engagement automation
+- **Feed commenting**: SDUI-resilient feed interaction with a recency-dominant scoring matrix (recency + relevance + reciprocity + activity), inline compose/submit, and best-effort "Recent" feed sort. Runs shortly before each scheduled post and daily at a golden hour.
+- **Replies, seed & pin**: Replies to comments on your own posts and auto-seeds + pins a first comment on your posts.
+- **Reciprocity**: Tracks who engaged with you and prioritizes commenting back.
+- **Direct messages**: Appreciation DMs (connections / recommendations / collaborations), profile-viewer outreach, and multi-touch follow-up sequences — all templated and voice-aligned.
+- **Company-page invitations**: Monthly automated invites.
+
+### Configuration & controls
+- **Targeting**: Include/exclude topics, keywords, and authors; minimum reactions and maximum post age; LLM topic-relevance scoring.
+- **Voice**: Tone, comment length (short/medium/long), style, and emoji/hashtag toggles.
+- **Caps**: Per-day comment and DM limits; DM template editor with follow-up steps; Login Location (city/state geocoding).
+
+### Platform
+- **Anti-bot infra**: Per-user static residential proxy with an MV3 proxy-auth extension, cookie persistence, and an email-PIN LinkedIn verification flow; 429/auth-wall backoff.
+- **Dockerized Environment**: Deployable locally or to the cloud via Docker Compose (AWS CDK for cloud).
+- **Modular Design**: Content generation providers are swappable via LiteLLM aliases.
+- **React SPA Dashboard**: Mobile- and web-friendly dashboard for monitoring and controlling engagement.
 - **Observability**: PostHog-based LLM usage tracking, Celery task metrics, and API latency monitoring.
 
 ## Tech Stack
