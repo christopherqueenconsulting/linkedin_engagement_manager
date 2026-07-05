@@ -4,6 +4,7 @@ import api from '../api/client'
 import { useAuth } from '../contexts/AuthContext'
 import { useUserTimezone } from '../hooks/useUserTimezone'
 import { formatInTimezone } from '../utils/datetime'
+import { isHttpUrl } from '../utils/links'
 
 interface PostStats {
   recommendations: { weekday: string; hour: number; avg_engagement: number; sample: number }[]
@@ -220,16 +221,19 @@ export default function Dashboard() {
                     {entry.message && (
                       <p className="text-xs text-gray-500 mt-0.5 line-clamp-1">{entry.message}</p>
                     )}
-                    {entry.post_url && (
-                      <a
-                        href={entry.post_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-xs text-blue-500 hover:underline truncate block"
-                      >
-                        {entry.post_url}
-                      </a>
-                    )}
+                    {entry.post_url &&
+                      (isHttpUrl(entry.post_url) ? (
+                        <a
+                          href={entry.post_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs text-blue-500 hover:underline truncate block"
+                        >
+                          {entry.post_url}
+                        </a>
+                      ) : (
+                        <span className="text-xs text-gray-400 truncate block">{entry.post_url}</span>
+                      ))}
                   </div>
                   <span className="text-xs text-gray-400 flex-shrink-0 whitespace-nowrap">
                     {formatInTimezone(entry.created_at, userTimezone)}
