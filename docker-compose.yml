@@ -121,6 +121,8 @@ services:
       - .env
     environment:
       - CELERY_TIMEZONE=${TZ:-UTC}
+      - SELENIUM_QUEUES=se_engage
+      - SELENIUM_CONCURRENCY=2
     depends_on:
       redis:
         condition: service_healthy
@@ -129,7 +131,75 @@ services:
       selenium-chrome:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "celery --app cqc_lem.app.my_celery inspect ping -d selenium-worker@$(hostname) -t 10 || exit 1"]
+      test: ["CMD-SHELL", "celery --app cqc_lem.app.my_celery inspect ping -d selenium-${SELENIUM_QUEUES}-worker@$(hostname) -t 10 || exit 1"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+      start_period: 60s
+
+  celery_worker_selenium_outreach:
+    image: ${DOCKER_IMAGE_NAME}
+    container_name: celery_worker_selenium_outreach
+    command: /start-celeryworker-selenium
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+        reservations:
+          cpus: '0.5'
+    volumes:
+      - ~/.aws:/home/celeryworker/.aws:ro
+    volumes_from:
+      - web_app
+    env_file:
+      - .env
+    environment:
+      - CELERY_TIMEZONE=${TZ:-UTC}
+      - SELENIUM_QUEUES=se_outreach
+      - SELENIUM_CONCURRENCY=1
+    depends_on:
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      selenium-chrome:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery --app cqc_lem.app.my_celery inspect ping -d selenium-${SELENIUM_QUEUES}-worker@$(hostname) -t 10 || exit 1"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+      start_period: 60s
+
+  celery_worker_selenium_content:
+    image: ${DOCKER_IMAGE_NAME}
+    container_name: celery_worker_selenium_content
+    command: /start-celeryworker-selenium
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+        reservations:
+          cpus: '0.5'
+    volumes:
+      - ~/.aws:/home/celeryworker/.aws:ro
+    volumes_from:
+      - web_app
+    env_file:
+      - .env
+    environment:
+      - CELERY_TIMEZONE=${TZ:-UTC}
+      - SELENIUM_QUEUES=se_content
+      - SELENIUM_CONCURRENCY=1
+    depends_on:
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      selenium-chrome:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery --app cqc_lem.app.my_celery inspect ping -d selenium-${SELENIUM_QUEUES}-worker@$(hostname) -t 10 || exit 1"]
       interval: 30s
       timeout: 30s
       retries: 3
@@ -192,12 +262,13 @@ services:
     image: selenium/standalone-chrome:latest
     container_name: selenium-chrome
     hostname: selenium-chrome
-    shm_size: 2g
+    shm_size: 4g
     ports:
       - "${SELENIUM_HUB_PORT}:4444"
       - "7900:7900"
     environment:
-      - SE_NODE_MAX_SESSIONS=1
+      - SE_NODE_MAX_SESSIONS=4
+      - SE_NODE_OVERRIDE_MAX_SESSIONS=true
       - SE_NODE_SESSION_TIMEOUT=600
       - SE_LOG_LEVEL=WARN
     volumes:
@@ -206,8 +277,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '2.0'
-          memory: 4g
+          cpus: '4.0'
+          memory: 8g
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:4444/status | python3 -c \"import sys,json; d=json.load(sys.stdin); sys.exit(0 if any(n.get('availability')=='UP' for n in d['value']['nodes']) else 1)\""]
       interval: 30s

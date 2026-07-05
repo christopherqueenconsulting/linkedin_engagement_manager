@@ -9,14 +9,22 @@ CELERY_USER=celeryworker
 # the system default, stripping /app/.venv/bin even when Docker ENV is set.
 VENV_ACTIVATE="VIRTUAL_ENV=/app/.venv PATH=/app/.venv/bin:/usr/local/bin:/usr/bin:/bin"
 
-printf "Starting Celery Selenium Worker as: %s\n" "$CELERY_USER"
-# concurrency=1  — only one Chrome session open at a time (SE_NODE_MAX_SESSIONS=1)
-# prefetch-multiplier=1 — never pre-fetch a second Selenium task while one is running
-# queues=selenium — consume only the selenium queue; main worker keeps the default queue
+# One script serves all three Selenium lane workers. Each container sets
+# SELENIUM_QUEUES / SELENIUM_CONCURRENCY to claim its lane(s). Defaults consume
+# all three lanes at c=4 so a single container still gives full parallelism if
+# the extra lane services aren't up.
+SELENIUM_QUEUES="${SELENIUM_QUEUES:-se_engage,se_outreach,se_content}"
+SELENIUM_CONCURRENCY="${SELENIUM_CONCURRENCY:-4}"
+
+printf "Starting Celery Selenium Worker as: %s (queues=%s concurrency=%s)\n" \
+  "$CELERY_USER" "$SELENIUM_QUEUES" "$SELENIUM_CONCURRENCY"
+# concurrency — number of Chrome sessions this lane may open (SE_NODE_MAX_SESSIONS gates the pool)
+# prefetch-multiplier=1 — never pre-fetch another Selenium task while one is running
+# queues — consume only this container's reserved lane(s); main worker keeps the default queue
 su $CELERY_USER -c "$VENV_ACTIVATE celery --app cqc_lem.app.my_celery worker \
   --loglevel=INFO \
-  --concurrency=1 \
+  --concurrency=$SELENIUM_CONCURRENCY \
   --prefetch-multiplier=1 \
-  --queues=selenium \
-  --hostname=selenium-worker@%h \
+  --queues=$SELENIUM_QUEUES \
+  --hostname=selenium-${SELENIUM_QUEUES//,/-}-worker@%h \
   -E"

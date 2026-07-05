@@ -245,7 +245,7 @@ def simulate_typing(driver: WebDriver, editable_element: WebElement, text, allow
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['user_id', 'post_link']},
-                  reject_on_worker_lost=True, rate_limit='4/m')
+                  reject_on_worker_lost=True, rate_limit='4/m', queue='se_engage')
 def comment_on_post(self, user_id: int, post_link: str, comment_text: str):
     """Post a comment to the given post link"""
 
@@ -881,7 +881,7 @@ def _fill_and_publish_article(driver, wait, title: str, body: str, subtitle: str
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
-                  queue='selenium')
+                  queue='se_content')
 def auto_publish_newsletter_edition(self, user_id: int):
     """Generate and publish a newsletter edition for the user (opt-in via newsletter_settings).
     Best-effort — the article publish flow is multi-step; the first real publish should be
@@ -973,7 +973,7 @@ def _pin_own_comment(driver) -> bool:
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id', 'post_id']},
-                  queue='selenium')
+                  queue='se_content')
 def auto_seed_comment_on_post(self, user_id: int, post_id: int):
     """After the user's post publishes, leave a value-adding FIRST comment on it (an open question
     or a behind-the-scenes insight — no links) and pin it. Seeds the comment thread that drives
@@ -1011,7 +1011,7 @@ def auto_seed_comment_on_post(self, user_id: int, post_id: int):
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
-                  queue='selenium')
+                  queue='se_content')
 def auto_scrape_post_stats(self, user_id: int):
     """Capture reactions/comments for each of the user's recent posts (feeds personalized
     post-time recommendations). Reuses the social-count extraction on each post's detail page."""
@@ -1066,7 +1066,7 @@ def _enumerate_joined_groups(driver) -> list:
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
-                  queue='selenium')
+                  queue='se_content')
 def auto_sync_user_groups(self, user_id: int):
     """Refresh the user's joined-groups list (new groups default to enabled)."""
     try:
@@ -1084,7 +1084,7 @@ def auto_sync_user_groups(self, user_id: int):
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
-                  queue='selenium')
+                  queue='se_engage')
 def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
     """Comment (value-add, scored) on posts in each of the user's ENABLED groups. Reuses the feed
     commenting engine pointed at each group's feed. Shares the per-day comment cap."""
@@ -1111,7 +1111,7 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id', 'group_id']},
-                  queue='selenium')
+                  queue='se_content')
 def auto_post_to_group(self, user_id: int, group_id: str):
     """Publish one short, value-add (non-promotional) post into a group via its share box.
     Best-effort — the group composer selectors are validated in the live pass."""
@@ -1154,7 +1154,7 @@ def auto_post_to_group(self, user_id: int, group_id: str):
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
-                  queue='selenium')
+                  queue='se_engage')
 def automate_commenting(self, user_id: int, loop_for_duration: int = None, future_forward: int = 60):
     global stop_all_thread
 
@@ -1215,7 +1215,7 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
 
 @shared_task.task(bind=True, base=QueueOnce,
                   once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id', 'post_id']},
-                  queue='selenium')
+                  queue='se_engage')
 def automate_reply_commenting(self, user_id: int, post_id: int, loop_for_duration: int = 60, future_forward=0):
     """Reply to recent comments left on the post recently posted"""
 
@@ -1500,7 +1500,7 @@ def check_dm_replied(driver, wait, profile_url: str, my_name: str = None) -> boo
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
-                  queue='selenium')
+                  queue='se_outreach')
 def process_user_followups(self, user_id: int, max_per_run: int = 20):
     """Send this user's due DM follow-ups: skip (and stop the sequence) anyone who has replied,
     otherwise render the next-step template in the user's voice, send it, mark it sent, and
@@ -1537,7 +1537,7 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
-                  reject_on_worker_lost=True, rate_limit='2/m', queue='selenium')
+                  reject_on_worker_lost=True, rate_limit='2/m', queue='se_outreach')
 def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: int = None, future_forward: int = 60):
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
@@ -1684,7 +1684,7 @@ def generate_and_post_comment(driver, wait, post_link, my_profile: LinkedInProfi
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
-                  queue='selenium')
+                  queue='se_outreach')
 def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: int = None, future_forward: int = 60):
     global stop_all_thread
 
@@ -1841,7 +1841,7 @@ def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: in
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['user_id', 'viewer_url']},
-                  reject_on_worker_lost=True, rate_limit='2/m', queue='selenium')
+                  reject_on_worker_lost=True, rate_limit='2/m', queue='se_outreach')
 def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
     myprint(f"Starting Profile Viewer Engagement")
 
@@ -1977,7 +1977,7 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True}, reject_on_worker_lost=True,
-                  rate_limit='2/m')
+                  rate_limit='2/m', queue='se_outreach')
 def clean_stale_invites(self, user_id: int):
     """Cleans up stale invites that the user has sent"""
 
@@ -1994,7 +1994,7 @@ def clean_stale_invites(self, user_id: int):
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True}, reject_on_worker_lost=True,
-                  rate_limit='2/m', queue='selenium')
+                  rate_limit='2/m', queue='se_outreach')
 def send_private_dm(self, user_id: int, profile_url: str, message: str):
     """ Send dm message to a profile. Must be a 1st connection"""
 
@@ -2063,7 +2063,7 @@ def send_private_dm(self, user_id: int, profile_url: str, message: str):
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['user_id', 'profile_url']},
-                  reject_on_worker_lost=True, rate_limit='1/m', queue='selenium')
+                  reject_on_worker_lost=True, rate_limit='1/m', queue='se_outreach')
 def invite_to_connect(self, user_id: int, profile_url: str, message: str = None):
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
@@ -2194,7 +2194,7 @@ def final_method(drivers: List[WebDriver]):
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True}, reject_on_worker_lost=True,
-                  rate_limit='1/m', queue='selenium')
+                  rate_limit='1/m', queue='se_outreach')
 def update_stale_profile(self, user_id: int):
     myprint(f"Updating Stale Profile. User ID: {user_id}")
     try:
@@ -2355,7 +2355,7 @@ def post_to_linkedin(self, user_id: int, post_id: int):
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': False}, reject_on_worker_lost=True,
-                  rate_limit='4/m', queue='selenium')
+                  rate_limit='4/m', queue='se_outreach')
 def automate_invites_to_company_page_for_user(self, user_id: int):
     """Send invites to the company page for the given user."""
 

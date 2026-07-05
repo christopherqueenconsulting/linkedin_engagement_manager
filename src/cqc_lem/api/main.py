@@ -2150,7 +2150,7 @@ def admin_test_comment(
     """Run the feed-commenting automation for a user (comments on posts in their feed)."""
     result = automate_commenting.apply_async(kwargs={
         "user_id": user_id, "loop_for_duration": loop_for_duration,
-    }, queue="selenium")
+    }, queue="se_engage")
     myprint(f"admin/test/comment: queued task={result.id} user_id={user_id}")
     return ResponseModel(status_code=200, detail={
         "task_id": result.id, "task": "automate_commenting", "user_id": user_id,
@@ -2177,7 +2177,7 @@ def admin_test_reply(
     result = automate_reply_commenting.apply_async(kwargs={
         "user_id": user_id, "post_id": post_id,
         "loop_for_duration": loop_for_duration, "future_forward": future_forward,
-    }, queue="selenium")
+    }, queue="se_engage")
     myprint(f"admin/test/reply: queued task={result.id} post_id={post_id}")
     return ResponseModel(status_code=200, detail={
         "task_id": result.id, "task": "automate_reply_commenting",
@@ -2199,7 +2199,7 @@ def admin_test_dm(
     """Run the appreciation-DM automation (DMs people who recently viewed the profile)."""
     result = automate_appreciation_dms_for_user.apply_async(kwargs={
         "user_id": user_id, "loop_for_duration": loop_for_duration,
-    }, queue="selenium")
+    }, queue="se_outreach")
     myprint(f"admin/test/dm: queued task={result.id} user_id={user_id}")
     return ResponseModel(status_code=200, detail={
         "task_id": result.id, "task": "automate_appreciation_dms_for_user",
@@ -2223,7 +2223,7 @@ def admin_test_dm_direct(
     watch the messaging flow end-to-end in the VNC."""
     result = send_private_dm.apply_async(kwargs={
         "user_id": user_id, "profile_url": profile_url, "message": message,
-    }, queue="selenium")
+    }, queue="se_outreach")
     myprint(f"admin/test/dm-direct: queued task={result.id} user_id={user_id} -> {profile_url}")
     return ResponseModel(status_code=200, detail={
         "task_id": result.id, "task": "send_private_dm",

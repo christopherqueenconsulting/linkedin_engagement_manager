@@ -77,31 +77,48 @@ task_create_missing_queues = True
 # ---------------------------------------------------------------------------
 # Queue definitions
 # ---------------------------------------------------------------------------
-# 'celery'   — default queue consumed by the main worker (scheduler tasks, API
-#               calls, content plan, Stripe sync, etc.).
-# 'selenium' — consumed exclusively by the selenium worker (concurrency=1).
-#               All tasks that open a Chrome session must route here so only
-#               one browser is used at a time.
+# 'celery'      — default queue consumed by the main worker (scheduler tasks,
+#                  API calls, content plan, Stripe sync, post_to_linkedin, etc.).
+# Selenium lanes — every task that opens a Chrome session routes to one of three
+#                  reserved lanes so a long-running loop can't starve the others.
+#   'se_engage'   (2 sessions) — long commenting/reply loops.
+#   'se_outreach' (1 session)  — DMs, invites, profile-viewer engagement, followups.
+#   'se_content'  (1 session)  — seed comments, stats scrape, group sync/post,
+#                                newsletter publishing.
 task_queues = (
     Queue('celery'),
-    Queue('selenium'),
+    Queue('se_engage'),
+    Queue('se_outreach'),
+    Queue('se_content'),
 )
 task_default_queue = 'celery'
 
-# Explicit routing for every Selenium-backed task.  The queue='selenium'
-# parameter on each task decorator already handles routing at dispatch time;
-# this mapping is a belt-and-suspenders safety net for any send() call that
-# doesn't pass queue= explicitly.
+# Explicit routing for every Selenium-backed task.  The queue= parameter on each
+# task decorator already handles routing at dispatch time; this mapping is a
+# belt-and-suspenders safety net for any send() call that doesn't pass queue=.
 task_routes = {
-    'cqc_lem.app.run_automation.automate_commenting': {'queue': 'selenium'},
-    'cqc_lem.app.run_automation.automate_reply_commenting': {'queue': 'selenium'},
-    'cqc_lem.app.run_automation.automate_appreciation_dms_for_user': {'queue': 'selenium'},
-    'cqc_lem.app.run_automation.automate_profile_viewer_engagement': {'queue': 'selenium'},
-    'cqc_lem.app.run_automation.engage_with_profile_viewer': {'queue': 'selenium'},
-    'cqc_lem.app.run_automation.send_private_dm': {'queue': 'selenium'},
-    'cqc_lem.app.run_automation.invite_to_connect': {'queue': 'selenium'},
-    'cqc_lem.app.run_automation.update_stale_profile': {'queue': 'selenium'},
-    'cqc_lem.app.run_automation.automate_invites_to_company_page_for_user': {'queue': 'selenium'},
+    # --- se_engage: long commenting loops --------------------------------
+    'cqc_lem.app.run_automation.automate_commenting': {'queue': 'se_engage'},
+    'cqc_lem.app.run_automation.automate_reply_commenting': {'queue': 'se_engage'},
+    'cqc_lem.app.run_automation.comment_on_post': {'queue': 'se_engage'},
+    'cqc_lem.app.run_automation.auto_comment_in_groups': {'queue': 'se_engage'},
+    # --- se_outreach: DMs, invites, profile-viewer engagement, followups --
+    'cqc_lem.app.run_automation.automate_appreciation_dms_for_user': {'queue': 'se_outreach'},
+    'cqc_lem.app.run_automation.send_private_dm': {'queue': 'se_outreach'},
+    'cqc_lem.app.run_automation.automate_profile_viewer_engagement': {'queue': 'se_outreach'},
+    'cqc_lem.app.run_automation.engage_with_profile_viewer': {'queue': 'se_outreach'},
+    'cqc_lem.app.run_automation.invite_to_connect': {'queue': 'se_outreach'},
+    'cqc_lem.app.run_automation.process_user_followups': {'queue': 'se_outreach'},
+    'cqc_lem.app.run_automation.automate_invites_to_company_page_for_user': {'queue': 'se_outreach'},
+    'cqc_lem.app.run_automation.clean_stale_invites': {'queue': 'se_outreach'},
+    'cqc_lem.app.run_automation.update_stale_profile': {'queue': 'se_outreach'},
+    # --- se_content: seeding, stats, group + newsletter publishing --------
+    'cqc_lem.app.run_automation.auto_seed_comment_on_post': {'queue': 'se_content'},
+    'cqc_lem.app.run_automation.auto_scrape_post_stats': {'queue': 'se_content'},
+    'cqc_lem.app.run_automation.auto_sync_user_groups': {'queue': 'se_content'},
+    'cqc_lem.app.run_automation.auto_post_to_group': {'queue': 'se_content'},
+    'cqc_lem.app.run_automation.auto_publish_newsletter_edition': {'queue': 'se_content'},
+    'cqc_lem.app.run_automation.auto_publish_edition': {'queue': 'se_content'},
 }
 
 
