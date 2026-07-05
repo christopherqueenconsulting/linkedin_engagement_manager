@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.25.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.24.1...v0.25.0) (2026-07-05)
+
+
+### Features
+
+* **newsletter:** draft-review + auto-publish scheduling workflow ([0a7251d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0a7251d5aba9ee22750e805af733520da2235fe1))
+* **newsletter:** draft-review workflow + day/time scheduling ([b785a93](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b785a9350c35ea110de784be6aeac608aeaf4c93))
+
 ## [0.24.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.24.0...v0.24.1) (2026-07-05)
 
 

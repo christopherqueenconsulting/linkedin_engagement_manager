@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "linkedin-engagement-manager"
-version = "0.24.1"
+version = "0.25.0"
 description = ""
 authors = ["gitchrisqueen <christopher.queen@gmail.com>"]
 readme = "README.md"
