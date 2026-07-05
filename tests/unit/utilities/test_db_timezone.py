@@ -42,26 +42,26 @@ class TestGetUserTimezone:
             result = get_user_timezone(1)
         assert result == "America/New_York"
 
-    def test_returns_utc_when_row_is_none(self, mock_database_connection):
+    def test_returns_default_when_row_is_none(self, mock_database_connection):
         with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
             mock_database_connection["cursor"].fetchone.return_value = None
             from cqc_lem.utilities.db import get_user_timezone
             result = get_user_timezone(99)
-        assert result == "UTC"
+        assert result == "America/New_York"
 
-    def test_returns_utc_when_field_is_empty(self, mock_database_connection):
+    def test_returns_default_when_field_is_empty(self, mock_database_connection):
         with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
             mock_database_connection["cursor"].fetchone.return_value = ("",)
             from cqc_lem.utilities.db import get_user_timezone
             result = get_user_timezone(5)
-        assert result == "UTC"
+        assert result == "America/New_York"
 
-    def test_returns_utc_on_db_error(self, mock_database_connection):
+    def test_returns_default_on_db_error(self, mock_database_connection):
         with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("fail")
             from cqc_lem.utilities.db import get_user_timezone
             result = get_user_timezone(7)
-        assert result == "UTC"
+        assert result == "America/New_York"
 
 
 # ---------------------------------------------------------------------------

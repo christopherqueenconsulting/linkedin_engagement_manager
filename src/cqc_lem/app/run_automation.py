@@ -7,7 +7,7 @@ import random
 import sys
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Tuple
 from urllib.parse import urlparse
 
@@ -1497,11 +1497,13 @@ def build_dm_from_template(user_id: int, event_type: str, first_name: str,
 
 
 def enqueue_next_followup(user_id: int, profile_url: str, first_name: str, event_type: str, current_step: int) -> None:
-    """If a follow-up template exists for the next step, schedule it at now + its delay_hours."""
+    """If a follow-up template exists for the next step, schedule it at now + its delay_hours.
+    due_at is stored as naive UTC to match the rest of the system (see get_due_followups)."""
     try:
         nxt = get_dm_template(user_id, event_type, current_step + 1)
         if nxt:
-            due = datetime.now() + timedelta(hours=int(nxt.get("delay_hours", 24) or 24))
+            now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+            due = now_utc + timedelta(hours=int(nxt.get("delay_hours", 24) or 24))
             enqueue_followup(user_id, profile_url, first_name, event_type, current_step + 1, due)
     except Exception as e:
         log_warning("Failed to enqueue next follow-up", exc=e, action_type="followup", user_id=user_id)
@@ -1552,7 +1554,8 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
     """Send this user's due DM follow-ups: skip (and stop the sequence) anyone who has replied,
     otherwise render the next-step template in the user's voice, send it, mark it sent, and
     schedule the following step."""
-    due = [f for f in get_due_followups(datetime.now()) if f["user_id"] == user_id]
+    due = [f for f in get_due_followups(datetime.now(timezone.utc).replace(tzinfo=None))
+           if f["user_id"] == user_id]
     if not due:
         return "No due follow-ups"
     try:

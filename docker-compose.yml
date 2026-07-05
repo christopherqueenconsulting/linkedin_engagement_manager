@@ -88,7 +88,7 @@ services:
     env_file:
       - .env
     environment:
-      - CELERY_TIMEZONE=${TZ:-UTC}
+      - CELERY_TIMEZONE=${CELERY_TIMEZONE:-UTC}
     depends_on:
       redis:
         condition: service_healthy
@@ -120,7 +120,7 @@ services:
     env_file:
       - .env
     environment:
-      - CELERY_TIMEZONE=${TZ:-UTC}
+      - CELERY_TIMEZONE=${CELERY_TIMEZONE:-UTC}
       - SELENIUM_QUEUES=se_engage
       - SELENIUM_CONCURRENCY=2
     depends_on:
@@ -156,7 +156,7 @@ services:
     env_file:
       - .env
     environment:
-      - CELERY_TIMEZONE=${TZ:-UTC}
+      - CELERY_TIMEZONE=${CELERY_TIMEZONE:-UTC}
       - SELENIUM_QUEUES=se_outreach
       - SELENIUM_CONCURRENCY=1
     depends_on:
@@ -192,7 +192,7 @@ services:
     env_file:
       - .env
     environment:
-      - CELERY_TIMEZONE=${TZ:-UTC}
+      - CELERY_TIMEZONE=${CELERY_TIMEZONE:-UTC}
       - SELENIUM_QUEUES=se_content
       - SELENIUM_CONCURRENCY=1
     depends_on:
@@ -220,7 +220,7 @@ services:
     env_file:
       - .env
     environment:
-      - CELERY_TIMEZONE=${TZ:-UTC}
+      - CELERY_TIMEZONE=${CELERY_TIMEZONE:-UTC}
     depends_on:
       redis:
         condition: service_healthy
@@ -249,7 +249,7 @@ services:
     environment:
       - FLOWER_UNAUTHENTICATED_API=True
       - FLOWER_PERSISTENT=False
-      - CELERY_TIMEZONE=${TZ:-UTC}
+      - CELERY_TIMEZONE=${CELERY_TIMEZONE:-UTC}
     ports:
       - "${CELERY_FLOWER_PORT}:${CELERY_FLOWER_PORT}"
     depends_on:

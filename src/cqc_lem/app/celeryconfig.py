@@ -33,7 +33,10 @@ result_backend_max_retries = 3
 # The Redis backend health checks every 5 minutes (300 seconds)
 redis_backend_health_check_interval = 300
 
-timezone = os.getenv('CELERY_TIMEZONE') or os.getenv('TZ') or 'UTC'
+# Beat schedules (my_celery.py crontabs) are authored in UTC — keep the scheduler on UTC and do
+# NOT inherit the container's TZ (which sets local wall-clock / Python datetime.now()), or hour-based
+# crontabs fire at the wrong instant. Post publishing uses aware-UTC ETAs and is unaffected either way.
+timezone = os.getenv('CELERY_TIMEZONE') or 'UTC'
 enable_utc = True
 
 # Prevent task messages from being lost
