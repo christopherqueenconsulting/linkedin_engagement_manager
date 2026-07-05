@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.23.1...v0.23.2) (2026-07-05)
+
+
+### Bug Fixes
+
+* **ui:** merge Voice&Tone + Targeting into one shared-state component ([c223158](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c22315850ef2ba522d15269c84133a71ddf9aca0))
+
 ## [0.23.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.23.0...v0.23.1) (2026-07-05)
 
 
