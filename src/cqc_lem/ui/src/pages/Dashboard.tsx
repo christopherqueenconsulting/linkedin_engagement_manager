@@ -5,6 +5,11 @@ import { useAuth } from '../contexts/AuthContext'
 import { useUserTimezone } from '../hooks/useUserTimezone'
 import { formatInTimezone } from '../utils/datetime'
 
+interface PostStats {
+  recommendations: { weekday: string; hour: number; avg_engagement: number; sample: number }[]
+  sample_size: number
+}
+
 interface DashboardStats {
   scheduled_this_week: number
   pending_review: number
@@ -55,9 +60,20 @@ function StatCard({ label, value, color }: { label: string; value: number; color
 }
 
 export default function Dashboard() {
-  const { user } = useAuth()
+  const { user, sessionToken } = useAuth()
   const email = user?.email ?? ''
   const userTimezone = useUserTimezone()
+
+  // Personalized best-times-to-post recommendations (read-only)
+  const { data: postStats } = useQuery({
+    queryKey: ['post-stats', sessionToken],
+    queryFn: () =>
+      api
+        .get(`/user/post-stats?session_token=${encodeURIComponent(sessionToken!)}`)
+        .then((r) => r.data.detail as PostStats),
+    enabled: !!sessionToken,
+    staleTime: 5 * 60 * 1000,
+  })
 
   const { data: statsData } = useQuery<{ detail: DashboardStats }>({
     queryKey: ['dashboard-stats', email],
@@ -224,6 +240,28 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+
+      {/* Best times to post (data-driven) */}
+      {postStats && (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-3">
+          <h2 className="text-base font-semibold text-gray-700">Your Best Times to Post</h2>
+          {postStats.recommendations.length > 0 ? (
+            <>
+              <p className="text-xs text-gray-500">Learned from your own post engagement — scheduling leans toward these.</p>
+              <ul className="text-sm text-gray-700 space-y-1">
+                {postStats.recommendations.map((r, i) => (
+                  <li key={i} className="flex justify-between">
+                    <span>{r.weekday} @ {String(r.hour).padStart(2, '0')}:00</span>
+                    <span className="text-gray-400">avg engagement {r.avg_engagement} · {r.sample} post(s)</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <p className="text-xs text-gray-500">Gathering data — recommendations appear after a few posts have engagement stats (currently {postStats.sample_size}).</p>
+          )}
+        </div>
+      )}
     </div>
   )
 }
