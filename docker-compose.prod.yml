@@ -141,7 +141,7 @@ services:
       # Kept behind Cloudflare Access as well (see cloudflared/config.yml).
       - FLOWER_BASIC_AUTH=${CELERY_FLOWER_USER}:${CELERY_FLOWER_PASSWORD}
       - FLOWER_PERSISTENT=True
-      - CELERY_TIMEZONE=${TZ:-UTC}
+      - CELERY_TIMEZONE=${CELERY_TIMEZONE:-UTC}
     deploy:
       resources:
         limits:

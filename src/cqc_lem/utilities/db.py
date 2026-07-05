@@ -2924,16 +2924,17 @@ def update_user_proxy(user_id: int, proxy_url: Optional[str]) -> bool:
 
 
 def get_user_timezone(user_id: int) -> str:
-    """Return the IANA timezone string for the user, defaulting to UTC."""
+    """Return the IANA timezone string for the user. Defaults to America/New_York to match the
+    users.timezone column default and the UI default (not UTC, which would misrender local times)."""
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
         cursor.execute("SELECT timezone FROM users WHERE id = %s", (user_id,))
         row = cursor.fetchone()
-        return row[0] if row and row[0] else 'UTC'
+        return row[0] if row and row[0] else 'America/New_York'
     except mysql.connector.Error as err:
         myprint(f"Could not get timezone for user_id {user_id} | Error: {err}")
-        return 'UTC'
+        return 'America/New_York'
     finally:
         cursor.close()
         connection.close()

@@ -243,7 +243,8 @@ def auto_send_due_followups():
     """Dispatch a per-user Selenium task to send due DM follow-ups (each gated by reply-detection)."""
     from cqc_lem.app.run_automation import process_user_followups
     from cqc_lem.utilities.db import get_due_followups
-    due = get_due_followups(datetime.now())
+    # due_at is stored naive-UTC; compare against naive-UTC now (not container-local time).
+    due = get_due_followups(datetime.now(timezone.utc).replace(tzinfo=None))
     user_ids = sorted({f["user_id"] for f in due})
     for uid in user_ids:
         process_user_followups.apply_async(kwargs={"user_id": uid})
