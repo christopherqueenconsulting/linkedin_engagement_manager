@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.24.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.24.0...v0.24.1) (2026-07-05)
+
+
+### Bug Fixes
+
+* **dashboard:** link home-feed comment rows to LinkedIn comments activity ([44f1840](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/44f18406be80c910124b066f663f20a0fd147264))
+* **dashboard:** link home-feed comment rows to LinkedIn comments activity ([d26d85d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d26d85d91f8970b7f88c0245165767dbc8924c8a))
+
 ## [0.24.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.23.2...v0.24.0) (2026-07-05)
 
 
