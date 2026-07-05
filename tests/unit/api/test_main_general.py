@@ -275,6 +275,35 @@ class TestGetUserSettings:
         assert detail["preferences"] is None
 
 
+# ---------------------------------------------------------------------------
+# GET /api/user/linkedin-profile
+# ---------------------------------------------------------------------------
+
+class TestGetUserLinkedInProfile:
+    BASE = "/api/user/linkedin-profile"
+
+    def test_invalid_session_returns_401(self, client):
+        with patch(f"{_MAIN}.get_session_user_id", return_value=None):
+            resp = client.get(self.BASE, params={"session_token": "bad-token"})
+        assert resp.status_code == 401
+
+    def test_valid_session_returns_profile_url(self, client):
+        with patch(f"{_MAIN}.get_session_user_id", return_value=5), \
+             patch(f"{_MAIN}.get_linkedin_profile_url_by_user_id",
+                   return_value="https://www.linkedin.com/in/christopherqueen/"):
+            resp = client.get(self.BASE, params={"session_token": "valid-tok"})
+        assert resp.status_code == 200
+        assert resp.json()["detail"]["linkedin_profile_url"] == \
+            "https://www.linkedin.com/in/christopherqueen/"
+
+    def test_missing_profile_returns_null(self, client):
+        with patch(f"{_MAIN}.get_session_user_id", return_value=5), \
+             patch(f"{_MAIN}.get_linkedin_profile_url_by_user_id", return_value=None):
+            resp = client.get(self.BASE, params={"session_token": "valid-tok"})
+        assert resp.status_code == 200
+        assert resp.json()["detail"]["linkedin_profile_url"] is None
+
+
 class TestVerificationPinInbound:
     """SendGrid Inbound Parse webhook that receives the user's PIN reply."""
     BASE = "/api/linkedin/verification-pin/inbound"

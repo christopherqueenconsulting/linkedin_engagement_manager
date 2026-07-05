@@ -4,7 +4,7 @@ import api from '../api/client'
 import { useAuth } from '../contexts/AuthContext'
 import { useUserTimezone } from '../hooks/useUserTimezone'
 import { formatInTimezone } from '../utils/datetime'
-import { isHttpUrl } from '../utils/links'
+import { isHttpUrl, commentsActivityUrl } from '../utils/links'
 
 interface PostStats {
   recommendations: { weekday: string; hour: number; avg_engagement: number; sample: number }[]
@@ -96,6 +96,20 @@ export default function Dashboard() {
     enabled: !!email,
     refetchInterval: 30_000,
   })
+
+  // Home-feed comment rows carry a synthetic post_url (no real permalink); fall back to the
+  // user's own "recent activity → comments" page derived from their stored LinkedIn profile URL.
+  const { data: linkedinProfileUrl } = useQuery({
+    queryKey: ['linkedin-profile', sessionToken],
+    queryFn: () =>
+      api
+        .get(`/user/linkedin-profile?session_token=${encodeURIComponent(sessionToken!)}`)
+        .then((r) => (r.data.detail?.linkedin_profile_url as string | null) ?? null),
+    enabled: !!sessionToken,
+    staleTime: 10 * 60 * 1000,
+  })
+
+  const commentsUrl = commentsActivityUrl(linkedinProfileUrl)
 
   const stats = statsData?.detail ?? { scheduled_this_week: 0, pending_review: 0, posted_total: 0 }
 
@@ -230,6 +244,16 @@ export default function Dashboard() {
                           className="text-xs text-blue-500 hover:underline truncate block"
                         >
                           {entry.post_url}
+                        </a>
+                      ) : commentsUrl ? (
+                        <a
+                          href={commentsUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title="View your LinkedIn comments"
+                          className="text-xs text-blue-500 hover:underline truncate block"
+                        >
+                          View your LinkedIn comments
                         </a>
                       ) : (
                         <span className="text-xs text-gray-400 truncate block">{entry.post_url}</span>

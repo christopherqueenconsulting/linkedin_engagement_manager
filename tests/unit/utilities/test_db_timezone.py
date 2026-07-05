@@ -65,6 +65,35 @@ class TestGetUserTimezone:
 
 
 # ---------------------------------------------------------------------------
+# get_linkedin_profile_url_by_user_id
+# ---------------------------------------------------------------------------
+
+class TestGetLinkedInProfileUrlByUserId:
+    def test_returns_stored_profile_url(self, mock_database_connection):
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].fetchone.return_value = (
+                "https://www.linkedin.com/in/christopherqueen/",
+            )
+            from cqc_lem.utilities.db import get_linkedin_profile_url_by_user_id
+            result = get_linkedin_profile_url_by_user_id(1)
+        assert result == "https://www.linkedin.com/in/christopherqueen/"
+
+    def test_returns_none_when_no_profile(self, mock_database_connection):
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].fetchone.return_value = None
+            from cqc_lem.utilities.db import get_linkedin_profile_url_by_user_id
+            result = get_linkedin_profile_url_by_user_id(99)
+        assert result is None
+
+    def test_returns_none_on_db_error(self, mock_database_connection):
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("fail")
+            from cqc_lem.utilities.db import get_linkedin_profile_url_by_user_id
+            result = get_linkedin_profile_url_by_user_id(7)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
 # update_user_timezone
 # ---------------------------------------------------------------------------
 
