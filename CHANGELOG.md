@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.26.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.25.1...v0.26.0) (2026-07-05)
+
+
+### Features
+
+* **engagement:** react on posts we comment on (SDUI, AI-chosen reaction) ([5de7953](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5de7953168560d2927240eb9904c6f677d280949))
+* **engagement:** react on posts we comment on (SDUI, AI-chosen reaction) ([7c14270](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7c14270d26bbd52855a3e08d1701ea90aa666d9c))
+
+
+### Bug Fixes
+
+* **compose:** correct selenium-lane healthcheck node name ([26dd1ae](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/26dd1aecd810c59f98dc2425906468f4566d8266))
+* **compose:** correct selenium-lane healthcheck node name (false unhealthy) ([0fb8e12](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0fb8e127a0c2fd6fdc1fa95f97971c6201de8618))
+* **time:** 12-hour newsletter publish-hour picker (never 24h) ([c0ad14c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c0ad14c32e04eb7353a1939ac1115248a94e1fa8))
+* **time:** 12-hour newsletter publish-hour picker (P1 UI) ([b66d4e2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b66d4e209685833bbc7d3ec88d59709771cd3e3b))
+* **time:** correct displayed times to user-local 12h + hide synthetic feed URLs ([8a62e30](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8a62e30a300d1037c6c2c5df3e5aa16d96fe5199))
+* **time:** pin Celery beat to UTC + follow-ups/tz-default on UTC (P1 backend) ([655877d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/655877d131261e05d125ff4de29c0eadf29a3b65))
+* **time:** pin Celery beat to UTC + standardize follow-ups/tz-default on UTC ([4622a1f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4622a1f26d4608795894984e97891bdadc318a05))
+* **time:** user-local 12h times + hide synthetic feed URLs (P0) ([f4f27e0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f4f27e0c853c8e59c6eb78d4a3d7c961a9e99d06))
+
+
+### Documentation
+
+* **claude:** add Git Safety & Multi-Agent Concurrency Rules ([bf3f180](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bf3f1805f20452778777ce55456c2db78e53e6dd))
+* **claude:** add Git Safety & Multi-Agent Concurrency Rules ([b173f62](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b173f62b77ec9bf50fb80db27a7a6efea6276148))
+
 ## [0.25.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.25.0...v0.25.1) (2026-07-05)
 
 
