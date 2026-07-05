@@ -71,3 +71,69 @@ class TestPostCommentInline:
              patch(f"{_RA}.find_first", return_value=None):
             ok = ra.post_comment_inline(MagicMock(), MagicMock(), MagicMock(), "hello", user_id=1)
         assert ok is False
+
+
+def _state(label):
+    el = MagicMock()
+    el.get_attribute.return_value = label
+    return el
+
+
+class TestReactToPostInline:
+    def test_reacts_when_not_yet_reacted(self):
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
+             patch(f"{_RA}.wait_for_ajax"), \
+             patch(f"{_RA}.find_first", side_effect=[_state("Reaction button state: no reaction"),
+                                                     _state("Reaction button state: Like reaction")]), \
+             patch(f"{_RA}.click_first", return_value=MagicMock()):
+            ok = ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(),
+                                         post_content="p", comment_text="c", user_id=1)
+        assert ok is True
+
+    def test_skips_when_already_reacted(self):
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.choose_post_reaction") as cpr, \
+             patch(f"{_RA}.find_first", return_value=_state("Reaction button state: Celebrate reaction")), \
+             patch(f"{_RA}.click_first") as cf:
+            ok = ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
+        assert ok is False
+        cpr.assert_not_called()      # no AI spend when we've already reacted
+        cf.assert_not_called()       # and we never open the menu
+
+    def test_false_when_menu_wont_open(self):
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
+             patch(f"{_RA}.find_first", return_value=_state("Reaction button state: no reaction")), \
+             patch(f"{_RA}.click_first", return_value=None):
+            ok = ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
+        assert ok is False
+
+    def test_clicks_the_ai_chosen_reaction(self):
+        from cqc_lem.app import run_automation as ra
+        seen = []
+
+        def _capture(driver, wait, locators, label, **kw):
+            seen.append(locators)
+            return MagicMock()
+
+        with patch(f"{_RA}.choose_post_reaction", return_value="Support"), \
+             patch(f"{_RA}.wait_for_ajax"), \
+             patch(f"{_RA}.find_first", side_effect=[_state("Reaction button state: no reaction"),
+                                                     _state("Reaction button state: Support reaction")]), \
+             patch(f"{_RA}.click_first", side_effect=_capture):
+            ok = ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(),
+                                         post_content="p", comment_text="c", user_id=1)
+        assert ok is True
+        # 2nd click_first is the reaction click; its primary locator targets aria-label='Support'
+        assert any("aria-label='Support'" in loc[1] for loc in seen[1])
+
+    def test_false_when_reaction_did_not_register(self):
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
+             patch(f"{_RA}.wait_for_ajax"), \
+             patch(f"{_RA}.find_first", side_effect=[_state("Reaction button state: no reaction"),
+                                                     _state("Reaction button state: no reaction")]), \
+             patch(f"{_RA}.click_first", return_value=MagicMock()):
+            ok = ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
+        assert ok is False  # toggle never flipped away from 'no reaction'

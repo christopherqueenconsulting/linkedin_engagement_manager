@@ -15,7 +15,7 @@ from celery_once import QueueOnce
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.utilities.ai.ai_helper import generate_ai_response, get_ai_message_refinement, summarize_recent_activity, \
     ai_check_message_history, post_is_relevant, generate_newsletter_edition, generate_group_post, \
-    generate_thread_reply, generate_seed_comment
+    generate_thread_reply, generate_seed_comment, choose_post_reaction
 from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, insert_new_log, LogActionType, \
     get_engagement_preferences, count_comments_today, get_recent_engagers, upsert_engager, \
@@ -639,6 +639,50 @@ def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = No
         return False
 
 
+def react_to_post_inline(driver, wait, card, post_content: str = None, comment_text: str = None,
+                         user_id: int = None) -> bool:
+    """Leave a single reaction on the card's post via the SDUI reaction fly-out.
+
+    The 2026 SDUI reaction controls carry obfuscated hashed classes, so the stable anchors are
+    aria-labels (verified live): the per-card 'Open reactions menu' trigger, the 'Reaction button
+    state: ...' toggle, and the fly-out buttons whose aria-label is exactly the reaction name
+    (Like / Celebrate / Support / Love / Insightful). The reaction itself is picked by a fast AI
+    call scoped to the post + our comment, which self-falls-back to random. Returns True only if a
+    reaction registered (the toggle no longer reads 'no reaction')."""
+    try:
+        state = find_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label^='Reaction button state']")],
+                           "Reaction state", parent_element=card, required=False, visible_only=True, user_id=user_id)
+        if state is not None and "no reaction" not in (state.get_attribute("aria-label") or "").lower():
+            return False  # already reacted on this post
+
+        reaction = choose_post_reaction(post_content, comment_text)
+        if click_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label='Open reactions menu']")],
+                       "Open reactions menu", parent_element=card, required=False, user_id=user_id) is None:
+            return False
+        time.sleep(random.uniform(0.8, 1.6))
+        # The fly-out can render just outside the card subtree, so match the reaction button globally
+        # (only one menu is open at a time and click_first filters to visible elements).
+        if click_first(driver, wait,
+                       [(By.CSS_SELECTOR, f"button[aria-label='{reaction}']"),
+                        (By.CSS_SELECTOR, "button[aria-label='Like']")],
+                       f"React {reaction}", user_id=user_id) is None:
+            return False
+        time.sleep(random.uniform(0.8, 1.5))
+        wait_for_ajax(driver)
+        after = find_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label^='Reaction button state']")],
+                           "Reaction state (post-click)", parent_element=card, required=False,
+                           visible_only=True, user_id=user_id)
+        # Best-effort confirm: label flips away from 'no reaction'. If the toggle can't be re-read,
+        # trust the click rather than false-negative.
+        if after is not None and "no reaction" in (after.get_attribute("aria-label") or "").lower():
+            return False
+        myprint(f"Reacted '{reaction}' on post")
+        return True
+    except Exception as e:
+        log_warning("Inline post reaction failed", exc=e, action_type="comment", user_id=user_id)
+        return False
+
+
 def post_matches_preferences(content: str, author: str, prefs: dict) -> bool:
     """Decide whether a post should be engaged given the user's targeting preferences.
 
@@ -764,6 +808,9 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
                     insert_new_log(user_id=user_id, action_type=LogActionType.COMMENT,
                                    result=LogResultType.SUCCESS, post_url=key, message=comment_text)
                     posted += 1
+                    # React on the same post to reinforce the comment (non-fatal if it misses).
+                    react_to_post_inline(driver, wait, card, post_content=content,
+                                         comment_text=comment_text, user_id=user_id)
                     myprint(f"Commented on {author or 'a'}'s post "
                             f"(score {score:.2f}, age {'?' if age is None else str(age) + 'm'}) ({posted}/{max_posts})")
                     time.sleep(random.uniform(6, 14))  # human pacing between comments
