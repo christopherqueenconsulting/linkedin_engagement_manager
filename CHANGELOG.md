@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.25.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.25.0...v0.25.1) (2026-07-05)
+
+
+### Bug Fixes
+
+* **selenium:** route auto_publish_edition to se_content (was on retired 'selenium' queue) ([7fdf7d8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7fdf7d8f01cb995065fbad232a669f4276595221))
+
+
+### Performance Improvements
+
+* **selenium:** 3-lane workers + 4 concurrent sessions (fix automation starvation) ([5d63442](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5d6344276f1fafeadae78d67f28ef82cdfe6abb2))
+* **selenium:** 3-lane workers + 4 concurrent sessions (fix automation starvation) ([0017a58](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0017a58a871f22334bc350b88771fe142fa113bb))
+
 ## [0.25.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.24.1...v0.25.0) (2026-07-05)
 
 
