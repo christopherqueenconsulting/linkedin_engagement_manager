@@ -917,7 +917,7 @@ def auto_publish_newsletter_edition(self, user_id: int):
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['edition_id']},
-                  queue='selenium')
+                  queue='se_content')
 def auto_publish_edition(self, edition_id: int):
     """Publish a reviewed/untouched newsletter edition at its scheduled slot. Loads the pre-generated
     edition (draft or approved), fills LinkedIn's article editor, and records the outcome. Best-effort
