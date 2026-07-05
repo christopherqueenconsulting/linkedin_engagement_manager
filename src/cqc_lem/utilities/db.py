@@ -567,6 +567,36 @@ def get_posts(user_id: int, limit: int = 10, offset: int = 0,
     return posts, total
 
 
+def get_dashboard_counts(user_id: int, week_start) -> dict:
+    """Dashboard top-line counts via SQL aggregates over ALL of the user's posts. Replaces the old
+    approach of counting in Python over get_posts()'s 10-oldest-posts slice (which made 'posted'
+    cap near 10 and 'scheduled this week' read ~0). week_start is coerced to a naive UTC datetime so
+    it compares cleanly against the naive UTC scheduled_time column (no tz TypeError)."""
+    if week_start is not None and getattr(week_start, "tzinfo", None) is not None:
+        week_start = week_start.astimezone(timezone.utc).replace(tzinfo=None)
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT "
+            "  COALESCE(SUM(status IN (%s,%s) AND scheduled_time >= %s), 0) AS scheduled_this_week, "
+            "  COALESCE(SUM(status = %s), 0) AS pending_review, "
+            "  COALESCE(SUM(status = %s), 0) AS posted_total "
+            "FROM posts WHERE user_id = %s",
+            (PostStatus.APPROVED.value, PostStatus.PENDING.value, week_start,
+             PostStatus.PENDING.value, PostStatus.POSTED.value, user_id))
+        row = cursor.fetchone()
+        return {"scheduled_this_week": int(row[0] or 0),
+                "pending_review": int(row[1] or 0),
+                "posted_total": int(row[2] or 0)}
+    except mysql.connector.Error as err:
+        myprint(f"Could not get dashboard counts for user {user_id} | Error: {err}")
+        return {"scheduled_this_week": 0, "pending_review": 0, "posted_total": 0}
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_posted_posts(user_id: int):
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
