@@ -11,8 +11,7 @@ import LinkedInLoginCard from './account/LinkedInLoginCard'
 import CompanyPageCard from './account/CompanyPageCard'
 import ContentProfileCard from './account/ContentProfileCard'
 import NewsletterCard from './account/NewsletterCard'
-import EngagementPreferencesCard from './account/EngagementPreferencesCard'
-import EngagementTargetingCard from './account/EngagementTargetingCard'
+import EngagementSettingsCard from './account/EngagementSettingsCard'
 import GroupsCard from './account/GroupsCard'
 import DmTemplatesCard from './account/DmTemplatesCard'
 import LeadMagnetCard from './account/LeadMagnetCard'
@@ -143,8 +142,7 @@ export default function Account() {
 
       {activeTab === 'automation' && (
         <div className="space-y-6">
-          <EngagementPreferencesCard />
-          <EngagementTargetingCard />
+          <EngagementSettingsCard />
           <GroupsCard />
           <DmTemplatesCard />
           <LeadMagnetCard />
