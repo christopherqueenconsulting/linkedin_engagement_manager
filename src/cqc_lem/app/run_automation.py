@@ -439,6 +439,19 @@ def _feed_post_key(author: str, content: str) -> str:
     return f"feedpost://{digest}"
 
 
+def _post_permalink_from_card(card):
+    """Real LinkedIn permalink for a feed post, read from its /feed/update/ anchor (the SDUI
+    card has no data-urn). Returns a normalized https URL or None."""
+    try:
+        for a in card.find_elements(By.CSS_SELECTOR, "a[href*='/feed/update/']"):
+            href = (a.get_attribute("href") or "").split("?")[0]
+            if "/feed/update/" in href:
+                return href.rstrip("/") + "/"
+        return None
+    except Exception:
+        return None
+
+
 # Relative-age units → minutes. The SDUI card shows a token like "3h •", "5d •", "2w •", "10mo •".
 _AGE_UNIT_MIN = {"s": 0, "m": 1, "h": 60, "d": 1440, "w": 10080, "mo": 43200, "y": 525600}
 _AGE_TOKEN_RE = re.compile(r"^(\d+)\s?(mo|[smhdwy])", re.I)
@@ -715,7 +728,9 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             if card is None:
                 continue
             author = _post_author_from_card(card)
-            key = _feed_post_key(author, content)
+            # Prefer the real /feed/update/ permalink so the logged post_url links correctly;
+            # fall back to the synthetic hash for cards that expose no anchor.
+            key = _post_permalink_from_card(card) or _feed_post_key(author, content)
             if key in seen:
                 continue
             if has_user_commented_on_post_url(user_id, key) or not _passes_hard_excludes(content, author, prefs):
