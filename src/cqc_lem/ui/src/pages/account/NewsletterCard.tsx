@@ -15,6 +15,9 @@ const fmt = (iso: string | null) => {
   })
 }
 
+// 12-hour label for an hour-of-day 0–23 (never 24h): 0 -> "12:00 AM", 13 -> "1:00 PM".
+const hour12Label = (h: number) => `${h % 12 === 0 ? 12 : h % 12}:00 ${h < 12 ? 'AM' : 'PM'}`
+
 export default function NewsletterCard() {
   const { sessionToken } = useAuth()
   const queryClient = useQueryClient()
@@ -132,7 +135,7 @@ export default function NewsletterCard() {
               <select value={newsletter.publish_hour} onChange={(e) => setNl({ publish_hour: Number(e.target.value) })}
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
                 {Array.from({ length: 24 }, (_, h) => (
-                  <option key={h} value={h}>{`${h.toString().padStart(2, '0')}:00`}</option>
+                  <option key={h} value={h}>{hour12Label(h)}</option>
                 ))}
               </select>
             </div>
