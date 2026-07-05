@@ -2424,8 +2424,10 @@ def record_lead_magnet_sent(user_id: int, recipient_profile: str, post_id: int =
 _NEWSLETTER_DEFAULTS: dict = {
     "enabled": False, "title": None, "topic": None, "cadence": "weekly",
     "align_with_blog": True, "newsletter_url": None, "last_published_at": None,
+    "publish_day": 1, "publish_hour": 9,
 }
-_NEWSLETTER_COLS = ("enabled", "title", "topic", "cadence", "align_with_blog", "newsletter_url")
+_NEWSLETTER_COLS = ("enabled", "title", "topic", "cadence", "align_with_blog", "newsletter_url",
+                    "publish_day", "publish_hour")
 
 
 def get_newsletter_settings(user_id: int) -> dict:
@@ -2434,13 +2436,16 @@ def get_newsletter_settings(user_id: int) -> dict:
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute(
-            "SELECT enabled, title, topic, cadence, align_with_blog, newsletter_url, last_published_at "
+            "SELECT enabled, title, topic, cadence, align_with_blog, newsletter_url, last_published_at, "
+            "publish_day, publish_hour "
             "FROM newsletter_settings WHERE user_id = %s", (user_id,))
         row = cursor.fetchone()
         if row is None:
             return dict(_NEWSLETTER_DEFAULTS)
         row["enabled"] = bool(row.get("enabled"))
         row["align_with_blog"] = bool(row.get("align_with_blog"))
+        row["publish_day"] = int(row.get("publish_day") if row.get("publish_day") is not None else 1)
+        row["publish_hour"] = int(row.get("publish_hour") if row.get("publish_hour") is not None else 9)
         return row
     except mysql.connector.Error as err:
         myprint(f"Could not get newsletter settings for user {user_id} | Error: {err}")
@@ -2509,6 +2514,153 @@ def get_newsletter_due_user_ids(now) -> list:
     except mysql.connector.Error as err:
         myprint(f"Could not get newsletter-due users | Error: {err}")
         return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_enabled_newsletter_user_ids() -> list:
+    """User IDs whose newsletter is enabled (regardless of cadence timing)."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT user_id FROM newsletter_settings WHERE enabled=1")
+        return [r[0] for r in cursor.fetchall()]
+    except mysql.connector.Error as err:
+        myprint(f"Could not get enabled newsletter users | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def create_newsletter_edition(user_id: int, title: str, subtitle: str, body: str,
+                              scheduled_for) -> int:
+    """Insert a draft newsletter edition (status defaults to 'draft'). Returns its id."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO newsletter_editions (user_id, title, subtitle, body, scheduled_for) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (user_id, title, subtitle, body, scheduled_for))
+        connection.commit()
+        return cursor.lastrowid
+    except mysql.connector.Error as err:
+        myprint(f"Could not create newsletter edition for user {user_id} | Error: {err}")
+        return 0
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_pending_newsletter_edition(user_id: int) -> "dict | None":
+    """The most recent edition still under review (status draft/approved) for this user."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT id, title, subtitle, body, status, scheduled_for FROM newsletter_editions "
+            "WHERE user_id = %s AND status IN ('draft', 'approved') "
+            "ORDER BY id DESC LIMIT 1", (user_id,))
+        return cursor.fetchone()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get pending newsletter edition for user {user_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_newsletter_edition(edition_id: int, user_id: int, title: str = None,
+                              subtitle: str = None, body: str = None,
+                              status: str = None) -> bool:
+    """Update only the provided fields on an edition, scoped to its owner (COALESCE-style)."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE newsletter_editions SET "
+            "title = COALESCE(%s, title), subtitle = COALESCE(%s, subtitle), "
+            "body = COALESCE(%s, body), status = COALESCE(%s, status) "
+            "WHERE id = %s AND user_id = %s",
+            (title, subtitle, body, status, edition_id, user_id))
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not update newsletter edition {edition_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_editions_due_to_publish(now) -> list:
+    """Editions whose scheduled slot has arrived and are still awaiting publish (draft/approved)."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT id, user_id, title, subtitle, body FROM newsletter_editions "
+            "WHERE scheduled_for <= %s AND status IN ('draft', 'approved')", (now,))
+        return cursor.fetchall()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get editions due to publish | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_newsletter_edition(edition_id: int) -> "dict | None":
+    """Fetch a single newsletter edition by id."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT id, user_id, title, subtitle, body, status, scheduled_for, published_url "
+            "FROM newsletter_editions WHERE id = %s", (edition_id,))
+        return cursor.fetchone()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get newsletter edition {edition_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def mark_edition_published(edition_id: int, url: str) -> bool:
+    """Mark an edition published and roll the user's newsletter cadence forward."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE newsletter_editions SET status='published', published_at=NOW(), published_url=%s "
+            "WHERE id=%s", (url, edition_id))
+        cursor.execute(
+            "UPDATE newsletter_settings SET last_published_at=NOW() "
+            "WHERE user_id = (SELECT user_id FROM newsletter_editions WHERE id=%s)", (edition_id,))
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not mark edition {edition_id} published | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def mark_edition_failed(edition_id: int) -> bool:
+    """Mark an edition as failed to publish."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("UPDATE newsletter_editions SET status='failed' WHERE id=%s", (edition_id,))
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not mark edition {edition_id} failed | Error: {err}")
+        return False
     finally:
         cursor.close()
         connection.close()

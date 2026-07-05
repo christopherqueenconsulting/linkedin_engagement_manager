@@ -92,9 +92,13 @@ app.conf.update(
             'task': 'cqc_lem.app.run_scheduler.auto_daily_engagement',
             'schedule': crontab(hour='13', minute='0')  # Daily peak-hour feed commenting (~9am ET), on top of pre-post
         },
-        'publish-due-newsletters': {
-            'task': 'cqc_lem.app.run_scheduler.auto_publish_due_newsletters',
-            'schedule': crontab(hour='12', minute='30')  # Daily check; publishes editions whose cadence is due
+        'generate-newsletter-drafts': {
+            'task': 'cqc_lem.app.run_scheduler.auto_generate_newsletter_drafts',
+            'schedule': crontab(hour='10', minute='0')  # Daily: draft editions ~3 days before their slot for review
+        },
+        'publish-scheduled-newsletters': {
+            'task': 'cqc_lem.app.run_scheduler.auto_publish_scheduled_editions',
+            'schedule': crontab(minute='5')  # Hourly: publish any edition whose scheduled slot has arrived
         },
         'sync-user-groups': {
             'task': 'cqc_lem.app.run_scheduler.auto_sync_groups',

@@ -31,7 +31,25 @@ export type NewsletterSettings = {
   topic: string | null
   cadence: string
   align_with_blog: boolean
+  publish_day: number
+  publish_hour: number
 }
+
+export type NewsletterEdition = {
+  id: number
+  title: string | null
+  subtitle: string | null
+  body: string | null
+  status: string
+  scheduled_for: string | null
+}
+
+export type NewsletterDraft = {
+  edition: NewsletterEdition | null
+  next_publish: string | null
+}
+
+export const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 
 export type UserGroup = {
   group_id: string

@@ -71,6 +71,24 @@ def test_throttle_zero_always_sends(monkeypatch):
         sc.assert_called_once()
 
 
+def test_newsletter_draft_ready_sends():
+    from datetime import datetime
+    from cqc_lem.utilities.notifications import notify_newsletter_draft_ready
+    with patch(f"{_MOD}.get_user_email", return_value="u@e.com"), \
+         patch(f"{_MOD}.send_newsletter_draft_ready_email", return_value=True) as snd:
+        assert notify_newsletter_draft_ready(3, "My Edition", datetime(2026, 7, 7, 13, 0)) is True
+        snd.assert_called_once()
+        assert snd.call_args[0][1] == "My Edition"
+
+
+def test_newsletter_draft_ready_no_email():
+    from cqc_lem.utilities.notifications import notify_newsletter_draft_ready
+    with patch(f"{_MOD}.get_user_email", return_value=None), \
+         patch(f"{_MOD}.send_newsletter_draft_ready_email") as snd:
+        assert notify_newsletter_draft_ready(3, "My Edition", "2026-07-07") is False
+        snd.assert_not_called()
+
+
 def test_not_stamped_when_send_fails(monkeypatch):
     monkeypatch.setenv("LINKEDIN_SESSION_EMAIL_THROTTLE_DAYS", "7")
     with patch(f"{_MOD}.get_linkedin_session_email_sent_at", return_value=None), \
