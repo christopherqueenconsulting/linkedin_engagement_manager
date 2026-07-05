@@ -806,10 +806,39 @@ def _comment_items_from_thread(driver):
     return items
 
 
-def _fill_and_publish_article(driver, wait, title: str, body: str) -> "str | None":
+def _fill_edition_description(driver, wait, subtitle: str) -> bool:
+    """Best-effort: fill the newsletter edition-description field in the publish dialog. LinkedIn
+    surfaces a 'what this edition is about' textarea/contenteditable whose placeholder/aria mentions
+    'edition', 'about', or 'what this'. Non-fatal — the field wasn't present in one live run, so we
+    never block publishing on it (fail fast: max_try=1, no retries)."""
+    if not subtitle:
+        return False
+    _lower = "translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz')"
+    candidates = []
+    for attr in ("@placeholder", "@aria-label"):
+        _l = f"translate({attr},'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz')"
+        for kw in ("edition", "about", "what this"):
+            candidates.append(
+                (By.XPATH, f"//*[(self::textarea or @role='textbox' or @contenteditable='true') "
+                           f"and contains({_l},'{kw}')]"))
+    try:
+        desc_el = find_first(driver, wait, candidates, "Edition description",
+                             visible_only=True, required=False, max_try=1)
+        if desc_el is None:
+            return False
+        desc_el.click()
+        desc_el.send_keys(_strip_non_bmp(subtitle))
+        time.sleep(random.uniform(1, 2))
+        return True
+    except Exception:
+        return False
+
+
+def _fill_and_publish_article(driver, wait, title: str, body: str, subtitle: str = None) -> "str | None":
     """Fill LinkedIn's article editor (title textarea + contenteditable body) and run the
-    Next → Publish flow. Returns the published article URL, or None. Best-effort — the multi-step
-    publish dialog varies, so this is validated on a supervised first real run."""
+    Next → Publish flow. On the publish dialog, best-effort fills the edition description with
+    `subtitle`. Returns the published article URL, or None. Best-effort — the multi-step publish
+    dialog varies, so this is validated on a supervised first real run."""
     title_el = find_first(driver, wait, [(By.CSS_SELECTOR, "textarea[placeholder='Title']")],
                           "Article title", required=False)
     body_el = find_first(driver, wait, [(By.CSS_SELECTOR, "div[role='textbox'][aria-label*='Article editor']"),
@@ -827,6 +856,7 @@ def _fill_and_publish_article(driver, wait, title: str, body: str) -> "str | Non
                    "Article Next", required=False) is None:
         return None
     time.sleep(random.uniform(2, 4))
+    _fill_edition_description(driver, wait, subtitle)   # best-effort; never blocks publishing
     if click_first(driver, wait, [(By.XPATH, "//button[normalize-space()='Publish']")],
                    "Article Publish", required=False) is None:
         return None
@@ -856,7 +886,8 @@ def auto_publish_newsletter_edition(self, user_id: int):
             return "No newsletter edition generated"
         driver.get("https://www.linkedin.com/article/new/")
         time.sleep(random.uniform(6, 9))
-        url = _fill_and_publish_article(driver, wait, edition["title"], edition["body"])
+        url = _fill_and_publish_article(driver, wait, edition["title"], edition["body"],
+                                        subtitle=edition.get("subtitle"))
         if url:
             mark_newsletter_published(user_id, url)
             myprint(f"Published newsletter edition for user {user_id}: {edition['title']}")

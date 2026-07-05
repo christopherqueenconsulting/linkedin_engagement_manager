@@ -205,25 +205,66 @@ def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=No
     return content.strip() if content is not None else None
 
 
+def _clean_newsletter_body(body: str) -> str:
+    """Safety net: strip stray markdown the model may slip in (headers, bold, bullet markers) so the
+    body typed via Selenium send_keys is clean — LinkedIn's article editor does NOT render markdown.
+    Reuses sanitize_for_linkedin (which keeps blank-line spacing between sections intact)."""
+    from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin
+    return sanitize_for_linkedin(body or "")
+
+
 def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
                                 blog_content: str = None, prefs: dict = None) -> "dict | None":
-    """Generate one LinkedIn newsletter edition (title + body) in the author's voice, repurposing
-    the author's blog content when provided. Save-worthy, structured, native (no reliance on an
-    external link). Returns {'title','body'} or None."""
+    """Generate one substantial LinkedIn newsletter edition in the author's voice, repurposing the
+    author's blog content when provided. Aims for ~800–1200 words with a strong hook, 3–5 developed
+    sections, a takeaways block, and a reply-driving CTA — worth an email, not a skeleton. Body is
+    PLAIN TEXT (no markdown; LinkedIn's article editor renders none). Returns
+    {'title','subtitle','body'} or None."""
     import json as _json
     src = f"\n\nSource material to repurpose (from the author's blog):\n{blog_content[:4000]}" if blog_content else ""
     topic_line = f"Topic/theme for this edition: {topic}\n" if topic else ""
     system_prompt = {
         "role": "system",
         "content": """You are a LinkedIn newsletter ghostwriter for the profile user. Write ONE
-        newsletter edition that builds authority and is SAVE-WORTHY — a framework, checklist, or
-        clear how-to the reader will bookmark. Structure: a scroll-stopping title; a 1–2 line hook;
-        3–5 short sections with subheads; a concise takeaway; and a soft CTA that invites replies or
-        subscribing (NOT an external link — LinkedIn penalizes those). Native, skimmable, in the
-        author's authentic voice. Return ONLY valid JSON: {"title": "...", "body": "..."} where body
-        is the full article text with line breaks (\\n).""",
+        COMPLETE, SUBSTANTIAL newsletter edition that builds authority and is genuinely worth landing
+        in a subscriber's inbox — never a skimpy skeleton.
+
+        LENGTH: Aim for roughly 800–1200 words. On LinkedIn, thin editions underperform; the
+        best-read newsletters run long enough to teach something real while staying scannable.
+
+        STRUCTURE (in this order):
+        1. A strong 2–4 line HOOK/lede that names a specific pain, tension, or promise and makes the
+           reader want to keep going. No throat-clearing, no "In today's edition...".
+        2. 3-5 WELL-DEVELOPED sections. Each section = a plain-text subhead on its own line, then 2-4
+           short paragraphs that make ONE point and back it with a concrete example, brief story,
+           data point, or step-by-step — NOT a single throwaway line. Depth is the whole job here.
+        3. A KEY TAKEAWAYS block: a short recap (3-5 crisp lines the reader could screenshot).
+        4. A soft CTA that invites REPLIES (ask an open, specific question) and invites the reader to
+           subscribe. NO external links — LinkedIn suppresses off-platform links.
+
+        FORMATTING — CRITICAL. The body is typed into LinkedIn's article editor, which renders NO
+        markdown. Output PLAIN TEXT only:
+        - NEVER use markdown: no '#'/'##' headers, no '**bold**' or '*italic*', no '- ' bullet
+          syntax, no '[text](url)' links, no backticks.
+        - Write section headers in Title Case or UPPERCASE on their OWN line, with a blank line above
+          and below.
+        - For any list, put each item on its own short line beginning with a literal "-> " or a
+          bullet character.
+        - Use short paragraphs and blank lines between them for white space and readability.
+
+        VOICE: the author's authentic voice and expertise, confident and human. No emojis unless the
+        author clearly uses them.
+
+        Return ONLY valid JSON with exactly these keys:
+        {"title": "...", "subtitle": "...", "body": "..."}
+        - title: a specific, benefit-driven, scroll-stopping edition title (<= ~90 chars).
+        - subtitle: a <= 150 character description of what THIS edition delivers and why to read it
+          (for LinkedIn's edition-description field). Plain text, no markdown.
+        - body: the full plain-text article with real line breaks (\\n) as described above.""",
     }
-    user_prompt = {"role": "user", "content": f"Author profile:\n{profile.model_dump_json()}\n\n{topic_line}{src}"}
+    user_prompt = {"role": "user",
+                   "content": f"Author profile:\n{profile.model_dump_json()}\n\n{topic_line}{src}"
+                              f"{_style_directive(prefs)}"}
     response = _call_llm(model="lem-complex", messages=[system_prompt, user_prompt],
                          temperature=round(random.uniform(0.5, 0.7), 2))
     content = response.choices[0].message.content
@@ -232,11 +273,18 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
     try:
         data = _json.loads(content)
         if data.get("title") and data.get("body"):
-            return {"title": str(data["title"]).strip()[:255], "body": str(data["body"]).strip()}
+            title = str(data["title"]).strip()[:255]
+            body = _clean_newsletter_body(str(data["body"]).strip())
+            subtitle = str(data.get("subtitle") or "").strip()[:150]
+            if not subtitle:
+                subtitle = (topic or title).strip()[:150]
+            return {"title": title, "subtitle": subtitle, "body": body}
     except (ValueError, TypeError, AttributeError):
         pass
     parts = content.strip().split("\n", 1)   # fallback: first line = title, remainder = body
-    return {"title": parts[0].strip()[:255], "body": (parts[1].strip() if len(parts) > 1 else content.strip())}
+    title = parts[0].strip()[:255]
+    body = _clean_newsletter_body(parts[1].strip() if len(parts) > 1 else content.strip())
+    return {"title": title, "subtitle": (topic or title).strip()[:150], "body": body}
 
 
 def generate_group_post(profile: "LinkedInProfile", group_name: str = None, prefs: dict = None) -> "str | None":
