@@ -132,6 +132,31 @@ class TestGetActivity:
         assert resp.status_code == 200
         assert resp.json()["detail"] == []
 
+    def test_created_at_serialized_as_explicit_utc(self, client):
+        log_row = {
+            "id": 1, "action_type": "post", "result": "success", "post_id": 10,
+            "post_url": "https://linkedin.com/p/123", "message": "ok",
+            "created_at": datetime(2024, 1, 15, 12, 0, 0),  # naive == UTC
+        }
+        with patch(f"{_MAIN}.get_user_id", return_value=5), \
+             patch(f"{_MAIN}.get_recent_logs", return_value=[log_row]):
+            resp = client.get(self.BASE, params={"email": "user@example.com"})
+        assert resp.json()["detail"][0]["created_at"] == "2024-01-15T12:00:00Z"
+
+    def test_synthetic_feedpost_url_blanked(self, client):
+        rows = [
+            {"id": 1, "action_type": "comment", "result": "success", "post_id": None,
+             "post_url": "feedpost://abc123", "message": "nice", "created_at": datetime(2024, 1, 1)},
+            {"id": 2, "action_type": "post", "result": "success", "post_id": 3,
+             "post_url": "https://www.linkedin.com/feed/update/x", "message": "up",
+             "created_at": datetime(2024, 1, 2)},
+        ]
+        with patch(f"{_MAIN}.get_user_id", return_value=5), \
+             patch(f"{_MAIN}.get_recent_logs", return_value=rows):
+            detail = client.get(self.BASE, params={"email": "user@example.com"}).json()["detail"]
+        assert detail[0]["post_url"] is None                                      # feedpost:// hidden
+        assert detail[1]["post_url"] == "https://www.linkedin.com/feed/update/x"  # real permalink kept
+
 
 # ---------------------------------------------------------------------------
 # PUT /api/user/
