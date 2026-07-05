@@ -131,7 +131,9 @@ services:
       selenium-chrome:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "celery --app cqc_lem.app.my_celery inspect ping -d selenium-${SELENIUM_QUEUES}-worker@$(hostname) -t 10 || exit 1"]
+      # $$ escapes compose interpolation so the CONTAINER shell expands SELENIUM_QUEUES at runtime
+      # (a bare $ is blanked by compose at parse time → selenium--worker → matches no node → false unhealthy).
+      test: ["CMD-SHELL", "celery --app cqc_lem.app.my_celery inspect ping -d selenium-$${SELENIUM_QUEUES}-worker@$(hostname) -t 10 || exit 1"]
       interval: 30s
       timeout: 30s
       retries: 3
@@ -165,7 +167,9 @@ services:
       selenium-chrome:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "celery --app cqc_lem.app.my_celery inspect ping -d selenium-${SELENIUM_QUEUES}-worker@$(hostname) -t 10 || exit 1"]
+      # $$ escapes compose interpolation so the CONTAINER shell expands SELENIUM_QUEUES at runtime
+      # (a bare $ is blanked by compose at parse time → selenium--worker → matches no node → false unhealthy).
+      test: ["CMD-SHELL", "celery --app cqc_lem.app.my_celery inspect ping -d selenium-$${SELENIUM_QUEUES}-worker@$(hostname) -t 10 || exit 1"]
       interval: 30s
       timeout: 30s
       retries: 3
@@ -199,7 +203,9 @@ services:
       selenium-chrome:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "celery --app cqc_lem.app.my_celery inspect ping -d selenium-${SELENIUM_QUEUES}-worker@$(hostname) -t 10 || exit 1"]
+      # $$ escapes compose interpolation so the CONTAINER shell expands SELENIUM_QUEUES at runtime
+      # (a bare $ is blanked by compose at parse time → selenium--worker → matches no node → false unhealthy).
+      test: ["CMD-SHELL", "celery --app cqc_lem.app.my_celery inspect ping -d selenium-$${SELENIUM_QUEUES}-worker@$(hostname) -t 10 || exit 1"]
       interval: 30s
       timeout: 30s
       retries: 3
