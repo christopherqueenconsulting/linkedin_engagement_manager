@@ -1232,6 +1232,25 @@ def get_user_sitemap_url(user_id: int):
     return sitemap_url[0] if sitemap_url else None
 
 
+def get_linkedin_profile_url_by_user_id(user_id: int) -> Optional[str]:
+    """Return the user's own LinkedIn profile URL (e.g. https://www.linkedin.com/in/<vanity>/).
+    Only the user's own scraped profile carries a non-null user_id in the profiles table."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+
+    try:
+        cursor.execute("SELECT profile_url FROM profiles WHERE user_id = %s LIMIT 1", (user_id,))
+        row = cursor.fetchone()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get user linkedin profile url | Error: {err}")
+        row = None
+    finally:
+        cursor.close()
+        connection.close()
+
+    return row[0] if row else None
+
+
 _ALLOWED_USER_CLAUSES = frozenset({"email = %s", "blog_url = %s", "sitemap_url = %s"})
 
 

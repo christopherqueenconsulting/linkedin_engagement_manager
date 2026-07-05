@@ -34,7 +34,7 @@ from cqc_lem.utilities.db import (
     update_subscription_from_stripe, update_user_linkedin_token,
     get_users_with_stripe_subscriptions,
     update_user_linkedin_password,
-    get_user_blog_url, get_user_sitemap_url,
+    get_user_blog_url, get_user_sitemap_url, get_linkedin_profile_url_by_user_id,
     get_user_by_stripe_customer_id, get_avatar_credit_ledger_entry_by_session,
     get_avatar_credit_balance, add_avatar_credits,
     get_video_credit_balance, add_video_credits,
@@ -1183,6 +1183,16 @@ def get_user_timezone_endpoint(session_token: str) -> ResponseModel:
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     return ResponseModel(status_code=200, detail={"timezone": get_user_timezone(user_id)})
+
+
+@router.get("/user/linkedin-profile")
+def get_user_linkedin_profile_endpoint(session_token: str) -> ResponseModel:
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return ResponseModel(status_code=200, detail={
+        "linkedin_profile_url": get_linkedin_profile_url_by_user_id(user_id),
+    })
 
 
 @router.put("/user/timezone")
