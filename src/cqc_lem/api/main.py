@@ -28,6 +28,8 @@ from cqc_lem.utilities.db import (
     get_user_subscription_info, get_user_preferences, update_user_preferences,
     get_engagement_preferences, update_engagement_preferences,
     get_newsletter_settings, update_newsletter_settings,
+    get_pending_newsletter_edition, update_newsletter_edition, get_newsletter_edition,
+    get_user_timezone,
     get_user_groups, set_groups_enabled, get_post_engagement_rows,
     get_lead_magnet_settings, update_lead_magnet_settings,
     get_dm_templates, upsert_dm_templates,
@@ -267,6 +269,17 @@ class NewsletterSettingsRequest(BaseModel):
     topic: Optional[str] = None
     cadence: str = "weekly"
     align_with_blog: bool = True
+    publish_day: int = 1
+    publish_hour: int = 9
+
+
+class NewsletterDraftRequest(BaseModel):
+    session_token: str
+    edition_id: int
+    title: Optional[str] = None
+    subtitle: Optional[str] = None
+    body: Optional[str] = None
+    action: str = "save"
 
 
 class EngagementPreferencesRequest(BaseModel):
@@ -1078,6 +1091,52 @@ def update_newsletter_settings_endpoint(request: NewsletterSettingsRequest) -> R
     if not update_newsletter_settings(user_id, request.model_dump(exclude={"session_token"})):
         raise HTTPException(status_code=500, detail="Could not update newsletter settings")
     return ResponseModel(status_code=200, detail="Newsletter settings updated")
+
+
+def _compute_next_publish(user_id: int):
+    """Next scheduled publish datetime (naive UTC) for the user's newsletter, or None."""
+    import pytz
+    from datetime import datetime as _dt
+    from cqc_lem.utilities.newsletter import next_publish_datetime
+    settings = get_newsletter_settings(user_id)
+    try:
+        tz = pytz.timezone(get_user_timezone(user_id))
+    except Exception:
+        tz = pytz.utc
+    return next_publish_datetime(
+        settings.get("publish_day", 1), settings.get("publish_hour", 9),
+        settings.get("cadence", "weekly"), settings.get("last_published_at"), tz, _dt.utcnow())
+
+
+@router.get("/user/newsletter-draft")
+def get_newsletter_draft_endpoint(session_token: str) -> ResponseModel:
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    edition = get_pending_newsletter_edition(user_id)
+    if edition and edition.get("scheduled_for") is not None:
+        edition["scheduled_for"] = edition["scheduled_for"].isoformat() if hasattr(
+            edition["scheduled_for"], "isoformat") else str(edition["scheduled_for"])
+    next_pub = _compute_next_publish(user_id)
+    return ResponseModel(status_code=200, detail={
+        "edition": edition,
+        "next_publish": next_pub.isoformat() if next_pub is not None else None,
+    })
+
+
+@router.put("/user/newsletter-draft")
+def update_newsletter_draft_endpoint(request: NewsletterDraftRequest) -> ResponseModel:
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    existing = get_newsletter_edition(request.edition_id)
+    if not existing or existing.get("user_id") != user_id:
+        raise HTTPException(status_code=404, detail="Edition not found")
+    status = {"approve": "approved", "skip": "skipped"}.get(request.action)  # None for 'save'
+    if not update_newsletter_edition(request.edition_id, user_id, title=request.title,
+                                     subtitle=request.subtitle, body=request.body, status=status):
+        raise HTTPException(status_code=500, detail="Could not update newsletter draft")
+    return ResponseModel(status_code=200, detail="Newsletter draft updated")
 
 
 class GroupTogglesRequest(BaseModel):

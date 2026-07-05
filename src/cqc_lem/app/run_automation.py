@@ -20,6 +20,7 @@ from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, insert_new_log, LogActionType, \
     get_engagement_preferences, count_comments_today, get_recent_engagers, upsert_engager, \
     get_newsletter_settings, mark_newsletter_published, \
+    get_newsletter_edition, mark_edition_published, mark_edition_failed, \
     upsert_user_group, get_enabled_group_ids, record_post_stats, get_recent_posted_post_ids, \
     get_lead_magnet_settings, has_received_lead_magnet, record_lead_magnet_sent, \
     LogResultType, has_user_commented_on_post_url, get_post_url_from_log_for_user, get_post_message_from_log_for_user, \
@@ -911,6 +912,40 @@ def auto_publish_newsletter_edition(self, user_id: int):
     except Exception as e:
         log_error("Newsletter publish error", exc=e, user_id=user_id, task_name="auto_publish_newsletter_edition")
         return f"Newsletter error: {e}"
+    finally:
+        quit_gracefully(driver)
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['edition_id']},
+                  queue='selenium')
+def auto_publish_edition(self, edition_id: int):
+    """Publish a reviewed/untouched newsletter edition at its scheduled slot. Loads the pre-generated
+    edition (draft or approved), fills LinkedIn's article editor, and records the outcome. Best-effort
+    — the multi-step publish flow varies; first real publish should be supervised."""
+    edition = get_newsletter_edition(edition_id)
+    if not edition or edition.get("status") not in ("draft", "approved"):
+        return f"Edition {edition_id} not publishable"
+    user_id = edition["user_id"]
+    try:
+        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Newsletter")
+    except Exception as e:
+        log_error("Error getting profile for newsletter edition", exc=e, user_id=user_id, task_name="auto_publish_edition")
+        return f"Failed to start newsletter edition: {e}"
+    try:
+        driver.get("https://www.linkedin.com/article/new/")
+        time.sleep(random.uniform(6, 9))
+        url = _fill_and_publish_article(driver, wait, edition["title"], edition["body"],
+                                        subtitle=edition.get("subtitle"))
+        if url:
+            mark_edition_published(edition_id, url)
+            myprint(f"Published newsletter edition {edition_id} for user {user_id}: {edition['title']}")
+            return f"Published newsletter edition: {edition['title']}"
+        mark_edition_failed(edition_id)
+        return "Newsletter edition publish flow did not complete"
+    except Exception as e:
+        log_error("Newsletter edition publish error", exc=e, user_id=user_id, task_name="auto_publish_edition")
+        mark_edition_failed(edition_id)
+        return f"Newsletter edition error: {e}"
     finally:
         quit_gracefully(driver)
 

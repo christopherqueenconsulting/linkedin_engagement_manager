@@ -282,6 +282,28 @@ def send_session_revalidation_email(to_email: str, account_url: Optional[str] = 
         to_email, "⚠️ Action needed: reconnect your LinkedIn session", html)
 
 
+def send_newsletter_draft_ready_email(to_email: str, edition_title: str,
+                                      scheduled_for: str, account_url: Optional[str] = None) -> bool:
+    """Email a user that their newsletter draft is ready to review before it auto-publishes."""
+    url = account_url or _account_url()
+    title = edition_title or "Your next edition"
+    html = f"""
+    <html><body>
+    <h2>Your newsletter draft is ready to review</h2>
+    <p>We drafted your next LinkedIn newsletter edition, <strong>{title}</strong>.
+    Review, edit, approve, or skip it before it goes out.</p>
+    <p>If you do nothing, it will <strong>auto-publish as-is on {scheduled_for}</strong> so your
+    cadence never breaks.</p>
+    <p><a href="{url}" style="background:#0a66c2;color:#fff;padding:10px 16px;border-radius:6px;
+    text-decoration:none;">Review your draft</a></p>
+    <p style="color:#888;font-size:12px;">You can edit the title, subtitle, and body, or skip this
+    edition entirely from your account page.</p>
+    </body></html>
+    """
+    return _send_high_priority_email(
+        to_email, f"📝 Your newsletter draft is ready: {title}", html)
+
+
 def send_pin_email(
     to_email: str,
     pin: str,

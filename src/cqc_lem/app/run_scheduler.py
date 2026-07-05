@@ -132,14 +132,54 @@ def auto_daily_engagement():
 
 
 @shared_task.task
-def auto_publish_due_newsletters():
-    """Publish a newsletter edition for each user whose enabled newsletter is due per its cadence."""
-    from cqc_lem.app.run_automation import auto_publish_newsletter_edition
-    from cqc_lem.utilities.db import get_newsletter_due_user_ids
-    due = get_newsletter_due_user_ids(datetime.utcnow())
-    for uid in due:
-        auto_publish_newsletter_edition.apply_async(kwargs={'user_id': uid})
-    return f"Dispatched newsletter edition for {len(due)} user(s)"
+def auto_generate_newsletter_drafts():
+    """Generate a draft edition ~GENERATE_LEAD_DAYS before each enabled user's next slot, so they
+    have time to review before it auto-publishes. Skips users who already have a pending edition."""
+    import pytz
+    from cqc_lem.utilities.db import (get_enabled_newsletter_user_ids, get_newsletter_settings,
+                                      get_user_timezone, get_pending_newsletter_edition,
+                                      create_newsletter_edition)
+    from cqc_lem.utilities.linkedin.helper import load_profile_for_user
+    from cqc_lem.utilities.ai.ai_helper import generate_newsletter_edition
+    from cqc_lem.utilities.newsletter import next_publish_datetime, should_generate_now
+    from cqc_lem.utilities.notifications import notify_newsletter_draft_ready
+
+    now = datetime.utcnow()
+    generated = 0
+    for user_id in get_enabled_newsletter_user_ids():
+        try:
+            settings = get_newsletter_settings(user_id)
+            tz = pytz.timezone(get_user_timezone(user_id))
+            next_pub = next_publish_datetime(
+                settings.get("publish_day", 1), settings.get("publish_hour", 9),
+                settings.get("cadence", "weekly"), settings.get("last_published_at"), tz, now)
+            if not should_generate_now(next_pub, now):
+                continue
+            if get_pending_newsletter_edition(user_id) is not None:
+                continue
+            profile = load_profile_for_user(user_id)
+            edition = generate_newsletter_edition(profile, topic=settings.get("topic"))
+            if not edition:
+                continue
+            create_newsletter_edition(user_id, edition["title"], edition.get("subtitle"),
+                                      edition["body"], next_pub)
+            notify_newsletter_draft_ready(user_id, edition["title"], next_pub)
+            generated += 1
+        except Exception as e:
+            log_warning("Failed to generate newsletter draft", exc=e, user_id=user_id,
+                        task_name="auto_generate_newsletter_drafts")
+    return f"Generated newsletter draft for {generated} user(s)"
+
+
+@shared_task.task
+def auto_publish_scheduled_editions():
+    """Publish any newsletter edition whose scheduled slot has arrived (approved or untouched draft)."""
+    from cqc_lem.app.run_automation import auto_publish_edition
+    from cqc_lem.utilities.db import get_editions_due_to_publish
+    due = get_editions_due_to_publish(datetime.utcnow())
+    for e in due:
+        auto_publish_edition.apply_async(kwargs={'edition_id': e['id']})
+    return f"Dispatched {len(due)} newsletter edition(s)"
 
 
 @shared_task.task

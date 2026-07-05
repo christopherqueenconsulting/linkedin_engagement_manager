@@ -48,7 +48,89 @@ class TestNewsletterSettings:
         args = upd.call_args[0][1]
         assert "session_token" not in args and args["title"] == "Weekly Wins"
 
+    def test_put_passes_publish_day_hour(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_newsletter_settings", return_value=True) as upd:
+            resp = client.put("/api/user/newsletter-settings", json={
+                "session_token": _SESSION, "enabled": True, "publish_day": 3, "publish_hour": 14})
+        assert resp.status_code == 200
+        args = upd.call_args[0][1]
+        assert args["publish_day"] == 3 and args["publish_hour"] == 14
+
     def test_401(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=None):
             resp = client.get("/api/user/newsletter-settings?session_token=bad")
+        assert resp.status_code == 401
+
+
+class TestNewsletterDraft:
+    def test_get_returns_edition_and_next_publish(self, client):
+        from datetime import datetime
+        edition = {"id": 4, "title": "T", "subtitle": "S", "body": "B", "status": "draft",
+                   "scheduled_for": datetime(2026, 7, 7, 13, 0, 0)}
+        settings = {"publish_day": 1, "publish_hour": 9, "cadence": "weekly", "last_published_at": None}
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_pending_newsletter_edition", return_value=edition), \
+             patch("cqc_lem.api.main.get_newsletter_settings", return_value=settings), \
+             patch("cqc_lem.api.main.get_user_timezone", return_value="UTC"):
+            resp = client.get(f"/api/user/newsletter-draft?session_token={_SESSION}")
+        assert resp.status_code == 200
+        detail = resp.json()["detail"]
+        assert detail["edition"]["id"] == 4
+        assert detail["edition"]["scheduled_for"].startswith("2026-07-07")
+        assert detail["next_publish"] is not None
+
+    def test_get_null_when_no_edition(self, client):
+        settings = {"publish_day": 1, "publish_hour": 9, "cadence": "weekly", "last_published_at": None}
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_pending_newsletter_edition", return_value=None), \
+             patch("cqc_lem.api.main.get_newsletter_settings", return_value=settings), \
+             patch("cqc_lem.api.main.get_user_timezone", return_value="UTC"):
+            resp = client.get(f"/api/user/newsletter-draft?session_token={_SESSION}")
+        assert resp.status_code == 200
+        assert resp.json()["detail"]["edition"] is None
+
+    def test_get_401(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=None):
+            resp = client.get("/api/user/newsletter-draft?session_token=bad")
+        assert resp.status_code == 401
+
+    def test_put_approve(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_newsletter_edition", return_value={"id": 4, "user_id": _USER}), \
+             patch("cqc_lem.api.main.update_newsletter_edition", return_value=True) as upd:
+            resp = client.put("/api/user/newsletter-draft", json={
+                "session_token": _SESSION, "edition_id": 4, "action": "approve"})
+        assert resp.status_code == 200
+        assert upd.call_args.kwargs["status"] == "approved"
+
+    def test_put_skip(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_newsletter_edition", return_value={"id": 4, "user_id": _USER}), \
+             patch("cqc_lem.api.main.update_newsletter_edition", return_value=True) as upd:
+            resp = client.put("/api/user/newsletter-draft", json={
+                "session_token": _SESSION, "edition_id": 4, "action": "skip"})
+        assert resp.status_code == 200
+        assert upd.call_args.kwargs["status"] == "skipped"
+
+    def test_put_save_leaves_status_none(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_newsletter_edition", return_value={"id": 4, "user_id": _USER}), \
+             patch("cqc_lem.api.main.update_newsletter_edition", return_value=True) as upd:
+            resp = client.put("/api/user/newsletter-draft", json={
+                "session_token": _SESSION, "edition_id": 4, "title": "New", "action": "save"})
+        assert resp.status_code == 200
+        assert upd.call_args.kwargs["status"] is None
+
+    def test_put_404_when_not_owner(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_newsletter_edition", return_value={"id": 4, "user_id": 999}):
+            resp = client.put("/api/user/newsletter-draft", json={
+                "session_token": _SESSION, "edition_id": 4, "action": "save"})
+        assert resp.status_code == 404
+
+    def test_put_401(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=None):
+            resp = client.put("/api/user/newsletter-draft", json={
+                "session_token": "bad", "edition_id": 4, "action": "save"})
         assert resp.status_code == 401
