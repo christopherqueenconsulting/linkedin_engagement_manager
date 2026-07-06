@@ -319,6 +319,12 @@ class NewsletterDraftRequest(BaseModel):
     action: str = "save"
 
 
+class NewsletterRegenerateRequest(BaseModel):
+    session_token: str
+    edition_id: int
+    guidance: Optional[str] = None  # free-text "Added Guidance"; empty => AI decides a fresh take
+
+
 class EngagementPreferencesRequest(BaseModel):
     session_token: str
     tone: Optional[str] = None
@@ -1201,6 +1207,24 @@ def update_newsletter_draft_endpoint(request: NewsletterDraftRequest) -> Respons
                                      subtitle=request.subtitle, body=request.body, status=status):
         raise HTTPException(status_code=500, detail="Could not update newsletter draft")
     return ResponseModel(status_code=200, detail="Newsletter draft updated")
+
+
+@router.post("/user/newsletter-draft/regenerate")
+def regenerate_newsletter_draft_endpoint(request: NewsletterRegenerateRequest) -> ResponseModel:
+    """Regenerate a single queued edition. Generation is a slow lem-complex call, so dispatch it to a
+    Celery task and let the UI refetch the queue once it lands. Optional free-text `guidance` steers
+    the rewrite; empty guidance lets the AI decide a fresh, distinct take."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    existing = get_newsletter_edition(request.edition_id)
+    if not existing or existing.get("user_id") != user_id:
+        raise HTTPException(status_code=404, detail="Edition not found")
+    from cqc_lem.app.run_scheduler import regenerate_newsletter_edition
+    guidance = (request.guidance or "").strip() or None
+    regenerate_newsletter_edition.apply_async(
+        kwargs={"edition_id": request.edition_id, "guidance": guidance})
+    return ResponseModel(status_code=200, detail="Regeneration started")
 
 
 class GroupTogglesRequest(BaseModel):

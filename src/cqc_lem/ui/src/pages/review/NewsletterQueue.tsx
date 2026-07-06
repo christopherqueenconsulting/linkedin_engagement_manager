@@ -16,6 +16,10 @@ export default function NewsletterQueue({ userTimezone }: { userTimezone: string
   const qc = useQueryClient()
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [draftEdit, setDraftEdit] = useState<NewsletterEdition | null>(null)
+  const [guidance, setGuidance] = useState('')
+  // After a regenerate lands, force the editor to re-seed from the freshly fetched edition (same id,
+  // new content) — the normal seed effect only fires when the selection is GONE.
+  const [reseedId, setReseedId] = useState<number | null>(null)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   const { data, isLoading } = useQuery({
@@ -45,6 +49,16 @@ export default function NewsletterQueue({ userTimezone }: { userTimezone: string
     }
   }, [data, selectedId])
 
+  // Pull in regenerated content once the async task has updated the edition in place.
+  useEffect(() => {
+    if (reseedId == null) return
+    const fresh = editions.find((e) => e.id === reseedId)
+    if (fresh) {
+      setDraftEdit({ ...fresh })
+      setReseedId(null)
+    }
+  }, [data, reseedId])
+
   const setDe = (patch: Partial<NewsletterEdition>) => setDraftEdit((p) => (p ? { ...p, ...patch } : p))
 
   const draftMutation = useMutation({
@@ -69,6 +83,36 @@ export default function NewsletterQueue({ userTimezone }: { userTimezone: string
       setTimeout(() => setMsg(null), 5000)
     },
   })
+
+  const regenerateMutation = useMutation({
+    mutationFn: () =>
+      api.post('/user/newsletter-draft/regenerate', {
+        session_token: sessionToken,
+        edition_id: draftEdit!.id,
+        guidance: guidance.trim() || null,
+      }),
+    onSuccess: () => {
+      const id = draftEdit!.id
+      setGuidance('')
+      setMsg({ ok: true, text: 'Regenerating… this can take a minute.' })
+      // The task is async — refetch a couple of times to pick up the rewritten draft, then re-seed
+      // the editor from the fresh content.
+      setTimeout(() => qc.invalidateQueries({ queryKey: ['newsletter-queue'] }), 6000)
+      setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ['newsletter-queue'] })
+        setReseedId(id)
+        setMsg({ ok: true, text: 'Regenerated draft updated below.' })
+        setTimeout(() => setMsg(null), 3000)
+      }, 15000)
+    },
+    onError: () => {
+      setMsg({ ok: false, text: 'Could not start regeneration — try again.' })
+      setTimeout(() => setMsg(null), 5000)
+    },
+  })
+
+  const regenerating = regenerateMutation.isPending || reseedId != null
+  const busy = draftMutation.isPending || regenerating
 
   function selectEdition(e: NewsletterEdition) {
     setSelectedId(e.id)
@@ -148,21 +192,39 @@ export default function NewsletterQueue({ userTimezone }: { userTimezone: string
               <textarea value={draftEdit.body || ''} onChange={(e) => setDe({ body: e.target.value })} rows={10}
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
             </div>
+
+            {/* Re-generate: the prominent action. Optional guidance steers the rewrite; empty guidance
+                lets the AI pick a fresh, distinct take. */}
+            <div className="border-t border-gray-100 pt-3 space-y-2">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Added Guidance <span className="font-normal text-gray-400">(optional)</span>
+              </label>
+              <textarea value={guidance} onChange={(e) => setGuidance(e.target.value)} rows={2}
+                placeholder="What should change and why? Leave blank to let AI pick a fresh, distinct take."
+                disabled={busy}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50" />
+              <button type="button" onClick={() => regenerateMutation.mutate()} disabled={busy}
+                className="w-full bg-indigo-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors">
+                {regenerating ? 'Regenerating…' : 'Re-generate'}
+              </button>
+            </div>
+
             {msg && <p className={`text-sm font-medium ${msg.ok ? 'text-green-600' : 'text-red-600'}`}>{msg.text}</p>}
-            <div className="grid grid-cols-3 gap-2">
-              <button type="button" onClick={() => draftMutation.mutate('save')} disabled={draftMutation.isPending}
+            <div className="grid grid-cols-2 gap-2">
+              <button type="button" onClick={() => draftMutation.mutate('save')} disabled={busy}
                 className="bg-gray-100 text-gray-700 py-2 rounded-lg text-sm font-semibold hover:bg-gray-200 disabled:opacity-50 transition-colors">
                 Save
               </button>
-              <button type="button" onClick={() => draftMutation.mutate('approve')} disabled={draftMutation.isPending}
+              <button type="button" onClick={() => draftMutation.mutate('approve')} disabled={busy}
                 className="bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
                 Approve
               </button>
-              <button type="button" onClick={() => draftMutation.mutate('skip')} disabled={draftMutation.isPending}
-                className="bg-white border border-gray-300 text-gray-700 py-2 rounded-lg text-sm font-semibold hover:bg-gray-50 disabled:opacity-50 transition-colors">
-                Skip
-              </button>
             </div>
+            {/* Skip stays as a smaller secondary action — not publishing an edition is still useful. */}
+            <button type="button" onClick={() => draftMutation.mutate('skip')} disabled={busy}
+              className="w-full text-xs text-gray-400 hover:text-gray-600 disabled:opacity-50 transition-colors">
+              Skip this edition
+            </button>
           </div>
 
           <NewsletterArticlePreview

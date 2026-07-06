@@ -128,7 +128,12 @@ def _run_generate(*, settings, pending, latest=None, gen_now=True,
         p(patch("cqc_lem.utilities.db.count_pending_newsletter_editions", return_value=pending))
         p(patch("cqc_lem.utilities.db.get_latest_edition_scheduled_for", return_value=latest))
         create = p(patch("cqc_lem.utilities.db.create_newsletter_edition", **create_kw))
+        p(patch("cqc_lem.utilities.db.get_pending_newsletter_editions", return_value=[]))
+        p(patch("cqc_lem.utilities.db.get_recent_newsletter_subjects", return_value=[]))
+        p(patch("cqc_lem.utilities.db.get_engagement_preferences", return_value={}))
         p(patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=MagicMock()))
+        p(patch("cqc_lem.utilities.ai.ai_helper.get_or_create_profile_synthesis", return_value="voice brief"))
+        p(patch("cqc_lem.utilities.ai.ai_helper.plan_newsletter_topics", return_value=[]))
         p(patch("cqc_lem.utilities.ai.ai_helper.generate_newsletter_edition", **gen_kw))
         p(patch("cqc_lem.utilities.newsletter.should_generate_now", return_value=gen_now))
         notify = p(patch("cqc_lem.utilities.notifications.notify_newsletter_draft_ready"))
@@ -213,7 +218,12 @@ def _run_generate_for_user(*, settings, pending, latest=None, gen_now=True, edit
         p(patch("cqc_lem.utilities.db.count_pending_newsletter_editions", return_value=pending))
         p(patch("cqc_lem.utilities.db.get_latest_edition_scheduled_for", return_value=latest))
         create = p(patch("cqc_lem.utilities.db.create_newsletter_edition", return_value=create_ret))
+        p(patch("cqc_lem.utilities.db.get_pending_newsletter_editions", return_value=[]))
+        p(patch("cqc_lem.utilities.db.get_recent_newsletter_subjects", return_value=[]))
+        p(patch("cqc_lem.utilities.db.get_engagement_preferences", return_value={}))
         p(patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=MagicMock()))
+        p(patch("cqc_lem.utilities.ai.ai_helper.get_or_create_profile_synthesis", return_value="voice brief"))
+        p(patch("cqc_lem.utilities.ai.ai_helper.plan_newsletter_topics", return_value=[]))
         p(patch("cqc_lem.utilities.ai.ai_helper.generate_newsletter_edition", return_value=edition))
         p(patch("cqc_lem.utilities.newsletter.should_generate_now", return_value=gen_now))
         p(patch("cqc_lem.utilities.notifications.notify_newsletter_draft_ready"))
@@ -247,6 +257,123 @@ class TestGenerateNewsletterDraftsForUser:
             settings=_settings(enabled=True, max_queued_drafts=2), pending=2)
         create.assert_not_called()
         assert "Generated 0 newsletter draft" in result
+
+
+class TestTopupPlansDistinctSubjects:
+    def _drive(self, planned, pending=0, existing_subjects=None, recent=None):
+        from contextlib import ExitStack
+        from cqc_lem.app.run_scheduler import auto_generate_newsletter_drafts
+
+        def _gen(profile, topic=None, prefs=None, subject=None, avoid_subjects=None,
+                 profile_synthesis=None, guidance=None):
+            # Echo the planned subject as the generated edition's canonical subject.
+            base = subject.split(" — angle:")[0] if subject else "Auto"
+            return {"title": f"Title for {base}", "subtitle": "S", "subject": base, "body": "B"}
+
+        with ExitStack() as es:
+            p = es.enter_context
+            p(patch("cqc_lem.utilities.db.get_enabled_newsletter_user_ids", return_value=[1]))
+            p(patch("cqc_lem.utilities.db.get_newsletter_settings",
+                    return_value=_settings(max_queued_drafts=max(1, len(planned)))))
+            p(patch("cqc_lem.utilities.db.get_user_timezone", return_value="UTC"))
+            p(patch("cqc_lem.utilities.db.count_pending_newsletter_editions", return_value=pending))
+            p(patch("cqc_lem.utilities.db.get_latest_edition_scheduled_for", return_value=None))
+            pending_eds = [{"id": i, "subject": s} for i, s in enumerate(existing_subjects or [])]
+            p(patch("cqc_lem.utilities.db.get_pending_newsletter_editions", return_value=pending_eds))
+            p(patch("cqc_lem.utilities.db.get_recent_newsletter_subjects", return_value=recent or []))
+            p(patch("cqc_lem.utilities.db.get_engagement_preferences", return_value={}))
+            create = p(patch("cqc_lem.utilities.db.create_newsletter_edition", return_value=1))
+            p(patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=MagicMock()))
+            p(patch("cqc_lem.utilities.ai.ai_helper.get_or_create_profile_synthesis", return_value="brief"))
+            plan = p(patch("cqc_lem.utilities.ai.ai_helper.plan_newsletter_topics", return_value=planned))
+            p(patch("cqc_lem.utilities.ai.ai_helper.generate_newsletter_edition", side_effect=_gen))
+            p(patch("cqc_lem.utilities.newsletter.should_generate_now", return_value=True))
+            p(patch("cqc_lem.utilities.notifications.notify_newsletter_draft_ready"))
+            result = auto_generate_newsletter_drafts()
+        return result, create, plan
+
+    def test_plans_then_persists_distinct_subjects(self):
+        planned = [{"subject": "Alpha", "angle": "a"}, {"subject": "Beta", "angle": "b"}]
+        result, create, plan = self._drive(planned)
+        plan.assert_called_once()
+        assert create.call_count == 2
+        subjects = [c.kwargs["subject"] for c in create.call_args_list]
+        assert subjects == ["Alpha", "Beta"]  # distinct, planned, and persisted
+        assert "Generated 2 newsletter draft" in result
+
+    def test_history_fed_into_planning(self):
+        planned = [{"subject": "New1", "angle": "a"}]
+        result, create, plan = self._drive(
+            planned, pending=0, existing_subjects=["Queued Subj"], recent=["Published Subj"])
+        prior = plan.call_args[0][3]  # (synthesis, description, prefs, prior_subjects, count)
+        assert "Queued Subj" in prior and "Published Subj" in prior
+
+    def test_falls_back_to_single_topic_when_planning_empty(self):
+        # Planner returns [] (e.g. LLM failure) → still generate one edition per slot, subject=None ok.
+        result, create, plan = self._drive([], pending=0)
+        # _settings default max_queued_drafts=1 via max(1, 0)
+        assert create.call_count == 1
+        assert "Generated 1 newsletter draft" in result
+
+
+def _run_regenerate(*, edition, guidance=None, others=None, recent=None, new_ed=None):
+    from contextlib import ExitStack
+    from cqc_lem.app.run_scheduler import regenerate_newsletter_edition
+    if new_ed is None:
+        new_ed = {"title": "New T", "subtitle": "New S", "subject": "New Subject", "body": "New B"}
+    captured = {}
+
+    def _gen(profile, topic=None, prefs=None, subject=None, avoid_subjects=None,
+             profile_synthesis=None, guidance=None):
+        captured["subject"] = subject
+        captured["avoid"] = avoid_subjects
+        captured["guidance"] = guidance
+        return new_ed
+
+    with ExitStack() as es:
+        p = es.enter_context
+        p(patch("cqc_lem.utilities.db.get_newsletter_edition", return_value=edition))
+        p(patch("cqc_lem.utilities.db.get_newsletter_settings", return_value=_settings()))
+        p(patch("cqc_lem.utilities.db.get_engagement_preferences", return_value={}))
+        pending_eds = [{"id": o_id, "subject": s} for o_id, s in (others or [])]
+        p(patch("cqc_lem.utilities.db.get_pending_newsletter_editions", return_value=pending_eds))
+        p(patch("cqc_lem.utilities.db.get_recent_newsletter_subjects", return_value=recent or []))
+        p(patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=MagicMock()))
+        p(patch("cqc_lem.utilities.ai.ai_helper.get_or_create_profile_synthesis", return_value="brief"))
+        p(patch("cqc_lem.utilities.ai.ai_helper.generate_newsletter_edition", side_effect=_gen))
+        upd = p(patch("cqc_lem.utilities.db.update_newsletter_edition", return_value=True))
+        result = regenerate_newsletter_edition.run(edition_id=edition["id"], guidance=guidance)
+    return result, upd, captured
+
+
+class TestRegenerateNewsletterEdition:
+    def test_not_regenerable_when_published(self):
+        result, upd, _ = _run_regenerate(
+            edition={"id": 9, "user_id": 1, "status": "published", "subject": "X"})
+        assert "not regenerable" in result
+        upd.assert_not_called()
+
+    def test_with_guidance_keeps_subject_and_applies_it(self):
+        ed = {"id": 9, "user_id": 1, "status": "draft", "subject": "Original Subject"}
+        result, upd, cap = _run_regenerate(edition=ed, guidance="Focus on hiring")
+        assert cap["subject"] == "Original Subject"  # guidance -> current subject is the starting point
+        assert cap["guidance"] == "Focus on hiring"
+        assert upd.call_args.kwargs["status"] == "draft"  # resets to draft
+        assert "Regenerated" in result
+
+    def test_without_guidance_ai_decides_fresh(self):
+        ed = {"id": 9, "user_id": 1, "status": "approved", "subject": "Original Subject"}
+        result, upd, cap = _run_regenerate(edition=ed, guidance=None)
+        assert cap["subject"] is None  # no guidance -> AI picks a fresh, distinct subject
+        assert upd.call_args.kwargs["status"] == "draft"
+        assert upd.call_args.kwargs["subject"] == "New Subject"  # persisted from the regenerated edition
+
+    def test_avoids_other_editions_subjects(self):
+        ed = {"id": 9, "user_id": 1, "status": "draft", "subject": "Mine"}
+        result, upd, cap = _run_regenerate(
+            edition=ed, others=[(9, "Mine"), (10, "Other Queued")], recent=["Past One"])
+        assert "Other Queued" in cap["avoid"] and "Past One" in cap["avoid"]
+        assert "Mine" not in cap["avoid"]  # this edition's own subject excluded
 
 
 class TestPublishScheduledEditions:

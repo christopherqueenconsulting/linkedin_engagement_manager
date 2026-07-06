@@ -178,3 +178,39 @@ class TestNewsletterDraft:
             resp = client.put("/api/user/newsletter-draft", json={
                 "session_token": "bad", "edition_id": 4, "action": "save"})
         assert resp.status_code == 401
+
+
+class TestNewsletterRegenerate:
+    def test_dispatches_task_with_guidance(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_newsletter_edition", return_value={"id": 4, "user_id": _USER}), \
+             patch("cqc_lem.app.run_scheduler.regenerate_newsletter_edition") as task:
+            resp = client.post("/api/user/newsletter-draft/regenerate", json={
+                "session_token": _SESSION, "edition_id": 4, "guidance": "Make it about pricing"})
+        assert resp.status_code == 200
+        task.apply_async.assert_called_once_with(
+            kwargs={"edition_id": 4, "guidance": "Make it about pricing"})
+
+    def test_blank_guidance_becomes_none(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_newsletter_edition", return_value={"id": 4, "user_id": _USER}), \
+             patch("cqc_lem.app.run_scheduler.regenerate_newsletter_edition") as task:
+            resp = client.post("/api/user/newsletter-draft/regenerate", json={
+                "session_token": _SESSION, "edition_id": 4, "guidance": "   "})
+        assert resp.status_code == 200
+        task.apply_async.assert_called_once_with(kwargs={"edition_id": 4, "guidance": None})
+
+    def test_404_when_not_owner(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_newsletter_edition", return_value={"id": 4, "user_id": 999}), \
+             patch("cqc_lem.app.run_scheduler.regenerate_newsletter_edition") as task:
+            resp = client.post("/api/user/newsletter-draft/regenerate", json={
+                "session_token": _SESSION, "edition_id": 4})
+        assert resp.status_code == 404
+        task.apply_async.assert_not_called()
+
+    def test_401(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=None):
+            resp = client.post("/api/user/newsletter-draft/regenerate", json={
+                "session_token": "bad", "edition_id": 4})
+        assert resp.status_code == 401

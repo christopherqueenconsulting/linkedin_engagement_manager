@@ -181,7 +181,40 @@ class TestEditions:
             assert update_newsletter_edition(4, 1, status="approved") is True
         sql, params = cur.execute.call_args[0]
         assert "COALESCE" in sql
-        assert params == (None, None, None, "approved", 4, 1)
+        # params now include the subject slot (5th position): (title, subtitle, subject, body, status, id, user_id)
+        assert params == (None, None, None, None, "approved", 4, 1)
+
+    def test_update_persists_subject(self):
+        conn, cur = _mock_conn(rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_newsletter_edition
+            assert update_newsletter_edition(4, 1, subject="New Subject", status="draft") is True
+        sql, params = cur.execute.call_args[0]
+        assert "subject = COALESCE" in sql
+        assert params == (None, None, "New Subject", None, "draft", 4, 1)
+
+    def test_create_persists_subject(self):
+        conn, cur = _mock_conn()
+        cur.lastrowid = 88
+        import datetime
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import create_newsletter_edition
+            assert create_newsletter_edition(1, "T", "S", "B", datetime.datetime(2026, 7, 7, 13),
+                                             subject="Coherent Subject") == 88
+        sql, params = cur.execute.call_args[0]
+        assert "subject" in sql
+        assert "Coherent Subject" in params
+
+    def test_recent_subjects_dedup_history(self):
+        conn, cur = _mock_conn(fetch_all=[("Subject A",), ("Subject B",)])
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_recent_newsletter_subjects
+            assert get_recent_newsletter_subjects(1, limit=5) == ["Subject A", "Subject B"]
+        sql, params = cur.execute.call_args[0]
+        # Pulls published + queued + skipped history and excludes blanks.
+        assert "published" in sql and "skipped" in sql and "draft" in sql
+        assert "subject IS NOT NULL" in sql
+        assert params == (1, 5)
 
     def test_editions_due(self):
         rows = [{"id": 3, "user_id": 1, "title": "T", "subtitle": "S", "body": "B"}]
