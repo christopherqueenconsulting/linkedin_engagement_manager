@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.34.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.33.0...v0.34.0) (2026-07-06)
+
+
+### Features
+
+* **account:** Save All bar, unsaved-changes guard, placeholder chips ([39e7d9d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/39e7d9d36e8ab347a7214d059f1c8d16af17a545))
+* **dm:** unify DM/lead-magnet placeholder substitution engine ([9257fee](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9257fee748c2a530907b13a769526a8d89c81b31))
+* **posts:** quick delete + regenerate-with-suggestions ([8b8e2bb](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8b8e2bbc66c00566d9a13158c3cf69b6aeb8d413))
+
+
+### Bug Fixes
+
+* **engagement:** settings persistence + placeholder substitution + post regenerate/delete ([bd296ac](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bd296acd73d2481c904a5847262bb068a6a5a005))
+* **engagement:** widen tone column so settings persist; surface save errors ([9f4ad0f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9f4ad0fda03d64752a6dc7fa7d2856bd6b6cfa23))
+* **settings:** align input length limits across SPA, API, and DB ([8c28f52](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8c28f52a975c018ebc5de341c3c2c3b9d8d39e7c))
+
 ## [0.33.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.32.0...v0.33.0) (2026-07-06)
 
 
