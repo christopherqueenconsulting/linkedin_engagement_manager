@@ -15,7 +15,8 @@ from celery_once import QueueOnce
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.utilities.ai.ai_helper import generate_ai_response, get_ai_message_refinement, summarize_recent_activity, \
     ai_check_message_history, post_is_relevant, generate_newsletter_edition, generate_group_post, \
-    generate_thread_reply, generate_seed_comment, choose_post_reaction
+    generate_thread_reply, generate_seed_comment, choose_post_reaction, get_or_create_profile_synthesis, \
+    synthesize_profile
 from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, insert_new_log, LogActionType, \
     get_engagement_preferences, count_comments_today, get_recent_engagers, upsert_engager, \
@@ -27,7 +28,8 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     claim_post_for_comment, mark_post_commented, mark_post_reacted, release_post_claim, has_commented_post, \
     has_engaged_url_with_x_days, get_post_content, get_post_video_url, update_db_post_status, PostStatus, PostType, \
     get_dm_history_for_profile, get_post_status, get_user_blog_url, get_post_type, get_carousel_slides, \
-    get_dm_template, enqueue_followup, get_due_followups, mark_followup, stop_followups_for_profile
+    get_dm_template, enqueue_followup, get_due_followups, mark_followup, stop_followups_for_profile, \
+    set_profile_synthesis
 from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
     load_profile_for_user
@@ -791,6 +793,9 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     max_posts = min(max_posts, remaining_today)
     max_age_min = (prefs.get("max_post_age_hours") or 24) * 60
     min_reactions = prefs.get("min_reactions") or 0
+    # Stable VOICE synthesis (cached weekly, lazily created on first use) — the voice source for every
+    # comment this run, in place of the bloated/volatile full profile JSON.
+    profile_synthesis = get_or_create_profile_synthesis(user_id, my_profile)
     _switch_feed_to_recent(driver, wait)  # surface golden-hour posts; scoring still ranks them
 
     posted, seen, scrolls = 0, set(), 0
@@ -845,7 +850,8 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             # comment per post per user, across the pre-post run, the golden-hour run, and retries.
             if not claim_post_for_comment(user_id, key):
                 continue
-            comment_text = generate_ai_response(content, my_profile, None, prefs=prefs)
+            comment_text = generate_ai_response(content, my_profile, None, prefs=prefs,
+                                                profile_synthesis=profile_synthesis)
             if comment_text:
                 driver.execute_script("arguments[0].scrollIntoView({block:'center'});", card)
                 time.sleep(simulate_reading_time(content) / 2 + simulate_thinking_time())
@@ -1094,7 +1100,8 @@ def auto_seed_comment_on_post(self, user_id: int, post_id: int):
     try:
         driver.get(post_url)
         time.sleep(random.uniform(4, 7))
-        seed = generate_seed_comment(post_message, my_profile, get_engagement_preferences(user_id))
+        seed = generate_seed_comment(post_message, my_profile, get_engagement_preferences(user_id),
+                                     profile_synthesis=get_or_create_profile_synthesis(user_id, my_profile))
         if not seed:
             return "No seed comment generated"
         card = find_first(driver, wait, [(By.CSS_SELECTOR, "div.feed-shared-update-v2"), (By.TAG_NAME, "main")],
@@ -1227,7 +1234,9 @@ def auto_post_to_group(self, user_id: int, group_id: str):
     try:
         driver.get(f"https://www.linkedin.com/groups/{group_id}/")
         time.sleep(random.uniform(4, 7))
-        text = _strip_non_bmp(generate_group_post(my_profile, prefs=get_engagement_preferences(user_id)) or "")
+        text = _strip_non_bmp(generate_group_post(
+            my_profile, prefs=get_engagement_preferences(user_id),
+            profile_synthesis=get_or_create_profile_synthesis(user_id, my_profile)) or "")
         if not text.strip():
             return "No group post generated"
         # Open the group share box, type, and post (best-effort SDUI selectors).
@@ -1343,6 +1352,9 @@ def automate_reply_commenting(self, user_id: int, post_id: int, loop_for_duratio
         # Get the message content of the post
         post_message = get_post_message_from_log_for_user(user_id, post_id)
 
+        # Stable VOICE synthesis reused across every reply in this run (voice source, not the raw JSON).
+        profile_synthesis = get_or_create_profile_synthesis(user_id, my_profile)
+
         if post_url:
             # Navigate to the Post
             if driver.current_url != post_url:
@@ -1408,7 +1420,8 @@ def automate_reply_commenting(self, user_id: int, post_id: int, loop_for_duratio
                 # Thread-builder: reply in a way that ends with a follow-up question so the commenter
                 # replies again — first-hour thread depth is the top 2026 reach signal.
                 response = generate_thread_reply(post_message, comment_text, my_profile,
-                                                 prefs=get_engagement_preferences(user_id))
+                                                 prefs=get_engagement_preferences(user_id),
+                                                 profile_synthesis=profile_synthesis)
                 myprint(f"AI Generated Response to Comment: {response}")
                 if response and _reply_to_comment_inline(driver, wait, comment, response, user_id=user_id):
                     insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.REPLY,
@@ -1718,7 +1731,8 @@ def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: in
     return result
 
 
-def generate_and_post_comment(driver, wait, post_link, my_profile: LinkedInProfile) -> bool:
+def generate_and_post_comment(driver, wait, post_link, my_profile: LinkedInProfile,
+                              profile_synthesis: str = None) -> bool:
     if post_link != driver.current_url:
         # Switch to post url
         driver.get(post_link)
@@ -1768,7 +1782,7 @@ def generate_and_post_comment(driver, wait, post_link, my_profile: LinkedInProfi
     time.sleep(thinking_time)
 
     # Generate AI response
-    comment_text = generate_ai_response(content, my_profile, img_url)
+    comment_text = generate_ai_response(content, my_profile, img_url, profile_synthesis=profile_synthesis)
 
     myprint(f"AI Generated Comment: {comment_text}")
     # Simulate typing the AI-generated comment
@@ -1998,13 +2012,16 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
                     # DONT: Shuffle the activities (they are already in order of latest to oldest)
                     # random.shuffle(recent_activities)
                     able_to_comment = False
+                    # Our own stable voice synthesis (the comment is written in the USER's voice).
+                    profile_synthesis = get_or_create_profile_synthesis(user_id, my_profile)
 
                     # Filter list to activities I haven't commented on
                     for activity in recent_activities:
                         link = str(activity.link)
 
                         # Leave comment on that activity
-                        able_to_comment = generate_and_post_comment(driver, wait, link, my_profile)
+                        able_to_comment = generate_and_post_comment(driver, wait, link, my_profile,
+                                                                    profile_synthesis=profile_synthesis)
                         if able_to_comment:
                             break  # Only comment/interact with one
 
@@ -2310,6 +2327,16 @@ def update_stale_profile(self, user_id: int):
         log_error("Error while updating stale profile", exc=e, user_id=user_id, task_name="update_stale_profile")
         return f"Failed to update profile: {e}"
     quit_gracefully(driver)
+    # A fresh scrape should yield a fresh voice synthesis — regenerate it now so the cached brief never
+    # lags the profile it was distilled from. Best-effort: never fail the refresh over this.
+    if my_profile is not None:
+        try:
+            synthesis = synthesize_profile(my_profile)
+            if synthesis:
+                set_profile_synthesis(user_id, synthesis)
+        except Exception as e:
+            log_warning("Could not refresh profile synthesis after scrape", exc=e, user_id=user_id,
+                        task_name="update_stale_profile")
     return "Profile Updated Successfully"
 
 

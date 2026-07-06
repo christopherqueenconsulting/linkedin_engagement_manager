@@ -104,6 +104,12 @@ app.conf.update(
             'task': 'cqc_lem.app.run_scheduler.auto_sync_groups',
             'schedule': crontab(hour='7', minute='0', day_of_week='monday')  # Refresh joined groups weekly
         },
+        'refresh-profile-syntheses': {
+            'task': 'cqc_lem.app.run_scheduler.auto_refresh_profile_syntheses',
+            # Weekly: regenerate each active user's DURABLE voice synthesis (missing/stale >7d) used as
+            # the voice source for every comment/post — Mondays at 4:30 AM, off-peak.
+            'schedule': crontab(hour='4', minute='30', day_of_week='monday')
+        },
         'group-engagement': {
             'task': 'cqc_lem.app.run_scheduler.auto_group_engagement',
             'schedule': crontab(hour='16', minute='0')  # Daily value-add commenting in enabled groups
