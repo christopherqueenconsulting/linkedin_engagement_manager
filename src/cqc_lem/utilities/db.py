@@ -2762,15 +2762,16 @@ def get_enabled_newsletter_user_ids() -> list:
 
 
 def create_newsletter_edition(user_id: int, title: str, subtitle: str, body: str,
-                              scheduled_for) -> int:
-    """Insert a draft newsletter edition (status defaults to 'draft'). Returns its id."""
+                              scheduled_for, subject: str = None) -> int:
+    """Insert a draft newsletter edition (status defaults to 'draft'). Returns its id. `subject` is
+    the planned topic/angle for this edition, stored so the planner can dedup against prior ones."""
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
         cursor.execute(
-            "INSERT INTO newsletter_editions (user_id, title, subtitle, body, scheduled_for) "
-            "VALUES (%s, %s, %s, %s, %s)",
-            (user_id, title, subtitle, body, scheduled_for))
+            "INSERT INTO newsletter_editions (user_id, title, subtitle, subject, body, scheduled_for) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (user_id, title, subtitle, subject, body, scheduled_for))
         connection.commit()
         return cursor.lastrowid
     except mysql.connector.IntegrityError as err:
@@ -2793,7 +2794,7 @@ def get_pending_newsletter_edition(user_id: int) -> "dict | None":
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute(
-            "SELECT id, title, subtitle, body, status, scheduled_for FROM newsletter_editions "
+            "SELECT id, title, subtitle, subject, body, status, scheduled_for FROM newsletter_editions "
             "WHERE user_id = %s AND status IN ('draft', 'approved') "
             "ORDER BY id DESC LIMIT 1", (user_id,))
         return cursor.fetchone()
@@ -2829,7 +2830,7 @@ def get_pending_newsletter_editions(user_id: int) -> list:
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute(
-            "SELECT id, title, subtitle, body, status, scheduled_for FROM newsletter_editions "
+            "SELECT id, title, subtitle, subject, body, status, scheduled_for FROM newsletter_editions "
             "WHERE user_id = %s AND status IN ('draft', 'approved') "
             "ORDER BY scheduled_for ASC", (user_id,))
         return cursor.fetchall()
@@ -2860,7 +2861,7 @@ def get_latest_edition_scheduled_for(user_id: int) -> "datetime | None":
 
 def update_newsletter_edition(edition_id: int, user_id: int, title: str = None,
                               subtitle: str = None, body: str = None,
-                              status: str = None) -> bool:
+                              status: str = None, subject: str = None) -> bool:
     """Update only the provided fields on an edition, scoped to its owner (COALESCE-style)."""
     connection = get_db_connection()
     cursor = connection.cursor()
@@ -2868,14 +2869,36 @@ def update_newsletter_edition(edition_id: int, user_id: int, title: str = None,
         cursor.execute(
             "UPDATE newsletter_editions SET "
             "title = COALESCE(%s, title), subtitle = COALESCE(%s, subtitle), "
+            "subject = COALESCE(%s, subject), "
             "body = COALESCE(%s, body), status = COALESCE(%s, status) "
             "WHERE id = %s AND user_id = %s",
-            (title, subtitle, body, status, edition_id, user_id))
+            (title, subtitle, subject, body, status, edition_id, user_id))
         connection.commit()
         return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not update newsletter edition {edition_id} | Error: {err}")
         return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_recent_newsletter_subjects(user_id: int, limit: int = 20) -> list:
+    """Recent edition SUBJECTS (published, queued draft/approved, AND skipped) for a user — the dedup
+    history fed to the topic planner so a new edition never repeats a subject already covered or
+    recently rejected. Most-recent first; NULL/blank subjects excluded."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT subject FROM newsletter_editions "
+            "WHERE user_id = %s AND subject IS NOT NULL AND subject <> '' "
+            "AND status IN ('draft', 'approved', 'published', 'skipped') "
+            "ORDER BY id DESC LIMIT %s", (user_id, int(limit)))
+        return [r[0] for r in cursor.fetchall()]
+    except mysql.connector.Error as err:
+        myprint(f"Could not get recent newsletter subjects for user {user_id} | Error: {err}")
+        return []
     finally:
         cursor.close()
         connection.close()
@@ -2904,7 +2927,7 @@ def get_newsletter_edition(edition_id: int) -> "dict | None":
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute(
-            "SELECT id, user_id, title, subtitle, body, status, scheduled_for, published_url "
+            "SELECT id, user_id, title, subtitle, subject, body, status, scheduled_for, published_url "
             "FROM newsletter_editions WHERE id = %s", (edition_id,))
         return cursor.fetchone()
     except mysql.connector.Error as err:
