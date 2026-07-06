@@ -4,15 +4,18 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '../api/client'
 import LinkedInPostPreview from '../components/LinkedInPostPreview'
 import NewsletterQueue from './review/NewsletterQueue'
+import ScheduledDMs from './review/ScheduledDMs'
 import { useAuth } from '../contexts/AuthContext'
 import { useUserTimezone } from '../hooks/useUserTimezone'
 import { formatInTimezone } from '../utils/datetime'
 
-type View = 'posts' | 'newsletters'
+type View = 'posts' | 'newsletters' | 'dms'
 const VIEWS: { key: View; label: string }[] = [
   { key: 'posts', label: 'Posts' },
   { key: 'newsletters', label: 'Newsletters' },
+  { key: 'dms', label: 'DMs' },
 ]
+const VIEW_KEYS = VIEWS.map((v) => v.key) as string[]
 
 type Status = 'ALL' | 'pending' | 'approved' | 'scheduled' | 'posted' | 'rejected'
 const STATUSES: { label: string; value: Status }[] = [
@@ -60,7 +63,8 @@ export default function ReviewSchedule() {
 
   // Top-level view (Posts / Newsletters), synced to the ?tab= query param for deep-linking.
   const [searchParams, setSearchParams] = useSearchParams()
-  const view: View = searchParams.get('tab') === 'newsletters' ? 'newsletters' : 'posts'
+  const tabParam = searchParams.get('tab') ?? ''
+  const view: View = (VIEW_KEYS.includes(tabParam) ? tabParam : 'posts') as View
   const setView = (v: View) => setSearchParams(v === 'posts' ? {} : { tab: v }, { replace: true })
 
   // Filter / sort / pagination state
@@ -249,6 +253,8 @@ export default function ReviewSchedule() {
       </div>
 
       {view === 'newsletters' && <NewsletterQueue userTimezone={userTimezone} />}
+
+      {view === 'dms' && <ScheduledDMs userTimezone={userTimezone} />}
 
       {view === 'posts' && (
       <>
