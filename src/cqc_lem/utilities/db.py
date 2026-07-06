@@ -2082,15 +2082,18 @@ _ENGAGEMENT_DEFAULTS: dict = {
     "use_emojis": True, "use_hashtags": False,
     "include_topics": [], "exclude_topics": [], "include_keywords": [], "exclude_keywords": [],
     "include_authors": [], "exclude_authors": [], "post_types": [],
+    "focus_topics": [], "business_goals": None, "personal_goals": None,
     "min_reactions": None, "max_post_age_hours": 24, "reply_to_own_comments": True,
     "max_comments_per_day": 20, "max_dms_per_day": 20, "default_buyer_stage": None,
 }
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
-                           "exclude_keywords", "include_authors", "exclude_authors", "post_types")
+                           "exclude_keywords", "include_authors", "exclude_authors", "post_types",
+                           "focus_topics")
 _ENGAGEMENT_BOOL_FIELDS = ("use_emojis", "use_hashtags", "reply_to_own_comments")
 _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "use_hashtags",
                     "include_topics", "exclude_topics", "include_keywords", "exclude_keywords",
-                    "include_authors", "exclude_authors", "post_types", "min_reactions",
+                    "include_authors", "exclude_authors", "post_types", "focus_topics",
+                    "business_goals", "personal_goals", "min_reactions",
                     "max_post_age_hours", "reply_to_own_comments", "max_comments_per_day",
                     "max_dms_per_day", "default_buyer_stage")
 
@@ -2246,6 +2249,135 @@ def get_recent_engagers(user_id: int, days: int = 14) -> set:
         return {r[0] for r in cursor.fetchall() if r and r[0]}
     except mysql.connector.Error:
         return set()
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def claim_post_for_comment(user_id: int, post_key: str) -> bool:
+    """Atomically claim a feed post for commenting. Returns True only for the caller that WON the
+    claim (safe to comment); False if the post was already claimed/commented by any prior or
+    concurrent run — the loser must back off. The UNIQUE (user_id, post_key) constraint resolves
+    the race at the DB, so this is safe across sequential re-scans, retries, and parallel workers."""
+    if not post_key or not str(post_key).strip():
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO commented_posts (user_id, post_key, status) VALUES (%s,%s,'claimed')",
+            (user_id, str(post_key)[:255]))
+        connection.commit()
+        return cursor.rowcount == 1
+    except mysql.connector.IntegrityError:
+        # Duplicate key — another run/worker already holds this post.
+        return False
+    except mysql.connector.Error as err:
+        myprint(f"Could not claim post for comment for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def mark_post_commented(user_id: int, post_key: str) -> bool:
+    """Promote a won claim to 'commented' once the comment has actually posted."""
+    if not post_key:
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE commented_posts SET status='commented' WHERE user_id=%s AND post_key=%s",
+            (user_id, str(post_key)[:255]))
+        connection.commit()
+        return cursor.rowcount >= 1
+    except mysql.connector.Error as err:
+        myprint(f"Could not mark post commented for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def mark_post_reacted(user_id: int, post_key: str) -> bool:
+    """Record that we also left a reaction on this post (audit + 'react at most once' tracking)."""
+    if not post_key:
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE commented_posts SET reacted=1 WHERE user_id=%s AND post_key=%s",
+            (user_id, str(post_key)[:255]))
+        connection.commit()
+        return cursor.rowcount >= 1
+    except mysql.connector.Error as err:
+        myprint(f"Could not mark post reacted for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def release_post_claim(user_id: int, post_key: str) -> bool:
+    """Release an in-flight claim (comment never posted) so a later run can retry the post. Only
+    deletes rows still in the 'claimed' state — a successful 'commented' record is never released."""
+    if not post_key:
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "DELETE FROM commented_posts WHERE user_id=%s AND post_key=%s AND status='claimed'",
+            (user_id, str(post_key)[:255]))
+        connection.commit()
+        return cursor.rowcount >= 1
+    except mysql.connector.Error as err:
+        myprint(f"Could not release post claim for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def has_commented_post(user_id: int, post_key: str) -> bool:
+    """True if this post is already claimed or commented for the user (persistent, cross-run
+    dedup). Empty/False if the ledger table isn't present yet."""
+    if not post_key:
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM commented_posts WHERE user_id=%s AND post_key=%s",
+            (user_id, str(post_key)[:255]))
+        row = cursor.fetchone()
+        return bool(row and row[0])
+    except mysql.connector.Error:
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_duplicate_comment_posts(user_id: int, hours: int = 24):
+    """Read-only report: posts the user commented on MORE THAN ONCE in the last `hours`, from the
+    SUCCESS comment logs. Returns list of (post_url, comment_count, first_at, last_at) ordered by
+    most-duplicated first. Used to size/verify the multiple-comment bug and drive consolidation."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT post_url, COUNT(*) AS c, MIN(created_at) AS first_at, MAX(created_at) AS last_at "
+            "FROM logs WHERE user_id=%s AND action_type=%s AND result=%s "
+            "AND post_url IS NOT NULL AND created_at >= (NOW() - INTERVAL %s HOUR) "
+            "GROUP BY post_url HAVING c > 1 ORDER BY c DESC, last_at DESC",
+            (user_id, LogActionType.COMMENT.value, LogResultType.SUCCESS.value, hours))
+        return [tuple(r) for r in cursor.fetchall()]
+    except mysql.connector.Error as err:
+        myprint(f"Could not get duplicate comment posts for user {user_id} | Error: {err}")
+        return []
     finally:
         cursor.close()
         connection.close()

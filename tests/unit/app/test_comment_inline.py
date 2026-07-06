@@ -104,10 +104,11 @@ class TestReactToPostInline:
     def test_false_when_menu_wont_open(self):
         from cqc_lem.app import run_automation as ra
         with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
+             patch(f"{_RA}.wait_for_ajax"), \
              patch(f"{_RA}.find_first", return_value=_state("Reaction button state: no reaction")), \
              patch(f"{_RA}.click_first", return_value=None):
             ok = ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
-        assert ok is False
+        assert ok is False  # fly-out never opened and the default-Like fallback didn't register
 
     def test_clicks_the_ai_chosen_reaction(self):
         from cqc_lem.app import run_automation as ra

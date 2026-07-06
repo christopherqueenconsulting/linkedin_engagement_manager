@@ -57,6 +57,18 @@ class TestUpdateEngagementPreferences:
         assert "session_token" not in prefs_arg
         assert prefs_arg["tone"] == "bold" and prefs_arg["include_topics"] == ["AI"]
 
+    def test_accepts_focus_and_goals(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/engagement-preferences",
+                              json={"session_token": _SESSION, "focus_topics": ["B2B sales"],
+                                    "business_goals": "book calls", "personal_goals": "grow authority"})
+        assert resp.status_code == 200
+        prefs_arg = upd.call_args[0][1]
+        assert prefs_arg["focus_topics"] == ["B2B sales"]
+        assert prefs_arg["business_goals"] == "book calls"
+        assert prefs_arg["personal_goals"] == "grow authority"
+
     def test_500_on_failure(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
              patch("cqc_lem.api.main.update_engagement_preferences", return_value=False):
