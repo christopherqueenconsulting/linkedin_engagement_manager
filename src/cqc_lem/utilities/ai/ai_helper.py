@@ -281,12 +281,10 @@ def get_or_create_profile_synthesis(user_id: int, profile: "LinkedInProfile" = N
         row = None
     if row:
         cached_text, generated_at = row
-        if cached_text and generated_at is not None:
-            try:
-                age_days = (datetime.now() - generated_at).days
-            except TypeError:
-                age_days = None
-            if age_days is not None and age_days < max_age_days:
+        # Only trust a real datetime for the staleness check — a non-datetime (bad/legacy data, or a
+        # mocked row) must fall through to regeneration rather than crash on the comparison.
+        if cached_text and isinstance(generated_at, datetime):
+            if (datetime.now() - generated_at).days < max_age_days:
                 return cached_text
 
     if profile is None:
