@@ -150,10 +150,13 @@ def _topup_newsletter_drafts_for_user(user_id: int, now: datetime,
                                       count_pending_newsletter_editions,
                                       get_latest_edition_scheduled_for, create_newsletter_edition,
                                       get_pending_newsletter_editions, get_recent_newsletter_subjects,
+                                      get_recent_newsletter_blueprint_history,
                                       get_engagement_preferences)
     from cqc_lem.utilities.linkedin.helper import load_profile_for_user
     from cqc_lem.utilities.ai.ai_helper import (generate_newsletter_edition, plan_newsletter_topics,
                                                 get_or_create_profile_synthesis)
+    from cqc_lem.utilities.ai.newsletter_blueprint import compact_blueprint
+    from cqc_lem.utilities.ai.newsletter_research import research_newsletter_topic
     from cqc_lem.utilities.newsletter import upcoming_publish_slots, should_generate_now
     from cqc_lem.utilities.notifications import notify_newsletter_draft_ready
 
@@ -192,10 +195,19 @@ def _topup_newsletter_drafts_for_user(user_id: int, now: datetime,
     prior_subjects = list(dict.fromkeys(
         [s for s in queued_subjects if s] + get_recent_newsletter_subjects(user_id, limit=20)))
 
-    # PLAN a coherent, distinct sequence of subjects up front (one shot), THEN write one edition per
-    # planned subject. Falls back to single-topic generation when planning yields nothing.
+    # SHAPE history (formats/hook styles/actual opening lines of recent editions, queued included) —
+    # fed to the planner so new editions rotate away from recently used shapes, and to the writer so
+    # no two editions open with the same line or rhetorical template.
+    shape_history = get_recent_newsletter_blueprint_history(user_id, limit=12)
+    recent_formats = [h.get("format") for h in shape_history if h.get("format")]
+    recent_hooks = [h.get("hook_style") for h in shape_history if h.get("hook_style")]
+    recent_openers = [h.get("opening_line") for h in shape_history if h.get("opening_line")]
+
+    # PLAN a coherent, distinct sequence of edition BLUEPRINTS up front (one shot), THEN write one
+    # edition per blueprint. Falls back to single-topic generation when planning yields nothing.
     planned = plan_newsletter_topics(synthesis or "", description or "", prefs, prior_subjects,
-                                     len(slots))
+                                     len(slots), recent_formats=recent_formats,
+                                     recent_hook_styles=recent_hooks)
 
     generated = 0
     for i, slot in enumerate(slots):
@@ -208,17 +220,29 @@ def _topup_newsletter_drafts_for_user(user_id: int, now: datetime,
         # Even the fallback path stays distinct: avoid every other planned subject + all prior ones.
         avoid = prior_subjects + [p["subject"] for j, p in enumerate(planned)
                                   if j != i and p.get("subject")]
+        # ONE research call per edition: current stats/examples for THIS subject, woven into the
+        # body as source material. Degrades to empty findings (write from expertise) on any failure.
+        research = research_newsletter_topic(
+            (plan.get("subject") if plan else None) or description or "",
+            blueprint=plan, newsletter_description=description, prefs=prefs)
         edition = generate_newsletter_edition(profile, topic=description, prefs=prefs,
                                               subject=subject_ctx, avoid_subjects=avoid,
-                                              profile_synthesis=synthesis)
+                                              profile_synthesis=synthesis, blueprint=plan,
+                                              avoid_openers=recent_openers, research=research)
         if not edition:
             break
         edition_subject = edition.get("subject") or (plan["subject"] if plan else None)
         if not create_newsletter_edition(user_id, edition["title"], edition.get("subtitle"),
-                                          edition["body"], slot, subject=edition_subject):
+                                          edition["body"], slot, subject=edition_subject,
+                                          edition_format=edition.get("format"),
+                                          hook_style=edition.get("hook_style"),
+                                          opening_line=edition.get("opening_line"),
+                                          blueprint=compact_blueprint(plan) if plan else None):
             break  # duplicate slot / db error → stop this user's run
         if edition_subject:
             prior_subjects.append(edition_subject)  # subsequent iterations avoid it too
+        if edition.get("opening_line"):
+            recent_openers.insert(0, edition["opening_line"])  # later slots avoid this opener too
         notify_newsletter_draft_ready(user_id, edition["title"], slot)
         generated += 1
     return generated
@@ -272,10 +296,14 @@ def regenerate_newsletter_edition(edition_id: int, guidance: str = None):
     'draft'."""
     from cqc_lem.utilities.db import (get_newsletter_edition, get_newsletter_settings,
                                       get_pending_newsletter_editions, get_recent_newsletter_subjects,
+                                      get_recent_newsletter_blueprint_history,
                                       get_engagement_preferences, update_newsletter_edition)
     from cqc_lem.utilities.linkedin.helper import load_profile_for_user
     from cqc_lem.utilities.ai.ai_helper import (generate_newsletter_edition,
                                                 get_or_create_profile_synthesis)
+    from cqc_lem.utilities.ai.newsletter_blueprint import (build_regeneration_blueprint,
+                                                           compact_blueprint)
+    from cqc_lem.utilities.ai.newsletter_research import research_newsletter_topic
 
     edition = get_newsletter_edition(edition_id)
     if not edition or edition.get("status") not in ("draft", "approved"):
@@ -291,13 +319,29 @@ def regenerate_newsletter_edition(edition_id: int, guidance: str = None):
               if e.get("id") != edition_id and e.get("subject")]
     avoid = list(dict.fromkeys([s for s in others if s] + get_recent_newsletter_subjects(user_id, limit=20)))
 
+    # Rotate the rewrite's SHAPE too: pick a fresh format/hook/CTA away from the recent history —
+    # including this edition's own previous shape — so regeneration changes form, not just words.
+    # Free-text guidance may name a format (e.g. "make it a case study"); the builder honors it.
+    shape_history = get_recent_newsletter_blueprint_history(user_id, limit=12)
+    recent_formats = [h.get("format") for h in shape_history if h.get("format")]
+    recent_hooks = [h.get("hook_style") for h in shape_history if h.get("hook_style")]
+    recent_openers = [h.get("opening_line") for h in shape_history if h.get("opening_line")]
+
     # With guidance we keep the current subject as the starting point (the guidance may edit it or
     # redirect entirely). With NO guidance the AI decides a fresh, distinct subject (subject=None).
     subject = edition.get("subject") if (guidance and guidance.strip()) else None
+    blueprint = build_regeneration_blueprint(subject=subject, recent_formats=recent_formats,
+                                             recent_hook_styles=recent_hooks, guidance=guidance)
+    # ONE research call per regenerate — grounds the rewrite in current facts; empty on failure.
+    research = research_newsletter_topic(subject or settings.get("topic") or "",
+                                         blueprint=blueprint,
+                                         newsletter_description=settings.get("topic"), prefs=prefs)
     try:
         new_ed = generate_newsletter_edition(profile, topic=settings.get("topic"), prefs=prefs,
                                              subject=subject, avoid_subjects=avoid,
-                                             profile_synthesis=synthesis, guidance=guidance)
+                                             profile_synthesis=synthesis, guidance=guidance,
+                                             blueprint=blueprint, avoid_openers=recent_openers,
+                                             research=research)
     except Exception as e:
         log_warning("Newsletter regeneration failed", exc=e, user_id=user_id,
                     task_name="regenerate_newsletter_edition")
@@ -306,7 +350,12 @@ def regenerate_newsletter_edition(edition_id: int, guidance: str = None):
         return f"Regeneration produced nothing for edition {edition_id}"
     update_newsletter_edition(edition_id, user_id, title=new_ed["title"],
                               subtitle=new_ed.get("subtitle"), body=new_ed["body"],
-                              subject=new_ed.get("subject") or subject, status="draft")
+                              subject=new_ed.get("subject") or subject, status="draft",
+                              edition_format=new_ed.get("format"),
+                              hook_style=new_ed.get("hook_style"),
+                              opening_line=new_ed.get("opening_line"),
+                              blueprint=compact_blueprint(
+                                  {**blueprint, "subject": new_ed.get("subject") or subject}))
     log_info("Regenerated newsletter edition", user_id=user_id,
              task_name="regenerate_newsletter_edition")
     return f"Regenerated newsletter edition {edition_id}"
