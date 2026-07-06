@@ -6,6 +6,7 @@ import Toggle from '../../components/Toggle'
 import type { LeadMagnet } from './types'
 import { useRegisterSaveSection } from './SettingsSaveContext'
 import PlaceholderChips from './PlaceholderChips'
+import { FIELD_LIMITS } from './fieldLimits'
 
 export default function LeadMagnetCard() {
   const { sessionToken } = useAuth()
@@ -55,11 +56,13 @@ export default function LeadMagnetCard() {
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Trigger keyword</label>
             <input type="text" value={leadMagnet.keyword || ''} onChange={(e) => setLm({ keyword: e.target.value })}
+              maxLength={FIELD_LIMITS.lm_keyword}
               placeholder="e.g. GUIDE" className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">DM message (may include your link)</label>
             <textarea value={leadMagnet.message || ''} onChange={(e) => setLm({ message: e.target.value })} rows={3}
+              maxLength={FIELD_LIMITS.lm_message}
               placeholder="Thanks for the interest! Here's the resource: …" className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
             <div className="mt-1.5">
               <PlaceholderChips placeholders={[

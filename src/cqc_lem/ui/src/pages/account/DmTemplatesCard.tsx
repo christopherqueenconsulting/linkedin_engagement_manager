@@ -6,6 +6,7 @@ import { DM_EVENTS } from './types'
 import type { DmTemplate } from './types'
 import { useRegisterSaveSection } from './SettingsSaveContext'
 import PlaceholderChips from './PlaceholderChips'
+import { FIELD_LIMITS } from './fieldLimits'
 
 export default function DmTemplatesCard() {
   const { sessionToken } = useAuth()
@@ -107,7 +108,7 @@ export default function DmTemplatesCard() {
                       className="ml-auto text-red-500 hover:text-red-600">Remove</button>
                   )}
                 </div>
-                <textarea value={t.template_text} rows={2}
+                <textarea value={t.template_text} rows={2} maxLength={FIELD_LIMITS.dm_template}
                   onChange={(e) => updateTemplate(ev.key, t.step, { template_text: e.target.value })}
                   placeholder="Leave blank for the default message"
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />

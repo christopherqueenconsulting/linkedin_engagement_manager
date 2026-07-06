@@ -105,6 +105,16 @@ class TestEngagementPersistenceRegression:
         missing = fields - set(_ENGAGEMENT_DEFAULTS)
         assert not missing, f"model fields not persisted by db: {missing}"
 
+    def test_over_limit_tone_rejected_with_422(self, client):
+        # Both-sides alignment: a value longer than the DB column returns a clean 422 (Pydantic
+        # max_length) and never reaches the DB, instead of a 500 MySQL 1406.
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/engagement-preferences",
+                              json={"session_token": _SESSION, "tone": "x" * 256})
+        assert resp.status_code == 422
+        upd.assert_not_called()
+
     def test_v52_migration_widens_tone(self):
         # The root cause was tone VARCHAR(64) overflowing (MySQL 1406) and rolling back the whole
         # engagement upsert. Assert the migration widening is present so it can't silently regress.

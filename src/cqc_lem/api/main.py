@@ -77,7 +77,7 @@ from fastapi.staticfiles import StaticFiles
 from linkedin_api.clients.auth.client import AuthClient
 from linkedin_api.clients.restli.client import RestliClient
 from linkedin_api.common.errors import ResponseFormattingError
-from pydantic import BaseModel, computed_field, field_validator, model_validator
+from pydantic import BaseModel, computed_field, field_validator, model_validator, Field
 
 app = FastAPI()
 
@@ -287,11 +287,25 @@ class UserPreferencesRequest(BaseModel):
     auto_schedule_posts: bool = False
 
 
+# Input length limits — kept in lockstep with the DB column widths (see migrations) so an
+# over-long value returns a clean 422 here instead of a MySQL 1406 that silently rolls back the
+# whole upsert (the bug fixed by V52). The SPA mirrors these in ui/.../account/fieldLimits.ts.
+_LEN_TONE = 255           # engagement_preferences.tone (V52: VARCHAR(255))
+_LEN_COMMENT_STYLE = 255  # engagement_preferences.comment_style VARCHAR(255)
+_LEN_GOALS = 2000         # engagement_preferences.business_goals/personal_goals (TEXT; app cap)
+_LEN_BUYER_STAGE = 32     # engagement_preferences.default_buyer_stage VARCHAR(32)
+_LEN_LM_KEYWORD = 128     # lead_magnet_settings.keyword VARCHAR(128)
+_LEN_LM_MESSAGE = 2000    # lead_magnet_settings.message (TEXT; app cap)
+_LEN_DM_TEMPLATE = 2000   # dm_templates.template_text (TEXT; app cap)
+_LEN_NL_TITLE = 255       # newsletter_settings.title VARCHAR(255)
+_LEN_NL_TOPIC = 512       # newsletter_settings.topic VARCHAR(512)
+
+
 class NewsletterSettingsRequest(BaseModel):
     session_token: str
     enabled: bool = False
-    title: Optional[str] = None
-    topic: Optional[str] = None
+    title: Optional[str] = Field(default=None, max_length=_LEN_NL_TITLE)
+    topic: Optional[str] = Field(default=None, max_length=_LEN_NL_TOPIC)
     cadence: str = "weekly"
     align_with_blog: bool = True
     publish_day: int = 1
@@ -333,9 +347,9 @@ class PostRegenerateRequest(BaseModel):
 
 class EngagementPreferencesRequest(BaseModel):
     session_token: str
-    tone: Optional[str] = None
+    tone: Optional[str] = Field(default=None, max_length=_LEN_TONE)
     comment_length: str = "short"
-    comment_style: Optional[str] = None
+    comment_style: Optional[str] = Field(default=None, max_length=_LEN_COMMENT_STYLE)
     use_emojis: bool = True
     use_hashtags: bool = False
     include_topics: List[str] = []
@@ -346,21 +360,21 @@ class EngagementPreferencesRequest(BaseModel):
     exclude_authors: List[str] = []
     post_types: List[str] = []
     focus_topics: List[str] = []
-    business_goals: Optional[str] = None
-    personal_goals: Optional[str] = None
+    business_goals: Optional[str] = Field(default=None, max_length=_LEN_GOALS)
+    personal_goals: Optional[str] = Field(default=None, max_length=_LEN_GOALS)
     min_reactions: Optional[int] = None
     max_post_age_hours: Optional[int] = 24
     reply_to_own_comments: bool = True
     max_comments_per_day: int = 20
     max_dms_per_day: int = 20
-    default_buyer_stage: Optional[str] = None
+    default_buyer_stage: Optional[str] = Field(default=None, max_length=_LEN_BUYER_STAGE)
 
 
 class DmTemplateItem(BaseModel):
     event_type: str
     step: int = 0
     delay_hours: int = 0
-    template_text: str
+    template_text: str = Field(max_length=_LEN_DM_TEMPLATE)
     is_active: bool = True
 
 
@@ -1289,8 +1303,8 @@ def get_post_stats_endpoint(session_token: str) -> ResponseModel:
 class LeadMagnetRequest(BaseModel):
     session_token: str
     enabled: bool = False
-    keyword: Optional[str] = None
-    message: Optional[str] = None
+    keyword: Optional[str] = Field(default=None, max_length=_LEN_LM_KEYWORD)
+    message: Optional[str] = Field(default=None, max_length=_LEN_LM_MESSAGE)
 
 
 @router.get("/user/lead-magnet")

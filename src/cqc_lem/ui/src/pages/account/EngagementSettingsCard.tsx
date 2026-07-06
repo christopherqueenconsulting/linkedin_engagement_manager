@@ -6,6 +6,7 @@ import Toggle from '../../components/Toggle'
 import { csv, parseCsv } from './types'
 import type { EngPrefs } from './types'
 import { useRegisterSaveSection } from './SettingsSaveContext'
+import { FIELD_LIMITS } from './fieldLimits'
 
 // Voice & Tone and Engagement Targeting both edit the SAME engagement_preferences object and each
 // PUT the full object. They must therefore share one piece of local state — otherwise saving one
@@ -81,6 +82,7 @@ export default function EngagementSettingsCard() {
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Tone</label>
             <input type="text" value={engPrefs.tone || ''} onChange={(e) => setEng({ tone: e.target.value })}
+              maxLength={FIELD_LIMITS.tone}
               placeholder="e.g. warm, authoritative"
               className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
           </div>
@@ -97,6 +99,7 @@ export default function EngagementSettingsCard() {
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Style guidance</label>
           <input type="text" value={engPrefs.comment_style || ''} onChange={(e) => setEng({ comment_style: e.target.value })}
+            maxLength={FIELD_LIMITS.comment_style}
             placeholder="e.g. ask a question, avoid buzzwords"
             className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
         </div>
@@ -130,14 +133,14 @@ export default function EngagementSettingsCard() {
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Business goals</label>
-          <textarea value={engPrefs.business_goals || ''} rows={2}
+          <textarea value={engPrefs.business_goals || ''} rows={2} maxLength={FIELD_LIMITS.goals}
             onChange={(e) => setEng({ business_goals: e.target.value })}
             placeholder="e.g. Book 5 discovery calls/month with mid-market ops leaders"
             className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Personal goals</label>
-          <textarea value={engPrefs.personal_goals || ''} rows={2}
+          <textarea value={engPrefs.personal_goals || ''} rows={2} maxLength={FIELD_LIMITS.goals}
             onChange={(e) => setEng({ personal_goals: e.target.value })}
             placeholder="e.g. Build a reputation as a thoughtful voice in supply-chain tech"
             className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
