@@ -27,6 +27,21 @@ class TestGetEngagementPreferences:
         assert prefs["comment_length"] == "short"
         assert prefs["include_topics"] == [] and prefs["max_comments_per_day"] == 20
         assert prefs["reply_to_own_comments"] is True
+        # Focus/goal steering fields default to empty
+        assert prefs["focus_topics"] == []
+        assert prefs["business_goals"] is None and prefs["personal_goals"] is None
+
+    def test_decodes_focus_and_goals(self):
+        conn, _ = _mock_conn(fetch_row={
+            "focus_topics": json.dumps(["B2B sales", "leadership"]),
+            "business_goals": "Book discovery calls", "personal_goals": "Grow authority",
+        })
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_engagement_preferences
+            prefs = get_engagement_preferences(1)
+        assert prefs["focus_topics"] == ["B2B sales", "leadership"]
+        assert prefs["business_goals"] == "Book discovery calls"
+        assert prefs["personal_goals"] == "Grow authority"
 
     def test_decodes_json_and_bools(self):
         row = {
@@ -60,6 +75,20 @@ class TestUpdateEngagementPreferences:
         assert "ON DUPLICATE KEY UPDATE" in sql and params[0] == 7
         # JSON array field is json-encoded somewhere in the params
         assert any(p == json.dumps(["AI"]) for p in params)
+
+    def test_persists_focus_and_goals(self):
+        conn, cursor = _mock_conn(rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_engagement_preferences
+            ok = update_engagement_preferences(9, {
+                "focus_topics": ["AI adoption"], "business_goals": "5 calls/mo",
+                "personal_goals": "thought leader"})
+        assert ok is True
+        sql = cursor.execute.call_args[0][0]
+        params = cursor.execute.call_args[0][1]
+        assert "focus_topics" in sql and "business_goals" in sql and "personal_goals" in sql
+        assert any(p == json.dumps(["AI adoption"]) for p in params)
+        assert "5 calls/mo" in params and "thought leader" in params
 
 
 class TestCountActions:

@@ -129,23 +129,95 @@ def _style_directive(prefs: dict = None) -> str:
     return "\n\nStyle requirements (follow these):\n- " + "\n- ".join(parts) + "\n"
 
 
+# Hard guardrail attached to EVERY generated comment, reply, and post. Without it, a user whose
+# profile / recent activity is dominated by a project they are building (e.g. their own internal
+# tooling) makes the model pull that project in as the SUBJECT of otherwise unrelated content —
+# the exact LEM-drift bug this guardrail prevents. Background is VOICE and credibility only.
+_NO_SELF_PROMO_GUARDRAIL = (
+    "Never mention, name, promote, or allude to the user's own internal tools, apps, software, "
+    "platforms, side projects, or anything they are personally building (including any product "
+    "referred to as 'LEM' or the engagement platform itself). Treat the user's profile and "
+    "background strictly as VOICE, TONE, and credibility — never as the subject matter, and never "
+    "as something to advertise. Do not turn the output into self-promotion."
+)
+
+
+# Effective server-side DEFAULT when the user has NOT declared focus topics / goals. LEM's core
+# engagement philosophy: every comment should build a relationship — connect genuinely to the POSTER
+# (the author of the target post) or to POTENTIAL FOLLOWERS reading the thread — grounded in the
+# post's actual topic and in the user's authentic voice. This makes blank-config generation produce
+# aligned, relationship-building comments instead of unaligned or self-referential ones.
+_DEFAULT_ENGAGEMENT_INTENTION = (
+    "Build a genuine relationship: every comment should draw a real connection either to the POSTER "
+    "(the author of this post) or to POTENTIAL FOLLOWERS reading the thread — start a conversation "
+    "worth replying to, grounded in the post's actual topic and written in the user's authentic voice."
+)
+
+
+def _focus_directive(prefs: dict = None) -> str:
+    """Soft SUBJECT steering from the user's declared focus topics + business/personal goals. It is
+    used only to choose which ANGLE to take when it genuinely fits — it must never override the
+    actual subject (the target post for comments, the chosen industry/story for posts). Returns ""
+    when nothing is declared (callers supply their own baseline)."""
+    if not prefs:
+        return ""
+    parts = []
+    topics = [str(t).strip() for t in (prefs.get("focus_topics") or []) if str(t).strip()]
+    if topics:
+        parts.append(f"Focus topics the user wants to be known for: {', '.join(topics)}.")
+    business = (prefs.get("business_goals") or "").strip()
+    if business:
+        parts.append(f"Business goals: {business}.")
+    personal = (prefs.get("personal_goals") or "").strip()
+    if personal:
+        parts.append(f"Personal goals: {personal}.")
+    if not parts:
+        return ""
+    return ("\n\nSoft steering (use ONLY to choose the angle when it genuinely fits the subject; "
+            "never force it in and never let it change the subject):\n- " + "\n- ".join(parts) + "\n")
+
+
+def _intention_directive(prefs: dict = None) -> str:
+    """Engagement steering for comments/replies/seed comments. ALWAYS states LEM's baseline
+    relationship-building intention (the effective default that works with everything left blank);
+    when the user has declared focus topics / goals, those are LAYERED on top to refine the angle —
+    they refine, not replace, the baseline, and win only where they directly conflict with it."""
+    directive = ("\n\nEngagement intention (baseline — always applies):\n- "
+                 + _DEFAULT_ENGAGEMENT_INTENTION + "\n")
+    focus = _focus_directive(prefs)
+    if focus:
+        directive += ("\nLayer the user's declared focus on top of that baseline when it genuinely "
+                      "fits (their stated goals take precedence only if they directly conflict):" + focus)
+    return directive
+
+
+def _alignment_directive(prefs: dict = None) -> str:
+    """Anti-self-promo guardrail + focus/goal steering, appended to POST prompts so generated posts
+    stay aligned to the user's real business/personal goals instead of drifting into promoting
+    whatever the user happens to be building right now."""
+    return "\n\nContent alignment rules:\n- " + _NO_SELF_PROMO_GUARDRAIL + _focus_directive(prefs)
+
+
 def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=None, post_comment: str = None,
                          prefs: dict = None):
     image_attached = "(image attached)" if post_img_url else ""
     _no_hashtags = "" if (prefs and prefs.get("use_hashtags")) else " without using any hashtags"
     user_comment = f"\n\nRespond to this Comment Directly: <comment>{post_comment}</comment>\n\nYou are responding as the author of the LinkedIn Content. Keep your response short and sweet{_no_hashtags}.\n\n" if post_comment else ""
 
-    prompt = (f"""Please give me a comment in response to the following LinkedIn Content as the following LinkedIn User,"
+    prompt = (f"""Please write a comment in response to the LinkedIn Content below, in the voice of the following LinkedIn User.
 
-                LinkedIn User Profile:\n\n{profile.model_dump_json()}\n\n"
+                Voice reference — the user's profile, provided for TONE and CREDIBILITY ONLY. Do NOT make the
+                comment about the user, their company, or anything they are building:\n\n{profile.model_dump_json()}\n\n
 
-                LinkedIn Content{image_attached}: <content>'{post_content}'</content>
+                The SUBJECT of your comment is this LinkedIn Content{image_attached} — engage with what it actually says:
+                <content>'{post_content}'</content>
 
                 {user_comment}
+                {_intention_directive(prefs)}
                 {_style_directive(prefs)}
 
                 Only provide the final comment once it perfectly reflects the LinkedIn user’s style
-                
+
                 Do not surround your response in quotes or added any additional system text.
 
                 Take a deep breath and work on this problem step-by-step.""")
@@ -166,13 +238,17 @@ def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=No
         (back-and-forth conversation) drive far more reach than likes, so you are starting a conversation,
         not delivering a monologue.
 
-        Write in the user's authentic voice and professional expertise — infer their tone and style from
-        their profile. Then follow these rules exactly:
+        GROUND EVERYTHING IN THE TARGET POST. The comment must be about what THIS post actually says —
+        react to its specific content. The user's profile is provided ONLY so you can match their authentic
+        voice, tone, and credibility angle; it is NOT the subject. """ + _NO_SELF_PROMO_GUARDRAIL + """
+
+        Then follow these rules exactly:
         - React to ONE specific point from the post (paraphrase or lightly quote it) so it's clearly a
           real reply. NEVER open with generic praise like "Great post!", "Well said", or "Thanks for
           sharing" — those earn no algorithmic credit and read as a bot.
-        - Add exactly ONE genuine insight, example, or perspective drawn from the user's background that
-          moves the conversation forward. Contribute, don't just agree.
+        - Add exactly ONE genuine insight or perspective that moves the conversation forward and stays ON
+          the post's topic. You may speak from the user's expertise, but the insight must be ABOUT the
+          post's subject — never a pivot to the user's own projects, products, or work.
         - END with a single, natural, open-ended question aimed at the author that invites them to reply.
         - Keep it SHORT and human — a few sentences, conversational, varied sentence structure. No
           preamble, no sign-off, no hashtags/emojis unless explicitly allowed below.
@@ -354,9 +430,10 @@ def generate_group_post(profile: "LinkedInProfile", group_name: str = None, pref
         "content": f"""You are the profile user posting {ctx}. Write ONE short, genuinely useful
         post that helps the community: a specific insight, lesson, or an open question that sparks
         discussion. Absolutely NO self-promotion, NO links, NO hashtags. Sound human, in the user's
-        voice, and end by inviting members to weigh in. Output ONLY the post text.""",
+        voice, and end by inviting members to weigh in. """ + _NO_SELF_PROMO_GUARDRAIL + """ Output ONLY the post text.""",
     }
-    user_prompt = {"role": "user", "content": f"Author profile:\n{profile.model_dump_json()}\n{_style_directive(prefs)}"}
+    user_prompt = {"role": "user",
+                   "content": f"Author profile:\n{profile.model_dump_json()}\n{_focus_directive(prefs)}{_style_directive(prefs)}"}
     response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt],
                          temperature=round(random.uniform(0.5, 0.7), 2))
     content = response.choices[0].message.content
@@ -377,12 +454,12 @@ def generate_seed_comment(post_content, profile: "LinkedInProfile", prefs: dict 
         (b) a short behind-the-scenes insight, nuance, or piece of context the post itself didn't cover —
         and end it in a way that invites people to reply.
         Rules: sound like a real person in your own voice; NO links; NO hashtags; no generic filler;
-        keep it short (1–3 sentences). Output ONLY the comment text.""",
+        keep it short (1–3 sentences). """ + _NO_SELF_PROMO_GUARDRAIL + """ Output ONLY the comment text.""",
     }
     user_prompt = {
         "role": "user",
         "content": f"My LinkedIn profile:\n{profile.model_dump_json()}\n\n"
-                   f"My post:\n<content>{post_content}</content>\n{_style_directive(prefs)}",
+                   f"My post:\n<content>{post_content}</content>\n{_intention_directive(prefs)}{_style_directive(prefs)}",
     }
     response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt],
                          temperature=round(random.uniform(0.5, 0.7), 2))
@@ -400,11 +477,12 @@ def generate_thread_reply(post_content: str, comment_text: str, profile: "Linked
         "content": """You are the post AUTHOR replying to a comment on YOUR OWN post. Keep the
         conversation going: briefly acknowledge their SPECIFIC point, add ONE useful thought, and END
         with a genuine, easy-to-answer follow-up question directed back to THEM. Warm, human, in the
-        author's voice, 1–3 sentences. No links, no hashtags, no generic 'thanks for sharing'.""",
+        author's voice, 1–3 sentences. No links, no hashtags, no generic 'thanks for sharing'. """
+        + _NO_SELF_PROMO_GUARDRAIL,
     }
     user_prompt = {"role": "user", "content":
         f"Author profile:\n{profile.model_dump_json()}\n\nMy post:\n{post_content}\n\n"
-        f"Their comment:\n{comment_text}\n{_style_directive(prefs)}"}
+        f"Their comment:\n{comment_text}\n{_intention_directive(prefs)}{_style_directive(prefs)}"}
     response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt],
                          temperature=round(random.uniform(0.5, 0.7), 2))
     content = response.choices[0].message.content
@@ -921,7 +999,8 @@ def create_video_from_prompt(prompt: str):
     )
 
 
-def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, buyer_stage: str):
+def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, buyer_stage: str,
+                                        prefs: dict = None):
     """
         Generate a thought leadership post based on user's expertise and industry.
         Uses the user's profile (e.g., job title, industry) and intended buyer_stage to form an insightful post.
@@ -957,6 +1036,8 @@ def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, bu
 
     # Add the industry trend analysis to the prompt
     prompt += f"\n ### Current {industry} Trends: <analysis>{analysis}</analysis>"
+
+    prompt += _alignment_directive(prefs)
 
     content = [{"type": "text", "text": prompt}]
 
@@ -1083,7 +1164,8 @@ def get_industry_trend_analysis_based_on_user_profile(linked_in_profile: LinkedI
     }
 
 
-def get_industry_news_post_from_ai(linked_user_profile: LinkedInProfile, buyer_stage: str):
+def get_industry_news_post_from_ai(linked_user_profile: LinkedInProfile, buyer_stage: str,
+                                   prefs: dict = None):
     """
        Generate a post sharing industry news based on the LinkedIn user's profile and the intended buyer stage, along with the user's commentary.
     """
@@ -1119,6 +1201,8 @@ def get_industry_news_post_from_ai(linked_user_profile: LinkedInProfile, buyer_s
     {get_viral_linked_post_prompt_suffix()}
 
     """
+
+    prompt += _alignment_directive(prefs)
 
     content = [{"type": "text", "text": prompt}]
 
@@ -1260,7 +1344,8 @@ def get_industry_trend_from_ai(industry: str, articles: list):
     return comment
 
 
-def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage: str):
+def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage: str,
+                                    prefs: dict = None):
     """
     Generate a post sharing a personal or professional story, based on the user's profile.
     """
@@ -1300,6 +1385,8 @@ def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage:
         {get_viral_linked_post_prompt_suffix()}
 
         """
+
+    prompt += _alignment_directive(prefs)
 
     content = [{"type": "text", "text": prompt}]
 
@@ -1366,7 +1453,8 @@ def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage:
     return content
 
 
-def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage: str):
+def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage: str,
+                                    prefs: dict = None):
     """
     Generate a question or prompt that encourages engagement from followers.
     """
@@ -1404,6 +1492,8 @@ def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage:
             {get_viral_linked_post_prompt_suffix()}
 
             """
+
+    prompt += _alignment_directive(prefs)
 
     content = [{"type": "text", "text": prompt}]
 
@@ -1469,7 +1559,7 @@ def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage:
 
 
 def get_blog_summary_post_from_ai(blog_post_url: str, blog_post_content: str, linked_user_profile: LinkedInProfile,
-                                  stage: str):
+                                  stage: str, prefs: dict = None):
     """
     Generate a summary post for a blog article using the provide post url and post content from user to create interest using relevance to the provided LinkedIn Profile.
     """
@@ -1500,10 +1590,12 @@ def get_blog_summary_post_from_ai(blog_post_url: str, blog_post_content: str, li
     ---
     
     Ensure the post is engaging, includes a clear call to action, and ends with a link inviting readers to read the full article.
-    
+
     {get_viral_linked_post_prompt_suffix()}
-    
+
     """
+
+    prompt += _alignment_directive(prefs)
 
     content = [{"type": "text", "text": prompt}]
 
@@ -1568,7 +1660,8 @@ def get_blog_summary_post_from_ai(blog_post_url: str, blog_post_content: str, li
     return content
 
 
-def get_website_content_post_from_ai(content: str, url: str, linked_user_profile: LinkedInProfile, stage: str):
+def get_website_content_post_from_ai(content: str, url: str, linked_user_profile: LinkedInProfile, stage: str,
+                                     prefs: dict = None):
     """
         Generate a summary post for a blog article using the provide post url and post content from user to create interest using relevance to the provided LinkedIn Profile.
         """
@@ -1599,9 +1692,11 @@ def get_website_content_post_from_ai(content: str, url: str, linked_user_profile
         ---
 
         Ensure the post is engaging, includes a clear call to action, and ends with a link to the website url.
-        
+
         {get_viral_linked_post_prompt_suffix()}
         """
+
+    prompt += _alignment_directive(prefs)
 
     content = [{"type": "text", "text": prompt}]
 

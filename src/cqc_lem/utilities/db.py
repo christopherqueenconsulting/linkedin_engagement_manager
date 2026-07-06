@@ -2082,15 +2082,18 @@ _ENGAGEMENT_DEFAULTS: dict = {
     "use_emojis": True, "use_hashtags": False,
     "include_topics": [], "exclude_topics": [], "include_keywords": [], "exclude_keywords": [],
     "include_authors": [], "exclude_authors": [], "post_types": [],
+    "focus_topics": [], "business_goals": None, "personal_goals": None,
     "min_reactions": None, "max_post_age_hours": 24, "reply_to_own_comments": True,
     "max_comments_per_day": 20, "max_dms_per_day": 20, "default_buyer_stage": None,
 }
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
-                           "exclude_keywords", "include_authors", "exclude_authors", "post_types")
+                           "exclude_keywords", "include_authors", "exclude_authors", "post_types",
+                           "focus_topics")
 _ENGAGEMENT_BOOL_FIELDS = ("use_emojis", "use_hashtags", "reply_to_own_comments")
 _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "use_hashtags",
                     "include_topics", "exclude_topics", "include_keywords", "exclude_keywords",
-                    "include_authors", "exclude_authors", "post_types", "min_reactions",
+                    "include_authors", "exclude_authors", "post_types", "focus_topics",
+                    "business_goals", "personal_goals", "min_reactions",
                     "max_post_age_hours", "reply_to_own_comments", "max_comments_per_day",
                     "max_dms_per_day", "default_buyer_stage")
 
