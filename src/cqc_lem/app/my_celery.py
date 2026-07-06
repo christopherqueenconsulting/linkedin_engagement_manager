@@ -68,6 +68,11 @@ app.conf.update(
             # min late, and any non-:00/:30 scheduled time could slip).
             'schedule': crontab(minute='*/10')
         },
+        'check-scheduled-dms': {
+            'task': 'cqc_lem.app.run_scheduler.auto_check_scheduled_dms',
+            # Same 10-min cadence as scheduled posts (20-min lookahead covers each run).
+            'schedule': crontab(minute='*/10')
+        },
         'generate-content-plan': {
             'task': 'cqc_lem.app.run_content_plan.auto_generate_content',
             'schedule': crontab(hour='1', minute='0')  # Run every day at 1:00 AM

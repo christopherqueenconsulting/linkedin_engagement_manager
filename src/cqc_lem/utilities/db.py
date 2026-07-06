@@ -75,6 +75,16 @@ class PostStatus(StrEnum):
     ERROR = 'error'  # generation/posting failed (e.g. no real carousel images) — needs manual/dev fix
 
 
+class ScheduledDmStatus(StrEnum):
+    """Status for a scheduled 1:1 DM (issue #306), mirroring PostStatus."""
+    PENDING = 'pending'      # draft awaiting approval
+    APPROVED = 'approved'    # approved, waiting for its scheduled_time
+    SCHEDULED = 'scheduled'  # scanner dispatched the send task
+    SENT = 'sent'            # delivered
+    FAILED = 'failed'        # send failed
+    CANCELED = 'canceled'    # canceled before send
+
+
 # Enum for log actions types
 class LogActionType(StrEnum):
     COMMENT = 'comment'
@@ -2294,6 +2304,152 @@ def count_comments_today(user_id: int) -> int:
 
 def count_dms_sent_today(user_id: int) -> int:
     return _count_actions_today(user_id, LogActionType.DM)
+
+
+# --- Scheduled 1:1 DMs (issue #306) — mirrors the post scheduler ---
+_SCHED_DM_COLS = ("id", "user_id", "recipient_profile_url", "recipient_name", "message",
+                  "scheduled_time", "status", "created_at", "updated_at")
+
+
+def insert_scheduled_dm(user_id: int, recipient_profile_url: str, message: str,
+                        scheduled_time: datetime, recipient_name: str = None,
+                        status: "ScheduledDmStatus" = ScheduledDmStatus.PENDING) -> Optional[int]:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO scheduled_dms (user_id, recipient_profile_url, recipient_name, message, "
+            "scheduled_time, status) VALUES (%s,%s,%s,%s,%s,%s)",
+            (user_id, recipient_profile_url, recipient_name, message, scheduled_time, str(status)))
+        connection.commit()
+        return cursor.lastrowid
+    except mysql.connector.Error as err:
+        myprint(f"Could not insert scheduled DM for user_id {user_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_scheduled_dm(dm_id: int) -> Optional[dict]:
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(f"SELECT {', '.join(_SCHED_DM_COLS)} FROM scheduled_dms WHERE id = %s", (dm_id,))
+        return cursor.fetchone()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get scheduled DM {dm_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_scheduled_dm_user_id(dm_id: int) -> Optional[int]:
+    row = get_scheduled_dm(dm_id)
+    return row["user_id"] if row else None
+
+
+def get_scheduled_dms(user_id: int, status_filter: str = None, page: int = 1,
+                      page_size: int = 25, sort_order: str = "asc") -> dict:
+    """Paginated list of a user's scheduled DMs (mirrors the posts list response)."""
+    order = "DESC" if str(sort_order).lower() == "desc" else "ASC"
+    where = "WHERE user_id = %s"
+    params: list = [user_id]
+    if status_filter:
+        where += " AND status = %s"
+        params.append(status_filter)
+    offset = max(0, (max(1, page) - 1) * page_size)
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(f"SELECT COUNT(*) AS c FROM scheduled_dms {where}", tuple(params))
+        total = int(cursor.fetchone()["c"])
+        cursor.execute(
+            f"SELECT {', '.join(_SCHED_DM_COLS)} FROM scheduled_dms {where} "
+            f"ORDER BY scheduled_time {order} LIMIT %s OFFSET %s",
+            tuple(params + [page_size, offset]))
+        rows = cursor.fetchall()
+        for r in rows:
+            if isinstance(r.get("scheduled_time"), datetime):
+                r["scheduled_time"] = r["scheduled_time"].isoformat()
+            for k in ("created_at", "updated_at"):
+                if isinstance(r.get(k), datetime):
+                    r[k] = r[k].isoformat()
+        return {"dms": rows, "total": total, "page": page, "page_size": page_size}
+    except mysql.connector.Error as err:
+        myprint(f"Could not list scheduled DMs for user_id {user_id} | Error: {err}")
+        return {"dms": [], "total": 0, "page": page, "page_size": page_size}
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_due_scheduled_dms(post_time_delta_minutes: int = 20) -> list:
+    """Approved DMs whose scheduled_time falls between 24h ago and now+delta (mirrors
+    get_ready_to_post_posts). Returns (id, scheduled_time, user_id) tuples."""
+    now = datetime.now(timezone.utc)
+    window_end = now + timedelta(minutes=post_time_delta_minutes)
+    yesterday = now - timedelta(days=1)
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT id, scheduled_time, user_id FROM scheduled_dms "
+            "WHERE status = 'approved' AND scheduled_time BETWEEN %s AND %s "
+            "ORDER BY scheduled_time ASC",
+            (yesterday, window_end))
+        return cursor.fetchall()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get due scheduled DMs | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_scheduled_dm_status(dm_id: int, status: "ScheduledDmStatus") -> bool:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("UPDATE scheduled_dms SET status = %s WHERE id = %s", (str(status), dm_id))
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not update scheduled DM {dm_id} status | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_scheduled_dm(dm_id: int, recipient_profile_url: str = None, recipient_name: str = None,
+                        message: str = None, scheduled_time: datetime = None,
+                        status: "ScheduledDmStatus" = None) -> bool:
+    fields, params = [], []
+    for col, val in (("recipient_profile_url", recipient_profile_url), ("recipient_name", recipient_name),
+                     ("message", message), ("scheduled_time", scheduled_time)):
+        if val is not None:
+            fields.append(f"{col} = %s")
+            params.append(val)
+    if status is not None:
+        fields.append("status = %s")
+        params.append(str(status))
+    if not fields:
+        return False
+    params.append(dm_id)
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(f"UPDATE scheduled_dms SET {', '.join(fields)} WHERE id = %s", tuple(params))
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not update scheduled DM {dm_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
 
 
 def has_scheduled_post_today(user_id: int) -> bool:

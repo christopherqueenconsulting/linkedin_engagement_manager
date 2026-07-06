@@ -2286,11 +2286,10 @@ def clean_stale_invites(self, user_id: int):
     pass
 
 
-@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True}, reject_on_worker_lost=True,
-                  rate_limit='2/m', queue='se_outreach')
-def send_private_dm(self, user_id: int, profile_url: str, message: str):
-    """ Send dm message to a profile. Must be a 1st connection"""
-
+def send_dm_now(user_id: int, profile_url: str, message: str) -> bool:
+    """Core DM send: open the profile, type + send a DM (must be a 1st-degree connection), log the
+    result. Returns True on success. Shared by send_private_dm (trigger-driven) and send_scheduled_dm
+    (issue #306 scheduler) so both use the same send + logging path."""
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
     driver, wait = get_driver_wait_pair(session_name='Private DM')
@@ -2303,8 +2302,6 @@ def send_private_dm(self, user_id: int, profile_url: str, message: str):
     dm_sent = False
 
     myprint("Sending DM: " + message)
-
-    final_result = "DM "
 
     try:
 
@@ -2338,10 +2335,8 @@ def send_private_dm(self, user_id: int, profile_url: str, message: str):
 
         dm_sent = True
 
-        final_result += " Sent Successfully"
-
     except Exception as e:
-        final_result += f"Failed. Error: {str(e)}"
+        myprint(f"DM send failed. Error: {str(e)}")
 
     finally:
         # Update DB logs with DM Sent
@@ -2351,8 +2346,40 @@ def send_private_dm(self, user_id: int, profile_url: str, message: str):
 
         quit_gracefully(driver)  # Close the driver
 
-    myprint(f"{final_result}")
-    return final_result
+    return dm_sent
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True}, reject_on_worker_lost=True,
+                  rate_limit='2/m', queue='se_outreach')
+def send_private_dm(self, user_id: int, profile_url: str, message: str):
+    """ Send dm message to a profile. Must be a 1st connection"""
+    dm_sent = send_dm_now(user_id, profile_url, message)
+    result = "DM Sent Successfully" if dm_sent else "DM Failed"
+    myprint(result)
+    return result
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['dm_id']},
+                  reject_on_worker_lost=True, rate_limit='2/m', queue='se_outreach')
+def send_scheduled_dm(self, dm_id: int):
+    """Send a scheduled 1:1 DM (issue #306). Enforces the per-day DM cap at send time (defers back
+    to 'approved' for the next scan when the cap is hit) and updates the scheduled_dms status."""
+    from cqc_lem.utilities.db import (get_scheduled_dm, update_scheduled_dm_status,
+                                      count_dms_sent_today, ScheduledDmStatus)
+    dm = get_scheduled_dm(dm_id)
+    if not dm or dm["status"] not in (ScheduledDmStatus.APPROVED, ScheduledDmStatus.SCHEDULED):
+        return f"Scheduled DM {dm_id} not sendable (status={dm['status'] if dm else 'missing'})"
+
+    user_id = dm["user_id"]
+    prefs = get_engagement_preferences(user_id)
+    if count_dms_sent_today(user_id) >= int(prefs.get("max_dms_per_day") or 0):
+        myprint(f"send_scheduled_dm: daily DM cap reached for user {user_id}; deferring DM {dm_id}")
+        update_scheduled_dm_status(dm_id, ScheduledDmStatus.APPROVED)  # retry on the next scan
+        return f"Scheduled DM {dm_id} deferred (daily DM cap reached)"
+
+    dm_sent = send_dm_now(user_id, dm["recipient_profile_url"], dm["message"])
+    update_scheduled_dm_status(dm_id, ScheduledDmStatus.SENT if dm_sent else ScheduledDmStatus.FAILED)
+    return f"Scheduled DM {dm_id} -> {'sent' if dm_sent else 'failed'}"
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['user_id', 'profile_url']},
