@@ -35,6 +35,7 @@ from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile,
     load_profile_for_user
 from cqc_lem.utilities.linkedin.poster import share_on_linkedin, share_carousel_on_linkedin
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
+from cqc_lem.utilities.linkedin_formatter import normalize_public_text
 from cqc_lem.utilities.logger import myprint, log_error, log_info, log_warning
 from cqc_lem.utilities.selenium_util import click_element_wait_retry, \
     get_element_wait_retry, get_elements_as_list_wait_stale, getText, close_tab, get_driver_wait_pair, quit_gracefully, \
@@ -597,9 +598,11 @@ def _score_feed_post(meta: dict, prefs: dict, engagers: set = None) -> float:
 
 
 def _strip_non_bmp(text: str) -> str:
-    # ChromeDriver's send_keys raises WebDriverException on non-BMP characters (most emoji), so
-    # drop them — otherwise emoji-flavoured AI comments fail to type at all.
-    return ''.join(c for c in (text or "") if ord(c) <= 0xFFFF)
+    # First normalize rogue AI typography (em dashes, smart quotes, ellipsis, exotic spaces) to plain
+    # ASCII so those tell-tale characters never reach a public comment/post. Then drop non-BMP chars:
+    # ChromeDriver's send_keys raises WebDriverException on them (most emoji), so keep the composer typing.
+    text = normalize_public_text(text or "")
+    return ''.join(c for c in text if ord(c) <= 0xFFFF)
 
 
 # The SDUI comment/reply composer has NO <form> ancestor, so walk up from the textbox and click

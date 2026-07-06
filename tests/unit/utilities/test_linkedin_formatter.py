@@ -1,7 +1,53 @@
 """Unit tests for LinkedIn text formatter utility."""
 
 import pytest
-from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin
+from cqc_lem.utilities.linkedin_formatter import (
+    sanitize_for_linkedin, normalize_public_text, PLAIN_PUNCTUATION_DIRECTIVE)
+
+
+@pytest.mark.unit
+class TestNormalizePublicText:
+    def test_empty_and_none(self):
+        assert normalize_public_text("") == ""
+        assert normalize_public_text(None) is None
+
+    def test_em_dash_becomes_spaced_hyphen(self):
+        assert normalize_public_text("The result—surprising—was clear") == "The result - surprising - was clear"
+        assert normalize_public_text("A — B") == "A - B"
+
+    def test_en_dash_ranges_become_hyphen(self):
+        assert normalize_public_text("pages 5–10") == "pages 5-10"
+
+    def test_smart_quotes_become_straight(self):
+        assert normalize_public_text("“Hello” it’s ‘here’") == "\"Hello\" it's 'here'"
+
+    def test_ellipsis_becomes_three_dots(self):
+        assert normalize_public_text("Wait… really") == "Wait... really"
+
+    def test_zero_width_chars_stripped(self):
+        assert normalize_public_text("in​vis﻿ible") == "invisible"
+
+    def test_replacement_char_removed(self):
+        assert normalize_public_text("bad�char") == "badchar"
+
+    def test_preserves_emoji_accents_and_bullets(self):
+        # Intentional characters must survive: emoji, accented letters, and the LinkedIn bullet.
+        assert normalize_public_text("Café \U0001F680 • bullet") == "Café \U0001F680 • bullet"
+
+    def test_preserves_newlines(self):
+        assert normalize_public_text("line1\n\nline2") == "line1\n\nline2"
+
+    def test_directive_is_ascii_and_nonempty(self):
+        assert PLAIN_PUNCTUATION_DIRECTIVE
+        assert PLAIN_PUNCTUATION_DIRECTIVE.isascii()
+
+
+@pytest.mark.unit
+class TestSanitizeNormalizesTypography:
+    def test_sanitize_strips_markdown_and_typography(self):
+        out = sanitize_for_linkedin("**Bold** text—with em dash and “quotes”")
+        assert out == "Bold text - with em dash and \"quotes\""
+        assert "—" not in out and "“" not in out
 
 
 @pytest.mark.unit

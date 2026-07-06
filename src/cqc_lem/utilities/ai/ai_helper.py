@@ -10,6 +10,7 @@ from cqc_lem.utilities.ai.client import client
 from cqc_lem.utilities.ai import newsletter_blueprint as _blueprint
 from cqc_lem.utilities.ai.tools import search_recent_news, search_with_perplexity
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
+from cqc_lem.utilities.linkedin_formatter import normalize_public_text, PLAIN_PUNCTUATION_DIRECTIVE
 from cqc_lem.utilities.logger import myprint, log_debug, log_error, log_warning
 from cqc_lem.utilities.utils import create_folder_if_not_exists, save_video_url_to_dir
 from cqc_lem.utilities.env_constants import DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_RATIO
@@ -645,6 +646,9 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
         markdown. Output PLAIN TEXT only:
         - NEVER use markdown: no '#'/'##' headers, no '**bold**' or '*italic*', no '- ' bullet
           syntax, no '[text](url)' links, no backticks.
+        - Use ONLY plain ASCII punctuation: NEVER use em dashes or en dashes (use a comma, period, or
+          plain hyphen), no curly/smart quotes (use straight ' and "), no ellipsis character (type
+          three periods). Fancy Unicode punctuation reads as AI-generated.
         - Write section headers in Title Case or UPPERCASE on their OWN line, with a blank line above
           and below.
         - For any list, put each item on its own short line beginning with a literal "-> " or a
@@ -689,9 +693,9 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
     try:
         data = _json.loads(content)
         if data.get("title") and data.get("body"):
-            title = str(data["title"]).strip()[:255]
+            title = normalize_public_text(str(data["title"]).strip())[:255]
             body = _clean_newsletter_body(str(data["body"]).strip())
-            subtitle = str(data.get("subtitle") or "").strip()[:150]
+            subtitle = normalize_public_text(str(data.get("subtitle") or "").strip())[:150]
             if not subtitle:
                 subtitle = (subject or topic or title).strip()[:150]
             out_subject = str(data.get("subject") or "").strip()[:500] or _default_subject or title[:500]
@@ -2633,7 +2637,8 @@ Return ONLY valid JSON. No explanation, no markdown fences."""
         "content": (
             "You are an expert LinkedIn content creator who produces high-engagement carousel posts. "
             "You always return well-structured JSON with no markdown formatting. "
-            "All text in the JSON is concise, professional, and written for a LinkedIn audience."
+            "All text in the JSON is concise, professional, and written for a LinkedIn audience. "
+            + PLAIN_PUNCTUATION_DIRECTIVE
         ),
     }
     user_message = {"role": "user", "content": [{"type": "text", "text": prompt}]}
@@ -2654,6 +2659,18 @@ Return ONLY valid JSON. No explanation, no markdown fences."""
         log_error("generate_carousel_content: LLM returned invalid JSON", exc=exc)
         parsed = {}
 
-    post_text = parsed.get("post_text", f"Explore our latest insights on {industry}.")
-    carousel_dict = parsed.get("carousel", {})
+    post_text = normalize_public_text(parsed.get("post_text", f"Explore our latest insights on {industry}."))
+    carousel_dict = _normalize_carousel_strings(parsed.get("carousel", {}))
     return post_text, carousel_dict
+
+
+def _normalize_carousel_strings(value):
+    """Recursively normalize every string in the carousel data (slide titles/content) so rogue
+    typographic characters never get rendered onto the slide images."""
+    if isinstance(value, str):
+        return normalize_public_text(value)
+    if isinstance(value, dict):
+        return {k: _normalize_carousel_strings(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_normalize_carousel_strings(v) for v in value]
+    return value

@@ -19,9 +19,15 @@ class TestStripNonBmp:
         from cqc_lem.app.run_automation import _strip_non_bmp
         assert _strip_non_bmp("Hooked and not even sorry 😄 nice") == "Hooked and not even sorry  nice"
 
-    def test_plain_text_unchanged(self):
+    def test_plain_ascii_unchanged(self):
         from cqc_lem.app.run_automation import _strip_non_bmp
-        assert _strip_non_bmp("plain ascii — even en-dash") == "plain ascii — even en-dash"
+        assert _strip_non_bmp("plain ascii, nothing fancy here") == "plain ascii, nothing fancy here"
+
+    def test_normalizes_rogue_typography(self):
+        # Em dashes / smart quotes are AI tell-tale signs — normalized to plain ASCII before typing.
+        from cqc_lem.app.run_automation import _strip_non_bmp
+        assert _strip_non_bmp("clean copy—no em dashes and “no” smart quotes") == \
+            "clean copy - no em dashes and \"no\" smart quotes"
 
 
 class TestComposerSubmitted:
