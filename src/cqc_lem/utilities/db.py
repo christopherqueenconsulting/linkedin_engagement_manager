@@ -5,7 +5,12 @@ from enum import StrEnum
 from typing import Optional
 
 import mysql.connector
-from cqc_lem.utilities.env_constants import AWS_MYSQL_SECRET_NAME, AWS_REGION
+from cqc_lem.utilities.env_constants import (
+    AWS_MYSQL_SECRET_NAME,
+    AWS_REGION,
+    SESSION_ABSOLUTE_MAX_DAYS,
+    SESSION_IDLE_HOURS,
+)
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.logger import myprint
 from cqc_lem.utilities.utils import get_top_level_domain, get_aws_ssm_secret
@@ -1662,7 +1667,7 @@ def create_session(user_id: int) -> Optional[str]:
     import secrets
     token = secrets.token_hex(32)
     now = datetime.now(timezone.utc)
-    expires_at = now + timedelta(hours=24)
+    expires_at = now + timedelta(hours=SESSION_IDLE_HOURS)
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -1685,15 +1690,38 @@ def create_session(user_id: int) -> Optional[str]:
 
 
 def get_session_user_id(token: str) -> Optional[int]:
+    """Validate a session token and, if live, slide its expiry forward.
+
+    Sliding idle window (SESSION_IDLE_HOURS) so an active user never has to request a new PIN,
+    bounded by an absolute cap (SESSION_ABSOLUTE_MAX_DAYS from first login) for security.
+    Expired/unknown tokens return None so the caller forces a fresh PIN."""
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
+        now = datetime.now(timezone.utc)
         cursor.execute(
-            "SELECT user_id FROM sessions WHERE session_token = %s AND expires_at > %s",
-            (token, datetime.now(timezone.utc)),
+            "SELECT user_id, created_at FROM sessions "
+            "WHERE session_token = %s AND expires_at > %s",
+            (token, now),
         )
         row = cursor.fetchone()
-        return row['user_id'] if row else None
+        if not row:
+            return None
+
+        new_expiry = now + timedelta(hours=SESSION_IDLE_HOURS)
+        created_at = row.get('created_at')
+        if created_at is not None:
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            absolute_cap = created_at + timedelta(days=SESSION_ABSOLUTE_MAX_DAYS)
+            if new_expiry > absolute_cap:
+                new_expiry = absolute_cap
+        cursor.execute(
+            "UPDATE sessions SET expires_at = %s WHERE session_token = %s",
+            (new_expiry, token),
+        )
+        connection.commit()
+        return row['user_id']
     except mysql.connector.Error as err:
         myprint(f"Could not validate session token | Error: {err}")
         return None

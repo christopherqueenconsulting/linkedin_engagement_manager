@@ -1,5 +1,7 @@
 """Unit tests for PIN auth, session management, and planned-posts DB functions."""
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from unittest.mock import MagicMock, patch
 import mysql.connector
@@ -287,6 +289,65 @@ class TestGetSessionUserId:
         sql, params = cursor.execute.call_args[0]
         assert "expires_at" in sql
         assert "my_session_token" in params
+
+    def test_valid_token_slides_expiry_forward(self):
+        """A live token should be extended (sliding idle window) and still return the user."""
+        from cqc_lem.utilities.db import get_session_user_id
+
+        conn, cursor = _make_conn_and_cursor(dictionary=True)
+        cursor.fetchone.return_value = {
+            "user_id": 7,
+            "created_at": datetime.now(timezone.utc),
+        }
+
+        with _patch_conn(conn):
+            uid = get_session_user_id("live_token")
+
+        assert uid == 7
+        update_calls = [
+            c for c in cursor.execute.call_args_list
+            if "UPDATE" in c[0][0].upper()
+        ]
+        assert len(update_calls) == 1
+        assert "expires_at" in update_calls[0][0][0]
+        assert "live_token" in update_calls[0][0][1]
+        conn.commit.assert_called_once()
+
+    def test_sliding_expiry_capped_by_absolute_max(self):
+        """Near the absolute cap the new expiry must not exceed created_at + max days."""
+        from cqc_lem.utilities.db import get_session_user_id
+
+        old_created = datetime.now(timezone.utc) - timedelta(days=29, hours=23)
+        conn, cursor = _make_conn_and_cursor(dictionary=True)
+        cursor.fetchone.return_value = {"user_id": 3, "created_at": old_created}
+
+        with _patch_conn(conn):
+            uid = get_session_user_id("aging_token")
+
+        assert uid == 3
+        update_calls = [
+            c for c in cursor.execute.call_args_list
+            if "UPDATE" in c[0][0].upper()
+        ]
+        new_expiry = update_calls[0][0][1][0]
+        cap = old_created + timedelta(days=30)
+        # Capped to the absolute max, not now + idle window
+        assert abs((new_expiry - cap).total_seconds()) < 5
+
+    def test_naive_created_at_is_handled(self):
+        """created_at coming back tz-naive (typical MySQL TIMESTAMP) must not raise."""
+        from cqc_lem.utilities.db import get_session_user_id
+
+        conn, cursor = _make_conn_and_cursor(dictionary=True)
+        cursor.fetchone.return_value = {
+            "user_id": 9,
+            "created_at": datetime.now(),  # naive
+        }
+
+        with _patch_conn(conn):
+            uid = get_session_user_id("naive_token")
+
+        assert uid == 9
 
 
 # ---------------------------------------------------------------------------
