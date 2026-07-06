@@ -456,16 +456,132 @@ def _clean_newsletter_body(body: str) -> str:
     return sanitize_for_linkedin(body or "")
 
 
+# Unlike comments/posts (which carry the HARD _NO_SELF_PROMO_GUARDRAIL), a newsletter is the author's
+# OWN publication, so a LIGHT, occasional, SECONDARY mention of the tools/approach the author uses is
+# acceptable when it genuinely serves the reader. The edition's SUBJECT and value must still stand on
+# their own — never turn an edition into an ad, and never let a tool become the whole subject.
+_NEWSLETTER_SOFT_PROMO_NOTE = (
+    "This is the author's OWN newsletter. A LIGHT, OCCASIONAL, SECONDARY mention of a tool, product, "
+    "or approach the author uses is allowed when it genuinely helps the reader — but keep it brief and "
+    "secondary. The edition's subject and value must stand on their own; never turn it into an ad and "
+    "never let a product become the whole subject."
+)
+
+
+def plan_newsletter_topics(profile_synthesis: str, newsletter_description: str, prefs: dict = None,
+                           prior_subjects: list = None, count: int = 1) -> list:
+    """Plan a sequence of `count` DISTINCT newsletter subjects that form a natural, coherent
+    progression BEFORE any edition is written — so the queued editions build on each other instead of
+    each independently rehashing the newsletter's single description (the near-duplicate bug).
+
+    Alignment (in priority order): the newsletter's DESCRIPTION/promise, the author's durable voice &
+    expertise SYNTHESIS, then their declared focus topics/goals. `prior_subjects` (already-queued,
+    published, and recently-skipped subjects) are AVOIDED so nothing repeats. Each item is
+    {"subject": str, "angle": str}. Robust JSON parsing; returns [] on any failure so the caller can
+    gracefully fall back to single-topic generation."""
+    import json as _json
+    count = max(1, int(count))
+    prior = [str(s).strip() for s in (prior_subjects or []) if str(s).strip()]
+    avoid_block = ("\n\nAlready-covered subjects to AVOID repeating (cover materially different "
+                   "ground):\n- " + "\n- ".join(prior) + "\n") if prior else ""
+    system_prompt = {
+        "role": "system",
+        "content": (
+            "You are the EDITORIAL PLANNER for a LinkedIn creator's newsletter. Plan a sequence of "
+            f"exactly {count} DISTINCT edition subjects that together form a COHERENT PROGRESSION — "
+            "each edition should advance the reader, never repeat a previous one.\n\n"
+            "Ground every subject in, in priority order:\n"
+            "1. The newsletter's stated purpose/description (its promise to subscribers) — the PRIMARY anchor.\n"
+            "2. The author's durable voice & expertise (their synthesis) — pick subjects THIS author can "
+            "speak to with real authority.\n"
+            "3. The author's declared focus topics and goals, when provided — use to refine the angle.\n\n"
+            "RULES:\n"
+            "- Each subject MUST be materially different from the others AND from any already-covered "
+            "subject: a different problem, angle, and takeaway. No rephrasings of the same idea, no "
+            "regurgitated fluff.\n"
+            "- Prefer a natural arc (e.g. foundational -> tactical -> advanced, or problem -> framework "
+            "-> execution).\n"
+            "- Subjects are about the READER'S growth and the newsletter's topic — NOT about the "
+            "author's own products. " + _NEWSLETTER_SOFT_PROMO_NOTE + " At most ONE of the planned "
+            "subjects may LIGHTLY touch tools/tooling; keep every other subject tool-agnostic.\n\n"
+            f"Return ONLY valid JSON with exactly this shape and exactly {count} items:\n"
+            '{"editions": [{"subject": "short specific subject (<= ~120 chars)", "angle": "the '
+            'distinct angle/takeaway for this edition"}]}'
+        ),
+    }
+    user_prompt = {
+        "role": "user",
+        "content": (f"Newsletter description / promise:\n{(newsletter_description or '').strip() or '(not provided)'}\n\n"
+                    f"Author voice & expertise synthesis:\n{(profile_synthesis or '').strip() or '(not provided)'}\n"
+                    f"{_focus_directive(prefs)}{avoid_block}\n"
+                    f"Plan exactly {count} distinct subjects now."),
+    }
+    try:
+        response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt],
+                             temperature=round(random.uniform(0.6, 0.8), 2))
+        content = response.choices[0].message.content
+    except Exception as exc:
+        log_warning("Newsletter topic planning failed; falling back to single-topic", exc=exc)
+        return []
+    if not content:
+        return []
+    raw = content.strip()
+    # Tolerate ```json fences some models still emit.
+    if raw.startswith("```"):
+        raw = raw.strip("`")
+        raw = raw[raw.find("{"):raw.rfind("}") + 1] if "{" in raw else raw
+    try:
+        data = _json.loads(raw)
+    except (ValueError, TypeError):
+        start, end = raw.find("{"), raw.rfind("}")
+        if start == -1 or end == -1:
+            return []
+        try:
+            data = _json.loads(raw[start:end + 1])
+        except (ValueError, TypeError):
+            return []
+    items = data.get("editions") if isinstance(data, dict) else data
+    if not isinstance(items, list):
+        return []
+    planned = []
+    seen = set()
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        subject = str(it.get("subject") or "").strip()[:500]
+        if not subject or subject.lower() in seen:
+            continue
+        seen.add(subject.lower())
+        planned.append({"subject": subject, "angle": str(it.get("angle") or "").strip()[:500]})
+    return planned[:count]
+
+
 def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
-                                blog_content: str = None, prefs: dict = None) -> "dict | None":
+                                blog_content: str = None, prefs: dict = None,
+                                subject: str = None, avoid_subjects: list = None,
+                                profile_synthesis: str = None,
+                                guidance: str = None) -> "dict | None":
     """Generate one substantial LinkedIn newsletter edition in the author's voice, repurposing the
     author's blog content when provided. Aims for ~800–1200 words with a strong hook, 3–5 developed
     sections, a takeaways block, and a reply-driving CTA — worth an email, not a skeleton. Body is
-    PLAIN TEXT (no markdown; LinkedIn's article editor renders none). Returns
-    {'title','subtitle','body'} or None."""
+    PLAIN TEXT (no markdown; LinkedIn's article editor renders none).
+
+    `subject` is the SPECIFIC planned subject/angle for THIS edition (from plan_newsletter_topics);
+    `topic` remains the newsletter's overall description/theme (context). `avoid_subjects` lists the
+    other editions' subjects so this one stays distinct. Voice comes from the durable
+    `profile_synthesis` (falls back to the guarded full profile JSON only when none supplied).
+    `guidance` is optional free-text steering for a regeneration (edit the same subject or take a
+    completely different direction). Returns {'title','subtitle','subject','body'} or None."""
     import json as _json
     src = f"\n\nSource material to repurpose (from the author's blog):\n{blog_content[:4000]}" if blog_content else ""
-    topic_line = f"Topic/theme for this edition: {topic}\n" if topic else ""
+    topic_line = f"Newsletter overall theme/description: {topic}\n" if topic else ""
+    subject_line = (f"THIS edition's specific subject/angle to develop (make the edition about THIS): "
+                    f"{subject}\n") if subject else ""
+    avoid = [str(s).strip() for s in (avoid_subjects or []) if str(s).strip()]
+    avoid_line = ("Do NOT overlap with these other editions' subjects — cover DISTINCT ground:\n- "
+                  + "\n- ".join(avoid) + "\n") if avoid else ""
+    guidance_line = ("\nUSER GUIDANCE for this rewrite — apply it. It may ask for edits to the same "
+                     f"subject or a COMPLETELY different take:\n{guidance.strip()}\n") if guidance and guidance.strip() else ""
     system_prompt = {
         "role": "system",
         "content": """You are a LinkedIn newsletter ghostwriter for the profile user. Write ONE
@@ -496,23 +612,28 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
         - Use short paragraphs and blank lines between them for white space and readability.
 
         VOICE: the author's authentic voice and expertise, confident and human. No emojis unless the
-        author clearly uses them.
+        author clearly uses them. """ + _NEWSLETTER_SOFT_PROMO_NOTE + """
 
         Return ONLY valid JSON with exactly these keys:
-        {"title": "...", "subtitle": "...", "body": "..."}
+        {"title": "...", "subtitle": "...", "subject": "...", "body": "..."}
         - title: a specific, benefit-driven, scroll-stopping edition title (<= ~90 chars).
         - subtitle: a <= 150 character description of what THIS edition delivers and why to read it
           (for LinkedIn's edition-description field). Plain text, no markdown.
+        - subject: a short (<= ~120 char) phrase naming THIS edition's specific subject/angle, for
+          internal dedup history (echo the given subject when one is provided).
         - body: the full plain-text article with real line breaks (\\n) as described above.""",
     }
     user_prompt = {"role": "user",
-                   "content": f"Author profile:\n{profile.model_dump_json()}\n\n{topic_line}{src}"
-                              f"{_style_directive(prefs)}"}
+                   "content": f"Author voice reference (TONE + CREDIBILITY only):\n"
+                              f"{_voice_reference(profile, profile_synthesis)}\n\n"
+                              f"{topic_line}{subject_line}{avoid_line}{guidance_line}{src}"
+                              f"{_focus_directive(prefs)}{_style_directive(prefs)}"}
     response = _call_llm(model="lem-complex", messages=[system_prompt, user_prompt],
                          temperature=round(random.uniform(0.5, 0.7), 2))
     content = response.choices[0].message.content
     if not content:
         return None
+    _default_subject = (subject or topic or "").strip()[:500]
     try:
         data = _json.loads(content)
         if data.get("title") and data.get("body"):
@@ -520,14 +641,16 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
             body = _clean_newsletter_body(str(data["body"]).strip())
             subtitle = str(data.get("subtitle") or "").strip()[:150]
             if not subtitle:
-                subtitle = (topic or title).strip()[:150]
-            return {"title": title, "subtitle": subtitle, "body": body}
+                subtitle = (subject or topic or title).strip()[:150]
+            out_subject = str(data.get("subject") or "").strip()[:500] or _default_subject or title[:500]
+            return {"title": title, "subtitle": subtitle, "subject": out_subject, "body": body}
     except (ValueError, TypeError, AttributeError):
         pass
     parts = content.strip().split("\n", 1)   # fallback: first line = title, remainder = body
     title = parts[0].strip()[:255]
     body = _clean_newsletter_body(parts[1].strip() if len(parts) > 1 else content.strip())
-    return {"title": title, "subtitle": (topic or title).strip()[:150], "body": body}
+    return {"title": title, "subtitle": (subject or topic or title).strip()[:150],
+            "subject": _default_subject or title[:500], "body": body}
 
 
 def generate_group_post(profile: "LinkedInProfile", group_name: str = None, prefs: dict = None,

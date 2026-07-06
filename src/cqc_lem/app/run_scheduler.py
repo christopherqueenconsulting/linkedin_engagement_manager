@@ -148,9 +148,12 @@ def _topup_newsletter_drafts_for_user(user_id: int, now: datetime,
     import pytz
     from cqc_lem.utilities.db import (get_newsletter_settings, get_user_timezone,
                                       count_pending_newsletter_editions,
-                                      get_latest_edition_scheduled_for, create_newsletter_edition)
+                                      get_latest_edition_scheduled_for, create_newsletter_edition,
+                                      get_pending_newsletter_editions, get_recent_newsletter_subjects,
+                                      get_engagement_preferences)
     from cqc_lem.utilities.linkedin.helper import load_profile_for_user
-    from cqc_lem.utilities.ai.ai_helper import generate_newsletter_edition
+    from cqc_lem.utilities.ai.ai_helper import (generate_newsletter_edition, plan_newsletter_topics,
+                                                get_or_create_profile_synthesis)
     from cqc_lem.utilities.newsletter import upcoming_publish_slots, should_generate_now
     from cqc_lem.utilities.notifications import notify_newsletter_draft_ready
 
@@ -176,15 +179,46 @@ def _topup_newsletter_drafts_for_user(user_id: int, now: datetime,
     if pending == 0 and allow_bootstrap and not should_generate_now(slots[0], now, lead_days=lead):
         return 0
 
-    generated = 0
     profile = load_profile_for_user(user_id)
-    for slot in slots:
-        edition = generate_newsletter_edition(profile, topic=settings.get("topic"))
+    synthesis = get_or_create_profile_synthesis(user_id, profile)
+    prefs = get_engagement_preferences(user_id)
+    description = settings.get("topic")
+
+    # Dedup history: subjects of already-queued editions + recently published/skipped ones. Feeding
+    # this into the planner (and the per-edition generator) is what keeps every edition unique and
+    # fresh instead of near-duplicate rehashes of the newsletter's single description.
+    queued_subjects = [e.get("subject") for e in get_pending_newsletter_editions(user_id)
+                       if e.get("subject")]
+    prior_subjects = list(dict.fromkeys(
+        [s for s in queued_subjects if s] + get_recent_newsletter_subjects(user_id, limit=20)))
+
+    # PLAN a coherent, distinct sequence of subjects up front (one shot), THEN write one edition per
+    # planned subject. Falls back to single-topic generation when planning yields nothing.
+    planned = plan_newsletter_topics(synthesis or "", description or "", prefs, prior_subjects,
+                                     len(slots))
+
+    generated = 0
+    for i, slot in enumerate(slots):
+        plan = planned[i] if i < len(planned) else None
+        subject_ctx = None
+        if plan:
+            subject_ctx = plan["subject"]
+            if plan.get("angle"):
+                subject_ctx = f"{plan['subject']} — angle: {plan['angle']}"
+        # Even the fallback path stays distinct: avoid every other planned subject + all prior ones.
+        avoid = prior_subjects + [p["subject"] for j, p in enumerate(planned)
+                                  if j != i and p.get("subject")]
+        edition = generate_newsletter_edition(profile, topic=description, prefs=prefs,
+                                              subject=subject_ctx, avoid_subjects=avoid,
+                                              profile_synthesis=synthesis)
         if not edition:
             break
+        edition_subject = edition.get("subject") or (plan["subject"] if plan else None)
         if not create_newsletter_edition(user_id, edition["title"], edition.get("subtitle"),
-                                          edition["body"], slot):
+                                          edition["body"], slot, subject=edition_subject):
             break  # duplicate slot / db error → stop this user's run
+        if edition_subject:
+            prior_subjects.append(edition_subject)  # subsequent iterations avoid it too
         notify_newsletter_draft_ready(user_id, edition["title"], slot)
         generated += 1
     return generated
@@ -225,6 +259,57 @@ def generate_newsletter_drafts_for_user(user_id: int):
                     task_name="generate_newsletter_drafts_for_user")
         return "Generated 0 newsletter draft(s)"
     return f"Generated {generated} newsletter draft(s)"
+
+
+@shared_task.task
+def regenerate_newsletter_edition(edition_id: int, guidance: str = None):
+    """Regenerate ONE queued newsletter edition in place. Generation is a slow lem-complex call, so
+    it runs as a task (not inline in the API request). Honors free-text `guidance` when provided
+    (edit the same subject OR take a completely different direction); with no guidance the AI decides
+    a fresh, distinct take. Grounded in the author's voice synthesis + the newsletter description, and
+    steered AWAY from the OTHER queued editions' subjects (and recent history) so regeneration never
+    reintroduces a duplicate. Updates the row (title/subtitle/subject/body) and resets status to
+    'draft'."""
+    from cqc_lem.utilities.db import (get_newsletter_edition, get_newsletter_settings,
+                                      get_pending_newsletter_editions, get_recent_newsletter_subjects,
+                                      get_engagement_preferences, update_newsletter_edition)
+    from cqc_lem.utilities.linkedin.helper import load_profile_for_user
+    from cqc_lem.utilities.ai.ai_helper import (generate_newsletter_edition,
+                                                get_or_create_profile_synthesis)
+
+    edition = get_newsletter_edition(edition_id)
+    if not edition or edition.get("status") not in ("draft", "approved"):
+        return f"Edition {edition_id} not regenerable"
+    user_id = edition["user_id"]
+    settings = get_newsletter_settings(user_id)
+    prefs = get_engagement_preferences(user_id)
+    profile = load_profile_for_user(user_id)
+    synthesis = get_or_create_profile_synthesis(user_id, profile)
+
+    # Avoid the OTHER queued editions' subjects + recent history so the rewrite stays unique.
+    others = [e.get("subject") for e in get_pending_newsletter_editions(user_id)
+              if e.get("id") != edition_id and e.get("subject")]
+    avoid = list(dict.fromkeys([s for s in others if s] + get_recent_newsletter_subjects(user_id, limit=20)))
+
+    # With guidance we keep the current subject as the starting point (the guidance may edit it or
+    # redirect entirely). With NO guidance the AI decides a fresh, distinct subject (subject=None).
+    subject = edition.get("subject") if (guidance and guidance.strip()) else None
+    try:
+        new_ed = generate_newsletter_edition(profile, topic=settings.get("topic"), prefs=prefs,
+                                             subject=subject, avoid_subjects=avoid,
+                                             profile_synthesis=synthesis, guidance=guidance)
+    except Exception as e:
+        log_warning("Newsletter regeneration failed", exc=e, user_id=user_id,
+                    task_name="regenerate_newsletter_edition")
+        return f"Regeneration failed for edition {edition_id}"
+    if not new_ed:
+        return f"Regeneration produced nothing for edition {edition_id}"
+    update_newsletter_edition(edition_id, user_id, title=new_ed["title"],
+                              subtitle=new_ed.get("subtitle"), body=new_ed["body"],
+                              subject=new_ed.get("subject") or subject, status="draft")
+    log_info("Regenerated newsletter edition", user_id=user_id,
+             task_name="regenerate_newsletter_edition")
+    return f"Regenerated newsletter edition {edition_id}"
 
 
 @shared_task.task
