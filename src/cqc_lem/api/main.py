@@ -112,7 +112,7 @@ _API_ACCESS_TOKEN_SET = {t.strip() for t in API_ACCESS_TOKENS.split(",") if t.st
 # handler (get_assets) is GET-only and path-traversal safe (_find_asset_file
 # rejects .. / separators and only returns real files under assets_dir).
 _PUBLIC_API_PREFIXES = ("/api/auth/", "/api/billing/webhook", "/api/assets",
-                        "/api/linkedin/verification-pin")
+                        "/api/linkedin/verification-pin", "/api/app-info")
 
 
 def _api_token_required(path: str) -> bool:
@@ -461,6 +461,16 @@ class FutureForwardValues(IntEnum):
 @app.get("/health")
 def health_check():
     return {"status": "healthy"}
+
+
+@router.get("/app-info")
+def get_app_info() -> ResponseModel:
+    """Public: the SPA footer reads the running release version + whether to display it."""
+    from cqc_lem.utilities.env_constants import get_app_version, SHOW_VERSION_FOOTER
+    return ResponseModel(status_code=200, detail={
+        "version": get_app_version(),
+        "show_version": SHOW_VERSION_FOOTER,
+    })
 
 
 @router.get("/dashboard/stats/", responses={

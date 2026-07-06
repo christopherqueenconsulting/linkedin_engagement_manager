@@ -172,3 +172,20 @@ API_ACCESS_TOKENS = get_constant_from_env('API_ACCESS_TOKENS', default_value='')
 
 # Set other constants here
 USE_DOCKER_BROWSER = isTrue(get_constant_from_env('USE_DOCKER_BROWSER', default_value='True'))
+
+# SPA footer version display. SHOW_VERSION_FOOTER toggles the small release-version
+# text in the copyright footer (default on; set to false to hide it). APP_VERSION
+# overrides the auto-detected version; when empty it falls back to the installed
+# package metadata, which reflects the exact release baked into the running image.
+SHOW_VERSION_FOOTER = isTrue(get_constant_from_env('SHOW_VERSION_FOOTER', default_value='True'))
+APP_VERSION = get_constant_from_env('APP_VERSION', default_value='')
+
+
+def get_app_version() -> str:
+    if APP_VERSION:
+        return APP_VERSION
+    try:
+        from importlib.metadata import version
+        return version('linkedin-engagement-manager')
+    except Exception:
+        return 'unknown'
