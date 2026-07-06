@@ -1,10 +1,18 @@
 import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '../api/client'
 import LinkedInPostPreview from '../components/LinkedInPostPreview'
+import NewsletterQueue from './review/NewsletterQueue'
 import { useAuth } from '../contexts/AuthContext'
 import { useUserTimezone } from '../hooks/useUserTimezone'
 import { formatInTimezone } from '../utils/datetime'
+
+type View = 'posts' | 'newsletters'
+const VIEWS: { key: View; label: string }[] = [
+  { key: 'posts', label: 'Posts' },
+  { key: 'newsletters', label: 'Newsletters' },
+]
 
 type Status = 'ALL' | 'pending' | 'approved' | 'scheduled' | 'posted' | 'rejected'
 const STATUSES: { label: string; value: Status }[] = [
@@ -49,6 +57,11 @@ export default function ReviewSchedule() {
   const email = user?.email ?? ''
   const qc = useQueryClient()
   const userTimezone = useUserTimezone()
+
+  // Top-level view (Posts / Newsletters), synced to the ?tab= query param for deep-linking.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const view: View = searchParams.get('tab') === 'newsletters' ? 'newsletters' : 'posts'
+  const setView = (v: View) => setSearchParams(v === 'posts' ? {} : { tab: v }, { replace: true })
 
   // Filter / sort / pagination state
   const [filterStatus, setFilterStatus] = useState<Status>('ALL')
@@ -171,16 +184,39 @@ export default function ReviewSchedule() {
     <div className="space-y-4">
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <h1 className="text-2xl font-bold text-gray-800">Review Posts</h1>
-        <button
-          onClick={() => weeklyMutation.mutate()}
-          disabled={weeklyMutation.isPending}
-          className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-green-700 disabled:opacity-50 transition-colors"
-        >
-          {weeklyMutation.isPending ? 'Generating content…' : 'Generate Weekly Content'}
-        </button>
+        <h1 className="text-2xl font-bold text-gray-800">Review</h1>
+        {view === 'posts' && (
+          <button
+            onClick={() => weeklyMutation.mutate()}
+            disabled={weeklyMutation.isPending}
+            className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-green-700 disabled:opacity-50 transition-colors"
+          >
+            {weeklyMutation.isPending ? 'Generating content…' : 'Generate Weekly Content'}
+          </button>
+        )}
       </div>
 
+      {/* Posts / Newsletters tabs */}
+      <div className="flex flex-wrap gap-1 border-b border-gray-200">
+        {VIEWS.map((v) => (
+          <button
+            key={v.key}
+            onClick={() => setView(v.key)}
+            className={`px-3 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${
+              view === v.key
+                ? 'border-blue-600 text-blue-700'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
+          >
+            {v.label}
+          </button>
+        ))}
+      </div>
+
+      {view === 'newsletters' && <NewsletterQueue userTimezone={userTimezone} />}
+
+      {view === 'posts' && (
+      <>
       {/* Status tabs */}
       <div className="flex gap-2 flex-wrap">
         {STATUSES.map((s) => (
@@ -539,6 +575,8 @@ export default function ReviewSchedule() {
           </div>
         )}
       </div>
+      </>
+      )}
     </div>
   )
 }
