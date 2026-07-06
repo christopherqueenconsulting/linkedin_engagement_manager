@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.32.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.31.0...v0.32.0) (2026-07-06)
+
+
+### Features
+
+* **text:** normalize rogue AI typography (em dashes, smart quotes) in public output ([580e46f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/580e46ff1d14c0e5ac08ef34e765ce8e40cc6bc0))
+* **text:** strip rogue AI typography (em dashes, smart quotes) from public output ([38187d4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/38187d49f1ffccd5a6f937898630664f1371f830))
+
 ## [0.31.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.30.0...v0.31.0) (2026-07-06)
 
 
