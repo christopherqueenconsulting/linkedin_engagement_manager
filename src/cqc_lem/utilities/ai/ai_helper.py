@@ -7,6 +7,7 @@ import openai
 import replicate
 from cqc_lem import assets_dir
 from cqc_lem.utilities.ai.client import client
+from cqc_lem.utilities.ai import newsletter_blueprint as _blueprint
 from cqc_lem.utilities.ai.tools import search_recent_news, search_with_perplexity
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.logger import myprint, log_debug, log_error, log_warning
@@ -469,27 +470,38 @@ _NEWSLETTER_SOFT_PROMO_NOTE = (
 
 
 def plan_newsletter_topics(profile_synthesis: str, newsletter_description: str, prefs: dict = None,
-                           prior_subjects: list = None, count: int = 1) -> list:
-    """Plan a sequence of `count` DISTINCT newsletter subjects that form a natural, coherent
-    progression BEFORE any edition is written — so the queued editions build on each other instead of
-    each independently rehashing the newsletter's single description (the near-duplicate bug).
+                           prior_subjects: list = None, count: int = 1,
+                           recent_formats: list = None, recent_hook_styles: list = None) -> list:
+    """Plan a sequence of `count` DISTINCT edition BLUEPRINTS — subject + angle + format + hook_style
+    + cta_style (+ structure attached in code) — BEFORE any edition is written, so the queued
+    editions differ in TOPIC and in SHAPE instead of each rehashing the same rhetorical template.
 
     Alignment (in priority order): the newsletter's DESCRIPTION/promise, the author's durable voice &
     expertise SYNTHESIS, then their declared focus topics/goals. `prior_subjects` (already-queued,
-    published, and recently-skipped subjects) are AVOIDED so nothing repeats. Each item is
-    {"subject": str, "angle": str}. Robust JSON parsing; returns [] on any failure so the caller can
-    gracefully fall back to single-topic generation."""
+    published, and recently-skipped subjects) are AVOIDED so no topic repeats; `recent_formats` /
+    `recent_hook_styles` (most-recent first) are AVOIDED so no SHAPE repeats — and
+    enforce_blueprint_variety GUARANTEES that in code regardless of what the model returns. Each item
+    is {"subject", "angle", "format", "hook_style", "cta_style", "structure"}. Robust JSON parsing;
+    returns [] on any failure so the caller can gracefully fall back to single-topic generation."""
     import json as _json
     count = max(1, int(count))
     prior = [str(s).strip() for s in (prior_subjects or []) if str(s).strip()]
     avoid_block = ("\n\nAlready-covered subjects to AVOID repeating (cover materially different "
                    "ground):\n- " + "\n- ".join(prior) + "\n") if prior else ""
+    recent_f = [str(f).strip() for f in (recent_formats or []) if str(f).strip()]
+    recent_h = [str(h).strip() for h in (recent_hook_styles or []) if str(h).strip()]
+    recent_shape_block = ""
+    if recent_f or recent_h:
+        recent_shape_block = ("\nRecently used FORMATS (most recent first) — do NOT assign these to "
+                              "the first new editions: " + ", ".join(recent_f[:5] or ["(none)"]) +
+                              "\nRecently used HOOK STYLES (most recent first) — same rule: "
+                              + ", ".join(recent_h[:5] or ["(none)"]) + "\n")
     system_prompt = {
         "role": "system",
         "content": (
             "You are the EDITORIAL PLANNER for a LinkedIn creator's newsletter. Plan a sequence of "
-            f"exactly {count} DISTINCT edition subjects that together form a COHERENT PROGRESSION — "
-            "each edition should advance the reader, never repeat a previous one.\n\n"
+            f"exactly {count} DISTINCT edition BLUEPRINTS that together form a COHERENT PROGRESSION — "
+            "each edition should advance the reader, never repeat a previous one in topic OR shape.\n\n"
             "Ground every subject in, in priority order:\n"
             "1. The newsletter's stated purpose/description (its promise to subscribers) — the PRIMARY anchor.\n"
             "2. The author's durable voice & expertise (their synthesis) — pick subjects THIS author can "
@@ -501,20 +513,25 @@ def plan_newsletter_topics(profile_synthesis: str, newsletter_description: str, 
             "regurgitated fluff.\n"
             "- Prefer a natural arc (e.g. foundational -> tactical -> advanced, or problem -> framework "
             "-> execution).\n"
+            "- VARIETY OF SHAPE IS MANDATORY: no two consecutive editions may share a format or a "
+            "hook_style, and avoid the recently used formats/hook styles the user lists. Assign the "
+            "format and hook style that BEST FIT each subject while honoring that rotation.\n"
             "- Subjects are about the READER'S growth and the newsletter's topic — NOT about the "
             "author's own products. " + _NEWSLETTER_SOFT_PROMO_NOTE + " At most ONE of the planned "
             "subjects may LIGHTLY touch tools/tooling; keep every other subject tool-agnostic.\n\n"
+            + _blueprint.blueprint_options_text() + "\n\n"
             f"Return ONLY valid JSON with exactly this shape and exactly {count} items:\n"
             '{"editions": [{"subject": "short specific subject (<= ~120 chars)", "angle": "the '
-            'distinct angle/takeaway for this edition"}]}'
+            'distinct angle/takeaway for this edition", "format": "<format key>", '
+            '"hook_style": "<hook style key>", "cta_style": "<cta style key>"}]}'
         ),
     }
     user_prompt = {
         "role": "user",
         "content": (f"Newsletter description / promise:\n{(newsletter_description or '').strip() or '(not provided)'}\n\n"
                     f"Author voice & expertise synthesis:\n{(profile_synthesis or '').strip() or '(not provided)'}\n"
-                    f"{_focus_directive(prefs)}{avoid_block}\n"
-                    f"Plan exactly {count} distinct subjects now."),
+                    f"{_focus_directive(prefs)}{avoid_block}{recent_shape_block}\n"
+                    f"Plan exactly {count} distinct blueprints now."),
     }
     try:
         response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt],
@@ -552,15 +569,20 @@ def plan_newsletter_topics(profile_synthesis: str, newsletter_description: str, 
         if not subject or subject.lower() in seen:
             continue
         seen.add(subject.lower())
-        planned.append({"subject": subject, "angle": str(it.get("angle") or "").strip()[:500]})
-    return planned[:count]
+        planned.append({"subject": subject, "angle": str(it.get("angle") or "").strip()[:500],
+                        "format": it.get("format"), "hook_style": it.get("hook_style"),
+                        "cta_style": it.get("cta_style")})
+    # The prompt REQUESTS shape rotation; this GUARANTEES it — normalizes formats/hooks/CTAs to known
+    # keys, reassigns any consecutive/recent repeats, and attaches each format's structure skeleton.
+    return _blueprint.enforce_blueprint_variety(planned[:count], recent_formats, recent_hook_styles)
 
 
 def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
                                 blog_content: str = None, prefs: dict = None,
                                 subject: str = None, avoid_subjects: list = None,
                                 profile_synthesis: str = None,
-                                guidance: str = None) -> "dict | None":
+                                guidance: str = None, blueprint: dict = None,
+                                avoid_openers: list = None, research: dict = None) -> "dict | None":
     """Generate one substantial LinkedIn newsletter edition in the author's voice, repurposing the
     author's blog content when provided. Aims for ~800–1200 words with a strong hook, 3–5 developed
     sections, a takeaways block, and a reply-driving CTA — worth an email, not a skeleton. Body is
@@ -568,10 +590,15 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
 
     `subject` is the SPECIFIC planned subject/angle for THIS edition (from plan_newsletter_topics);
     `topic` remains the newsletter's overall description/theme (context). `avoid_subjects` lists the
-    other editions' subjects so this one stays distinct. Voice comes from the durable
-    `profile_synthesis` (falls back to the guarded full profile JSON only when none supplied).
-    `guidance` is optional free-text steering for a regeneration (edit the same subject or take a
-    completely different direction). Returns {'title','subtitle','subject','body'} or None."""
+    other editions' subjects so this one stays distinct. `blueprint` assigns THIS edition's shape
+    (format + structure skeleton + hook style + CTA style — see newsletter_blueprint) and
+    `avoid_openers` lists prior editions' actual opening lines, so no two editions share a rhetorical
+    template. `research` ({'findings','sources'} from research_newsletter_topic) is woven in as
+    source material — specific numbers/examples over vague claims, no links in the body. Voice comes
+    from the durable `profile_synthesis` (falls back to the guarded full profile JSON only when none
+    supplied). `guidance` is optional free-text steering for a regeneration (edit the same subject or
+    take a completely different direction). Returns {'title','subtitle','subject','body',
+    'format','hook_style','cta_style','opening_line'} or None."""
     import json as _json
     src = f"\n\nSource material to repurpose (from the author's blog):\n{blog_content[:4000]}" if blog_content else ""
     topic_line = f"Newsletter overall theme/description: {topic}\n" if topic else ""
@@ -580,8 +607,21 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
     avoid = [str(s).strip() for s in (avoid_subjects or []) if str(s).strip()]
     avoid_line = ("Do NOT overlap with these other editions' subjects — cover DISTINCT ground:\n- "
                   + "\n- ".join(avoid) + "\n") if avoid else ""
+    openers = [str(o).strip() for o in (avoid_openers or []) if str(o).strip()]
+    openers_line = ("Previous editions OPENED with these exact lines. Your opening must NOT reuse or "
+                    "resemble ANY of them — different wording, different rhetorical device, different "
+                    "rhythm:\n- " + "\n- ".join(openers[:10]) + "\n") if openers else ""
     guidance_line = ("\nUSER GUIDANCE for this rewrite — apply it. It may ask for edits to the same "
                      f"subject or a COMPLETELY different take:\n{guidance.strip()}\n") if guidance and guidance.strip() else ""
+    findings = str((research or {}).get("findings") or "").strip()
+    research_block = (
+        "\n\nSOURCE MATERIAL — current research findings for this subject. Ground the edition in "
+        "these: weave the specific numbers, dates, and named examples into the prose naturally "
+        "(specific beats vague). Do NOT invent statistics beyond this material. Do NOT paste URLs or "
+        "external links into the body — LinkedIn suppresses off-platform links; you may name a "
+        "source (publication, company, researcher) in prose when natural. Strip any citation markers "
+        "like [1].\n" + findings[:3500] + "\n") if findings else ""
+    blueprint_block = _blueprint.blueprint_directive(blueprint)
     system_prompt = {
         "role": "system",
         "content": """You are a LinkedIn newsletter ghostwriter for the profile user. Write ONE
@@ -612,7 +652,9 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
         - Use short paragraphs and blank lines between them for white space and readability.
 
         VOICE: the author's authentic voice and expertise, confident and human. No emojis unless the
-        author clearly uses them. """ + _NEWSLETTER_SOFT_PROMO_NOTE + """
+        author clearly uses them. NEVER fabricate statistics, studies, or fake specifics — any number
+        you state must come from provided source material or be genuinely well-established; with no
+        source material, write from expertise and lived reasoning instead of invented data. """ + _NEWSLETTER_SOFT_PROMO_NOTE + """
 
         Return ONLY valid JSON with exactly these keys:
         {"title": "...", "subtitle": "...", "subject": "...", "body": "..."}
@@ -621,12 +663,13 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
           (for LinkedIn's edition-description field). Plain text, no markdown.
         - subject: a short (<= ~120 char) phrase naming THIS edition's specific subject/angle, for
           internal dedup history (echo the given subject when one is provided).
-        - body: the full plain-text article with real line breaks (\\n) as described above.""",
+        - body: the full plain-text article with real line breaks (\\n) as described above.""" + blueprint_block,
     }
     user_prompt = {"role": "user",
                    "content": f"Author voice reference (TONE + CREDIBILITY only):\n"
                               f"{_voice_reference(profile, profile_synthesis)}\n\n"
-                              f"{topic_line}{subject_line}{avoid_line}{guidance_line}{src}"
+                              f"{topic_line}{subject_line}{avoid_line}{openers_line}{guidance_line}{src}"
+                              f"{research_block}"
                               f"{_focus_directive(prefs)}{_style_directive(prefs)}"}
     response = _call_llm(model="lem-complex", messages=[system_prompt, user_prompt],
                          temperature=round(random.uniform(0.5, 0.7), 2))
@@ -634,6 +677,15 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
     if not content:
         return None
     _default_subject = (subject or topic or "").strip()[:500]
+    # The edition's shape is persisted alongside it so the planner/regenerator can rotate away from
+    # recently used formats, hook styles, AND actual opening lines — not just subjects.
+    shape = {"format": _blueprint.normalize_format((blueprint or {}).get("format")),
+             "hook_style": _blueprint.normalize_hook_style((blueprint or {}).get("hook_style")),
+             "cta_style": _blueprint.normalize_cta_style((blueprint or {}).get("cta_style"))}
+
+    def _opening_line(text: str) -> str:
+        return next((ln.strip() for ln in text.splitlines() if ln.strip()), "")[:500]
+
     try:
         data = _json.loads(content)
         if data.get("title") and data.get("body"):
@@ -643,14 +695,16 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
             if not subtitle:
                 subtitle = (subject or topic or title).strip()[:150]
             out_subject = str(data.get("subject") or "").strip()[:500] or _default_subject or title[:500]
-            return {"title": title, "subtitle": subtitle, "subject": out_subject, "body": body}
+            return {"title": title, "subtitle": subtitle, "subject": out_subject, "body": body,
+                    "opening_line": _opening_line(body), **shape}
     except (ValueError, TypeError, AttributeError):
         pass
     parts = content.strip().split("\n", 1)   # fallback: first line = title, remainder = body
     title = parts[0].strip()[:255]
     body = _clean_newsletter_body(parts[1].strip() if len(parts) > 1 else content.strip())
     return {"title": title, "subtitle": (subject or topic or title).strip()[:150],
-            "subject": _default_subject or title[:500], "body": body}
+            "subject": _default_subject or title[:500], "body": body,
+            "opening_line": _opening_line(body), **shape}
 
 
 def generate_group_post(profile: "LinkedInProfile", group_name: str = None, prefs: dict = None,
