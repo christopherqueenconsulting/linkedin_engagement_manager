@@ -43,6 +43,14 @@ class TestUpdateNewsletterSettings:
             assert update_newsletter_settings(1, {"enabled": True, "title": "Weekly Wins", "cadence": "weekly"}) is True
         assert "ON DUPLICATE KEY UPDATE" in cur.execute.call_args[0][0]
 
+    def test_upsert_includes_draft_config_columns(self):
+        conn, cur = _mock_conn()
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_newsletter_settings
+            update_newsletter_settings(1, {"generate_lead_days": 14, "max_queued_drafts": 5})
+        sql = cur.execute.call_args[0][0]
+        assert "generate_lead_days" in sql and "max_queued_drafts" in sql
+
 
 class TestNewsletterDue:
     def test_returns_due_user_ids(self):
@@ -73,6 +81,34 @@ class TestNewsletterSchedulingFields:
         assert s["publish_day"] == 1 and s["publish_hour"] == 9
 
 
+class TestNewsletterDraftConfigFields:
+    def test_settings_coerce_draft_config(self):
+        row = {"enabled": 1, "title": "T", "topic": None, "cadence": "weekly",
+               "align_with_blog": 1, "newsletter_url": None, "last_published_at": None,
+               "publish_day": "1", "publish_hour": "9",
+               "generate_lead_days": "14", "max_queued_drafts": "5"}
+        conn, _ = _mock_conn(fetch_row=row)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_newsletter_settings
+            s = get_newsletter_settings(1)
+        assert s["generate_lead_days"] == 14 and s["max_queued_drafts"] == 5
+
+    def test_defaults_draft_config(self):
+        conn, _ = _mock_conn(fetch_row=None)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_newsletter_settings
+            s = get_newsletter_settings(1)
+        assert s["generate_lead_days"] == 3 and s["max_queued_drafts"] == 1
+
+    def test_selects_draft_config_columns(self):
+        conn, cur = _mock_conn(fetch_row=None)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_newsletter_settings
+            get_newsletter_settings(1)
+        sql = cur.execute.call_args[0][0]
+        assert "generate_lead_days" in sql and "max_queued_drafts" in sql
+
+
 class TestEnabledNewsletterUsers:
     def test_returns_ids(self):
         conn, cur = _mock_conn(fetch_all=[(2,), (9,)])
@@ -101,6 +137,42 @@ class TestEditions:
             assert get_pending_newsletter_edition(1)["id"] == 4
         sql = cur.execute.call_args[0][0]
         assert "draft" in sql and "approved" in sql
+
+    def test_create_returns_zero_on_duplicate_slot(self):
+        import mysql.connector
+        conn, cur = _mock_conn()
+        cur.execute.side_effect = mysql.connector.IntegrityError("dup uq_user_slot")
+        import datetime
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import create_newsletter_edition
+            assert create_newsletter_edition(1, "T", "S", "B", datetime.datetime(2026, 7, 7, 13)) == 0
+
+    def test_count_pending(self):
+        conn, cur = _mock_conn(fetch_row=(3,))
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import count_pending_newsletter_editions
+            assert count_pending_newsletter_editions(1) == 3
+        sql = cur.execute.call_args[0][0]
+        assert "COUNT(*)" in sql and "draft" in sql and "approved" in sql
+
+    def test_get_pending_editions_plural_ordered(self):
+        rows = [{"id": 1, "title": "A", "subtitle": None, "body": "B", "status": "draft", "scheduled_for": None},
+                {"id": 2, "title": "C", "subtitle": None, "body": "D", "status": "approved", "scheduled_for": None}]
+        conn, cur = _mock_conn(fetch_all=rows)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_pending_newsletter_editions
+            out = get_pending_newsletter_editions(1)
+        assert [e["id"] for e in out] == [1, 2]
+        assert "ORDER BY scheduled_for ASC" in cur.execute.call_args[0][0]
+
+    def test_get_latest_scheduled_for(self):
+        import datetime
+        dt = datetime.datetime(2026, 7, 21, 13)
+        conn, cur = _mock_conn(fetch_row=(dt,))
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_latest_edition_scheduled_for
+            assert get_latest_edition_scheduled_for(1) == dt
+        assert "MAX(scheduled_for)" in cur.execute.call_args[0][0]
 
     def test_update_only_provided_fields(self):
         conn, cur = _mock_conn(rowcount=1)

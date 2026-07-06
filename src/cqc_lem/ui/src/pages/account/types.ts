@@ -33,6 +33,8 @@ export type NewsletterSettings = {
   align_with_blog: boolean
   publish_day: number
   publish_hour: number
+  generate_lead_days: number
+  max_queued_drafts: number
 }
 
 export type NewsletterEdition = {
@@ -45,8 +47,10 @@ export type NewsletterEdition = {
 }
 
 export type NewsletterDraft = {
-  edition: NewsletterEdition | null
+  editions: NewsletterEdition[]
   next_publish: string | null
+  max_queued_drafts?: number
+  generate_lead_days?: number
 }
 
 export const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']

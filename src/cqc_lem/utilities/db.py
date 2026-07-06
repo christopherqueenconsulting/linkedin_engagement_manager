@@ -2424,10 +2424,10 @@ def record_lead_magnet_sent(user_id: int, recipient_profile: str, post_id: int =
 _NEWSLETTER_DEFAULTS: dict = {
     "enabled": False, "title": None, "topic": None, "cadence": "weekly",
     "align_with_blog": True, "newsletter_url": None, "last_published_at": None,
-    "publish_day": 1, "publish_hour": 9,
+    "publish_day": 1, "publish_hour": 9, "generate_lead_days": 3, "max_queued_drafts": 1,
 }
 _NEWSLETTER_COLS = ("enabled", "title", "topic", "cadence", "align_with_blog", "newsletter_url",
-                    "publish_day", "publish_hour")
+                    "publish_day", "publish_hour", "generate_lead_days", "max_queued_drafts")
 
 
 def get_newsletter_settings(user_id: int) -> dict:
@@ -2437,7 +2437,7 @@ def get_newsletter_settings(user_id: int) -> dict:
     try:
         cursor.execute(
             "SELECT enabled, title, topic, cadence, align_with_blog, newsletter_url, last_published_at, "
-            "publish_day, publish_hour "
+            "publish_day, publish_hour, generate_lead_days, max_queued_drafts "
             "FROM newsletter_settings WHERE user_id = %s", (user_id,))
         row = cursor.fetchone()
         if row is None:
@@ -2446,6 +2446,10 @@ def get_newsletter_settings(user_id: int) -> dict:
         row["align_with_blog"] = bool(row.get("align_with_blog"))
         row["publish_day"] = int(row.get("publish_day") if row.get("publish_day") is not None else 1)
         row["publish_hour"] = int(row.get("publish_hour") if row.get("publish_hour") is not None else 9)
+        row["generate_lead_days"] = int(
+            row.get("generate_lead_days") if row.get("generate_lead_days") is not None else 3)
+        row["max_queued_drafts"] = int(
+            row.get("max_queued_drafts") if row.get("max_queued_drafts") is not None else 1)
         return row
     except mysql.connector.Error as err:
         myprint(f"Could not get newsletter settings for user {user_id} | Error: {err}")
@@ -2546,6 +2550,12 @@ def create_newsletter_edition(user_id: int, title: str, subtitle: str, body: str
             (user_id, title, subtitle, body, scheduled_for))
         connection.commit()
         return cursor.lastrowid
+    except mysql.connector.IntegrityError as err:
+        # errno 1062 = ER_DUP_ENTRY: uq_user_slot already covers this user+slot — expected, not an
+        # error. Other integrity failures (e.g. FK on user_id) are real problems worth surfacing.
+        if getattr(err, "errno", None) != 1062:
+            myprint(f"Could not create newsletter edition for user {user_id} | Error: {err}")
+        return 0
     except mysql.connector.Error as err:
         myprint(f"Could not create newsletter edition for user {user_id} | Error: {err}")
         return 0
@@ -2566,6 +2576,59 @@ def get_pending_newsletter_edition(user_id: int) -> "dict | None":
         return cursor.fetchone()
     except mysql.connector.Error as err:
         myprint(f"Could not get pending newsletter edition for user {user_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def count_pending_newsletter_editions(user_id: int) -> int:
+    """How many editions are still queued (status draft/approved) for this user."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM newsletter_editions "
+            "WHERE user_id = %s AND status IN ('draft', 'approved')", (user_id,))
+        row = cursor.fetchone()
+        return int(row[0]) if row else 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not count pending newsletter editions for user {user_id} | Error: {err}")
+        return 0
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_pending_newsletter_editions(user_id: int) -> list:
+    """All editions still under review (status draft/approved), soonest slot first — the review queue."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT id, title, subtitle, body, status, scheduled_for FROM newsletter_editions "
+            "WHERE user_id = %s AND status IN ('draft', 'approved') "
+            "ORDER BY scheduled_for ASC", (user_id,))
+        return cursor.fetchall()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get pending newsletter editions for user {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_latest_edition_scheduled_for(user_id: int) -> "datetime | None":
+    """The latest slot already covered by ANY edition (any status), so the next slot never re-covers it."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT MAX(scheduled_for) FROM newsletter_editions WHERE user_id = %s", (user_id,))
+        row = cursor.fetchone()
+        return row[0] if row else None
+    except mysql.connector.Error as err:
+        myprint(f"Could not get latest edition slot for user {user_id} | Error: {err}")
         return None
     finally:
         cursor.close()

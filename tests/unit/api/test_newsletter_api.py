@@ -57,6 +57,26 @@ class TestNewsletterSettings:
         args = upd.call_args[0][1]
         assert args["publish_day"] == 3 and args["publish_hour"] == 14
 
+    def test_put_clamps_draft_config(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_newsletter_settings", return_value=True) as upd:
+            resp = client.put("/api/user/newsletter-settings", json={
+                "session_token": _SESSION, "enabled": True,
+                "max_queued_drafts": 15, "generate_lead_days": 100})
+        assert resp.status_code == 200
+        args = upd.call_args[0][1]
+        assert args["max_queued_drafts"] == 10 and args["generate_lead_days"] == 60
+
+    def test_put_clamps_draft_config_low(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_newsletter_settings", return_value=True) as upd:
+            resp = client.put("/api/user/newsletter-settings", json={
+                "session_token": _SESSION, "enabled": True,
+                "max_queued_drafts": 0, "generate_lead_days": -5})
+        assert resp.status_code == 200
+        args = upd.call_args[0][1]
+        assert args["max_queued_drafts"] == 1 and args["generate_lead_days"] == 0
+
     def test_401(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=None):
             resp = client.get("/api/user/newsletter-settings?session_token=bad")
@@ -64,31 +84,36 @@ class TestNewsletterSettings:
 
 
 class TestNewsletterDraft:
-    def test_get_returns_edition_and_next_publish(self, client):
+    def test_get_returns_editions_and_next_publish(self, client):
         from datetime import datetime
-        edition = {"id": 4, "title": "T", "subtitle": "S", "body": "B", "status": "draft",
-                   "scheduled_for": datetime(2026, 7, 7, 13, 0, 0)}
-        settings = {"publish_day": 1, "publish_hour": 9, "cadence": "weekly", "last_published_at": None}
+        editions = [{"id": 4, "title": "T", "subtitle": "S", "body": "B", "status": "draft",
+                     "scheduled_for": datetime(2026, 7, 7, 13, 0, 0)}]
+        settings = {"publish_day": 1, "publish_hour": 9, "cadence": "weekly", "last_published_at": None,
+                    "max_queued_drafts": 3, "generate_lead_days": 14}
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_pending_newsletter_edition", return_value=edition), \
+             patch("cqc_lem.api.main.get_pending_newsletter_editions", return_value=editions), \
+             patch("cqc_lem.api.main.get_latest_edition_scheduled_for", return_value=None), \
              patch("cqc_lem.api.main.get_newsletter_settings", return_value=settings), \
              patch("cqc_lem.api.main.get_user_timezone", return_value="UTC"):
             resp = client.get(f"/api/user/newsletter-draft?session_token={_SESSION}")
         assert resp.status_code == 200
         detail = resp.json()["detail"]
-        assert detail["edition"]["id"] == 4
-        assert detail["edition"]["scheduled_for"].startswith("2026-07-07")
+        assert detail["editions"][0]["id"] == 4
+        assert detail["editions"][0]["scheduled_for"].startswith("2026-07-07")
         assert detail["next_publish"] is not None
+        assert detail["max_queued_drafts"] == 3 and detail["generate_lead_days"] == 14
 
-    def test_get_null_when_no_edition(self, client):
-        settings = {"publish_day": 1, "publish_hour": 9, "cadence": "weekly", "last_published_at": None}
+    def test_get_empty_when_no_editions(self, client):
+        settings = {"publish_day": 1, "publish_hour": 9, "cadence": "weekly", "last_published_at": None,
+                    "max_queued_drafts": 1, "generate_lead_days": 3}
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
-             patch("cqc_lem.api.main.get_pending_newsletter_edition", return_value=None), \
+             patch("cqc_lem.api.main.get_pending_newsletter_editions", return_value=[]), \
+             patch("cqc_lem.api.main.get_latest_edition_scheduled_for", return_value=None), \
              patch("cqc_lem.api.main.get_newsletter_settings", return_value=settings), \
              patch("cqc_lem.api.main.get_user_timezone", return_value="UTC"):
             resp = client.get(f"/api/user/newsletter-draft?session_token={_SESSION}")
         assert resp.status_code == 200
-        assert resp.json()["detail"]["edition"] is None
+        assert resp.json()["detail"]["editions"] == []
 
     def test_get_401(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=None):

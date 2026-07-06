@@ -107,67 +107,95 @@ class TestAutoPublishEdition:
         assert "did not complete" in result
 
 
-class TestGenerateNewsletterDrafts:
-    def test_generates_and_notifies(self):
-        from cqc_lem.app.run_scheduler import auto_generate_newsletter_drafts
-        settings = {"publish_day": 1, "publish_hour": 9, "cadence": "weekly",
-                    "last_published_at": None, "topic": "reach"}
+def _run_generate(*, settings, pending, latest=None, gen_now=True,
+                  edition=None, edition_side_effect=None, create_ret=1, create_side_effect=None,
+                  user_ids=None, tz_side_effect=None):
+    """Drive auto_generate_newsletter_drafts with the new pure-count collaborators mocked out."""
+    from contextlib import ExitStack
+    from cqc_lem.app.run_scheduler import auto_generate_newsletter_drafts
+    if edition is None:
         edition = {"title": "T", "subtitle": "S", "body": "B"}
-        with patch("cqc_lem.utilities.db.get_enabled_newsletter_user_ids", return_value=[1]), \
-             patch("cqc_lem.utilities.db.get_newsletter_settings", return_value=settings), \
-             patch("cqc_lem.utilities.db.get_user_timezone", return_value="UTC"), \
-             patch("cqc_lem.utilities.db.get_pending_newsletter_edition", return_value=None), \
-             patch("cqc_lem.utilities.db.create_newsletter_edition", return_value=42) as create, \
-             patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=MagicMock()), \
-             patch("cqc_lem.utilities.ai.ai_helper.generate_newsletter_edition", return_value=edition), \
-             patch("cqc_lem.utilities.newsletter.should_generate_now", return_value=True), \
-             patch("cqc_lem.utilities.notifications.notify_newsletter_draft_ready") as notify:
-            result = auto_generate_newsletter_drafts()
+    if user_ids is None:
+        user_ids = [1]
+    gen_kw = {"side_effect": edition_side_effect} if edition_side_effect else {"return_value": edition}
+    create_kw = {"side_effect": create_side_effect} if create_side_effect else {"return_value": create_ret}
+    tz_kw = {"side_effect": tz_side_effect} if tz_side_effect else {"return_value": "UTC"}
+    with ExitStack() as es:
+        p = es.enter_context
+        p(patch("cqc_lem.utilities.db.get_enabled_newsletter_user_ids", return_value=user_ids))
+        p(patch("cqc_lem.utilities.db.get_newsletter_settings", return_value=settings))
+        p(patch("cqc_lem.utilities.db.get_user_timezone", **tz_kw))
+        p(patch("cqc_lem.utilities.db.count_pending_newsletter_editions", return_value=pending))
+        p(patch("cqc_lem.utilities.db.get_latest_edition_scheduled_for", return_value=latest))
+        create = p(patch("cqc_lem.utilities.db.create_newsletter_edition", **create_kw))
+        p(patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=MagicMock()))
+        p(patch("cqc_lem.utilities.ai.ai_helper.generate_newsletter_edition", **gen_kw))
+        p(patch("cqc_lem.utilities.newsletter.should_generate_now", return_value=gen_now))
+        notify = p(patch("cqc_lem.utilities.notifications.notify_newsletter_draft_ready"))
+        result = auto_generate_newsletter_drafts()
+    return result, create, notify
+
+
+_SETTINGS = {"publish_day": 1, "publish_hour": 9, "cadence": "weekly", "last_published_at": None,
+             "topic": "reach", "max_queued_drafts": 1, "generate_lead_days": 3}
+
+
+def _settings(**overrides):
+    return {**_SETTINGS, **overrides}
+
+
+class TestGenerateNewsletterDrafts:
+    def test_bootstrap_generates_one(self):
+        result, create, notify = _run_generate(settings=_settings(max_queued_drafts=1), pending=0)
         create.assert_called_once()
         notify.assert_called_once()
-        assert "1 user" in result
+        assert "Generated 1 newsletter draft" in result
 
-    def test_skips_when_pending_exists(self):
-        from cqc_lem.app.run_scheduler import auto_generate_newsletter_drafts
-        settings = {"publish_day": 1, "publish_hour": 9, "cadence": "weekly", "last_published_at": None}
-        with patch("cqc_lem.utilities.db.get_enabled_newsletter_user_ids", return_value=[1]), \
-             patch("cqc_lem.utilities.db.get_newsletter_settings", return_value=settings), \
-             patch("cqc_lem.utilities.db.get_user_timezone", return_value="UTC"), \
-             patch("cqc_lem.utilities.db.get_pending_newsletter_edition", return_value={"id": 5}), \
-             patch("cqc_lem.utilities.db.create_newsletter_edition") as create, \
-             patch("cqc_lem.utilities.newsletter.should_generate_now", return_value=True):
-            result = auto_generate_newsletter_drafts()
+    def test_fills_queue_to_cap(self):
+        # cap 5, empty queue → generate all 5 upcoming slots in one run.
+        result, create, notify = _run_generate(settings=_settings(max_queued_drafts=5), pending=0)
+        assert create.call_count == 5
+        assert notify.call_count == 5
+        assert "Generated 5 newsletter draft" in result
+
+    def test_skips_when_queue_full(self):
+        # pending == cap → nothing to add.
+        result, create, _ = _run_generate(settings=_settings(max_queued_drafts=3), pending=3)
         create.assert_not_called()
-        assert "0 user" in result
+        assert "Generated 0 newsletter draft" in result
 
-    def test_skips_when_not_time_yet(self):
-        from cqc_lem.app.run_scheduler import auto_generate_newsletter_drafts
-        settings = {"publish_day": 1, "publish_hour": 9, "cadence": "weekly", "last_published_at": None}
-        with patch("cqc_lem.utilities.db.get_enabled_newsletter_user_ids", return_value=[1]), \
-             patch("cqc_lem.utilities.db.get_newsletter_settings", return_value=settings), \
-             patch("cqc_lem.utilities.db.get_user_timezone", return_value="UTC"), \
-             patch("cqc_lem.utilities.db.get_pending_newsletter_edition", return_value=None) as pend, \
-             patch("cqc_lem.utilities.newsletter.should_generate_now", return_value=False):
-            result = auto_generate_newsletter_drafts()
-        pend.assert_not_called()
-        assert "0 user" in result
+    def test_bootstrap_gate_blocks_when_not_time_yet(self):
+        # First-ever draft (pending 0) waits for the lead window.
+        result, create, _ = _run_generate(settings=_settings(max_queued_drafts=2), pending=0, gen_now=False)
+        create.assert_not_called()
+        assert "Generated 0 newsletter draft" in result
+
+    def test_rolling_refill_ignores_lead_gate(self):
+        # Queue already rolling (pending > 0) → top up to cap even though the lead gate would say "not yet".
+        result, create, _ = _run_generate(settings=_settings(max_queued_drafts=3), pending=2, gen_now=False)
+        create.assert_called_once()
+        assert "Generated 1 newsletter draft" in result
+
+    def test_stops_when_generation_fails_midway(self):
+        result, create, notify = _run_generate(
+            settings=_settings(max_queued_drafts=3), pending=0,
+            edition_side_effect=[{"title": "T", "subtitle": "S", "body": "B"}, None])
+        create.assert_called_once()
+        assert "Generated 1 newsletter draft" in result
+
+    def test_stops_on_duplicate_slot(self):
+        # create returning 0 (uq_user_slot collision) halts this user's run.
+        result, create, _ = _run_generate(
+            settings=_settings(max_queued_drafts=3), pending=0, create_side_effect=[10, 0])
+        assert create.call_count == 2
+        assert "Generated 1 newsletter draft" in result
 
     def test_one_user_failure_does_not_stop_loop(self):
-        from cqc_lem.app.run_scheduler import auto_generate_newsletter_drafts
-        settings = {"publish_day": 1, "publish_hour": 9, "cadence": "weekly",
-                    "last_published_at": None, "topic": None}
-        with patch("cqc_lem.utilities.db.get_enabled_newsletter_user_ids", return_value=[1, 2]), \
-             patch("cqc_lem.utilities.db.get_newsletter_settings", return_value=settings), \
-             patch("cqc_lem.utilities.db.get_user_timezone", side_effect=[Exception("boom"), "UTC"]), \
-             patch("cqc_lem.utilities.db.get_pending_newsletter_edition", return_value=None), \
-             patch("cqc_lem.utilities.db.create_newsletter_edition", return_value=1), \
-             patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=MagicMock()), \
-             patch("cqc_lem.utilities.ai.ai_helper.generate_newsletter_edition",
-                   return_value={"title": "T", "subtitle": "S", "body": "B"}), \
-             patch("cqc_lem.utilities.newsletter.should_generate_now", return_value=True), \
-             patch("cqc_lem.utilities.notifications.notify_newsletter_draft_ready"):
-            result = auto_generate_newsletter_drafts()
-        assert "1 user" in result
+        result, create, _ = _run_generate(
+            settings=_settings(max_queued_drafts=1), pending=0, user_ids=[1, 2],
+            tz_side_effect=[Exception("boom"), "UTC"])
+        create.assert_called_once()
+        assert "Generated 1 newsletter draft" in result
 
 
 class TestPublishScheduledEditions:

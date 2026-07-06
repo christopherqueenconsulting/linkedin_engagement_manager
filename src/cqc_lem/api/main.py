@@ -28,7 +28,8 @@ from cqc_lem.utilities.db import (
     get_user_subscription_info, get_user_preferences, update_user_preferences,
     get_engagement_preferences, update_engagement_preferences,
     get_newsletter_settings, update_newsletter_settings,
-    get_pending_newsletter_edition, update_newsletter_edition, get_newsletter_edition,
+    get_pending_newsletter_editions,
+    get_latest_edition_scheduled_for, update_newsletter_edition, get_newsletter_edition,
     get_user_timezone,
     get_user_groups, set_groups_enabled, get_post_engagement_rows,
     get_lead_magnet_settings, update_lead_magnet_settings,
@@ -76,7 +77,7 @@ from fastapi.staticfiles import StaticFiles
 from linkedin_api.clients.auth.client import AuthClient
 from linkedin_api.clients.restli.client import RestliClient
 from linkedin_api.common.errors import ResponseFormattingError
-from pydantic import BaseModel, computed_field, model_validator
+from pydantic import BaseModel, computed_field, field_validator, model_validator
 
 app = FastAPI()
 
@@ -295,6 +296,18 @@ class NewsletterSettingsRequest(BaseModel):
     align_with_blog: bool = True
     publish_day: int = 1
     publish_hour: int = 9
+    generate_lead_days: int = 3
+    max_queued_drafts: int = 1
+
+    @field_validator("max_queued_drafts")
+    @classmethod
+    def _clamp_max_queued(cls, v: int) -> int:
+        return max(1, min(10, v))
+
+    @field_validator("generate_lead_days")
+    @classmethod
+    def _clamp_lead_days(cls, v: int) -> int:
+        return max(0, min(60, v))
 
 
 class NewsletterDraftRequest(BaseModel):
@@ -1117,8 +1130,9 @@ def update_newsletter_settings_endpoint(request: NewsletterSettingsRequest) -> R
     return ResponseModel(status_code=200, detail="Newsletter settings updated")
 
 
-def _compute_next_publish(user_id: int):
-    """Next scheduled publish datetime (naive UTC) for the user's newsletter, or None."""
+def _compute_next_publish(user_id: int, anchor=None):
+    """Next scheduled publish datetime (naive UTC) after `anchor`, or None. When `anchor` is None the
+    user's last_published_at is used, giving the soonest upcoming slot."""
     import pytz
     from datetime import datetime as _dt
     from cqc_lem.utilities.newsletter import next_publish_datetime
@@ -1127,9 +1141,11 @@ def _compute_next_publish(user_id: int):
         tz = pytz.timezone(get_user_timezone(user_id))
     except Exception:
         tz = pytz.utc
+    if anchor is None:
+        anchor = settings.get("last_published_at")
     return next_publish_datetime(
         settings.get("publish_day", 1), settings.get("publish_hour", 9),
-        settings.get("cadence", "weekly"), settings.get("last_published_at"), tz, _dt.utcnow())
+        settings.get("cadence", "weekly"), anchor, tz, _dt.utcnow())
 
 
 @router.get("/user/newsletter-draft")
@@ -1137,14 +1153,20 @@ def get_newsletter_draft_endpoint(session_token: str) -> ResponseModel:
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
-    edition = get_pending_newsletter_edition(user_id)
-    if edition and edition.get("scheduled_for") is not None:
-        edition["scheduled_for"] = edition["scheduled_for"].isoformat() if hasattr(
-            edition["scheduled_for"], "isoformat") else str(edition["scheduled_for"])
-    next_pub = _compute_next_publish(user_id)
+    editions = get_pending_newsletter_editions(user_id)
+    for e in editions:
+        sched = e.get("scheduled_for")
+        if sched is not None:
+            e["scheduled_for"] = sched.isoformat() if hasattr(sched, "isoformat") else str(sched)
+    # next_publish is the slot AFTER the last edition already queued, so the UI can show what's next.
+    anchor = get_latest_edition_scheduled_for(user_id)
+    next_pub = _compute_next_publish(user_id, anchor=anchor)
+    settings = get_newsletter_settings(user_id)
     return ResponseModel(status_code=200, detail={
-        "edition": edition,
+        "editions": editions,
         "next_publish": next_pub.isoformat() if next_pub is not None else None,
+        "max_queued_drafts": settings.get("max_queued_drafts", 1),
+        "generate_lead_days": settings.get("generate_lead_days", 3),
     })
 
 
