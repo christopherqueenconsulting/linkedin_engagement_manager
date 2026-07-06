@@ -95,6 +95,40 @@ export default function EngagementSettingsCard() {
         {saveBtn('Save Voice & Tone')}
       </div>
 
+      {/* Content Focus & Goals */}
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-5">
+        <h2 className="text-base font-semibold text-gray-700">Content Focus &amp; Goals</h2>
+        <p className="text-xs text-gray-500">
+          What your generated posts and comments should be about. These steer the ANGLE and keep
+          content aligned to your business and personal goals — they never override the subject of the
+          post being engaged with, and AI is instructed to never promote internal tools or software.
+          Leave these blank and LEM defaults to relationship-building: every comment connects genuinely
+          to the poster or to potential followers, grounded in the target post and your voice.
+        </p>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Focus topics</label>
+          <input type="text" value={csv(engPrefs.focus_topics)}
+            onChange={(e) => setEng({ focus_topics: parseCsv(e.target.value) })}
+            placeholder="e.g. B2B sales, leadership, AI adoption"
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Business goals</label>
+          <textarea value={engPrefs.business_goals || ''} rows={2}
+            onChange={(e) => setEng({ business_goals: e.target.value })}
+            placeholder="e.g. Book 5 discovery calls/month with mid-market ops leaders"
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Personal goals</label>
+          <textarea value={engPrefs.personal_goals || ''} rows={2}
+            onChange={(e) => setEng({ personal_goals: e.target.value })}
+            placeholder="e.g. Build a reputation as a thoughtful voice in supply-chain tech"
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+        </div>
+        {saveBtn('Save Focus & Goals')}
+      </div>
+
       {/* Engagement Targeting */}
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-5">
         <h2 className="text-base font-semibold text-gray-700">Engagement Targeting</h2>

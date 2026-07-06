@@ -10,6 +10,9 @@ export type EngPrefs = {
   exclude_keywords: string[]
   include_authors: string[]
   exclude_authors: string[]
+  focus_topics: string[]
+  business_goals: string | null
+  personal_goals: string | null
   min_reactions: number | null
   max_post_age_hours: number | null
   reply_to_own_comments: boolean
