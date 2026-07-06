@@ -1523,6 +1523,7 @@ def automate_reply_commenting(self, user_id: int, post_id: int, loop_for_duratio
 
             comments_replied_count = 0
             lead_magnet = get_lead_magnet_settings(user_id)
+            lead_magnet_blog_url = get_user_blog_url(user_id) if lead_magnet.get("enabled") else ""
             for comment in comments:
                 try:
                     tb = comment.find_elements(By.CSS_SELECTOR, "[data-testid='expandable-text-box']")
@@ -1541,8 +1542,12 @@ def automate_reply_commenting(self, user_id: int, post_id: int, loop_for_duratio
                         if (lead_magnet.get("enabled") and lead_magnet.get("keyword") and lead_magnet.get("message")
                                 and lead_magnet["keyword"].lower() in comment_text.lower()
                                 and _eprofile and not has_received_lead_magnet(user_id, _eprofile)):
+                            lm_message = render_dm_placeholders(
+                                lead_magnet["message"],
+                                first_name=(_ename or "").split(" ")[0],
+                                blog_url=lead_magnet_blog_url or "")
                             send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": _eprofile,
-                                                                "message": lead_magnet["message"]})
+                                                                "message": lm_message})
                             record_lead_magnet_sent(user_id, _eprofile, post_id)
                             myprint(f"Lead magnet DM queued to {_ename} (keyword '{lead_magnet['keyword']}')")
                 except Exception:
@@ -1684,6 +1689,33 @@ def get_recent_collaborators(driver, wait) -> dict[str, str]:
     return {}
 
 
+class _SafePlaceholders(dict):
+    """format_map backing dict that leaves unknown {tokens} literal instead of raising —
+    so a user typo like {frst_name} never drops the whole message."""
+    def __missing__(self, key):
+        return "{" + key + "}"
+
+
+def render_dm_placeholders(text: str, *, first_name: str = "", headline: str = "",
+                           blog_url: str = "") -> str:
+    """Single source of truth for filling DM / lead-magnet {placeholders}: {first_name},
+    {headline}, {blog_url}. Used by BOTH the DM-template path and the Comment->DM lead magnet
+    so their substitution can never drift. Tolerates unknown/malformed tokens gracefully."""
+    if not text:
+        return text or ""
+    ctx = _SafePlaceholders(first_name=first_name or "there",
+                            headline=headline or "my professional field",
+                            blog_url=blog_url or "")
+    try:
+        return text.format_map(ctx)
+    except (IndexError, ValueError):
+        # malformed/positional braces (e.g. a stray "{") — replace known tokens only
+        out = text
+        for k in ("first_name", "headline", "blog_url"):
+            out = out.replace("{" + k + "}", str(ctx[k]))
+        return out
+
+
 def build_dm_from_template(user_id: int, event_type: str, first_name: str,
                            my_profile: LinkedInProfile, step: int = 0, blog_url: str = "") -> "str | None":
     """Render the user's DM template for an event (filling {first_name}/{headline}/{blog_url})
@@ -1693,12 +1725,8 @@ def build_dm_from_template(user_id: int, event_type: str, first_name: str,
     if not tmpl:
         return None
     headline = getattr(my_profile, "job_title", None) or "my professional field"
-    ctx = {"first_name": first_name or "there", "headline": headline, "blog_url": blog_url or ""}
-    try:
-        rendered = tmpl["template_text"].format(**ctx)
-    except (KeyError, IndexError, ValueError):
-        # user template referenced an unknown {placeholder} — degrade to a minimal fill
-        rendered = tmpl["template_text"].replace("{first_name}", ctx["first_name"])
+    rendered = render_dm_placeholders(tmpl["template_text"], first_name=first_name,
+                                      headline=headline, blog_url=blog_url)
     try:
         refined = get_ai_message_refinement(rendered, character_limit=300)
         return (refined or rendered).strip()
