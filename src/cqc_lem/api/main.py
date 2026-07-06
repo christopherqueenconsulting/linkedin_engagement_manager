@@ -325,6 +325,12 @@ class NewsletterRegenerateRequest(BaseModel):
     guidance: Optional[str] = None  # free-text "Added Guidance"; empty => AI decides a fresh take
 
 
+class PostRegenerateRequest(BaseModel):
+    session_token: str
+    post_id: int
+    guidance: Optional[str] = None  # free-text "Added Guidance"; empty => fresh take honoring settings
+
+
 class EngagementPreferencesRequest(BaseModel):
     session_token: str
     tone: Optional[str] = None
@@ -1224,6 +1230,22 @@ def regenerate_newsletter_draft_endpoint(request: NewsletterRegenerateRequest) -
     guidance = (request.guidance or "").strip() or None
     regenerate_newsletter_edition.apply_async(
         kwargs={"edition_id": request.edition_id, "guidance": guidance})
+    return ResponseModel(status_code=200, detail="Regeneration started")
+
+
+@router.post("/user/post/regenerate")
+def regenerate_post_endpoint(request: PostRegenerateRequest) -> ResponseModel:
+    """Regenerate a single pending/approved post. Generation is a slow lem-complex call, so dispatch
+    it to a Celery task; the post resets to 'pending' for re-review. Optional free-text `guidance`
+    steers the rewrite while the base regeneration honors the user's saved engagement settings."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if get_post_user_id(request.post_id) != user_id:
+        raise HTTPException(status_code=404, detail="Post not found")
+    from cqc_lem.app.run_content_plan import regenerate_post_task
+    guidance = (request.guidance or "").strip() or None
+    regenerate_post_task.apply_async(kwargs={"post_id": request.post_id, "guidance": guidance})
     return ResponseModel(status_code=200, detail="Regeneration started")
 
 

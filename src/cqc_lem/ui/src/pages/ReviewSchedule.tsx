@@ -53,7 +53,7 @@ const STATUS_COLORS: Record<string, string> = {
 }
 
 export default function ReviewSchedule() {
-  const { user } = useAuth()
+  const { user, sessionToken } = useAuth()
   const email = user?.email ?? ''
   const qc = useQueryClient()
   const userTimezone = useUserTimezone()
@@ -76,6 +76,11 @@ export default function ReviewSchedule() {
 
   // Single-post edit state
   const [editingPost, setEditingPost] = useState<Post | null>(null)
+
+  // Quick-delete confirmation + regenerate-with-suggestions state
+  const [confirmDeletePost, setConfirmDeletePost] = useState<Post | null>(null)
+  const [regenGuidance, setRegenGuidance] = useState('')
+  const [regenNotice, setRegenNotice] = useState<string | null>(null)
 
   const queryKey = ['posts', email, page, pageSize, sortOrder, filterStatus]
 
@@ -130,6 +135,36 @@ export default function ReviewSchedule() {
       qc.invalidateQueries({ queryKey: ['posts', email] })
       setSelectedIds(new Set())
     },
+  })
+
+  // Quick per-post delete (reuses the same soft-delete endpoint as the bulk flow, one id).
+  const deleteMutation = useMutation({
+    mutationFn: (post_id: number) => api.delete('/posts/', { data: { post_ids: [post_id] } }),
+    onSuccess: (_res, post_id) => {
+      qc.invalidateQueries({ queryKey: ['posts', email] })
+      setConfirmDeletePost(null)
+      setSelectedIds((prev) => { const n = new Set(prev); n.delete(post_id); return n })
+      if (editingPost?.post_id === post_id) setEditingPost(null)
+    },
+  })
+
+  // Regenerate a single post with optional freeform guidance — runs the async generation task
+  // server-side (honors saved settings + guidance), then resets the post to PENDING for re-review.
+  const regenerateMutation = useMutation({
+    mutationFn: (vars: { post_id: number; guidance: string }) =>
+      api.post('/user/post/regenerate', {
+        session_token: sessionToken,
+        post_id: vars.post_id,
+        guidance: vars.guidance.trim() || null,
+      }),
+    onSuccess: () => {
+      setRegenGuidance('')
+      setRegenNotice('Regenerating… this post will return to PENDING with fresh content shortly.')
+      setEditingPost(null)
+      setTimeout(() => qc.invalidateQueries({ queryKey: ['posts', email] }), 2500)
+      setTimeout(() => setRegenNotice(null), 8000)
+    },
+    onError: () => setRegenNotice('Could not start regeneration — please try again.'),
   })
 
   const weeklyMutation = useMutation({
@@ -217,6 +252,11 @@ export default function ReviewSchedule() {
 
       {view === 'posts' && (
       <>
+      {regenNotice && (
+        <div className="bg-indigo-50 border border-indigo-200 text-indigo-800 rounded-lg px-4 py-2 text-sm">
+          {regenNotice}
+        </div>
+      )}
       {/* Status tabs */}
       <div className="flex gap-2 flex-wrap">
         {STATUSES.map((s) => (
@@ -379,6 +419,17 @@ export default function ReviewSchedule() {
                       <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[post.status] ?? 'bg-gray-100 text-gray-600'}`}>
                         {post.status.toUpperCase()}
                       </span>
+                      {post.status !== 'posted' && (
+                        <button
+                          type="button"
+                          title="Delete this post"
+                          aria-label={`Delete post ${post.post_id}`}
+                          onClick={(e) => { e.stopPropagation(); setConfirmDeletePost(post) }}
+                          className="text-gray-300 hover:text-red-500 transition-colors px-1 leading-none text-base"
+                        >
+                          🗑
+                        </button>
+                      )}
                     </div>
                   </div>
                   <p className="text-sm text-gray-700 line-clamp-2">{post.content}</p>
@@ -561,6 +612,34 @@ export default function ReviewSchedule() {
                     Cancel
                   </button>
                 </div>
+
+                {/* Regenerate with suggestions — mirrors the newsletter flow. Runs the generation
+                    pipeline server-side (honors saved voice/tone, focus/goals, emoji/hashtag prefs)
+                    PLUS the optional guidance, then resets the post to PENDING for re-review. */}
+                {editingPost.post_type === 'text' && (
+                  <div className="border-t border-gray-100 pt-4 space-y-2">
+                    <label className="block text-xs font-medium text-gray-600">
+                      Added Guidance <span className="font-normal text-gray-400">(optional)</span>
+                    </label>
+                    <textarea
+                      value={regenGuidance}
+                      onChange={(e) => setRegenGuidance(e.target.value)}
+                      rows={2}
+                      placeholder="e.g. lead with a client result, drop the stat, make it a personal story"
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                    />
+                    <button
+                      onClick={() => regenerateMutation.mutate({ post_id: editingPost.post_id, guidance: regenGuidance })}
+                      disabled={regenerateMutation.isPending}
+                      className="w-full bg-indigo-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                    >
+                      {regenerateMutation.isPending ? 'Starting…' : 'Re-generate Post'}
+                    </button>
+                    <p className="text-xs text-gray-400">
+                      Regeneration replaces this post's content and returns it to PENDING for review.
+                    </p>
+                  </div>
+                )}
               </div>
             )}
 
@@ -576,6 +655,38 @@ export default function ReviewSchedule() {
         )}
       </div>
       </>
+      )}
+
+      {/* Quick-delete confirmation — permanent, all history lost. */}
+      {confirmDeletePost && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+             onClick={() => !deleteMutation.isPending && setConfirmDeletePost(null)}>
+          <div className="bg-white rounded-lg shadow-xl max-w-sm w-full p-6 space-y-4"
+               onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-base font-semibold text-gray-800">Delete this post?</h3>
+            <p className="text-sm text-gray-600">
+              This will permanently delete post #{confirmDeletePost.post_id} and <span className="font-semibold">ALL of its
+              history</span> (stats, logs, generated media). This cannot be undone.
+            </p>
+            <p className="text-xs text-gray-500 line-clamp-3 bg-gray-50 rounded p-2">{confirmDeletePost.content}</p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setConfirmDeletePost(null)}
+                disabled={deleteMutation.isPending}
+                className="px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => deleteMutation.mutate(confirmDeletePost.post_id)}
+                disabled={deleteMutation.isPending}
+                className="px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-semibold hover:bg-red-700 disabled:opacity-50"
+              >
+                {deleteMutation.isPending ? 'Deleting…' : 'Delete permanently'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

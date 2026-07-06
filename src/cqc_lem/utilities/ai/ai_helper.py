@@ -973,6 +973,43 @@ def get_ai_linked_post_refinement(original_message: str, character_limit: int = 
     comment = response.choices[0].message.content.strip()
     return comment
 
+
+def apply_post_guidance(post_content: str, guidance: str, prefs: dict = None,
+                        profile_synthesis: str = None) -> str:
+    """Revise an already-generated LinkedIn post per the user's free-text suggestions while keeping
+    their voice and every alignment rule (focus/goals, anti-self-promo, emoji/hashtag prefs). This
+    is the post-side of the newsletter 'regenerate with suggestions' flow — the base post is produced
+    by the normal generation pipeline (which honors saved settings) and this pass folds in the typed
+    guidance. Returns the revised post; on empty guidance returns the input unchanged."""
+    if not (guidance or "").strip():
+        return post_content
+
+    prompt = f"""Revise the LinkedIn post below according to the author's revision request.
+Keep it in the author's authentic voice and honor every alignment and style rule that follows.
+Return ONLY the revised post text — no preamble, no explanation.
+
+### Current post:
+{post_content}
+
+### Author's revision request:
+{guidance.strip()}
+"""
+    prompt += _alignment_directive(prefs)
+    prompt += _style_directive(prefs, "post")
+    prompt += "\n\n" + PLAIN_PUNCTUATION_DIRECTIVE
+
+    system_prompt = {
+        "role": "system",
+        "content": ("Act like a professional LinkedIn ghostwriter. Revise the given post to satisfy "
+                    "the author's request while preserving their voice, staying LinkedIn-native (no "
+                    "markdown), and never promoting internal tools. Provide only the finalized post."),
+    }
+    user_message = {"role": "user", "content": [{"type": "text", "text": prompt}]}
+    response = _call_llm(model="lem-complex", messages=[system_prompt, user_message])
+    revised = (response.choices[0].message.content or "").strip()
+    return revised or post_content
+
+
 def get_ai_message_refinement(original_message: str, character_limit: int = 300):
     character_limit_string = f"\nThe refined message needs to be less than or equal to {character_limit} characters including white spaces and punctuations. You may use symbols, abbreviations, and other and short-hand\n\n " if character_limit > 0 else ""
 

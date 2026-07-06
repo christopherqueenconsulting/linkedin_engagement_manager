@@ -17,7 +17,7 @@ from cqc_lem.utilities.ai.ai_helper import get_blog_summary_post_from_ai, get_we
     create_runway_video, get_ai_linked_post_refinement, optimize_post_hook
 from cqc_lem.utilities.ai.ai_helper import get_thought_leadership_post_from_ai, \
     get_industry_news_post_from_ai, get_personal_story_post_from_ai, generate_engagement_prompt_post, \
-    get_or_create_profile_synthesis
+    get_or_create_profile_synthesis, apply_post_guidance
 from cqc_lem.utilities.db import get_post_type_counts, insert_planned_post, update_db_post_content, \
     get_planned_posts_for_current_week, get_last_planned_post_date_for_user, get_user_password_pair_by_id, \
     get_user_blog_url, get_user_sitemap_url, get_active_user_ids, get_planned_posts_for_next_week, PostStatus, \
@@ -507,6 +507,55 @@ def regenerate_post_carousel_task(post_id: int):
             update_db_post_status(post_id, PostStatus.APPROVED)
             myprint(f"regenerate_post_carousel_task: post {post_id} healed → approved")
     return content
+
+
+def regenerate_post(post_id: int, guidance: str = None) -> Optional[str]:
+    """Regenerate ONE text post in place through the normal generation pipeline — so it honors the
+    user's saved engagement settings (voice/tone, focus/goals, emoji/hashtag prefs, anti-self-promo)
+    — then folds in optional free-text `guidance`. Mirrors regenerate_newsletter_edition. Resets the
+    post to PENDING so the user re-reviews. Text posts only: carousels/videos keep their dedicated
+    media healers (regenerate_post_carousel_task / regenerate_post_video_task)."""
+    from cqc_lem.utilities.db import get_post_user_id, get_post_buyer_stage, get_post_type
+
+    user_id = get_post_user_id(post_id)
+    if not user_id:
+        myprint(f"regenerate_post: no user for post_id={post_id}")
+        return None
+    post_type = get_post_type(post_id)
+    pt_value = post_type.value if isinstance(post_type, PostType) else post_type
+    if pt_value and pt_value != PostType.TEXT.value:
+        myprint(f"regenerate_post: post {post_id} is '{pt_value}', not text — skipping text regenerate")
+        return None
+
+    stage = get_post_buyer_stage(post_id) or "awareness"
+    # Cached/DB-backed profile (no Selenium) — same source the newsletter regenerate uses.
+    user_profile = load_profile_for_user(user_id)
+    content = create_text_post(user_id, stage, user_profile=user_profile, post_id=post_id)
+    if not content:
+        myprint(f"regenerate_post: generation produced nothing for post {post_id}")
+        return None
+
+    guidance = (guidance or "").strip()
+    if guidance:
+        try:
+            prefs = get_engagement_preferences(user_id)
+            synthesis = get_or_create_profile_synthesis(user_id, user_profile)
+            revised = apply_post_guidance(content, guidance, prefs=prefs, profile_synthesis=synthesis)
+            if revised:
+                content = sanitize_for_linkedin(revised).strip()
+        except Exception as e:
+            myprint(f"regenerate_post: guidance pass failed for post {post_id} ({e}); keeping base regen")
+
+    update_db_post_content(post_id, content)
+    update_db_post_status(post_id, PostStatus.PENDING)
+    myprint(f"regenerate_post: post {post_id} regenerated → pending")
+    return content
+
+
+@shared_task.task
+def regenerate_post_task(post_id: int, guidance: str = None):
+    """Celery wrapper so post regeneration (slow lem-complex call) runs async off the API request."""
+    return regenerate_post(post_id, guidance)
 
 
 def create_text_post(user_id: int, stage: str, post_type: str = None, user_profile: LinkedInProfile=None,
