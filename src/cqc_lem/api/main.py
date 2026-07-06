@@ -20,6 +20,8 @@ from cqc_lem.utilities.db import (
     insert_post, get_post_by_email, get_user_id, update_db_post, get_post_user_id,
     add_user_with_access_token, update_user, PostType, PostStatus, get_posts, get_dashboard_counts,
     get_recent_logs, bulk_update_posts, soft_delete_posts,
+    insert_scheduled_dm, get_scheduled_dms, get_scheduled_dm, get_scheduled_dm_user_id,
+    update_scheduled_dm, update_scheduled_dm_status, ScheduledDmStatus,
     create_pin_for_email, verify_pin_for_email, delete_pin_for_email,
     create_session, get_session_user_id, delete_session,
     add_user_by_email, get_user_email, get_user_token_info, store_linkedin_li_at,
@@ -299,6 +301,8 @@ _LEN_LM_MESSAGE = 2000    # lead_magnet_settings.message (TEXT; app cap)
 _LEN_DM_TEMPLATE = 2000   # dm_templates.template_text (TEXT; app cap)
 _LEN_NL_TITLE = 255       # newsletter_settings.title VARCHAR(255)
 _LEN_NL_TOPIC = 512       # newsletter_settings.topic VARCHAR(512)
+_LEN_DM_RECIPIENT_URL = 512   # scheduled_dms.recipient_profile_url VARCHAR(512)
+_LEN_DM_RECIPIENT_NAME = 255  # scheduled_dms.recipient_name VARCHAR(255)
 
 
 class NewsletterSettingsRequest(BaseModel):
@@ -343,6 +347,30 @@ class PostRegenerateRequest(BaseModel):
     session_token: str
     post_id: int
     guidance: Optional[str] = None  # free-text "Added Guidance"; empty => fresh take honoring settings
+
+
+class ScheduleDmRequest(BaseModel):
+    session_token: str
+    recipient_profile_url: str = Field(max_length=_LEN_DM_RECIPIENT_URL)
+    recipient_name: Optional[str] = Field(default=None, max_length=_LEN_DM_RECIPIENT_NAME)
+    message: str = Field(max_length=_LEN_DM_TEMPLATE)
+    scheduled_datetime: datetime
+    status: str = "pending"  # 'pending' (draft) or 'approved' (queue for send)
+
+
+class UpdateDmRequest(BaseModel):
+    session_token: str
+    dm_id: int
+    recipient_profile_url: Optional[str] = Field(default=None, max_length=_LEN_DM_RECIPIENT_URL)
+    recipient_name: Optional[str] = Field(default=None, max_length=_LEN_DM_RECIPIENT_NAME)
+    message: Optional[str] = Field(default=None, max_length=_LEN_DM_TEMPLATE)
+    scheduled_datetime: Optional[datetime] = None
+    action: Optional[str] = None  # 'approve' | 'cancel' | None (save fields only)
+
+
+class DmDeleteRequest(BaseModel):
+    session_token: str
+    dm_id: int
 
 
 class EngagementPreferencesRequest(BaseModel):
@@ -1261,6 +1289,64 @@ def regenerate_post_endpoint(request: PostRegenerateRequest) -> ResponseModel:
     guidance = (request.guidance or "").strip() or None
     regenerate_post_task.apply_async(kwargs={"post_id": request.post_id, "guidance": guidance})
     return ResponseModel(status_code=200, detail="Regeneration started")
+
+
+# --- Scheduled 1:1 DMs (issue #306) — mirrors the post scheduler endpoints ---
+
+@router.post("/schedule_dm")
+def schedule_dm_endpoint(request: ScheduleDmRequest) -> ResponseModel:
+    """Create a scheduled 1:1 DM (draft or approved). The beat scanner (auto_check_scheduled_dms)
+    sends approved DMs at their scheduled_time via send_scheduled_dm, honoring per-day DM caps."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    status = ScheduledDmStatus.APPROVED if request.status == "approved" else ScheduledDmStatus.PENDING
+    dm_id = insert_scheduled_dm(user_id, request.recipient_profile_url, request.message,
+                                request.scheduled_datetime, recipient_name=request.recipient_name,
+                                status=status)
+    if not dm_id:
+        raise HTTPException(status_code=500, detail="Could not schedule DM")
+    return ResponseModel(status_code=200, detail={"dm_id": dm_id})
+
+
+@router.get("/dms")
+def list_scheduled_dms_endpoint(session_token: str, status_filter: Optional[str] = None,
+                                page: int = 1, page_size: int = 25,
+                                sort_order: str = "asc") -> ResponseModel:
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return ResponseModel(status_code=200,
+                         detail=get_scheduled_dms(user_id, status_filter=status_filter, page=page,
+                                                  page_size=page_size, sort_order=sort_order))
+
+
+@router.put("/dm")
+def update_scheduled_dm_endpoint(request: UpdateDmRequest) -> ResponseModel:
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if get_scheduled_dm_user_id(request.dm_id) != user_id:
+        raise HTTPException(status_code=404, detail="Scheduled DM not found")
+    status = {"approve": ScheduledDmStatus.APPROVED, "cancel": ScheduledDmStatus.CANCELED}.get(request.action)
+    if not update_scheduled_dm(request.dm_id, recipient_profile_url=request.recipient_profile_url,
+                               recipient_name=request.recipient_name, message=request.message,
+                               scheduled_time=request.scheduled_datetime, status=status):
+        raise HTTPException(status_code=500, detail="Could not update scheduled DM")
+    return ResponseModel(status_code=200, detail="Scheduled DM updated")
+
+
+@router.delete("/dm")
+def delete_scheduled_dm_endpoint(request: DmDeleteRequest) -> ResponseModel:
+    """Cancel a scheduled DM (soft — sets status 'canceled' so it won't be sent)."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if get_scheduled_dm_user_id(request.dm_id) != user_id:
+        raise HTTPException(status_code=404, detail="Scheduled DM not found")
+    if not update_scheduled_dm_status(request.dm_id, ScheduledDmStatus.CANCELED):
+        raise HTTPException(status_code=500, detail="Could not cancel scheduled DM")
+    return ResponseModel(status_code=200, detail="Scheduled DM canceled")
 
 
 class GroupTogglesRequest(BaseModel):

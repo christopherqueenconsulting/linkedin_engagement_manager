@@ -8,12 +8,13 @@ from cqc_lem import assets_dir
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.app.run_automation import automate_commenting, automate_profile_viewer_engagement, \
     automate_appreciation_dms_for_user, clean_stale_invites, update_stale_profile, post_to_linkedin, \
-    automate_invites_to_company_page_for_user, auto_seed_comment_on_post
+    automate_invites_to_company_page_for_user, auto_seed_comment_on_post, send_scheduled_dm
 from cqc_lem.utilities.db import (
     get_ready_to_post_posts, get_orphaned_scheduled_posts, update_db_post_status,
     get_active_user_ids, PostStatus, has_linkedin_session, has_scheduled_post_today,
     get_company_linked_in_url_for_user,
     get_users_with_stripe_subscriptions, update_subscription_from_stripe,
+    get_due_scheduled_dms, update_scheduled_dm_status, ScheduledDmStatus,
 )
 from cqc_lem.utilities.env_constants import SELENIUM_KEEP_VIDEOS_X_DAYS, CQC_LEM_POST_TIME_DELTA_MINUTES
 from cqc_lem.utilities.logger import myprint, log_info, log_debug, log_warning
@@ -86,6 +87,32 @@ def auto_check_scheduled_posts(self):
         return f"No Post to Schedule"
     else:
         return f"Started Process for {len(posts)} post(s); re-queued {len(orphaned)} orphaned post(s)"
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, }, reject_on_worker_lost=True)
+def auto_check_scheduled_dms(self):
+    """Scan for approved scheduled DMs that are due and dispatch the send task at their eta
+    (issue #306, mirrors auto_check_scheduled_posts). Only dispatches for active/connected users;
+    the per-day DM cap is enforced at send time in send_scheduled_dm."""
+    dms = get_due_scheduled_dms(post_time_delta_minutes=CQC_LEM_POST_TIME_DELTA_MINUTES)
+    active_user_ids = set(get_active_user_ids()) if dms else set()
+
+    dispatched = 0
+    for dm_id, scheduled_time, user_id in dms:
+        if scheduled_time.tzinfo is None:
+            scheduled_time = scheduled_time.replace(tzinfo=timezone.utc)
+        if user_id not in active_user_ids:
+            log_warning("Skipping scheduled DM — user not active/connected",
+                        user_id=user_id, task_name="auto_check_scheduled_dms")
+            continue
+        # Mark 'scheduled' so it isn't re-dispatched on the next scan, then send at its eta.
+        update_scheduled_dm_status(dm_id, ScheduledDmStatus.SCHEDULED)
+        send_scheduled_dm.apply_async(kwargs={'dm_id': dm_id}, eta=scheduled_time)
+        log_info(f"Scheduled DM {dm_id} queued for {scheduled_time}",
+                 user_id=user_id, task_name="auto_check_scheduled_dms")
+        dispatched += 1
+
+    return f"Scheduled {dispatched} DM(s)" if dispatched else "No DMs to Schedule"
 
 
 @shared_task.task
