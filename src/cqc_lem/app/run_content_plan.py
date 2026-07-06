@@ -23,6 +23,8 @@ from cqc_lem.utilities.db import get_post_type_counts, insert_planned_post, upda
     get_user_blog_url, get_user_sitemap_url, get_active_user_ids, get_planned_posts_for_next_week, PostStatus, \
     update_db_post_video_url, update_db_post_status, PostType, get_user_preferences, \
     update_db_post_carousel_slides, get_post_content, get_user_timezone, get_engagement_preferences
+from cqc_lem.utilities.db import get_recent_post_shape_history, update_db_post_shape
+from cqc_lem.utilities.ai.content_framework import select_blueprint
 from cqc_lem.utilities.env_constants import API_URL_FINAL, DEFAULT_VIDEO_RATIO, \
     DEFAULT_IMAGE_RATIO, AI_DISCLOSURE_ENABLED, AI_DISCLOSURE_TEXT, \
     STANDARD_VIDEO_MODEL, PREMIUM_VIDEO_MODEL, PREMIUM_TOP_VIDEO_MODEL, \
@@ -222,7 +224,7 @@ def create_content(user_id: int, post_type: str, stage: str, post_id: int = None
     elif post_type == "carousel":
         content = create_carousel_content(user_id, stage, post_id)
     else:
-        content = create_text_post(user_id, stage)
+        content = create_text_post(user_id, stage, post_id=post_id)
         if content:
             content = content.strip()
 
@@ -239,7 +241,19 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
         IndustryInsightsCarousel, EventRecapCarousel, TestimonialCarousel, ProductDemoCarousel,
     )
 
-    post_text, carousel_dict = generate_carousel_content(user_id, stage)
+    # Same alignment inputs as text posts (best-effort — carousel generation never blocks on them).
+    try:
+        prefs = get_engagement_preferences(user_id)
+    except Exception as e:
+        myprint(f"Could not load engagement preferences for carousel: {e}")
+        prefs = None
+    try:
+        profile_synthesis = get_or_create_profile_synthesis(user_id)
+    except Exception as e:
+        myprint(f"Could not load profile synthesis for carousel: {e}")
+        profile_synthesis = None
+    post_text, carousel_dict = generate_carousel_content(user_id, stage, prefs=prefs,
+                                                         profile_synthesis=profile_synthesis)
     myprint(f"Carousel AI content generated for user_id={user_id} stage={stage}")
 
     # Map stage to carousel model class
@@ -401,7 +415,7 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
 
 def create_video_content(user_id: int, stage: str, post_id: int = None) -> tuple[str, str | None]:
     # Get Text Content
-    text_content = create_text_post(user_id, stage)
+    text_content = create_text_post(user_id, stage, post_id=post_id)
     # Load profile once so the image prompt is brand/role-aligned
     user_profile = load_profile_for_user(user_id)
     video_url = _generate_video_src(user_id, text_content, user_profile, post_id)
@@ -496,7 +510,7 @@ def regenerate_post_carousel_task(post_id: int):
 
 
 def create_text_post(user_id: int, stage: str, post_type: str = None, user_profile: LinkedInProfile=None,
-                     refine_final_post: bool = True):
+                     refine_final_post: bool = True, blueprint: dict = None, post_id: int = None):
     """
     Generate a text post for LinkedIn based on the user's profile, blog, or website content.
 
@@ -540,11 +554,28 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
     # in their volatile recent activity / current projects (LEM-drift).
     profile_synthesis = get_or_create_profile_synthesis(user_id, user_profile)
 
+    # ONE assigned SHAPE per post from the SHARED framework core (content_framework): rotate away
+    # from this user's recently used post archetypes/hook styles (V51 history) exactly the way
+    # newsletter editions rotate — chosen in code, no extra LLM call.
+    if blueprint is None:
+        try:
+            shape_history = get_recent_post_shape_history(user_id)
+        except Exception as e:
+            myprint(f"Could not load post shape history (rotating without it): {e}")
+            shape_history = []
+        blueprint = select_blueprint(
+            "post",
+            recent_formats=[h.get("archetype") for h in shape_history if h.get("archetype")],
+            recent_hook_styles=[h.get("hook_style") for h in shape_history if h.get("hook_style")])
+    myprint(f"Post blueprint: format={blueprint.get('format')} hook={blueprint.get('hook_style')} "
+            f"cta={blueprint.get('cta_style')}")
+
     # Generate the post based on the selected type
     myprint(f"Creating text post of type: {post_type} for stage: {stage}")
     if post_type == "thought_leadership":
         final_content = get_thought_leadership_post_from_ai(user_profile, stage, prefs=prefs,
-                                                            profile_synthesis=profile_synthesis)
+                                                            profile_synthesis=profile_synthesis,
+                                                            blueprint=blueprint)
     elif post_type == "blog_summary":
         # Get the users blog url
         user_main_blog_url = get_user_blog_url(user_id)
@@ -552,19 +583,22 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
         if blog_post_url and blog_post_content:
             process_selected_post(blog_post_url, blog_post_content)
             final_content = get_blog_summary_post_from_ai(blog_post_url, blog_post_content, user_profile, stage,
-                                                          prefs=prefs, profile_synthesis=profile_synthesis)
+                                                          prefs=prefs, profile_synthesis=profile_synthesis,
+                                                          blueprint=blueprint)
         else:
             myprint("No blog post found for this user. Generating another post type")
             # Chose another random post type that is not "blog_summary"
             post_types.remove("blog_summary")
             post_type = random.choice(post_types)
-            final_content = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=False)
+            final_content = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=False,
+                                             blueprint=blueprint)
     elif post_type == "website_content":
         # Get the users sitemap url
         sitemap_url = get_user_sitemap_url(user_id)
         if sitemap_url:
             content = generate_website_content_post(sitemap_url, user_profile, stage, prefs=prefs,
-                                                    profile_synthesis=profile_synthesis)
+                                                    profile_synthesis=profile_synthesis,
+                                                    blueprint=blueprint)
             if content:
                 final_content = content
             else:
@@ -572,22 +606,27 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                 # Chose another random post type that is not "website_content"
                 post_types.remove("website_content")
                 post_type = random.choice(post_types)
-                final_content = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=False)
+                final_content = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=False,
+                                             blueprint=blueprint)
         else:
             myprint("No sitemap found for this user. Generating another post type")
             # Chose another random post type that is not "website_content"
             post_types.remove("website_content")
             post_type = random.choice(post_types)
-            final_content = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=False)
+            final_content = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=False,
+                                             blueprint=blueprint)
     elif post_type == "industry_news":
         final_content = get_industry_news_post_from_ai(user_profile, stage, prefs=prefs,
-                                                       profile_synthesis=profile_synthesis)
+                                                       profile_synthesis=profile_synthesis,
+                                                       blueprint=blueprint)
     elif post_type == "personal_story":
         final_content = get_personal_story_post_from_ai(user_profile, stage, prefs=prefs,
-                                                        profile_synthesis=profile_synthesis)
+                                                        profile_synthesis=profile_synthesis,
+                                                        blueprint=blueprint)
     else:
         final_content = generate_engagement_prompt_post(user_profile, stage, prefs=prefs,
-                                                        profile_synthesis=profile_synthesis)
+                                                        profile_synthesis=profile_synthesis,
+                                                        blueprint=blueprint)
 
     if refine_final_post:
         final_content = get_ai_linked_post_refinement(final_content)
@@ -597,6 +636,14 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
         # Guardrail: strip classic engagement-bait CTAs (penalized), keeping lead-magnet CTAs.
         final_content = strip_engagement_bait(final_content)
         final_content = final_content.strip()
+
+    # Persist the assigned shape so FUTURE posts rotate away from it (the newsletter's V50 shape
+    # history, applied to posts via V51). Only the outermost call (which knows the post row) writes.
+    if post_id is not None and final_content and blueprint:
+        try:
+            update_db_post_shape(post_id, blueprint.get("format"), blueprint.get("hook_style"))
+        except Exception as e:
+            myprint(f"Could not persist post shape for post {post_id}: {e}")
 
     return final_content
 
@@ -750,7 +797,7 @@ def process_selected_post(url, content):
 
 
 def generate_website_content_post(sitemap_url, linked_user_profile, stage: str, prefs: dict = None,
-                                  profile_synthesis: str = None):
+                                  profile_synthesis: str = None, blueprint: dict = None):
     """
     Generate a post based on content found on the user's website using their sitemap url catered to readers in the desired buyers journey stage.
     Scrapes or retrieves key points from the website's sitemap.
@@ -780,7 +827,8 @@ def generate_website_content_post(sitemap_url, linked_user_profile, stage: str, 
         if content is not None:
             # 4. Generate a social media post based on the extracted content
             social_media_post = get_website_content_post_from_ai(content, selected_url, linked_user_profile, stage,
-                                                                 prefs=prefs, profile_synthesis=profile_synthesis)
+                                                                 prefs=prefs, profile_synthesis=profile_synthesis,
+                                                                 blueprint=blueprint)
             return social_media_post
         else:
             myprint("No content extracted from the selected URL.")

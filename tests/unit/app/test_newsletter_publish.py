@@ -136,7 +136,7 @@ def _run_generate(*, settings, pending, latest=None, gen_now=True,
         p(patch("cqc_lem.utilities.ai.ai_helper.get_or_create_profile_synthesis", return_value="voice brief"))
         p(patch("cqc_lem.utilities.ai.ai_helper.plan_newsletter_topics", return_value=[]))
         p(patch("cqc_lem.utilities.ai.ai_helper.generate_newsletter_edition", **gen_kw))
-        p(patch("cqc_lem.utilities.ai.newsletter_research.research_newsletter_topic",
+        p(patch("cqc_lem.utilities.ai.content_research.research_topic",
                 return_value={"findings": "", "sources": []}))
         p(patch("cqc_lem.utilities.newsletter.should_generate_now", return_value=gen_now))
         notify = p(patch("cqc_lem.utilities.notifications.notify_newsletter_draft_ready"))
@@ -229,7 +229,7 @@ def _run_generate_for_user(*, settings, pending, latest=None, gen_now=True, edit
         p(patch("cqc_lem.utilities.ai.ai_helper.get_or_create_profile_synthesis", return_value="voice brief"))
         p(patch("cqc_lem.utilities.ai.ai_helper.plan_newsletter_topics", return_value=[]))
         p(patch("cqc_lem.utilities.ai.ai_helper.generate_newsletter_edition", return_value=edition))
-        p(patch("cqc_lem.utilities.ai.newsletter_research.research_newsletter_topic",
+        p(patch("cqc_lem.utilities.ai.content_research.research_topic",
                 return_value={"findings": "", "sources": []}))
         p(patch("cqc_lem.utilities.newsletter.should_generate_now", return_value=gen_now))
         p(patch("cqc_lem.utilities.notifications.notify_newsletter_draft_ready"))
@@ -303,7 +303,7 @@ class TestTopupPlansDistinctSubjects:
             p(patch("cqc_lem.utilities.ai.ai_helper.get_or_create_profile_synthesis", return_value="brief"))
             plan = p(patch("cqc_lem.utilities.ai.ai_helper.plan_newsletter_topics", return_value=planned))
             p(patch("cqc_lem.utilities.ai.ai_helper.generate_newsletter_edition", side_effect=_gen))
-            research_mock = p(patch("cqc_lem.utilities.ai.newsletter_research.research_newsletter_topic",
+            research_mock = p(patch("cqc_lem.utilities.ai.content_research.research_topic",
                                     return_value=research or {"findings": "", "sources": []}))
             p(patch("cqc_lem.utilities.newsletter.should_generate_now", return_value=True))
             p(patch("cqc_lem.utilities.notifications.notify_newsletter_draft_ready"))
@@ -422,7 +422,7 @@ def _run_regenerate(*, edition, guidance=None, others=None, recent=None, new_ed=
         p(patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=MagicMock()))
         p(patch("cqc_lem.utilities.ai.ai_helper.get_or_create_profile_synthesis", return_value="brief"))
         p(patch("cqc_lem.utilities.ai.ai_helper.generate_newsletter_edition", side_effect=_gen))
-        research_mock = p(patch("cqc_lem.utilities.ai.newsletter_research.research_newsletter_topic",
+        research_mock = p(patch("cqc_lem.utilities.ai.content_research.research_topic",
                                 return_value=research or {"findings": "", "sources": []}))
         upd = p(patch("cqc_lem.utilities.db.update_newsletter_edition", return_value=True))
         result = regenerate_newsletter_edition.run(edition_id=edition["id"], guidance=guidance)

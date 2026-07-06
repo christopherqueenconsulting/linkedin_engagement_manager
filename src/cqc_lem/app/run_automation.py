@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 
 from celery_once import QueueOnce
 from cqc_lem.app.my_celery import app as shared_task
+from cqc_lem.utilities.ai.content_framework import select_blueprint
 from cqc_lem.utilities.ai.ai_helper import generate_ai_response, get_ai_message_refinement, summarize_recent_activity, \
     ai_check_message_history, post_is_relevant, generate_newsletter_edition, generate_group_post, \
     generate_thread_reply, generate_seed_comment, choose_post_reaction, get_or_create_profile_synthesis, \
@@ -801,6 +802,12 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     profile_synthesis = get_or_create_profile_synthesis(user_id, my_profile)
     _switch_feed_to_recent(driver, wait)  # surface golden-hour posts; scoring still ranks them
 
+    # Per-run comment ANGLE rotation from the shared framework core: each comment this run gets a
+    # different archetype (Expander, Storyteller, Questioner, ...) so a day's comments never all
+    # read from the same template. In-memory only — comments are too high-volume to justify a DB
+    # shape history, and per-run rotation is what a reader of the same feed would notice.
+    used_comment_shapes: list = []
+
     posted, seen, scrolls = 0, set(), 0
     while posted < max_posts and scrolls < 15:
         if deadline_ts and time.time() >= deadline_ts:
@@ -853,8 +860,12 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             # comment per post per user, across the pre-post run, the golden-hour run, and retries.
             if not claim_post_for_comment(user_id, key):
                 continue
+            comment_blueprint = select_blueprint("comment", recent_formats=used_comment_shapes)
             comment_text = generate_ai_response(content, my_profile, None, prefs=prefs,
-                                                profile_synthesis=profile_synthesis)
+                                                profile_synthesis=profile_synthesis,
+                                                blueprint=comment_blueprint)
+            if comment_text and comment_blueprint.get("format"):
+                used_comment_shapes.insert(0, comment_blueprint["format"])
             if comment_text:
                 driver.execute_script("arguments[0].scrollIntoView({block:'center'});", card)
                 time.sleep(simulate_reading_time(content) / 2 + simulate_thinking_time())

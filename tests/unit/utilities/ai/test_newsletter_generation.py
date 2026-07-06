@@ -134,7 +134,7 @@ class TestGenerationWritesToBlueprint:
         return out, system, user
 
     def test_blueprint_structure_hook_cta_injected(self):
-        from cqc_lem.utilities.ai.newsletter_blueprint import FORMATS, HOOK_STYLES, CTA_STYLES
+        from cqc_lem.utilities.ai.content_framework import NEWSLETTER_FORMATS as FORMATS, HOOK_STYLES, CTA_STYLES
         out, system, user = self._gen(blueprint=self._BLUEPRINT)
         assert "ASSIGNED BLUEPRINT" in system
         assert FORMATS["contrarian"]["structure"][1] in system  # skeleton sections present
@@ -266,7 +266,7 @@ class TestPlanNewsletterTopics:
 class TestPlannerEmitsBlueprints:
     def test_full_blueprints_with_valid_keys_and_structure(self):
         from cqc_lem.utilities.ai import ai_helper
-        from cqc_lem.utilities.ai.newsletter_blueprint import FORMATS, HOOK_STYLES, CTA_STYLES
+        from cqc_lem.utilities.ai.content_framework import NEWSLETTER_FORMATS as FORMATS, HOOK_STYLES, CTA_STYLES
         payload = json.dumps({"editions": [
             {"subject": "A", "angle": "1", "format": "case_study", "hook_style": "micro_story",
              "cta_style": "reply_question"},
@@ -311,7 +311,7 @@ class TestPlannerEmitsBlueprints:
 
     def test_format_menu_present_in_system_prompt(self):
         from cqc_lem.utilities.ai import ai_helper
-        from cqc_lem.utilities.ai.newsletter_blueprint import FORMATS
+        from cqc_lem.utilities.ai.content_framework import NEWSLETTER_FORMATS as FORMATS
         payload = json.dumps({"editions": [{"subject": "A", "angle": "1"}]})
         with patch(f"{_AI}._call_llm", return_value=_resp(payload)) as call:
             ai_helper.plan_newsletter_topics("v", "d", None, [], 1)

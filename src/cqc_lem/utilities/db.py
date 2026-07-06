@@ -825,6 +825,47 @@ def update_db_post_carousel_slides(post_id: int, slides: list[str]) -> bool:
     return success
 
 
+def update_db_post_shape(post_id: int, archetype: Optional[str], hook_style: Optional[str]) -> bool:
+    """Persist the SHAPE (short-form archetype + hook style) assigned to a generated post — the
+    rotation history that keeps a user's next post from reusing a recently used shape (V51)."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE posts SET archetype = %s, hook_style = %s WHERE id = %s",
+            (archetype, hook_style, post_id)
+        )
+        connection.commit()
+        success = cursor.rowcount == 1
+    except mysql.connector.Error as e:
+        success = False
+        myprint(f"Could not update shape for post {post_id}. Error: {e}")
+    finally:
+        cursor.close()
+        connection.close()
+    return success
+
+
+def get_recent_post_shape_history(user_id: int, limit: int = 10) -> list:
+    """Recent posts' SHAPE history — {archetype, hook_style} dicts, most-recent first — fed to the
+    shared content framework so a new post rotates away from recently used archetypes/hooks (the
+    post-side twin of get_recent_newsletter_blueprint_history)."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT archetype, hook_style FROM posts "
+            "WHERE user_id = %s AND archetype IS NOT NULL "
+            "ORDER BY id DESC LIMIT %s", (user_id, int(limit)))
+        return cursor.fetchall()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get post shape history for user {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def replace_video_url_base(old_base: str, new_base: str, user_id: Optional[int] = None) -> int:
     """Replace old_base URL prefix with new_base in video_url for all matching posts.
 
