@@ -24,7 +24,7 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     upsert_user_group, get_enabled_group_ids, record_post_stats, get_recent_posted_post_ids, \
     get_lead_magnet_settings, has_received_lead_magnet, record_lead_magnet_sent, \
     LogResultType, has_user_commented_on_post_url, get_post_url_from_log_for_user, get_post_message_from_log_for_user, \
-    claim_post_for_comment, mark_post_commented, release_post_claim, has_commented_post, \
+    claim_post_for_comment, mark_post_commented, mark_post_reacted, release_post_claim, has_commented_post, \
     has_engaged_url_with_x_days, get_post_content, get_post_video_url, update_db_post_status, PostStatus, PostType, \
     get_dm_history_for_profile, get_post_status, get_user_blog_url, get_post_type, get_carousel_slides, \
     get_dm_template, enqueue_followup, get_due_followups, mark_followup, stop_followups_for_profile
@@ -444,6 +444,16 @@ def _post_author_from_card(card) -> str:
         return ""
 
 
+def _author_is_me(author: str, my_profile: LinkedInProfile) -> bool:
+    """True if a feed card's author is the logged-in user — used to skip reacting/engaging on our
+    OWN posts (the reply-to-own-post path handles those separately)."""
+    try:
+        me = (getattr(my_profile, "full_name", "") or "").strip().lower()
+    except Exception:
+        me = ""
+    return bool(me) and (author or "").strip().lower() == me
+
+
 def _feed_post_key(author: str, content: str) -> str:
     """Stable-ish dedup key for a feed post (no permalink/urn exists in the SDUI DOM anymore)."""
     digest = hashlib.sha1(f"{author}|{content[:200]}".encode("utf-8", "ignore")).hexdigest()[:20]
@@ -666,17 +676,34 @@ def react_to_post_inline(driver, wait, card, post_content: str = None, comment_t
             return False  # already reacted on this post
 
         reaction = choose_post_reaction(post_content, comment_text)
-        if click_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label='Open reactions menu']")],
-                       "Open reactions menu", parent_element=card, required=False, user_id=user_id) is None:
-            return False
+        # The reaction fly-out is hover-revealed off the card's primary Like/React toggle. Hover it
+        # first (the menu opener is hidden until then), then click the opener.
+        trigger = state or find_first(
+            driver, wait,
+            [(By.CSS_SELECTOR, "button[aria-label='React Like']"),
+             (By.CSS_SELECTOR, "button[aria-label^='React']"),
+             (By.CSS_SELECTOR, "button[aria-label='Like']")],
+            "React toggle", parent_element=card, required=False, visible_only=True, user_id=user_id)
+        if trigger is not None:
+            try:
+                ActionChains(driver).move_to_element(trigger).perform()
+                time.sleep(random.uniform(0.6, 1.2))
+            except Exception:
+                pass
+        opened = click_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label='Open reactions menu']")],
+                             "Open reactions menu", parent_element=card, required=False, user_id=user_id)
         time.sleep(random.uniform(0.8, 1.6))
         # The fly-out can render just outside the card subtree, so match the reaction button globally
         # (only one menu is open at a time and click_first filters to visible elements).
-        if click_first(driver, wait,
+        if opened is None or click_first(driver, wait,
                        [(By.CSS_SELECTOR, f"button[aria-label='{reaction}']"),
                         (By.CSS_SELECTOR, "button[aria-label='Like']")],
-                       f"React {reaction}", user_id=user_id) is None:
-            return False
+                       f"React {reaction}", required=False, user_id=user_id) is None:
+            # Fly-out didn't open or the specific reaction wasn't found — fall back to clicking the
+            # primary toggle directly, which leaves a default Like. Better a Like than no reaction.
+            if trigger is None:
+                return False
+            driver.execute_script("arguments[0].click();", trigger)
         time.sleep(random.uniform(0.8, 1.5))
         wait_for_ajax(driver)
         after = find_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label^='Reaction button state']")],
@@ -822,14 +849,21 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             if comment_text:
                 driver.execute_script("arguments[0].scrollIntoView({block:'center'});", card)
                 time.sleep(simulate_reading_time(content) / 2 + simulate_thinking_time())
+                # React BEFORE submitting the comment: posting re-renders the card and staled the
+                # element, so the old post-comment reaction attempt silently failed. Skip our OWN
+                # posts. Non-fatal — a missed reaction never blocks the comment.
+                if not _author_is_me(author, my_profile):
+                    if react_to_post_inline(driver, wait, card, post_content=content,
+                                            comment_text=comment_text, user_id=user_id):
+                        mark_post_reacted(user_id, key)
+                    else:
+                        log_warning("Could not leave a reaction on post", user_id=user_id,
+                                    action_type="comment")
                 if post_comment_inline(driver, wait, card, comment_text, user_id=user_id):
                     mark_post_commented(user_id, key)
                     insert_new_log(user_id=user_id, action_type=LogActionType.COMMENT,
                                    result=LogResultType.SUCCESS, post_url=key, message=comment_text)
                     posted += 1
-                    # React on the same post to reinforce the comment (non-fatal if it misses).
-                    react_to_post_inline(driver, wait, card, post_content=content,
-                                         comment_text=comment_text, user_id=user_id)
                     myprint(f"Commented on {author or 'a'}'s post "
                             f"(score {score:.2f}, age {'?' if age is None else str(age) + 'm'}) ({posted}/{max_posts})")
                     time.sleep(random.uniform(6, 14))  # human pacing between comments

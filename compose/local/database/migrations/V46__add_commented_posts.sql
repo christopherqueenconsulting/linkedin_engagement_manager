@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS commented_posts (
     user_id     INT NOT NULL,
     post_key    VARCHAR(255) NOT NULL,
     status      VARCHAR(20) NOT NULL DEFAULT 'claimed',
+    reacted     TINYINT(1) NOT NULL DEFAULT 0,
     created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uq_commented_posts_user_key (user_id, post_key),

@@ -2297,6 +2297,26 @@ def mark_post_commented(user_id: int, post_key: str) -> bool:
         connection.close()
 
 
+def mark_post_reacted(user_id: int, post_key: str) -> bool:
+    """Record that we also left a reaction on this post (audit + 'react at most once' tracking)."""
+    if not post_key:
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE commented_posts SET reacted=1 WHERE user_id=%s AND post_key=%s",
+            (user_id, str(post_key)[:255]))
+        connection.commit()
+        return cursor.rowcount >= 1
+    except mysql.connector.Error as err:
+        myprint(f"Could not mark post reacted for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def release_post_claim(user_id: int, post_key: str) -> bool:
     """Release an in-flight claim (comment never posted) so a later run can retry the post. Only
     deletes rows still in the 'claimed' state — a successful 'commented' record is never released."""

@@ -22,7 +22,8 @@ def _box(text):
     return b
 
 
-def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=10):
+def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=10,
+              author="Jane Author", is_me=False, react_returns=True, post_returns=True):
     """Drive comment_on_feed_inline with all the SDUI/DB collaborators mocked. Returns a dict of
     the key mocks so assertions can inspect calls."""
     from cqc_lem.app import run_automation as ra
@@ -32,14 +33,16 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
     wait = MagicMock()
 
     # A stable content->key map (simulates _feed_post_key: same content => same key).
-    def _key(author, content):
+    def _key(a, content):
         return f"feedpost://{hash(content) & 0xffff}"
 
     claim = MagicMock(side_effect=claim_side_effect) if claim_side_effect is not None \
         else MagicMock(return_value=True)
-    post_inline = MagicMock(return_value=True)
+    post_inline = MagicMock(return_value=post_returns)
     mark = MagicMock(return_value=True)
+    mark_reacted = MagicMock(return_value=True)
     release = MagicMock(return_value=True)
+    react = MagicMock(return_value=react_returns)
     gen = MagicMock(return_value="A thoughtful comment.")
 
     with ExitStack() as es:
@@ -49,9 +52,10 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
         p("count_comments_today", return_value=0)
         p("_switch_feed_to_recent")
         p("_card_for_textbox", side_effect=lambda d, b: MagicMock())
-        p("_post_author_from_card", return_value="Jane Author")
+        p("_post_author_from_card", return_value=author)
         p("_post_permalink_from_card", return_value=None)
         p("_feed_post_key", side_effect=_key)
+        p("_author_is_me", return_value=is_me)
         p("has_commented_post", return_value=has_commented)
         p("has_user_commented_on_post_url", return_value=False)
         p("_passes_hard_excludes", return_value=True)
@@ -63,16 +67,18 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
         p("claim_post_for_comment", new=claim)
         p("generate_ai_response", new=gen)
         p("post_comment_inline", new=post_inline)
+        p("react_to_post_inline", new=react)
         p("mark_post_commented", new=mark)
+        p("mark_post_reacted", new=mark_reacted)
         p("release_post_claim", new=release)
-        p("react_to_post_inline")
+        p("log_warning")
         p("insert_new_log")
         p("simulate_reading_time", return_value=0)
         p("simulate_thinking_time", return_value=0)
         posted = ra.comment_on_feed_inline(driver, wait, MagicMock(), user_id=1, max_posts=max_posts)
 
-    return {"posted": posted, "claim": claim, "post_inline": post_inline,
-            "mark": mark, "release": release, "gen": gen}
+    return {"posted": posted, "claim": claim, "post_inline": post_inline, "react": react,
+            "mark": mark, "mark_reacted": mark_reacted, "release": release, "gen": gen}
 
 
 class TestFeedDedup:
@@ -129,18 +135,58 @@ class TestFeedDedup:
             p("_literal_relevant", return_value=True)
             p("_score_feed_post", return_value=1.0)
             p("post_matches_preferences", return_value=True)
+            p("_author_is_me", return_value=False)
             p("claim_post_for_comment", return_value=True)
             p("generate_ai_response", return_value="A comment.")
             p("post_comment_inline", return_value=False)  # submit fails
             p("mark_post_commented")
+            p("mark_post_reacted")
+            p("react_to_post_inline", return_value=True)
+            p("log_warning")
             release = es.enter_context(patch(f"{_RA}.release_post_claim"))
             p("insert_new_log")
-            p("react_to_post_inline")
             p("simulate_reading_time", return_value=0)
             p("simulate_thinking_time", return_value=0)
             posted = ra.comment_on_feed_inline(driver, MagicMock(), MagicMock(), user_id=1, max_posts=1)
         assert posted == 0
         release.assert_called_with(1, "feedpost://fail")
+
+
+class TestFeedReactions:
+    def test_reaction_left_on_non_own_post(self):
+        r = _run_feed([_box("A non-authored post we will comment on and react to.")],
+                      is_me=False)
+        assert r["posted"] == 1
+        r["react"].assert_called_once()
+        r["mark_reacted"].assert_called_once()
+
+    def test_no_reaction_on_own_post(self):
+        r = _run_feed([_box("Our OWN post appearing in the feed — no self reaction here.")],
+                      is_me=True)
+        # We still comment, but never react on our own post.
+        assert r["posted"] == 1
+        r["react"].assert_not_called()
+        r["mark_reacted"].assert_not_called()
+
+    def test_reaction_failure_does_not_block_comment(self):
+        r = _run_feed([_box("A post whose reaction fails but the comment must still post.")],
+                      react_returns=False)
+        assert r["posted"] == 1            # comment still posted
+        r["post_inline"].assert_called_once()
+        r["mark_reacted"].assert_not_called()  # reaction failed -> not marked
+
+
+class TestAuthorIsMe:
+    def test_matches_own_name_case_insensitively(self):
+        from cqc_lem.app.run_automation import _author_is_me
+        prof = MagicMock(); prof.full_name = "Chris Queen"
+        assert _author_is_me("chris queen", prof) is True
+        assert _author_is_me("Someone Else", prof) is False
+
+    def test_blank_profile_name_is_not_me(self):
+        from cqc_lem.app.run_automation import _author_is_me
+        prof = MagicMock(); prof.full_name = ""
+        assert _author_is_me("Anybody", prof) is False
 
 
 class TestCommentOnPostTaskIdempotency:
