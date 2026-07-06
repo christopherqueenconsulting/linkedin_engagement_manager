@@ -50,3 +50,20 @@ def should_generate_now(next_publish: datetime, now_utc: datetime,
     if next_publish is None:
         return False
     return _as_utc(now_utc) >= _as_utc(next_publish) - timedelta(days=lead_days)
+
+
+def upcoming_publish_slots(publish_day: int, publish_hour: int, cadence: str,
+                           last_published_at: datetime, tz, now_utc: datetime,
+                           count: int) -> list:
+    """The next `count` cadence-spaced UTC publish slots, soonest first.
+
+    Chains next_publish_datetime by feeding each computed slot back in as the anchor, so slot N+1 is
+    exactly one cadence interval past slot N (weekday/hour/DST handling reused, never duplicated).
+    """
+    slots = []
+    anchor = last_published_at
+    for _ in range(max(0, count)):
+        slot = next_publish_datetime(publish_day, publish_hour, cadence, anchor, tz, now_utc)
+        slots.append(slot)
+        anchor = slot
+    return slots

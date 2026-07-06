@@ -94,7 +94,7 @@ app.conf.update(
         },
         'generate-newsletter-drafts': {
             'task': 'cqc_lem.app.run_scheduler.auto_generate_newsletter_drafts',
-            'schedule': crontab(hour='10', minute='0')  # Daily: draft editions ~3 days before their slot for review
+            'schedule': crontab(hour='10', minute='0')  # Daily: top up each user's newsletter draft queue for review
         },
         'publish-scheduled-newsletters': {
             'task': 'cqc_lem.app.run_scheduler.auto_publish_scheduled_editions',

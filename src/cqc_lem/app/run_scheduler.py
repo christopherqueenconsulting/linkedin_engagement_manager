@@ -131,17 +131,24 @@ def auto_daily_engagement():
     return f"Golden-hour engagement dispatched for {dispatched}/{len(users)} active user(s)"
 
 
+def _max_dt(*dts):
+    """Max of the given datetimes, ignoring None (returns None if all are None)."""
+    present = [d for d in dts if d is not None]
+    return max(present) if present else None
+
+
 @shared_task.task
 def auto_generate_newsletter_drafts():
-    """Generate a draft edition ~GENERATE_LEAD_DAYS before each enabled user's next slot, so they
-    have time to review before it auto-publishes. Skips users who already have a pending edition."""
+    """Keep each enabled user's review queue topped up to their max_queued_drafts, so they can plan
+    ahead. The first-ever draft waits for the generate_lead_days window; once the queue is rolling it
+    refills to the cap as editions publish/skip. Each draft covers the next uncovered cadence slot."""
     import pytz
     from cqc_lem.utilities.db import (get_enabled_newsletter_user_ids, get_newsletter_settings,
-                                      get_user_timezone, get_pending_newsletter_edition,
-                                      create_newsletter_edition)
+                                      get_user_timezone, count_pending_newsletter_editions,
+                                      get_latest_edition_scheduled_for, create_newsletter_edition)
     from cqc_lem.utilities.linkedin.helper import load_profile_for_user
     from cqc_lem.utilities.ai.ai_helper import generate_newsletter_edition
-    from cqc_lem.utilities.newsletter import next_publish_datetime, should_generate_now
+    from cqc_lem.utilities.newsletter import upcoming_publish_slots, should_generate_now
     from cqc_lem.utilities.notifications import notify_newsletter_draft_ready
 
     now = datetime.utcnow()
@@ -149,26 +156,40 @@ def auto_generate_newsletter_drafts():
     for user_id in get_enabled_newsletter_user_ids():
         try:
             settings = get_newsletter_settings(user_id)
+            cap = settings.get("max_queued_drafts", 1)
+            lead = settings.get("generate_lead_days", 3)
+            pending = count_pending_newsletter_editions(user_id)
+            remaining = cap - pending
+            if remaining <= 0:
+                continue  # queue already full
+
             tz = pytz.timezone(get_user_timezone(user_id))
-            next_pub = next_publish_datetime(
+            # Anchor on the latest slot ANY edition already covers (incl. published/skipped) so a
+            # freed cap slot fills the next future slot, never re-covering a skipped one.
+            anchor = _max_dt(settings.get("last_published_at"),
+                             get_latest_edition_scheduled_for(user_id))
+            slots = upcoming_publish_slots(
                 settings.get("publish_day", 1), settings.get("publish_hour", 9),
-                settings.get("cadence", "weekly"), settings.get("last_published_at"), tz, now)
-            if not should_generate_now(next_pub, now):
+                settings.get("cadence", "weekly"), anchor, tz, now, remaining)
+            # Bootstrap gate: only the first-ever draft waits for the lead window. Once the queue is
+            # rolling (pending > 0), keep it topped up regardless of how far out the slots land.
+            if pending == 0 and not should_generate_now(slots[0], now, lead_days=lead):
                 continue
-            if get_pending_newsletter_edition(user_id) is not None:
-                continue
+
             profile = load_profile_for_user(user_id)
-            edition = generate_newsletter_edition(profile, topic=settings.get("topic"))
-            if not edition:
-                continue
-            create_newsletter_edition(user_id, edition["title"], edition.get("subtitle"),
-                                      edition["body"], next_pub)
-            notify_newsletter_draft_ready(user_id, edition["title"], next_pub)
-            generated += 1
+            for slot in slots:
+                edition = generate_newsletter_edition(profile, topic=settings.get("topic"))
+                if not edition:
+                    break
+                if not create_newsletter_edition(user_id, edition["title"], edition.get("subtitle"),
+                                                 edition["body"], slot):
+                    break  # duplicate slot / db error → stop this user's run
+                notify_newsletter_draft_ready(user_id, edition["title"], slot)
+                generated += 1
         except Exception as e:
             log_warning("Failed to generate newsletter draft", exc=e, user_id=user_id,
                         task_name="auto_generate_newsletter_drafts")
-    return f"Generated newsletter draft for {generated} user(s)"
+    return f"Generated {generated} newsletter draft(s)"
 
 
 @shared_task.task
