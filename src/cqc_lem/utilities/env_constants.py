@@ -135,12 +135,21 @@ else:
 
 SENDGRID_API_KEY     = get_constant_from_env('SENDGRID_API_KEY')
 SENDGRID_FROM_EMAIL  = get_constant_from_env('SENDGRID_FROM_EMAIL', default_value='noreply@example.com')
+# Friendly From display name and Reply-To for outbound transactional mail. A recognizable
+# From name that matches the sending domain and a real Reply-To reduce spam/phishing scores.
+EMAIL_FROM_NAME      = get_constant_from_env('EMAIL_FROM_NAME', default_value='Christopher Queen Consulting')
+EMAIL_REPLY_TO       = get_constant_from_env('EMAIL_REPLY_TO', default_value='')
 
 # SMTP fallback (Gmail or any STARTTLS-capable server)
 SMTP_HOST     = get_constant_from_env('SMTP_HOST', default_value='smtp.gmail.com')
 SMTP_PORT     = int(get_constant_from_env('SMTP_PORT', default_value='587'))
 SMTP_USER     = get_constant_from_env('SMTP_USER')
 SMTP_PASSWORD = get_constant_from_env('SMTP_PASSWORD')
+
+# Persistent-login session lifetime. Sliding idle window (session stays alive as long as the
+# user is active within SESSION_IDLE_HOURS) capped by an absolute maximum from first login.
+SESSION_IDLE_HOURS        = int(get_constant_from_env('SESSION_IDLE_HOURS', default_value='24'))
+SESSION_ABSOLUTE_MAX_DAYS = int(get_constant_from_env('SESSION_ABSOLUTE_MAX_DAYS', default_value='30'))
 
 STRIPE_API_KEY            = get_constant_from_env('STRIPE_API_KEY')
 STRIPE_WEBHOOK_SECRET     = get_constant_from_env('STRIPE_WEBHOOK_SECRET')

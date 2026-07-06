@@ -209,3 +209,86 @@ class TestSendLoginApprovalEmail:
         from cqc_lem.utilities.email import send_login_approval_email
         mock_smtp_class.side_effect = Exception("SMTP refused")
         assert send_login_approval_email("u@e.com") is False
+
+
+class TestPinEmailContent:
+    def test_html_contains_code_and_no_links(self):
+        from cqc_lem.utilities.email import _build_pin_html
+        html = _build_pin_html("123456", "sign in")
+        assert "123456" in html
+        assert "expires" in html.lower()
+        # No links at all in a login-code email (removes link-mismatch phishing signal)
+        assert "href" not in html.lower()
+        assert "http://" not in html and "https://" not in html
+        # Anti-phishing reassurance + company footer
+        assert "never" in html.lower()
+        assert "Christopher Queen Consulting" in html
+
+    def test_text_part_contains_code_and_company(self):
+        from cqc_lem.utilities.email import _build_pin_text
+        text = _build_pin_text("654321", "create your account")
+        assert "654321" in text
+        assert "create your account" in text
+        assert "Christopher Queen Consulting" in text
+        # plain text must not carry HTML tags
+        assert "<" not in text and ">" not in text
+
+    def test_html_to_text_strips_tags(self):
+        from cqc_lem.utilities.email import _html_to_text
+        out = _html_to_text("<p>Hello <strong>world</strong></p><br><a href='x'>link</a>")
+        assert "<" not in out and ">" not in out
+        assert "Hello" in out and "world" in out
+
+
+class TestPinEmailHeadersSendGrid:
+    @patch("cqc_lem.utilities.email.EMAIL_REPLY_TO", "support@christopherqueenconsulting.com")
+    @patch("cqc_lem.utilities.email.SENDGRID_FROM_EMAIL", "no-reply@lem.christopherqueenconsulting.com")
+    @patch("cqc_lem.utilities.email.EMAIL_FROM_NAME", "Christopher Queen Consulting")
+    @patch("cqc_lem.utilities.email.SENDGRID_API_KEY", "sg_test_key")
+    @patch("cqc_lem.utilities.email.SMTP_USER", None)
+    @patch("cqc_lem.utilities.email.SMTP_PASSWORD", None)
+    @patch("sendgrid.SendGridAPIClient")
+    def test_multipart_plain_and_html_plus_from_and_replyto(self, mock_sg_class):
+        mock_sg = MagicMock()
+        sent = []
+        mock_sg.send.side_effect = lambda m: sent.append(m)
+        mock_sg_class.return_value = mock_sg
+
+        success, bypassed = send_pin_email("user@example.com", "111222")
+
+        assert success is True and bypassed is False
+        blob = str(sent[0].get())
+        # Both MIME parts present
+        assert "text/plain" in blob and "text/html" in blob
+        # Aligned From on the authenticated domain, friendly name, and a Reply-To
+        assert "no-reply@lem.christopherqueenconsulting.com" in blob
+        assert "Christopher Queen Consulting" in blob
+        assert "support@christopherqueenconsulting.com" in blob
+
+
+class TestPinEmailHeadersSmtp:
+    @patch("cqc_lem.utilities.email.EMAIL_REPLY_TO", "support@christopherqueenconsulting.com")
+    @patch("cqc_lem.utilities.email.SENDGRID_FROM_EMAIL", "no-reply@lem.christopherqueenconsulting.com")
+    @patch("cqc_lem.utilities.email.EMAIL_FROM_NAME", "Christopher Queen Consulting")
+    @patch("cqc_lem.utilities.email.SENDGRID_API_KEY", None)
+    @patch("cqc_lem.utilities.email.SMTP_USER", "user@gmail.com")
+    @patch("cqc_lem.utilities.email.SMTP_PASSWORD", "app_password")
+    @patch("cqc_lem.utilities.email.smtplib.SMTP")
+    def test_smtp_multipart_from_display_and_replyto(self, mock_smtp_class):
+        sent = {}
+        server = MagicMock()
+        server.sendmail.side_effect = lambda frm, to, body: sent.update(body=body, frm=frm)
+        mock_smtp_class.return_value.__enter__.return_value = server
+
+        success, bypassed = send_pin_email("user@example.com", "333444")
+
+        assert success is True and bypassed is False
+        body = sent["body"]
+        assert "multipart/alternative" in body
+        assert "text/plain" in body and "text/html" in body
+        # Display-name From on the authenticated domain and a Reply-To header
+        assert "Christopher Queen Consulting" in body
+        assert "no-reply@lem.christopherqueenconsulting.com" in body
+        assert "Reply-To: support@christopherqueenconsulting.com" in body
+        # Envelope sender remains the SMTP login account
+        assert sent["frm"] == "user@gmail.com"
