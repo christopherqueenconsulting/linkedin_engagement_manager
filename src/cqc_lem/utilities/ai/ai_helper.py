@@ -1258,7 +1258,7 @@ def create_video_from_prompt(prompt: str):
 
 def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, buyer_stage: str,
                                         prefs: dict = None, profile_synthesis: str = None,
-                                        blueprint: dict = None):
+                                        blueprint: dict = None, lead_magnet_cta: str = None):
     """
         Generate a thought leadership post based on user's expertise and industry.
         Uses the user's profile (e.g., job title, industry) and intended buyer_stage to form an insightful post.
@@ -1294,7 +1294,7 @@ def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, bu
     # Add the industry trend analysis to the prompt
     prompt += f"\n ### Current {industry} Trends: <analysis>{analysis}</analysis>"
 
-    prompt += _alignment_directive(prefs)
+    prompt += _alignment_directive(prefs, lead_magnet_cta)
     # Shared framework core: this post's assigned archetype/hook/CTA blueprint (rotated across
     # the user's recent posts by the caller) + the invariant short-form craft rules + prefs.
     prompt += _framework.blueprint_directive("post", blueprint)
@@ -1434,7 +1434,7 @@ def get_industry_trend_analysis_based_on_user_profile(linked_in_profile: LinkedI
 
 def get_industry_news_post_from_ai(linked_user_profile: LinkedInProfile, buyer_stage: str,
                                    prefs: dict = None, profile_synthesis: str = None,
-                                   blueprint: dict = None):
+                                   blueprint: dict = None, lead_magnet_cta: str = None):
     """
        Generate a post sharing industry news based on the LinkedIn user's profile and the intended buyer stage, along with the user's commentary.
     """
@@ -1470,7 +1470,7 @@ def get_industry_news_post_from_ai(linked_user_profile: LinkedInProfile, buyer_s
     
     """
 
-    prompt += _alignment_directive(prefs)
+    prompt += _alignment_directive(prefs, lead_magnet_cta)
     # Shared framework core: this post's assigned archetype/hook/CTA blueprint (rotated across
     # the user's recent posts by the caller) + the invariant short-form craft rules + prefs.
     prompt += _framework.blueprint_directive("post", blueprint)
@@ -1619,7 +1619,7 @@ def get_industry_trend_from_ai(industry: str, articles: list):
 
 def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage: str,
                                     prefs: dict = None, profile_synthesis: str = None,
-                                    blueprint: dict = None):
+                                    blueprint: dict = None, lead_magnet_cta: str = None):
     """
     Generate a post sharing a personal or professional story, based on the user's profile.
     """
@@ -1659,7 +1659,7 @@ def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage:
         
         """
 
-    prompt += _alignment_directive(prefs)
+    prompt += _alignment_directive(prefs, lead_magnet_cta)
     # Shared framework core: this post's assigned archetype/hook/CTA blueprint (rotated across
     # the user's recent posts by the caller) + the invariant short-form craft rules + prefs.
     prompt += _framework.blueprint_directive("post", blueprint)
@@ -1733,7 +1733,7 @@ def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage:
 
 def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage: str,
                                     prefs: dict = None, profile_synthesis: str = None,
-                                    blueprint: dict = None):
+                                    blueprint: dict = None, lead_magnet_cta: str = None):
     """
     Generate a question or prompt that encourages engagement from followers.
     """
@@ -1771,7 +1771,7 @@ def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage:
             
             """
 
-    prompt += _alignment_directive(prefs)
+    prompt += _alignment_directive(prefs, lead_magnet_cta)
     # Shared framework core: this post's assigned archetype/hook/CTA blueprint (rotated across
     # the user's recent posts by the caller) + the invariant short-form craft rules + prefs.
     prompt += _framework.blueprint_directive("post", blueprint)
@@ -1843,7 +1843,7 @@ def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage:
 
 def get_blog_summary_post_from_ai(blog_post_url: str, blog_post_content: str, linked_user_profile: LinkedInProfile,
                                   stage: str, prefs: dict = None, profile_synthesis: str = None,
-                                  blueprint: dict = None):
+                                  blueprint: dict = None, lead_magnet_cta: str = None):
     """
     Generate a summary post for a blog article using the provide post url and post content from user to create interest using relevance to the provided LinkedIn Profile.
     """
@@ -1878,7 +1878,7 @@ def get_blog_summary_post_from_ai(blog_post_url: str, blog_post_content: str, li
     
     """
 
-    prompt += _alignment_directive(prefs)
+    prompt += _alignment_directive(prefs, lead_magnet_cta)
     # Shared framework core: this post's assigned archetype/hook/CTA blueprint (rotated across
     # the user's recent posts by the caller) + the invariant short-form craft rules + prefs.
     prompt += _framework.blueprint_directive("post", blueprint)
@@ -1950,7 +1950,7 @@ def get_blog_summary_post_from_ai(blog_post_url: str, blog_post_content: str, li
 
 def get_website_content_post_from_ai(content: str, url: str, linked_user_profile: LinkedInProfile, stage: str,
                                      prefs: dict = None, profile_synthesis: str = None,
-                                     blueprint: dict = None):
+                                     blueprint: dict = None, lead_magnet_cta: str = None):
     """
         Generate a summary post for a blog article using the provide post url and post content from user to create interest using relevance to the provided LinkedIn Profile.
         """
@@ -1984,7 +1984,7 @@ def get_website_content_post_from_ai(content: str, url: str, linked_user_profile
 
                 """
 
-    prompt += _alignment_directive(prefs)
+    prompt += _alignment_directive(prefs, lead_magnet_cta)
     # Shared framework core: this post's assigned archetype/hook/CTA blueprint (rotated across
     # the user's recent posts by the caller) + the invariant short-form craft rules + prefs.
     prompt += _framework.blueprint_directive("post", blueprint)
