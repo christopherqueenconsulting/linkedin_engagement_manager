@@ -14,6 +14,7 @@ def client():
         patch("cqc_lem.app.run_automation.automate_reply_commenting"),
         patch("cqc_lem.app.run_content_plan.auto_create_weekly_content"),
         patch("cqc_lem.app.aws_test_celery_task.test_get_my_profile"),
+        patch("cqc_lem.app.run_scheduler.generate_newsletter_drafts_for_user"),
     ]
     for p in patches:
         p.start()
@@ -76,6 +77,24 @@ class TestNewsletterSettings:
         assert resp.status_code == 200
         args = upd.call_args[0][1]
         assert args["max_queued_drafts"] == 1 and args["generate_lead_days"] == 0
+
+    def test_put_enabled_triggers_queue_topup(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_newsletter_settings", return_value=True), \
+             patch("cqc_lem.app.run_scheduler.generate_newsletter_drafts_for_user") as task:
+            resp = client.put("/api/user/newsletter-settings", json={
+                "session_token": _SESSION, "enabled": True, "max_queued_drafts": 3})
+        assert resp.status_code == 200
+        task.apply_async.assert_called_once_with(kwargs={"user_id": _USER})
+
+    def test_put_disabled_does_not_trigger_topup(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_newsletter_settings", return_value=True), \
+             patch("cqc_lem.app.run_scheduler.generate_newsletter_drafts_for_user") as task:
+            resp = client.put("/api/user/newsletter-settings", json={
+                "session_token": _SESSION, "enabled": False, "max_queued_drafts": 3})
+        assert resp.status_code == 200
+        task.apply_async.assert_not_called()
 
     def test_401(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=None):

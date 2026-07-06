@@ -198,6 +198,57 @@ class TestGenerateNewsletterDrafts:
         assert "Generated 1 newsletter draft" in result
 
 
+def _run_generate_for_user(*, settings, pending, latest=None, gen_now=True, edition=None,
+                           create_ret=1):
+    """Drive generate_newsletter_drafts_for_user (the on-demand per-user top-up) with collaborators
+    mocked out."""
+    from contextlib import ExitStack
+    from cqc_lem.app.run_scheduler import generate_newsletter_drafts_for_user
+    if edition is None:
+        edition = {"title": "T", "subtitle": "S", "body": "B"}
+    with ExitStack() as es:
+        p = es.enter_context
+        p(patch("cqc_lem.utilities.db.get_newsletter_settings", return_value=settings))
+        p(patch("cqc_lem.utilities.db.get_user_timezone", return_value="UTC"))
+        p(patch("cqc_lem.utilities.db.count_pending_newsletter_editions", return_value=pending))
+        p(patch("cqc_lem.utilities.db.get_latest_edition_scheduled_for", return_value=latest))
+        create = p(patch("cqc_lem.utilities.db.create_newsletter_edition", return_value=create_ret))
+        p(patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=MagicMock()))
+        p(patch("cqc_lem.utilities.ai.ai_helper.generate_newsletter_edition", return_value=edition))
+        p(patch("cqc_lem.utilities.newsletter.should_generate_now", return_value=gen_now))
+        p(patch("cqc_lem.utilities.notifications.notify_newsletter_draft_ready"))
+        result = generate_newsletter_drafts_for_user.run(user_id=1)
+    return result, create
+
+
+class TestGenerateNewsletterDraftsForUser:
+    def test_disabled_user_generates_nothing(self):
+        result, create = _run_generate_for_user(
+            settings=_settings(enabled=False, max_queued_drafts=3), pending=1)
+        create.assert_not_called()
+        assert "disabled" in result
+
+    def test_raising_count_adds_delta_when_one_exists(self):
+        # User already has one draft; count raised to 3 → fill the two freed slots.
+        result, create = _run_generate_for_user(
+            settings=_settings(enabled=True, max_queued_drafts=3), pending=1)
+        assert create.call_count == 2
+        assert "Generated 2 newsletter draft" in result
+
+    def test_bypasses_bootstrap_lead_gate(self):
+        # Empty queue, outside the lead window: an explicit settings change still fills ahead.
+        result, create = _run_generate_for_user(
+            settings=_settings(enabled=True, max_queued_drafts=2), pending=0, gen_now=False)
+        assert create.call_count == 2
+        assert "Generated 2 newsletter draft" in result
+
+    def test_skips_when_queue_full(self):
+        result, create = _run_generate_for_user(
+            settings=_settings(enabled=True, max_queued_drafts=2), pending=2)
+        create.assert_not_called()
+        assert "Generated 0 newsletter draft" in result
+
+
 class TestPublishScheduledEditions:
     def test_dispatches_due_editions(self):
         from cqc_lem.app.run_scheduler import auto_publish_scheduled_editions
