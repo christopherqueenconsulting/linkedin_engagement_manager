@@ -4,12 +4,14 @@ import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
 import Toggle from '../../components/Toggle'
 import type { UserGroup } from './types'
+import { useRegisterSaveSection } from './SettingsSaveContext'
 
 export default function GroupsCard() {
   const { sessionToken } = useAuth()
   const queryClient = useQueryClient()
   const [groups, setGroups] = useState<UserGroup[]>([])
   const [groupsInit, setGroupsInit] = useState(false)
+  const [savedSig, setSavedSig] = useState<string | null>(null)
   const [groupsMsg, setGroupsMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   const { data: groupsData } = useQuery({
@@ -24,6 +26,7 @@ export default function GroupsCard() {
   useEffect(() => {
     if (groupsData && !groupsInit) {
       setGroups(groupsData)
+      setSavedSig(JSON.stringify(groupsData))
       setGroupsInit(true)
     }
   }, [groupsData, groupsInit])
@@ -39,6 +42,7 @@ export default function GroupsCard() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['user-groups'] })
+      setSavedSig(JSON.stringify(groups))
       setGroupsMsg({ ok: true, text: 'Saved.' })
       setTimeout(() => setGroupsMsg(null), 3000)
     },
@@ -47,6 +51,10 @@ export default function GroupsCard() {
       setTimeout(() => setGroupsMsg(null), 5000)
     },
   })
+
+  const isDirty = groupsInit && savedSig !== null && JSON.stringify(groups) !== savedSig
+  useRegisterSaveSection('groups', 'LinkedIn Groups', isDirty,
+    async () => { await groupsMutation.mutateAsync(); return true })
 
   if (!(groupsInit && groups.length > 0)) return null
 

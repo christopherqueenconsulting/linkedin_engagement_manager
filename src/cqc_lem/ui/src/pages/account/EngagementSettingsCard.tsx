@@ -5,6 +5,8 @@ import { useAuth } from '../../contexts/AuthContext'
 import Toggle from '../../components/Toggle'
 import { csv, parseCsv } from './types'
 import type { EngPrefs } from './types'
+import { useRegisterSaveSection } from './SettingsSaveContext'
+import { FIELD_LIMITS } from './fieldLimits'
 
 // Voice & Tone and Engagement Targeting both edit the SAME engagement_preferences object and each
 // PUT the full object. They must therefore share one piece of local state — otherwise saving one
@@ -14,6 +16,7 @@ export default function EngagementSettingsCard() {
   const { sessionToken } = useAuth()
   const queryClient = useQueryClient()
   const [engPrefs, setEngPrefs] = useState<EngPrefs | null>(null)
+  const [savedSig, setSavedSig] = useState<string | null>(null)
   const [engMsg, setEngMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   const { data: engData } = useQuery({
@@ -26,7 +29,7 @@ export default function EngagementSettingsCard() {
     staleTime: 60 * 1000,
   })
   useEffect(() => {
-    if (engData && !engPrefs) setEngPrefs(engData)
+    if (engData && !engPrefs) { setEngPrefs(engData); setSavedSig(JSON.stringify(engData)) }
   }, [engData])
 
   const setEng = (patch: Partial<EngPrefs>) => setEngPrefs((p) => (p ? { ...p, ...patch } : p))
@@ -35,6 +38,7 @@ export default function EngagementSettingsCard() {
     mutationFn: () => api.put('/user/engagement-preferences', { session_token: sessionToken, ...engPrefs }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['engagement-preferences'] })
+      setSavedSig(JSON.stringify(engPrefs))
       setEngMsg({ ok: true, text: 'Saved.' })
       setTimeout(() => setEngMsg(null), 3000)
     },
@@ -44,13 +48,26 @@ export default function EngagementSettingsCard() {
     },
   })
 
+  const isDirty = !!engPrefs && savedSig !== null && JSON.stringify(engPrefs) !== savedSig
+  useRegisterSaveSection('engagement', 'Voice, Focus & Targeting', isDirty,
+    async () => { await engMutation.mutateAsync(); return true })
+
   if (!engPrefs) return null
 
+  // Every engagement section edits ONE shared object saved by ONE mutation, so a failure in any
+  // field (e.g. an over-long value) fails the whole save. Show the result under whichever button
+  // the user clicked — previously the message only rendered in the Targeting card, hiding errors
+  // from anyone saving Voice & Tone or Focus & Goals.
   const saveBtn = (label: string) => (
-    <button type="button" onClick={() => engMutation.mutate()} disabled={engMutation.isPending}
-      className="w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
-      {engMutation.isPending ? 'Saving…' : label}
-    </button>
+    <div className="space-y-1.5">
+      <button type="button" onClick={() => engMutation.mutate()} disabled={engMutation.isPending}
+        className="w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
+        {engMutation.isPending ? 'Saving…' : label}
+      </button>
+      {engMsg && (
+        <p className={`text-sm font-medium ${engMsg.ok ? 'text-green-600' : 'text-red-600'}`}>{engMsg.text}</p>
+      )}
+    </div>
   )
 
   return (
@@ -65,6 +82,7 @@ export default function EngagementSettingsCard() {
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Tone</label>
             <input type="text" value={engPrefs.tone || ''} onChange={(e) => setEng({ tone: e.target.value })}
+              maxLength={FIELD_LIMITS.tone}
               placeholder="e.g. warm, authoritative"
               className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
           </div>
@@ -81,6 +99,7 @@ export default function EngagementSettingsCard() {
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Style guidance</label>
           <input type="text" value={engPrefs.comment_style || ''} onChange={(e) => setEng({ comment_style: e.target.value })}
+            maxLength={FIELD_LIMITS.comment_style}
             placeholder="e.g. ask a question, avoid buzzwords"
             className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
         </div>
@@ -114,14 +133,14 @@ export default function EngagementSettingsCard() {
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Business goals</label>
-          <textarea value={engPrefs.business_goals || ''} rows={2}
+          <textarea value={engPrefs.business_goals || ''} rows={2} maxLength={FIELD_LIMITS.goals}
             onChange={(e) => setEng({ business_goals: e.target.value })}
             placeholder="e.g. Book 5 discovery calls/month with mid-market ops leaders"
             className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Personal goals</label>
-          <textarea value={engPrefs.personal_goals || ''} rows={2}
+          <textarea value={engPrefs.personal_goals || ''} rows={2} maxLength={FIELD_LIMITS.goals}
             onChange={(e) => setEng({ personal_goals: e.target.value })}
             placeholder="e.g. Build a reputation as a thoughtful voice in supply-chain tech"
             className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
@@ -183,9 +202,6 @@ export default function EngagementSettingsCard() {
           <p className="text-sm font-medium text-gray-700">Reply to comments on my posts</p>
           <Toggle on={engPrefs.reply_to_own_comments} onClick={() => setEng({ reply_to_own_comments: !engPrefs.reply_to_own_comments })} />
         </div>
-        {engMsg && (
-          <p className={`text-sm font-medium ${engMsg.ok ? 'text-green-600' : 'text-red-600'}`}>{engMsg.text}</p>
-        )}
         {saveBtn('Save Targeting')}
       </div>
     </>

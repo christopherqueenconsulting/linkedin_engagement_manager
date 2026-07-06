@@ -4,12 +4,16 @@ import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
 import { DM_EVENTS } from './types'
 import type { DmTemplate } from './types'
+import { useRegisterSaveSection } from './SettingsSaveContext'
+import PlaceholderChips from './PlaceholderChips'
+import { FIELD_LIMITS } from './fieldLimits'
 
 export default function DmTemplatesCard() {
   const { sessionToken } = useAuth()
   const queryClient = useQueryClient()
   const [dmTemplates, setDmTemplates] = useState<DmTemplate[]>([])
   const [dmInit, setDmInit] = useState(false)
+  const [savedSig, setSavedSig] = useState<string | null>(null)
   const [dmMsg, setDmMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   const { data: dmData } = useQuery({
@@ -30,6 +34,7 @@ export default function DmTemplatesCard() {
         }
       }
       setDmTemplates(seeded)
+      setSavedSig(JSON.stringify(seeded))
       setDmInit(true)
     }
   }, [dmData, dmInit])
@@ -52,6 +57,7 @@ export default function DmTemplatesCard() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['dm-templates'] })
+      setSavedSig(JSON.stringify(dmTemplates))
       setDmMsg({ ok: true, text: 'DM templates saved.' })
       setTimeout(() => setDmMsg(null), 3000)
     },
@@ -61,16 +67,24 @@ export default function DmTemplatesCard() {
     },
   })
 
+  const isDirty = dmInit && savedSig !== null && JSON.stringify(dmTemplates) !== savedSig
+  useRegisterSaveSection('dm-templates', 'DM Templates', isDirty,
+    async () => { await dmMutation.mutateAsync(); return true })
+
   if (!dmInit) return null
 
   return (
     <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-4">
       <h2 className="text-base font-semibold text-gray-700">DM Templates</h2>
       <p className="text-xs text-gray-500">
-        Placeholders: <code>{'{first_name}'}</code>, <code>{'{headline}'}</code>, <code>{'{blog_url}'}</code>.
         Blank uses the built-in default. Add follow-up steps to message again after a delay — the
-        sequence stops automatically if they reply.
+        sequence stops automatically if they reply. Click a placeholder to insert it at your cursor:
       </p>
+      <PlaceholderChips placeholders={[
+        { token: '{first_name}', desc: "The recipient's first name" },
+        { token: '{headline}', desc: "The recipient's headline / role" },
+        { token: '{blog_url}', desc: 'Your configured blog URL' },
+      ]} />
       {DM_EVENTS.map((ev) => {
         const steps = dmTemplates.filter((t) => t.event_type === ev.key).sort((a, b) => a.step - b.step)
         return (
@@ -94,7 +108,7 @@ export default function DmTemplatesCard() {
                       className="ml-auto text-red-500 hover:text-red-600">Remove</button>
                   )}
                 </div>
-                <textarea value={t.template_text} rows={2}
+                <textarea value={t.template_text} rows={2} maxLength={FIELD_LIMITS.dm_template}
                   onChange={(e) => updateTemplate(ev.key, t.step, { template_text: e.target.value })}
                   placeholder="Leave blank for the default message"
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />

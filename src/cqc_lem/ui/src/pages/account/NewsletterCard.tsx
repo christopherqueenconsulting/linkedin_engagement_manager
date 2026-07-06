@@ -6,6 +6,7 @@ import { useAuth } from '../../contexts/AuthContext'
 import Toggle from '../../components/Toggle'
 import type { NewsletterSettings } from './types'
 import { WEEKDAYS } from './types'
+import { FIELD_LIMITS } from './fieldLimits'
 
 // 12-hour label for an hour-of-day 0–23 (never 24h): 0 -> "12:00 AM", 13 -> "1:00 PM".
 const hour12Label = (h: number) => `${h % 12 === 0 ? 12 : h % 12}:00 ${h < 12 ? 'AM' : 'PM'}`
@@ -61,6 +62,7 @@ export default function NewsletterCard() {
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Title</label>
               <input type="text" value={newsletter.title || ''} onChange={(e) => setNl({ title: e.target.value })}
+                maxLength={FIELD_LIMITS.nl_title}
                 placeholder="e.g. The Growth Brief" className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
             </div>
             <div>
@@ -96,6 +98,7 @@ export default function NewsletterCard() {
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Topic / theme</label>
             <input type="text" value={newsletter.topic || ''} onChange={(e) => setNl({ topic: e.target.value })}
+              maxLength={FIELD_LIMITS.nl_topic}
               placeholder="What each edition should focus on" className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
           </div>
 

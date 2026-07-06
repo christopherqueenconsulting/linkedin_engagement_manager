@@ -15,6 +15,7 @@ import EngagementSettingsCard from './account/EngagementSettingsCard'
 import GroupsCard from './account/GroupsCard'
 import DmTemplatesCard from './account/DmTemplatesCard'
 import LeadMagnetCard from './account/LeadMagnetCard'
+import { SettingsSaveProvider, SaveAllBar } from './account/SettingsSaveContext'
 
 type TabKey = 'account' | 'linkedin' | 'content' | 'automation'
 
@@ -141,12 +142,15 @@ export default function Account() {
       )}
 
       {activeTab === 'automation' && (
-        <div className="space-y-6">
-          <EngagementSettingsCard />
-          <GroupsCard />
-          <DmTemplatesCard />
-          <LeadMagnetCard />
-        </div>
+        <SettingsSaveProvider>
+          <div className="space-y-6">
+            <EngagementSettingsCard />
+            <GroupsCard />
+            <DmTemplatesCard />
+            <LeadMagnetCard />
+          </div>
+          <SaveAllBar />
+        </SettingsSaveProvider>
       )}
     </div>
   )
