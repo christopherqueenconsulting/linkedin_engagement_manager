@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.36.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.35.0...v0.36.0) (2026-07-06)
+
+
+### Features
+
+* **content:** weave lead-magnet CTA into ~1-in-N generated posts ([3874873](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3874873bff784601d6d5eb3ad7d4e4fb0d98e0f7))
+
 ## [0.35.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.34.0...v0.35.0) (2026-07-06)
 
 
