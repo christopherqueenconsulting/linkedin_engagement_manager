@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.35.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.34.0...v0.35.0) (2026-07-06)
+
+
+### Features
+
+* **dm-scheduler:** schedule 1:1 DMs mirroring the post scheduler (closes [#306](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/306)) ([35d1a93](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/35d1a93c0c383d27e035cb1a1ff2e6d86c033da1))
+* **dm-scheduler:** schedule 1:1 DMs, mirroring the post scheduler ([#306](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/306)) ([1805b35](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1805b35163cc7d2a132ff9dfc12f607b7f90b120))
+* **dm-scheduler:** SPA DMs tab with preview/approve workflow ([#306](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/306)) ([72a2ae0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/72a2ae08c15f6e9794f86b7ce28f0aea3369e896))
+* **ui:** consolidate Schedule + Review into one Content Studio page ([c059d35](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c059d35847e35e12c1cd6712e282ba2a42e1af2a))
+* **ui:** consolidate Schedule + Review into one Content Studio page ([168da98](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/168da9833832e398ab09ef008c633963b5beb27f))
+
 ## [0.34.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.33.0...v0.34.0) (2026-07-06)
 
 
