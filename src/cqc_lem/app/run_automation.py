@@ -27,7 +27,8 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     claim_post_for_comment, mark_post_commented, mark_post_reacted, release_post_claim, has_commented_post, \
     has_engaged_url_with_x_days, get_post_content, get_post_video_url, update_db_post_status, PostStatus, PostType, \
     get_dm_history_for_profile, get_post_status, get_user_blog_url, get_post_type, get_carousel_slides, \
-    get_dm_template, enqueue_followup, get_due_followups, mark_followup, stop_followups_for_profile
+    get_dm_template, enqueue_followup, get_due_followups, mark_followup, stop_followups_for_profile, \
+    get_duplicate_comment_posts
 from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
     load_profile_for_user
@@ -1074,6 +1075,133 @@ def _pin_own_comment(driver) -> bool:
     except Exception as e:
         log_warning("Pin own comment failed", exc=e, action_type="comment")
         return False
+
+
+# JS: count the overflow ("…") buttons for OUR OWN comments on the current post. LinkedIn labels each
+# comment's overflow control "View more options for <name>'s comment.", so matching our full name
+# restricts this to comments WE authored — we never touch anyone else's comment.
+_COUNT_OWN_COMMENT_MENUS_JS = (
+    "const name=(arguments[0]||'').toLowerCase();"
+    "return [...document.querySelectorAll('button[aria-label]')].filter(x=>{"
+    "const a=(x.getAttribute('aria-label')||'').toLowerCase();"
+    "return a.includes('options for') && a.includes('comment') && name && a.includes(name);"
+    "}).length;")
+
+# JS: open the overflow menu of the LAST of our own comments (we keep the first/earliest and delete
+# the rest). The control is hover-hidden, so we JS-click it directly.
+_OPEN_LAST_OWN_COMMENT_MENU_JS = (
+    "const name=(arguments[0]||'').toLowerCase();"
+    "const b=[...document.querySelectorAll('button[aria-label]')].filter(x=>{"
+    "const a=(x.getAttribute('aria-label')||'').toLowerCase();"
+    "return a.includes('options for') && a.includes('comment') && name && a.includes(name);"
+    "});"
+    "if(!b.length) return false;"
+    "const t=b[b.length-1]; t.scrollIntoView({block:'center'}); t.click(); return true;")
+
+# JS: click the "Delete" item in the open overflow menu.
+_CLICK_DELETE_MENUITEM_JS = (
+    "const el=[...document.querySelectorAll('[role=menuitem],[role=menuitemradio],button,div,span,li,h5')]"
+    ".find(e=>/^delete\\b/i.test((e.innerText||'').trim()) && (e.innerText||'').trim().length<20);"
+    "if(el){(el.closest('[role=menuitem]')||el).click(); return true;} return false;")
+
+# JS: confirm deletion in the modal that follows (its confirm button reads exactly "Delete").
+_CONFIRM_DELETE_MODAL_JS = (
+    "const d=[...document.querySelectorAll('[role=dialog],.artdeco-modal')];"
+    "for(const m of d){const btn=[...m.querySelectorAll('button')]"
+    ".find(b=>((b.innerText||'').trim().toLowerCase()==='delete'));"
+    "if(btn){btn.click(); return true;}} return false;")
+
+
+def _delete_extra_own_comments_on_post(driver, my_full_name: str, dry_run: bool = True) -> Tuple[int, int]:
+    """On the CURRENTLY-OPEN post page, keep our earliest comment and delete the rest so the post ends
+    with exactly ONE comment from us. Returns (own_comments_found, deleted). In dry_run mode it only
+    counts what WOULD be deleted (deleted stays 0). Only comments authored by `my_full_name` are ever
+    touched — replies/comments by others are never affected."""
+    try:
+        found = int(driver.execute_script(_COUNT_OWN_COMMENT_MENUS_JS, my_full_name) or 0)
+    except Exception as e:
+        log_warning("Could not count own comments on post", exc=e, action_type="comment")
+        return 0, 0
+    if found <= 1:
+        return found, 0
+    if dry_run:
+        return found, 0
+
+    deleted = 0
+    # Delete the last-of-ours repeatedly, re-counting each pass (the DOM re-renders after a delete).
+    # Cap the loop at the initial surplus so a stuck menu can't spin forever.
+    for _ in range(found - 1):
+        try:
+            if not driver.execute_script(_OPEN_LAST_OWN_COMMENT_MENU_JS, my_full_name):
+                break
+            time.sleep(random.uniform(1, 2))
+            if not driver.execute_script(_CLICK_DELETE_MENUITEM_JS):
+                log_warning("Delete menu item not found; stopping this post", action_type="comment")
+                break
+            time.sleep(random.uniform(1, 2))
+            if not driver.execute_script(_CONFIRM_DELETE_MODAL_JS):
+                log_warning("Delete confirm button not found; stopping this post", action_type="comment")
+                break
+            wait_for_ajax(driver)
+            time.sleep(random.uniform(2, 3))
+            deleted += 1
+            remaining = int(driver.execute_script(_COUNT_OWN_COMMENT_MENUS_JS, my_full_name) or 0)
+            if remaining <= 1:
+                break
+        except Exception as e:
+            log_warning("Error deleting a duplicate comment", exc=e, action_type="comment")
+            break
+    return found, deleted
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
+                  queue='se_engage')
+def consolidate_duplicate_comments_for_user(self, user_id: int, dry_run: bool = True, hours: int = 168):
+    """One-off cleanup: for each post this user commented on MORE THAN ONCE in the last `hours`,
+    delete the extra comments so exactly ONE remains. dry_run=True (default) only REPORTS what it
+    would delete — pass dry_run=False to actually delete. Only real post URLs are actionable; feed
+    comments logged under a synthetic key (no navigable URL) are reported as skipped."""
+    dupes = get_duplicate_comment_posts(user_id, hours)
+    if not dupes:
+        return "No duplicate-commented posts found"
+
+    actionable = [row for row in dupes if str(row[0]).startswith("http")]
+    skipped = len(dupes) - len(actionable)
+    if not actionable:
+        return (f"Found {len(dupes)} duplicate-commented post(s) but none have a navigable URL "
+                f"(synthetic feed keys) — cannot auto-delete; inspect manually.")
+
+    try:
+        driver, wait, user_email, my_profile = get_current_profile(
+            user_id=user_id, session_name="Consolidate Comments")
+    except Exception as e:
+        log_error("Login failed for comment consolidation", exc=e, user_id=user_id,
+                  task_name="consolidate_duplicate_comments_for_user")
+        return f"Failed to start: {e}"
+
+    posts_processed, total_found, total_deleted = 0, 0, 0
+    try:
+        for post_url, logged_count, first_at, last_at in actionable:
+            try:
+                driver.get(post_url)
+                time.sleep(random.uniform(4, 7))
+                found, deleted = _delete_extra_own_comments_on_post(driver, my_profile.full_name, dry_run)
+                posts_processed += 1
+                total_found += found
+                total_deleted += deleted
+                log_info(f"Consolidated comments on post (found={found}, deleted={deleted}, "
+                         f"dry_run={dry_run})", user_id=user_id, post_id=post_url,
+                         action_type="comment", task_name="consolidate_duplicate_comments_for_user")
+            except Exception as e:
+                log_warning("Failed to consolidate a post's comments", exc=e, user_id=user_id,
+                            post_id=post_url, action_type="comment")
+    finally:
+        quit_gracefully(driver)
+
+    verb = "would delete" if dry_run else "deleted"
+    return (f"Processed {posts_processed} post(s); {verb} {total_deleted} extra comment(s) "
+            f"(own comments found across posts={total_found}; skipped {skipped} non-URL post(s); "
+            f"dry_run={dry_run})")
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id', 'post_id']},
