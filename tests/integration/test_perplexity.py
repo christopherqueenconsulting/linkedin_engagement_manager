@@ -44,8 +44,8 @@ class TestPerplexitySearch:
             company_name="Tech Co",
         )
 
-        with patch("cqc_lem.utilities.ai.ai_helper.search_with_perplexity",
-                   side_effect=RuntimeError("PERPLEXITY_API_KEY is not set")), \
+        with patch("cqc_lem.utilities.ai.ai_helper.research_topic",
+                   return_value={"findings": "", "sources": []}), \
              patch("cqc_lem.utilities.ai.ai_helper.search_recent_news",
                    return_value={"articles": [{"title": "AI news", "date": "2025-01-01", "link": "https://example.com"}]}), \
              patch("cqc_lem.utilities.ai.ai_helper.get_industries_of_profile_from_ai",

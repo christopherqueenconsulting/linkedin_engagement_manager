@@ -7,7 +7,22 @@ import openai
 import replicate
 from cqc_lem import assets_dir
 from cqc_lem.utilities.ai.client import client
-from cqc_lem.utilities.ai import newsletter_blueprint as _blueprint
+from cqc_lem.utilities.ai import content_framework as _framework
+# The ONE alignment core (voice + prefs + LEM purpose + promo policy) shared by newsletters,
+# posts, and comments. The underscore aliases keep this module's long-standing internal API
+# (and the tests that import it) stable while the definitions live in exactly one place.
+from cqc_lem.utilities.ai.content_alignment import (
+    COMMENT_LENGTH_CHARS as _COMMENT_LENGTH_CHARS,
+    NO_SELF_PROMO_GUARDRAIL as _NO_SELF_PROMO_GUARDRAIL,
+    NEWSLETTER_SOFT_PROMO_NOTE as _NEWSLETTER_SOFT_PROMO_NOTE,
+    DEFAULT_ENGAGEMENT_INTENTION as _DEFAULT_ENGAGEMENT_INTENTION,
+    style_directive as _style_directive,
+    focus_directive as _focus_directive,
+    intention_directive as _intention_directive,
+    alignment_directive as _alignment_directive,
+    voice_reference as _voice_reference,
+)
+from cqc_lem.utilities.ai.content_research import research_topic
 from cqc_lem.utilities.ai.tools import search_recent_news, search_with_perplexity
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text, PLAIN_PUNCTUATION_DIRECTIVE
@@ -107,100 +122,6 @@ def generate_ai_response_test():
     return comment
 
 
-# Tight, engagement-optimized targets. Short is the default: LinkedIn rewards comments that
-# earn a REPLY (threads), and a punchy, specific comment out-performs a long essay. Even
-# "short" stays >~25 words so it clears the quality floor.
-_COMMENT_LENGTH_CHARS = {"short": 180, "medium": 320, "long": 550}
-
-
-def _style_directive(prefs: dict = None) -> str:
-    """Turn the user's engagement preferences into an explicit style directive that overrides
-    the profile-inferred defaults (tone, length, emoji/hashtag rules, freeform style)."""
-    if not prefs:
-        return ""
-    parts = []
-    tone = prefs.get("tone")
-    if tone:
-        parts.append(f"Write in a {tone} tone.")
-    length = prefs.get("comment_length") or "short"
-    parts.append(f"Keep it {length} — at most ~{_COMMENT_LENGTH_CHARS.get(length, 180)} characters "
-                 f"(a few sentences); brevity beats length.")
-    parts.append("You may use one tasteful emoji." if prefs.get("use_emojis") else "Do not use emojis.")
-    parts.append("Relevant hashtags are okay." if prefs.get("use_hashtags") else "Do not use any hashtags.")
-    if prefs.get("comment_style"):
-        parts.append(f"Style guidance: {prefs['comment_style']}.")
-    return "\n\nStyle requirements (follow these):\n- " + "\n- ".join(parts) + "\n"
-
-
-# Hard guardrail attached to EVERY generated comment, reply, and post. Without it, a user whose
-# profile / recent activity is dominated by a project they are building (e.g. their own internal
-# tooling) makes the model pull that project in as the SUBJECT of otherwise unrelated content —
-# the exact LEM-drift bug this guardrail prevents. Background is VOICE and credibility only.
-_NO_SELF_PROMO_GUARDRAIL = (
-    "Never mention, name, promote, or allude to the user's own internal tools, apps, software, "
-    "platforms, side projects, or anything they are personally building (including any product "
-    "referred to as 'LEM' or the engagement platform itself). Treat the user's profile and "
-    "background strictly as VOICE, TONE, and credibility — never as the subject matter, and never "
-    "as something to advertise. Do not turn the output into self-promotion."
-)
-
-
-# Effective server-side DEFAULT when the user has NOT declared focus topics / goals. LEM's core
-# engagement philosophy: every comment should build a relationship — connect genuinely to the POSTER
-# (the author of the target post) or to POTENTIAL FOLLOWERS reading the thread — grounded in the
-# post's actual topic and in the user's authentic voice. This makes blank-config generation produce
-# aligned, relationship-building comments instead of unaligned or self-referential ones.
-_DEFAULT_ENGAGEMENT_INTENTION = (
-    "Build a genuine relationship: every comment should draw a real connection either to the POSTER "
-    "(the author of this post) or to POTENTIAL FOLLOWERS reading the thread — start a conversation "
-    "worth replying to, grounded in the post's actual topic and written in the user's authentic voice."
-)
-
-
-def _focus_directive(prefs: dict = None) -> str:
-    """Soft SUBJECT steering from the user's declared focus topics + business/personal goals. It is
-    used only to choose which ANGLE to take when it genuinely fits — it must never override the
-    actual subject (the target post for comments, the chosen industry/story for posts). Returns ""
-    when nothing is declared (callers supply their own baseline)."""
-    if not prefs:
-        return ""
-    parts = []
-    topics = [str(t).strip() for t in (prefs.get("focus_topics") or []) if str(t).strip()]
-    if topics:
-        parts.append(f"Focus topics the user wants to be known for: {', '.join(topics)}.")
-    business = (prefs.get("business_goals") or "").strip()
-    if business:
-        parts.append(f"Business goals: {business}.")
-    personal = (prefs.get("personal_goals") or "").strip()
-    if personal:
-        parts.append(f"Personal goals: {personal}.")
-    if not parts:
-        return ""
-    return ("\n\nSoft steering (use ONLY to choose the angle when it genuinely fits the subject; "
-            "never force it in and never let it change the subject):\n- " + "\n- ".join(parts) + "\n")
-
-
-def _intention_directive(prefs: dict = None) -> str:
-    """Engagement steering for comments/replies/seed comments. ALWAYS states LEM's baseline
-    relationship-building intention (the effective default that works with everything left blank);
-    when the user has declared focus topics / goals, those are LAYERED on top to refine the angle —
-    they refine, not replace, the baseline, and win only where they directly conflict with it."""
-    directive = ("\n\nEngagement intention (baseline — always applies):\n- "
-                 + _DEFAULT_ENGAGEMENT_INTENTION + "\n")
-    focus = _focus_directive(prefs)
-    if focus:
-        directive += ("\nLayer the user's declared focus on top of that baseline when it genuinely "
-                      "fits (their stated goals take precedence only if they directly conflict):" + focus)
-    return directive
-
-
-def _alignment_directive(prefs: dict = None) -> str:
-    """Anti-self-promo guardrail + focus/goal steering, appended to POST prompts so generated posts
-    stay aligned to the user's real business/personal goals instead of drifting into promoting
-    whatever the user happens to be building right now."""
-    return "\n\nContent alignment rules:\n- " + _NO_SELF_PROMO_GUARDRAIL + _focus_directive(prefs)
-
-
 # Volatile profile fields deliberately EXCLUDED from the synthesis INPUT. `recent_activities` is the
 # root of "LEM drift" — it is dominated by whatever the user is building / posting THIS week, which
 # the model otherwise pulls in as subject matter. The synthesis is about who the user IS and how they
@@ -259,15 +180,6 @@ def synthesize_profile(profile: "LinkedInProfile") -> str:
     return content.strip() if content is not None else ""
 
 
-def _voice_reference(profile: "LinkedInProfile", profile_synthesis: str = None) -> str:
-    """The VOICE/TONE/credibility reference string dropped into a generation prompt. Prefers the
-    compact, stable synthesis; falls back to the guarded full profile JSON only when no synthesis was
-    supplied (keeps behavior working before the first weekly refresh has run)."""
-    if profile_synthesis and profile_synthesis.strip():
-        return profile_synthesis.strip()
-    return profile.model_dump_json()
-
-
 def get_or_create_profile_synthesis(user_id: int, profile: "LinkedInProfile" = None,
                                     max_age_days: int = 7) -> "str | None":
     """Return the user's cached profile synthesis, lazily generating + persisting it when missing or
@@ -310,10 +222,34 @@ def get_or_create_profile_synthesis(user_id: int, profile: "LinkedInProfile" = N
 
 
 def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=None, post_comment: str = None,
-                         prefs: dict = None, profile_synthesis: str = None):
+                         prefs: dict = None, profile_synthesis: str = None,
+                         blueprint: dict = None, research: dict = None):
+    """Feed comment in the user's voice, GROUNDED IN THE TARGET POST (that contract never changes).
+    `blueprint` assigns this comment's ANGLE from the shared comment menu (Expander, Storyteller,
+    Questioner, ... — see content_framework) so a day's comments vary in approach; callers that track
+    per-run rotation pass one in, otherwise a fresh angle is selected here. `research` is optional
+    {'findings','sources'} background material — comment research is OFF by default (comments run at
+    high volume; the target post is the primary grounding, see content_research cost policy), so a
+    normal call adds NO research API cost."""
     image_attached = "(image attached)" if post_img_url else ""
     _no_hashtags = "" if (prefs and prefs.get("use_hashtags")) else " without using any hashtags"
     user_comment = f"\n\nRespond to this Comment Directly: <comment>{post_comment}</comment>\n\nYou are responding as the author of the LinkedIn Content. Keep your response short and sweet{_no_hashtags}.\n\n" if post_comment else ""
+
+    # Angle rotation applies to fresh feed comments only — replying to a specific comment already has
+    # its own fixed contract (acknowledge + respond directly).
+    if blueprint is None and post_comment is None:
+        blueprint = _framework.select_blueprint("comment")
+    blueprint_block = _framework.blueprint_directive("comment", blueprint) if post_comment is None else ""
+
+    # Optional, tightly-gated background facts: research_topic returns empty immediately unless
+    # COMMENT_RESEARCH_ENABLED is explicitly on, so the default path makes NO research call.
+    if research is None and post_comment is None:
+        research = research_topic(str(post_content or "")[:300], content_type="comment", prefs=prefs)
+    findings = str((research or {}).get("findings") or "").strip()
+    research_block = (
+        "\n\nOptional background facts (use at most ONE, only when it genuinely strengthens the "
+        "comment; never let it replace engaging with the post itself, and never invent numbers "
+        "beyond it):\n" + findings[:1200] + "\n") if findings else ""
 
     prompt = (f"""Please write a comment in response to the LinkedIn Content below, in the voice of the following LinkedIn User.
 
@@ -326,6 +262,7 @@ def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=No
                 {user_comment}
                 {_intention_directive(prefs)}
                 {_style_directive(prefs)}
+                {research_block}
 
                 Only provide the final comment once it perfectly reflects the LinkedIn user’s style
 
@@ -364,7 +301,7 @@ def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=No
         - Keep it SHORT and human — a few sentences, conversational, varied sentence structure. No
           preamble, no sign-off, no hashtags/emojis unless explicitly allowed below.
 
-        Output ONLY the final comment text — no quotes, no labels, no explanation."""
+        Output ONLY the final comment text — no quotes, no labels, no explanation.""" + blueprint_block
     }
 
     # User prompt to be sent with each API call
@@ -458,18 +395,6 @@ def _clean_newsletter_body(body: str) -> str:
     return sanitize_for_linkedin(body or "")
 
 
-# Unlike comments/posts (which carry the HARD _NO_SELF_PROMO_GUARDRAIL), a newsletter is the author's
-# OWN publication, so a LIGHT, occasional, SECONDARY mention of the tools/approach the author uses is
-# acceptable when it genuinely serves the reader. The edition's SUBJECT and value must still stand on
-# their own — never turn an edition into an ad, and never let a tool become the whole subject.
-_NEWSLETTER_SOFT_PROMO_NOTE = (
-    "This is the author's OWN newsletter. A LIGHT, OCCASIONAL, SECONDARY mention of a tool, product, "
-    "or approach the author uses is allowed when it genuinely helps the reader — but keep it brief and "
-    "secondary. The edition's subject and value must stand on their own; never turn it into an ad and "
-    "never let a product become the whole subject."
-)
-
-
 def plan_newsletter_topics(profile_synthesis: str, newsletter_description: str, prefs: dict = None,
                            prior_subjects: list = None, count: int = 1,
                            recent_formats: list = None, recent_hook_styles: list = None) -> list:
@@ -520,7 +445,7 @@ def plan_newsletter_topics(profile_synthesis: str, newsletter_description: str, 
             "- Subjects are about the READER'S growth and the newsletter's topic — NOT about the "
             "author's own products. " + _NEWSLETTER_SOFT_PROMO_NOTE + " At most ONE of the planned "
             "subjects may LIGHTLY touch tools/tooling; keep every other subject tool-agnostic.\n\n"
-            + _blueprint.blueprint_options_text() + "\n\n"
+            + _framework.options_text("newsletter") + "\n\n"
             f"Return ONLY valid JSON with exactly this shape and exactly {count} items:\n"
             '{"editions": [{"subject": "short specific subject (<= ~120 chars)", "angle": "the '
             'distinct angle/takeaway for this edition", "format": "<format key>", '
@@ -575,7 +500,7 @@ def plan_newsletter_topics(profile_synthesis: str, newsletter_description: str, 
                         "cta_style": it.get("cta_style")})
     # The prompt REQUESTS shape rotation; this GUARANTEES it — normalizes formats/hooks/CTAs to known
     # keys, reassigns any consecutive/recent repeats, and attaches each format's structure skeleton.
-    return _blueprint.enforce_blueprint_variety(planned[:count], recent_formats, recent_hook_styles)
+    return _framework.enforce_variety("newsletter", planned[:count], recent_formats, recent_hook_styles)
 
 
 def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
@@ -622,7 +547,7 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
         "external links into the body — LinkedIn suppresses off-platform links; you may name a "
         "source (publication, company, researcher) in prose when natural. Strip any citation markers "
         "like [1].\n" + findings[:3500] + "\n") if findings else ""
-    blueprint_block = _blueprint.blueprint_directive(blueprint)
+    blueprint_block = _framework.blueprint_directive("newsletter", blueprint)
     system_prompt = {
         "role": "system",
         "content": """You are a LinkedIn newsletter ghostwriter for the profile user. Write ONE
@@ -674,7 +599,7 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
                               f"{_voice_reference(profile, profile_synthesis)}\n\n"
                               f"{topic_line}{subject_line}{avoid_line}{openers_line}{guidance_line}{src}"
                               f"{research_block}"
-                              f"{_focus_directive(prefs)}{_style_directive(prefs)}"}
+                              f"{_focus_directive(prefs)}{_style_directive(prefs, 'newsletter')}"}
     response = _call_llm(model="lem-complex", messages=[system_prompt, user_prompt],
                          temperature=round(random.uniform(0.5, 0.7), 2))
     content = response.choices[0].message.content
@@ -683,9 +608,9 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
     _default_subject = (subject or topic or "").strip()[:500]
     # The edition's shape is persisted alongside it so the planner/regenerator can rotate away from
     # recently used formats, hook styles, AND actual opening lines — not just subjects.
-    shape = {"format": _blueprint.normalize_format((blueprint or {}).get("format")),
-             "hook_style": _blueprint.normalize_hook_style((blueprint or {}).get("hook_style")),
-             "cta_style": _blueprint.normalize_cta_style((blueprint or {}).get("cta_style"))}
+    shape = {"format": _framework.normalize_key("newsletter", "format", (blueprint or {}).get("format")),
+             "hook_style": _framework.normalize_key("newsletter", "hook", (blueprint or {}).get("hook_style")),
+             "cta_style": _framework.normalize_key("newsletter", "cta", (blueprint or {}).get("cta_style"))}
 
     def _opening_line(text: str) -> str:
         return next((ln.strip() for ln in text.splitlines() if ln.strip()), "")[:500]
@@ -1112,7 +1037,7 @@ def get_ai_message_refinement(original_message: str, character_limit: int = 300)
 
 
 def get_video_content_from_ai(linked_user_profile: LinkedInProfile, buyer_stage: str,
-                              profile_synthesis: str = None):
+                              profile_synthesis: str = None, prefs: dict = None):
     """Generate video content based on the LinkedIn user profile and buyer stage."""
 
     # Voice/credibility reference — prefer the stable synthesis, else the guarded full JSON.
@@ -1146,6 +1071,8 @@ def get_video_content_from_ai(linked_user_profile: LinkedInProfile, buyer_stage:
 
     # Add the Linked JSon profile to end of prompt
     prompt += f"\n ### LinkedIn Profile: {linked_in_profile_json}"
+
+    prompt += _alignment_directive(prefs)
 
     content = [{"type": "text", "text": prompt}]
 
@@ -1293,7 +1220,8 @@ def create_video_from_prompt(prompt: str):
 
 
 def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, buyer_stage: str,
-                                        prefs: dict = None, profile_synthesis: str = None):
+                                        prefs: dict = None, profile_synthesis: str = None,
+                                        blueprint: dict = None):
     """
         Generate a thought leadership post based on user's expertise and industry.
         Uses the user's profile (e.g., job title, industry) and intended buyer_stage to form an insightful post.
@@ -1320,8 +1248,7 @@ def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, bu
         
         Conclude with an engaging call to action that encourages readers at the specified stage to connect or learn more.
         
-        {get_viral_linked_post_prompt_suffix()}
-        
+                
         """
 
     # Add the Linked JSON profile to end of prompt
@@ -1331,6 +1258,11 @@ def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, bu
     prompt += f"\n ### Current {industry} Trends: <analysis>{analysis}</analysis>"
 
     prompt += _alignment_directive(prefs)
+    # Shared framework core: this post's assigned archetype/hook/CTA blueprint (rotated across
+    # the user's recent posts by the caller) + the invariant short-form craft rules + prefs.
+    prompt += _framework.blueprint_directive("post", blueprint)
+    prompt += _framework.post_writing_directive()
+    prompt += _style_directive(prefs, "post")
 
     content = [{"type": "text", "text": prompt}]
 
@@ -1424,17 +1356,22 @@ def get_industry_trend_analysis_based_on_user_profile(linked_in_profile: LinkedI
 
     myprint(f"Chosen Industry: {industry}")
 
-    # Prefer Perplexity (online search with citations) over GoogleNews when available
-    try:
-        perplexity_result = search_with_perplexity(f"Recent trends and news in the {industry} industry")
-        articles = [{"title": perplexity_result["answer"][:200], "date": "", "link": s.get("url", "")}
-                    for s in perplexity_result["sources"]] or \
-                   [{"title": perplexity_result["answer"][:200], "date": "", "link": ""}]
-        myprint(f"Perplexity search returned {len(perplexity_result['sources'])} source(s)")
-    except Exception as e:
-        log_warning(f"Perplexity unavailable, falling back to GoogleNews", exc=e, api_provider="perplexity")
-        articles_dict = search_recent_news(industry, 7)
-        articles = articles_dict.get('articles', [])
+    # SHARED research core (same lem-research-preferred / direct-Perplexity-fallback layer the
+    # newsletter uses; POST_RESEARCH_ENABLED toggles it). When it returns findings they ARE the
+    # analysis — dated stats + named examples — so no second summarization LLM call is needed.
+    research = research_topic(f"Recent trends and news in the {industry} industry",
+                              content_type="post",
+                              blueprint={"format": "industry_observation"})
+    if research.get("findings"):
+        return {
+            'industry': industry.strip(),
+            'analysis': research["findings"],
+            'sources': research.get("sources") or [],
+        }
+
+    # Research disabled/unavailable → the free GoogleNews path + trend summarization below.
+    articles_dict = search_recent_news(industry, 7)
+    articles = articles_dict.get('articles', [])
 
     myprint(f"Articles Found: {len(articles)}")
 
@@ -1453,12 +1390,14 @@ def get_industry_trend_analysis_based_on_user_profile(linked_in_profile: LinkedI
 
     return {
         'industry': industry.strip(),
-        'analysis': trend_analysis
+        'analysis': trend_analysis,
+        'sources': [],
     }
 
 
 def get_industry_news_post_from_ai(linked_user_profile: LinkedInProfile, buyer_stage: str,
-                                   prefs: dict = None, profile_synthesis: str = None):
+                                   prefs: dict = None, profile_synthesis: str = None,
+                                   blueprint: dict = None):
     """
        Generate a post sharing industry news based on the LinkedIn user's profile and the intended buyer stage, along with the user's commentary.
     """
@@ -1491,11 +1430,15 @@ def get_industry_news_post_from_ai(linked_user_profile: LinkedInProfile, buyer_s
     \n
     Make the post insightful and end with a question or prompt that invites engagement from readers.
 
-    {get_viral_linked_post_prompt_suffix()}
-
+    
     """
 
     prompt += _alignment_directive(prefs)
+    # Shared framework core: this post's assigned archetype/hook/CTA blueprint (rotated across
+    # the user's recent posts by the caller) + the invariant short-form craft rules + prefs.
+    prompt += _framework.blueprint_directive("post", blueprint)
+    prompt += _framework.post_writing_directive()
+    prompt += _style_directive(prefs, "post")
 
     content = [{"type": "text", "text": prompt}]
 
@@ -1638,7 +1581,8 @@ def get_industry_trend_from_ai(industry: str, articles: list):
 
 
 def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage: str,
-                                    prefs: dict = None, profile_synthesis: str = None):
+                                    prefs: dict = None, profile_synthesis: str = None,
+                                    blueprint: dict = None):
     """
     Generate a post sharing a personal or professional story, based on the user's profile.
     """
@@ -1675,11 +1619,15 @@ def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage:
         \n
         Conclude with an engaging question or prompt that encourages readers to reflect on similar experiences.
 
-        {get_viral_linked_post_prompt_suffix()}
-
+        
         """
 
     prompt += _alignment_directive(prefs)
+    # Shared framework core: this post's assigned archetype/hook/CTA blueprint (rotated across
+    # the user's recent posts by the caller) + the invariant short-form craft rules + prefs.
+    prompt += _framework.blueprint_directive("post", blueprint)
+    prompt += _framework.post_writing_directive()
+    prompt += _style_directive(prefs, "post")
 
     content = [{"type": "text", "text": prompt}]
 
@@ -1747,7 +1695,8 @@ def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage:
 
 
 def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage: str,
-                                    prefs: dict = None, profile_synthesis: str = None):
+                                    prefs: dict = None, profile_synthesis: str = None,
+                                    blueprint: dict = None):
     """
     Generate a question or prompt that encourages engagement from followers.
     """
@@ -1782,11 +1731,15 @@ def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage:
             \n
             Make the question open-ended and relatable to create meaningful engagement.
 
-            {get_viral_linked_post_prompt_suffix()}
-
+            
             """
 
     prompt += _alignment_directive(prefs)
+    # Shared framework core: this post's assigned archetype/hook/CTA blueprint (rotated across
+    # the user's recent posts by the caller) + the invariant short-form craft rules + prefs.
+    prompt += _framework.blueprint_directive("post", blueprint)
+    prompt += _framework.post_writing_directive()
+    prompt += _style_directive(prefs, "post")
 
     content = [{"type": "text", "text": prompt}]
 
@@ -1852,7 +1805,8 @@ def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage:
 
 
 def get_blog_summary_post_from_ai(blog_post_url: str, blog_post_content: str, linked_user_profile: LinkedInProfile,
-                                  stage: str, prefs: dict = None, profile_synthesis: str = None):
+                                  stage: str, prefs: dict = None, profile_synthesis: str = None,
+                                  blueprint: dict = None):
     """
     Generate a summary post for a blog article using the provide post url and post content from user to create interest using relevance to the provided LinkedIn Profile.
     """
@@ -1884,11 +1838,15 @@ def get_blog_summary_post_from_ai(blog_post_url: str, blog_post_content: str, li
     
     Ensure the post is engaging, includes a clear call to action, and ends with a link inviting readers to read the full article.
 
-    {get_viral_linked_post_prompt_suffix()}
-
+    
     """
 
     prompt += _alignment_directive(prefs)
+    # Shared framework core: this post's assigned archetype/hook/CTA blueprint (rotated across
+    # the user's recent posts by the caller) + the invariant short-form craft rules + prefs.
+    prompt += _framework.blueprint_directive("post", blueprint)
+    prompt += _framework.post_writing_directive()
+    prompt += _style_directive(prefs, "post")
 
     content = [{"type": "text", "text": prompt}]
 
@@ -1954,7 +1912,8 @@ def get_blog_summary_post_from_ai(blog_post_url: str, blog_post_content: str, li
 
 
 def get_website_content_post_from_ai(content: str, url: str, linked_user_profile: LinkedInProfile, stage: str,
-                                     prefs: dict = None, profile_synthesis: str = None):
+                                     prefs: dict = None, profile_synthesis: str = None,
+                                     blueprint: dict = None):
     """
         Generate a summary post for a blog article using the provide post url and post content from user to create interest using relevance to the provided LinkedIn Profile.
         """
@@ -1986,10 +1945,14 @@ def get_website_content_post_from_ai(content: str, url: str, linked_user_profile
 
         Ensure the post is engaging, includes a clear call to action, and ends with a link to the website url.
 
-        {get_viral_linked_post_prompt_suffix()}
-        """
+                """
 
     prompt += _alignment_directive(prefs)
+    # Shared framework core: this post's assigned archetype/hook/CTA blueprint (rotated across
+    # the user's recent posts by the caller) + the invariant short-form craft rules + prefs.
+    prompt += _framework.blueprint_directive("post", blueprint)
+    prompt += _framework.post_writing_directive()
+    prompt += _style_directive(prefs, "post")
 
     content = [{"type": "text", "text": prompt}]
 
@@ -2053,41 +2016,6 @@ def get_website_content_post_from_ai(content: str, url: str, linked_user_profile
     # Extract and return the model's response
     content = response.choices[0].message.content.strip()
     return content
-
-
-def get_viral_linked_post_prompt_suffix():
-    return """After crafting your response, using the Viral Post Creation Framework detailed below, update your response to a viral post for LinkedIn readers.
-    ---
-    
-    # Viral Post Creation Framework
-    
-    Must start with a hook from the Catch Hook Framework. Use the topic and pillar(s) from your original response as the focus. Write the post with each sentence being no more than ten words, ensuring clarity and impact in every line. Add a line space after each period to enhance readability. Include a call-to-action at the end, inviting engagement or reflection from my audience. The format should keep the message sharp, inviting readers to pause and engage with my content thoughtfully. End with 10 relevant hashtags to the post all on one line. Use relevant emoticons as bullet points when needed.
-    
-    I want you to critique your post according to the SUCKS framework. S: Is it specific? U: Is it unique, useful, and undeniable? C: Is it clear, curious, and conversational? K: Is it kept simple? S: Is it structured?
-    If your answer is "no" to any of the the SUCKS frameworks questions fix the post so that the answer becomes "yes".
-    
-    ---
-    
-    # Catchy Hook Framework
-    
-    Act like an experienced social media expert with more than 20 years of experience in digital marketing, capturing people's attention and writing copy. I want you to write the perfect hook for my post.
-    
-    My post is missing a hook, which is the first 1-3 lines of the post. You will create its hook. You know well that the hook is 80% of the result of a post. It is essential for my job that my hook is perfect.
-    
-    I want you to generate 1 perfect hook. What’s a perfect hook? It’s creative. Outside the box. Eye-catching. It creates an emotion, a feeling. It makes people stop scrolling. It avoids jargon, fancy words, questions, and emojis at all costs. Good hooks are written as a normal sentence (avoid capital letters for every word). Some of the hooks are one-liners, some are three-liners (with line breaks). Switch between the two. Your hook must be perfect.
-    
-    Hooks are short sentences. Impactful. If the sentence is long, cut it in 2 and put a line break. Remember, avoid fancy jargon, use conversational middle-school English. Be as simple as possible. 
-    
-    ---
-    
-    ### Your Final Steps: 
-    - Take a deep breath and work on this problem step-by-step.
-    - Only provide the final response once it perfectly reflects the LinkedIn user’s style.
-    - Do not surround your response in quotes or added any additional system text. 
-    - Do not share your thoughts nor show your work. 
-    - Only respond with one final Viral Post response.
-    
-    """
 
 
 def get_dall_e_image_prompt_from_ai(post_content: str):
@@ -2563,7 +2491,8 @@ def ai_check_message_history(message_history_json: str, main_focus: str, message
     return content
 
 
-def generate_carousel_content(user_id: int, stage: str) -> tuple[str, dict]:
+def generate_carousel_content(user_id: int, stage: str, prefs: dict = None,
+                              profile_synthesis: str = None) -> tuple[str, dict]:
     """Generate structured carousel content using AI and return (post_text, carousel_dict).
 
     The carousel_dict matches the schema of one of the carousel models in carousel_creator.py.
@@ -2632,12 +2561,20 @@ Create two things and return them as a single JSON object with these top-level k
 
 Return ONLY valid JSON. No explanation, no markdown fences."""
 
+    # Same alignment core as text posts: voice synthesis when available, prefs steering, and the
+    # hard anti-self-promo guardrail — carousels must not drift while text posts stay aligned.
+    if profile_synthesis:
+        prompt += (f"\n\nAuthor voice reference (TONE + CREDIBILITY only — never the subject):\n"
+                   f"{profile_synthesis}")
+    prompt += _alignment_directive(prefs)
+
     system_prompt = {
         "role": "system",
         "content": (
             "You are an expert LinkedIn content creator who produces high-engagement carousel posts. "
             "You always return well-structured JSON with no markdown formatting. "
             "All text in the JSON is concise, professional, and written for a LinkedIn audience. "
+            + _NO_SELF_PROMO_GUARDRAIL + " "
             + PLAIN_PUNCTUATION_DIRECTIVE
         ),
     }

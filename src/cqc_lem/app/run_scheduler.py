@@ -155,8 +155,8 @@ def _topup_newsletter_drafts_for_user(user_id: int, now: datetime,
     from cqc_lem.utilities.linkedin.helper import load_profile_for_user
     from cqc_lem.utilities.ai.ai_helper import (generate_newsletter_edition, plan_newsletter_topics,
                                                 get_or_create_profile_synthesis)
-    from cqc_lem.utilities.ai.newsletter_blueprint import compact_blueprint
-    from cqc_lem.utilities.ai.newsletter_research import research_newsletter_topic
+    from cqc_lem.utilities.ai.content_framework import compact_blueprint
+    from cqc_lem.utilities.ai.content_research import research_topic
     from cqc_lem.utilities.newsletter import upcoming_publish_slots, should_generate_now
     from cqc_lem.utilities.notifications import notify_newsletter_draft_ready
 
@@ -222,9 +222,9 @@ def _topup_newsletter_drafts_for_user(user_id: int, now: datetime,
                                   if j != i and p.get("subject")]
         # ONE research call per edition: current stats/examples for THIS subject, woven into the
         # body as source material. Degrades to empty findings (write from expertise) on any failure.
-        research = research_newsletter_topic(
+        research = research_topic(
             (plan.get("subject") if plan else None) or description or "",
-            blueprint=plan, newsletter_description=description, prefs=prefs)
+            content_type="newsletter", blueprint=plan, context_description=description, prefs=prefs)
         edition = generate_newsletter_edition(profile, topic=description, prefs=prefs,
                                               subject=subject_ctx, avoid_subjects=avoid,
                                               profile_synthesis=synthesis, blueprint=plan,
@@ -301,9 +301,8 @@ def regenerate_newsletter_edition(edition_id: int, guidance: str = None):
     from cqc_lem.utilities.linkedin.helper import load_profile_for_user
     from cqc_lem.utilities.ai.ai_helper import (generate_newsletter_edition,
                                                 get_or_create_profile_synthesis)
-    from cqc_lem.utilities.ai.newsletter_blueprint import (build_regeneration_blueprint,
-                                                           compact_blueprint)
-    from cqc_lem.utilities.ai.newsletter_research import research_newsletter_topic
+    from cqc_lem.utilities.ai.content_framework import compact_blueprint, select_blueprint
+    from cqc_lem.utilities.ai.content_research import research_topic
 
     edition = get_newsletter_edition(edition_id)
     if not edition or edition.get("status") not in ("draft", "approved"):
@@ -330,12 +329,12 @@ def regenerate_newsletter_edition(edition_id: int, guidance: str = None):
     # With guidance we keep the current subject as the starting point (the guidance may edit it or
     # redirect entirely). With NO guidance the AI decides a fresh, distinct subject (subject=None).
     subject = edition.get("subject") if (guidance and guidance.strip()) else None
-    blueprint = build_regeneration_blueprint(subject=subject, recent_formats=recent_formats,
-                                             recent_hook_styles=recent_hooks, guidance=guidance)
+    blueprint = select_blueprint("newsletter", subject=subject, recent_formats=recent_formats,
+                                 recent_hook_styles=recent_hooks, guidance=guidance)
     # ONE research call per regenerate — grounds the rewrite in current facts; empty on failure.
-    research = research_newsletter_topic(subject or settings.get("topic") or "",
-                                         blueprint=blueprint,
-                                         newsletter_description=settings.get("topic"), prefs=prefs)
+    research = research_topic(subject or settings.get("topic") or "", content_type="newsletter",
+                              blueprint=blueprint,
+                              context_description=settings.get("topic"), prefs=prefs)
     try:
         new_ed = generate_newsletter_edition(profile, topic=settings.get("topic"), prefs=prefs,
                                              subject=subject, avoid_subjects=avoid,

@@ -1,0 +1,268 @@
+"""Unit tests for the SHARED content framework core (blueprint menus + variety engine) used by
+newsletters, posts, AND comments. The newsletter-menu tests preserve the exact behavior contracts
+of the pre-unification newsletter blueprint system."""
+
+import pytest
+
+from cqc_lem.utilities.ai import content_framework as fw
+
+pytestmark = pytest.mark.unit
+
+
+class TestMenusAreConsistent:
+    def test_newsletter_formats_non_empty_and_complete(self):
+        assert len(fw.NEWSLETTER_FORMATS) >= 6
+        for key, meta in fw.NEWSLETTER_FORMATS.items():
+            assert key == key.lower().replace(" ", "_")
+            assert meta["label"] and meta["guidance"]
+            assert isinstance(meta["structure"], list) and len(meta["structure"]) >= 3
+            # Every skeleton opens with the hook and closes with the CTA.
+            assert "hook" in meta["structure"][0].lower()
+            assert "cta" in meta["structure"][-1].lower()
+
+    def test_post_formats_non_empty_and_complete(self):
+        assert len(fw.POST_FORMATS) >= 6
+        for key, meta in fw.POST_FORMATS.items():
+            assert key == key.lower().replace(" ", "_")
+            assert meta["label"] and meta["guidance"]
+            assert isinstance(meta["structure"], list) and len(meta["structure"]) >= 3
+            assert "hook" in meta["structure"][0].lower()
+            assert "cta" in meta["structure"][-1].lower()
+
+    def test_comment_formats_non_empty_and_grounded(self):
+        assert len(fw.COMMENT_FORMATS) >= 5
+        for key, meta in fw.COMMENT_FORMATS.items():
+            assert meta["label"] and meta["guidance"]
+            assert isinstance(meta["structure"], list) and len(meta["structure"]) >= 2
+            # Every comment angle stays anchored to the TARGET POST.
+            blob = (meta["guidance"] + " ".join(meta["structure"])).lower()
+            assert "post" in blob
+
+    def test_hooks_and_ctas_non_empty(self):
+        assert len(fw.HOOK_STYLES) >= 6
+        for key, meta in fw.HOOK_STYLES.items():
+            assert meta["label"] and meta["guidance"]
+        assert len(fw.CTA_STYLES) >= 4
+        for key, meta in fw.CTA_STYLES.items():
+            assert meta["label"] and meta["guidance"]
+
+    def test_expected_newsletter_archetypes_present(self):
+        for expected in ("deep_dive", "framework", "case_study", "contrarian", "listicle",
+                         "teardown", "roundup", "personal_lesson"):
+            assert expected in fw.NEWSLETTER_FORMATS
+
+    def test_expected_post_and_comment_archetypes_present(self):
+        for expected in ("personal_lesson", "contrarian_take", "tactical_list", "how_to",
+                         "case_snapshot", "industry_observation", "question_starter"):
+            assert expected in fw.POST_FORMATS
+        for expected in ("expander", "storyteller", "questioner", "respectful_contrarian",
+                         "connector", "practical_add"):
+            assert expected in fw.COMMENT_FORMATS
+
+    def test_hooks_shared_between_newsletter_and_post(self):
+        # ONE hook menu object — the definition can't drift between content types.
+        assert fw.MENUS["newsletter"]["hooks"] is fw.MENUS["post"]["hooks"]
+
+    def test_post_ctas_reuse_shared_definitions(self):
+        for key in ("reply_question", "challenge", "debate", "poll_prompt"):
+            assert fw.POST_CTA_STYLES[key] is fw.CTA_STYLES[key]
+        assert "teaser_next" not in fw.POST_CTA_STYLES  # subscribe-teasers are newsletter-only
+
+    def test_unknown_content_type_raises(self):
+        with pytest.raises(ValueError):
+            fw.options_text("tweet")
+
+
+class TestNormalize:
+    def test_exact_keys(self):
+        assert fw.normalize_key("newsletter", "format", "case_study") == "case_study"
+        assert fw.normalize_key("newsletter", "hook", "bold_claim") == "bold_claim"
+        assert fw.normalize_key("newsletter", "cta", "reply_question") == "reply_question"
+        assert fw.normalize_key("post", "format", "contrarian_take") == "contrarian_take"
+        assert fw.normalize_key("comment", "format", "storyteller") == "storyteller"
+
+    def test_tolerates_labels_spaces_and_case(self):
+        assert fw.normalize_key("newsletter", "format", "Case Study") == "case_study"
+        assert fw.normalize_key("newsletter", "format", "Deep Dive / How-To") == "deep_dive"
+        assert fw.normalize_key("newsletter", "hook", "Surprising Statistic") == "surprising_stat"
+        assert fw.normalize_key("newsletter", "cta", "reply question") == "reply_question"
+        assert fw.normalize_key("comment", "format", "Thoughtful Questioner") == "questioner"
+
+    def test_unknown_returns_none(self):
+        assert fw.normalize_key("newsletter", "format", "interpretive dance") is None
+        assert fw.normalize_key("post", "hook", None) is None
+        assert fw.normalize_key("newsletter", "cta", "") is None
+        # A newsletter-only format is NOT a valid post format.
+        assert fw.normalize_key("post", "format", "roundup") is None
+
+    def test_comment_menu_has_no_hooks_or_ctas(self):
+        assert fw.normalize_key("comment", "hook", "bold_claim") is None
+        assert fw.normalize_key("comment", "cta", "reply_question") is None
+
+
+class TestEnforceVariety:
+    @pytest.mark.parametrize("content_type", ["newsletter", "post"])
+    def test_consecutive_formats_and_hooks_never_repeat(self, content_type):
+        first = list(fw.MENUS[content_type]["formats"])[0]
+        raw = [{"subject": f"S{i}", "format": first, "hook_style": "question",
+                "cta_style": "reply_question"} for i in range(5)]
+        out = fw.enforce_variety(content_type, raw)
+        for a, b in zip(out, out[1:]):
+            assert a["format"] != b["format"]
+            assert a["hook_style"] != b["hook_style"]
+            assert a["cta_style"] != b["cta_style"]
+
+    def test_avoids_recent_history(self):
+        raw = [{"subject": "S1"}, {"subject": "S2"}]
+        out = fw.enforce_variety("newsletter", raw, recent_formats=["case_study", "listicle"],
+                                 recent_hook_styles=["micro_story", "bold_claim"])
+        for item in out:
+            assert item["format"] not in ("case_study", "listicle")
+            assert item["hook_style"] not in ("micro_story", "bold_claim")
+
+    def test_valid_non_repeating_choices_kept(self):
+        raw = [{"subject": "A", "format": "case_study", "hook_style": "micro_story", "cta_style": "debate"},
+               {"subject": "B", "format": "listicle", "hook_style": "bold_claim", "cta_style": "challenge"}]
+        out = fw.enforce_variety("newsletter", raw)
+        assert [o["format"] for o in out] == ["case_study", "listicle"]
+        assert [o["hook_style"] for o in out] == ["micro_story", "bold_claim"]
+
+    def test_invalid_values_replaced_with_known_keys(self):
+        out = fw.enforce_variety("newsletter",
+                                 [{"subject": "A", "format": "sonnet", "hook_style": "smoke signal"}])
+        assert out[0]["format"] in fw.NEWSLETTER_FORMATS
+        assert out[0]["hook_style"] in fw.HOOK_STYLES
+        assert out[0]["cta_style"] in fw.CTA_STYLES
+
+    def test_attaches_structure_and_keeps_subject_angle(self):
+        out = fw.enforce_variety("newsletter",
+                                 [{"subject": "A", "angle": "the angle", "format": "framework",
+                                   "hook_style": "direct_promise", "cta_style": "teaser_next"}])
+        assert out[0]["subject"] == "A" and out[0]["angle"] == "the angle"
+        assert out[0]["structure"] == fw.NEWSLETTER_FORMATS["framework"]["structure"]
+
+    def test_no_repeat_within_batch_even_when_pool_pressured(self):
+        # 8 formats, batch of 6 + 3 recent: still no within-batch repeats.
+        raw = [{"subject": f"S{i}"} for i in range(6)]
+        out = fw.enforce_variety("newsletter", raw,
+                                 recent_formats=["deep_dive", "framework", "case_study"])
+        formats = [o["format"] for o in out]
+        assert len(set(formats)) == len(formats)
+
+    def test_comment_variety_rotates_without_hooks(self):
+        raw = [{"format": "expander"} for _ in range(4)]
+        out = fw.enforce_variety("comment", raw)
+        formats = [o["format"] for o in out]
+        assert len(set(formats)) == len(formats)
+        for item in out:
+            assert item["format"] in fw.COMMENT_FORMATS
+            assert "hook_style" not in item and "cta_style" not in item
+            assert item["structure"] == fw.COMMENT_FORMATS[item["format"]]["structure"]
+
+    def test_empty_and_garbage_input(self):
+        assert fw.enforce_variety("newsletter", []) == []
+        assert fw.enforce_variety("newsletter", None) == []
+        assert fw.enforce_variety("newsletter", ["not a dict", 42]) == []
+
+
+class TestSelectBlueprint:
+    def test_rotates_away_from_recent_shape(self):
+        out = fw.select_blueprint("newsletter", subject="S",
+                                  recent_formats=["deep_dive", "framework"],
+                                  recent_hook_styles=["question", "surprising_stat"])
+        assert out["format"] in fw.NEWSLETTER_FORMATS and out["format"] not in ("deep_dive", "framework")
+        assert out["hook_style"] in fw.HOOK_STYLES
+        assert out["hook_style"] not in ("question", "surprising_stat")
+        assert out["cta_style"] in fw.CTA_STYLES
+        assert out["structure"] == fw.NEWSLETTER_FORMATS[out["format"]]["structure"]
+        assert out["subject"] == "S"
+
+    def test_guidance_format_hint_wins(self):
+        out = fw.select_blueprint("newsletter", subject="S", recent_formats=["listicle"],
+                                  guidance="make this one a Case Study of a real client")
+        assert out["format"] == "case_study"
+
+    def test_no_history_still_valid(self):
+        out = fw.select_blueprint("newsletter")
+        assert out["format"] in fw.NEWSLETTER_FORMATS and out["hook_style"] in fw.HOOK_STYLES
+
+    def test_post_selection_rotates_and_carries_post_menu(self):
+        out = fw.select_blueprint("post", recent_formats=["personal_lesson", "contrarian_take"],
+                                  recent_hook_styles=["question"])
+        assert out["format"] in fw.POST_FORMATS
+        assert out["format"] not in ("personal_lesson", "contrarian_take")
+        assert out["hook_style"] in fw.HOOK_STYLES and out["hook_style"] != "question"
+        assert out["cta_style"] in fw.POST_CTA_STYLES
+
+    def test_comment_selection_has_format_only(self):
+        out = fw.select_blueprint("comment", recent_formats=["expander", "storyteller"])
+        assert out["format"] in fw.COMMENT_FORMATS
+        assert out["format"] not in ("expander", "storyteller")
+        assert out["hook_style"] is None and out["cta_style"] is None
+
+    def test_comment_rotation_covers_menu_before_repeating(self):
+        used = []
+        rounds = len(fw.COMMENT_FORMATS)
+        for _ in range(rounds):
+            picked = fw.select_blueprint("comment", recent_formats=used)["format"]
+            used.insert(0, picked)
+        # A full pass through never repeats until the whole menu has been used.
+        assert len(set(used)) == rounds
+
+
+class TestDirectivesAndCompact:
+    def test_newsletter_directive_includes_structure_hook_cta(self):
+        blueprint = {"subject": "S", "format": "contrarian", "hook_style": "bold_claim",
+                     "cta_style": "debate"}
+        text = fw.blueprint_directive("newsletter", blueprint)
+        assert "ASSIGNED BLUEPRINT" in text
+        assert fw.NEWSLETTER_FORMATS["contrarian"]["label"] in text
+        for i, section in enumerate(fw.NEWSLETTER_FORMATS["contrarian"]["structure"], 1):
+            assert f"{i}. {section}" in text
+        assert fw.HOOK_STYLES["bold_claim"]["guidance"] in text
+        assert fw.CTA_STYLES["debate"]["guidance"] in text
+
+    def test_post_directive_uses_post_menu(self):
+        blueprint = {"format": "tactical_list", "hook_style": "surprising_stat",
+                     "cta_style": "save_worthy"}
+        text = fw.blueprint_directive("post", blueprint)
+        assert "THIS POST'S ASSIGNED BLUEPRINT" in text
+        assert fw.POST_FORMATS["tactical_list"]["label"] in text
+        assert fw.HOOK_STYLES["surprising_stat"]["guidance"] in text
+        assert fw.POST_CTA_STYLES["save_worthy"]["guidance"] in text
+
+    def test_comment_directive_has_beats_but_no_hook_or_cta(self):
+        text = fw.blueprint_directive("comment", {"format": "respectful_contrarian"})
+        assert "THIS COMMENT'S ASSIGNED BLUEPRINT" in text
+        assert fw.COMMENT_FORMATS["respectful_contrarian"]["label"] in text
+        assert "OPENING HOOK STYLE" not in text and "CTA STYLE" not in text
+
+    def test_blueprint_directive_empty_without_format(self):
+        assert fw.blueprint_directive("newsletter", None) == ""
+        assert fw.blueprint_directive("newsletter", {}) == ""
+        assert fw.blueprint_directive("post", {"format": "not real"}) == ""
+
+    def test_compact_drops_structure(self):
+        blueprint = {"subject": "S", "angle": "a", "format": "listicle", "hook_style": "question",
+                     "cta_style": "poll_prompt", "structure": ["x", "y"]}
+        compact = fw.compact_blueprint(blueprint)
+        assert compact == {"subject": "S", "angle": "a", "format": "listicle",
+                           "hook_style": "question", "cta_style": "poll_prompt"}
+        assert fw.compact_blueprint(None) is None
+
+    @pytest.mark.parametrize("content_type", ["newsletter", "post", "comment"])
+    def test_options_text_lists_all_keys(self, content_type):
+        menu = fw.MENUS[content_type]
+        text = fw.options_text(content_type)
+        for key in list(menu["formats"]) + list(menu["hooks"]) + list(menu["ctas"]):
+            assert key in text
+
+    def test_post_writing_directive_carries_craft_rules(self):
+        text = fw.post_writing_directive()
+        assert "210 characters" in text          # hook before the '...more' fold
+        assert "1300-2000" in text               # optimal short-form length
+        assert "engagement-bait" in text
+        assert "NEVER invent statistics" in text
+        # The old one-size-fits-all viral template is gone for good.
+        assert "10 relevant hashtags" not in text
+        assert "SUCKS" not in text
