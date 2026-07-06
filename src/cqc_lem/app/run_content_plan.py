@@ -23,8 +23,10 @@ from cqc_lem.utilities.db import get_post_type_counts, insert_planned_post, upda
     get_user_blog_url, get_user_sitemap_url, get_active_user_ids, get_planned_posts_for_next_week, PostStatus, \
     update_db_post_video_url, update_db_post_status, PostType, get_user_preferences, \
     update_db_post_carousel_slides, get_post_content, get_user_timezone, get_engagement_preferences
-from cqc_lem.utilities.db import get_recent_post_shape_history, update_db_post_shape
+from cqc_lem.utilities.db import get_recent_post_shape_history, update_db_post_shape, get_lead_magnet_settings
 from cqc_lem.utilities.ai.content_framework import select_blueprint
+from cqc_lem.utilities.ai.content_alignment import (
+    should_include_lead_magnet_cta, lead_magnet_cta_directive)
 from cqc_lem.utilities.env_constants import API_URL_FINAL, DEFAULT_VIDEO_RATIO, \
     DEFAULT_IMAGE_RATIO, AI_DISCLOSURE_ENABLED, AI_DISCLOSURE_TEXT, \
     STANDARD_VIDEO_MODEL, PREMIUM_VIDEO_MODEL, PREMIUM_TOP_VIDEO_MODEL, \
@@ -559,7 +561,8 @@ def regenerate_post_task(post_id: int, guidance: str = None):
 
 
 def create_text_post(user_id: int, stage: str, post_type: str = None, user_profile: LinkedInProfile=None,
-                     refine_final_post: bool = True, blueprint: dict = None, post_id: int = None):
+                     refine_final_post: bool = True, blueprint: dict = None, post_id: int = None,
+                     lead_magnet_cta: str = None):
     """
     Generate a text post for LinkedIn based on the user's profile, blog, or website content.
 
@@ -619,12 +622,31 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
     myprint(f"Post blueprint: format={blueprint.get('format')} hook={blueprint.get('hook_style')} "
             f"cta={blueprint.get('cta_style')}")
 
+    # Lead-magnet soft-ask: on a deterministic 1-in-N rotation (keyed off post_id so it's stable and
+    # testable), weave the user's configured "comment KEYWORD and I'll DM it to you" CTA into the
+    # post — the compliant way to share a resource and what fires the keyword listener in the
+    # automation. Only SOME posts get it (all = spammy/pattern-flagged). Recursive fallbacks reuse
+    # the already-computed directive so the same post stays consistent. No-op unless the user enabled
+    # the lead magnet with a non-empty keyword.
+    if lead_magnet_cta is None:
+        try:
+            lead_magnet = get_lead_magnet_settings(user_id)
+            include_cta = should_include_lead_magnet_cta(lead_magnet, post_id)
+            lead_magnet_cta = lead_magnet_cta_directive(lead_magnet, include_cta)
+            if lead_magnet_cta:
+                myprint(f"Lead-magnet CTA included on post_id={post_id} "
+                        f"(keyword '{lead_magnet.get('keyword')}')")
+        except Exception as e:
+            myprint(f"Lead-magnet CTA skipped (settings unavailable): {e}")
+            lead_magnet_cta = ""
+
     # Generate the post based on the selected type
     myprint(f"Creating text post of type: {post_type} for stage: {stage}")
     if post_type == "thought_leadership":
         final_content = get_thought_leadership_post_from_ai(user_profile, stage, prefs=prefs,
                                                             profile_synthesis=profile_synthesis,
-                                                            blueprint=blueprint)
+                                                            blueprint=blueprint,
+                                                            lead_magnet_cta=lead_magnet_cta)
     elif post_type == "blog_summary":
         # Get the users blog url
         user_main_blog_url = get_user_blog_url(user_id)
@@ -633,21 +655,21 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             process_selected_post(blog_post_url, blog_post_content)
             final_content = get_blog_summary_post_from_ai(blog_post_url, blog_post_content, user_profile, stage,
                                                           prefs=prefs, profile_synthesis=profile_synthesis,
-                                                          blueprint=blueprint)
+                                                          blueprint=blueprint, lead_magnet_cta=lead_magnet_cta)
         else:
             myprint("No blog post found for this user. Generating another post type")
             # Chose another random post type that is not "blog_summary"
             post_types.remove("blog_summary")
             post_type = random.choice(post_types)
             final_content = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=False,
-                                             blueprint=blueprint)
+                                             blueprint=blueprint, lead_magnet_cta=lead_magnet_cta)
     elif post_type == "website_content":
         # Get the users sitemap url
         sitemap_url = get_user_sitemap_url(user_id)
         if sitemap_url:
             content = generate_website_content_post(sitemap_url, user_profile, stage, prefs=prefs,
                                                     profile_synthesis=profile_synthesis,
-                                                    blueprint=blueprint)
+                                                    blueprint=blueprint, lead_magnet_cta=lead_magnet_cta)
             if content:
                 final_content = content
             else:
@@ -656,26 +678,26 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                 post_types.remove("website_content")
                 post_type = random.choice(post_types)
                 final_content = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=False,
-                                             blueprint=blueprint)
+                                             blueprint=blueprint, lead_magnet_cta=lead_magnet_cta)
         else:
             myprint("No sitemap found for this user. Generating another post type")
             # Chose another random post type that is not "website_content"
             post_types.remove("website_content")
             post_type = random.choice(post_types)
             final_content = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=False,
-                                             blueprint=blueprint)
+                                             blueprint=blueprint, lead_magnet_cta=lead_magnet_cta)
     elif post_type == "industry_news":
         final_content = get_industry_news_post_from_ai(user_profile, stage, prefs=prefs,
                                                        profile_synthesis=profile_synthesis,
-                                                       blueprint=blueprint)
+                                                       blueprint=blueprint, lead_magnet_cta=lead_magnet_cta)
     elif post_type == "personal_story":
         final_content = get_personal_story_post_from_ai(user_profile, stage, prefs=prefs,
                                                         profile_synthesis=profile_synthesis,
-                                                        blueprint=blueprint)
+                                                        blueprint=blueprint, lead_magnet_cta=lead_magnet_cta)
     else:
         final_content = generate_engagement_prompt_post(user_profile, stage, prefs=prefs,
                                                         profile_synthesis=profile_synthesis,
-                                                        blueprint=blueprint)
+                                                        blueprint=blueprint, lead_magnet_cta=lead_magnet_cta)
 
     if refine_final_post:
         final_content = get_ai_linked_post_refinement(final_content)
@@ -846,7 +868,8 @@ def process_selected_post(url, content):
 
 
 def generate_website_content_post(sitemap_url, linked_user_profile, stage: str, prefs: dict = None,
-                                  profile_synthesis: str = None, blueprint: dict = None):
+                                  profile_synthesis: str = None, blueprint: dict = None,
+                                  lead_magnet_cta: str = None):
     """
     Generate a post based on content found on the user's website using their sitemap url catered to readers in the desired buyers journey stage.
     Scrapes or retrieves key points from the website's sitemap.
@@ -877,7 +900,7 @@ def generate_website_content_post(sitemap_url, linked_user_profile, stage: str, 
             # 4. Generate a social media post based on the extracted content
             social_media_post = get_website_content_post_from_ai(content, selected_url, linked_user_profile, stage,
                                                                  prefs=prefs, profile_synthesis=profile_synthesis,
-                                                                 blueprint=blueprint)
+                                                                 blueprint=blueprint, lead_magnet_cta=lead_magnet_cta)
             return social_media_post
         else:
             myprint("No content extracted from the selected URL.")

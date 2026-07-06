@@ -2,7 +2,36 @@
 
 import pytest
 from cqc_lem.utilities.linkedin_formatter import (
-    sanitize_for_linkedin, normalize_public_text, PLAIN_PUNCTUATION_DIRECTIVE)
+    sanitize_for_linkedin, normalize_public_text, PLAIN_PUNCTUATION_DIRECTIVE,
+    strip_engagement_bait)
+
+
+@pytest.mark.unit
+class TestStripEngagementBait:
+    @pytest.mark.parametrize("bait", [
+        "Tag a friend who needs this.",
+        "Like if you agree!",
+        "Comment YES below if you want more.",
+        "Repost this if it helped.",
+    ])
+    def test_strips_classic_bait_lines(self, bait):
+        text = f"Here is a real insight.\n\n{bait}"
+        out = strip_engagement_bait(text)
+        assert "real insight" in out
+        assert bait not in out
+
+    def test_preserves_lead_magnet_cta(self):
+        # A sanctioned lead-magnet CTA ("comment KEYWORD") must survive the bait filter.
+        text = ("Cutting acquisition cost took us six months of testing.\n\n"
+                "Comment AUDIT and I'll DM you the 12-point checklist we used.")
+        out = strip_engagement_bait(text)
+        assert "Comment AUDIT" in out
+        assert "12-point checklist" in out
+
+    def test_preserves_lead_magnet_cta_lowercase(self):
+        text = "Real value here.\n\ncomment SCALE and I'll send over the playbook."
+        out = strip_engagement_bait(text)
+        assert "comment SCALE" in out
 
 
 @pytest.mark.unit

@@ -6,6 +6,7 @@ a HARD no-self-promo guardrail for comments/posts, a LIGHT soft-promo allowance 
 own newsletter. Keeping all of this in one module is what stops the content types from drifting
 out of alignment with each other over time."""
 
+import os
 from typing import Optional
 
 # Tight, engagement-optimized targets. Short is the default: LinkedIn rewards comments that
@@ -130,12 +131,67 @@ def intention_directive(prefs: dict = None) -> str:
     return directive
 
 
-def alignment_directive(prefs: dict = None) -> str:
+def alignment_directive(prefs: dict = None, lead_magnet_cta: str = "") -> str:
     """Anti-self-promo guardrail + focus/goal steering, appended to POST prompts so generated posts
     stay aligned to the user's real business/personal goals instead of drifting into promoting
-    whatever the user happens to be building right now."""
+    whatever the user happens to be building right now. `lead_magnet_cta` (built by
+    lead_magnet_cta_directive) is the ONE sanctioned exception to the guardrail and is appended
+    only for the posts the rotation selects — see should_include_lead_magnet_cta."""
     return ("\n\nContent alignment rules:\n- " + NO_SELF_PROMO_GUARDRAIL
-            + "\n- " + engagement_purpose("post") + focus_directive(prefs))
+            + "\n- " + engagement_purpose("post") + focus_directive(prefs)
+            + (lead_magnet_cta or ""))
+
+
+# The lead-magnet soft-ask ("comment KEYWORD and I'll DM it to you") is the compliant way to share a
+# resource on LinkedIn — links in the post body get down-ranked, and it's what fires the keyword
+# listener in run_automation. But it must NOT appear on every post: a repeated CTA reads as spam and
+# gets pattern-flagged. So it rides a deterministic 1-in-N rotation (default N=3, env-overridable).
+LEAD_MAGNET_CTA_EVERY_N = int(os.getenv("LEAD_MAGNET_CTA_EVERY_N", "3") or "3")
+
+
+def lead_magnet_enabled(lead_magnet: Optional[dict]) -> bool:
+    """The lead magnet is usable only when the user turned it ON and gave a non-empty trigger keyword
+    (matches the gate the automation keyword-listener uses)."""
+    return bool(lead_magnet and lead_magnet.get("enabled")
+                and str(lead_magnet.get("keyword") or "").strip())
+
+
+def should_include_lead_magnet_cta(lead_magnet: Optional[dict], sequence_index: Optional[int],
+                                   every_n: Optional[int] = None) -> bool:
+    """Deterministic 1-in-N selection: the soft-ask goes on SOME posts, never all. `sequence_index`
+    is any stable per-post integer (the post id works) so the choice is reproducible and testable —
+    no per-call randomness. Returns False when the lead magnet is off/unkeyworded or no index is
+    available."""
+    if not lead_magnet_enabled(lead_magnet) or sequence_index is None:
+        return False
+    n = every_n if (every_n and every_n > 0) else LEAD_MAGNET_CTA_EVERY_N
+    if n <= 1:
+        return True
+    return int(sequence_index) % n == 0
+
+
+def lead_magnet_cta_directive(lead_magnet: Optional[dict], include: bool) -> str:
+    """The SANCTIONED lead-magnet CTA line appended to a post prompt. This is the ONE allowed
+    exception to NO_SELF_PROMO_GUARDRAIL because it is the user's OWN explicitly-configured offer.
+    Woven in the user's voice by the model, references the ACTUAL trigger keyword, and describes the
+    resource's value. Returns "" when not selected or when the lead magnet is off — so callers can
+    always append it unconditionally."""
+    if not include or not lead_magnet_enabled(lead_magnet):
+        return ""
+    keyword = str(lead_magnet.get("keyword")).strip()
+    resource_context = str(lead_magnet.get("message") or "").strip()[:240]
+    context_line = (f"\n- For context, the resource being offered is described as: "
+                    f"\"{resource_context}\". Convey its value in one plainspoken sentence."
+                    if resource_context else "")
+    return (
+        "\n\nSANCTIONED lead-magnet call-to-action (this post ONLY — the user has explicitly "
+        "configured this offer, so it OVERRIDES the no-self-promo guardrail for THIS CTA):\n"
+        f"- End the post with a short, soft invitation for readers to comment the exact word "
+        f"\"{keyword}\" to receive the resource; it will be delivered by DM after they comment.\n"
+        "- Write it in the user's own voice — plainspoken, no hype, no hard sell, and NO link in the "
+        "post body (the DM delivers it). Honor the user's emoji/hashtag settings.\n"
+        "- Keep it to one clean ask; do NOT stack multiple asks or use engagement-bait phrasing "
+        "(no 'tag a friend', no 'like if')." + context_line + "\n")
 
 
 def voice_reference(profile, profile_synthesis: Optional[str] = None) -> str:

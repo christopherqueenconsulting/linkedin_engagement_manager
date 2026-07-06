@@ -61,3 +61,57 @@ class TestStyleDirectivePerType:
     def test_empty_prefs_yield_empty_directive(self):
         assert ca.style_directive(None) == ""
         assert ca.style_directive({}) == ""
+
+
+class TestLeadMagnetCTA:
+    _ON = {"enabled": True, "keyword": "AUDIT", "message": "A free 12-point LinkedIn profile audit PDF."}
+    _OFF = {"enabled": False, "keyword": "AUDIT", "message": "audit"}
+    _NO_KEYWORD = {"enabled": True, "keyword": "  ", "message": "audit"}
+
+    def test_enabled_requires_on_and_keyword(self):
+        assert ca.lead_magnet_enabled(self._ON) is True
+        assert ca.lead_magnet_enabled(self._OFF) is False
+        assert ca.lead_magnet_enabled(self._NO_KEYWORD) is False
+        assert ca.lead_magnet_enabled(None) is False
+
+    def test_directive_included_only_when_enabled_and_selected(self):
+        d = ca.lead_magnet_cta_directive(self._ON, include=True)
+        assert "AUDIT" in d
+        assert "SANCTIONED" in d
+        assert "OVERRIDES the no-self-promo guardrail" in d
+        # resource value is threaded in for the model to paraphrase in voice
+        assert "12-point LinkedIn profile audit" in d
+
+    def test_directive_absent_when_not_selected(self):
+        assert ca.lead_magnet_cta_directive(self._ON, include=False) == ""
+
+    def test_directive_absent_when_disabled(self):
+        assert ca.lead_magnet_cta_directive(self._OFF, include=True) == ""
+        assert ca.lead_magnet_cta_directive(self._NO_KEYWORD, include=True) == ""
+
+    def test_selection_off_when_lead_magnet_off_or_no_index(self):
+        assert ca.should_include_lead_magnet_cta(self._OFF, 3) is False
+        assert ca.should_include_lead_magnet_cta(self._ON, None) is False
+
+    def test_selection_is_deterministic_and_roughly_one_in_n(self):
+        n = 3
+        selected = [i for i in range(300)
+                    if ca.should_include_lead_magnet_cta(self._ON, i, every_n=n)]
+        # exactly the multiples of N → deterministic 1-in-N
+        assert selected == list(range(0, 300, n))
+        assert len(selected) == 100
+        # stable across repeated calls (no per-call randomness)
+        assert all(ca.should_include_lead_magnet_cta(self._ON, i, every_n=n) for i in selected)
+        assert not any(ca.should_include_lead_magnet_cta(self._ON, i, every_n=n)
+                       for i in range(300) if i % n != 0)
+
+    def test_every_n_of_one_selects_all(self):
+        assert all(ca.should_include_lead_magnet_cta(self._ON, i, every_n=1) for i in range(10))
+
+    def test_alignment_directive_appends_cta_when_given(self):
+        cta = ca.lead_magnet_cta_directive(self._ON, include=True)
+        d = ca.alignment_directive(None, lead_magnet_cta=cta)
+        assert ca.NO_SELF_PROMO_GUARDRAIL in d
+        assert "AUDIT" in d and "SANCTIONED" in d
+        # default (no CTA) leaves the directive unchanged
+        assert "SANCTIONED" not in ca.alignment_directive(None)
