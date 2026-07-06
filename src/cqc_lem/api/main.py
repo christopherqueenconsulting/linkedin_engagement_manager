@@ -1127,6 +1127,11 @@ def update_newsletter_settings_endpoint(request: NewsletterSettingsRequest) -> R
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     if not update_newsletter_settings(user_id, request.model_dump(exclude={"session_token"})):
         raise HTTPException(status_code=500, detail="Could not update newsletter settings")
+    # Top up the review queue now so a raised max_queued_drafts adds drafts immediately instead of
+    # waiting for the daily beat. Idempotent: a full queue generates nothing.
+    if request.enabled:
+        from cqc_lem.app.run_scheduler import generate_newsletter_drafts_for_user
+        generate_newsletter_drafts_for_user.apply_async(kwargs={"user_id": user_id})
     return ResponseModel(status_code=200, detail="Newsletter settings updated")
 
 

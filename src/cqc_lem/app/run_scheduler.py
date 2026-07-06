@@ -137,58 +137,93 @@ def _max_dt(*dts):
     return max(present) if present else None
 
 
-@shared_task.task
-def auto_generate_newsletter_drafts():
-    """Keep each enabled user's review queue topped up to their max_queued_drafts, so they can plan
-    ahead. The first-ever draft waits for the generate_lead_days window; once the queue is rolling it
-    refills to the cap as editions publish/skip. Each draft covers the next uncovered cadence slot."""
+def _topup_newsletter_drafts_for_user(user_id: int, now: datetime,
+                                      allow_bootstrap: bool = True) -> int:
+    """Top a single user's review queue up to their max_queued_drafts and return how many drafts were
+    generated. Each draft covers the next uncovered cadence slot.
+
+    `allow_bootstrap` gates the first-ever draft (empty queue): the daily beat passes True so the very
+    first draft still waits for the generate_lead_days window; an explicit user action (e.g. raising
+    the count) passes False to fill the queue ahead immediately."""
     import pytz
-    from cqc_lem.utilities.db import (get_enabled_newsletter_user_ids, get_newsletter_settings,
-                                      get_user_timezone, count_pending_newsletter_editions,
+    from cqc_lem.utilities.db import (get_newsletter_settings, get_user_timezone,
+                                      count_pending_newsletter_editions,
                                       get_latest_edition_scheduled_for, create_newsletter_edition)
     from cqc_lem.utilities.linkedin.helper import load_profile_for_user
     from cqc_lem.utilities.ai.ai_helper import generate_newsletter_edition
     from cqc_lem.utilities.newsletter import upcoming_publish_slots, should_generate_now
     from cqc_lem.utilities.notifications import notify_newsletter_draft_ready
 
+    settings = get_newsletter_settings(user_id)
+    cap = settings.get("max_queued_drafts", 1)
+    lead = settings.get("generate_lead_days", 3)
+    pending = count_pending_newsletter_editions(user_id)
+    remaining = cap - pending
+    if remaining <= 0:
+        return 0  # queue already full
+
+    tz = pytz.timezone(get_user_timezone(user_id))
+    # Anchor on the latest slot ANY edition already covers (incl. published/skipped) so a freed cap
+    # slot fills the next future slot, never re-covering a skipped one.
+    anchor = _max_dt(settings.get("last_published_at"),
+                     get_latest_edition_scheduled_for(user_id))
+    slots = upcoming_publish_slots(
+        settings.get("publish_day", 1), settings.get("publish_hour", 9),
+        settings.get("cadence", "weekly"), anchor, tz, now, remaining)
+    # Bootstrap gate: only the first-ever draft waits for the lead window, and only when triggered by
+    # the daily beat. Once the queue is rolling (pending > 0), or when the user explicitly asked for
+    # more queued drafts, keep it topped up regardless of how far out the slots land.
+    if pending == 0 and allow_bootstrap and not should_generate_now(slots[0], now, lead_days=lead):
+        return 0
+
+    generated = 0
+    profile = load_profile_for_user(user_id)
+    for slot in slots:
+        edition = generate_newsletter_edition(profile, topic=settings.get("topic"))
+        if not edition:
+            break
+        if not create_newsletter_edition(user_id, edition["title"], edition.get("subtitle"),
+                                          edition["body"], slot):
+            break  # duplicate slot / db error → stop this user's run
+        notify_newsletter_draft_ready(user_id, edition["title"], slot)
+        generated += 1
+    return generated
+
+
+@shared_task.task
+def auto_generate_newsletter_drafts():
+    """Keep each enabled user's review queue topped up to their max_queued_drafts, so they can plan
+    ahead. The first-ever draft waits for the generate_lead_days window; once the queue is rolling it
+    refills to the cap as editions publish/skip."""
+    from cqc_lem.utilities.db import get_enabled_newsletter_user_ids
+
     now = datetime.utcnow()
     generated = 0
     for user_id in get_enabled_newsletter_user_ids():
         try:
-            settings = get_newsletter_settings(user_id)
-            cap = settings.get("max_queued_drafts", 1)
-            lead = settings.get("generate_lead_days", 3)
-            pending = count_pending_newsletter_editions(user_id)
-            remaining = cap - pending
-            if remaining <= 0:
-                continue  # queue already full
-
-            tz = pytz.timezone(get_user_timezone(user_id))
-            # Anchor on the latest slot ANY edition already covers (incl. published/skipped) so a
-            # freed cap slot fills the next future slot, never re-covering a skipped one.
-            anchor = _max_dt(settings.get("last_published_at"),
-                             get_latest_edition_scheduled_for(user_id))
-            slots = upcoming_publish_slots(
-                settings.get("publish_day", 1), settings.get("publish_hour", 9),
-                settings.get("cadence", "weekly"), anchor, tz, now, remaining)
-            # Bootstrap gate: only the first-ever draft waits for the lead window. Once the queue is
-            # rolling (pending > 0), keep it topped up regardless of how far out the slots land.
-            if pending == 0 and not should_generate_now(slots[0], now, lead_days=lead):
-                continue
-
-            profile = load_profile_for_user(user_id)
-            for slot in slots:
-                edition = generate_newsletter_edition(profile, topic=settings.get("topic"))
-                if not edition:
-                    break
-                if not create_newsletter_edition(user_id, edition["title"], edition.get("subtitle"),
-                                                 edition["body"], slot):
-                    break  # duplicate slot / db error → stop this user's run
-                notify_newsletter_draft_ready(user_id, edition["title"], slot)
-                generated += 1
+            generated += _topup_newsletter_drafts_for_user(user_id, now)
         except Exception as e:
             log_warning("Failed to generate newsletter draft", exc=e, user_id=user_id,
                         task_name="auto_generate_newsletter_drafts")
+    return f"Generated {generated} newsletter draft(s)"
+
+
+@shared_task.task
+def generate_newsletter_drafts_for_user(user_id: int):
+    """Top up a single user's newsletter review queue on demand (e.g. right after they raise their
+    max_queued_drafts in settings), so new slots don't wait for the daily beat. Skips the bootstrap
+    lead-window gate: an explicit settings change should fill the queue ahead immediately."""
+    from cqc_lem.utilities.db import get_newsletter_settings
+
+    if not get_newsletter_settings(user_id).get("enabled"):
+        return "Newsletter disabled"
+    try:
+        generated = _topup_newsletter_drafts_for_user(user_id, datetime.utcnow(),
+                                                       allow_bootstrap=False)
+    except Exception as e:
+        log_warning("Failed to generate newsletter draft", exc=e, user_id=user_id,
+                    task_name="generate_newsletter_drafts_for_user")
+        return "Generated 0 newsletter draft(s)"
     return f"Generated {generated} newsletter draft(s)"
 
 
