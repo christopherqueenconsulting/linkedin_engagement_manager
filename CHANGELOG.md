@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.29.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.28.0...v0.29.0) (2026-07-06)
+
+
+### Features
+
+* **automation:** consolidate duplicate comments to one-per-post (dry-run default) ([6db8e99](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6db8e991ef2b9b551ae3a036a7f4f317ab4d1fa9))
+* **engagement:** weekly profile synthesis as the voice source for generation ([50a931a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/50a931a18d393dedabd79a39c443f3314593b7c1))
+
+
+### Bug Fixes
+
+* **ai:** harden profile-synthesis staleness check against non-datetime timestamps ([0a88cea](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0a88cea804bba6c9ca182e4f84f288bf10f8567d))
+
 ## [0.28.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.27.0...v0.28.0) (2026-07-06)
 
 
