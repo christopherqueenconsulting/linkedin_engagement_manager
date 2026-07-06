@@ -24,6 +24,7 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     upsert_user_group, get_enabled_group_ids, record_post_stats, get_recent_posted_post_ids, \
     get_lead_magnet_settings, has_received_lead_magnet, record_lead_magnet_sent, \
     LogResultType, has_user_commented_on_post_url, get_post_url_from_log_for_user, get_post_message_from_log_for_user, \
+    claim_post_for_comment, mark_post_commented, release_post_claim, has_commented_post, \
     has_engaged_url_with_x_days, get_post_content, get_post_video_url, update_db_post_status, PostStatus, PostType, \
     get_dm_history_for_profile, get_post_status, get_user_blog_url, get_post_type, get_carousel_slides, \
     get_dm_template, enqueue_followup, get_due_followups, mark_followup, stop_followups_for_profile
@@ -249,10 +250,16 @@ def simulate_typing(driver: WebDriver, editable_element: WebElement, text, allow
 def comment_on_post(self, user_id: int, post_link: str, comment_text: str):
     """Post a comment to the given post link"""
 
-    # Check the database logs to make sure user hasn't already commented on this post
-    if has_user_commented_on_post_url(user_id, post_link):
+    # Check the database logs / claim ledger to make sure user hasn't already commented here.
+    if has_user_commented_on_post_url(user_id, post_link) or has_commented_post(user_id, post_link):
         myprint("User has already commented on this post. Skipping...")
         return "User has already commented on this post. Skipping..."
+
+    # Atomically claim before doing any work — a concurrent worker with the same post_link loses
+    # here and backs off (belt-and-suspenders alongside QueueOnce's user_id+post_link key).
+    if not claim_post_for_comment(user_id, post_link):
+        myprint("Another task already claimed this post. Skipping...")
+        return "Another task already claimed this post. Skipping..."
 
     driver, wait = get_driver_wait_pair(session_name='Post Comment')
 
@@ -297,7 +304,8 @@ def comment_on_post(self, user_id: int, post_link: str, comment_text: str):
             myprint(f"Added Comment via Post Button")
             method_result = f"Added Comment via Post Button"
 
-            # Update database with record of comment to this post
+            # Promote the claim to 'commented' and record the log.
+            mark_post_commented(user_id, post_link)
             insert_new_log(user_id=user_id, action_type=LogActionType.COMMENT, result=LogResultType.SUCCESS,
                            post_url=post_link, message=comment_text)
 
@@ -371,6 +379,8 @@ def comment_on_post(self, user_id: int, post_link: str, comment_text: str):
             log_warning("Error while clicking post reaction", exc=e, user_id=user_id, post_id=post_link)
             method_result += f"Could not add post reaction | Error: {e}"
     except Exception as e:
+        # Nothing posted (login/compose failure) — release the claim so a later run can retry.
+        release_post_claim(user_id, post_link)
         log_error("Error while posting comment", exc=e, user_id=user_id, post_id=post_link, action_type="comment")
         method_result = f"Error while posting comment: {e}"
     finally:
@@ -778,7 +788,10 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             key = _post_permalink_from_card(card) or _feed_post_key(author, content)
             if key in seen:
                 continue
-            if has_user_commented_on_post_url(user_id, key) or not _passes_hard_excludes(content, author, prefs):
+            # Persistent, cross-run/worker dedup: skip anything already claimed or commented
+            # (commented_posts ledger), plus historical SUCCESS comment logs, plus hard excludes.
+            if (has_commented_post(user_id, key) or has_user_commented_on_post_url(user_id, key)
+                    or not _passes_hard_excludes(content, author, prefs)):
                 seen.add(key)
                 continue
             age = _post_age_minutes(driver, card)
@@ -800,11 +813,17 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             # Full include check (may use the LLM topic classifier) only on the chosen post.
             if not post_matches_preferences(content, author, prefs):
                 continue
+            # Atomically claim the post BEFORE spending an LLM call or commenting. If a prior/
+            # concurrent run already holds it, we lose the race here and move on — at most one
+            # comment per post per user, across the pre-post run, the golden-hour run, and retries.
+            if not claim_post_for_comment(user_id, key):
+                continue
             comment_text = generate_ai_response(content, my_profile, None, prefs=prefs)
             if comment_text:
                 driver.execute_script("arguments[0].scrollIntoView({block:'center'});", card)
                 time.sleep(simulate_reading_time(content) / 2 + simulate_thinking_time())
                 if post_comment_inline(driver, wait, card, comment_text, user_id=user_id):
+                    mark_post_commented(user_id, key)
                     insert_new_log(user_id=user_id, action_type=LogActionType.COMMENT,
                                    result=LogResultType.SUCCESS, post_url=key, message=comment_text)
                     posted += 1
@@ -814,6 +833,10 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
                     myprint(f"Commented on {author or 'a'}'s post "
                             f"(score {score:.2f}, age {'?' if age is None else str(age) + 'm'}) ({posted}/{max_posts})")
                     time.sleep(random.uniform(6, 14))  # human pacing between comments
+                else:
+                    release_post_claim(user_id, key)  # posting failed — let a later run retry
+            else:
+                release_post_claim(user_id, key)  # no comment generated — release the claim
             continue  # DOM re-rendered / candidate consumed — re-gather from the top
         # nothing actionable in view — scroll to load more
         driver.execute_script("window.scrollBy(0, 1200);")
