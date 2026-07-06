@@ -21,7 +21,7 @@ from cqc_lem.utilities.db import get_post_type_counts, insert_planned_post, upda
     get_planned_posts_for_current_week, get_last_planned_post_date_for_user, get_user_password_pair_by_id, \
     get_user_blog_url, get_user_sitemap_url, get_active_user_ids, get_planned_posts_for_next_week, PostStatus, \
     update_db_post_video_url, update_db_post_status, PostType, get_user_preferences, \
-    update_db_post_carousel_slides, get_post_content, get_user_timezone
+    update_db_post_carousel_slides, get_post_content, get_user_timezone, get_engagement_preferences
 from cqc_lem.utilities.env_constants import API_URL_FINAL, DEFAULT_VIDEO_RATIO, \
     DEFAULT_IMAGE_RATIO, AI_DISCLOSURE_ENABLED, AI_DISCLOSURE_TEXT, \
     STANDARD_VIDEO_MODEL, PREMIUM_VIDEO_MODEL, PREMIUM_TOP_VIDEO_MODEL, \
@@ -529,17 +529,23 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
         finally:
             quit_gracefully(driver)
 
+    # User-declared focus topics + business/personal goals steer the post's angle and enforce the
+    # anti-self-promo guardrail (see _alignment_directive) so posts don't drift into promoting
+    # whatever the user is currently building.
+    prefs = get_engagement_preferences(user_id)
+
     # Generate the post based on the selected type
     myprint(f"Creating text post of type: {post_type} for stage: {stage}")
     if post_type == "thought_leadership":
-        final_content = get_thought_leadership_post_from_ai(user_profile, stage)
+        final_content = get_thought_leadership_post_from_ai(user_profile, stage, prefs=prefs)
     elif post_type == "blog_summary":
         # Get the users blog url
         user_main_blog_url = get_user_blog_url(user_id)
         blog_post_url, blog_post_content = get_main_blog_url_content(user_main_blog_url)
         if blog_post_url and blog_post_content:
             process_selected_post(blog_post_url, blog_post_content)
-            final_content = get_blog_summary_post_from_ai(blog_post_url, blog_post_content, user_profile, stage)
+            final_content = get_blog_summary_post_from_ai(blog_post_url, blog_post_content, user_profile, stage,
+                                                          prefs=prefs)
         else:
             myprint("No blog post found for this user. Generating another post type")
             # Chose another random post type that is not "blog_summary"
@@ -550,7 +556,7 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
         # Get the users sitemap url
         sitemap_url = get_user_sitemap_url(user_id)
         if sitemap_url:
-            content = generate_website_content_post(sitemap_url, user_profile, stage)
+            content = generate_website_content_post(sitemap_url, user_profile, stage, prefs=prefs)
             if content:
                 final_content = content
             else:
@@ -566,11 +572,11 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             post_type = random.choice(post_types)
             final_content = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=False)
     elif post_type == "industry_news":
-        final_content = get_industry_news_post_from_ai(user_profile, stage)
+        final_content = get_industry_news_post_from_ai(user_profile, stage, prefs=prefs)
     elif post_type == "personal_story":
-        final_content = get_personal_story_post_from_ai(user_profile, stage)
+        final_content = get_personal_story_post_from_ai(user_profile, stage, prefs=prefs)
     else:
-        final_content = generate_engagement_prompt_post(user_profile, stage)
+        final_content = generate_engagement_prompt_post(user_profile, stage, prefs=prefs)
 
     if refine_final_post:
         final_content = get_ai_linked_post_refinement(final_content)
@@ -732,7 +738,7 @@ def process_selected_post(url, content):
         myprint("Selected Post Content: None")
 
 
-def generate_website_content_post(sitemap_url, linked_user_profile, stage: str):
+def generate_website_content_post(sitemap_url, linked_user_profile, stage: str, prefs: dict = None):
     """
     Generate a post based on content found on the user's website using their sitemap url catered to readers in the desired buyers journey stage.
     Scrapes or retrieves key points from the website's sitemap.
@@ -761,7 +767,8 @@ def generate_website_content_post(sitemap_url, linked_user_profile, stage: str):
                 attempts -= 1
         if content is not None:
             # 4. Generate a social media post based on the extracted content
-            social_media_post = get_website_content_post_from_ai(content, selected_url, linked_user_profile, stage)
+            social_media_post = get_website_content_post_from_ai(content, selected_url, linked_user_profile, stage,
+                                                                 prefs=prefs)
             return social_media_post
         else:
             myprint("No content extracted from the selected URL.")
