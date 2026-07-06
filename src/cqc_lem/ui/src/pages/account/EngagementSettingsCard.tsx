@@ -46,11 +46,20 @@ export default function EngagementSettingsCard() {
 
   if (!engPrefs) return null
 
+  // Every engagement section edits ONE shared object saved by ONE mutation, so a failure in any
+  // field (e.g. an over-long value) fails the whole save. Show the result under whichever button
+  // the user clicked — previously the message only rendered in the Targeting card, hiding errors
+  // from anyone saving Voice & Tone or Focus & Goals.
   const saveBtn = (label: string) => (
-    <button type="button" onClick={() => engMutation.mutate()} disabled={engMutation.isPending}
-      className="w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
-      {engMutation.isPending ? 'Saving…' : label}
-    </button>
+    <div className="space-y-1.5">
+      <button type="button" onClick={() => engMutation.mutate()} disabled={engMutation.isPending}
+        className="w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
+        {engMutation.isPending ? 'Saving…' : label}
+      </button>
+      {engMsg && (
+        <p className={`text-sm font-medium ${engMsg.ok ? 'text-green-600' : 'text-red-600'}`}>{engMsg.text}</p>
+      )}
+    </div>
   )
 
   return (
@@ -183,9 +192,6 @@ export default function EngagementSettingsCard() {
           <p className="text-sm font-medium text-gray-700">Reply to comments on my posts</p>
           <Toggle on={engPrefs.reply_to_own_comments} onClick={() => setEng({ reply_to_own_comments: !engPrefs.reply_to_own_comments })} />
         </div>
-        {engMsg && (
-          <p className={`text-sm font-medium ${engMsg.ok ? 'text-green-600' : 'text-red-600'}`}>{engMsg.text}</p>
-        )}
         {saveBtn('Save Targeting')}
       </div>
     </>
