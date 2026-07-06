@@ -5,15 +5,19 @@ import api from '../api/client'
 import LinkedInPostPreview from '../components/LinkedInPostPreview'
 import NewsletterQueue from './review/NewsletterQueue'
 import ScheduledDMs from './review/ScheduledDMs'
+import ComposePost from './content/ComposePost'
 import { useAuth } from '../contexts/AuthContext'
 import { useUserTimezone } from '../hooks/useUserTimezone'
 import { formatInTimezone } from '../utils/datetime'
 
-type View = 'posts' | 'newsletters' | 'dms'
+// Consolidated content hub: compose posts, schedule DMs, manage newsletters, and review/edit
+// existing content — one page, four tabs, synced to ?tab= for deep-linking.
+type View = 'posts' | 'dms' | 'newsletters' | 'review'
 const VIEWS: { key: View; label: string }[] = [
   { key: 'posts', label: 'Posts' },
-  { key: 'newsletters', label: 'Newsletters' },
   { key: 'dms', label: 'DMs' },
+  { key: 'newsletters', label: 'Newsletters' },
+  { key: 'review', label: 'Review & Edit' },
 ]
 const VIEW_KEYS = VIEWS.map((v) => v.key) as string[]
 
@@ -55,7 +59,7 @@ const STATUS_COLORS: Record<string, string> = {
   scheduled: 'bg-purple-100 text-purple-700',
 }
 
-export default function ReviewSchedule() {
+export default function ContentStudio() {
   const { user, sessionToken } = useAuth()
   const email = user?.email ?? ''
   const qc = useQueryClient()
@@ -223,8 +227,8 @@ export default function ReviewSchedule() {
     <div className="space-y-4">
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <h1 className="text-2xl font-bold text-gray-800">Review</h1>
-        {view === 'posts' && (
+        <h1 className="text-2xl font-bold text-gray-800">Content Studio</h1>
+        {view === 'review' && (
           <button
             onClick={() => weeklyMutation.mutate()}
             disabled={weeklyMutation.isPending}
@@ -233,9 +237,17 @@ export default function ReviewSchedule() {
             {weeklyMutation.isPending ? 'Generating content…' : 'Generate Weekly Content'}
           </button>
         )}
+        {view === 'review' && (
+          <button
+            onClick={() => setView('posts')}
+            className="border border-blue-600 text-blue-700 px-4 py-2 rounded-lg text-sm font-semibold hover:bg-blue-50 transition-colors"
+          >
+            + Schedule a post
+          </button>
+        )}
       </div>
 
-      {/* Posts / Newsletters tabs */}
+      {/* Content tabs */}
       <div className="flex flex-wrap gap-1 border-b border-gray-200">
         {VIEWS.map((v) => (
           <button
@@ -252,11 +264,17 @@ export default function ReviewSchedule() {
         ))}
       </div>
 
+      {/* Compose stays MOUNTED (hidden when inactive) so in-progress captions and generated AI
+          carousel slides survive a tab switch. */}
+      <div className={view === 'posts' ? '' : 'hidden'}>
+        <ComposePost onNavigateTab={(t) => setView(t as View)} />
+      </div>
+
       {view === 'newsletters' && <NewsletterQueue userTimezone={userTimezone} />}
 
       {view === 'dms' && <ScheduledDMs userTimezone={userTimezone} />}
 
-      {view === 'posts' && (
+      {view === 'review' && (
       <>
       {regenNotice && (
         <div className="bg-indigo-50 border border-indigo-200 text-indigo-800 rounded-lg px-4 py-2 text-sm">

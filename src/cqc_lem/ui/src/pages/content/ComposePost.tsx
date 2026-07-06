@@ -1,10 +1,10 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import api from '../api/client'
-import LinkedInPostPreview from '../components/LinkedInPostPreview'
-import { useAuth } from '../contexts/AuthContext'
-import { useUserTimezone } from '../hooks/useUserTimezone'
+import api from '../../api/client'
+import LinkedInPostPreview from '../../components/LinkedInPostPreview'
+import { useAuth } from '../../contexts/AuthContext'
+import { useUserTimezone } from '../../hooks/useUserTimezone'
 
 const POST_TYPES = ['TEXT', 'VIDEO', 'CAROUSEL'] as const
 type PostType = typeof POST_TYPES[number]
@@ -40,7 +40,7 @@ interface CarouselTemplate {
   description: string
 }
 
-export default function ScheduleContent() {
+export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: string) => void }) {
   const { user, sessionToken } = useAuth()
   const email = user?.email ?? ''
 
@@ -196,8 +196,6 @@ export default function ScheduleContent() {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
       <div className="space-y-4">
-        <h1 className="text-2xl font-bold text-gray-800">Schedule Content</h1>
-
         {!email && (
           <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700">
             No account email set. Please{' '}
@@ -537,6 +535,12 @@ export default function ScheduleContent() {
           {result && (
             <p className={`text-sm font-medium ${result.ok ? 'text-green-600' : 'text-red-600'}`}>
               {result.msg}
+              {result.ok && onNavigateTab && (
+                <button type="button" onClick={() => onNavigateTab('review')}
+                  className="ml-2 font-semibold text-blue-600 hover:underline">
+                  View in Review &rarr;
+                </button>
+              )}
             </p>
           )}
 

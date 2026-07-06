@@ -4,14 +4,13 @@ import AccountReadinessBanner from './AccountReadinessBanner'
 import Footer from './Footer'
 
 // Pages whose features depend on a fully set-up account — show the readiness banner here.
-const AUTOMATION_PATHS = ['/schedule', '/review', '/avatars']
+const AUTOMATION_PATHS = ['/content', '/schedule', '/review', '/avatars']
 
 const navLinks = [
   { to: '/', label: 'Home', end: true },
   { to: '/account', label: 'Account' },
   { to: '/avatars', label: 'Avatars' },
-  { to: '/schedule', label: 'Schedule Post' },
-  { to: '/review', label: 'Review Posts' },
+  { to: '/content', label: 'Content' },
 ]
 
 export default function Layout() {
