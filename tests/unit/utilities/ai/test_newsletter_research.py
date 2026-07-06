@@ -43,6 +43,23 @@ class TestLiteLLMRoutePreferred:
         assert "conventional wisdom" in query  # contrarian → challenge-the-consensus focus
         assert "SaaS founders" in query
 
+    def test_query_focus_for_roundup_and_focus_topics(self):
+        with patch(_CLIENT) as client:
+            client.chat.completions.create.return_value = _resp("findings")
+            nr.research_newsletter_topic(
+                "AI tooling this month", blueprint={"format": "roundup"},
+                prefs={"focus_topics": ["ai agents", "automation"]})
+        query = client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+        assert "last few weeks" in query
+        assert "ai agents, automation" in query
+
+    def test_query_focus_for_case_study(self):
+        with patch(_CLIENT) as client:
+            client.chat.completions.create.return_value = _resp("findings")
+            nr.research_newsletter_topic("churn turnarounds", blueprint={"format": "case_study"})
+        query = client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+        assert "real named examples" in query
+
     def test_exactly_one_call_per_invocation(self):
         with patch(_CLIENT) as client:
             client.chat.completions.create.return_value = _resp("findings")
