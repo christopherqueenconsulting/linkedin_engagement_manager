@@ -67,6 +67,7 @@ class TestApiTokenRequired:
         "/api/auth/session",
         "/api/billing/webhook",   # Stripe (signature-verified)
         "/api/assets",            # public: LinkedIn fetches media over unauth URL
+        "/api/app-info",          # public: SPA footer version/toggle
         "/health",                # non-/api
         "/auth/linkedin/callback",
         "/assets/index.js",       # SPA static
@@ -107,3 +108,18 @@ class TestGateMiddleware:
         with patch.object(main_mod, "_API_ACCESS_TOKEN_SET", set()):
             resp = client.get("/api/assets", params={"file_name": "x.png"})
         assert resp.status_code != 401
+
+
+class TestAppInfo:
+    def test_returns_version_and_toggle(self, main_mod, client):
+        with patch("cqc_lem.utilities.env_constants.get_app_version", return_value="1.2.3"), \
+             patch("cqc_lem.utilities.env_constants.SHOW_VERSION_FOOTER", True):
+            resp = client.get("/api/app-info")
+        assert resp.status_code == 200
+        assert resp.json()["detail"] == {"version": "1.2.3", "show_version": True}
+
+    def test_reachable_when_gate_enabled(self, main_mod, client):
+        # The footer loads pre-login, so /api/app-info must clear the bearer gate.
+        with patch.object(main_mod, "_API_ACCESS_TOKEN_SET", {"tok"}):
+            resp = client.get("/api/app-info")
+        assert resp.status_code == 200
