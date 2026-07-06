@@ -130,6 +130,33 @@ class TestTaskStatus:
         assert r.status_code == 403
 
 
+class TestConsolidateDuplicateComments:
+    def test_forbidden_without_secret(self, client):
+        with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET):
+            r = client.post("/api/admin/consolidate-duplicate-comments", params={"user_id": 1})
+        assert r.status_code == 403
+
+    def test_defaults_to_dry_run(self, client):
+        with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET), \
+             patch("cqc_lem.api.main.consolidate_duplicate_comments_for_user.apply_async",
+                   return_value=_async_result()) as t:
+            r = client.post("/api/admin/consolidate-duplicate-comments",
+                            params={"user_id": 3}, headers=_ADMIN_HEADER)
+        assert r.status_code == 200
+        assert r.json()["detail"]["dry_run"] is True
+        assert t.call_args.kwargs["kwargs"] == {"user_id": 3, "dry_run": True, "hours": 168}
+        assert t.call_args.kwargs["queue"] == "se_engage"
+
+    def test_can_request_real_delete(self, client):
+        with patch("cqc_lem.api.main.ADMIN_SECRET", _SECRET), \
+             patch("cqc_lem.api.main.consolidate_duplicate_comments_for_user.apply_async",
+                   return_value=_async_result()) as t:
+            r = client.post("/api/admin/consolidate-duplicate-comments",
+                            params={"user_id": 3, "dry_run": False, "hours": 48}, headers=_ADMIN_HEADER)
+        assert r.status_code == 200
+        assert t.call_args.kwargs["kwargs"] == {"user_id": 3, "dry_run": False, "hours": 48}
+
+
 class TestAuthSchemeInOpenAPI:
     """Both security schemes must be advertised so /docs shows both credentials."""
     def test_both_schemes_present(self, client):

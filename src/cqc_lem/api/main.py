@@ -12,7 +12,7 @@ from cqc_lem.app.aws_test_celery_task import test_get_my_profile
 from cqc_lem.app.run_automation import (
     automate_invites_to_company_page_for_user, automate_reply_commenting,
     automate_commenting, automate_appreciation_dms_for_user,
-    send_private_dm,
+    send_private_dm, consolidate_duplicate_comments_for_user,
 )
 from celery import chain as celery_chain
 from cqc_lem.app.run_content_plan import auto_create_weekly_content, plan_content_for_user
@@ -2246,6 +2246,30 @@ def admin_test_reply(
     return ResponseModel(status_code=200, detail={
         "task_id": result.id, "task": "automate_reply_commenting",
         "post_id": post_id, "user_id": user_id,
+    })
+
+
+@router.post("/admin/consolidate-duplicate-comments", responses={
+    200: {"description": "Consolidation run queued"},
+    401: {"description": "Missing/invalid bearer token"},
+    403: {"description": "Missing/invalid admin secret"},
+})
+def admin_consolidate_duplicate_comments(
+    user_id: int = Query(..., description="LinkedIn account user id", examples=[1]),
+    dry_run: bool = Query(True, description="Report-only when true; set false to actually delete extras"),
+    hours: int = Query(168, ge=1, le=2160,
+                       description="Look back this many hours for duplicate-commented posts (default 7 days)"),
+    _: None = Depends(_require_api_and_admin),
+) -> ResponseModel:
+    """Keep one comment per post and delete the extras for posts this user commented on more than once.
+    Defaults to a DRY RUN (report only) — pass dry_run=false to actually delete."""
+    result = consolidate_duplicate_comments_for_user.apply_async(kwargs={
+        "user_id": user_id, "dry_run": dry_run, "hours": hours,
+    }, queue="se_engage")
+    myprint(f"admin/consolidate-duplicate-comments: queued task={result.id} user_id={user_id} dry_run={dry_run}")
+    return ResponseModel(status_code=200, detail={
+        "task_id": result.id, "task": "consolidate_duplicate_comments_for_user",
+        "user_id": user_id, "dry_run": dry_run, "hours": hours,
     })
 
 
