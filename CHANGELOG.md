@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.27.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.26.0...v0.27.0) (2026-07-06)
+
+
+### Features
+
+* **newsletter:** multi-draft queue with days-ahead + count config ([66fc566](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/66fc5661b0d248c20ce2f579f03fb5c4afdbf23a))
+* **newsletter:** multi-draft review queue on Review page + plan-ahead config ([6d08ad4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6d08ad46cb1dd9646b7f0821537ffdd4e59825ad))
+* **ui:** move newsletter draft review to Review page, add config ([1a41038](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1a41038734fc0a09eb6470ca88981b055a8511df))
+
+
+### Bug Fixes
+
+* **newsletter:** address PR review comments ([36c88f1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/36c88f1b6364d9aaeb7e35e72e113ac890d23608))
+
 ## [0.26.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.25.1...v0.26.0) (2026-07-05)
 
 
