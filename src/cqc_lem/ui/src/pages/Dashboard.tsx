@@ -127,13 +127,13 @@ export default function Dashboard() {
         <h1 className="text-2xl font-bold text-gray-800">Dashboard</h1>
         <div className="flex gap-2">
           <Link
-            to="/schedule"
+            to="/content"
             className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors"
           >
             + Schedule Post
           </Link>
           <Link
-            to="/review"
+            to="/content?tab=review"
             className="border border-gray-300 text-gray-600 px-4 py-2 rounded-lg text-sm font-semibold hover:bg-gray-50 transition-colors"
           >
             Review Posts
@@ -153,7 +153,7 @@ export default function Dashboard() {
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-5">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-semibold text-gray-700">Planned Tasks</h2>
-            <Link to="/review" className="text-xs text-blue-600 hover:underline">
+            <Link to="/content?tab=review" className="text-xs text-blue-600 hover:underline">
               Manage all
             </Link>
           </div>
@@ -161,7 +161,7 @@ export default function Dashboard() {
             <div className="text-center py-6">
               <p className="text-sm text-gray-400">No upcoming tasks scheduled.</p>
               <Link
-                to="/review"
+                to="/content?tab=review"
                 className="text-xs text-blue-600 hover:underline mt-1 inline-block"
               >
                 Generate weekly content →

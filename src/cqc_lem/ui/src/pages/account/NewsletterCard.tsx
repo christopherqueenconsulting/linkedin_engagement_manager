@@ -129,7 +129,7 @@ export default function NewsletterCard() {
           </div>
           <p className="text-xs text-gray-500">
             Review &amp; approve drafts on the{' '}
-            <Link to="/review?tab=newsletters" className="text-blue-600 font-medium hover:underline">Review → Newsletters</Link>{' '}
+            <Link to="/content?tab=newsletters" className="text-blue-600 font-medium hover:underline">Content → Newsletters</Link>{' '}
             tab.
           </p>
         </>
