@@ -1,6 +1,7 @@
 import os
 import random
 import time
+from datetime import datetime
 
 import openai
 import replicate
@@ -198,8 +199,118 @@ def _alignment_directive(prefs: dict = None) -> str:
     return "\n\nContent alignment rules:\n- " + _NO_SELF_PROMO_GUARDRAIL + _focus_directive(prefs)
 
 
+# Volatile profile fields deliberately EXCLUDED from the synthesis INPUT. `recent_activities` is the
+# root of "LEM drift" — it is dominated by whatever the user is building / posting THIS week, which
+# the model otherwise pulls in as subject matter. The synthesis is about who the user IS and how they
+# SOUND (durable voice + expertise), never their current projects. password/email are PII with no
+# voice value.
+_SYNTHESIS_EXCLUDE_FIELDS = {"recent_activities", "password", "email"}
+
+
+def synthesize_profile(profile: "LinkedInProfile") -> str:
+    """Distill a LinkedInProfile into a SHORT, DURABLE voice/expertise brief used as the VOICE, TONE
+    and CREDIBILITY reference for that user's future comments and posts — dropped into every
+    generation prompt in place of the bloated full profile JSON.
+
+    It captures who they are (role, industry/domain), core expertise, the audience they serve, their
+    tone/voice characteristics, and credibility points/values. It DELIBERATELY EXCLUDES the volatile
+    "currently building X / working on Y" noise in `recent_activities` (stripped from the input, and
+    hard-excluded again in the prompt) so nothing here can reintroduce project/self-promo drift."""
+    import json as _json
+    durable = profile.model_dump(mode="json", exclude=_SYNTHESIS_EXCLUDE_FIELDS)
+    durable_json = _json.dumps(durable, default=str)
+
+    # Best-effort durable enrichment (reuses the existing industry helper). Never fatal.
+    industries = ""
+    try:
+        industries = get_industries_of_profile_from_ai(profile) or ""
+    except Exception as exc:
+        log_warning("Profile synthesis: industry enrichment failed", exc=exc)
+
+    system_prompt = {
+        "role": "system",
+        "content": (
+            "You distill a LinkedIn profile into a SHORT, DURABLE voice-and-expertise brief. This brief "
+            "will be used ONLY as a VOICE, TONE, and CREDIBILITY reference when writing the person's "
+            "future LinkedIn comments and posts — capture who they ARE and how they SOUND, never what "
+            "they happen to be doing this week.\n\n"
+            "Produce a few tight bullet lines covering:\n"
+            "- Who they are: role, industry/domain, seniority\n"
+            "- Core expertise: the topics they can speak to with genuine authority\n"
+            "- Audience they serve or want to reach\n"
+            "- Tone & voice characteristics: how they phrase things (e.g. plain-spoken, data-driven, warm)\n"
+            "- Credibility points and values: durable proof, not news\n\n"
+            "HARD EXCLUSIONS: Do NOT name, describe, or allude to any specific project, product, app, "
+            "tool, platform, or 'currently building / working on / launching' activity. Distill only "
+            "DURABLE themes. " + _NO_SELF_PROMO_GUARDRAIL + " Keep it under ~150 words. Output ONLY the "
+            "brief as plain bullet lines — no preamble, no headings, no self-promotion."
+        ),
+    }
+    user_prompt = {
+        "role": "user",
+        "content": ("Durable profile data (volatile recent activity has already been removed):\n"
+                    + durable_json
+                    + (f"\n\nLikely industries: {industries}" if industries else "")),
+    }
+    response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt], temperature=0.3)
+    content = response.choices[0].message.content
+    return content.strip() if content is not None else ""
+
+
+def _voice_reference(profile: "LinkedInProfile", profile_synthesis: str = None) -> str:
+    """The VOICE/TONE/credibility reference string dropped into a generation prompt. Prefers the
+    compact, stable synthesis; falls back to the guarded full profile JSON only when no synthesis was
+    supplied (keeps behavior working before the first weekly refresh has run)."""
+    if profile_synthesis and profile_synthesis.strip():
+        return profile_synthesis.strip()
+    return profile.model_dump_json()
+
+
+def get_or_create_profile_synthesis(user_id: int, profile: "LinkedInProfile" = None,
+                                    max_age_days: int = 7) -> "str | None":
+    """Return the user's cached profile synthesis, lazily generating + persisting it when missing or
+    stale so generation never breaks before the first weekly refresh. Returns the cached value (even
+    if stale) or None when there is nothing to synthesize from — callers pass the result straight to
+    the generators, which fall back to the guarded full JSON when it is None."""
+    from cqc_lem.utilities.db import get_profile_synthesis, set_profile_synthesis
+    cached_text = None
+    try:
+        row = get_profile_synthesis(user_id)
+    except Exception as exc:
+        log_warning("Could not read cached profile synthesis", exc=exc, user_id=user_id)
+        row = None
+    if row:
+        cached_text, generated_at = row
+        if cached_text and generated_at is not None:
+            try:
+                age_days = (datetime.now() - generated_at).days
+            except TypeError:
+                age_days = None
+            if age_days is not None and age_days < max_age_days:
+                return cached_text
+
+    if profile is None:
+        from cqc_lem.utilities.linkedin.helper import load_profile_for_user
+        profile = load_profile_for_user(user_id)
+    if profile is None:
+        return cached_text
+
+    try:
+        text = synthesize_profile(profile)
+    except Exception as exc:
+        log_warning("Profile synthesis generation failed; using cached", exc=exc, user_id=user_id)
+        return cached_text
+    if not text:
+        return cached_text
+    try:
+        set_profile_synthesis(user_id, text)
+    except Exception as exc:
+        log_warning("Could not persist profile synthesis", exc=exc, user_id=user_id)
+    return text
+
+
 def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=None, post_comment: str = None,
-                         prefs: dict = None):
+                         prefs: dict = None, profile_synthesis: str = None):
     image_attached = "(image attached)" if post_img_url else ""
     _no_hashtags = "" if (prefs and prefs.get("use_hashtags")) else " without using any hashtags"
     user_comment = f"\n\nRespond to this Comment Directly: <comment>{post_comment}</comment>\n\nYou are responding as the author of the LinkedIn Content. Keep your response short and sweet{_no_hashtags}.\n\n" if post_comment else ""
@@ -207,7 +318,7 @@ def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=No
     prompt = (f"""Please write a comment in response to the LinkedIn Content below, in the voice of the following LinkedIn User.
 
                 Voice reference — the user's profile, provided for TONE and CREDIBILITY ONLY. Do NOT make the
-                comment about the user, their company, or anything they are building:\n\n{profile.model_dump_json()}\n\n
+                comment about the user, their company, or anything they are building:\n\n{_voice_reference(profile, profile_synthesis)}\n\n
 
                 The SUBJECT of your comment is this LinkedIn Content{image_attached} — engage with what it actually says:
                 <content>'{post_content}'</content>
@@ -421,7 +532,8 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
     return {"title": title, "subtitle": (topic or title).strip()[:150], "body": body}
 
 
-def generate_group_post(profile: "LinkedInProfile", group_name: str = None, prefs: dict = None) -> "str | None":
+def generate_group_post(profile: "LinkedInProfile", group_name: str = None, prefs: dict = None,
+                        profile_synthesis: str = None) -> "str | None":
     """A short, value-add post for a LinkedIn Group — a genuine insight or open question for that
     community, NEVER promotional (groups penalize/moderate self-promo). Ends inviting discussion."""
     ctx = f"for the LinkedIn group \"{group_name}\"" if group_name else "for a professional LinkedIn group"
@@ -433,14 +545,15 @@ def generate_group_post(profile: "LinkedInProfile", group_name: str = None, pref
         voice, and end by inviting members to weigh in. """ + _NO_SELF_PROMO_GUARDRAIL + """ Output ONLY the post text.""",
     }
     user_prompt = {"role": "user",
-                   "content": f"Author profile:\n{profile.model_dump_json()}\n{_focus_directive(prefs)}{_style_directive(prefs)}"}
+                   "content": f"Author profile:\n{_voice_reference(profile, profile_synthesis)}\n{_focus_directive(prefs)}{_style_directive(prefs)}"}
     response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt],
                          temperature=round(random.uniform(0.5, 0.7), 2))
     content = response.choices[0].message.content
     return content.strip() if content is not None else None
 
 
-def generate_seed_comment(post_content, profile: "LinkedInProfile", prefs: dict = None):
+def generate_seed_comment(post_content, profile: "LinkedInProfile", prefs: dict = None,
+                          profile_synthesis: str = None):
     """The author's own FIRST comment on their post, to seed a discussion thread (threads drive
     reach). The model picks whatever fits the post — an open question to the audience OR a short
     behind-the-scenes insight/context the post didn't cover — and always invites replies. No
@@ -458,7 +571,7 @@ def generate_seed_comment(post_content, profile: "LinkedInProfile", prefs: dict 
     }
     user_prompt = {
         "role": "user",
-        "content": f"My LinkedIn profile:\n{profile.model_dump_json()}\n\n"
+        "content": f"My LinkedIn profile:\n{_voice_reference(profile, profile_synthesis)}\n\n"
                    f"My post:\n<content>{post_content}</content>\n{_intention_directive(prefs)}{_style_directive(prefs)}",
     }
     response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt],
@@ -468,7 +581,7 @@ def generate_seed_comment(post_content, profile: "LinkedInProfile", prefs: dict 
 
 
 def generate_thread_reply(post_content: str, comment_text: str, profile: "LinkedInProfile",
-                          prefs: dict = None) -> "str | None":
+                          prefs: dict = None, profile_synthesis: str = None) -> "str | None":
     """Reply to a commenter on the AUTHOR's own post so the thread KEEPS GOING: acknowledge their
     specific point, add one useful thought, and END with a genuine, easy follow-up question directed
     back to them. First-hour thread depth is the top 2026 reach signal. Short."""
@@ -481,7 +594,7 @@ def generate_thread_reply(post_content: str, comment_text: str, profile: "Linked
         + _NO_SELF_PROMO_GUARDRAIL,
     }
     user_prompt = {"role": "user", "content":
-        f"Author profile:\n{profile.model_dump_json()}\n\nMy post:\n{post_content}\n\n"
+        f"Author profile:\n{_voice_reference(profile, profile_synthesis)}\n\nMy post:\n{post_content}\n\n"
         f"Their comment:\n{comment_text}\n{_intention_directive(prefs)}{_style_directive(prefs)}"}
     response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt],
                          temperature=round(random.uniform(0.5, 0.7), 2))
@@ -819,11 +932,12 @@ def get_ai_message_refinement(original_message: str, character_limit: int = 300)
     return comment
 
 
-def get_video_content_from_ai(linked_user_profile: LinkedInProfile, buyer_stage: str):
+def get_video_content_from_ai(linked_user_profile: LinkedInProfile, buyer_stage: str,
+                              profile_synthesis: str = None):
     """Generate video content based on the LinkedIn user profile and buyer stage."""
 
-    # Use json to output to string
-    linked_in_profile_json = linked_user_profile.model_dump_json()
+    # Voice/credibility reference — prefer the stable synthesis, else the guarded full JSON.
+    linked_in_profile_json = _voice_reference(linked_user_profile, profile_synthesis)
 
     prompts = [f"""Create a short, high-impact video script tailored for LinkedIn to introduce and build awareness about the expertise or unique value of the profile represented by the following LinkedIn Profile. 
                 This video should appeal to users in the {buyer_stage} buyer stage, aiming to quickly capture attention with a clear, memorable introduction. 
@@ -1000,7 +1114,7 @@ def create_video_from_prompt(prompt: str):
 
 
 def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, buyer_stage: str,
-                                        prefs: dict = None):
+                                        prefs: dict = None, profile_synthesis: str = None):
     """
         Generate a thought leadership post based on user's expertise and industry.
         Uses the user's profile (e.g., job title, industry) and intended buyer_stage to form an insightful post.
@@ -1014,7 +1128,7 @@ def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, bu
         f'Generating Thought Leadership AI Response for {buyer_stage} buyer stage about the {industry} industry.\n\nAnalysis: {analysis} ')
 
     # Use json to output to string
-    linked_in_profile_json = linked_user_profile.model_dump_json()
+    linked_in_profile_json = _voice_reference(linked_user_profile, profile_synthesis)
 
     prompt = f"""Please create a thought leadership post for me based on my LinkedIn Profile information and the current trends in the {industry} industry.
 
@@ -1165,7 +1279,7 @@ def get_industry_trend_analysis_based_on_user_profile(linked_in_profile: LinkedI
 
 
 def get_industry_news_post_from_ai(linked_user_profile: LinkedInProfile, buyer_stage: str,
-                                   prefs: dict = None):
+                                   prefs: dict = None, profile_synthesis: str = None):
     """
        Generate a post sharing industry news based on the LinkedIn user's profile and the intended buyer stage, along with the user's commentary.
     """
@@ -1175,7 +1289,7 @@ def get_industry_news_post_from_ai(linked_user_profile: LinkedInProfile, buyer_s
     analysis = trends.get("analysis", "")
 
     # Use json to output to string
-    linked_in_profile_json = linked_user_profile.model_dump_json()
+    linked_in_profile_json = _voice_reference(linked_user_profile, profile_synthesis)
 
     prompt = f"""Please create a post sharing recent {industry} industry news based on my LinkedIn Profile information provided below. 
     Tailor the post to readers in the {buyer_stage} buyer stage of their journey and include my own commentary to add perspective.
@@ -1345,7 +1459,7 @@ def get_industry_trend_from_ai(industry: str, articles: list):
 
 
 def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage: str,
-                                    prefs: dict = None):
+                                    prefs: dict = None, profile_synthesis: str = None):
     """
     Generate a post sharing a personal or professional story, based on the user's profile.
     """
@@ -1353,7 +1467,7 @@ def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage:
     # Example content: "Reflecting on my journey as a [job title], I’ve learned that..."
 
     # Use json to output to string
-    linked_in_profile_json = linked_user_profile.model_dump_json()
+    linked_in_profile_json = _voice_reference(linked_user_profile, profile_synthesis)
 
     prompt = f"""Please create a story-based post for me, reflecting on a personal or professional milestone, achievement, or challenge, using the information from my LinkedIn Profile provided below. 
     Tailor the story to connect with readers in the {stage} buyer stage of their journey. 
@@ -1454,7 +1568,7 @@ def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage:
 
 
 def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage: str,
-                                    prefs: dict = None):
+                                    prefs: dict = None, profile_synthesis: str = None):
     """
     Generate a question or prompt that encourages engagement from followers.
     """
@@ -1462,7 +1576,7 @@ def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage:
     # Example content: "As a [job title], I’m curious to hear how others are handling [challenge]..."
 
     # Use json to output to string
-    linked_in_profile_json = linked_user_profile.model_dump_json()
+    linked_in_profile_json = _voice_reference(linked_user_profile, profile_synthesis)
 
     prompt = f"""Please generate a question or prompt to encourage engagement from my followers based on the information in my LinkedIn Profile below and related it to current industry trends. 
     Tailor the question to resonate with readers in the {stage} buyer stage of their journey.
@@ -1559,14 +1673,14 @@ def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage:
 
 
 def get_blog_summary_post_from_ai(blog_post_url: str, blog_post_content: str, linked_user_profile: LinkedInProfile,
-                                  stage: str, prefs: dict = None):
+                                  stage: str, prefs: dict = None, profile_synthesis: str = None):
     """
     Generate a summary post for a blog article using the provide post url and post content from user to create interest using relevance to the provided LinkedIn Profile.
     """
     # create a LinkedIn-friendly summary
 
     # Use json to output to string
-    linked_in_profile_json = linked_user_profile.model_dump_json()
+    linked_in_profile_json = _voice_reference(linked_user_profile, profile_synthesis)
 
     prompt = f"""Please generate a LinkedIn-friendly summary post for the blog article provided below. 
     Tailor the post to appeal to readers in the {stage} buyer stage of their journey, using my LinkedIn profile details to make the summary relevant to my role and industry.
@@ -1661,14 +1775,14 @@ def get_blog_summary_post_from_ai(blog_post_url: str, blog_post_content: str, li
 
 
 def get_website_content_post_from_ai(content: str, url: str, linked_user_profile: LinkedInProfile, stage: str,
-                                     prefs: dict = None):
+                                     prefs: dict = None, profile_synthesis: str = None):
     """
         Generate a summary post for a blog article using the provide post url and post content from user to create interest using relevance to the provided LinkedIn Profile.
         """
     # create a LinkedIn-friendly summary
 
     # Use json to output to string
-    linked_in_profile_json = linked_user_profile.model_dump_json()
+    linked_in_profile_json = _voice_reference(linked_user_profile, profile_synthesis)
 
     prompt = f"""Please generate a LinkedIn-friendly summary post for the website content provided below. 
         Tailor the post to appeal to readers in the {stage} buyer stage of their journey, using my LinkedIn profile details to make the summary relevant to my role and industry.
