@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.30.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.29.0...v0.30.0) (2026-07-06)
+
+
+### Features
+
+* **newsletter:** persist edition subject (V49) + recent-subjects dedup history ([a1e0457](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a1e0457a2094b06ecc149d7f3f581644b02e464f))
+* **newsletter:** topic-planning phase + synthesis alignment + Re-generate w/ guidance ([642b9f0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/642b9f023771e0c7a20323ae4dfa69c96790064b))
+* **newsletter:** topic-planning phase, synthesis-grounded editions, regenerate task+endpoint ([b4de4f5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b4de4f58226903b9849f8139d453ba624d35ee60))
+* **ui:** Re-generate action + Added Guidance textarea in newsletter review queue ([15f46f8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/15f46f897e79d66bc9ed36193d181727a248da26))
+
 ## [0.29.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.28.0...v0.29.0) (2026-07-06)
 
 
