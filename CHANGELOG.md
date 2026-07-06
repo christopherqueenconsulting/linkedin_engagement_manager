@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.31.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.30.0...v0.31.0) (2026-07-06)
+
+
+### Features
+
+* **newsletter:** edition blueprint/variety system + Perplexity research grounding ([94f0ff9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/94f0ff93529644ea213ae3d05b01929d23494efe))
+* **newsletter:** edition blueprint/variety system, research layer, V50 shape history ([49f5c87](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/49f5c878e058bae3549600f980ee09c47e3bac94))
+* **newsletter:** wire blueprint + research through top-up/regenerate, UI format badges, tests ([b317f40](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b317f408374cba490181618f43fa4f2addf20302))
+
 ## [0.30.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.29.0...v0.30.0) (2026-07-06)
 
 
