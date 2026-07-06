@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.33.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.32.0...v0.33.0) (2026-07-06)
+
+
+### Features
+
+* **ai:** unify newsletter blueprint/research/alignment into one shared content core ([fa3c040](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/fa3c04080eb9a6d31f17c9f230b222b4e708f59d))
+* **comments:** per-run comment angle rotation, target-post grounding kept, research gated off ([9c7d4bd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9c7d4bd44083c7fd7b20a393f0ad56718773f122))
+* **posts:** rotate post archetypes via shared framework + research-backed trends (V51) ([c8c55f8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c8c55f8ebed3b520227882eb658848f43f4dbf92))
+
+
+### Documentation
+
+* document unified content core, V51, and per-type research toggles ([6e70ad0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6e70ad04f6e29a2f0d2afb66cd7d1062d198e7ca))
+
 ## [0.32.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.31.0...v0.32.0) (2026-07-06)
 
 
