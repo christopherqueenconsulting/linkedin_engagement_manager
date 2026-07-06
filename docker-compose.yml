@@ -308,6 +308,8 @@ services:
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
       - OLLAMA_CLOUD_URL=${OLLAMA_CLOUD_URL}
       - OLLAMA_CLOUD_API_KEY=${OLLAMA_CLOUD_API_KEY}
+      # lem-research (newsletter research grounding) routes to Perplexity Sonar
+      - PERPLEXITY_API_KEY=${PERPLEXITY_API_KEY}
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')\" 2>/dev/null || exit 1"]

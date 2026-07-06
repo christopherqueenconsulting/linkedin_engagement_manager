@@ -2762,16 +2762,22 @@ def get_enabled_newsletter_user_ids() -> list:
 
 
 def create_newsletter_edition(user_id: int, title: str, subtitle: str, body: str,
-                              scheduled_for, subject: str = None) -> int:
+                              scheduled_for, subject: str = None, edition_format: str = None,
+                              hook_style: str = None, opening_line: str = None,
+                              blueprint: dict = None) -> int:
     """Insert a draft newsletter edition (status defaults to 'draft'). Returns its id. `subject` is
-    the planned topic/angle for this edition, stored so the planner can dedup against prior ones."""
+    the planned topic/angle; `edition_format`/`hook_style`/`opening_line`/`blueprint` record the
+    edition's assigned SHAPE, so the planner can rotate formats/hooks/openers (not just subjects)
+    against prior editions across runs."""
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
         cursor.execute(
-            "INSERT INTO newsletter_editions (user_id, title, subtitle, subject, body, scheduled_for) "
-            "VALUES (%s, %s, %s, %s, %s, %s)",
-            (user_id, title, subtitle, subject, body, scheduled_for))
+            "INSERT INTO newsletter_editions (user_id, title, subtitle, subject, `format`, "
+            "hook_style, opening_line, blueprint, body, scheduled_for) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (user_id, title, subtitle, subject, edition_format, hook_style, opening_line,
+             json.dumps(blueprint) if blueprint else None, body, scheduled_for))
         connection.commit()
         return cursor.lastrowid
     except mysql.connector.IntegrityError as err:
@@ -2794,7 +2800,8 @@ def get_pending_newsletter_edition(user_id: int) -> "dict | None":
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute(
-            "SELECT id, title, subtitle, subject, body, status, scheduled_for FROM newsletter_editions "
+            "SELECT id, title, subtitle, subject, `format`, hook_style, body, status, scheduled_for "
+            "FROM newsletter_editions "
             "WHERE user_id = %s AND status IN ('draft', 'approved') "
             "ORDER BY id DESC LIMIT 1", (user_id,))
         return cursor.fetchone()
@@ -2830,7 +2837,8 @@ def get_pending_newsletter_editions(user_id: int) -> list:
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute(
-            "SELECT id, title, subtitle, subject, body, status, scheduled_for FROM newsletter_editions "
+            "SELECT id, title, subtitle, subject, `format`, hook_style, body, status, scheduled_for "
+            "FROM newsletter_editions "
             "WHERE user_id = %s AND status IN ('draft', 'approved') "
             "ORDER BY scheduled_for ASC", (user_id,))
         return cursor.fetchall()
@@ -2861,7 +2869,9 @@ def get_latest_edition_scheduled_for(user_id: int) -> "datetime | None":
 
 def update_newsletter_edition(edition_id: int, user_id: int, title: str = None,
                               subtitle: str = None, body: str = None,
-                              status: str = None, subject: str = None) -> bool:
+                              status: str = None, subject: str = None,
+                              edition_format: str = None, hook_style: str = None,
+                              opening_line: str = None, blueprint: dict = None) -> bool:
     """Update only the provided fields on an edition, scoped to its owner (COALESCE-style)."""
     connection = get_db_connection()
     cursor = connection.cursor()
@@ -2870,9 +2880,12 @@ def update_newsletter_edition(edition_id: int, user_id: int, title: str = None,
             "UPDATE newsletter_editions SET "
             "title = COALESCE(%s, title), subtitle = COALESCE(%s, subtitle), "
             "subject = COALESCE(%s, subject), "
+            "`format` = COALESCE(%s, `format`), hook_style = COALESCE(%s, hook_style), "
+            "opening_line = COALESCE(%s, opening_line), blueprint = COALESCE(%s, blueprint), "
             "body = COALESCE(%s, body), status = COALESCE(%s, status) "
             "WHERE id = %s AND user_id = %s",
-            (title, subtitle, subject, body, status, edition_id, user_id))
+            (title, subtitle, subject, edition_format, hook_style, opening_line,
+             json.dumps(blueprint) if blueprint else None, body, status, edition_id, user_id))
         connection.commit()
         return cursor.rowcount >= 0
     except mysql.connector.Error as err:
@@ -2904,6 +2917,27 @@ def get_recent_newsletter_subjects(user_id: int, limit: int = 20) -> list:
         connection.close()
 
 
+def get_recent_newsletter_blueprint_history(user_id: int, limit: int = 12) -> list:
+    """Recent editions' SHAPE history — {subject, format, hook_style, opening_line} dicts, most-recent
+    first, across queued/published/skipped editions. Fed to the planner and regenerator so new
+    editions rotate away from recently used formats, hook styles, AND actual opening lines (the
+    'every edition opens the same way' bug), not just subjects."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT subject, `format`, hook_style, opening_line FROM newsletter_editions "
+            "WHERE user_id = %s AND status IN ('draft', 'approved', 'published', 'skipped') "
+            "ORDER BY id DESC LIMIT %s", (user_id, int(limit)))
+        return cursor.fetchall()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get newsletter blueprint history for user {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_editions_due_to_publish(now) -> list:
     """Editions whose scheduled slot has arrived and are still awaiting publish (draft/approved)."""
     connection = get_db_connection()
@@ -2927,7 +2961,8 @@ def get_newsletter_edition(edition_id: int) -> "dict | None":
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute(
-            "SELECT id, user_id, title, subtitle, subject, body, status, scheduled_for, published_url "
+            "SELECT id, user_id, title, subtitle, subject, `format`, hook_style, opening_line, "
+            "body, status, scheduled_for, published_url "
             "FROM newsletter_editions WHERE id = %s", (edition_id,))
         return cursor.fetchone()
     except mysql.connector.Error as err:

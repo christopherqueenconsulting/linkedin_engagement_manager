@@ -181,8 +181,8 @@ class TestEditions:
             assert update_newsletter_edition(4, 1, status="approved") is True
         sql, params = cur.execute.call_args[0]
         assert "COALESCE" in sql
-        # params now include the subject slot (5th position): (title, subtitle, subject, body, status, id, user_id)
-        assert params == (None, None, None, None, "approved", 4, 1)
+        # (title, subtitle, subject, format, hook_style, opening_line, blueprint, body, status, id, user_id)
+        assert params == (None, None, None, None, None, None, None, None, "approved", 4, 1)
 
     def test_update_persists_subject(self):
         conn, cur = _mock_conn(rowcount=1)
@@ -191,7 +191,21 @@ class TestEditions:
             assert update_newsletter_edition(4, 1, subject="New Subject", status="draft") is True
         sql, params = cur.execute.call_args[0]
         assert "subject = COALESCE" in sql
-        assert params == (None, None, "New Subject", None, "draft", 4, 1)
+        assert params == (None, None, "New Subject", None, None, None, None, None, "draft", 4, 1)
+
+    def test_update_persists_shape_fields(self):
+        import json
+        conn, cur = _mock_conn(rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_newsletter_edition
+            assert update_newsletter_edition(
+                4, 1, edition_format="case_study", hook_style="micro_story",
+                opening_line="It was a Tuesday.", blueprint={"format": "case_study"}) is True
+        sql, params = cur.execute.call_args[0]
+        assert "`format` = COALESCE" in sql and "hook_style = COALESCE" in sql
+        assert "opening_line = COALESCE" in sql and "blueprint = COALESCE" in sql
+        assert "case_study" in params and "micro_story" in params and "It was a Tuesday." in params
+        assert json.dumps({"format": "case_study"}) in params
 
     def test_create_persists_subject(self):
         conn, cur = _mock_conn()
@@ -204,6 +218,59 @@ class TestEditions:
         sql, params = cur.execute.call_args[0]
         assert "subject" in sql
         assert "Coherent Subject" in params
+
+    def test_create_persists_shape_fields(self):
+        import json
+        conn, cur = _mock_conn()
+        cur.lastrowid = 89
+        import datetime
+        bp = {"subject": "S", "format": "contrarian", "hook_style": "bold_claim", "cta_style": "debate"}
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import create_newsletter_edition
+            assert create_newsletter_edition(
+                1, "T", "S", "B", datetime.datetime(2026, 7, 7, 13), subject="S",
+                edition_format="contrarian", hook_style="bold_claim",
+                opening_line="Everyone is wrong about this.", blueprint=bp) == 89
+        sql, params = cur.execute.call_args[0]
+        assert "`format`" in sql and "hook_style" in sql and "opening_line" in sql and "blueprint" in sql
+        assert "contrarian" in params and "bold_claim" in params
+        assert "Everyone is wrong about this." in params
+        assert json.dumps(bp) in params
+
+    def test_create_shape_fields_default_null(self):
+        conn, cur = _mock_conn()
+        cur.lastrowid = 90
+        import datetime
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import create_newsletter_edition
+            assert create_newsletter_edition(1, "T", "S", "B", datetime.datetime(2026, 7, 7, 13)) == 90
+        _, params = cur.execute.call_args[0]
+        # blueprint None → stored NULL, not the string 'null'
+        assert "null" not in [p for p in params if isinstance(p, str)]
+
+    def test_blueprint_history(self):
+        rows = [{"subject": "S1", "format": "case_study", "hook_style": "micro_story",
+                 "opening_line": "It was a Tuesday."},
+                {"subject": "S2", "format": "listicle", "hook_style": "question",
+                 "opening_line": "What would you do?"}]
+        conn, cur = _mock_conn(fetch_all=rows)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_recent_newsletter_blueprint_history
+            out = get_recent_newsletter_blueprint_history(1, limit=5)
+        assert [h["format"] for h in out] == ["case_study", "listicle"]
+        sql, params = cur.execute.call_args[0]
+        assert "`format`" in sql and "hook_style" in sql and "opening_line" in sql
+        assert "published" in sql and "skipped" in sql and "draft" in sql
+        assert "ORDER BY id DESC" in sql
+        assert params == (1, 5)
+
+    def test_blueprint_history_empty_on_error(self):
+        import mysql.connector
+        conn, cur = _mock_conn()
+        cur.execute.side_effect = mysql.connector.Error("boom")
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_recent_newsletter_blueprint_history
+            assert get_recent_newsletter_blueprint_history(1) == []
 
     def test_recent_subjects_dedup_history(self):
         conn, cur = _mock_conn(fetch_all=[("Subject A",), ("Subject B",)])

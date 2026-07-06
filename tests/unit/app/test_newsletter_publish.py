@@ -130,11 +130,14 @@ def _run_generate(*, settings, pending, latest=None, gen_now=True,
         create = p(patch("cqc_lem.utilities.db.create_newsletter_edition", **create_kw))
         p(patch("cqc_lem.utilities.db.get_pending_newsletter_editions", return_value=[]))
         p(patch("cqc_lem.utilities.db.get_recent_newsletter_subjects", return_value=[]))
+        p(patch("cqc_lem.utilities.db.get_recent_newsletter_blueprint_history", return_value=[]))
         p(patch("cqc_lem.utilities.db.get_engagement_preferences", return_value={}))
         p(patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=MagicMock()))
         p(patch("cqc_lem.utilities.ai.ai_helper.get_or_create_profile_synthesis", return_value="voice brief"))
         p(patch("cqc_lem.utilities.ai.ai_helper.plan_newsletter_topics", return_value=[]))
         p(patch("cqc_lem.utilities.ai.ai_helper.generate_newsletter_edition", **gen_kw))
+        p(patch("cqc_lem.utilities.ai.newsletter_research.research_newsletter_topic",
+                return_value={"findings": "", "sources": []}))
         p(patch("cqc_lem.utilities.newsletter.should_generate_now", return_value=gen_now))
         notify = p(patch("cqc_lem.utilities.notifications.notify_newsletter_draft_ready"))
         result = auto_generate_newsletter_drafts()
@@ -220,11 +223,14 @@ def _run_generate_for_user(*, settings, pending, latest=None, gen_now=True, edit
         create = p(patch("cqc_lem.utilities.db.create_newsletter_edition", return_value=create_ret))
         p(patch("cqc_lem.utilities.db.get_pending_newsletter_editions", return_value=[]))
         p(patch("cqc_lem.utilities.db.get_recent_newsletter_subjects", return_value=[]))
+        p(patch("cqc_lem.utilities.db.get_recent_newsletter_blueprint_history", return_value=[]))
         p(patch("cqc_lem.utilities.db.get_engagement_preferences", return_value={}))
         p(patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=MagicMock()))
         p(patch("cqc_lem.utilities.ai.ai_helper.get_or_create_profile_synthesis", return_value="voice brief"))
         p(patch("cqc_lem.utilities.ai.ai_helper.plan_newsletter_topics", return_value=[]))
         p(patch("cqc_lem.utilities.ai.ai_helper.generate_newsletter_edition", return_value=edition))
+        p(patch("cqc_lem.utilities.ai.newsletter_research.research_newsletter_topic",
+                return_value={"findings": "", "sources": []}))
         p(patch("cqc_lem.utilities.newsletter.should_generate_now", return_value=gen_now))
         p(patch("cqc_lem.utilities.notifications.notify_newsletter_draft_ready"))
         result = generate_newsletter_drafts_for_user.run(user_id=1)
@@ -260,15 +266,23 @@ class TestGenerateNewsletterDraftsForUser:
 
 
 class TestTopupPlansDistinctSubjects:
-    def _drive(self, planned, pending=0, existing_subjects=None, recent=None):
+    def _drive(self, planned, pending=0, existing_subjects=None, recent=None,
+               shape_history=None, research=None, gen_captures=None):
         from contextlib import ExitStack
         from cqc_lem.app.run_scheduler import auto_generate_newsletter_drafts
 
         def _gen(profile, topic=None, prefs=None, subject=None, avoid_subjects=None,
-                 profile_synthesis=None, guidance=None):
+                 profile_synthesis=None, guidance=None, blueprint=None, avoid_openers=None,
+                 research=None):
+            if gen_captures is not None:
+                gen_captures.append({"subject": subject, "blueprint": blueprint,
+                                     "avoid_openers": avoid_openers, "research": research})
             # Echo the planned subject as the generated edition's canonical subject.
             base = subject.split(" — angle:")[0] if subject else "Auto"
-            return {"title": f"Title for {base}", "subtitle": "S", "subject": base, "body": "B"}
+            return {"title": f"Title for {base}", "subtitle": "S", "subject": base, "body": "B",
+                    "format": (blueprint or {}).get("format"),
+                    "hook_style": (blueprint or {}).get("hook_style"),
+                    "opening_line": f"Opening for {base}"}
 
         with ExitStack() as es:
             p = es.enter_context
@@ -281,15 +295,20 @@ class TestTopupPlansDistinctSubjects:
             pending_eds = [{"id": i, "subject": s} for i, s in enumerate(existing_subjects or [])]
             p(patch("cqc_lem.utilities.db.get_pending_newsletter_editions", return_value=pending_eds))
             p(patch("cqc_lem.utilities.db.get_recent_newsletter_subjects", return_value=recent or []))
+            p(patch("cqc_lem.utilities.db.get_recent_newsletter_blueprint_history",
+                    return_value=shape_history or []))
             p(patch("cqc_lem.utilities.db.get_engagement_preferences", return_value={}))
             create = p(patch("cqc_lem.utilities.db.create_newsletter_edition", return_value=1))
             p(patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=MagicMock()))
             p(patch("cqc_lem.utilities.ai.ai_helper.get_or_create_profile_synthesis", return_value="brief"))
             plan = p(patch("cqc_lem.utilities.ai.ai_helper.plan_newsletter_topics", return_value=planned))
             p(patch("cqc_lem.utilities.ai.ai_helper.generate_newsletter_edition", side_effect=_gen))
+            research_mock = p(patch("cqc_lem.utilities.ai.newsletter_research.research_newsletter_topic",
+                                    return_value=research or {"findings": "", "sources": []}))
             p(patch("cqc_lem.utilities.newsletter.should_generate_now", return_value=True))
             p(patch("cqc_lem.utilities.notifications.notify_newsletter_draft_ready"))
             result = auto_generate_newsletter_drafts()
+        self.research_mock = research_mock
         return result, create, plan
 
     def test_plans_then_persists_distinct_subjects(self):
@@ -315,8 +334,64 @@ class TestTopupPlansDistinctSubjects:
         assert create.call_count == 1
         assert "Generated 1 newsletter draft" in result
 
+    def test_blueprint_and_research_threaded_and_persisted(self):
+        planned = [
+            {"subject": "Alpha", "angle": "a", "format": "case_study", "hook_style": "micro_story",
+             "cta_style": "reply_question"},
+            {"subject": "Beta", "angle": "b", "format": "listicle", "hook_style": "bold_claim",
+             "cta_style": "challenge"},
+        ]
+        captures = []
+        result, create, _ = self._drive(
+            planned, research={"findings": "Fresh stat: 42% (2026, Acme).", "sources": [{"url": "https://x"}]},
+            gen_captures=captures)
+        # Blueprint + research reach the writer for every edition.
+        assert [c["blueprint"]["format"] for c in captures] == ["case_study", "listicle"]
+        assert all(c["research"]["findings"].startswith("Fresh stat") for c in captures)
+        # Exactly ONE research call per edition (cost guard).
+        assert self.research_mock.call_count == 2
+        # Shape persisted alongside the edition.
+        kw = create.call_args_list[0].kwargs
+        assert kw["edition_format"] == "case_study" and kw["hook_style"] == "micro_story"
+        assert kw["opening_line"] == "Opening for Alpha"
+        assert kw["blueprint"]["format"] == "case_study"
+        assert "structure" not in kw["blueprint"]  # compact form persisted, skeleton lives in code
+        assert "Generated 2 newsletter draft" in result
 
-def _run_regenerate(*, edition, guidance=None, others=None, recent=None, new_ed=None):
+    def test_shape_history_fed_into_planning(self):
+        history = [{"subject": "S1", "format": "deep_dive", "hook_style": "question",
+                    "opening_line": "Old opener one."},
+                   {"subject": "S2", "format": "framework", "hook_style": "surprising_stat",
+                    "opening_line": "Old opener two."}]
+        planned = [{"subject": "New", "angle": "x", "format": "case_study",
+                    "hook_style": "micro_story", "cta_style": "debate"}]
+        captures = []
+        self._drive(planned, shape_history=history, gen_captures=captures)
+        plan_kwargs = None
+        # plan mock reference lives inside _drive's return; re-drive to inspect via captured kwargs
+        _, _, plan = self._drive(planned, shape_history=history, gen_captures=[])
+        plan_kwargs = plan.call_args.kwargs
+        assert plan_kwargs["recent_formats"] == ["deep_dive", "framework"]
+        assert plan_kwargs["recent_hook_styles"] == ["question", "surprising_stat"]
+        # Prior openers are fed to the writer as an avoid list.
+        assert "Old opener one." in captures[0]["avoid_openers"]
+        assert "Old opener two." in captures[0]["avoid_openers"]
+
+    def test_new_openers_accumulate_within_run(self):
+        planned = [
+            {"subject": "Alpha", "angle": "a", "format": "case_study", "hook_style": "micro_story",
+             "cta_style": "reply_question"},
+            {"subject": "Beta", "angle": "b", "format": "listicle", "hook_style": "bold_claim",
+             "cta_style": "challenge"},
+        ]
+        captures = []
+        self._drive(planned, gen_captures=captures)
+        # The second edition must avoid the FIRST edition's just-written opening line too.
+        assert "Opening for Alpha" in captures[1]["avoid_openers"]
+
+
+def _run_regenerate(*, edition, guidance=None, others=None, recent=None, new_ed=None,
+                    shape_history=None, research=None):
     from contextlib import ExitStack
     from cqc_lem.app.run_scheduler import regenerate_newsletter_edition
     if new_ed is None:
@@ -324,10 +399,14 @@ def _run_regenerate(*, edition, guidance=None, others=None, recent=None, new_ed=
     captured = {}
 
     def _gen(profile, topic=None, prefs=None, subject=None, avoid_subjects=None,
-             profile_synthesis=None, guidance=None):
+             profile_synthesis=None, guidance=None, blueprint=None, avoid_openers=None,
+             research=None):
         captured["subject"] = subject
         captured["avoid"] = avoid_subjects
         captured["guidance"] = guidance
+        captured["blueprint"] = blueprint
+        captured["avoid_openers"] = avoid_openers
+        captured["research"] = research
         return new_ed
 
     with ExitStack() as es:
@@ -338,11 +417,16 @@ def _run_regenerate(*, edition, guidance=None, others=None, recent=None, new_ed=
         pending_eds = [{"id": o_id, "subject": s} for o_id, s in (others or [])]
         p(patch("cqc_lem.utilities.db.get_pending_newsletter_editions", return_value=pending_eds))
         p(patch("cqc_lem.utilities.db.get_recent_newsletter_subjects", return_value=recent or []))
+        p(patch("cqc_lem.utilities.db.get_recent_newsletter_blueprint_history",
+                return_value=shape_history or []))
         p(patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=MagicMock()))
         p(patch("cqc_lem.utilities.ai.ai_helper.get_or_create_profile_synthesis", return_value="brief"))
         p(patch("cqc_lem.utilities.ai.ai_helper.generate_newsletter_edition", side_effect=_gen))
+        research_mock = p(patch("cqc_lem.utilities.ai.newsletter_research.research_newsletter_topic",
+                                return_value=research or {"findings": "", "sources": []}))
         upd = p(patch("cqc_lem.utilities.db.update_newsletter_edition", return_value=True))
         result = regenerate_newsletter_edition.run(edition_id=edition["id"], guidance=guidance)
+    captured["research_calls"] = research_mock.call_count
     return result, upd, captured
 
 
@@ -374,6 +458,34 @@ class TestRegenerateNewsletterEdition:
             edition=ed, others=[(9, "Mine"), (10, "Other Queued")], recent=["Past One"])
         assert "Other Queued" in cap["avoid"] and "Past One" in cap["avoid"]
         assert "Mine" not in cap["avoid"]  # this edition's own subject excluded
+
+    def test_rotates_shape_away_from_history_and_persists(self):
+        ed = {"id": 9, "user_id": 1, "status": "draft", "subject": "Mine"}
+        history = [{"subject": "Mine", "format": "deep_dive", "hook_style": "question",
+                    "opening_line": "Most founders treat X like Y."}]
+        result, upd, cap = _run_regenerate(edition=ed, shape_history=history)
+        # A fresh blueprint is built in code: not the edition's own previous shape.
+        assert cap["blueprint"]["format"] != "deep_dive"
+        assert cap["blueprint"]["hook_style"] != "question"
+        assert "Most founders treat X like Y." in cap["avoid_openers"]
+        # Exactly ONE research call per regenerate.
+        assert cap["research_calls"] == 1
+        # New shape persisted on the row (blueprint in compact form).
+        kw = upd.call_args.kwargs
+        assert kw["edition_format"] == cap["blueprint"]["format"] or kw["edition_format"] is None
+        assert kw["blueprint"]["format"] == cap["blueprint"]["format"]
+        assert "structure" not in kw["blueprint"]
+
+    def test_guidance_format_hint_honored(self):
+        ed = {"id": 9, "user_id": 1, "status": "draft", "subject": "Mine"}
+        result, upd, cap = _run_regenerate(edition=ed, guidance="Rewrite this as a case study please")
+        assert cap["blueprint"]["format"] == "case_study"
+
+    def test_research_findings_reach_the_writer(self):
+        ed = {"id": 9, "user_id": 1, "status": "draft", "subject": "Mine"}
+        result, upd, cap = _run_regenerate(
+            edition=ed, research={"findings": "In March 2026, 61% of B2B teams...", "sources": []})
+        assert cap["research"]["findings"].startswith("In March 2026")
 
 
 class TestPublishScheduledEditions:

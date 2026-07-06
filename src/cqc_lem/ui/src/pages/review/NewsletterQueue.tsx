@@ -11,6 +11,9 @@ const STATUS_COLORS: Record<string, string> = {
   approved: 'bg-green-100 text-green-700',
 }
 
+// e.g. "case_study" -> "Case Study" for the format/hook badges.
+const prettyKey = (k: string) => k.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+
 export default function NewsletterQueue({ userTimezone }: { userTimezone: string }) {
   const { user, sessionToken } = useAuth()
   const qc = useQueryClient()
@@ -161,6 +164,20 @@ export default function NewsletterQueue({ userTimezone }: { userTimezone: string
             </div>
             <p className="text-sm font-medium text-gray-800 truncate">{e.title || 'Untitled edition'}</p>
             {e.subtitle && <p className="text-xs text-gray-500 line-clamp-1">{e.subtitle}</p>}
+            {(e.format || e.hook_style) && (
+              <div className="flex flex-wrap gap-1 mt-1.5">
+                {e.format && (
+                  <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 text-[10px] font-medium uppercase tracking-wide">
+                    {prettyKey(e.format)}
+                  </span>
+                )}
+                {e.hook_style && (
+                  <span className="px-1.5 py-0.5 rounded bg-purple-50 text-purple-600 text-[10px] font-medium uppercase tracking-wide">
+                    {prettyKey(e.hook_style)} hook
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -200,7 +217,7 @@ export default function NewsletterQueue({ userTimezone }: { userTimezone: string
                 Added Guidance <span className="font-normal text-gray-400">(optional)</span>
               </label>
               <textarea value={guidance} onChange={(e) => setGuidance(e.target.value)} rows={2}
-                placeholder="What should change and why? Leave blank to let AI pick a fresh, distinct take."
+                placeholder="What should change and why? You can name a format (e.g. case study, listicle, contrarian). Leave blank for a fresh, distinct take."
                 disabled={busy}
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50" />
               <button type="button" onClick={() => regenerateMutation.mutate()} disabled={busy}

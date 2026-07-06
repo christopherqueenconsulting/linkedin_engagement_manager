@@ -73,6 +73,16 @@ model_list:
       model: anthropic/claude-sonnet-4-6
       api_key: os.environ/ANTHROPIC_API_KEY
 
+  # ── RESEARCH: web-grounded current facts via Perplexity Sonar ────────────────
+  # Used by newsletter_research.research_newsletter_topic (one call per edition) to ground
+  # editions in current stats/examples. Falls back in code to the direct Perplexity helper.
+  - model_name: lem-research
+    litellm_params:
+      model: perplexity/sonar
+      api_key: os.environ/PERPLEXITY_API_KEY
+      request_timeout: 60
+      rpm: 20
+
   # ── IMAGE generation — no Ollama Cloud equivalent; use OpenAI DALL-E ─────────
   - model_name: lem-image
     litellm_params:
