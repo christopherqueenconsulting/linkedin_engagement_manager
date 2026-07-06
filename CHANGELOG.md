@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.28.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.27.0...v0.28.0) (2026-07-06)
+
+
+### Features
+
+* **newsletter:** multi-draft review queue with configurable count + days-ahead ([5031ec6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5031ec6183a021f28e078d72012886b7994ea41a))
+* **prefs:** add focus_topics + business/personal goals to engagement prefs ([099f749](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/099f7496c967cfbeec6a94910bdffb4b30829aa0))
+* **ui:** add Content Focus & Goals card to engagement settings ([cc5af9b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/cc5af9b93a933edce95931d42b6acbf0508c5675))
+* **ui:** copyright footer with configurable release-version text ([f2966c9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f2966c900337644c9111d57a6c2e2c564dc7789f))
+* **ui:** copyright footer with configurable release-version text ([7c9867a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7c9867a3dff0e4a63d726188720e280a670e5173))
+
+
+### Bug Fixes
+
+* **ai:** ground comments in target post, block LEM self-promo, add focus steering ([9a8d1fe](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9a8d1fe88add299be10894f51db3cf563342f159))
+* **automation:** persistent at-most-once feed comment dedup (V46 commented_posts) ([75ae240](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/75ae240b57194b5e31d3eb0d1970aea97313763e))
+* **automation:** reliably react on non-own commented posts; harden SDUI react fly-out ([7d345bd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7d345bdf73a553fb456802f3fc48b1b0f0994f7c))
+* **email+auth:** trustworthy login PIN email + sliding 24h session ([755cea9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/755cea9317d6b25dc1a05e73fa50b61e6abd6eac))
+* **engagement:** 1 comment/post + reactions + topic-aligned comments (no LEM drift) ([0223d3f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0223d3fe95570e9b4a03d872ad49fd8623fd8b2b))
+* **newsletter:** top up draft queue immediately when count is raised ([e884c57](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e884c571608cc26eafc90dad5fe4b1062f6ada4a))
+
 ## [0.27.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.26.0...v0.27.0) (2026-07-06)
 
 
