@@ -333,6 +333,9 @@ class EngagementPreferencesRequest(BaseModel):
     include_authors: List[str] = []
     exclude_authors: List[str] = []
     post_types: List[str] = []
+    focus_topics: List[str] = []
+    business_goals: Optional[str] = None
+    personal_goals: Optional[str] = None
     min_reactions: Optional[int] = None
     max_post_age_hours: Optional[int] = 24
     reply_to_own_comments: bool = True
