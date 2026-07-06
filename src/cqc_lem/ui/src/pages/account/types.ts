@@ -44,6 +44,7 @@ export type NewsletterEdition = {
   id: number
   title: string | null
   subtitle: string | null
+  subject?: string | null
   body: string | null
   status: string
   scheduled_for: string | null
