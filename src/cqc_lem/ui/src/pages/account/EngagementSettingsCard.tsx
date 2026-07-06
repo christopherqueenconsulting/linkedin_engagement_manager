@@ -5,6 +5,7 @@ import { useAuth } from '../../contexts/AuthContext'
 import Toggle from '../../components/Toggle'
 import { csv, parseCsv } from './types'
 import type { EngPrefs } from './types'
+import { useRegisterSaveSection } from './SettingsSaveContext'
 
 // Voice & Tone and Engagement Targeting both edit the SAME engagement_preferences object and each
 // PUT the full object. They must therefore share one piece of local state — otherwise saving one
@@ -14,6 +15,7 @@ export default function EngagementSettingsCard() {
   const { sessionToken } = useAuth()
   const queryClient = useQueryClient()
   const [engPrefs, setEngPrefs] = useState<EngPrefs | null>(null)
+  const [savedSig, setSavedSig] = useState<string | null>(null)
   const [engMsg, setEngMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   const { data: engData } = useQuery({
@@ -26,7 +28,7 @@ export default function EngagementSettingsCard() {
     staleTime: 60 * 1000,
   })
   useEffect(() => {
-    if (engData && !engPrefs) setEngPrefs(engData)
+    if (engData && !engPrefs) { setEngPrefs(engData); setSavedSig(JSON.stringify(engData)) }
   }, [engData])
 
   const setEng = (patch: Partial<EngPrefs>) => setEngPrefs((p) => (p ? { ...p, ...patch } : p))
@@ -35,6 +37,7 @@ export default function EngagementSettingsCard() {
     mutationFn: () => api.put('/user/engagement-preferences', { session_token: sessionToken, ...engPrefs }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['engagement-preferences'] })
+      setSavedSig(JSON.stringify(engPrefs))
       setEngMsg({ ok: true, text: 'Saved.' })
       setTimeout(() => setEngMsg(null), 3000)
     },
@@ -43,6 +46,10 @@ export default function EngagementSettingsCard() {
       setTimeout(() => setEngMsg(null), 5000)
     },
   })
+
+  const isDirty = !!engPrefs && savedSig !== null && JSON.stringify(engPrefs) !== savedSig
+  useRegisterSaveSection('engagement', 'Voice, Focus & Targeting', isDirty,
+    async () => { await engMutation.mutateAsync(); return true })
 
   if (!engPrefs) return null
 
