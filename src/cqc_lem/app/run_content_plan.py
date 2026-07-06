@@ -16,7 +16,8 @@ from cqc_lem.utilities.ai.ai_helper import get_blog_summary_post_from_ai, get_we
     get_flux_image_prompt_from_ai, generate_flux1_image_from_prompt, get_runway_ml_video_prompt_from_ai, \
     create_runway_video, get_ai_linked_post_refinement, optimize_post_hook
 from cqc_lem.utilities.ai.ai_helper import get_thought_leadership_post_from_ai, \
-    get_industry_news_post_from_ai, get_personal_story_post_from_ai, generate_engagement_prompt_post
+    get_industry_news_post_from_ai, get_personal_story_post_from_ai, generate_engagement_prompt_post, \
+    get_or_create_profile_synthesis
 from cqc_lem.utilities.db import get_post_type_counts, insert_planned_post, update_db_post_content, \
     get_planned_posts_for_current_week, get_last_planned_post_date_for_user, get_user_password_pair_by_id, \
     get_user_blog_url, get_user_sitemap_url, get_active_user_ids, get_planned_posts_for_next_week, PostStatus, \
@@ -534,10 +535,16 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
     # whatever the user is currently building.
     prefs = get_engagement_preferences(user_id)
 
+    # Stable VOICE synthesis (cached weekly; lazily generated on first use) replaces the bloated full
+    # profile JSON as the voice/credibility source — keeps posts in the user's voice without dragging
+    # in their volatile recent activity / current projects (LEM-drift).
+    profile_synthesis = get_or_create_profile_synthesis(user_id, user_profile)
+
     # Generate the post based on the selected type
     myprint(f"Creating text post of type: {post_type} for stage: {stage}")
     if post_type == "thought_leadership":
-        final_content = get_thought_leadership_post_from_ai(user_profile, stage, prefs=prefs)
+        final_content = get_thought_leadership_post_from_ai(user_profile, stage, prefs=prefs,
+                                                            profile_synthesis=profile_synthesis)
     elif post_type == "blog_summary":
         # Get the users blog url
         user_main_blog_url = get_user_blog_url(user_id)
@@ -545,7 +552,7 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
         if blog_post_url and blog_post_content:
             process_selected_post(blog_post_url, blog_post_content)
             final_content = get_blog_summary_post_from_ai(blog_post_url, blog_post_content, user_profile, stage,
-                                                          prefs=prefs)
+                                                          prefs=prefs, profile_synthesis=profile_synthesis)
         else:
             myprint("No blog post found for this user. Generating another post type")
             # Chose another random post type that is not "blog_summary"
@@ -556,7 +563,8 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
         # Get the users sitemap url
         sitemap_url = get_user_sitemap_url(user_id)
         if sitemap_url:
-            content = generate_website_content_post(sitemap_url, user_profile, stage, prefs=prefs)
+            content = generate_website_content_post(sitemap_url, user_profile, stage, prefs=prefs,
+                                                    profile_synthesis=profile_synthesis)
             if content:
                 final_content = content
             else:
@@ -572,11 +580,14 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             post_type = random.choice(post_types)
             final_content = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=False)
     elif post_type == "industry_news":
-        final_content = get_industry_news_post_from_ai(user_profile, stage, prefs=prefs)
+        final_content = get_industry_news_post_from_ai(user_profile, stage, prefs=prefs,
+                                                       profile_synthesis=profile_synthesis)
     elif post_type == "personal_story":
-        final_content = get_personal_story_post_from_ai(user_profile, stage, prefs=prefs)
+        final_content = get_personal_story_post_from_ai(user_profile, stage, prefs=prefs,
+                                                        profile_synthesis=profile_synthesis)
     else:
-        final_content = generate_engagement_prompt_post(user_profile, stage, prefs=prefs)
+        final_content = generate_engagement_prompt_post(user_profile, stage, prefs=prefs,
+                                                        profile_synthesis=profile_synthesis)
 
     if refine_final_post:
         final_content = get_ai_linked_post_refinement(final_content)
@@ -738,7 +749,8 @@ def process_selected_post(url, content):
         myprint("Selected Post Content: None")
 
 
-def generate_website_content_post(sitemap_url, linked_user_profile, stage: str, prefs: dict = None):
+def generate_website_content_post(sitemap_url, linked_user_profile, stage: str, prefs: dict = None,
+                                  profile_synthesis: str = None):
     """
     Generate a post based on content found on the user's website using their sitemap url catered to readers in the desired buyers journey stage.
     Scrapes or retrieves key points from the website's sitemap.
@@ -768,7 +780,7 @@ def generate_website_content_post(sitemap_url, linked_user_profile, stage: str, 
         if content is not None:
             # 4. Generate a social media post based on the extracted content
             social_media_post = get_website_content_post_from_ai(content, selected_url, linked_user_profile, stage,
-                                                                 prefs=prefs)
+                                                                 prefs=prefs, profile_synthesis=profile_synthesis)
             return social_media_post
         else:
             myprint("No content extracted from the selected URL.")

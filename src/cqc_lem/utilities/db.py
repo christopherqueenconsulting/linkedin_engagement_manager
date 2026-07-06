@@ -1046,6 +1046,69 @@ def get_linked_in_profile_by_user_id(user_id: int, updated_less_than_days_ago: i
     return profile_data
 
 
+def get_profile_synthesis(user_id: int) -> Optional[tuple]:
+    """Return the user's cached (synthesis_text, synthesis_generated_at) or None when there is no
+    profile row / no synthesis yet. Kept separate from the profile-JSON getters so the small, stable
+    voice brief can be read cheaply on every generation call without pulling the full profile blob."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT synthesis, synthesis_generated_at FROM profiles WHERE user_id = %s", (user_id,))
+        row = cursor.fetchone()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get profile synthesis for user_id={user_id} | Error: {err}")
+        row = None
+    finally:
+        cursor.close()
+        connection.close()
+
+    if not row or row[0] is None:
+        return None
+    return row[0], row[1]
+
+
+def set_profile_synthesis(user_id: int, synthesis: str) -> bool:
+    """Persist a freshly generated voice synthesis and stamp synthesis_generated_at = NOW() (drives
+    the weekly staleness selector). No-op-safe: returns False if the profile row doesn't exist yet."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE profiles SET synthesis = %s, synthesis_generated_at = NOW() WHERE user_id = %s",
+            (synthesis, user_id))
+        connection.commit()
+        success = cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not set profile synthesis for user_id={user_id} | Error: {err}")
+        success = False
+    finally:
+        cursor.close()
+        connection.close()
+    return success
+
+
+def get_user_ids_needing_profile_synthesis(stale_days: int = 7) -> list:
+    """User IDs whose cached profile synthesis is MISSING or older than `stale_days` — the work list
+    for the weekly refresh task. Only rows that actually have a profile (user_id NOT NULL) qualify."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT user_id FROM profiles WHERE user_id IS NOT NULL AND ("
+            "synthesis IS NULL OR synthesis_generated_at IS NULL "
+            "OR synthesis_generated_at < NOW() - INTERVAL %s DAY)",
+            (stale_days,))
+        rows = cursor.fetchall()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get user_ids needing profile synthesis | Error: {err}")
+        rows = []
+    finally:
+        cursor.close()
+        connection.close()
+    return [row[0] for row in rows]
+
+
 def remove_linked_in_profile_by_user_id(user_id: int):
     connection = get_db_connection()
     cursor = connection.cursor()

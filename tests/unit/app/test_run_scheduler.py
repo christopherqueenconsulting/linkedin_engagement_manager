@@ -816,3 +816,30 @@ class TestAutoInviteToCompanyPages:
             result = auto_invite_to_company_pages()
         mock_task.apply_async.assert_not_called()
         assert "No active users with a company page" in result
+
+
+class TestAutoRefreshProfileSyntheses:
+    def test_synthesizes_only_stale_active_users(self):
+        # user 3 is stale but NOT active -> must be skipped; user 1 stale+active -> processed.
+        with patch(f"{_MOD}.get_active_user_ids", return_value=[1, 2]), \
+             patch("cqc_lem.utilities.db.get_user_ids_needing_profile_synthesis", return_value=[1, 3]), \
+             patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=MagicMock()), \
+             patch("cqc_lem.utilities.ai.ai_helper.synthesize_profile", return_value="brief") as syn, \
+             patch("cqc_lem.utilities.db.set_profile_synthesis", return_value=True) as setter:
+            from cqc_lem.app.run_scheduler import auto_refresh_profile_syntheses
+            result = auto_refresh_profile_syntheses()
+        syn.assert_called_once()
+        setter.assert_called_once_with(1, "brief")
+        assert "1/1" in result
+
+    def test_skips_users_without_cached_profile(self):
+        with patch(f"{_MOD}.get_active_user_ids", return_value=[1]), \
+             patch("cqc_lem.utilities.db.get_user_ids_needing_profile_synthesis", return_value=[1]), \
+             patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=None), \
+             patch("cqc_lem.utilities.ai.ai_helper.synthesize_profile") as syn, \
+             patch("cqc_lem.utilities.db.set_profile_synthesis") as setter:
+            from cqc_lem.app.run_scheduler import auto_refresh_profile_syntheses
+            result = auto_refresh_profile_syntheses()
+        syn.assert_not_called()
+        setter.assert_not_called()
+        assert "0/1" in result

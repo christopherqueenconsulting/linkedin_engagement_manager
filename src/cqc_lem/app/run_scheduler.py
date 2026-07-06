@@ -239,6 +239,35 @@ def auto_publish_scheduled_editions():
 
 
 @shared_task.task
+def auto_refresh_profile_syntheses():
+    """Weekly: (re)generate the cached, DURABLE voice synthesis for each active user whose synthesis is
+    missing or stale (>7 days). The synthesis replaces the bloated full profile JSON as the voice
+    source in every comment/post prompt; refreshing it on a slow cadence keeps the voice stable while
+    still tracking real profile changes. No Selenium — works off each user's cached profile JSON."""
+    from cqc_lem.utilities.ai.ai_helper import synthesize_profile
+    from cqc_lem.utilities.db import get_user_ids_needing_profile_synthesis, set_profile_synthesis
+    from cqc_lem.utilities.linkedin.helper import load_profile_for_user
+    active = set(get_active_user_ids())
+    stale = [uid for uid in get_user_ids_needing_profile_synthesis(stale_days=7) if uid in active]
+    refreshed = 0
+    for uid in stale:
+        profile = load_profile_for_user(uid)
+        if profile is None:
+            continue
+        try:
+            synthesis = synthesize_profile(profile)
+        except Exception as e:
+            log_warning("Weekly profile synthesis failed", exc=e, user_id=uid,
+                        task_name="auto_refresh_profile_syntheses")
+            continue
+        if synthesis and set_profile_synthesis(uid, synthesis):
+            refreshed += 1
+    log_info(f"Refreshed {refreshed}/{len(stale)} stale profile synthesis(es)",
+             task_name="auto_refresh_profile_syntheses")
+    return f"Refreshed {refreshed}/{len(stale)} profile synthesis(es)"
+
+
+@shared_task.task
 def auto_sync_groups():
     """Refresh each active user's joined-groups list (new groups default to enabled)."""
     from cqc_lem.app.run_automation import auto_sync_user_groups

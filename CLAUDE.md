@@ -57,7 +57,7 @@ tests/
 ├── unit/          Fast tests — mock all I/O
 ├── integration/   Require MySQL + Redis service containers
 └── e2e/           Require selenium/standalone-chrome
-compose/local/database/migrations/  Flyway migrations (through V47)
+compose/local/database/migrations/  Flyway migrations (through V48)
 .litellm/
 ├── config.yaml    LiteLLM model aliases and routing config
 └── complexity_router.py  Pre-call hook for lem-router model
@@ -188,7 +188,7 @@ Before merging any PR, all of the following must pass:
 - `linkedin-preview` service (external) was removed — preview is now the native `LinkedInPostPreview.tsx` component.
 - **LinkedIn SDUI:** the old `urn:`, `feed-shared-*`, and `comments-comment-*` DOM anchors are gone. Prefer `data-testid` / `aria-label` selectors via `find_first`/`click_first`. The comment composer has NO `<form>` — "submit" means clicking the Comment/Post button next to the composer (`_composer_submitted`), and the comment overflow "…" menu is hover-hidden.
 - **Emoji in Selenium:** ChromeDriver `send_keys` throws on non-BMP emoji — strip them before typing with `_strip_non_bmp()`.
-- **ENUM columns:** `logs.action_type` (and other status columns) are MySQL ENUMs. Adding a new value requires a migration — e.g. V37 added `'followup'` to `logs.action_type`. Migrations live in `compose/local/database/migrations/` and currently run through **V47** (V46 added the `commented_posts` at-most-once claim ledger, V47 added engagement focus_topics/business_goals/personal_goals).
+- **ENUM columns:** `logs.action_type` (and other status columns) are MySQL ENUMs. Adding a new value requires a migration — e.g. V37 added `'followup'` to `logs.action_type`. Migrations live in `compose/local/database/migrations/` and currently run through **V48** (V46 added the `commented_posts` at-most-once claim ledger, V47 added engagement focus_topics/business_goals/personal_goals, V48 added `profiles.synthesis`/`synthesis_generated_at` — the cached durable voice brief).
 - **Proxy auth:** proxies are authenticated by the runtime MV3 extension (`_build_proxy_auth_extension_b64`), not by URL-embedded credentials — MV2 background pages that used to do this are disabled in Chrome 149+.
 
 ## Git Safety & Multi-Agent Concurrency Rules
