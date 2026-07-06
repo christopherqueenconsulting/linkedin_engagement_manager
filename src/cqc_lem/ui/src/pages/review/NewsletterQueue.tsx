@@ -30,17 +30,20 @@ export default function NewsletterQueue({ userTimezone }: { userTimezone: string
 
   const editions = data?.editions ?? []
 
-  // Keep a selection; default to the soonest draft. Sync the editable copy when selection changes.
+  // Seed the editor only when the current selection is GONE (initial load, or the selected draft was
+  // approved/skipped away) — default to the soonest draft. When the selection is still present we
+  // leave draftEdit alone so a background refetch can't wipe in-progress edits.
   useEffect(() => {
     if (editions.length === 0) {
       setSelectedId(null)
       setDraftEdit(null)
       return
     }
-    const current = editions.find((e) => e.id === selectedId) ?? editions[0]
-    setSelectedId(current.id)
-    setDraftEdit({ ...current })
-  }, [data])
+    if (!editions.some((e) => e.id === selectedId)) {
+      setSelectedId(editions[0].id)
+      setDraftEdit({ ...editions[0] })
+    }
+  }, [data, selectedId])
 
   const setDe = (patch: Partial<NewsletterEdition>) => setDraftEdit((p) => (p ? { ...p, ...patch } : p))
 

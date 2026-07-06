@@ -44,7 +44,7 @@ export default function NewsletterArticlePreview({
       {/* Subscribe footer, evoking LinkedIn's newsletter card */}
       <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-between">
         <span className="text-xs text-gray-500">Subscribers get this by notification + email</span>
-        <button className="text-blue-600 border border-blue-600 rounded-full px-3 py-1 text-xs font-semibold hover:bg-blue-50">
+        <button type="button" className="text-blue-600 border border-blue-600 rounded-full px-3 py-1 text-xs font-semibold hover:bg-blue-50">
           Subscribe
         </button>
       </div>

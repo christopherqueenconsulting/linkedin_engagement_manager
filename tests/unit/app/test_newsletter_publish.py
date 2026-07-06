@@ -108,12 +108,15 @@ class TestAutoPublishEdition:
 
 
 def _run_generate(*, settings, pending, latest=None, gen_now=True,
-                  edition={"title": "T", "subtitle": "S", "body": "B"},
-                  edition_side_effect=None, create_ret=1, create_side_effect=None,
-                  user_ids=[1], tz_side_effect=None):
+                  edition=None, edition_side_effect=None, create_ret=1, create_side_effect=None,
+                  user_ids=None, tz_side_effect=None):
     """Drive auto_generate_newsletter_drafts with the new pure-count collaborators mocked out."""
     from contextlib import ExitStack
     from cqc_lem.app.run_scheduler import auto_generate_newsletter_drafts
+    if edition is None:
+        edition = {"title": "T", "subtitle": "S", "body": "B"}
+    if user_ids is None:
+        user_ids = [1]
     gen_kw = {"side_effect": edition_side_effect} if edition_side_effect else {"return_value": edition}
     create_kw = {"side_effect": create_side_effect} if create_side_effect else {"return_value": create_ret}
     tz_kw = {"side_effect": tz_side_effect} if tz_side_effect else {"return_value": "UTC"}

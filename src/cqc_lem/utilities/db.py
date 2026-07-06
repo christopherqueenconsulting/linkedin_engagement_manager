@@ -2550,8 +2550,11 @@ def create_newsletter_edition(user_id: int, title: str, subtitle: str, body: str
             (user_id, title, subtitle, body, scheduled_for))
         connection.commit()
         return cursor.lastrowid
-    except mysql.connector.IntegrityError:
-        # uq_user_slot: an edition for this user+slot already exists — expected, not an error.
+    except mysql.connector.IntegrityError as err:
+        # errno 1062 = ER_DUP_ENTRY: uq_user_slot already covers this user+slot — expected, not an
+        # error. Other integrity failures (e.g. FK on user_id) are real problems worth surfacing.
+        if getattr(err, "errno", None) != 1062:
+            myprint(f"Could not create newsletter edition for user {user_id} | Error: {err}")
         return 0
     except mysql.connector.Error as err:
         myprint(f"Could not create newsletter edition for user {user_id} | Error: {err}")
