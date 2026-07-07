@@ -133,8 +133,8 @@ class _TextPostHarness:
             "sitemap": patch(f"{_RCP}.get_user_sitemap_url",
                              return_value=self.overrides.get("sitemap_url")),
             "refine": patch(f"{_RCP}.get_ai_linked_post_refinement",
-                            side_effect=lambda c: f"refined:{c}"),
-            "hook": patch(f"{_RCP}.optimize_post_hook", side_effect=lambda c: c),
+                            side_effect=lambda c, **kw: f"refined:{c}"),
+            "hook": patch(f"{_RCP}.optimize_post_hook", side_effect=lambda c, **kw: c),
             "sanitize": patch(f"{_RCP}.sanitize_for_linkedin", side_effect=lambda c: c),
             "bait": patch(f"{_RCP}.strip_engagement_bait", side_effect=lambda c: c),
             "shape_save": patch(f"{_RCP}.update_db_post_shape",
@@ -240,7 +240,11 @@ class TestCreateTextPost:
         gmp.assert_called_once()
         quit_g.assert_called_once_with(driver)
 
-    def test_profile_scrape_failure_uses_dummy_profile(self):
+    def test_profile_scrape_failure_uses_neutral_fallback(self):
+        # Configurability audit: scrape failure first tries the cached DB profile
+        # (load_profile_for_user); only when that's ALSO unavailable does it fall back to a
+        # neutral placeholder — never the old fake "John Doe / ABC Inc." persona, which leaked
+        # into prompts as if it were the user's identity.
         from cqc_lem.app.run_content_plan import create_text_post
         driver, wait = MagicMock(), MagicMock()
         with _TextPostHarness() as m, \
@@ -248,11 +252,12 @@ class TestCreateTextPost:
                    return_value=("a@x.com", "pw")), \
              patch(f"{_RCP}.get_driver_wait_pair", return_value=(driver, wait)), \
              patch(f"{_RCP}.get_my_profile", side_effect=RuntimeError("selenium down")), \
+             patch(f"{_RCP}.load_profile_for_user", return_value=None), \
              patch(f"{_RCP}.quit_gracefully") as quit_g:
             result = create_text_post(1, "awareness", post_type="thought_leadership",
                                       refine_final_post=False)
         assert result == "TL post"
-        assert m["tl"].call_args[0][0].full_name == "John Doe"  # dummy fallback
+        assert m["tl"].call_args[0][0].full_name == "LinkedIn Member"  # neutral, not a fake persona
         quit_g.assert_called_once_with(driver)
 
     def test_lead_magnet_cta_included_on_rotation(self):
