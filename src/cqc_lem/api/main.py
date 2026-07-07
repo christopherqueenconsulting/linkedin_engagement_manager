@@ -79,7 +79,7 @@ from fastapi.staticfiles import StaticFiles
 from linkedin_api.clients.auth.client import AuthClient
 from linkedin_api.clients.restli.client import RestliClient
 from linkedin_api.common.errors import ResponseFormattingError
-from pydantic import BaseModel, computed_field, field_validator, model_validator, Field
+from pydantic import BaseModel, field_validator, model_validator, Field
 
 app = FastAPI()
 
@@ -228,17 +228,6 @@ class UpgradeVideoRequest(BaseModel):
 
 class AvatarActivateRequest(BaseModel):
     session_token: str
-
-    @property
-    def post_json(self):
-        json = self.model_dump()
-        json['scheduled_datetime'] = self.scheduled_time
-        return json
-
-    @computed_field
-    @property
-    def scheduled_time(self) -> str:
-        return self.scheduled_datetime.isoformat()
 
 
 class BulkUpdateRequest(BaseModel):
