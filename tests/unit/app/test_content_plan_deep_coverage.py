@@ -390,6 +390,8 @@ class TestRegenerateTaskWrappers:
              patch(f"{_RCP}.save_video_url_to_dir", return_value=str(video_file)), \
              patch("cqc_lem.utilities.c2pa_helper.add_ai_content_credentials",
                    side_effect=RuntimeError("no cert")), \
+             patch("cqc_lem.utilities.db.get_post_status", return_value="planning"), \
+             patch(f"{_RCP}.update_db_post_status"), \
              patch(f"{_RCP}.update_db_post_video_url"):
             assert regenerate_video_for_post(9) is not None
 

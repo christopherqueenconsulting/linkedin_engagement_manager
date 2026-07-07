@@ -495,8 +495,11 @@ class TestCreateVideoContent:
     @patch("cqc_lem.app.run_content_plan.generate_flux1_image_from_prompt", return_value="/tmp/image.png")
     @patch("cqc_lem.app.run_content_plan.get_runway_ml_video_prompt_from_ai", return_value="a cinematic scene" * 30)
     @patch("cqc_lem.app.run_content_plan.get_flux_image_prompt_from_ai", return_value="An inspiring image")
+    @patch("cqc_lem.utilities.db.get_active_avatar", return_value=None)
+    @patch("cqc_lem.utilities.db.get_default_video_quality", return_value="standard")
     @patch("cqc_lem.app.run_content_plan.create_text_post", return_value="Great video post text")
-    def test_successful_video_generation(self, mock_text, mock_img_prompt, mock_vid_prompt, mock_image, mock_video):
+    def test_successful_video_generation(self, mock_text, mock_default_q, mock_avatar,
+                                         mock_img_prompt, mock_vid_prompt, mock_image, mock_video):
         from cqc_lem.app.run_content_plan import create_video_content
         content, video_url = create_video_content(user_id=1, stage="awareness")
         assert content == "Great video post text"

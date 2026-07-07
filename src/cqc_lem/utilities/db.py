@@ -612,6 +612,101 @@ def get_dashboard_counts(user_id: int, week_start) -> dict:
         connection.close()
 
 
+def get_planned_tasks(user_id: int, limit: int = 10) -> list[dict]:
+    """Upcoming (future-dated, non-terminal) work for the dashboard "Planned Tasks" card:
+    scheduled/approved/pending POSTS, scheduled DMs, and upcoming NEWSLETTER editions — each
+    labeled by `kind` (Post / DM / Newsletter). Terminal states (posted/sent/published/etc.)
+    are excluded, results are merged and sorted soonest-first, capped at `limit`."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    tasks: list[dict] = []
+    try:
+        cursor.execute(
+            "SELECT id, content, scheduled_time, status FROM posts "
+            "WHERE user_id = %s AND status IN (%s, %s, %s) "
+            "AND scheduled_time >= UTC_TIMESTAMP() ORDER BY scheduled_time ASC LIMIT %s",
+            (user_id, PostStatus.PENDING.value, PostStatus.APPROVED.value,
+             PostStatus.SCHEDULED.value, limit))
+        for row in cursor.fetchall():
+            tasks.append({
+                "kind": "Post",
+                "id": row["id"],
+                "title": (row.get("content") or "").strip()[:120] or "Scheduled post",
+                "scheduled_time": row["scheduled_time"],
+                "status": row["status"],
+            })
+
+        cursor.execute(
+            "SELECT id, recipient_name, message, scheduled_time, status FROM scheduled_dms "
+            "WHERE user_id = %s AND status IN (%s, %s, %s) "
+            "AND scheduled_time >= UTC_TIMESTAMP() ORDER BY scheduled_time ASC LIMIT %s",
+            (user_id, ScheduledDmStatus.PENDING.value, ScheduledDmStatus.APPROVED.value,
+             ScheduledDmStatus.SCHEDULED.value, limit))
+        for row in cursor.fetchall():
+            title = (row.get("recipient_name") or "").strip() or (row.get("message") or "").strip()[:120]
+            tasks.append({
+                "kind": "DM",
+                "id": row["id"],
+                "title": title or "Scheduled DM",
+                "scheduled_time": row["scheduled_time"],
+                "status": row["status"],
+            })
+
+        # newsletter_editions has no status enum in code; 'draft'/'approved' are the non-terminal
+        # states (mirrors get_pending_newsletter_editions), 'published'/'failed'/'skipped' terminal.
+        cursor.execute(
+            "SELECT id, title, scheduled_for, status FROM newsletter_editions "
+            "WHERE user_id = %s AND status IN ('draft', 'approved') "
+            "AND scheduled_for >= UTC_TIMESTAMP() ORDER BY scheduled_for ASC LIMIT %s",
+            (user_id, limit))
+        for row in cursor.fetchall():
+            tasks.append({
+                "kind": "Newsletter",
+                "id": row["id"],
+                "title": (row.get("title") or "").strip() or "Newsletter edition",
+                "scheduled_time": row["scheduled_for"],
+                "status": row["status"],
+            })
+    except mysql.connector.Error as err:
+        myprint(f"Could not get planned tasks for user {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+    tasks.sort(key=lambda t: t["scheduled_time"])
+    return tasks[:limit]
+
+
+def get_default_video_quality(user_id: int) -> str:
+    """The user's preferred default video quality for AUTO-generated posts (engagement_preferences).
+    Falls back to 'standard' when unset/invalid — premium is only ever honored when credits exist,
+    which is enforced separately at render time."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT default_video_quality FROM engagement_preferences WHERE user_id = %s",
+            (user_id,))
+        row = cursor.fetchone()
+        quality = row.get("default_video_quality") if row else None
+        return quality if quality in VALID_VIDEO_QUALITIES else "standard"
+    except mysql.connector.Error as err:
+        myprint(f"Could not get default video quality for user {user_id} | Error: {err}")
+        return "standard"
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def set_default_video_quality(user_id: int, quality: str) -> bool:
+    """Set the user's default video quality preference (upserts the engagement_preferences row).
+    Invalid values are coerced to 'standard'."""
+    if quality not in VALID_VIDEO_QUALITIES:
+        quality = "standard"
+    return update_engagement_preferences(user_id, {"default_video_quality": quality})
+
+
 def get_posted_posts(user_id: int):
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
@@ -2218,6 +2313,7 @@ _ENGAGEMENT_DEFAULTS: dict = {
     "focus_topics": [], "business_goals": None, "personal_goals": None,
     "min_reactions": None, "max_post_age_hours": 24, "reply_to_own_comments": True,
     "max_comments_per_day": 20, "max_dms_per_day": 20, "default_buyer_stage": None,
+    "default_video_quality": "standard",
 }
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
                            "exclude_keywords", "include_authors", "exclude_authors", "post_types",
@@ -2228,7 +2324,9 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "include_authors", "exclude_authors", "post_types", "focus_topics",
                     "business_goals", "personal_goals", "min_reactions",
                     "max_post_age_hours", "reply_to_own_comments", "max_comments_per_day",
-                    "max_dms_per_day", "default_buyer_stage")
+                    "max_dms_per_day", "default_buyer_stage", "default_video_quality")
+
+VALID_VIDEO_QUALITIES = ("standard", "premium", "premium_top")
 
 
 def _coerce_json_list(value) -> list:

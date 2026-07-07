@@ -69,6 +69,29 @@ class TestUpdateEngagementPreferences:
         assert prefs_arg["business_goals"] == "book calls"
         assert prefs_arg["personal_goals"] == "grow authority"
 
+    def test_default_video_quality_passthrough(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/engagement-preferences",
+                              json={"session_token": _SESSION, "default_video_quality": "premium"})
+        assert resp.status_code == 200
+        assert upd.call_args[0][1]["default_video_quality"] == "premium"
+
+    def test_default_video_quality_defaults_standard_when_omitted(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/engagement-preferences", json={"session_token": _SESSION})
+        assert resp.status_code == 200
+        assert upd.call_args[0][1]["default_video_quality"] == "standard"
+
+    def test_invalid_video_quality_coerced_to_standard(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/engagement-preferences",
+                              json={"session_token": _SESSION, "default_video_quality": "bogus"})
+        assert resp.status_code == 200
+        assert upd.call_args[0][1]["default_video_quality"] == "standard"
+
     def test_500_on_failure(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
              patch("cqc_lem.api.main.update_engagement_preferences", return_value=False):

@@ -19,6 +19,7 @@ from cqc_lem.app.run_content_plan import auto_create_weekly_content, plan_conten
 from cqc_lem.utilities.db import (
     insert_post, get_post_by_email, get_user_id, update_db_post, get_post_user_id,
     add_user_with_access_token, update_user, PostType, PostStatus, get_posts, get_dashboard_counts,
+    get_planned_tasks,
     get_recent_logs, bulk_update_posts, soft_delete_posts,
     insert_scheduled_dm, get_scheduled_dms, get_scheduled_dm, get_scheduled_dm_user_id,
     update_scheduled_dm, update_scheduled_dm_status, ScheduledDmStatus,
@@ -285,6 +286,7 @@ _LEN_TONE = 255           # engagement_preferences.tone (V52: VARCHAR(255))
 _LEN_COMMENT_STYLE = 255  # engagement_preferences.comment_style VARCHAR(255)
 _LEN_GOALS = 2000         # engagement_preferences.business_goals/personal_goals (TEXT; app cap)
 _LEN_BUYER_STAGE = 32     # engagement_preferences.default_buyer_stage VARCHAR(32)
+_VALID_VIDEO_QUALITIES = ("standard", "premium", "premium_top")  # engagement_preferences.default_video_quality
 _LEN_LM_KEYWORD = 128     # lead_magnet_settings.keyword VARCHAR(128)
 _LEN_LM_MESSAGE = 2000    # lead_magnet_settings.message (TEXT; app cap)
 _LEN_DM_TEMPLATE = 2000   # dm_templates.template_text (TEXT; app cap)
@@ -385,6 +387,12 @@ class EngagementPreferencesRequest(BaseModel):
     max_comments_per_day: int = 20
     max_dms_per_day: int = 20
     default_buyer_stage: Optional[str] = Field(default=None, max_length=_LEN_BUYER_STAGE)
+    default_video_quality: str = "standard"
+
+    @field_validator("default_video_quality")
+    @classmethod
+    def _coerce_video_quality(cls, v: str) -> str:
+        return v if v in _VALID_VIDEO_QUALITIES else "standard"
 
 
 class DmTemplateItem(BaseModel):
@@ -542,6 +550,31 @@ def get_dashboard_stats(email: str) -> ResponseModel:
     # datetime compare could 500 the endpoint → all-zeros fallback in the UI).
     stats: Dict[str, int] = get_dashboard_counts(user_id, week_start)
     return ResponseModel(status_code=200, detail=stats)
+
+
+@router.get("/dashboard/planned-tasks/", responses={
+    200: {"description": "Planned tasks returned"},
+    **{k: v for k, v in error_responses.items() if k in [400, 403]}
+})
+def get_planned_tasks_endpoint(email: str, limit: int = Query(default=10, ge=1, le=50)) -> ResponseModel:
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required")
+
+    user_id = get_user_id(email)
+    if not user_id:
+        raise HTTPException(status_code=403, detail="User not found")
+
+    tasks = [
+        {
+            "kind": t["kind"],
+            "id": t["id"],
+            "title": t["title"],
+            "status": t["status"],
+            "scheduled_time": _utc_iso(t["scheduled_time"]),
+        }
+        for t in get_planned_tasks(user_id, limit=limit)
+    ]
+    return ResponseModel(status_code=200, detail={"tasks": tasks})
 
 
 @router.get("/activity/", responses={

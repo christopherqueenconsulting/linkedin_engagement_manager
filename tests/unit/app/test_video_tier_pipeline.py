@@ -69,6 +69,7 @@ class TestGenerateVideoSrc:
 
     def test_standard_quality_no_credit_calls(self):
         with patch("cqc_lem.utilities.db.get_post_video_quality", return_value="standard"), \
+             patch("cqc_lem.utilities.db.get_default_video_quality", return_value="standard"), \
              patch("cqc_lem.utilities.db.get_video_credit_balance") as bal, \
              patch("cqc_lem.utilities.db.deduct_video_credits") as ded, \
              patch("cqc_lem.utilities.db.get_active_avatar", return_value=None), \
@@ -79,5 +80,97 @@ class TestGenerateVideoSrc:
             from cqc_lem.app.run_content_plan import _generate_video_src
             _generate_video_src(1, "text", None, post_id=9)
         bal.assert_not_called()
+        ded.assert_not_called()
+        assert crv.call_args[1]["model"] == "gen4_turbo"
+
+
+_ACTIVE_AVATAR = {"status": "succeeded", "model_ref": "owner/lora:v1", "trigger_word": "TOK"}
+
+
+class TestAvatarOnStandardTier:
+    def test_standard_uses_avatar_frame_when_present(self):
+        """Avatar appears on the standard (free) tier too — frame goes through generate_post_image."""
+        with patch("cqc_lem.utilities.db.get_post_video_quality", return_value="standard"), \
+             patch("cqc_lem.utilities.db.get_default_video_quality", return_value="standard"), \
+             patch("cqc_lem.utilities.db.get_active_avatar", return_value=_ACTIVE_AVATAR), \
+             patch("cqc_lem.app.run_content_plan.get_flux_image_prompt_from_ai", return_value="scene"), \
+             patch("cqc_lem.utilities.ai.ai_helper.generate_post_image", return_value="/tmp/avatar.png") as gpi, \
+             patch("cqc_lem.app.run_content_plan.generate_flux1_image_from_prompt") as flux, \
+             patch("cqc_lem.app.run_content_plan.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
+             patch("cqc_lem.app.run_content_plan.create_runway_video", return_value="https://x.mp4") as crv:
+            from cqc_lem.app.run_content_plan import _generate_video_src
+            src = _generate_video_src(7, "text", None, post_id=9)
+        assert src == "https://x.mp4"
+        gpi.assert_called_once()
+        assert gpi.call_args[0][1] == 7  # user_id passed to generate_post_image
+        flux.assert_not_called()
+        # standard model + avatar frame as the first positional image arg
+        assert crv.call_args[1]["model"] == "gen4_turbo"
+        assert crv.call_args[0][0] == "/tmp/avatar.png"
+
+    def test_standard_no_avatar_falls_back_to_flux(self):
+        with patch("cqc_lem.utilities.db.get_post_video_quality", return_value="standard"), \
+             patch("cqc_lem.utilities.db.get_default_video_quality", return_value="standard"), \
+             patch("cqc_lem.utilities.db.get_active_avatar", return_value=None), \
+             patch("cqc_lem.app.run_content_plan.get_flux_image_prompt_from_ai", return_value="scene"), \
+             patch("cqc_lem.utilities.ai.ai_helper.generate_post_image") as gpi, \
+             patch("cqc_lem.app.run_content_plan.generate_flux1_image_from_prompt", return_value="/tmp/i.png") as flux, \
+             patch("cqc_lem.app.run_content_plan.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
+             patch("cqc_lem.app.run_content_plan.create_runway_video", return_value="https://x.mp4") as crv:
+            from cqc_lem.app.run_content_plan import _generate_video_src
+            src = _generate_video_src(7, "text", None, post_id=9)
+        assert src == "https://x.mp4"
+        gpi.assert_not_called()
+        flux.assert_called_once()
+        assert crv.call_args[0][0] == "/tmp/i.png"
+
+
+    def test_premium_with_avatar_uses_avatar_image_to_video(self):
+        with patch("cqc_lem.utilities.db.get_post_video_quality", return_value="premium"), \
+             patch("cqc_lem.utilities.db.get_video_credit_balance", return_value=5), \
+             patch("cqc_lem.utilities.db.deduct_video_credits", return_value=True), \
+             patch("cqc_lem.utilities.db.get_active_avatar", return_value=_ACTIVE_AVATAR), \
+             patch("cqc_lem.app.run_content_plan.get_flux_image_prompt_from_ai", return_value="scene"), \
+             patch("cqc_lem.utilities.ai.ai_helper.generate_post_image", return_value="/tmp/avatar.png") as gpi, \
+             patch("cqc_lem.app.run_content_plan.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
+             patch("cqc_lem.app.run_content_plan.create_runway_video", return_value="https://x.mp4") as crv:
+            from cqc_lem.app.run_content_plan import _generate_video_src
+            src = _generate_video_src(7, "text", None, post_id=9)
+        assert src == "https://x.mp4"
+        gpi.assert_called_once()
+        # premium + avatar -> Veo image->video on the avatar frame with audio
+        assert crv.call_args[0][0] == "/tmp/avatar.png"
+        assert crv.call_args[1]["model"] == "veo3.1_fast" and crv.call_args[1]["audio"] is True
+
+
+class TestDefaultVideoQualityPreference:
+    def test_default_premium_upgrades_standard_post_when_credits(self):
+        """post video_quality='standard' but the user's default is premium + has credits -> premium."""
+        with patch("cqc_lem.utilities.db.get_post_video_quality", return_value="standard"), \
+             patch("cqc_lem.utilities.db.get_default_video_quality", return_value="premium"), \
+             patch("cqc_lem.utilities.db.get_video_credit_balance", return_value=5), \
+             patch("cqc_lem.utilities.db.deduct_video_credits", return_value=True) as ded, \
+             patch("cqc_lem.utilities.db.get_active_avatar", return_value=None), \
+             patch("cqc_lem.app.run_content_plan.get_flux_image_prompt_from_ai", return_value="scene"), \
+             patch("cqc_lem.app.run_content_plan.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
+             patch("cqc_lem.app.run_content_plan.create_runway_video", return_value="https://x.mp4") as crv:
+            from cqc_lem.app.run_content_plan import _generate_video_src
+            src = _generate_video_src(1, "text", None, post_id=9)
+        assert src == "https://x.mp4"
+        ded.assert_called_once()
+        assert crv.call_args[1]["model"] == "veo3.1_fast" and crv.call_args[1]["audio"] is True
+
+    def test_default_premium_degrades_to_standard_on_zero_credits(self):
+        with patch("cqc_lem.utilities.db.get_post_video_quality", return_value="standard"), \
+             patch("cqc_lem.utilities.db.get_default_video_quality", return_value="premium"), \
+             patch("cqc_lem.utilities.db.get_video_credit_balance", return_value=0), \
+             patch("cqc_lem.utilities.db.deduct_video_credits") as ded, \
+             patch("cqc_lem.utilities.db.get_active_avatar", return_value=None), \
+             patch("cqc_lem.app.run_content_plan.get_flux_image_prompt_from_ai", return_value="scene"), \
+             patch("cqc_lem.app.run_content_plan.generate_flux1_image_from_prompt", return_value="/tmp/i.png"), \
+             patch("cqc_lem.app.run_content_plan.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
+             patch("cqc_lem.app.run_content_plan.create_runway_video", return_value="https://x.mp4") as crv:
+            from cqc_lem.app.run_content_plan import _generate_video_src
+            src = _generate_video_src(1, "text", None, post_id=9)
         ded.assert_not_called()
         assert crv.call_args[1]["model"] == "gen4_turbo"
