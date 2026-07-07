@@ -26,7 +26,7 @@ from cqc_lem.utilities.db import get_post_type_counts, insert_planned_post, upda
 from cqc_lem.utilities.db import get_recent_post_shape_history, update_db_post_shape, get_lead_magnet_settings
 from cqc_lem.utilities.ai.content_framework import select_blueprint
 from cqc_lem.utilities.ai.content_alignment import (
-    should_include_lead_magnet_cta, lead_magnet_cta_directive)
+    should_include_lead_magnet_cta, lead_magnet_cta_directive, ensure_lead_magnet_cta)
 from cqc_lem.utilities.env_constants import API_URL_FINAL, DEFAULT_VIDEO_RATIO, \
     DEFAULT_IMAGE_RATIO, AI_DISCLOSURE_ENABLED, AI_DISCLOSURE_TEXT, \
     STANDARD_VIDEO_MODEL, PREMIUM_VIDEO_MODEL, PREMIUM_TOP_VIDEO_MODEL, \
@@ -34,7 +34,7 @@ from cqc_lem.utilities.env_constants import API_URL_FINAL, DEFAULT_VIDEO_RATIO, 
 from cqc_lem.utilities.linkedin.helper import get_my_profile, load_profile_for_user
 from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin, strip_engagement_bait
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
-from cqc_lem.utilities.logger import myprint
+from cqc_lem.utilities.logger import myprint, log_info
 from cqc_lem.utilities.selenium_util import get_driver_wait_pair, quit_gracefully
 from cqc_lem.utilities.utils import get_best_posting_time, get_post_time, create_folder_if_not_exists, save_video_url_to_dir
 from requests.adapters import HTTPAdapter
@@ -545,6 +545,10 @@ def regenerate_post(post_id: int, guidance: str = None) -> Optional[str]:
             revised = apply_post_guidance(content, guidance, prefs=prefs, profile_synthesis=synthesis)
             if revised:
                 content = sanitize_for_linkedin(revised).strip()
+                # The guidance rewrite is another LLM pass that can drop the comment-keyword
+                # mechanic create_text_post already verified — re-verify after it.
+                content = ensure_lead_magnet_cta(content, get_lead_magnet_settings(user_id), post_id,
+                                                 use_emojis=bool((prefs or {}).get("use_emojis")))
         except Exception as e:
             myprint(f"regenerate_post: guidance pass failed for post {post_id} ({e}); keeping base regen")
 
@@ -628,6 +632,8 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
     # automation. Only SOME posts get it (all = spammy/pattern-flagged). Recursive fallbacks reuse
     # the already-computed directive so the same post stays consistent. No-op unless the user enabled
     # the lead magnet with a non-empty keyword.
+    lead_magnet = None
+    include_cta = False
     if lead_magnet_cta is None:
         try:
             lead_magnet = get_lead_magnet_settings(user_id)
@@ -638,7 +644,7 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                         f"(keyword '{lead_magnet.get('keyword')}')")
         except Exception as e:
             myprint(f"Lead-magnet CTA skipped (settings unavailable): {e}")
-            lead_magnet_cta = ""
+            lead_magnet, include_cta, lead_magnet_cta = None, False, ""
 
     # Generate the post based on the selected type
     myprint(f"Creating text post of type: {post_type} for stage: {stage}")
@@ -707,6 +713,18 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
         # Guardrail: strip classic engagement-bait CTAs (penalized), keeping lead-magnet CTAs.
         final_content = strip_engagement_bait(final_content)
         final_content = final_content.strip()
+
+    # The refinement passes above are LLM rewrites — verified in prod to reword the "comment
+    # KEYWORD" mechanic into a generic ask or drop it entirely, which silently kills the auto-DM
+    # keyword listener. Deterministic verify-and-repair AFTER the pipeline guarantees the mechanic
+    # ships on every selected post (variant chosen by post_id so repaired CTAs stay non-identical).
+    if include_cta and final_content:
+        repaired = ensure_lead_magnet_cta(final_content, lead_magnet, post_id,
+                                          use_emojis=bool((prefs or {}).get("use_emojis")))
+        if repaired != final_content:
+            log_info("Lead-magnet CTA lost in refinement - repaired deterministically",
+                     post_id=post_id, user_id=user_id, task_name="create_text_post")
+            final_content = repaired
 
     # Persist the assigned shape so FUTURE posts rotate away from it (the newsletter's V50 shape
     # history, applied to posts via V51). Only the outermost call (which knows the post row) writes.
