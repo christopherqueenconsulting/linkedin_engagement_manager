@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.40.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.39.0...v0.40.0) (2026-07-07)
+
+
+### Features
+
+* **spa:** Save Draft vs Approve & Schedule for SPA-created posts + newsletters ([c7e3d4f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c7e3d4fc84fd42292f267efa780cc363dd8c354f))
+* **spa:** Save Draft vs Approve & Schedule for SPA-created posts + newsletters ([e3e6405](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e3e6405c91f2b2140a251e6e9d61254b7b10ff42))
+
 ## [0.39.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.38.1...v0.39.0) (2026-07-07)
 
 
