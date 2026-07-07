@@ -274,7 +274,12 @@ def ensure_lead_magnet_cta(content: Optional[str], lead_magnet: Optional[dict], 
     keyword = str(lead_magnet.get("keyword")).strip()
     if has_lead_magnet_cta_mechanic(content, keyword):
         return content
-    line = LEAD_MAGNET_CTA_REPAIR_MENU[int(post_id) % len(LEAD_MAGNET_CTA_REPAIR_MENU)].format(
+    # Index by the SELECTION ORDINAL (post_id // n), not raw post_id: selected posts are all
+    # multiples of n, so raw post_id % len(menu) would only ever hit gcd(n, len) of the variants —
+    # the ordinal makes consecutive selected posts cycle through the whole menu.
+    n = every_n if (every_n and every_n > 0) else LEAD_MAGNET_CTA_EVERY_N
+    idx = (int(post_id) // max(n, 1)) % len(LEAD_MAGNET_CTA_REPAIR_MENU)
+    line = LEAD_MAGNET_CTA_REPAIR_MENU[idx].format(
         keyword=keyword, resource=_resource_label(lead_magnet))
     if use_emojis:
         line += " " + _CTA_REPAIR_EMOJI
