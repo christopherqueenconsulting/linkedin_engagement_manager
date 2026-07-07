@@ -67,11 +67,14 @@ class TestLeadMagnetCTA:
     _ON = {"enabled": True, "keyword": "AUDIT", "message": "A free 12-point LinkedIn profile audit PDF."}
     _OFF = {"enabled": False, "keyword": "AUDIT", "message": "audit"}
     _NO_KEYWORD = {"enabled": True, "keyword": "  ", "message": "audit"}
+    _NO_MESSAGE = {"enabled": True, "keyword": "AUDIT", "message": "  "}
 
-    def test_enabled_requires_on_and_keyword(self):
+    def test_enabled_requires_on_keyword_and_message(self):
         assert ca.lead_magnet_enabled(self._ON) is True
         assert ca.lead_magnet_enabled(self._OFF) is False
         assert ca.lead_magnet_enabled(self._NO_KEYWORD) is False
+        # No message → the automation DM dispatch gate can never fire; the CTA must not run either.
+        assert ca.lead_magnet_enabled(self._NO_MESSAGE) is False
         assert ca.lead_magnet_enabled(None) is False
 
     def test_directive_included_only_when_enabled_and_selected(self):
@@ -106,7 +109,20 @@ class TestLeadMagnetCTA:
                        for i in range(300) if i % n != 0)
 
     def test_every_n_of_one_selects_all(self):
+        # n == 1 is an explicit operator choice meaning every post.
         assert all(ca.should_include_lead_magnet_cta(self._ON, i, every_n=1) for i in range(10))
+
+    @pytest.mark.parametrize("bad_n", [0, -1, -5])
+    def test_invalid_every_n_falls_back_to_default_cadence(self, bad_n):
+        # A misconfigured cadence (0/negative) must never mean 'every post' — default 1-in-3.
+        selected = [i for i in range(30)
+                    if ca.should_include_lead_magnet_cta(self._ON, i, every_n=bad_n)]
+        assert selected == list(range(0, 30, 3))
+
+    def test_invalid_env_cadence_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setattr(ca, "LEAD_MAGNET_CTA_EVERY_N", 0)
+        selected = [i for i in range(30) if ca.should_include_lead_magnet_cta(self._ON, i)]
+        assert selected == list(range(0, 30, 3))
 
     def test_alignment_directive_appends_cta_when_given(self):
         cta = ca.lead_magnet_cta_directive(self._ON, include=True)
@@ -213,8 +229,10 @@ class TestEnsureLeadMagnetCta:
     def test_noop_when_disabled_or_unkeyworded_or_no_post_id(self):
         off = {"enabled": False, "keyword": "AUDIT", "message": "x"}
         no_kw = {"enabled": True, "keyword": "  ", "message": "x"}
+        no_msg = {"enabled": True, "keyword": "AUDIT", "message": ""}
         assert ca.ensure_lead_magnet_cta(self._BODY, off, post_id=3) == self._BODY
         assert ca.ensure_lead_magnet_cta(self._BODY, no_kw, post_id=3) == self._BODY
+        assert ca.ensure_lead_magnet_cta(self._BODY, no_msg, post_id=3) == self._BODY
         assert ca.ensure_lead_magnet_cta(self._BODY, None, post_id=3) == self._BODY
         assert ca.ensure_lead_magnet_cta(self._BODY, self._LM, post_id=None) == self._BODY
         assert ca.ensure_lead_magnet_cta("", self._LM, post_id=3) == ""
@@ -235,12 +253,14 @@ class TestEnsureLeadMagnetCta:
         assert "a free 12-point LinkedIn profile audit PDF" in out
 
     @pytest.mark.parametrize("message", [
-        "",  # nothing configured
         "https://example.com/get-it #freebie",  # link/hashtag-only message must not leak in
         "I made a checklist that helps founders audit their ops end to end and more words",  # sentence-shaped
+        "This is a checklist for auditing your LinkedIn profile",  # multi-word sentence start
+        "We built an audit template you can copy",  # sentence start, plural
     ])
     def test_resource_label_falls_back_to_generic(self, message):
         lm = dict(self._LM, message=message)
         out = ca.ensure_lead_magnet_cta(self._BODY, lm, post_id=0, every_n=1)
         assert "the resource" in out
+        assert "This is a" not in out  # never a garbled 'my This is a checklist...' label
         assert "http" not in out.lower() and "#" not in out
