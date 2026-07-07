@@ -296,7 +296,7 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
         try:
             # Render slide images using Pillow; explicit override wins over auto-pick
             image_paths = create_carousel_slide_images(
-                carousel_obj, post_id, template=template or carousel_template
+                carousel_obj, post_id, template=template or carousel_template, user_id=user_id
             )
             slide_urls = [
                 f"{API_URL_FINAL}/api/assets?file_name=images/carousel/{post_id}/{os.path.basename(p)}"

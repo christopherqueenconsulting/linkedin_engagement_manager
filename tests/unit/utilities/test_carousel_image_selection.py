@@ -1,18 +1,25 @@
 """Unit tests for the structured, deterministic carousel content-slide image
 selection + layout routing (cqc_lem.utilities.carousel_creator)."""
 
+import os
+import tempfile
+
 import pytest
 from unittest.mock import MagicMock, patch
 
 from cqc_lem.utilities import carousel_creator as cc
 from cqc_lem.utilities.carousel_creator import (
+    EducationalContentCarousel,
     choose_content_layout,
+    create_carousel_slide_images,
     create_one_column_text_layout_slide,
     create_one_column_text_1_layout_slide,
     create_title_and_body_layout_slide,
     create_title_and_body_1_layout_slide,
     derive_image_query,
     select_slide_image,
+    _carousel_content_type,
+    _fit_and_crop_image,
     _heuristic_image_query,
     _seeded_unit,
     _should_include_slide_image,
@@ -299,3 +306,122 @@ class TestCarouselIntegrationRouting:
 
         # Both content slides (index 2 and 3) got an image.
         assert used == [(2, "image"), (3, "image")]
+
+
+# ── Pillow renderer: the actually-posted PNG carousel ─────────────────────────
+
+def _write_solid_image(color, size=(800, 600), suffix=".jpg"):
+    from PIL import Image
+    path = tempfile.NamedTemporaryFile(delete=False, suffix=suffix).name
+    Image.new("RGB", size, color).save(path)
+    return path
+
+
+def _edu_carousel():
+    return EducationalContentCarousel(**{
+        "cover": {"title": "5 Productivity Tips", "content": "Get more done"},
+        "contents": [
+            {"title": "Time Blocking", "content": "Reserve focused blocks for deep work."},
+            {"title": "Batch Tasks", "content": "Group similar tasks to cut context switching."},
+        ],
+        "call_to_action": {"title": "Your turn", "content": "Which tip will you try?"},
+    })
+
+
+@pytest.mark.unit
+class TestFitAndCropImage:
+    def test_exact_size_and_rgb(self):
+        src = _write_solid_image((10, 20, 30), size=(400, 200), suffix=".png")
+        panel = _fit_and_crop_image(src, 1080, 360)
+        assert panel.size == (1080, 360)
+        assert panel.mode == "RGB"
+
+    def test_flattens_transparency(self):
+        from PIL import Image
+        src = tempfile.NamedTemporaryFile(delete=False, suffix=".png").name
+        Image.new("RGBA", (300, 300), (0, 128, 255, 128)).save(src)
+        panel = _fit_and_crop_image(src, 200, 200)
+        assert panel.mode == "RGB"
+        assert panel.size == (200, 200)
+
+    def test_bad_image_raises(self):
+        bad = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name
+        with open(bad, "w") as fh:
+            fh.write("not an image")
+        with pytest.raises(Exception):
+            _fit_and_crop_image(bad, 100, 100)
+
+
+@pytest.mark.unit
+class TestContentTypeMapping:
+    def test_maps_known_type(self):
+        assert _carousel_content_type(_edu_carousel()) == "educational"
+
+    def test_unknown_defaults_professional(self):
+        assert _carousel_content_type(object()) == "professional"
+
+
+@pytest.mark.unit
+class TestPillowComposition:
+    """The posted PNGs: content slides composite a photo band; cover/CTA never do;
+    a miss or decode failure falls back to text-only. RED marks the image region."""
+
+    RED = (220, 30, 30)
+    BAND_SAMPLE = (540, 860)  # deep inside the bottom photo band on content slides
+
+    def _render(self, template, image_return, post_id=1):
+        from PIL import Image
+        outdir = tempfile.mkdtemp()
+        with patch.object(cc, "select_slide_image", return_value=image_return):
+            paths = create_carousel_slide_images(
+                _edu_carousel(), post_id=post_id,
+                output_dir=outdir, template=template,
+            )
+        return [Image.open(p).convert("RGB") for p in paths]
+
+    @pytest.mark.parametrize("template", ["bold_listicle", "minimal_dark", "stat_reveal",
+                                          "step_framework", "story_arc"])
+    def test_content_slide_has_image_band(self, template):
+        img_path = _write_solid_image(self.RED)
+        slides = self._render(template, img_path)
+        content = slides[1]  # slide_02 = first content slide
+        assert content.size == (1080, 1080)
+        px = content.getpixel(self.BAND_SAMPLE)
+        assert px[0] > 150 and px[1] < 100 and px[2] < 100, f"{template} band not composited: {px}"
+
+    def test_cover_and_cta_have_no_band(self):
+        img_path = _write_solid_image(self.RED)
+        slides = self._render("bold_listicle", img_path)
+        cover_px = slides[0].getpixel(self.BAND_SAMPLE)
+        cta_px = slides[-1].getpixel(self.BAND_SAMPLE)
+        # Neither cover nor CTA should carry the red photo band.
+        assert not (cover_px[0] > 150 and cover_px[1] < 100 and cover_px[2] < 100)
+        assert not (cta_px[0] > 150 and cta_px[1] < 100 and cta_px[2] < 100)
+
+    def test_no_image_falls_back_to_text_only(self):
+        slides = self._render("bold_listicle", None, post_id=2)
+        content = slides[1]
+        assert content.size == (1080, 1080)
+        px = content.getpixel(self.BAND_SAMPLE)
+        assert not (px[0] > 150 and px[1] < 100 and px[2] < 100)  # no red band
+
+    def test_decode_failure_falls_back_without_crashing(self):
+        bad = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name
+        with open(bad, "w") as fh:
+            fh.write("not an image")
+        slides = self._render("minimal_dark", bad, post_id=3)
+        content = slides[1]
+        assert content.size == (1080, 1080)
+        px = content.getpixel(self.BAND_SAMPLE)
+        assert not (px[0] > 150 and px[1] < 100 and px[2] < 100)
+
+    def test_selection_engine_called_per_content_slide_with_seed(self):
+        outdir = tempfile.mkdtemp()
+        with patch.object(cc, "select_slide_image", return_value=None) as mock_sel:
+            create_carousel_slide_images(_edu_carousel(), post_id=77, output_dir=outdir,
+                                         template="bold_listicle", user_id=5)
+        # 2 content slides (cover + CTA excluded); seeded by post_id + slide_index.
+        assert mock_sel.call_count == 2
+        seen = {(c.kwargs["post_id"], c.kwargs["slide_index"], c.kwargs["user_id"])
+                for c in mock_sel.call_args_list}
+        assert seen == {(77, 2, 5), (77, 3, 5)}

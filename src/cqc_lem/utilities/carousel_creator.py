@@ -1509,6 +1509,41 @@ CAROUSEL_TEMPLATES: dict[str, dict] = {
 DEFAULT_TEMPLATE = "bold_listicle"
 
 
+def _fit_and_crop_image(image_path: str, target_w: int, target_h: int):
+    """Cover-fit + center-crop an image to exactly (target_w, target_h) as RGB.
+
+    Scales so the image fully covers the target box (no letterboxing), then crops
+    the overflow from the center. Raises on any decode failure so callers can fall
+    back to a text-only render.
+    """
+    from PIL import Image
+    with Image.open(image_path) as src:
+        rgb = src.convert("RGB")  # flattens transparency / palette onto RGB
+    sw, sh = rgb.size
+    if sw <= 0 or sh <= 0:
+        raise ValueError("empty source image")
+    scale = max(target_w / sw, target_h / sh)
+    nw, nh = max(1, round(sw * scale)), max(1, round(sh * scale))
+    resized = rgb.resize((nw, nh), Image.LANCZOS)
+    left = (nw - target_w) // 2
+    top = (nh - target_h) // 2
+    return resized.crop((left, top, left + target_w, top + target_h))
+
+
+def _carousel_content_type(carousel_data) -> str:
+    """Map a carousel model instance to the content_type string used by the shared
+    image-selection engine (query derivation + avatar relevance)."""
+    return {
+        EducationalContentCarousel: "educational",
+        CaseStudyCarousel: "case_study",
+        PersonalStoryCarousel: "personal_story",
+        IndustryInsightsCarousel: "industry_insights",
+        EventRecapCarousel: "event_recap",
+        TestimonialCarousel: "testimonial",
+        ProductDemoCarousel: "product_demo",
+    }.get(type(carousel_data), "professional")
+
+
 def create_carousel_slide_images(
     carousel_data: Union[
         EducationalContentCarousel,
@@ -1522,6 +1557,7 @@ def create_carousel_slide_images(
     post_id: int,
     output_dir: Optional[str] = None,
     template: str = DEFAULT_TEMPLATE,
+    user_id: Optional[int] = None,
     # Legacy params retained for backward compat but ignored
     bg_color: tuple = (26, 86, 219),
     accent_color: tuple = (255, 255, 255),
@@ -1534,8 +1570,16 @@ def create_carousel_slide_images(
 
     ``template`` selects a visual style from CAROUSEL_TEMPLATES. Defaults to
     DEFAULT_TEMPLATE ("bold_listicle").
+
+    CONTENT (middle) slides composite a relevant image into a bottom photo band via
+    the shared, deterministic ``select_slide_image`` engine (Pexels-first, optional
+    avatar-gated generation), seeded by (post_id, slide_index). Text reflows into the
+    area above the band so nothing overlaps or clips. When no image is selected or the
+    decode fails, the slide renders exactly as before (text-only). Cover + CTA slides
+    are left as-is.
     """
     from PIL import Image, ImageDraw, ImageFont
+    from cqc_lem.utilities.logger import log_warning
 
     W, H = 1080, 1080
     WHITE = (255, 255, 255)
@@ -1637,6 +1681,28 @@ def create_carousel_slide_images(
         img.convert("RGB").save(out, "PNG", optimize=True)
         return out
 
+    # ── Content-slide photo band ──────────────────────────────────────────────
+    # A full-width band pinned above the slide footer. Preparing the panel up front
+    # means a decode failure returns (None, None) and the slide renders text-only —
+    # identical to today — instead of clipping text for an image that never lands.
+    BAND_H = 360
+
+    def _prep_band(image_path, footer_h, band_h=BAND_H):
+        if not image_path:
+            return None, None
+        band_top = H - footer_h - band_h
+        try:
+            panel = _fit_and_crop_image(image_path, W, band_h)
+        except Exception as e:
+            log_warning("Carousel content image composite failed; rendering text-only",
+                        exc=e, post_id=post_id)
+            return None, None
+        return panel, band_top
+
+    def _place_band(img, draw, panel, band_top, accent):
+        img.paste(panel, (0, band_top))
+        draw.rectangle([(0, band_top), (W, band_top + 6)], fill=accent)
+
     # ══════════════════════════════════════════════════════════════════════════
     # LAYOUT: listicle  (Bold Listicle)
     # White content slides, colored numbered badge circle top-left, navy footer
@@ -1667,7 +1733,7 @@ def create_carousel_slide_images(
         draw.text(((W - hw) // 2, H - 80), hint, font=f_l, fill=(*cover_accent, 160))
         return _save(img, idx)
 
-    def _listicle_content(idx, total, title, body, badge_color) -> str:
+    def _listicle_content(idx, total, title, body, badge_color, image_path=None) -> str:
         f_t = _load_font(64, bold=True)
         f_b = _load_font(38, bold=False)
         f_n = _load_font(50, bold=True)
@@ -1675,6 +1741,8 @@ def create_carousel_slide_images(
         title, body = _norm(title), _norm(body)
         img = Image.new("RGB", (W, H), color=content_bg)
         draw = ImageDraw.Draw(img, "RGBA")
+        BAR = 80
+        panel, band_top = _prep_band(image_path, BAR)
         draw.rectangle([(0, 0), (W, 10)], fill=badge_color)
         cx, cy, cr = 118, 155, 68
         draw.ellipse([(cx - cr, cy - cr), (cx + cr, cy + cr)], fill=badge_color)
@@ -1685,12 +1753,15 @@ def create_carousel_slide_images(
         draw.text((cx - nw // 2, cy - nh // 2 - 3), num_str, font=f_n, fill=WHITE)
         PAD = 62
         t_lines = _wrap(title, f_t, W - PAD * 2, draw)
-        y = _draw_block(draw, t_lines, f_t, PAD, cy + cr + 32, fill=title_color, spacing=12, max_lines=3)
+        y = _draw_block(draw, t_lines, f_t, PAD, cy + cr + 32, fill=title_color, spacing=12,
+                        max_lines=2 if band_top else 3)
         draw.rectangle([(PAD, y + 14), (PAD + 90, y + 20)], fill=badge_color)
         y += 48
         b_lines = _wrap(body, f_b, W - PAD * 2, draw)
-        _draw_block(draw, b_lines, f_b, PAD, y, fill=body_color, spacing=18, max_lines=7)
-        BAR = 80
+        _draw_block(draw, b_lines, f_b, PAD, y, fill=body_color, spacing=18,
+                    max_lines=3 if band_top else 7)
+        if panel is not None:
+            _place_band(img, draw, panel, band_top, badge_color)
         draw.rectangle([(0, H - BAR), (W, H)], fill=bottom_bar)
         draw.rectangle([(0, H - BAR), (int(W * idx / total), H - BAR + 5)], fill=badge_color)
         cnt = f"{idx} / {total}"
@@ -1759,13 +1830,14 @@ def create_carousel_slide_images(
         draw.text((PAD, H - 80), hint, font=f_l, fill=(*cover_accent, 120))
         return _save(img, idx)
 
-    def _dark_content(idx, total, title, body, badge_color) -> str:
+    def _dark_content(idx, total, title, body, badge_color, image_path=None) -> str:
         f_t = _load_font(70, bold=True)
         f_b = _load_font(36, bold=False)
         f_l = _load_font(24, bold=False)
         title, body = _norm(title), _norm(body)
         img = Image.new("RGB", (W, H), color=content_bg)
         draw = ImageDraw.Draw(img, "RGBA")
+        panel, band_top = _prep_band(image_path, 60)
         # Left accent bar (thicker than cover)
         draw.rectangle([(0, 0), (16, H)], fill=badge_color)
         # Slide number — top right, muted
@@ -1775,13 +1847,17 @@ def create_carousel_slide_images(
         # LARGE title left-aligned, starts high
         PAD = 70
         t_lines = _wrap(title, f_t, W - PAD - 60, draw)
-        y = _draw_block(draw, t_lines, f_t, PAD, 180, title_color, spacing=14, max_lines=4)
+        y = _draw_block(draw, t_lines, f_t, PAD, 180, title_color, spacing=14,
+                        max_lines=3 if band_top else 4)
         # Thin colored rule
         draw.rectangle([(PAD, y + 24), (PAD + 100, y + 27)], fill=badge_color)
         y += 52
         # Body text — smaller, muted
         b_lines = _wrap(body, f_b, W - PAD - 60, draw)
-        _draw_block(draw, b_lines, f_b, PAD, y, fill=body_color, spacing=20, max_lines=8)
+        _draw_block(draw, b_lines, f_b, PAD, y, fill=body_color, spacing=20,
+                    max_lines=3 if band_top else 8)
+        if panel is not None:
+            _place_band(img, draw, panel, band_top, badge_color)
         # Bottom: thin line only
         draw.rectangle([(0, H - 60), (W, H - 58)], fill=(*badge_color, 80))
         return _save(img, idx)
@@ -1842,7 +1918,7 @@ def create_carousel_slide_images(
         _draw_block(draw, s_lines, f_s, PAD, y, fill=(*cover_text, 200), spacing=14, centered=True, max_lines=3)
         return _save(img, idx)
 
-    def _stat_content(idx, total, title, body, badge_color) -> str:
+    def _stat_content(idx, total, title, body, badge_color, image_path=None) -> str:
         f_huge = _load_font(100, bold=True)  # title as massive centered text
         f_body = _load_font(36, bold=False)
         f_l    = _load_font(24, bold=False)
@@ -1850,6 +1926,7 @@ def create_carousel_slide_images(
         title, body = _norm(title), _norm(body)
         img = Image.new("RGB", (W, H), color=content_bg)
         draw = ImageDraw.Draw(img, "RGBA")
+        panel, band_top = _prep_band(image_path, 60)
         # Top color band
         draw.rectangle([(0, 0), (W, 90)], fill=badge_color)
         # Step number in top band
@@ -1857,17 +1934,23 @@ def create_carousel_slide_images(
         draw.text((W // 2 - int(draw.textlength(step_label, font=f_num)) // 2, 30),
                   step_label, font=f_num, fill=(*content_bg, 220))
         PAD = 60
-        # HUGE title — centered vertically in upper 65%
+        # HUGE title — centered vertically in upper 65%; lifted to the top band when
+        # an image occupies the lower third.
+        title_max = 2 if band_top else 3
         t_lines = _wrap(title, f_huge, W - PAD * 2, draw)
-        t_h = _block_h(t_lines[:3], f_huge, 18, draw)
-        t_y = max(130, (H * 65 // 100) // 2 - t_h // 2)
-        y = _draw_block(draw, t_lines, f_huge, PAD, t_y, title_color, spacing=18, centered=True, max_lines=3)
+        t_h = _block_h(t_lines[:title_max], f_huge, 18, draw)
+        t_y = 140 if band_top else max(130, (H * 65 // 100) // 2 - t_h // 2)
+        y = _draw_block(draw, t_lines, f_huge, PAD, t_y, title_color, spacing=18, centered=True,
+                        max_lines=title_max)
         # Horizontal rule
         draw.rectangle([(PAD, y + 22), (W - PAD, y + 25)], fill=(*badge_color, 120))
         y += 50
         # Body small, centered
         b_lines = _wrap(body, f_body, W - PAD * 2, draw)
-        _draw_block(draw, b_lines, f_body, PAD, y, fill=body_color, spacing=18, centered=True, max_lines=5)
+        _draw_block(draw, b_lines, f_body, PAD, y, fill=body_color, spacing=18, centered=True,
+                    max_lines=2 if band_top else 5)
+        if panel is not None:
+            _place_band(img, draw, panel, band_top, badge_color)
         # Bottom strip
         draw.rectangle([(0, H - 60), (W, H)], fill=bottom_bar)
         progress_w = int(W * (idx - 1) / max(total - 2, 1))
@@ -1931,7 +2014,7 @@ def create_carousel_slide_images(
         _draw_block(draw, s_lines, f_s, PAD, y, fill=(*cover_text, 200), spacing=14, centered=True, max_lines=3)
         return _save(img, idx)
 
-    def _step_content(idx, total, title, body, badge_color) -> str:
+    def _step_content(idx, total, title, body, badge_color, image_path=None) -> str:
         f_t = _load_font(62, bold=True)
         f_b = _load_font(36, bold=False)
         f_n = _load_font(30, bold=True)
@@ -1941,6 +2024,7 @@ def create_carousel_slide_images(
 
         img = Image.new("RGB", (W, H), color=content_bg)
         draw = ImageDraw.Draw(img, "RGBA")
+        panel, band_top = _prep_band(image_path, 60)
 
         # ── Step progress strip at top ────────────────────────────────────────
         STRIP = 100
@@ -1985,12 +2069,16 @@ def create_carousel_slide_images(
         draw.rectangle([(PAD, y + 12), (PAD + 80, y + 17)], fill=badge_color)
         y += 42
 
-        # ── Body with arrow bullets ───────────────────────────────────────────
-        for line_text in _wrap(body, f_b, W - PAD - 30, draw)[:7]:
+        # ── Body with arrow bullets (fewer lines when a photo band is present) ──
+        body_cap = 4 if band_top else 7
+        for line_text in _wrap(body, f_b, W - PAD - 30, draw)[:body_cap]:
             draw.text((PAD, y), "->", font=f_b, fill=badge_color)
             draw.text((PAD + 52, y), line_text, font=f_b, fill=body_color)
             bb = draw.textbbox((0, 0), line_text, font=f_b)
             y += (bb[3] - bb[1]) + 20
+
+        if panel is not None:
+            _place_band(img, draw, panel, band_top, badge_color)
 
         # ── Bottom bar ────────────────────────────────────────────────────────
         BAR = 60
@@ -2054,7 +2142,7 @@ def create_carousel_slide_images(
         _draw_block(draw, s_lines, f_s, PAD, y, fill=(*cover_text, 190), spacing=16, max_lines=3)
         return _save(img, idx)
 
-    def _story_content(idx, total, title, body, badge_color) -> str:
+    def _story_content(idx, total, title, body, badge_color, image_path=None) -> str:
         f_quote = _load_font(180, bold=True)
         f_t     = _load_font(58, bold=True)
         f_b     = _load_font(36, bold=False)
@@ -2062,6 +2150,7 @@ def create_carousel_slide_images(
         title, body = _norm(title), _norm(body)
         img = Image.new("RGB", (W, H), color=content_bg)
         draw = ImageDraw.Draw(img, "RGBA")
+        panel, band_top = _prep_band(image_path, 60)
         # Right accent border
         draw.rectangle([(W - 14, 0), (W, H)], fill=badge_color)
         # Slide number — top-left badge (square, not circle)
@@ -2077,13 +2166,19 @@ def create_carousel_slide_images(
         # Title — larger, treated as pull-quote
         PAD = 70
         t_lines = _wrap(title, f_t, W - PAD - 80, draw)
-        y = _draw_block(draw, t_lines, f_t, PAD, 220, title_color, spacing=14, max_lines=4)
+        y = _draw_block(draw, t_lines, f_t, PAD, 220, title_color, spacing=14,
+                        max_lines=3 if band_top else 4)
         # Amber rule
         draw.rectangle([(PAD, y + 16), (PAD + 100, y + 20)], fill=badge_color)
         y += 46
         # Body text — softer
         b_lines = _wrap(body, f_b, W - PAD - 80, draw)
-        _draw_block(draw, b_lines, f_b, PAD, y, fill=body_color, spacing=20, max_lines=6)
+        _draw_block(draw, b_lines, f_b, PAD, y, fill=body_color, spacing=20,
+                    max_lines=3 if band_top else 6)
+        if panel is not None:
+            _place_band(img, draw, panel, band_top, badge_color)
+            # keep the signature right border visible over the photo band
+            draw.rectangle([(W - 14, band_top), (W, H)], fill=badge_color)
         # Bottom: issue label
         draw.rectangle([(0, H - 60), (W - 14, H)], fill=bottom_bar)
         cnt = f"Part {idx - 1} of {total - 2}"
@@ -2193,6 +2288,7 @@ def create_carousel_slide_images(
         _add(carousel_data.call_to_action.title, carousel_data.call_to_action.content)
 
     # ── Render ────────────────────────────────────────────────────────────────
+    content_type = _carousel_content_type(carousel_data)
     total = len(slides_data)
     image_paths = []
     for idx, (title, body) in enumerate(slides_data, start=1):
@@ -2202,7 +2298,13 @@ def create_carousel_slide_images(
             path = render_cta(idx, total, title, body)
         else:
             bc = badge_colors[(idx - 2) % len(badge_colors)]
-            path = render_content(idx, total, title, body, bc)
+            # Shared deterministic engine; default_path=None so a miss => text-only
+            # (never a placeholder image).
+            slide_image = select_slide_image(
+                title=title, content=body, content_type=content_type,
+                post_id=post_id, slide_index=idx, user_id=user_id, default_path=None,
+            )
+            path = render_content(idx, total, title, body, bc, slide_image)
         image_paths.append(path)
 
     return image_paths
