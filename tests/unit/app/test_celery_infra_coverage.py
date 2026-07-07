@@ -15,7 +15,7 @@ class TestGetAwsSqs:
         session.client.return_value.get_queue_url.return_value = {"QueueUrl": "https://sqs/q"}
         result = get_aws_sqs("celery", session)
         assert result == {"QueueUrl": "https://sqs/q"}
-        session.client.assert_called_once_with(service_name="elasticcache")
+        session.client.assert_called_once_with(service_name="sqs")
         session.client.return_value.get_queue_url.assert_called_once_with(QueueName="celery")
 
 
