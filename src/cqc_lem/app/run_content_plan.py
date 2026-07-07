@@ -363,17 +363,27 @@ def _premium_tier_for_quality(quality: str):
 def _generate_video_src(user_id: int, text_content: str, profile, post_id: int = None):
     """Generate a video source URL honoring the post's quality tier + video credits.
 
-    Standard (free) = gen4_turbo image->video. Premium = Veo (+audio): with an active
-    avatar it runs Veo image->video on the avatar image to preserve the likeness, else
-    Veo text->video. Premium credits are reserved up-front and refunded on failure;
-    falls back to standard when the user has no credits, and to Pexels stock on error.
+    The account avatar (when active) drives the source frame on BOTH tiers so the user's
+    likeness appears regardless of tier. Standard (free) = gen4_turbo image->video off that
+    avatar frame (or a base Flux.1 frame when no avatar). Premium = Veo (+audio) image->video
+    on the avatar image to preserve likeness, else Veo text->video. The effective tier honors
+    the post's video_quality, falling back to the user's default_video_quality preference.
+    Premium credits are reserved up-front and refunded on failure; falls back to standard when
+    the user has no credits, and to Pexels stock on error.
     Returns the remote Runway URL (http) or a local Pexels path, or None.
     """
     from cqc_lem.utilities.ai.video_models import is_premium
+    from cqc_lem.utilities.ai.ai_helper import generate_post_image
     from cqc_lem.utilities.db import (get_post_video_quality, get_video_credit_balance,
-                                      deduct_video_credits, refund_video_credits, get_active_avatar)
+                                      deduct_video_credits, refund_video_credits, get_active_avatar,
+                                      get_default_video_quality)
 
     quality = get_post_video_quality(post_id) if post_id else "standard"
+    # Auto-planned posts default posts.video_quality to 'standard'; honor the user's per-user
+    # default_video_quality preference so they can opt their auto-generated videos up to premium
+    # (credit availability is still enforced below — no credits degrades back to standard).
+    if quality == "standard" and user_id:
+        quality = get_default_video_quality(user_id)
     tier = _premium_tier_for_quality(quality)
 
     model, audio, deducted = STANDARD_VIDEO_MODEL, False, 0
@@ -388,17 +398,23 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
     try:
         image_prompt = get_flux_image_prompt_from_ai(text_content, profile=profile, ratio=DEFAULT_IMAGE_RATIO)
         motion = get_runway_ml_video_prompt_from_ai(text_content, image_prompt, model=model)[:512]
+        avatar = get_active_avatar(user_id) if user_id else None
+        has_avatar = bool(avatar and avatar.get("status") == "succeeded" and avatar.get("model_ref"))
         if is_premium(model):
-            avatar = get_active_avatar(user_id) if user_id else None
-            if avatar and avatar.get("status") == "succeeded" and avatar.get("model_ref"):
-                from cqc_lem.utilities.ai.ai_helper import generate_post_image
+            if has_avatar:
                 image_path = generate_post_image(image_prompt, user_id, ratio="9:16")
                 src = create_runway_video(image_path, motion, model=model, ratio="9:16", audio=audio)
             else:
                 combined = (image_prompt[:700] + " Motion: " + motion)[:980]
                 src = create_runway_video(None, combined, model=model, ratio="9:16", audio=audio)
         else:
-            image_path = generate_flux1_image_from_prompt(image_prompt, ratio=DEFAULT_IMAGE_RATIO)
+            # Standard tier still uses the account avatar for the source frame when the user has one
+            # (avatar likeness regardless of tier; premium only adds the higher-quality Veo motion +
+            # credit spend). generate_post_image falls back to base Flux.1 when there is no avatar.
+            if has_avatar:
+                image_path = generate_post_image(image_prompt, user_id, ratio=DEFAULT_IMAGE_RATIO)
+            else:
+                image_path = generate_flux1_image_from_prompt(image_prompt, ratio=DEFAULT_IMAGE_RATIO)
             src = create_runway_video(image_path, motion, model=model, ratio=DEFAULT_VIDEO_RATIO)
         if not src:
             raise RuntimeError("no video output")
@@ -467,6 +483,13 @@ def regenerate_video_for_post(post_id: int) -> Optional[str]:
     video_file_name = os.path.basename(video_file_path)
     api_video_url = f"{API_URL_FINAL}/api/assets?file_name=videos/runwayml/{video_file_name}"
     update_db_post_video_url(post_id, api_video_url)
+    # Symmetric with regenerate_post_carousel_task: a real video now exists, so heal a non-terminal
+    # post (e.g. one left in 'planning' by asset backfill) to 'approved' so it becomes visible in the
+    # Review UI and can post, instead of being stranded despite a correctly-produced video.
+    from cqc_lem.utilities.db import get_post_status
+    if api_video_url and get_post_status(post_id) != PostStatus.POSTED.value:
+        update_db_post_status(post_id, PostStatus.APPROVED)
+        myprint(f"regenerate_video_for_post: post {post_id} healed → approved")
     myprint(f"regenerate_video_for_post: post_id={post_id} -> {api_video_url}")
     return api_video_url
 

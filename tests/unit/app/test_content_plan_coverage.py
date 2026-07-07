@@ -241,11 +241,49 @@ class TestRegenerateVideoForPost:
              patch(f"{_RCP}.create_folder_if_not_exists"), \
              patch(f"{_RCP}.save_video_url_to_dir", return_value=str(video_file)), \
              patch("cqc_lem.utilities.c2pa_helper.add_ai_content_credentials") as c2pa, \
+             patch("cqc_lem.utilities.db.get_post_status", return_value="planning"), \
+             patch(f"{_RCP}.update_db_post_status"), \
              patch(f"{_RCP}.update_db_post_video_url") as upd:
             url = regenerate_video_for_post(9)
         assert url is not None and "file_name=videos/runwayml/new.mp4" in url
         c2pa.assert_called_once_with(str(video_file))
         upd.assert_called_once_with(9, url)
+
+    def test_heals_planning_post_to_approved_on_success(self, tmp_path):
+        from cqc_lem.app.run_content_plan import regenerate_video_for_post
+        from cqc_lem.utilities.db import PostStatus
+        video_file = tmp_path / "new.mp4"
+        video_file.write_bytes(b"v")
+        with patch(f"{_RCP}.get_post_content", return_value="text"), \
+             patch("cqc_lem.utilities.db.get_post_user_id", return_value=1), \
+             patch(f"{_RCP}.load_profile_for_user", return_value=MagicMock()), \
+             patch(f"{_RCP}._generate_video_src", return_value="http://runway/new.mp4"), \
+             patch(f"{_RCP}.create_folder_if_not_exists"), \
+             patch(f"{_RCP}.save_video_url_to_dir", return_value=str(video_file)), \
+             patch("cqc_lem.utilities.c2pa_helper.add_ai_content_credentials"), \
+             patch("cqc_lem.utilities.db.get_post_status", return_value="planning"), \
+             patch(f"{_RCP}.update_db_post_status") as mock_status, \
+             patch(f"{_RCP}.update_db_post_video_url"):
+            regenerate_video_for_post(9)
+        assert PostStatus.APPROVED in [c.args[1] for c in mock_status.call_args_list]
+
+    def test_does_not_reheal_posted_video(self, tmp_path):
+        from cqc_lem.app.run_content_plan import regenerate_video_for_post
+        from cqc_lem.utilities.db import PostStatus
+        video_file = tmp_path / "new.mp4"
+        video_file.write_bytes(b"v")
+        with patch(f"{_RCP}.get_post_content", return_value="text"), \
+             patch("cqc_lem.utilities.db.get_post_user_id", return_value=1), \
+             patch(f"{_RCP}.load_profile_for_user", return_value=MagicMock()), \
+             patch(f"{_RCP}._generate_video_src", return_value="http://runway/new.mp4"), \
+             patch(f"{_RCP}.create_folder_if_not_exists"), \
+             patch(f"{_RCP}.save_video_url_to_dir", return_value=str(video_file)), \
+             patch("cqc_lem.utilities.c2pa_helper.add_ai_content_credentials"), \
+             patch("cqc_lem.utilities.db.get_post_status", return_value=PostStatus.POSTED.value), \
+             patch(f"{_RCP}.update_db_post_status") as mock_status, \
+             patch(f"{_RCP}.update_db_post_video_url"):
+            regenerate_video_for_post(9)
+        assert PostStatus.APPROVED not in [c.args[1] for c in mock_status.call_args_list]
 
     def test_profile_load_failure_is_non_fatal(self, tmp_path):
         from cqc_lem.app.run_content_plan import regenerate_video_for_post
@@ -257,6 +295,8 @@ class TestRegenerateVideoForPost:
              patch(f"{_RCP}.create_folder_if_not_exists"), \
              patch(f"{_RCP}.save_video_url_to_dir", return_value=str(video_file)), \
              patch("cqc_lem.utilities.c2pa_helper.add_ai_content_credentials") as c2pa, \
+             patch("cqc_lem.utilities.db.get_post_status", return_value="planning"), \
+             patch(f"{_RCP}.update_db_post_status"), \
              patch(f"{_RCP}.update_db_post_video_url"):
             assert regenerate_video_for_post(9) is not None
         c2pa.assert_not_called()  # Pexels stock never gets AI credentials
