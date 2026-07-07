@@ -42,9 +42,11 @@ class TestSelectFocusTopic:
         assert select_focus_topic(None, 1) is None
         assert select_focus_topic({"focus_topics": ["  ", ""]}, 1) is None
 
-    def test_no_sequence_index_still_picks_a_declared_topic(self):
+    def test_no_sequence_index_falls_back_to_first_topic_deterministically(self):
         from cqc_lem.utilities.ai.content_alignment import select_focus_topic
-        assert select_focus_topic(_PREFS, None) in _FOCUS
+        # No stable per-post key → deterministic FIRST topic, never a random pick.
+        assert select_focus_topic(_PREFS, None) == _FOCUS[0]
+        assert select_focus_topic(_PREFS, None) == select_focus_topic(_PREFS, None)
 
 
 class TestTrendAnalysisAnchoring:

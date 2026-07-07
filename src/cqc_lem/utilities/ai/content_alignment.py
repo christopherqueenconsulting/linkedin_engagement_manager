@@ -8,7 +8,6 @@ out of alignment with each other over time."""
 
 import math
 import os
-import random
 import re
 from typing import Optional
 
@@ -130,14 +129,14 @@ def select_focus_topic(prefs: dict = None, sequence_index: Optional[int] = None)
     """The SUBJECT anchor for one trend-based post: rotate deterministically across the user's
     declared focus topics (keyed off a stable per-post integer — the post id — the same way the
     lead-magnet CTA rotation works) so anchoring never collapses every post onto one topic. Without
-    a sequence key it falls back to a random pick among the topics (variety over determinism, and
-    consistent with how the industry itself is randomly chosen). Returns None when the user declared
-    no focus topics — callers keep their current profile-industry-only behavior."""
+    a sequence key it deterministically falls back to the FIRST topic — reproducible and testable,
+    no per-call randomness. Returns None when the user declared no focus topics — callers keep
+    their current profile-industry-only behavior."""
     topics = _focus_topics(prefs)
     if not topics:
         return None
     if sequence_index is None:
-        return random.choice(topics)
+        return topics[0]
     return topics[int(sequence_index) % len(topics)]
 
 
