@@ -60,6 +60,24 @@ PREMIUM_TOP_VIDEO_MODEL = get_constant_from_env('PREMIUM_TOP_VIDEO_MODEL', defau
 PREMIUM_VIDEO_CREDITS = int(get_constant_from_env('PREMIUM_VIDEO_CREDITS', default_value='1'))
 PREMIUM_TOP_VIDEO_CREDITS = int(get_constant_from_env('PREMIUM_TOP_VIDEO_CREDITS', default_value='3'))
 
+# --- Carousel content-slide imagery ---
+# Content (middle) carousel slides carry a relevant image so they don't render as
+# text-on-blank. Sourcing is deterministic and cheap-first: Pexels stock (just an
+# API call) is the default source; Replicate generation is OFF by default (costs
+# money + only adds value with the user's active avatar). Rates are 0..1 fractions
+# applied against a per-(post_id, slide) deterministic seed so regeneration is stable.
+CAROUSEL_IMAGES_ENABLED = isTrue(get_constant_from_env('CAROUSEL_IMAGES_ENABLED', default_value='True'))
+CAROUSEL_PEXELS_ENABLED = isTrue(get_constant_from_env('CAROUSEL_PEXELS_ENABLED', default_value='True'))
+CAROUSEL_REPLICATE_ENABLED = isTrue(get_constant_from_env('CAROUSEL_REPLICATE_ENABLED', default_value='False'))
+# Fraction of eligible content slides that MAY use Replicate generation (only when
+# CAROUSEL_REPLICATE_ENABLED and the user has an active, relevant avatar). Low by default.
+CAROUSEL_REPLICATE_RATE = float(get_constant_from_env('CAROUSEL_REPLICATE_RATE', default_value='0.34'))
+# Fraction of content slides that get an image at all (1.0 = every content slide).
+CAROUSEL_IMAGE_RATE = float(get_constant_from_env('CAROUSEL_IMAGE_RATE', default_value='1.0'))
+# Use an LLM (lem-simple) to derive visual keywords from slide meaning. When off,
+# a local keyword-extraction heuristic is used (no API call).
+CAROUSEL_IMAGE_QUERY_LLM = isTrue(get_constant_from_env('CAROUSEL_IMAGE_QUERY_LLM', default_value='True'))
+
 # AI disclosure: append a short caption line to AI-visual posts. Guaranteed-visible
 # fallback for C2PA (which self-signed certs can't make LinkedIn trust yet).
 AI_DISCLOSURE_ENABLED = isTrue(get_constant_from_env('AI_DISCLOSURE_ENABLED', default_value='True'))
