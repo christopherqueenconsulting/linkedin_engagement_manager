@@ -431,11 +431,21 @@ class TestScrapeRecentPosts:
 
 
 class TestProcessSelectedPost:
-    def test_handles_list_content_and_missing_values(self, capsys):
+    def test_handles_list_content_and_missing_values(self):
         from cqc_lem.app.run_content_plan import process_selected_post
-        # Must not raise on list content or falsy url/content
-        process_selected_post(None, ["part one", "part two"])
-        process_selected_post("https://x.com/p", None)
+        with patch(f"{_RCP}.myprint") as log:
+            # List content is joined; a falsy url gets the placeholder.
+            process_selected_post(None, ["part one", "part two"])
+            logged = " | ".join(str(c.args[0]) for c in log.call_args_list)
+            assert "Could not retrieve URL" in logged
+            assert "part one part two" in logged
+
+            log.reset_mock()
+            # Falsy content gets the placeholder and never raises.
+            process_selected_post("https://x.com/p", None)
+            logged = " | ".join(str(c.args[0]) for c in log.call_args_list)
+            assert "https://x.com/p" in logged
+            assert "Could not retrieve content" in logged
 
 
 class TestGenerateWebsiteContentPost:
