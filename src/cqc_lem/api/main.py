@@ -1318,7 +1318,14 @@ def update_scheduled_dm_endpoint(request: UpdateDmRequest) -> ResponseModel:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     if get_scheduled_dm_user_id(request.dm_id) != user_id:
         raise HTTPException(status_code=404, detail="Scheduled DM not found")
-    status = {"approve": ScheduledDmStatus.APPROVED, "cancel": ScheduledDmStatus.CANCELED}.get(request.action)
+    action_map = {"approve": ScheduledDmStatus.APPROVED, "cancel": ScheduledDmStatus.CANCELED}
+    if request.action is not None and request.action not in action_map:
+        raise HTTPException(status_code=422,
+                            detail=f"Unknown action '{request.action}' — expected 'approve' or 'cancel'")
+    status = action_map.get(request.action)
+    if status is None and all(v is None for v in (request.recipient_profile_url, request.recipient_name,
+                                                  request.message, request.scheduled_datetime)):
+        raise HTTPException(status_code=422, detail="Nothing to update — provide at least one field or an action")
     if not update_scheduled_dm(request.dm_id, recipient_profile_url=request.recipient_profile_url,
                                recipient_name=request.recipient_name, message=request.message,
                                scheduled_time=request.scheduled_datetime, status=status):

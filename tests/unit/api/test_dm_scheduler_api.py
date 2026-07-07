@@ -97,6 +97,24 @@ class TestUpdateAndCancel:
             resp = client.put("/api/dm", json={"session_token": _S, "dm_id": 3, "message": "x"})
         assert resp.status_code == 404
 
+    def test_unknown_action_422(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_scheduled_dm_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.update_scheduled_dm") as upd:
+            resp = client.put("/api/dm", json={"session_token": _S, "dm_id": 3, "action": "sned"})
+        assert resp.status_code == 422
+        assert "Unknown action" in resp.json()["detail"]
+        upd.assert_not_called()
+
+    def test_no_fields_and_no_action_422(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_scheduled_dm_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.update_scheduled_dm") as upd:
+            resp = client.put("/api/dm", json={"session_token": _S, "dm_id": 3})
+        assert resp.status_code == 422
+        assert "Nothing to update" in resp.json()["detail"]
+        upd.assert_not_called()
+
     def test_cancel_sets_canceled(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
              patch("cqc_lem.api.main.get_scheduled_dm_user_id", return_value=_U), \
