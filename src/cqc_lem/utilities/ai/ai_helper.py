@@ -721,7 +721,10 @@ def optimize_post_hook(post_content: str, prefs: dict = None) -> str:
         a bold claim, a surprising stat, or a sharp question. Keep the author's substance and voice.
         If the content lends itself to it, shape the body as a save-worthy framework or checklist and
         add ONE short, soft 'worth saving for later' style invite near the end. NO engagement-bait
-        (no 'comment YES'), NO external links, do not add hashtags. Return ONLY the rewritten post.""",
+        (no 'comment YES'), NO external links, do not add hashtags. Return ONLY the rewritten post."""
+        # The rewrite must respect the user's saved voice settings (tone, emoji/hashtag toggles) —
+        # without this the hook pass could re-introduce emojis a user has turned off. "" when unset.
+        + _style_directive(prefs, "post"),
     }
     user_prompt = {"role": "user", "content": post_content}
     try:
@@ -887,9 +890,27 @@ def get_industries_of_profile_from_ai(linked_in_profile: LinkedInProfile, indust
     comment = response.choices[0].message.content.strip()
     return comment
 
-def get_ai_linked_post_refinement(original_message: str, character_limit: int = 3000):
+def get_ai_linked_post_refinement(original_message: str, character_limit: int = 3000,
+                                  prefs: dict = None):
     character_limit_string = (f"""\nThe refined LinkedIn Post needs to be less than or equal to {character_limit} characters including white spaces and punctuations. You may use symbols, abbreviations, and other and short-hand.
                                Ideally, Posts between 1,300 and 2,000 characters tend to perform well by providing enough detail while maintaining readability.\n\n""") if character_limit > 0 else ""
+
+    # Pref-aware formatting rules. The old hardcoded lines instructed emoji bullets and a trailing
+    # hashtag block on EVERY refinement — directly fighting a user's use_emojis / use_hashtags
+    # settings (and the style directive the generator already honored). When no prefs are supplied
+    # the original wording is used verbatim, so unconfigured callers see a byte-identical prompt.
+    emoji_line = "Use emojis (✅, 👉, 🔑, 💡) for visual emphasis and as bullet replacements."
+    hashtag_line = "Place all hashtags together on the final line of the post."
+    tone_line = ""
+    if prefs:
+        if not prefs.get("use_emojis"):
+            emoji_line = "Do NOT use any emojis; remove any emojis present in the draft."
+        if not prefs.get("use_hashtags"):
+            hashtag_line = "Do NOT add hashtags; remove any hashtags present in the draft."
+        if prefs.get("tone"):
+            tone_line = (f"\n        6. **Preserve the author's configured tone**\n"
+                         f"           - The author writes in a {prefs['tone']} tone — preserve it; "
+                         "do not flatten it into a generic corporate voice.\n")
 
     prompt = f"""Please review and refine the following LinkedIn Post Draft. {character_limit_string} LinkedIn Post Draft: {original_message}
                 """
@@ -933,11 +954,11 @@ def get_ai_linked_post_refinement(original_message: str, character_limit: int = 
         5. **LinkedIn-native formatting only — no markdown**
            - Do NOT use markdown syntax of any kind: no **bold**, no *italic*, no _underline_, no # headers, no [links](url), no `code`.
            - LinkedIn does not render markdown; these characters appear as raw symbols to readers.
-           - Use emojis (✅, 👉, 🔑, 💡) for visual emphasis and as bullet replacements.
+           - {emoji_line}
            - Use ALL CAPS sparingly for emphasis of a single key word.
            - Use line breaks and blank lines for structure and readability.
-           - Place all hashtags together on the final line of the post.
-
+           - {hashtag_line}
+{tone_line}
         All responses should be **finalized drafts** ready for publishing. Do not ask for additional input—refine the given draft based on available information.
 
         Provide only the edited version of the LinkedIn post without explanations or notes.
@@ -1282,7 +1303,9 @@ def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, bu
 
     trends = get_industry_trend_analysis_based_on_user_profile(linked_user_profile, limit_to=10,
                                                                prefs=prefs, sequence_index=post_id)
-    industry = trends.get("industry", "Technology")
+    # Fall back to the user's OWN profile industry before the generic "Technology" — a fixed
+    # industry fallback misaligns the whole post for non-tech users.
+    industry = trends.get("industry") or getattr(linked_user_profile, "industry", None) or "Technology"
     analysis = trends.get("analysis", "")
 
     myprint(
@@ -1334,14 +1357,14 @@ def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, bu
         - Encourage engagement by inspiring readers to reflect, comment, or share.
         
         ### Instructions
-        1. **Analyze User Profile**:  
+        1. **Analyze User Profile**:
            Use the following details provided by the user:
-           - Job Title (e.g., “Chief Technology Officer,” “Senior Marketing Strategist”)
-           - Industry (e.g., “Healthcare Technology,” “Financial Services,” “Renewable Energy”)
+           - Job Title (exactly as stated in their profile)
+           - Industry (exactly as stated in — or inferred from — their profile; never substitute a different industry)
            - Years of Experience and Key Skills, if available.
-        
-        2. **Identify Key Industry Trends**:  
-           Based on the user’s industry, identify one or two current challenges, emerging trends, or transformations affecting the field. For example, if the user is in Healthcare Technology, potential themes might include digital transformation in patient care or regulatory compliance with data privacy.
+
+        2. **Identify Key Industry Trends**:
+           Based on the user’s industry, identify one or two current challenges, emerging trends, or transformations affecting the field, drawing them from the trend analysis provided — never from an unrelated example industry.
         
         3. **Develop Core Insight**:  
            Draw from the user's job title and experience to present an insight or perspective that:
@@ -1481,7 +1504,8 @@ def get_industry_news_post_from_ai(linked_user_profile: LinkedInProfile, buyer_s
 
     trends = get_industry_trend_analysis_based_on_user_profile(linked_user_profile, limit_to=3,
                                                                prefs=prefs, sequence_index=post_id)
-    industry = trends.get("industry", "Technology")
+    # Profile industry beats the generic "Technology" fallback (misalignment guard).
+    industry = trends.get("industry") or getattr(linked_user_profile, "industry", None) or "Technology"
     analysis = trends.get("analysis", "")
 
     # Use json to output to string
@@ -1690,7 +1714,8 @@ def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage:
 
     trends = get_industry_trend_analysis_based_on_user_profile(linked_user_profile, limit_to=5,
                                                                prefs=prefs, sequence_index=post_id)
-    industry = trends.get("industry", "Technology")
+    # Profile industry beats the generic "Technology" fallback (misalignment guard).
+    industry = trends.get("industry") or getattr(linked_user_profile, "industry", None) or "Technology"
     analysis = trends.get("analysis", "")
 
     # Add the industry trend analysis to the prompt
@@ -1806,7 +1831,8 @@ def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage:
 
     trends = get_industry_trend_analysis_based_on_user_profile(linked_user_profile,
                                                                prefs=prefs, sequence_index=post_id)
-    industry = trends.get("industry", "Technology")
+    # Profile industry beats the generic "Technology" fallback (misalignment guard).
+    industry = trends.get("industry") or getattr(linked_user_profile, "industry", None) or "Technology"
     analysis = trends.get("analysis", "")
 
     # Add the industry trend analysis to the prompt
@@ -1940,27 +1966,38 @@ def get_blog_summary_post_from_ai(blog_post_url: str, blog_post_content: str, li
 
     content = [{"type": "text", "text": prompt}]
 
+    # Pref-aware emoji/hashtag instructions — the hardcoded versions told the model to use emojis
+    # and add hashtags even when the user's settings (already in the style directive above) said
+    # not to, and a system-prompt instruction usually wins that fight. Unset prefs keep the
+    # original wording so unconfigured behavior is unchanged.
+    _emoji_instr = ("You can use emojis (such as 📊, 🌟, or ❓) to add personality, but only if it aligns with the user’s tone and industry norms."
+                    if (not prefs or prefs.get("use_emojis"))
+                    else "Do NOT use any emojis in the post.")
+    _hashtag_instr = ("Use up to 5 relevant hashtags, based on the article’s subject and the user’s industry. Suggested tags may include broader industry terms (#Innovation, #AI, #Leadership) and niche terms directly related to the content."
+                      if (not prefs or prefs.get("use_hashtags"))
+                      else "Do NOT include any hashtags in the post.")
+
     # System prompt to be included in every request
     system_prompt = {
         "role": "system",
         "content": f"""Act as an informed LinkedIn content strategist with expertise in the user’s industry. You will be provided with a blog article URL, the article content, and LinkedIn profile information from the user. Create an engaging LinkedIn-friendly summary post that highlights the relevance of the article to the user’s industry and expertise.
- 
+
         ### Instructions:
-        1. **Summarize the Main Idea**:  
+        1. **Summarize the Main Idea**:
            Begin with a clear, concise summary of the article's main message or insight, focusing on how it relates to the user’s industry. Avoid using complex terminology to keep the content accessible and engaging.
-         
-        2. **Personalize with Relatable Elements**:  
+
+        2. **Personalize with Relatable Elements**:
            Incorporate a relatable comment or anecdote that connects the article’s content to the user’s role or experience. Use phrases like:
            - “As a [Job Title], I often see…”
            - “In the world of [Industry], this trend is particularly relevant because…”
-         
-        3. **Add Engaging Elements**:  
-           Include a question, a call to action, or a compelling statistic from the article to prompt followers to engage with the post. You can use emojis (such as 📊, 🌟, or ❓) to add personality, but only if it aligns with the user’s tone and industry norms.
-         
-        4. **Incorporate Relevant Hashtags**:  
-           Use up to 5 relevant hashtags, based on the article’s subject and the user’s industry. Suggested tags may include broader industry terms (#Innovation, #AI, #Leadership) and niche terms directly related to the content.
-         
-        5. **Tone Adaptation**:  
+
+        3. **Add Engaging Elements**:
+           Include a question, a call to action, or a compelling statistic from the article to prompt followers to engage with the post. {_emoji_instr}
+
+        4. **Hashtags**:
+           {_hashtag_instr}
+
+        5. **Tone Adaptation**:
            Adjust the tone to match the article’s content and the LinkedIn user’s profile. Whether the tone is formal, casual, motivational, or insightful, ensure it feels authentic to the user's voice.
          
         6. **Encourage Readers to Read the Full Article**:  
@@ -2048,6 +2085,16 @@ def get_website_content_post_from_ai(content: str, url: str, linked_user_profile
 
     content = [{"type": "text", "text": prompt}]
 
+    # Pref-aware emoji/hashtag instructions (same fix as get_blog_summary_post_from_ai): honor the
+    # user's use_emojis/use_hashtags settings instead of hardcoding both ON. Unset prefs keep the
+    # original wording.
+    _emoji_instr = ("You can use emojis (such as 📊, 🌟, or ❓) to add personality, but only if it aligns with the user’s tone and industry norms."
+                    if (not prefs or prefs.get("use_emojis"))
+                    else "Do NOT use any emojis in the post.")
+    _hashtag_instr = ("Use up to 5 relevant hashtags, based on the website content’s subject and the user’s industry. Suggested tags may include broader industry terms (#Innovation, #AI, #Leadership) and niche terms directly related to the content."
+                      if (not prefs or prefs.get("use_hashtags"))
+                      else "Do NOT include any hashtags in the post.")
+
     # System prompt to be included in every request
     system_prompt = {
         "role": "system",
@@ -2055,21 +2102,21 @@ def get_website_content_post_from_ai(content: str, url: str, linked_user_profile
         Create an engaging LinkedIn-friendly summary post that highlights the relevance of the website content to the user’s industry and expertise.
 
             ### Instructions:
-            1. **Summarize the Main Idea**:  
+            1. **Summarize the Main Idea**:
                Begin with a clear, concise summary of the website content's main message or insight, focusing on how it relates to the user’s industry. Avoid using complex terminology to keep the content accessible and engaging.
 
-            2. **Personalize with Relatable Elements**:  
+            2. **Personalize with Relatable Elements**:
                Incorporate a relatable comment or anecdote that connects the website’s content to the user’s role or experience. Use phrases like:
                - “As a [Job Title], I often see…”
                - “In the world of [Industry], this trend is particularly relevant because…”
 
-            3. **Add Engaging Elements**:  
-               Include a question, a call to action, or a compelling statistic from the website content to prompt followers to engage with the post. You can use emojis (such as 📊, 🌟, or ❓) to add personality, but only if it aligns with the user’s tone and industry norms.
+            3. **Add Engaging Elements**:
+               Include a question, a call to action, or a compelling statistic from the website content to prompt followers to engage with the post. {_emoji_instr}
 
-            4. **Incorporate Relevant Hashtags**:  
-               Use up to 5 relevant hashtags, based on the website content’s subject and the user’s industry. Suggested tags may include broader industry terms (#Innovation, #AI, #Leadership) and niche terms directly related to the content.
+            4. **Hashtags**:
+               {_hashtag_instr}
 
-            5. **Tone Adaptation**:  
+            5. **Tone Adaptation**:
                Adjust the tone to match the website’s content and the LinkedIn user’s profile. Whether the tone is formal, casual, motivational, or insightful, ensure it feels authentic to the user's voice.
 
             6. **Encourage Readers to visit the website url**:  
@@ -2639,16 +2686,31 @@ def generate_carousel_content(user_id: int, stage: str, prefs: dict = None,
         finally:
             quit_gracefully(driver)
     except Exception as exc:
-        log_warning("Could not load user profile for carousel generation; using defaults", exc=exc)
-        profile = _Profile(full_name="Professional", job_title="Expert", company_name="Your Company")
+        log_warning("Could not load user profile for carousel generation; trying cached profile", exc=exc)
+        # Prefer the user's cached DB profile (no Selenium) over a generic persona — a hardcoded
+        # persona misaligns the carousel's industry/role framing.
+        profile = None
+        try:
+            from cqc_lem.utilities.linkedin.helper import load_profile_for_user
+            profile = load_profile_for_user(user_id)
+        except Exception as exc2:
+            log_warning("Cached profile unavailable for carousel generation", exc=exc2, user_id=user_id)
+        if profile is None:
+            profile = _Profile(full_name="Professional", job_title="Expert", company_name="Your Company")
 
     industry = getattr(profile, "industry", "Business") or "Business"
     job_title = getattr(profile, "job_title", "Professional") or "Professional"
 
+    # Honor the user's hashtag setting — the old prompt hardcoded "End with 5-10 hashtags" for
+    # every carousel regardless of use_hashtags. Unset prefs keep the original instruction.
+    _hashtag_rule = ("End with 5-10 relevant hashtags on the final line."
+                     if (not prefs or prefs.get("use_hashtags"))
+                     else "Do NOT include any hashtags.")
+
     prompt = f"""You are a LinkedIn content strategist creating a visual carousel post for a {job_title} in the {industry} industry at the {stage} stage of the buyer journey.
 
 Create two things and return them as a single JSON object with these top-level keys:
-1. "post_text": A compelling 1300-2000 character LinkedIn post that introduces the carousel. Use line breaks for readability. End with 5-10 relevant hashtags on the final line. Do NOT use markdown syntax — no **bold**, no *italic*, no # headers.
+1. "post_text": A compelling 1300-2000 character LinkedIn post that introduces the carousel. Use line breaks for readability. {_hashtag_rule} Do NOT use markdown syntax — no **bold**, no *italic*, no # headers.
 2. "carousel": A JSON object matching the {schema_hint}. Each slide's "title" should be 3-8 words. Each slide's "content" should be 1-3 engaging sentences (max 200 chars).
 
 Return ONLY valid JSON. No explanation, no markdown fences."""

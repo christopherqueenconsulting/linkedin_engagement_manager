@@ -2,6 +2,7 @@ import hashlib
 import inspect
 import json
 import math
+import os
 import re
 import random
 import sys
@@ -525,8 +526,11 @@ def _post_social_counts(card) -> dict:
             "impressions": _num(_IMPRESSIONS_RE)}
 
 
-# Feed-post prioritization weights (tunable). Recency dominates: golden-hour posts get 4–10× the
-# algorithmic weight and the author is online to reply — which is the whole point (earn a thread).
+# Feed-post prioritization weights — defaults below, each overridable per-deploy via the matching
+# FEED_SCORE_W_* / FEED_RECENCY_HALFLIFE_MIN env var (read at call time, same live-env pattern as
+# POST_SIMILARITY_MAX, so ops/tests can tune without a restart). Recency dominates: golden-hour
+# posts get 4–10× the algorithmic weight and the author is online to reply — which is the whole
+# point (earn a thread).
 _SCORE_W_RECENCY = 0.5
 _SCORE_W_RELEVANCE = 0.2
 _SCORE_W_RECIPROCITY = 0.2
@@ -534,10 +538,19 @@ _SCORE_W_ACTIVITY = 0.1
 _RECENCY_HALFLIFE_MIN = 180.0  # exp decay: ~1.0 under an hour, ~0.37 at 3h, small by a day
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = (os.environ.get(name) or "").strip()
+    try:
+        return float(raw) if raw else default
+    except ValueError:
+        return default
+
+
 def _recency_score(age_minutes) -> float:
     if age_minutes is None:
         return 0.4  # unknown age → mid-priority, never top
-    return math.exp(-max(0, age_minutes) / _RECENCY_HALFLIFE_MIN)
+    halflife = _env_float("FEED_RECENCY_HALFLIFE_MIN", _RECENCY_HALFLIFE_MIN)
+    return math.exp(-max(0, age_minutes) / max(halflife, 1.0))
 
 
 def _activity_score(comments: int) -> float:
@@ -594,8 +607,10 @@ def _score_feed_post(meta: dict, prefs: dict, engagers: set = None) -> float:
     reciprocal = bool(author) and (author in engagers or any(a and a in author for a in incl_auth))
     reciprocity = 1.0 if reciprocal else 0.0
     activity = _activity_score(meta.get("comments", 0))
-    return (_SCORE_W_RECENCY * recency + _SCORE_W_RELEVANCE * relevance
-            + _SCORE_W_RECIPROCITY * reciprocity + _SCORE_W_ACTIVITY * activity)
+    return (_env_float("FEED_SCORE_W_RECENCY", _SCORE_W_RECENCY) * recency
+            + _env_float("FEED_SCORE_W_RELEVANCE", _SCORE_W_RELEVANCE) * relevance
+            + _env_float("FEED_SCORE_W_RECIPROCITY", _SCORE_W_RECIPROCITY) * reciprocity
+            + _env_float("FEED_SCORE_W_ACTIVITY", _SCORE_W_ACTIVITY) * activity)
 
 
 def _strip_non_bmp(text: str) -> str:
@@ -1950,8 +1965,17 @@ def generate_and_post_comment(driver, wait, post_link, my_profile: LinkedInProfi
     myprint(f"Simulated Thinking... for {thinking_time} seconds")
     time.sleep(thinking_time)
 
-    # Generate AI response
-    comment_text = generate_ai_response(content, my_profile, img_url, profile_synthesis=profile_synthesis)
+    # Generate AI response — pass the user's engagement preferences so this path honors
+    # tone/comment_length/style/emoji/hashtag settings exactly like the feed-commenting path
+    # (it previously generated with NO prefs, silently ignoring the user's voice settings).
+    try:
+        prefs = get_engagement_preferences(user_id)
+    except Exception as e:
+        log_warning("Could not load engagement preferences for comment; generating with defaults",
+                    exc=e, user_id=user_id, action_type="comment")
+        prefs = None
+    comment_text = generate_ai_response(content, my_profile, img_url, prefs=prefs,
+                                        profile_synthesis=profile_synthesis)
 
     myprint(f"AI Generated Comment: {comment_text}")
     # Simulate typing the AI-generated comment

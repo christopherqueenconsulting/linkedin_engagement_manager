@@ -39,10 +39,10 @@ def _run(outputs, recent=None, prefs=None, post_id=77, log=None):
         patch(f"{_RCP}.update_db_post_shape"),
         patch(f"{_RCP}.get_thought_leadership_post_from_ai", gen),
         # Identity refinement passes so the gate sees the generator output verbatim.
-        patch(f"{_RCP}.get_ai_linked_post_refinement", side_effect=lambda c: c),
-        patch(f"{_RCP}.optimize_post_hook", side_effect=lambda c: c),
-        patch(f"{_RCP}.sanitize_for_linkedin", side_effect=lambda c: c),
-        patch(f"{_RCP}.strip_engagement_bait", side_effect=lambda c: c),
+        patch(f"{_RCP}.get_ai_linked_post_refinement", side_effect=lambda c, **kw: c),
+        patch(f"{_RCP}.optimize_post_hook", side_effect=lambda c, **kw: c),
+        patch(f"{_RCP}.sanitize_for_linkedin", side_effect=lambda c, **kw: c),
+        patch(f"{_RCP}.strip_engagement_bait", side_effect=lambda c, **kw: c),
     ]
     if log is not None:
         patches.append(patch(f"{_RCP}.log_warning", log))
@@ -78,10 +78,10 @@ class TestSteering:
              patch(f"{_RCP}.get_recent_post_shape_history", return_value=[]), \
              patch(f"{_RCP}.update_db_post_shape"), \
              patch(f"{_RCP}.get_thought_leadership_post_from_ai", return_value=_FRESH), \
-             patch(f"{_RCP}.get_ai_linked_post_refinement", side_effect=lambda c: c), \
-             patch(f"{_RCP}.optimize_post_hook", side_effect=lambda c: c), \
-             patch(f"{_RCP}.sanitize_for_linkedin", side_effect=lambda c: c), \
-             patch(f"{_RCP}.strip_engagement_bait", side_effect=lambda c: c):
+             patch(f"{_RCP}.get_ai_linked_post_refinement", side_effect=lambda c, **kw: c), \
+             patch(f"{_RCP}.optimize_post_hook", side_effect=lambda c, **kw: c), \
+             patch(f"{_RCP}.sanitize_for_linkedin", side_effect=lambda c, **kw: c), \
+             patch(f"{_RCP}.strip_engagement_bait", side_effect=lambda c, **kw: c):
             out = rcp.create_text_post(1, "awareness", post_type="thought_leadership",
                                        user_profile=MagicMock(), post_id=5)
         assert out == _FRESH
