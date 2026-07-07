@@ -159,12 +159,14 @@ export default function ContentStudio() {
   // Regenerate a single post with optional freeform guidance — runs the async generation task
   // server-side (honors saved settings + guidance), then resets the post to PENDING for re-review.
   const regenerateMutation = useMutation({
-    mutationFn: (vars: { post_id: number; guidance: string }) =>
-      api.post('/user/post/regenerate', {
+    mutationFn: (vars: { post_id: number; guidance: string }) => {
+      if (!sessionToken) return Promise.reject(new Error('No active session'))
+      return api.post('/user/post/regenerate', {
         session_token: sessionToken,
         post_id: vars.post_id,
         guidance: vars.guidance.trim() || null,
-      }),
+      })
+    },
     onSuccess: () => {
       setRegenGuidance('')
       setRegenNotice('Regenerating… this post will return to PENDING with fresh content shortly.')
@@ -681,16 +683,17 @@ export default function ContentStudio() {
       </>
       )}
 
-      {/* Quick-delete confirmation — permanent, all history lost. */}
+      {/* Quick-delete confirmation — backend is a soft delete (status=rejected), so the copy
+          promises only what actually happens: gone from the queue/views, not purged. */}
       {confirmDeletePost && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
              onClick={() => !deleteMutation.isPending && setConfirmDeletePost(null)}>
           <div className="bg-white rounded-lg shadow-xl max-w-sm w-full p-6 space-y-4"
                onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-base font-semibold text-gray-800">Delete this post?</h3>
+            <h3 className="text-base font-semibold text-gray-800">Remove this post?</h3>
             <p className="text-sm text-gray-600">
-              This will permanently delete post #{confirmDeletePost.post_id} and <span className="font-semibold">ALL of its
-              history</span> (stats, logs, generated media). This cannot be undone.
+              This will remove post #{confirmDeletePost.post_id} from your queue — it won't be published
+              and will disappear from all views. You can't undo this from the UI.
             </p>
             <p className="text-xs text-gray-500 line-clamp-3 bg-gray-50 rounded p-2">{confirmDeletePost.content}</p>
             <div className="flex gap-2 justify-end">
@@ -706,7 +709,7 @@ export default function ContentStudio() {
                 disabled={deleteMutation.isPending}
                 className="px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-semibold hover:bg-red-700 disabled:opacity-50"
               >
-                {deleteMutation.isPending ? 'Deleting…' : 'Delete permanently'}
+                {deleteMutation.isPending ? 'Removing…' : 'Remove post'}
               </button>
             </div>
           </div>
