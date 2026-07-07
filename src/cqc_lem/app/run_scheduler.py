@@ -14,7 +14,7 @@ from cqc_lem.utilities.db import (
     get_active_user_ids, PostStatus, has_linkedin_session, has_scheduled_post_today,
     get_company_linked_in_url_for_user,
     get_users_with_stripe_subscriptions, update_subscription_from_stripe,
-    get_due_scheduled_dms, update_scheduled_dm_status, ScheduledDmStatus,
+    get_due_scheduled_dms, get_orphaned_scheduled_dms, update_scheduled_dm_status, ScheduledDmStatus,
 )
 from cqc_lem.utilities.env_constants import SELENIUM_KEEP_VIDEOS_X_DAYS, CQC_LEM_POST_TIME_DELTA_MINUTES
 from cqc_lem.utilities.logger import myprint, log_info, log_debug, log_warning
@@ -112,7 +112,19 @@ def auto_check_scheduled_dms(self):
                  user_id=user_id, task_name="auto_check_scheduled_dms")
         dispatched += 1
 
-    return f"Scheduled {dispatched} DM(s)" if dispatched else "No DMs to Schedule"
+    # Re-queue DMs stuck in 'scheduled' whose send task was lost (e.g. on container restart) —
+    # mirrors the orphaned-post recovery above. The 2-hour gap avoids racing an in-flight task.
+    orphaned = get_orphaned_scheduled_dms(lookback_hours=2)
+    for dm_id, scheduled_time, user_id in orphaned:
+        log_warning(
+            f"Re-queueing orphaned scheduled DM {dm_id}",
+            user_id=user_id, task_name="auto_check_scheduled_dms",
+        )
+        send_scheduled_dm.apply_async(kwargs={'dm_id': dm_id})
+
+    if dispatched == 0 and len(orphaned) == 0:
+        return "No DMs to Schedule"
+    return f"Scheduled {dispatched} DM(s); re-queued {len(orphaned)} orphaned DM(s)"
 
 
 @shared_task.task

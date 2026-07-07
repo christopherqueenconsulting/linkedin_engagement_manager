@@ -66,6 +66,7 @@ class TestAutoCheckScheduledDms:
         from cqc_lem.app import run_scheduler as rs
         due = [(3, datetime(2026, 8, 1, 9, tzinfo=timezone.utc), 1)]
         with patch(f"{_RS}.get_due_scheduled_dms", return_value=due), \
+             patch(f"{_RS}.get_orphaned_scheduled_dms", return_value=[]), \
              patch(f"{_RS}.get_active_user_ids", return_value=[1]), \
              patch(f"{_RS}.update_scheduled_dm_status") as upd, \
              patch(f"{_RS}.send_scheduled_dm") as task:
@@ -80,6 +81,7 @@ class TestAutoCheckScheduledDms:
         from cqc_lem.app import run_scheduler as rs
         due = [(3, datetime(2026, 8, 1, 9, tzinfo=timezone.utc), 99)]
         with patch(f"{_RS}.get_due_scheduled_dms", return_value=due), \
+             patch(f"{_RS}.get_orphaned_scheduled_dms", return_value=[]), \
              patch(f"{_RS}.get_active_user_ids", return_value=[1]), \
              patch(f"{_RS}.update_scheduled_dm_status") as upd, \
              patch(f"{_RS}.send_scheduled_dm") as task:
@@ -87,3 +89,19 @@ class TestAutoCheckScheduledDms:
         task.apply_async.assert_not_called()
         upd.assert_not_called()
         assert "No DMs" in out
+
+    def test_requeues_orphaned_scheduled_dms(self):
+        # A DM stuck in 'scheduled' (send task lost, e.g. container restart) gets re-queued
+        # immediately — no eta, no second status flip. Mirrors the orphaned-post recovery.
+        from cqc_lem.app import run_scheduler as rs
+        orphan = [(7, datetime(2026, 7, 1, 9, tzinfo=timezone.utc), 1)]
+        with patch(f"{_RS}.get_due_scheduled_dms", return_value=[]), \
+             patch(f"{_RS}.get_orphaned_scheduled_dms", return_value=orphan) as orph, \
+             patch(f"{_RS}.get_active_user_ids", return_value=[1]), \
+             patch(f"{_RS}.update_scheduled_dm_status") as upd, \
+             patch(f"{_RS}.send_scheduled_dm") as task:
+            out = rs.auto_check_scheduled_dms()
+        orph.assert_called_once_with(lookback_hours=2)
+        task.apply_async.assert_called_once_with(kwargs={"dm_id": 7})
+        upd.assert_not_called()
+        assert "re-queued 1 orphaned" in out

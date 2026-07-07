@@ -2405,22 +2405,45 @@ def get_scheduled_dms(user_id: int, status_filter: str = None, page: int = 1,
 
 
 def get_due_scheduled_dms(post_time_delta_minutes: int = 20) -> list:
-    """Approved DMs whose scheduled_time falls between 24h ago and now+delta (mirrors
-    get_ready_to_post_posts). Returns (id, scheduled_time, user_id) tuples."""
+    """Approved DMs whose scheduled_time is at or before now+delta. Deliberately NO lower bound:
+    an approved DM can drift arbitrarily far past its slot (e.g. deferred repeatedly by the daily
+    DM cap) and must stay eligible until sent/canceled. Oldest first so overdue DMs drain in order.
+    Returns (id, scheduled_time, user_id) tuples."""
     now = datetime.now(timezone.utc)
     window_end = now + timedelta(minutes=post_time_delta_minutes)
-    yesterday = now - timedelta(days=1)
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
         cursor.execute(
             "SELECT id, scheduled_time, user_id FROM scheduled_dms "
-            "WHERE status = 'approved' AND scheduled_time BETWEEN %s AND %s "
+            "WHERE status = 'approved' AND scheduled_time <= %s "
             "ORDER BY scheduled_time ASC",
-            (yesterday, window_end))
+            (window_end,))
         return cursor.fetchall()
     except mysql.connector.Error as err:
         myprint(f"Could not get due scheduled DMs | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_orphaned_scheduled_dms(lookback_hours: int = 2) -> list:
+    """DMs stuck in 'scheduled' whose send task was lost (e.g. Celery queue purged on container
+    restart) before reaching sent/failed. Mirrors get_orphaned_scheduled_posts — the lookback gap
+    avoids racing a task that is still in flight. Returns (id, scheduled_time, user_id) tuples."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT id, scheduled_time, user_id FROM scheduled_dms "
+            "WHERE status = 'scheduled' AND scheduled_time <= %s "
+            "ORDER BY scheduled_time ASC",
+            (cutoff,))
+        return cursor.fetchall()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get orphaned scheduled DMs | Error: {err}")
         return []
     finally:
         cursor.close()
