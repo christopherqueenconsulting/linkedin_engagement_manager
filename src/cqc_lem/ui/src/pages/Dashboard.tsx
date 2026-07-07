@@ -17,12 +17,12 @@ interface DashboardStats {
   posted_total: number
 }
 
-interface Post {
-  post_id: number
-  content: string
-  scheduled_time: string
-  post_type: string
+interface PlannedTask {
+  kind: 'Post' | 'DM' | 'Newsletter'
+  id: number
+  title: string
   status: string
+  scheduled_time: string
 }
 
 interface ActivityEntry {
@@ -41,6 +41,12 @@ const ACTION_ICONS: Record<string, string> = {
   reply: '↩️',
   dm: '✉️',
   engaged: '👍',
+}
+
+const KIND_ICONS: Record<string, string> = {
+  Post: '📝',
+  DM: '✉️',
+  Newsletter: '📰',
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -83,9 +89,12 @@ export default function Dashboard() {
     refetchInterval: 30_000,
   })
 
-  const { data: postsData } = useQuery<{ detail: { posts: Post[]; total: number } }>({
-    queryKey: ['dashboard-posts', email],
-    queryFn: () => api.get(`/posts/?email=${encodeURIComponent(email)}&page_size=50`).then((r) => r.data),
+  // Upcoming (future-dated, non-terminal) work across posts, scheduled DMs, and newsletter
+  // editions — the backend already filters terminal states, sorts soonest-first, and caps.
+  const { data: plannedData } = useQuery<{ detail: { tasks: PlannedTask[] } }>({
+    queryKey: ['planned-tasks', email],
+    queryFn: () =>
+      api.get(`/dashboard/planned-tasks/?email=${encodeURIComponent(email)}&limit=10`).then((r) => r.data),
     enabled: !!email,
     refetchInterval: 30_000,
   })
@@ -113,11 +122,7 @@ export default function Dashboard() {
 
   const stats = statsData?.detail ?? { scheduled_this_week: 0, pending_review: 0, posted_total: 0 }
 
-  const allPosts = postsData?.detail?.posts ?? []
-  const upcoming = allPosts
-    .filter((p) => p.status !== 'POSTED')
-    .sort((a, b) => new Date(a.scheduled_time).getTime() - new Date(b.scheduled_time).getTime())
-    .slice(0, 5)
+  const upcoming = plannedData?.detail?.tasks ?? []
 
   const activity = activityData?.detail ?? []
 
@@ -169,30 +174,29 @@ export default function Dashboard() {
             </div>
           ) : (
             <ul className="space-y-3">
-              {upcoming.map((post) => (
+              {upcoming.map((task) => (
                 <li
-                  key={post.post_id}
+                  key={`${task.kind}-${task.id}`}
                   className="flex items-start gap-3 p-3 rounded-lg bg-gray-50 hover:bg-gray-100 transition-colors"
                 >
-                  <div className="mt-0.5 text-lg flex-shrink-0">
-                    {post.post_type === 'video'
-                      ? '🎬'
-                      : post.post_type === 'carousel'
-                      ? '🎠'
-                      : '📝'}
-                  </div>
+                  <div className="mt-0.5 text-lg flex-shrink-0">{KIND_ICONS[task.kind] ?? '🔔'}</div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-xs text-gray-500 mb-0.5">
-                      {formatInTimezone(post.scheduled_time, userTimezone)}
-                    </p>
-                    <p className="text-sm text-gray-700 line-clamp-2">{post.content}</p>
+                    <div className="flex items-center gap-2 mb-0.5">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                        {task.kind}
+                      </span>
+                      <span className="text-xs text-gray-400">
+                        {formatInTimezone(task.scheduled_time, userTimezone)}
+                      </span>
+                    </div>
+                    <p className="text-sm text-gray-700 line-clamp-2">{task.title}</p>
                   </div>
                   <span
                     className={`flex-shrink-0 px-2 py-0.5 rounded-full text-xs font-medium ${
-                      STATUS_COLORS[post.status] ?? 'bg-gray-100 text-gray-600'
+                      STATUS_COLORS[task.status.toUpperCase()] ?? 'bg-gray-100 text-gray-600'
                     }`}
                   >
-                    {post.status}
+                    {task.status}
                   </span>
                 </li>
               ))}

@@ -197,6 +197,17 @@ export default function EngagementSettingsCard() {
               onChange={(e) => setEng({ max_dms_per_day: Number(e.target.value) })}
               className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
           </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Auto-generated video quality</label>
+            <select value={engPrefs.default_video_quality ?? 'standard'}
+              onChange={(e) => setEng({ default_video_quality: e.target.value })}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+              <option value="standard">Standard (free)</option>
+              <option value="premium">Premium (uses 1 video credit)</option>
+              <option value="premium_top">Premium Top (uses 3 video credits)</option>
+            </select>
+            <p className="text-xs text-gray-400 mt-1">Premium spends video credits per auto-generated video; falls back to standard when you have none.</p>
+          </div>
         </div>
         <div className="flex items-center justify-between">
           <p className="text-sm font-medium text-gray-700">Reply to comments on my posts</p>
