@@ -1,6 +1,7 @@
 """Unit tests for LinkedIn text formatter utility."""
 
 import pytest
+from cqc_lem.utilities.ai.content_alignment import LEAD_MAGNET_CTA_REPAIR_MENU
 from cqc_lem.utilities.linkedin_formatter import (
     sanitize_for_linkedin, normalize_public_text, PLAIN_PUNCTUATION_DIRECTIVE,
     strip_engagement_bait)
@@ -32,6 +33,17 @@ class TestStripEngagementBait:
         text = "Real value here.\n\ncomment SCALE and I'll send over the playbook."
         out = strip_engagement_bait(text)
         assert "comment SCALE" in out
+
+    @pytest.mark.parametrize("resource", ["a free 12-point LinkedIn profile audit PDF", "the resource"])
+    @pytest.mark.parametrize("template", LEAD_MAGNET_CTA_REPAIR_MENU)
+    def test_preserves_every_repair_menu_variant(self, template, resource):
+        # The verify-and-repair menu (content_alignment.LEAD_MAGNET_CTA_REPAIR_MENU) must never be
+        # eaten by the bait filter or mangled by markdown sanitization — otherwise the repair would
+        # be undone the next time the content flows through the formatters.
+        variant = template.format(keyword="AUDIT", resource=resource)
+        text = f"Here is a real insight.\n\n{variant}"
+        assert variant in strip_engagement_bait(text)
+        assert variant in sanitize_for_linkedin(text)
 
 
 @pytest.mark.unit
