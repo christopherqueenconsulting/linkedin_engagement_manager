@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.39.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.38.1...v0.39.0) (2026-07-07)
+
+
+### Features
+
+* **review:** filter posts by type + boolean keyword search + sort on Review & Edit ([a988102](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a98810282fd3ce4a45d8fee2ee944361ab6a3946))
+* **review:** post-type filter + boolean keyword search + sort on Review & Edit ([d89b052](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d89b0522d6ede99706b7efbd9a7c2507c97f6473))
+
+
+### Bug Fixes
+
+* **carousel:** keep content-slide body text inside the margins ([d561f30](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d561f307e91ee826e64f4177cf096d5a4a962555))
+* **carousel:** keep content-slide body text inside the margins ([abf2098](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/abf2098a55275bb073d4326704e474ed69c8f460))
+* **ui,deploy:** lowercase post_type on schedule + make Flower basic auth optional ([77036d8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/77036d8a74565d233bc210e0addd8edc3c6391f9))
+* **ui,deploy:** lowercase post_type on schedule + optional Flower basic auth ([45736f2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/45736f27b639556dc4f47c0580ffe0a7a4c20e6e))
+
 ## [0.38.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.38.0...v0.38.1) (2026-07-07)
 
 
