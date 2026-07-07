@@ -159,7 +159,7 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
     try {
       const payload: Record<string, unknown> = {
         content,
-        post_type: postType,
+        post_type: postType.toLowerCase(),
         scheduled_datetime: new Date(scheduledAt).toISOString(),
         email,
         status: 'pending',
