@@ -245,12 +245,33 @@ def lead_magnet_cta_directive(lead_magnet: Optional[dict], include: bool) -> str
     return (
         "\n\nSANCTIONED lead-magnet call-to-action (this post ONLY — the user has explicitly "
         "configured this offer, so it OVERRIDES the no-self-promo guardrail for THIS CTA):\n"
-        f"- End the post with a short, soft invitation for readers to comment the exact word "
-        f"\"{keyword}\" to receive the resource; it will be delivered by DM after they comment.\n"
+        f"- REQUIRED: end the post with ONE short line that literally asks readers to comment the "
+        f"exact word \"{keyword}\" to receive the resource by DM. The words 'comment' and "
+        f"\"{keyword}\" must BOTH appear in that line — e.g. 'Comment {keyword} and I'll DM it to "
+        "you.'\n"
+        "- Do NOT paraphrase the mechanic: 'reach out', 'DM me', 'message me', 'send me a note', or "
+        "a link are NOT acceptable substitutes — an automation watches the comments for that exact "
+        "word, so a paraphrase breaks delivery.\n"
         "- Write it in the user's own voice — plainspoken, no hype, no hard sell, and NO link in the "
         "post body (the DM delivers it). Honor the user's emoji/hashtag settings.\n"
-        "- Keep it to one clean ask; do NOT stack multiple asks or use engagement-bait phrasing "
-        "(no 'tag a friend', no 'like if')." + context_line + "\n")
+        "- Keep it to exactly ONE ask; do NOT also add softer offers of the same resource, and no "
+        "engagement-bait phrasing (no 'tag a friend', no 'like if')." + context_line + "\n")
+
+
+def lead_magnet_preserve_note(keyword: Optional[str]) -> str:
+    """Preservation instruction for the downstream REWRITE passes (refinement / hook optimization).
+    Those prompts carry their own anti-engagement-bait rules, which is exactly what rewrites
+    'comment KEYWORD' into 'reach out for...' — this note carves out the sanctioned CTA so the
+    mechanic survives. Empty string when no keyword, so callers can append unconditionally."""
+    keyword = str(keyword or "").strip()
+    if not keyword:
+        return ""
+    return (
+        f"\n\nREQUIRED CTA — PRESERVE: the draft ends with a line asking readers to comment the "
+        f"exact word \"{keyword}\" to receive a resource by DM. That line is a sanctioned, "
+        "user-configured call-to-action, NOT engagement-bait: keep it (verbatim or lightly "
+        "polished), never paraphrase it into 'reach out'/'DM me'/'message me', never remove the "
+        f"word \"{keyword}\" or the word 'comment' from it, and keep exactly ONE such ask.")
 
 
 # The prompt directive above is only a REQUEST — the downstream refinement passes (LLM rewrites +
@@ -322,6 +343,39 @@ def has_lead_magnet_cta_mechanic(content: Optional[str], keyword: Optional[str])
     return bool(_cta_mechanic_re(keyword).search(content))
 
 
+# A "soft offer" is the model's PARAPHRASED version of the lead-magnet CTA — an offer to send the
+# resource without the comment-keyword mechanic ("Feel free to reach out if you'd like a
+# checklist..."). Left in place next to the appended repair line, it reads as a doubled ask. Both
+# halves are required for a strip (offer verb + resource noun) so ordinary sentences like "Reach
+# out to your vendor" or "Here's a checklist" are never touched — precision over recall: a missed
+# soft line is cosmetic, an over-strip loses real content.
+_SOFT_OFFER_VERBS = (r"(?:feel free to )?reach out|dm me|message me|send me a (?:dm|message|note)|"
+                     r"i(?:'|’)ll (?:send|share|dm)|happy to (?:send|share|dm|walk)")
+_SOFT_OFFER_NOUNS = (r"checklist|guide|template|playbook|worksheet|resource|framework|cheat ?sheet|"
+                     r"ebook|e-book|toolkit|audit|scorecard|assessment|list|copy")
+_SOFT_OFFER_RE = re.compile(
+    rf"(?=.*\b(?:{_SOFT_OFFER_VERBS})\b)(?=.*\b(?:{_SOFT_OFFER_NOUNS})\b)", re.IGNORECASE)
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _strip_soft_resource_offers(content: str, keyword: str) -> str:
+    """Remove sentences that soft-paraphrase the lead-magnet offer (offer verb + resource noun)
+    WITHOUT the comment-keyword mechanic — so the deterministic repair line never ships alongside
+    the model's mangled version of the same ask. Sentences carrying the real mechanic are kept."""
+    mech = _cta_mechanic_re(keyword)
+    out_lines = []
+    for raw_line in content.split("\n"):
+        sentences = _SENTENCE_SPLIT_RE.split(raw_line)
+        kept = [s for s in sentences
+                if not s.strip() or mech.search(s) or not _SOFT_OFFER_RE.search(s)]
+        line = " ".join(s for s in kept if s).rstrip()
+        # Drop a line the strip emptied entirely (was purely the soft offer).
+        if line or not raw_line.strip():
+            out_lines.append(line if raw_line.strip() else raw_line)
+    stripped = "\n".join(out_lines)
+    return re.sub(r"\n{3,}", "\n\n", stripped)
+
+
 def ensure_lead_magnet_cta(content: Optional[str], lead_magnet: Optional[dict], post_id: Optional[int],
                            use_emojis: bool = False, every_n: Optional[int] = None) -> Optional[str]:
     """Deterministic verify-and-repair run AFTER the refinement pipeline: if this post was selected
@@ -331,8 +385,12 @@ def ensure_lead_magnet_cta(content: Optional[str], lead_magnet: Optional[dict], 
     if not content or not should_include_lead_magnet_cta(lead_magnet, post_id, every_n):
         return content
     keyword = str(lead_magnet.get("keyword")).strip()
-    if has_lead_magnet_cta_mechanic(content, keyword):
-        return content
+    # Strip the model's soft PARAPHRASE of the same offer first ("reach out if you'd like the
+    # checklist...") — whether the real mechanic survived or not, a second softer ask next to it
+    # reads as a doubled CTA.
+    deduped = _strip_soft_resource_offers(content, keyword)
+    if has_lead_magnet_cta_mechanic(deduped, keyword):
+        return content if deduped == content else normalize_public_text(deduped)
     # Index by the SELECTION ORDINAL (post_id // n), not raw post_id: selected posts are all
     # multiples of n, so raw post_id % len(menu) would only ever hit gcd(n, len) of the variants —
     # the ordinal makes consecutive selected posts cycle through the whole menu.
@@ -342,7 +400,7 @@ def ensure_lead_magnet_cta(content: Optional[str], lead_magnet: Optional[dict], 
         keyword=keyword, resource=_resource_label(lead_magnet))
     if use_emojis:
         line += " " + _CTA_REPAIR_EMOJI
-    return normalize_public_text(content.rstrip() + "\n\n" + line)
+    return normalize_public_text(deduped.rstrip() + "\n\n" + line)
 
 
 def voice_reference(profile, profile_synthesis: Optional[str] = None) -> str:

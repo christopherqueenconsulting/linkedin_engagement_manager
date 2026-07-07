@@ -22,6 +22,7 @@ from cqc_lem.utilities.ai.content_alignment import (
     alignment_directive as _alignment_directive,
     voice_reference as _voice_reference,
     select_focus_topic as _select_focus_topic,
+    lead_magnet_preserve_note as _lead_magnet_preserve_note,
 )
 from cqc_lem.utilities.ai.content_research import research_topic
 from cqc_lem.utilities.ai.tools import search_recent_news, search_with_perplexity
@@ -707,7 +708,8 @@ def generate_thread_reply(post_content: str, comment_text: str, profile: "Linked
     return content.strip() if content is not None else None
 
 
-def optimize_post_hook(post_content: str, prefs: dict = None) -> str:
+def optimize_post_hook(post_content: str, prefs: dict = None,
+                       preserve_cta_keyword: str = None) -> str:
     """Rewrite a generated post so it opens with a scroll-stopping hook within the first ~210
     characters (before LinkedIn's '…more' fold) and, when the topic fits, frames it as save-worthy
     (a framework/checklist) with ONE soft 'save this' invite. Preserves substance + voice. Returns
@@ -724,7 +726,11 @@ def optimize_post_hook(post_content: str, prefs: dict = None) -> str:
         (no 'comment YES'), NO external links, do not add hashtags. Return ONLY the rewritten post."""
         # The rewrite must respect the user's saved voice settings (tone, emoji/hashtag toggles) —
         # without this the hook pass could re-introduce emojis a user has turned off. "" when unset.
-        + _style_directive(prefs, "post"),
+        + _style_directive(prefs, "post")
+        # This pass's own NO-engagement-bait rule is precisely what used to rewrite the sanctioned
+        # 'comment KEYWORD' lead-magnet ask into 'reach out for...' — the preserve note carves the
+        # configured keyword out of that rule. "" when no keyword.
+        + _lead_magnet_preserve_note(preserve_cta_keyword),
     }
     user_prompt = {"role": "user", "content": post_content}
     try:
@@ -891,7 +897,7 @@ def get_industries_of_profile_from_ai(linked_in_profile: LinkedInProfile, indust
     return comment
 
 def get_ai_linked_post_refinement(original_message: str, character_limit: int = 3000,
-                                  prefs: dict = None):
+                                  prefs: dict = None, preserve_cta_keyword: str = None):
     character_limit_string = (f"""\nThe refined LinkedIn Post needs to be less than or equal to {character_limit} characters including white spaces and punctuations. You may use symbols, abbreviations, and other and short-hand.
                                Ideally, Posts between 1,300 and 2,000 characters tend to perform well by providing enough detail while maintaining readability.\n\n""") if character_limit > 0 else ""
 
@@ -914,6 +920,9 @@ def get_ai_linked_post_refinement(original_message: str, character_limit: int = 
 
     prompt = f"""Please review and refine the following LinkedIn Post Draft. {character_limit_string} LinkedIn Post Draft: {original_message}
                 """
+    # Selected lead-magnet posts carry a REQUIRED comment-keyword CTA that this rewrite must not
+    # paraphrase away (the DM automation watches comments for the exact word).
+    prompt += _lead_magnet_preserve_note(preserve_cta_keyword)
 
     # myprint(f"Prompt: {prompt}")
 
