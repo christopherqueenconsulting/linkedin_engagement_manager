@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.37.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.36.0...v0.37.0) (2026-07-07)
+
+
+### Features
+
+* **content:** anchor post subjects to focus topics + post-history dedup/alignment review ([304bff8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/304bff81b04e43bd0fee466fef605b60b9675b38))
+* **content:** anchor trend-based post subjects to the user's focus topics ([a2fb5ff](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a2fb5ff076e6627c488f930703edcfdb557ecca3))
+* **content:** post-history dedup steering + similarity review gate ([50a89c7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/50a89c746befc7568e04bbbc9759ceccb8ae4e17))
+* **engagement:** honor prefs on viewer-comment path; env-tunable feed scoring ([7d67921](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7d67921f10840cee3937c4066e94d7e18d641e6e))
+* **scheduler:** DEFAULT_POSTING_HOURS env override for the default post-time model ([bfb3731](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bfb3731aac3a801f238cc1d029446fa317f02da6))
+
+
+### Bug Fixes
+
+* **alignment:** drive hardcoded prompt styling from user settings (configurability audit) ([7dadb33](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7dadb33a474ab846d42f1f1c69ced97828ad45eb))
+* **api:** remove dead AvatarActivateRequest properties ([d45faf7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d45faf731140872b698ce39e9a1ac8f1667a8c0a))
+* **api:** validate PUT /dm action and reject empty updates ([19d6724](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/19d6724458e6841716b74cd1a517a1ebe9833726))
+* **celery:** get_aws_sqs used service_name 'elasticcache' for SQS ([78bcff8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/78bcff83e33f1f3b91a4053bb270d88f092b13c6))
+* clean up coverage-found bugs + Copilot review findings (21 items) ([3674ab1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3674ab1dd89e9d10b6f152f337963cc987737f1c))
+* **content:** deterministic fallback in select_focus_topic ([e772a74](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e772a74a57b298dd3076f274196852350ced20d8))
+* **content:** drive emoji/hashtag/tone prompt rules from engagement prefs ([1f265d3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1f265d35abe291f140bd2960de88687c007dc253))
+* **content:** guarantee lead-magnet comment-keyword CTA survives refinement pipeline ([09a1d87](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/09a1d87ff2f0268d81232394428002f2b29de55f))
+* **content:** guarantee lead-magnet CTA survives the refinement pipeline ([a96b565](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a96b565246c4cbfce511bd3db81af5eaf72c9f46))
+* **content:** index CTA repair menu by selection ordinal, not raw post_id ([c7ba539](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c7ba5394b83516239c93a8c532fd3383e8a8954b))
+* **content:** regenerate guards — unknown type skips, status validated at API ([5cd9969](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5cd9969afbaced3cc7905a44a7c2e879557198ee))
+* **db:** error fallbacks and set_active_avatar safety ([a00ccff](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a00ccff789966ac489e768679162736f9a75ee79))
+* **dm:** overdue approved DMs stay eligible + orphaned-DM recovery ([e251578](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e25157818b3527efcb3ba955662e092a79948b09))
+* **lead-magnet:** exempt configured trigger word from the bait filter ([4876f16](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4876f16683bc7c3b7fe3b7632fc8ba49258b4913))
+* **lead-magnet:** require message, guard invalid cadence, fix multi-word label check ([bd191f5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bd191f57de695601a878d943bd23753354394f90))
+* replace deprecated datetime.utcnow() with timezone-aware equivalent ([d7beabf](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d7beabfdea35b4a5183fda8611e6a7d3816abc9a))
+* **ui:** honest delete-confirmation copy + session guard on regenerate ([5889c84](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5889c8443e34bc2df2f1aafb2a8b2b71a09ccd65))
+
 ## [0.36.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.35.0...v0.36.0) (2026-07-06)
 
 
