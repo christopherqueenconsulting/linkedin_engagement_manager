@@ -6,7 +6,9 @@ a HARD no-self-promo guardrail for comments/posts, a LIGHT soft-promo allowance 
 own newsletter. Keeping all of this in one module is what stops the content types from drifting
 out of alignment with each other over time."""
 
+import math
 import os
+import random
 import re
 from typing import Optional
 
@@ -118,6 +120,47 @@ def focus_directive(prefs: dict = None) -> str:
         return ""
     return ("\n\nSoft steering (use ONLY to choose the angle when it genuinely fits the subject; "
             "never force it in and never let it change the subject):\n- " + "\n- ".join(parts) + "\n")
+
+
+def _focus_topics(prefs: dict = None) -> list:
+    return [str(t).strip() for t in ((prefs or {}).get("focus_topics") or []) if str(t).strip()]
+
+
+def select_focus_topic(prefs: dict = None, sequence_index: Optional[int] = None) -> Optional[str]:
+    """The SUBJECT anchor for one trend-based post: rotate deterministically across the user's
+    declared focus topics (keyed off a stable per-post integer — the post id — the same way the
+    lead-magnet CTA rotation works) so anchoring never collapses every post onto one topic. Without
+    a sequence key it falls back to a random pick among the topics (variety over determinism, and
+    consistent with how the industry itself is randomly chosen). Returns None when the user declared
+    no focus topics — callers keep their current profile-industry-only behavior."""
+    topics = _focus_topics(prefs)
+    if not topics:
+        return None
+    if sequence_index is None:
+        return random.choice(topics)
+    return topics[int(sequence_index) % len(topics)]
+
+
+def content_matches_focus(content: str, focus_topics: list, subject: str = None) -> bool:
+    """Cheap deterministic alignment heuristic — NO LLM call: does the content plausibly relate to
+    at least one declared focus topic (or the post's assigned `subject`)? A topic matches when at
+    least half of its meaningful tokens appear in the content. Empty focus list (or no usable topic
+    tokens) is a no-op: True."""
+    from cqc_lem.utilities.ai.content_framework import content_tokens
+    candidates = [str(t) for t in (focus_topics or [])]
+    if subject:
+        candidates.append(str(subject))
+    ctokens = content_tokens(content)
+    checked_any = False
+    for cand in candidates:
+        needed = content_tokens(cand)
+        if not needed:
+            continue
+        checked_any = True
+        hits = len(needed & ctokens)
+        if hits >= max(1, math.ceil(len(needed) / 2)):
+            return True
+    return not checked_any
 
 
 def intention_directive(prefs: dict = None) -> str:
