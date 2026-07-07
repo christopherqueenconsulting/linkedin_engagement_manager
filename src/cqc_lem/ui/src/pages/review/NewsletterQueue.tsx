@@ -14,6 +14,14 @@ const STATUS_COLORS: Record<string, string> = {
 // e.g. "case_study" -> "Case Study" for the format/hook badges.
 const prettyKey = (k: string) => k.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 
+// UTC ISO string -> value for a <input type="datetime-local"> (local wall-clock, minute precision).
+const toLocalInput = (iso?: string | null): string => {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return ''
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+}
+
 export default function NewsletterQueue({ userTimezone }: { userTimezone: string }) {
   const { user, sessionToken } = useAuth()
   const qc = useQueryClient()
@@ -72,6 +80,7 @@ export default function NewsletterQueue({ userTimezone }: { userTimezone: string
         title: draftEdit!.title,
         subtitle: draftEdit!.subtitle,
         body: draftEdit!.body,
+        scheduled_datetime: draftEdit!.scheduled_for || null,
         action,
       }),
     onSuccess: (_res, action) => {
@@ -209,6 +218,15 @@ export default function NewsletterQueue({ userTimezone }: { userTimezone: string
               <textarea value={draftEdit.body || ''} onChange={(e) => setDe({ body: e.target.value })} rows={10}
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
             </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Publish date &amp; time</label>
+              <input
+                type="datetime-local"
+                value={toLocalInput(draftEdit.scheduled_for)}
+                onChange={(e) => setDe({ scheduled_for: e.target.value ? new Date(e.target.value).toISOString() : draftEdit.scheduled_for })}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
 
             {/* Re-generate: the prominent action. Optional guidance steers the rewrite; empty guidance
                 lets the AI pick a fresh, distinct take. */}
@@ -230,11 +248,11 @@ export default function NewsletterQueue({ userTimezone }: { userTimezone: string
             <div className="grid grid-cols-2 gap-2">
               <button type="button" onClick={() => draftMutation.mutate('save')} disabled={busy}
                 className="bg-gray-100 text-gray-700 py-2 rounded-lg text-sm font-semibold hover:bg-gray-200 disabled:opacity-50 transition-colors">
-                Save
+                Save Draft
               </button>
               <button type="button" onClick={() => draftMutation.mutate('approve')} disabled={busy}
                 className="bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
-                Approve
+                Approve &amp; Schedule
               </button>
             </div>
             {/* Skip stays as a smaller secondary action — not publishing an edition is still useful. */}

@@ -82,6 +82,26 @@ class TestAutomationTriggerEndpoints:
                 "email": "a@x.com"})
         assert resp.status_code == 404
 
+    def test_schedule_post_forwards_approved_status(self, client):
+        from cqc_lem.utilities.db import PostStatus
+        with patch(f"{_M}.get_user_id", return_value=_UID), \
+             patch(f"{_M}.insert_post", return_value=True) as ins:
+            resp = client.post("/api/schedule_post/", json={
+                "content": "hello", "scheduled_datetime": "2026-07-10T15:00:00",
+                "email": "a@x.com", "post_type": "text", "status": "approved"})
+        assert resp.status_code == 200
+        assert ins.call_args[1].get("status") == PostStatus.APPROVED
+
+    def test_schedule_post_defaults_to_pending_status(self, client):
+        from cqc_lem.utilities.db import PostStatus
+        with patch(f"{_M}.get_user_id", return_value=_UID), \
+             patch(f"{_M}.insert_post", return_value=True) as ins:
+            resp = client.post("/api/schedule_post/", json={
+                "content": "hello", "scheduled_datetime": "2026-07-10T15:00:00",
+                "email": "a@x.com", "post_type": "text"})
+        assert resp.status_code == 200
+        assert ins.call_args[1].get("status") == PostStatus.PENDING
+
     def test_create_weekly_content_chains_plan_then_create(self, client):
         chain_obj = MagicMock()
         with patch(f"{_M}.celery_chain", return_value=chain_obj) as chain, \

@@ -371,6 +371,36 @@ class TestInsertPost:
 
             assert result is False
 
+    def test_inserts_with_explicit_status(self, mock_database_connection):
+        from cqc_lem.utilities.db import insert_post, PostType, PostStatus
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
+             patch("cqc_lem.utilities.db.get_user_id", return_value=60):
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].rowcount = 1
+
+            insert_post("test@example.com", "content",
+                        datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+                        PostType.TEXT, status=PostStatus.APPROVED)
+
+            sql, params = mock_database_connection["cursor"].execute.call_args[0]
+            assert "status" in sql
+            assert PostStatus.APPROVED.value in params
+
+    def test_status_defaults_to_pending(self, mock_database_connection):
+        from cqc_lem.utilities.db import insert_post, PostType, PostStatus
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
+             patch("cqc_lem.utilities.db.get_user_id", return_value=60):
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].rowcount = 1
+
+            insert_post("test@example.com", "content",
+                        datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc), PostType.TEXT)
+
+            _, params = mock_database_connection["cursor"].execute.call_args[0]
+            assert PostStatus.PENDING.value in params
+
 
 @pytest.mark.unit
 class TestGetUserId:

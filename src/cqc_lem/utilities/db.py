@@ -373,7 +373,7 @@ def get_user_id(email: str):
 
 def insert_post(email: str, content: str, scheduled_time: datetime, post_type: PostType,
                 video_url: Optional[str] = None, carousel_slides: Optional[list[str]] = None,
-                video_quality: str = "standard") -> bool:
+                video_quality: str = "standard", status: PostStatus = PostStatus.PENDING) -> bool:
     user_id = get_user_id(email)
 
     success = False
@@ -394,10 +394,10 @@ def insert_post(email: str, content: str, scheduled_time: datetime, post_type: P
         slides_json = json.dumps(carousel_slides) if carousel_slides else None
 
         cursor.execute("""
-            INSERT INTO posts (content, scheduled_time, post_type, user_id, video_url, carousel_slides, video_quality)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO posts (content, scheduled_time, post_type, user_id, video_url, carousel_slides, video_quality, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """, (content, scheduled_time, post_type.value, user_id, video_url, slides_json,
-              video_quality or "standard"))
+              video_quality or "standard", status.value))
 
         connection.commit()
         success = cursor.rowcount == 1
@@ -3355,21 +3355,26 @@ def update_newsletter_edition(edition_id: int, user_id: int, title: str = None,
                               subtitle: str = None, body: str = None,
                               status: str = None, subject: str = None,
                               edition_format: str = None, hook_style: str = None,
-                              opening_line: str = None, blueprint: dict = None) -> bool:
+                              opening_line: str = None, blueprint: dict = None,
+                              scheduled_for=None) -> bool:
     """Update only the provided fields on an edition, scoped to its owner (COALESCE-style)."""
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
+        if scheduled_for is not None and getattr(scheduled_for, "tzinfo", None) is not None:
+            scheduled_for = scheduled_for.astimezone(timezone.utc).replace(tzinfo=None)
         cursor.execute(
             "UPDATE newsletter_editions SET "
             "title = COALESCE(%s, title), subtitle = COALESCE(%s, subtitle), "
             "subject = COALESCE(%s, subject), "
             "`format` = COALESCE(%s, `format`), hook_style = COALESCE(%s, hook_style), "
             "opening_line = COALESCE(%s, opening_line), blueprint = COALESCE(%s, blueprint), "
-            "body = COALESCE(%s, body), status = COALESCE(%s, status) "
+            "body = COALESCE(%s, body), status = COALESCE(%s, status), "
+            "scheduled_for = COALESCE(%s, scheduled_for) "
             "WHERE id = %s AND user_id = %s",
             (title, subtitle, subject, edition_format, hook_style, opening_line,
-             json.dumps(blueprint) if blueprint else None, body, status, edition_id, user_id))
+             json.dumps(blueprint) if blueprint else None, body, status, scheduled_for,
+             edition_id, user_id))
         connection.commit()
         return cursor.rowcount >= 0
     except mysql.connector.Error as err:

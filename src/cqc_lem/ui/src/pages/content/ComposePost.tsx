@@ -141,7 +141,9 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
     }
   }
 
-  async function handleSubmit(e: React.FormEvent) {
+  // "Approve & Schedule" creates the post approved (ready to publish); "Save Draft" holds it as
+  // pending for later review. Auto-generated content sets its own status server-side.
+  async function handleSubmit(e: React.FormEvent, status: 'pending' | 'approved' = 'approved') {
     e.preventDefault()
     if (!email) { setResult({ ok: false, msg: 'Set your email in Account settings first.' }); return }
     if (!content.trim()) { setResult({ ok: false, msg: 'Post content is required.' }); return }
@@ -162,7 +164,7 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
         post_type: postType.toLowerCase(),
         scheduled_datetime: new Date(scheduledAt).toISOString(),
         email,
-        status: 'pending',
+        status,
         use_avatar: postType !== 'TEXT' && useAvatar && hasActiveAvatar,
       }
       if (postType === 'VIDEO') {
@@ -175,7 +177,7 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
           : slides.filter((s) => s.trim())
       }
       await api.post('/schedule_post/', payload)
-      setResult({ ok: true, msg: 'Post scheduled successfully!' })
+      setResult({ ok: true, msg: status === 'approved' ? 'Post approved & scheduled!' : 'Draft saved.' })
       setContent('')
       setVideoUrl('')
       setSlides([''])
@@ -544,13 +546,23 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
             </p>
           )}
 
-          <button
-            type="submit"
-            disabled={submitting || content.length > MAX_CHARS}
-            className="w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors"
-          >
-            {submitting ? 'Scheduling…' : 'Schedule Post'}
-          </button>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={(e) => handleSubmit(e, 'pending')}
+              disabled={submitting || content.length > MAX_CHARS}
+              className="bg-gray-100 text-gray-700 py-2 rounded-lg text-sm font-semibold hover:bg-gray-200 disabled:opacity-50 transition-colors"
+            >
+              {submitting ? 'Saving…' : 'Save Draft'}
+            </button>
+            <button
+              type="submit"
+              disabled={submitting || content.length > MAX_CHARS}
+              className="bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors"
+            >
+              {submitting ? 'Scheduling…' : 'Approve & Schedule'}
+            </button>
+          </div>
         </form>
       </div>
 
