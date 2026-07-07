@@ -809,10 +809,16 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
 
     if refine_final_post:
         # Both refinement passes get the user's prefs so the LLM rewrites can't re-introduce
-        # emojis/hashtags the user turned off (or flatten a configured tone).
-        final_content = get_ai_linked_post_refinement(final_content, prefs=prefs)
+        # emojis/hashtags the user turned off (or flatten a configured tone). CTA-selected posts
+        # also pass the keyword so the passes' own anti-bait rules don't paraphrase the sanctioned
+        # 'comment KEYWORD' ask into 'reach out for...'.
+        _cta_kw = (str(lead_magnet.get("keyword")).strip()
+                   if include_cta and lead_magnet else None)
+        final_content = get_ai_linked_post_refinement(final_content, prefs=prefs,
+                                                      preserve_cta_keyword=_cta_kw)
         # Hook + save-worthy pass: strong first line before the '…more' fold; save-worthy framing.
-        final_content = optimize_post_hook(final_content, prefs=prefs)
+        final_content = optimize_post_hook(final_content, prefs=prefs,
+                                           preserve_cta_keyword=_cta_kw)
         final_content = sanitize_for_linkedin(final_content)
         # Guardrail: strip classic engagement-bait CTAs (penalized), keeping lead-magnet CTAs —
         # including one whose configured trigger word collides with the bait regex (e.g. 'YES').
