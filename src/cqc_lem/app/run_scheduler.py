@@ -282,7 +282,8 @@ def auto_generate_newsletter_drafts():
     refills to the cap as editions publish/skip."""
     from cqc_lem.utilities.db import get_enabled_newsletter_user_ids
 
-    now = datetime.utcnow()
+    # Naive UTC on purpose — compared against naive DB datetimes downstream.
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     generated = 0
     for user_id in get_enabled_newsletter_user_ids():
         try:
@@ -303,7 +304,8 @@ def generate_newsletter_drafts_for_user(user_id: int):
     if not get_newsletter_settings(user_id).get("enabled"):
         return "Newsletter disabled"
     try:
-        generated = _topup_newsletter_drafts_for_user(user_id, datetime.utcnow(),
+        generated = _topup_newsletter_drafts_for_user(user_id,
+                                                       datetime.now(timezone.utc).replace(tzinfo=None),
                                                        allow_bootstrap=False)
     except Exception as e:
         log_warning("Failed to generate newsletter draft", exc=e, user_id=user_id,
@@ -392,7 +394,7 @@ def auto_publish_scheduled_editions():
     """Publish any newsletter edition whose scheduled slot has arrived (approved or untouched draft)."""
     from cqc_lem.app.run_automation import auto_publish_edition
     from cqc_lem.utilities.db import get_editions_due_to_publish
-    due = get_editions_due_to_publish(datetime.utcnow())
+    due = get_editions_due_to_publish(datetime.now(timezone.utc).replace(tzinfo=None))
     for e in due:
         auto_publish_edition.apply_async(kwargs={'edition_id': e['id']})
     return f"Dispatched {len(due)} newsletter edition(s)"

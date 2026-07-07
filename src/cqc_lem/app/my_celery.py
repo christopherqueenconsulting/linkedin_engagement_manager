@@ -1,5 +1,5 @@
 import time as _time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from celery import Celery
 from celery import current_app
@@ -284,7 +284,7 @@ def update_queue_length_metric(sender=None, headers=None, **kwargs) -> int:
                         'MetricName': 'QueueLength',
                         'Value': total_tasks,
                         'Unit': 'Count',
-                        'Timestamp': datetime.utcnow(),
+                        'Timestamp': datetime.now(timezone.utc),
                         'Dimensions': [
                             {
                                 'Name': 'QueueName',

@@ -1195,7 +1195,7 @@ def _compute_next_publish(user_id: int, anchor=None):
     """Next scheduled publish datetime (naive UTC) after `anchor`, or None. When `anchor` is None the
     user's last_published_at is used, giving the soonest upcoming slot."""
     import pytz
-    from datetime import datetime as _dt
+    from datetime import datetime as _dt, timezone as _tz
     from cqc_lem.utilities.newsletter import next_publish_datetime
     settings = get_newsletter_settings(user_id)
     try:
@@ -1206,7 +1206,8 @@ def _compute_next_publish(user_id: int, anchor=None):
         anchor = settings.get("last_published_at")
     return next_publish_datetime(
         settings.get("publish_day", 1), settings.get("publish_hour", 9),
-        settings.get("cadence", "weekly"), anchor, tz, _dt.utcnow())
+        settings.get("cadence", "weekly"), anchor, tz,
+        _dt.now(_tz.utc).replace(tzinfo=None))  # naive UTC — compared to naive DB datetimes
 
 
 @router.get("/user/newsletter-draft")
