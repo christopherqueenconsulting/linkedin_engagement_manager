@@ -528,7 +528,8 @@ def regenerate_post(post_id: int, guidance: str = None) -> Optional[str]:
         return None
     post_type = get_post_type(post_id)
     pt_value = post_type.value if isinstance(post_type, PostType) else post_type
-    if pt_value and pt_value != PostType.TEXT.value:
+    # Unknown/None type counts as non-text: regenerating blind could clobber a carousel/video post.
+    if pt_value != PostType.TEXT.value:
         myprint(f"regenerate_post: post {post_id} is '{pt_value}', not text — skipping text regenerate")
         return None
 
@@ -813,8 +814,11 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
         # Hook + save-worthy pass: strong first line before the '…more' fold; save-worthy framing.
         final_content = optimize_post_hook(final_content, prefs=prefs)
         final_content = sanitize_for_linkedin(final_content)
-        # Guardrail: strip classic engagement-bait CTAs (penalized), keeping lead-magnet CTAs.
-        final_content = strip_engagement_bait(final_content)
+        # Guardrail: strip classic engagement-bait CTAs (penalized), keeping lead-magnet CTAs —
+        # including one whose configured trigger word collides with the bait regex (e.g. 'YES').
+        final_content = strip_engagement_bait(
+            final_content,
+            exempt_keyword=(lead_magnet or {}).get("keyword") if include_cta else None)
         final_content = final_content.strip()
 
     # Review gate (runs once, in the outermost call): deterministic near-duplicate check against the

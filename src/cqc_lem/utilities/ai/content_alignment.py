@@ -8,7 +8,6 @@ out of alignment with each other over time."""
 
 import math
 import os
-import random
 import re
 from typing import Optional
 
@@ -130,14 +129,14 @@ def select_focus_topic(prefs: dict = None, sequence_index: Optional[int] = None)
     """The SUBJECT anchor for one trend-based post: rotate deterministically across the user's
     declared focus topics (keyed off a stable per-post integer — the post id — the same way the
     lead-magnet CTA rotation works) so anchoring never collapses every post onto one topic. Without
-    a sequence key it falls back to a random pick among the topics (variety over determinism, and
-    consistent with how the industry itself is randomly chosen). Returns None when the user declared
-    no focus topics — callers keep their current profile-industry-only behavior."""
+    a sequence key it deterministically falls back to the FIRST topic — reproducible and testable,
+    no per-call randomness. Returns None when the user declared no focus topics — callers keep
+    their current profile-industry-only behavior."""
     topics = _focus_topics(prefs)
     if not topics:
         return None
     if sequence_index is None:
-        return random.choice(topics)
+        return topics[0]
     return topics[int(sequence_index) % len(topics)]
 
 
@@ -193,13 +192,27 @@ def alignment_directive(prefs: dict = None, lead_magnet_cta: str = "") -> str:
 # listener in run_automation. But it must NOT appear on every post: a repeated CTA reads as spam and
 # gets pattern-flagged. So it rides a deterministic 1-in-N rotation (default N=3, env-overridable).
 LEAD_MAGNET_CTA_EVERY_N = int(os.getenv("LEAD_MAGNET_CTA_EVERY_N", "3") or "3")
+_DEFAULT_CTA_EVERY_N = 3
+
+
+def _effective_cta_every_n(every_n: Optional[int]) -> int:
+    """The 1-in-N cadence actually used. A misconfigured n < 1 (e.g. LEAD_MAGNET_CTA_EVERY_N=0)
+    must NEVER mean 'every post' — fall back to the default cadence. n == 1 stays a valid explicit
+    operator choice meaning every post."""
+    try:
+        n = int(every_n) if every_n is not None else int(LEAD_MAGNET_CTA_EVERY_N)
+    except (TypeError, ValueError):
+        return _DEFAULT_CTA_EVERY_N
+    return n if n >= 1 else _DEFAULT_CTA_EVERY_N
 
 
 def lead_magnet_enabled(lead_magnet: Optional[dict]) -> bool:
-    """The lead magnet is usable only when the user turned it ON and gave a non-empty trigger keyword
-    (matches the gate the automation keyword-listener uses)."""
+    """The lead magnet is usable only when the user turned it ON and gave BOTH a non-empty trigger
+    keyword AND a non-empty message — the automation DM dispatch gate requires all three, so a
+    keyword-only config would invite comments that never get a DM."""
     return bool(lead_magnet and lead_magnet.get("enabled")
-                and str(lead_magnet.get("keyword") or "").strip())
+                and str(lead_magnet.get("keyword") or "").strip()
+                and str(lead_magnet.get("message") or "").strip())
 
 
 def should_include_lead_magnet_cta(lead_magnet: Optional[dict], sequence_index: Optional[int],
@@ -210,8 +223,8 @@ def should_include_lead_magnet_cta(lead_magnet: Optional[dict], sequence_index: 
     available."""
     if not lead_magnet_enabled(lead_magnet) or sequence_index is None:
         return False
-    n = every_n if (every_n and every_n > 0) else LEAD_MAGNET_CTA_EVERY_N
-    if n <= 1:
+    n = _effective_cta_every_n(every_n)
+    if n == 1:
         return True
     return int(sequence_index) % n == 0
 
@@ -276,7 +289,10 @@ def _resource_label(lead_magnet: Optional[dict]) -> str:
     # Drop emoji/symbols so the appended line keeps its own one-emoji budget.
     first = "".join(c for c in first if ord(c) <= 0xFFFF and not (0x2190 <= ord(c) <= 0x2BFF))
     words = first.split()
-    if not words or words[0].lower() in _LABEL_SENTENCE_STARTS or len(words) > 10:
+    # Check both one- and two-word sentence starts ("this is ...") — a single-word check can never
+    # match the multi-word entries in _LABEL_SENTENCE_STARTS.
+    leading = {words[0].lower(), " ".join(w.lower() for w in words[:2])} if words else set()
+    if not words or (leading & _LABEL_SENTENCE_STARTS) or len(words) > 10:
         return "the resource"
     label = " ".join(words)
     if words[0].lower() in _LABEL_DETERMINERS:
@@ -320,8 +336,8 @@ def ensure_lead_magnet_cta(content: Optional[str], lead_magnet: Optional[dict], 
     # Index by the SELECTION ORDINAL (post_id // n), not raw post_id: selected posts are all
     # multiples of n, so raw post_id % len(menu) would only ever hit gcd(n, len) of the variants —
     # the ordinal makes consecutive selected posts cycle through the whole menu.
-    n = every_n if (every_n and every_n > 0) else LEAD_MAGNET_CTA_EVERY_N
-    idx = (int(post_id) // max(n, 1)) % len(LEAD_MAGNET_CTA_REPAIR_MENU)
+    n = _effective_cta_every_n(every_n)
+    idx = (int(post_id) // n) % len(LEAD_MAGNET_CTA_REPAIR_MENU)
     line = LEAD_MAGNET_CTA_REPAIR_MENU[idx].format(
         keyword=keyword, resource=_resource_label(lead_magnet))
     if use_emojis:

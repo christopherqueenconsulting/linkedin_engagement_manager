@@ -338,6 +338,18 @@ class TestLeadMagnetAndPassword:
         assert "session_token" not in upd.call_args[0][1]
         assert upd.call_args[0][1]["keyword"] == "GUIDE"
 
+    @pytest.mark.parametrize("bad_kw", ["YES", "agree", "BELOW", "AMEN", "ME"])
+    def test_put_lead_magnet_rejects_bait_colliding_keyword(self, client, bad_kw):
+        # Keywords that trip the engagement-bait filter would be stripped from generated posts —
+        # reject at config time with a clear message.
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.update_lead_magnet_settings", return_value=True) as upd:
+            resp = client.put("/api/user/lead-magnet", json={
+                "session_token": _TOK, "enabled": True, "keyword": bad_kw})
+        assert resp.status_code == 422
+        assert "engagement-bait" in resp.json()["detail"]
+        upd.assert_not_called()
+
     def test_put_lead_magnet_500(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.update_lead_magnet_settings", return_value=False):

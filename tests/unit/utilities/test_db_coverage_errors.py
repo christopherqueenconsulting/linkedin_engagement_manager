@@ -47,7 +47,7 @@ _ERROR_CASES = [
     ("get_post_buyer_stage", (1,), None),
     ("get_post_type", (1,), None),
     ("get_carousel_slides", (1,), []),
-    ("get_post_type_counts", (1,), 0),  # documented quirk: 0, not {}
+    ("get_post_type_counts", (1,), {}),  # empty dict so callers can safely .values()
     ("get_last_planned_post_date_for_user", (1,), None),
     ("get_user_blog_url", (1,), None),
     ("get_user_sitemap_url", (1,), None),

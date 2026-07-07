@@ -1,5 +1,6 @@
 import re
 import unicodedata
+from typing import Optional
 
 # Fancy typographic glyphs that models love to emit — em/en dashes, curly quotes, ellipsis, exotic
 # spaces — are tell-tale AI signs and sometimes render as mojibake on downstream surfaces. Map each
@@ -113,10 +114,23 @@ _BAIT_PATTERNS = [
 _BAIT_RE = re.compile("|".join(_BAIT_PATTERNS), re.IGNORECASE)
 
 
-def strip_engagement_bait(text: str) -> str:
+def is_bait_keyword(keyword: Optional[str]) -> bool:
+    """True when 'comment <keyword>' would itself trip the bait filter (YES/AGREE/BELOW/AMEN/ME/👇).
+    Such a lead-magnet trigger word can never reliably survive strip_engagement_bait, so it must be
+    rejected at configuration time."""
+    kw = str(keyword or "").strip()
+    return bool(kw) and bool(_BAIT_RE.search(f"comment {kw}"))
+
+
+def strip_engagement_bait(text: str, exempt_keyword: Optional[str] = None) -> str:
     """Drop lines containing classic engagement-bait CTAs (penalized). Conservative and line-level:
-    bait is almost always its own CTA line, and we avoid touching 'comment <keyword>' lead magnets."""
+    bait is almost always its own CTA line, and we avoid touching 'comment <keyword>' lead magnets.
+    `exempt_keyword` protects lines carrying the user's configured lead-magnet trigger word
+    (whole-word, case-insensitive) when that keyword happens to collide with the bait regex."""
     if not text:
         return text
-    kept = [line for line in text.split("\n") if not _BAIT_RE.search(line)]
+    kw = str(exempt_keyword or "").strip()
+    kw_re = re.compile(rf"(?<!\w){re.escape(kw)}(?!\w)", re.IGNORECASE) if kw else None
+    kept = [line for line in text.split("\n")
+            if not _BAIT_RE.search(line) or (kw_re is not None and kw_re.search(line))]
     return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()

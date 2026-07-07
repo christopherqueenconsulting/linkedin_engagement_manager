@@ -49,7 +49,7 @@ from cqc_lem.utilities.db import (
     get_avatar_trainings, get_active_avatar,
     get_user_timezone, update_user_timezone,
     get_user_geo, update_user_location,
-    replace_video_url_base, get_post_type, get_post_buyer_stage,
+    replace_video_url_base, get_post_type, get_post_buyer_stage, get_post_status,
     update_db_post_carousel_slides,
     get_post_url_from_log_for_user,
 )
@@ -79,7 +79,7 @@ from fastapi.staticfiles import StaticFiles
 from linkedin_api.clients.auth.client import AuthClient
 from linkedin_api.clients.restli.client import RestliClient
 from linkedin_api.common.errors import ResponseFormattingError
-from pydantic import BaseModel, computed_field, field_validator, model_validator, Field
+from pydantic import BaseModel, field_validator, model_validator, Field
 
 app = FastAPI()
 
@@ -228,17 +228,6 @@ class UpgradeVideoRequest(BaseModel):
 
 class AvatarActivateRequest(BaseModel):
     session_token: str
-
-    @property
-    def post_json(self):
-        json = self.model_dump()
-        json['scheduled_datetime'] = self.scheduled_time
-        return json
-
-    @computed_field
-    @property
-    def scheduled_time(self) -> str:
-        return self.scheduled_datetime.isoformat()
 
 
 class BulkUpdateRequest(BaseModel):
@@ -1206,7 +1195,7 @@ def _compute_next_publish(user_id: int, anchor=None):
     """Next scheduled publish datetime (naive UTC) after `anchor`, or None. When `anchor` is None the
     user's last_published_at is used, giving the soonest upcoming slot."""
     import pytz
-    from datetime import datetime as _dt
+    from datetime import datetime as _dt, timezone as _tz
     from cqc_lem.utilities.newsletter import next_publish_datetime
     settings = get_newsletter_settings(user_id)
     try:
@@ -1217,7 +1206,8 @@ def _compute_next_publish(user_id: int, anchor=None):
         anchor = settings.get("last_published_at")
     return next_publish_datetime(
         settings.get("publish_day", 1), settings.get("publish_hour", 9),
-        settings.get("cadence", "weekly"), anchor, tz, _dt.utcnow())
+        settings.get("cadence", "weekly"), anchor, tz,
+        _dt.now(_tz.utc).replace(tzinfo=None))  # naive UTC — compared to naive DB datetimes
 
 
 @router.get("/user/newsletter-draft")
@@ -1285,6 +1275,13 @@ def regenerate_post_endpoint(request: PostRegenerateRequest) -> ResponseModel:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     if get_post_user_id(request.post_id) != user_id:
         raise HTTPException(status_code=404, detail="Post not found")
+    # Regeneration resets the post to PENDING — only sensible from the review states. Regenerating
+    # a scheduled/posted/rejected post would silently yank it out of (or back into) the pipeline.
+    post_status = get_post_status(request.post_id)
+    if post_status not in (PostStatus.PENDING.value, PostStatus.APPROVED.value):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Post is '{post_status}' — only pending or approved posts can be regenerated")
     from cqc_lem.app.run_content_plan import regenerate_post_task
     guidance = (request.guidance or "").strip() or None
     regenerate_post_task.apply_async(kwargs={"post_id": request.post_id, "guidance": guidance})
@@ -1328,7 +1325,14 @@ def update_scheduled_dm_endpoint(request: UpdateDmRequest) -> ResponseModel:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     if get_scheduled_dm_user_id(request.dm_id) != user_id:
         raise HTTPException(status_code=404, detail="Scheduled DM not found")
-    status = {"approve": ScheduledDmStatus.APPROVED, "cancel": ScheduledDmStatus.CANCELED}.get(request.action)
+    action_map = {"approve": ScheduledDmStatus.APPROVED, "cancel": ScheduledDmStatus.CANCELED}
+    if request.action is not None and request.action not in action_map:
+        raise HTTPException(status_code=422,
+                            detail=f"Unknown action '{request.action}' — expected 'approve' or 'cancel'")
+    status = action_map.get(request.action)
+    if status is None and all(v is None for v in (request.recipient_profile_url, request.recipient_name,
+                                                  request.message, request.scheduled_datetime)):
+        raise HTTPException(status_code=422, detail="Nothing to update — provide at least one field or an action")
     if not update_scheduled_dm(request.dm_id, recipient_profile_url=request.recipient_profile_url,
                                recipient_name=request.recipient_name, message=request.message,
                                scheduled_time=request.scheduled_datetime, status=status):
@@ -1406,6 +1410,15 @@ def update_lead_magnet_endpoint(request: LeadMagnetRequest) -> ResponseModel:
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+    # A trigger word that itself reads as engagement bait (YES/AGREE/BELOW/AMEN/ME/👇) would be
+    # stripped from generated posts by the bait filter — reject it up front.
+    from cqc_lem.utilities.linkedin_formatter import is_bait_keyword
+    if request.keyword and is_bait_keyword(request.keyword):
+        raise HTTPException(
+            status_code=422,
+            detail=(f"Keyword '{request.keyword.strip()}' collides with the engagement-bait filter "
+                    "(words like YES, AGREE, BELOW, AMEN, ME). Choose a distinctive trigger word "
+                    "such as AUDIT or GUIDE."))
     if not update_lead_magnet_settings(user_id, request.model_dump(exclude={"session_token"})):
         raise HTTPException(status_code=500, detail="Could not update lead magnet")
     return ResponseModel(status_code=200, detail="Lead magnet updated")

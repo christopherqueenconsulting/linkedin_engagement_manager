@@ -69,6 +69,27 @@ class TestApplyPostGuidance:
         assert out == "revised post per guidance"
         assert call.called
 
+    def test_profile_synthesis_included_as_voice_reference(self):
+        from cqc_lem.utilities.ai import ai_helper
+        resp = MagicMock()
+        resp.choices = [MagicMock()]
+        resp.choices[0].message.content = "revised"
+        with patch.object(ai_helper, "_call_llm", return_value=resp) as call:
+            ai_helper.apply_post_guidance("original", "tweak", profile_synthesis="Warm, direct, ops-heavy voice.")
+        prompt = call.call_args.kwargs["messages"][1]["content"][0]["text"]
+        assert "Warm, direct, ops-heavy voice." in prompt
+        assert "voice reference" in prompt
+
+    def test_blank_profile_synthesis_omitted(self):
+        from cqc_lem.utilities.ai import ai_helper
+        resp = MagicMock()
+        resp.choices = [MagicMock()]
+        resp.choices[0].message.content = "revised"
+        with patch.object(ai_helper, "_call_llm", return_value=resp) as call:
+            ai_helper.apply_post_guidance("original", "tweak", profile_synthesis="   ")
+        prompt = call.call_args.kwargs["messages"][1]["content"][0]["text"]
+        assert "voice reference" not in prompt
+
     def test_blank_llm_output_falls_back_to_input(self):
         from cqc_lem.utilities.ai import ai_helper
         resp = MagicMock()

@@ -34,7 +34,34 @@ class TestScheduledDmDb:
             from cqc_lem.utilities.db import get_due_scheduled_dms
             rows = get_due_scheduled_dms(post_time_delta_minutes=20)
         assert len(rows) == 1
-        assert "status = 'approved'" in cur.execute.call_args[0][0]
+        sql = cur.execute.call_args[0][0]
+        assert "status = 'approved'" in sql
+        # No lower time bound: an approved DM deferred >24h past its slot (e.g. by the daily DM
+        # cap) must stay eligible until sent/canceled — oldest first.
+        assert "BETWEEN" not in sql
+        assert "scheduled_time <= %s" in sql
+        assert "ORDER BY scheduled_time ASC" in sql
+        assert len(cur.execute.call_args[0][1]) == 1
+
+    def test_get_orphaned_scheduled_dms(self):
+        from datetime import datetime, timezone, timedelta
+        conn, cur = _conn(fetchall=[(9, MagicMock(), 5)])
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_orphaned_scheduled_dms
+            rows = get_orphaned_scheduled_dms(lookback_hours=2)
+        assert rows == [(9, cur.fetchall.return_value[0][1], 5)]
+        sql, params = cur.execute.call_args[0]
+        assert "status = 'scheduled'" in sql and "scheduled_time <= %s" in sql
+        # cutoff is ~2h in the past
+        assert params[0] <= datetime.now(timezone.utc) - timedelta(hours=2) + timedelta(seconds=5)
+
+    def test_get_orphaned_scheduled_dms_error_returns_empty(self):
+        import mysql.connector
+        conn, cur = _conn()
+        cur.execute.side_effect = mysql.connector.Error(msg="db down")
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_orphaned_scheduled_dms
+            assert get_orphaned_scheduled_dms() == []
 
     def test_list_returns_pagination_shape(self):
         conn, cur = _conn()

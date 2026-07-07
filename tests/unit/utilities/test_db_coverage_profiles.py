@@ -253,21 +253,21 @@ class TestGetUserLocation:
 
 class TestActiveUserPasswordPairs:
     def test_collects_only_complete_pairs(self):
-        conn, _ = _conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn), \
+        with patch(f"{_DB}.get_db_connection") as get_conn, \
              patch(f"{_DB}.get_active_user_ids", return_value=[1, 2, 3]), \
              patch(f"{_DB}.get_user_password_pair_by_id",
                    side_effect=[("a@x.com", "pw1"), ("b@x.com", None), (None, None)]):
             from cqc_lem.utilities.db import get_active_user_password_pairs
             pairs = get_active_user_password_pairs()
         assert pairs == [["a@x.com", "pw1"]]
+        get_conn.assert_not_called()  # no dangling direct connection — the helpers own their own
 
     def test_empty_when_no_active_users(self):
-        conn, _ = _conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn), \
+        with patch(f"{_DB}.get_db_connection") as get_conn, \
              patch(f"{_DB}.get_active_user_ids", return_value=[]):
             from cqc_lem.utilities.db import get_active_user_password_pairs
             assert get_active_user_password_pairs() == []
+        get_conn.assert_not_called()
 
 
 class TestProfileSynthesisErrorPaths:

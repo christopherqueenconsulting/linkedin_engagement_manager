@@ -1020,9 +1020,6 @@ def get_user_password_pair_by_id(user_id: int):
 
 
 def get_active_user_password_pairs():
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     user_password_pairs = []
 
     active_users = get_active_user_ids()
@@ -1225,7 +1222,7 @@ def remove_linked_in_profile_by_email(profile_email: str):
         connection.commit()
         success = True
     except mysql.connector.Error as err:
-        myprint(f"Could not remove linkedin profile by url | Error: {err}")
+        myprint(f"Could not remove linkedin profile by email | Error: {err}")
         success = False
     finally:
         cursor.close()
@@ -1244,7 +1241,7 @@ def get_post_type_counts(user_id: int):
         post_counts = {row['post_type']: row['count'] for row in cursor.fetchall()}
     except mysql.connector.Error as err:
         myprint(f"Could not get post type counts | Error: {err}")
-        post_counts = 0
+        post_counts = {}
     finally:
         cursor.close()
         connection.close()
@@ -2408,22 +2405,45 @@ def get_scheduled_dms(user_id: int, status_filter: str = None, page: int = 1,
 
 
 def get_due_scheduled_dms(post_time_delta_minutes: int = 20) -> list:
-    """Approved DMs whose scheduled_time falls between 24h ago and now+delta (mirrors
-    get_ready_to_post_posts). Returns (id, scheduled_time, user_id) tuples."""
+    """Approved DMs whose scheduled_time is at or before now+delta. Deliberately NO lower bound:
+    an approved DM can drift arbitrarily far past its slot (e.g. deferred repeatedly by the daily
+    DM cap) and must stay eligible until sent/canceled. Oldest first so overdue DMs drain in order.
+    Returns (id, scheduled_time, user_id) tuples."""
     now = datetime.now(timezone.utc)
     window_end = now + timedelta(minutes=post_time_delta_minutes)
-    yesterday = now - timedelta(days=1)
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
         cursor.execute(
             "SELECT id, scheduled_time, user_id FROM scheduled_dms "
-            "WHERE status = 'approved' AND scheduled_time BETWEEN %s AND %s "
+            "WHERE status = 'approved' AND scheduled_time <= %s "
             "ORDER BY scheduled_time ASC",
-            (yesterday, window_end))
+            (window_end,))
         return cursor.fetchall()
     except mysql.connector.Error as err:
         myprint(f"Could not get due scheduled DMs | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_orphaned_scheduled_dms(lookback_hours: int = 2) -> list:
+    """DMs stuck in 'scheduled' whose send task was lost (e.g. Celery queue purged on container
+    restart) before reaching sent/failed. Mirrors get_orphaned_scheduled_posts — the lookback gap
+    avoids racing a task that is still in flight. Returns (id, scheduled_time, user_id) tuples."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT id, scheduled_time, user_id FROM scheduled_dms "
+            "WHERE status = 'scheduled' AND scheduled_time <= %s "
+            "ORDER BY scheduled_time ASC",
+            (cutoff,))
+        return cursor.fetchall()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get orphaned scheduled DMs | Error: {err}")
         return []
     finally:
         cursor.close()
@@ -3890,6 +3910,15 @@ def set_active_avatar(user_id: int, avatar_id: int) -> bool:
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
+        # Validate the target avatar BEFORE deactivating anything — a bad id must leave the
+        # user's current active avatar untouched (never strand them with no active avatar).
+        cursor.execute(
+            "SELECT id FROM avatar_trainings WHERE id = %s AND user_id = %s",
+            (avatar_id, user_id),
+        )
+        if cursor.fetchone() is None:
+            myprint(f"set_active_avatar: avatar {avatar_id} not found for user_id {user_id}")
+            return False
         cursor.execute(
             "UPDATE avatar_trainings SET is_active = 0 WHERE user_id = %s",
             (user_id,),
@@ -3899,7 +3928,7 @@ def set_active_avatar(user_id: int, avatar_id: int) -> bool:
             (avatar_id, user_id),
         )
         connection.commit()
-        return cursor.rowcount > 0
+        return True
     except mysql.connector.Error as err:
         myprint(f"Could not set active avatar for user_id {user_id} | Error: {err}")
         return False

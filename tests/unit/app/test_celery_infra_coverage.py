@@ -15,7 +15,7 @@ class TestGetAwsSqs:
         session.client.return_value.get_queue_url.return_value = {"QueueUrl": "https://sqs/q"}
         result = get_aws_sqs("celery", session)
         assert result == {"QueueUrl": "https://sqs/q"}
-        session.client.assert_called_once_with(service_name="elasticcache")
+        session.client.assert_called_once_with(service_name="sqs")
         session.client.return_value.get_queue_url.assert_called_once_with(QueueName="celery")
 
 
@@ -94,11 +94,16 @@ class TestCelerySignalHandlers:
         import cqc_lem.app.my_celery as mc
         tracer = MagicMock()
         with patch.object(mc, "CODE_TRACING", True), \
-             patch.object(mc, "get_jaeger_tracer", return_value=tracer):
+             patch.object(mc, "get_jaeger_tracer", return_value=tracer) as get_tracer:
             mc.init_celery_tracing()
-        # Either the instrumentor import succeeded (span started) or the ImportError
-        # branch logged and skipped — both are valid; assert the tracer was requested.
-        assert mc.get_jaeger_tracer is not None
+        # The tracer must actually be requested for the celery worker; if the optional
+        # instrumentor import succeeded a span was opened on it as well.
+        get_tracer.assert_called_once_with("celery_worker", mc.__name__)
+        try:
+            import opentelemetry.instrumentation.celery  # noqa: F401
+            tracer.start_as_current_span.assert_called_once_with("init_celery_tracing")
+        except ImportError:
+            tracer.start_as_current_span.assert_not_called()
 
     def test_task_pre_and_postrun_track_duration(self):
         import cqc_lem.app.my_celery as mc

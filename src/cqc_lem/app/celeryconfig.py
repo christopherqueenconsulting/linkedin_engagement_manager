@@ -68,7 +68,7 @@ def get_aws_sqs(queue_name: str,
                 # region_name: str,
                 session: boto3.session.Session) -> dict:
     sqs = session.client(
-        service_name='elasticcache',
+        service_name='sqs',
         # region_name=region_name
     )
 

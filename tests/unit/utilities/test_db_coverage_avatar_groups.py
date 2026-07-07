@@ -57,15 +57,27 @@ class TestAvatarLedger:
 
 
 class TestAvatarTrainings:
-    def test_set_active_avatar_deactivates_then_activates(self):
-        conn, cur = _conn(rowcount=1)
+    def test_set_active_avatar_validates_then_deactivates_then_activates(self):
+        conn, cur = _conn(rowcount=1, fetch_one={"id": 11})
         with patch(f"{_DB}.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_active_avatar
             assert set_active_avatar(3, 11) is True
-        first_sql, first_params = cur.execute.call_args_list[0][0]
-        second_sql, second_params = cur.execute.call_args_list[1][0]
+        select_sql, select_params = cur.execute.call_args_list[0][0]
+        first_sql, first_params = cur.execute.call_args_list[1][0]
+        second_sql, second_params = cur.execute.call_args_list[2][0]
+        assert "SELECT id" in select_sql and select_params == (11, 3)
         assert "is_active = 0" in first_sql and first_params == (3,)
         assert "is_active = 1" in second_sql and second_params == (11, 3)
+
+    def test_set_active_avatar_invalid_id_preserves_current_active(self):
+        # Unknown avatar id → False, and NO deactivating UPDATE ever runs.
+        conn, cur = _conn(fetch_one=None)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import set_active_avatar
+            assert set_active_avatar(3, 999) is False
+        executed = [c[0][0] for c in cur.execute.call_args_list]
+        assert len(executed) == 1 and "SELECT id" in executed[0]
+        conn.commit.assert_not_called()
 
     def test_set_active_avatar_error(self):
         conn, cur = _conn()

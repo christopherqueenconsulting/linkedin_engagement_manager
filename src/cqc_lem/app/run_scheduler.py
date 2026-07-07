@@ -14,7 +14,7 @@ from cqc_lem.utilities.db import (
     get_active_user_ids, PostStatus, has_linkedin_session, has_scheduled_post_today,
     get_company_linked_in_url_for_user,
     get_users_with_stripe_subscriptions, update_subscription_from_stripe,
-    get_due_scheduled_dms, update_scheduled_dm_status, ScheduledDmStatus,
+    get_due_scheduled_dms, get_orphaned_scheduled_dms, update_scheduled_dm_status, ScheduledDmStatus,
 )
 from cqc_lem.utilities.env_constants import SELENIUM_KEEP_VIDEOS_X_DAYS, CQC_LEM_POST_TIME_DELTA_MINUTES
 from cqc_lem.utilities.logger import myprint, log_info, log_debug, log_warning
@@ -112,7 +112,19 @@ def auto_check_scheduled_dms(self):
                  user_id=user_id, task_name="auto_check_scheduled_dms")
         dispatched += 1
 
-    return f"Scheduled {dispatched} DM(s)" if dispatched else "No DMs to Schedule"
+    # Re-queue DMs stuck in 'scheduled' whose send task was lost (e.g. on container restart) —
+    # mirrors the orphaned-post recovery above. The 2-hour gap avoids racing an in-flight task.
+    orphaned = get_orphaned_scheduled_dms(lookback_hours=2)
+    for dm_id, scheduled_time, user_id in orphaned:
+        log_warning(
+            f"Re-queueing orphaned scheduled DM {dm_id}",
+            user_id=user_id, task_name="auto_check_scheduled_dms",
+        )
+        send_scheduled_dm.apply_async(kwargs={'dm_id': dm_id})
+
+    if dispatched == 0 and len(orphaned) == 0:
+        return "No DMs to Schedule"
+    return f"Scheduled {dispatched} DM(s); re-queued {len(orphaned)} orphaned DM(s)"
 
 
 @shared_task.task
@@ -282,7 +294,8 @@ def auto_generate_newsletter_drafts():
     refills to the cap as editions publish/skip."""
     from cqc_lem.utilities.db import get_enabled_newsletter_user_ids
 
-    now = datetime.utcnow()
+    # Naive UTC on purpose — compared against naive DB datetimes downstream.
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     generated = 0
     for user_id in get_enabled_newsletter_user_ids():
         try:
@@ -303,7 +316,8 @@ def generate_newsletter_drafts_for_user(user_id: int):
     if not get_newsletter_settings(user_id).get("enabled"):
         return "Newsletter disabled"
     try:
-        generated = _topup_newsletter_drafts_for_user(user_id, datetime.utcnow(),
+        generated = _topup_newsletter_drafts_for_user(user_id,
+                                                       datetime.now(timezone.utc).replace(tzinfo=None),
                                                        allow_bootstrap=False)
     except Exception as e:
         log_warning("Failed to generate newsletter draft", exc=e, user_id=user_id,
@@ -392,7 +406,7 @@ def auto_publish_scheduled_editions():
     """Publish any newsletter edition whose scheduled slot has arrived (approved or untouched draft)."""
     from cqc_lem.app.run_automation import auto_publish_edition
     from cqc_lem.utilities.db import get_editions_due_to_publish
-    due = get_editions_due_to_publish(datetime.utcnow())
+    due = get_editions_due_to_publish(datetime.now(timezone.utc).replace(tzinfo=None))
     for e in due:
         auto_publish_edition.apply_async(kwargs={'edition_id': e['id']})
     return f"Dispatched {len(due)} newsletter edition(s)"

@@ -4,7 +4,7 @@ import pytest
 from cqc_lem.utilities.ai.content_alignment import LEAD_MAGNET_CTA_REPAIR_MENU
 from cqc_lem.utilities.linkedin_formatter import (
     sanitize_for_linkedin, normalize_public_text, PLAIN_PUNCTUATION_DIRECTIVE,
-    strip_engagement_bait)
+    strip_engagement_bait, is_bait_keyword)
 
 
 @pytest.mark.unit
@@ -33,6 +33,32 @@ class TestStripEngagementBait:
         text = "Real value here.\n\ncomment SCALE and I'll send over the playbook."
         out = strip_engagement_bait(text)
         assert "comment SCALE" in out
+
+    def test_exempt_keyword_protects_colliding_cta_line(self):
+        # A configured trigger word that collides with the bait regex (e.g. 'YES') must survive
+        # when threaded through as exempt_keyword.
+        text = "Real value here.\n\nComment YES and I'll DM you the checklist."
+        assert "Comment YES" not in strip_engagement_bait(text)  # collides by default
+        out = strip_engagement_bait(text, exempt_keyword="YES")
+        assert "Comment YES and I'll DM you the checklist." in out
+
+    def test_exempt_keyword_is_whole_word(self):
+        # 'ME' as the exempt keyword must not shield unrelated bait lines containing 'me' inside
+        # other words.
+        text = "Insight.\n\nTag a friend who needs this moment."
+        out = strip_engagement_bait(text, exempt_keyword="ME")
+        assert "Tag a friend" not in out
+
+    def test_exempt_keyword_none_keeps_default_behavior(self):
+        text = "Insight.\n\nComment YES below if you want more."
+        assert strip_engagement_bait(text, exempt_keyword=None) == "Insight."
+
+    @pytest.mark.parametrize("kw,expected", [
+        ("YES", True), ("agree", True), ("BELOW", True), ("AMEN", True), ("ME", True),
+        ("AUDIT", False), ("GUIDE", False), ("SCALE", False), ("", False), (None, False),
+    ])
+    def test_is_bait_keyword(self, kw, expected):
+        assert is_bait_keyword(kw) is expected
 
     @pytest.mark.parametrize("resource", ["a free 12-point LinkedIn profile audit PDF", "the resource"])
     @pytest.mark.parametrize("template", LEAD_MAGNET_CTA_REPAIR_MENU)
