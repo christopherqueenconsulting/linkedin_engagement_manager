@@ -181,8 +181,8 @@ class TestEditions:
             assert update_newsletter_edition(4, 1, status="approved") is True
         sql, params = cur.execute.call_args[0]
         assert "COALESCE" in sql
-        # (title, subtitle, subject, format, hook_style, opening_line, blueprint, body, status, id, user_id)
-        assert params == (None, None, None, None, None, None, None, None, "approved", 4, 1)
+        # (title, subtitle, subject, format, hook_style, opening_line, blueprint, body, status, scheduled_for, id, user_id)
+        assert params == (None, None, None, None, None, None, None, None, "approved", None, 4, 1)
 
     def test_update_persists_subject(self):
         conn, cur = _mock_conn(rowcount=1)
@@ -191,7 +191,7 @@ class TestEditions:
             assert update_newsletter_edition(4, 1, subject="New Subject", status="draft") is True
         sql, params = cur.execute.call_args[0]
         assert "subject = COALESCE" in sql
-        assert params == (None, None, "New Subject", None, None, None, None, None, "draft", 4, 1)
+        assert params == (None, None, "New Subject", None, None, None, None, None, "draft", None, 4, 1)
 
     def test_update_persists_shape_fields(self):
         import json
@@ -206,6 +206,19 @@ class TestEditions:
         assert "opening_line = COALESCE" in sql and "blueprint = COALESCE" in sql
         assert "case_study" in params and "micro_story" in params and "It was a Tuesday." in params
         assert json.dumps({"format": "case_study"}) in params
+
+    def test_update_persists_scheduled_for(self):
+        from datetime import datetime, timezone
+        conn, cur = _mock_conn(rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_newsletter_edition
+            # tz-aware input is normalized to naive UTC before storage.
+            assert update_newsletter_edition(
+                4, 1, status="approved",
+                scheduled_for=datetime(2026, 7, 10, 19, 0, 0, tzinfo=timezone.utc)) is True
+        sql, params = cur.execute.call_args[0]
+        assert "scheduled_for = COALESCE" in sql
+        assert datetime(2026, 7, 10, 19, 0, 0) in params
 
     def test_create_persists_subject(self):
         conn, cur = _mock_conn()

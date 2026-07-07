@@ -325,6 +325,7 @@ class NewsletterDraftRequest(BaseModel):
     title: Optional[str] = None
     subtitle: Optional[str] = None
     body: Optional[str] = None
+    scheduled_datetime: Optional[datetime] = None
     action: str = "save"
 
 
@@ -686,9 +687,12 @@ def schedule_post(post: PostRequest) -> ResponseModel:
     if not user_id:
         raise HTTPException(status_code=403, detail="User not found")
 
+    # SPA-created posts carry an explicit status: "Approve & Schedule" → approved,
+    # "Save Draft" → pending. Auto-generated content sets its own status elsewhere.
     if insert_post(post.email, post.content, post.scheduled_datetime, post.post_type,
                    video_url=post.video_url, carousel_slides=post.carousel_slides,
-                   video_quality=post.video_quality or "standard"):
+                   video_quality=post.video_quality or "standard",
+                   status=post.status or PostStatus.PENDING):
         return ResponseModel(status_code=200, detail="Post scheduled successfully")
     else:
         raise HTTPException(status_code=404, detail="Could not schedule post")
@@ -1279,7 +1283,8 @@ def update_newsletter_draft_endpoint(request: NewsletterDraftRequest) -> Respons
         raise HTTPException(status_code=404, detail="Edition not found")
     status = {"approve": "approved", "skip": "skipped"}.get(request.action)  # None for 'save'
     if not update_newsletter_edition(request.edition_id, user_id, title=request.title,
-                                     subtitle=request.subtitle, body=request.body, status=status):
+                                     subtitle=request.subtitle, body=request.body, status=status,
+                                     scheduled_for=request.scheduled_datetime):
         raise HTTPException(status_code=500, detail="Could not update newsletter draft")
     return ResponseModel(status_code=200, detail="Newsletter draft updated")
 

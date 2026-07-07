@@ -166,6 +166,17 @@ class TestNewsletterDraft:
         assert resp.status_code == 200
         assert upd.call_args.kwargs["status"] is None
 
+    def test_put_forwards_scheduled_datetime(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_newsletter_edition", return_value={"id": 4, "user_id": _USER}), \
+             patch("cqc_lem.api.main.update_newsletter_edition", return_value=True) as upd:
+            resp = client.put("/api/user/newsletter-draft", json={
+                "session_token": _SESSION, "edition_id": 4, "action": "approve",
+                "scheduled_datetime": "2026-07-10T19:00:00"})
+        assert resp.status_code == 200
+        assert upd.call_args.kwargs["status"] == "approved"
+        assert upd.call_args.kwargs["scheduled_for"] is not None
+
     def test_put_404_when_not_owner(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
              patch("cqc_lem.api.main.get_newsletter_edition", return_value={"id": 4, "user_id": 999}):
