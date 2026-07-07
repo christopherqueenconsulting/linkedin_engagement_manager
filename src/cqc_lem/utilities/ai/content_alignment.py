@@ -7,7 +7,10 @@ own newsletter. Keeping all of this in one module is what stops the content type
 out of alignment with each other over time."""
 
 import os
+import re
 from typing import Optional
+
+from cqc_lem.utilities.linkedin_formatter import normalize_public_text
 
 # Tight, engagement-optimized targets. Short is the default: LinkedIn rewards comments that
 # earn a REPLY (threads), and a punchy, specific comment out-performs a long essay. Even
@@ -192,6 +195,90 @@ def lead_magnet_cta_directive(lead_magnet: Optional[dict], include: bool) -> str
         "post body (the DM delivers it). Honor the user's emoji/hashtag settings.\n"
         "- Keep it to one clean ask; do NOT stack multiple asks or use engagement-bait phrasing "
         "(no 'tag a friend', no 'like if')." + context_line + "\n")
+
+
+# The prompt directive above is only a REQUEST — the downstream refinement passes (LLM rewrites +
+# bait strip) can reword "comment AUDIT" into "reach out for..." or drop it entirely, and then the
+# comment-keyword DM listener never fires. The menu below is the deterministic REPAIR: a small set
+# of phrasings picked by post_id so repaired CTAs across a user's feed are not word-for-word
+# identical. Every variant must (a) carry the exact keyword verbatim, (b) say it's DM'd after they
+# comment, (c) carry no link/hashtag, and (d) never trip strip_engagement_bait's _BAIT_PATTERNS.
+LEAD_MAGNET_CTA_REPAIR_MENU = (
+    "Want {resource}? Comment {keyword} and I'll DM it to you.",
+    "If you'd like {resource}, comment {keyword} below and I'll send it your way by DM.",
+    "Comment {keyword} and I'll DM you {resource}.",
+    "Drop {keyword} in the comments and I'll DM you {resource}.",
+    "Curious? Comment {keyword} and I'll send {resource} straight to your DMs.",
+    "Comment {keyword} on this post and I'll DM {resource} over to you.",
+)
+
+# Envelope (mail = DM delivery) — deliberately a BMP character: ChromeDriver send_keys throws on
+# non-BMP emoji, so the repair line must never depend on downstream stripping to post cleanly.
+_CTA_REPAIR_EMOJI = "✉️"
+
+# Messages that read as full sentences ("I made a checklist that...") don't compress into a noun
+# label — fall back to the generic "the resource" instead of producing garbled grammar.
+_LABEL_SENTENCE_STARTS = {"i", "i'll", "i'd", "i've", "we", "we'll", "we've", "you", "it", "this is"}
+_LABEL_DETERMINERS = {"a", "an", "the", "my", "our", "your", "this"}
+
+
+def _resource_label(lead_magnet: Optional[dict]) -> str:
+    """A few plain words describing the offered resource, derived from the configured lead-magnet
+    message; generic 'the resource' when the message is missing, sentence-shaped, or too long. Links,
+    hashtags, and emoji are stripped so the repair line's own constraints can't be violated."""
+    msg = str((lead_magnet or {}).get("message") or "").strip()
+    msg = re.sub(r"https?://\S+|www\.\S+", "", msg)
+    msg = re.sub(r"#\S+", "", msg)
+    first = msg.split("\n")[0].strip().strip("\"'").rstrip(".!?").strip()
+    # Drop emoji/symbols so the appended line keeps its own one-emoji budget.
+    first = "".join(c for c in first if ord(c) <= 0xFFFF and not (0x2190 <= ord(c) <= 0x2BFF))
+    words = first.split()
+    if not words or words[0].lower() in _LABEL_SENTENCE_STARTS or len(words) > 10:
+        return "the resource"
+    label = " ".join(words)
+    if words[0].lower() in _LABEL_DETERMINERS:
+        return label[0].lower() + label[1:]
+    # No leading determiner — "I'll DM you my free checklist" reads naturally, bare noun doesn't.
+    return "my " + label
+
+
+def _cta_mechanic_re(keyword: str) -> re.Pattern:
+    """Matches a FUNCTIONING comment-keyword ask — the keyword near the word 'comment' within one
+    sentence — while rejecting incidental keyword mentions. The (?<![\\w-]) / (?![\\w-]) guards
+    reject hyphenated compounds like 'bias-audit', and 'comment on/about X' is excluded because it
+    means discussing X, not typing the keyword."""
+    kw = re.escape(keyword)
+    kw_pat = rf"(?<![\w-])[\"']?{kw}[\"']?(?![\w-])"
+    ask = rf"\bcomment(?:s|ing|ed)?\b(?!\s+(?:on|about)\b)[^.\n!?]{{0,40}}{kw_pat}"
+    drop = rf"{kw_pat}[^.\n!?]{{0,40}}\bcomments?\b"
+    return re.compile(rf"(?:{ask})|(?:{drop})", re.IGNORECASE)
+
+
+def has_lead_magnet_cta_mechanic(content: Optional[str], keyword: Optional[str]) -> bool:
+    """True when the content still asks readers to COMMENT the trigger keyword (the mechanic the
+    automation's keyword listener needs). Case-insensitive; incidental keyword mentions don't count."""
+    keyword = str(keyword or "").strip()
+    if not content or not keyword:
+        return False
+    return bool(_cta_mechanic_re(keyword).search(content))
+
+
+def ensure_lead_magnet_cta(content: Optional[str], lead_magnet: Optional[dict], post_id: Optional[int],
+                           use_emojis: bool = False, every_n: Optional[int] = None) -> Optional[str]:
+    """Deterministic verify-and-repair run AFTER the refinement pipeline: if this post was selected
+    for the lead-magnet CTA but the comment-keyword mechanic didn't survive the LLM rewrites, append
+    a short soft-ask chosen from LEAD_MAGNET_CTA_REPAIR_MENU by post_id. Returns content unchanged
+    (byte-identical) when not selected, lead magnet off, or a working mechanic is already present."""
+    if not content or not should_include_lead_magnet_cta(lead_magnet, post_id, every_n):
+        return content
+    keyword = str(lead_magnet.get("keyword")).strip()
+    if has_lead_magnet_cta_mechanic(content, keyword):
+        return content
+    line = LEAD_MAGNET_CTA_REPAIR_MENU[int(post_id) % len(LEAD_MAGNET_CTA_REPAIR_MENU)].format(
+        keyword=keyword, resource=_resource_label(lead_magnet))
+    if use_emojis:
+        line += " " + _CTA_REPAIR_EMOJI
+    return normalize_public_text(content.rstrip() + "\n\n" + line)
 
 
 def voice_reference(profile, profile_synthesis: Optional[str] = None) -> str:
