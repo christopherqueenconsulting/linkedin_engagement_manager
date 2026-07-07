@@ -13,19 +13,20 @@ coverage:
   status:
     project:
       default:
-        # Track overall coverage trend; informational so pre-existing debt doesn't block PRs.
-        # Selenium, Celery tasks, and LinkedIn automation skew this low — patch coverage
-        # (below) is the enforced metric for new code per CLAUDE.md.
-        target: auto
-        threshold: 2%
-        informational: true
+        # ENFORCED coverage floor. Unit coverage sits at ~95% after the 2026-07 coverage
+        # program; the floor is a ratchet set below the baseline so coverage can't silently
+        # regress while the 1% threshold absorbs run-to-run flake. Raise the target as the
+        # baseline rises — never lower it.
+        target: 90%
+        threshold: 1%
+        informational: false
         carryforward_behavior: include
     patch:
       default:
-        # New code in a PR must be 80% covered — this is the enforced metric.
+        # New code in a PR must be 80% covered — ENFORCED (per CLAUDE.md testing standards).
         target: 80%
         threshold: 5%
-        informational: true
+        informational: false
 
 flags:
   unit:
