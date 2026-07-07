@@ -227,9 +227,11 @@ def get_pexels_image_path(query: str, default_path: Optional[str] = None) -> Opt
         from cqc_lem.utilities.pexels_helper import get_photo
         photo = get_photo(query)
         url = photo.medium  # medium-size JPEG is a good balance for slides
-        suffix = ".jpg"
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-        urllib.request.urlretrieve(url, tmp.name)
+        # Pexels' image CDN 403s the default urllib User-Agent, so send a browser one.
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+        with urllib.request.urlopen(req, timeout=20) as resp, open(tmp.name, "wb") as fh:
+            fh.write(resp.read())
         return tmp.name
     except Exception:
         return default_path
