@@ -763,7 +763,10 @@ def get_posts_for_email(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=200),
     sort_order: str = Query(default='asc', pattern='^(asc|desc)$'),
+    sort_by: str = Query(default='scheduled_time', pattern='^(scheduled_time|status|post_type|id)$'),
     status_filter: Optional[str] = Query(default=None),
+    post_type_filter: Optional[str] = Query(default=None, pattern='^(text|video|carousel)$'),
+    search: Optional[str] = Query(default=None, max_length=500),
 ) -> ResponseModel:
     if not email:
         raise HTTPException(status_code=400, detail="Email is required")
@@ -771,7 +774,8 @@ def get_posts_for_email(
     offset = (page - 1) * page_size
     posts, total = get_post_by_email(
         email, limit=page_size, offset=offset,
-        sort_order=sort_order, status_filter=status_filter
+        sort_order=sort_order, status_filter=status_filter,
+        post_type_filter=post_type_filter, search=search, sort_by=sort_by,
     )
 
     posts_list = [
