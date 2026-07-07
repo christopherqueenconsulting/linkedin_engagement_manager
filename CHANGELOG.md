@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.38.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.37.1...v0.38.0) (2026-07-07)
+
+
+### Features
+
+* **carousel:** composite content-slide images in the posted PNG renderer ([474c20c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/474c20c6c689fda8fd21f12fe6fb4d7ecc91aef5))
+* **carousel:** composite relevant images into content slides (fill white space) ([9dd5ee0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9dd5ee0db9e07ce6daf5cee8b40b1e88b36bd80e))
+* **ui:** planned-tasks card by kind + default video quality control ([0d1150a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0d1150a5111e04bc3dcdf833ce356ab897c073cd))
+* **video,dashboard:** avatar-on-standard video, default_video_quality pref, upcoming planned tasks ([b2b759a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b2b759a3e7cfbecb64119aeaf6a8b4c1d672c9e4))
+* **video,dashboard:** avatar-on-standard video, default_video_quality pref, upcoming Planned Tasks ([4b4be1b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4b4be1bb52ba9b0b4566236f16f14fcc94111204))
+
 ## [0.37.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.37.0...v0.37.1) (2026-07-07)
 
 
