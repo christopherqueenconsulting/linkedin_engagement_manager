@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.38.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.38.0...v0.38.1) (2026-07-07)
+
+
+### Bug Fixes
+
+* **carousel:** send browser User-Agent when downloading Pexels slide images ([b8feab8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b8feab86af3d782dc897a4bccf29aa10e1115b57))
+* **carousel:** send browser User-Agent when downloading Pexels slide images ([80859c7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/80859c72fad27f129a024b3996f37671f0de2b31))
+
 ## [0.38.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.37.1...v0.38.0) (2026-07-07)
 
 
