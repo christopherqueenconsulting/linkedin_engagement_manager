@@ -876,6 +876,28 @@ def get_recent_post_shape_history(user_id: int, limit: int = 10) -> list:
         connection.close()
 
 
+def get_recent_post_texts(user_id: int, limit: int = 20) -> list:
+    """Recent post CONTENT (pending/approved/posted, most-recent first) — the post-side dedup
+    history (the newsletter's V49 subject dedup applied to posts). Feeds the opener/subject
+    avoidance steering and the pre-persist similarity gate in create_text_post. Openers/subjects
+    are derived from content on demand, so no new column is needed."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT content FROM posts "
+            "WHERE user_id = %s AND content IS NOT NULL AND content <> '' "
+            "AND status IN ('pending', 'approved', 'posted') "
+            "ORDER BY id DESC LIMIT %s", (user_id, int(limit)))
+        return [r[0] for r in cursor.fetchall()]
+    except mysql.connector.Error as err:
+        myprint(f"Could not get recent post texts for user {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def replace_video_url_base(old_base: str, new_base: str, user_id: Optional[int] = None) -> int:
     """Replace old_base URL prefix with new_base in video_url for all matching posts.
 

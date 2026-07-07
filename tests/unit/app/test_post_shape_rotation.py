@@ -18,14 +18,17 @@ def _run(post_id=77, blueprint=None, history=None, lead_magnet=None):
     captured = {}
 
     def gen(user_profile, stage, prefs=None, profile_synthesis=None, blueprint=None,
-            lead_magnet_cta=None):
+            lead_magnet_cta=None, post_id=None, history_directive=None):
         captured["blueprint"] = blueprint
         captured["lead_magnet_cta"] = lead_magnet_cta
+        captured["post_id"] = post_id
+        captured["history_directive"] = history_directive
         return "generated post"
 
     with patch(f"{_RCP}.get_engagement_preferences", return_value={}), \
          patch(f"{_RCP}.get_or_create_profile_synthesis", return_value="voice"), \
          patch(f"{_RCP}.get_lead_magnet_settings", return_value=lead_magnet or _DISABLED_LM), \
+         patch(f"{_RCP}.get_recent_post_texts", return_value=[]), \
          patch(f"{_RCP}.get_recent_post_shape_history", return_value=history or []) as hist, \
          patch(f"{_RCP}.update_db_post_shape") as save, \
          patch(f"{_RCP}.get_thought_leadership_post_from_ai", side_effect=gen):
@@ -83,6 +86,7 @@ class TestPostShapeRotation:
         with patch(f"{_RCP}.get_engagement_preferences", return_value={}), \
              patch(f"{_RCP}.get_or_create_profile_synthesis", return_value="voice"), \
              patch(f"{_RCP}.get_lead_magnet_settings", return_value={"enabled": False, "keyword": None, "message": None}), \
+             patch(f"{_RCP}.get_recent_post_texts", side_effect=RuntimeError("db down")), \
              patch(f"{_RCP}.get_recent_post_shape_history", side_effect=RuntimeError("db down")), \
              patch(f"{_RCP}.update_db_post_shape"), \
              patch(f"{_RCP}.get_thought_leadership_post_from_ai", return_value="post"):
