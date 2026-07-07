@@ -425,3 +425,38 @@ class TestPillowComposition:
         seen = {(c.kwargs["post_id"], c.kwargs["slide_index"], c.kwargs["user_id"])
                 for c in mock_sel.call_args_list}
         assert seen == {(77, 2, 5), (77, 3, 5)}
+
+
+@pytest.mark.unit
+class TestWrapText:
+    """Word-wrap must never produce a line wider than the budget — including long
+    tokens (URLs) which are hard-broken — so slide text never bleeds past the margin."""
+
+    def _draw_font(self):
+        from PIL import Image, ImageDraw, ImageFont
+        draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+        return draw, ImageFont.load_default()
+
+    def test_empty_returns_empty(self):
+        draw, font = self._draw_font()
+        assert cc._wrap_text("", font, 100, draw) == []
+
+    def test_wraps_within_max(self):
+        draw, font = self._draw_font()
+        text = "the quick brown fox jumps over the lazy dog " * 4
+        max_px = 120
+        lines = cc._wrap_text(text, font, max_px, draw)
+        assert len(lines) > 1
+        for ln in lines:
+            assert draw.textlength(ln, font=font) <= max_px
+
+    def test_long_token_is_hard_broken_within_max(self):
+        draw, font = self._draw_font()
+        long_word = "https://example.com/" + "a" * 400
+        max_px = 90
+        lines = cc._wrap_text(long_word, font, max_px, draw)
+        assert len(lines) > 1
+        for ln in lines:
+            assert draw.textlength(ln, font=font) <= max_px
+        # No context lost — every character survives the break.
+        assert "".join(lines) == long_word

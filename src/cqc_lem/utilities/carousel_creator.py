@@ -1511,6 +1511,47 @@ CAROUSEL_TEMPLATES: dict[str, dict] = {
 DEFAULT_TEMPLATE = "bold_listicle"
 
 
+def _wrap_text(text: str, font, max_px: int, draw) -> list[str]:
+    """Greedy word-wrap `text` to lines no wider than `max_px` (measured via `draw`).
+
+    A single token wider than `max_px` (long URL/word) is hard-broken into
+    margin-fitting chunks so no line ever bleeds past the slide edge. `draw` is a
+    Pillow ImageDraw whose ``textlength`` is used to measure — passed in so this is a
+    pure function (unit-testable without the renderer closure).
+    """
+    if not text:
+        return []
+
+    def _fits(s: str) -> bool:
+        return draw.textlength(s, font=font) <= max_px
+
+    def _break_long(word: str) -> list[str]:
+        chunks, cur = [], ""
+        for ch in word:
+            if cur and not _fits(cur + ch):
+                chunks.append(cur)
+                cur = ch
+            else:
+                cur += ch
+        if cur:
+            chunks.append(cur)
+        return chunks
+
+    words, lines, cur = text.split(), [], ""
+    for word in words:
+        for piece in ([word] if _fits(word) else _break_long(word)):
+            test = (cur + " " + piece).strip()
+            if _fits(test):
+                cur = test
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = piece
+    if cur:
+        lines.append(cur)
+    return lines
+
+
 def _fit_and_crop_image(image_path: str, target_w: int, target_h: int):
     """Cover-fit + center-crop an image to exactly (target_w, target_h) as RGB.
 
@@ -1643,20 +1684,7 @@ def create_carousel_slide_images(
         return text
 
     def _wrap(text: str, font, max_px: int, draw) -> list[str]:
-        if not text:
-            return []
-        words, lines, cur = text.split(), [], ""
-        for word in words:
-            test = (cur + " " + word).strip()
-            if draw.textlength(test, font=font) <= max_px:
-                cur = test
-            else:
-                if cur:
-                    lines.append(cur)
-                cur = word
-        if cur:
-            lines.append(cur)
-        return lines
+        return _wrap_text(text, font, max_px, draw)
 
     def _block_h(lines, font, spacing, draw) -> int:
         total_h = 0
@@ -2072,10 +2100,13 @@ def create_carousel_slide_images(
         y += 42
 
         # ── Body with arrow bullets (fewer lines when a photo band is present) ──
+        # Wrap to the width AFTER the arrow indent, keeping a right margin (PAD), so
+        # bulleted lines never run past the slide edge.
+        BULLET_INDENT = 52
         body_cap = 4 if band_top else 7
-        for line_text in _wrap(body, f_b, W - PAD - 30, draw)[:body_cap]:
+        for line_text in _wrap(body, f_b, W - (PAD + BULLET_INDENT) - PAD, draw)[:body_cap]:
             draw.text((PAD, y), "->", font=f_b, fill=badge_color)
-            draw.text((PAD + 52, y), line_text, font=f_b, fill=body_color)
+            draw.text((PAD + BULLET_INDENT, y), line_text, font=f_b, fill=body_color)
             bb = draw.textbbox((0, 0), line_text, font=f_b)
             y += (bb[3] - bb[1]) + 20
 
