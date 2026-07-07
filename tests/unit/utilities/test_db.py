@@ -220,6 +220,18 @@ class TestGetPosts:
             assert "DROP TABLE" not in data_sql
             assert "ORDER BY scheduled_time" in data_sql  # safe default
 
+    def test_db_error_returns_empty(self, mock_database_connection):
+        import mysql.connector
+        from cqc_lem.utilities.db import get_posts
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("boom")
+
+            posts, total = get_posts(42, search='ai')
+
+            assert posts == [] and total == 0
+
 
 @pytest.mark.unit
 class TestBuildContentSearchClause:
@@ -270,6 +282,56 @@ class TestBuildContentSearchClause:
         from cqc_lem.utilities.db import build_content_search_clause
         sql, _ = build_content_search_clause('hi', column='message')
         assert sql == 'message LIKE %s'
+
+    def test_empty_quotes_tokenize_to_nothing(self):
+        from cqc_lem.utilities.db import build_content_search_clause
+        # Non-blank input that yields no tokens (empty quoted phrase) → treated as no search.
+        assert build_content_search_clause('""') == (None, [])
+
+    def test_too_many_terms_falls_back_to_literal(self):
+        from cqc_lem.utilities.db import build_content_search_clause
+        query = " ".join(f"t{i}" for i in range(25))  # exceeds the term cap
+        sql, params = build_content_search_clause(query)
+        assert sql == 'content LIKE %s'
+        assert params == [f"%{query}%"]
+
+    def test_open_paren_without_close_falls_back(self):
+        from cqc_lem.utilities.db import build_content_search_clause
+        sql, params = build_content_search_clause('(ai')
+        assert sql == 'content LIKE %s'
+        assert params == ['%(ai%']
+
+    def test_trailing_tokens_fall_back(self):
+        from cqc_lem.utilities.db import build_content_search_clause
+        sql, params = build_content_search_clause('ai )')
+        assert sql == 'content LIKE %s'
+        assert params == ['%ai )%']
+
+
+@pytest.mark.unit
+class TestGetPostByEmail:
+    def test_unknown_email_returns_empty(self):
+        from cqc_lem.utilities.db import get_post_by_email
+
+        with patch("cqc_lem.utilities.db.get_user_id", return_value=None):
+            assert get_post_by_email("nobody@example.com") == ([], 0)
+
+    def test_forwards_all_filters_to_get_posts(self):
+        from cqc_lem.utilities.db import get_post_by_email
+
+        with patch("cqc_lem.utilities.db.get_user_id", return_value=7), \
+             patch("cqc_lem.utilities.db.get_posts", return_value=(["p"], 1)) as mock_gp:
+            result = get_post_by_email(
+                "u@example.com", limit=5, offset=10, sort_order='desc',
+                status_filter='approved', post_type_filter='video',
+                search='ai OR ml', sort_by='status',
+            )
+
+        assert result == (["p"], 1)
+        mock_gp.assert_called_once_with(
+            7, limit=5, offset=10, sort_order='desc', status_filter='approved',
+            post_type_filter='video', search='ai OR ml', sort_by='status',
+        )
 
 
 @pytest.mark.unit
