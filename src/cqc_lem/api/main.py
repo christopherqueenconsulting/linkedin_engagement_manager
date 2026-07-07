@@ -49,7 +49,7 @@ from cqc_lem.utilities.db import (
     get_avatar_trainings, get_active_avatar,
     get_user_timezone, update_user_timezone,
     get_user_geo, update_user_location,
-    replace_video_url_base, get_post_type, get_post_buyer_stage,
+    replace_video_url_base, get_post_type, get_post_buyer_stage, get_post_status,
     update_db_post_carousel_slides,
     get_post_url_from_log_for_user,
 )
@@ -1275,6 +1275,13 @@ def regenerate_post_endpoint(request: PostRegenerateRequest) -> ResponseModel:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     if get_post_user_id(request.post_id) != user_id:
         raise HTTPException(status_code=404, detail="Post not found")
+    # Regeneration resets the post to PENDING — only sensible from the review states. Regenerating
+    # a scheduled/posted/rejected post would silently yank it out of (or back into) the pipeline.
+    post_status = get_post_status(request.post_id)
+    if post_status not in (PostStatus.PENDING.value, PostStatus.APPROVED.value):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Post is '{post_status}' — only pending or approved posts can be regenerated")
     from cqc_lem.app.run_content_plan import regenerate_post_task
     guidance = (request.guidance or "").strip() or None
     regenerate_post_task.apply_async(kwargs={"post_id": request.post_id, "guidance": guidance})

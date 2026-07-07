@@ -136,7 +136,7 @@ class _TextPostHarness:
                             side_effect=lambda c, **kw: f"refined:{c}"),
             "hook": patch(f"{_RCP}.optimize_post_hook", side_effect=lambda c, **kw: c),
             "sanitize": patch(f"{_RCP}.sanitize_for_linkedin", side_effect=lambda c: c),
-            "bait": patch(f"{_RCP}.strip_engagement_bait", side_effect=lambda c: c),
+            "bait": patch(f"{_RCP}.strip_engagement_bait", side_effect=lambda c, **kw: c),
             "shape_save": patch(f"{_RCP}.update_db_post_shape",
                                 side_effect=self.overrides.get("shape_exc")),
         }
@@ -345,17 +345,28 @@ class TestRegenerateTaskWrappers:
     def test_regenerate_post_returns_none_when_generation_empty(self):
         from cqc_lem.app.run_content_plan import regenerate_post
         with patch("cqc_lem.utilities.db.get_post_user_id", return_value=1), \
-             patch("cqc_lem.utilities.db.get_post_type", return_value=None), \
+             patch("cqc_lem.utilities.db.get_post_type", return_value="text"), \
              patch("cqc_lem.utilities.db.get_post_buyer_stage", return_value="awareness"), \
              patch(f"{_RCP}.load_profile_for_user", return_value=_profile()), \
              patch(f"{_RCP}.create_text_post", return_value=None):
             assert regenerate_post(9) is None
 
+    def test_regenerate_post_unknown_type_skipped(self):
+        # 'text posts only' treats an unknown/None post type as non-text — never regenerate blind.
+        from cqc_lem.app.run_content_plan import regenerate_post
+        with patch("cqc_lem.utilities.db.get_post_user_id", return_value=1), \
+             patch("cqc_lem.utilities.db.get_post_type", return_value=None), \
+             patch(f"{_RCP}.create_text_post") as ctp, \
+             patch(f"{_RCP}.update_db_post_status") as us:
+            assert regenerate_post(9) is None
+        ctp.assert_not_called()
+        us.assert_not_called()
+
     def test_regenerate_post_guidance_failure_keeps_base_regen(self):
         from cqc_lem.app.run_content_plan import regenerate_post
         from cqc_lem.utilities.db import PostStatus
         with patch("cqc_lem.utilities.db.get_post_user_id", return_value=1), \
-             patch("cqc_lem.utilities.db.get_post_type", return_value=None), \
+             patch("cqc_lem.utilities.db.get_post_type", return_value="text"), \
              patch("cqc_lem.utilities.db.get_post_buyer_stage", return_value="awareness"), \
              patch(f"{_RCP}.load_profile_for_user", return_value=_profile()), \
              patch(f"{_RCP}.create_text_post", return_value="base content"), \

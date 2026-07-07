@@ -1016,6 +1016,8 @@ Return ONLY the revised post text — no preamble, no explanation.
 ### Author's revision request:
 {guidance.strip()}
 """
+    if profile_synthesis and profile_synthesis.strip():
+        prompt += f"\n### Author voice reference (match this voice):\n{profile_synthesis.strip()}\n"
     prompt += _alignment_directive(prefs)
     prompt += _style_directive(prefs, "post")
     prompt += "\n\n" + PLAIN_PUNCTUATION_DIRECTIVE

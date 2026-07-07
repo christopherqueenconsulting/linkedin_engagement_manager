@@ -528,7 +528,8 @@ def regenerate_post(post_id: int, guidance: str = None) -> Optional[str]:
         return None
     post_type = get_post_type(post_id)
     pt_value = post_type.value if isinstance(post_type, PostType) else post_type
-    if pt_value and pt_value != PostType.TEXT.value:
+    # Unknown/None type counts as non-text: regenerating blind could clobber a carousel/video post.
+    if pt_value != PostType.TEXT.value:
         myprint(f"regenerate_post: post {post_id} is '{pt_value}', not text — skipping text regenerate")
         return None
 

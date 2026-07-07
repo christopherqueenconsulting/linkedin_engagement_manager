@@ -35,6 +35,7 @@ class TestRegeneratePostEndpoint:
     def test_dispatches_task_with_guidance(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
              patch("cqc_lem.api.main.get_post_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_post_status", return_value="pending"), \
              patch("cqc_lem.app.run_content_plan.regenerate_post_task") as task:
             resp = client.post("/api/user/post/regenerate",
                                json={"session_token": _SESSION, "post_id": 7, "guidance": "punchier"})
@@ -46,11 +47,25 @@ class TestRegeneratePostEndpoint:
     def test_blank_guidance_becomes_none(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
              patch("cqc_lem.api.main.get_post_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_post_status", return_value="approved"), \
              patch("cqc_lem.app.run_content_plan.regenerate_post_task") as task:
             resp = client.post("/api/user/post/regenerate",
                                json={"session_token": _SESSION, "post_id": 7, "guidance": "   "})
         assert resp.status_code == 200
         assert task.apply_async.call_args.kwargs["kwargs"]["guidance"] is None
+
+    @pytest.mark.parametrize("status", ["scheduled", "posted", "rejected", "error", "planning", None])
+    def test_409_when_post_not_in_review_state(self, client, status):
+        # Regeneration resets a post to PENDING — allowed only from pending/approved.
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_post_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_post_status", return_value=status), \
+             patch("cqc_lem.app.run_content_plan.regenerate_post_task") as task:
+            resp = client.post("/api/user/post/regenerate",
+                               json={"session_token": _SESSION, "post_id": 7})
+        assert resp.status_code == 409
+        assert "only pending or approved" in resp.json()["detail"]
+        task.apply_async.assert_not_called()
 
     def test_404_when_not_owner(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
