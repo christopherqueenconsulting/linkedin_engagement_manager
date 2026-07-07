@@ -1403,6 +1403,15 @@ def update_lead_magnet_endpoint(request: LeadMagnetRequest) -> ResponseModel:
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+    # A trigger word that itself reads as engagement bait (YES/AGREE/BELOW/AMEN/ME/👇) would be
+    # stripped from generated posts by the bait filter — reject it up front.
+    from cqc_lem.utilities.linkedin_formatter import is_bait_keyword
+    if request.keyword and is_bait_keyword(request.keyword):
+        raise HTTPException(
+            status_code=422,
+            detail=(f"Keyword '{request.keyword.strip()}' collides with the engagement-bait filter "
+                    "(words like YES, AGREE, BELOW, AMEN, ME). Choose a distinctive trigger word "
+                    "such as AUDIT or GUIDE."))
     if not update_lead_magnet_settings(user_id, request.model_dump(exclude={"session_token"})):
         raise HTTPException(status_code=500, detail="Could not update lead magnet")
     return ResponseModel(status_code=200, detail="Lead magnet updated")

@@ -91,6 +91,15 @@ class TestCreateTextPostCtaSurvival:
         assert (_run_pipeline(post_id=30, refined_output=_DROPPED)
                 == _run_pipeline(post_id=30, refined_output=_DROPPED))
 
+    def test_colliding_keyword_cta_survives_bait_filter(self):
+        # A trigger word colliding with the bait regex ('YES') is exempted via the threaded
+        # keyword — the surviving CTA line stays byte-identical instead of strip-then-repair.
+        lm = {"enabled": True, "keyword": "YES", "message": "A checklist."}
+        kept = ("Six months of testing taught us where acquisition cost hides.\n\n"
+                "Comment YES and I'll DM you the checklist we used.")
+        out = _run_pipeline(post_id=30, refined_output=kept, lead_magnet=lm)
+        assert out == kept
+
     def test_different_posts_get_different_repair_phrasings(self):
         outs = {_run_pipeline(post_id=pid, refined_output=_DROPPED)[len(_DROPPED):]
                 for pid in (27, 30, 33, 36, 39, 42)}
