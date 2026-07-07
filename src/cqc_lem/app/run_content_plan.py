@@ -308,7 +308,7 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
             # Also generate PPTX for user download
             try:
                 ppt_name = f"carousel_{post_id}"
-                create_ppt(ppt_name, carousel_obj)
+                create_ppt(ppt_name, carousel_obj, post_id=post_id, user_id=user_id)
             except Exception as ppt_err:
                 myprint(f"PPTX generation failed (non-fatal): {ppt_err}")
         except Exception as img_err:

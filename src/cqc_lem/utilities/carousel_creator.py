@@ -1,9 +1,32 @@
+"""Carousel rendering + a structured, deterministic image-selection strategy for
+content slides.
+
+LinkedIn carousel imagery — research-backed principles encoded below (from Buffer /
+PostNitro / Hootsuite analyses of high-engagement document posts):
+
+- CONTENT (middle) slides should carry a relevant image so they don't read as
+  text-on-blank. The image must REINFORCE the slide's single idea — a concept,
+  metaphor, or data-viz cue — never be random stock filler unrelated to the point.
+- Keep a CONSISTENT visual style across slides (calm, professional, uncluttered) so
+  the deck reads as one system, not a scrapbook.
+- AVOID busy / text-heavy images that fight the slide's own overlaid text for
+  attention. Prefer clean subjects with breathing room.
+- The COVER and CTA slides are their own thing (bold title / clear ask); we leave
+  those layouts as-is and only enrich the middle slides.
+
+Sourcing is deterministic and cheap-first: Pexels stock (a free API call) is the
+default; Replicate generation is opt-in, low-rate, and only used with the user's
+active avatar when a person likeness actually adds value (e.g. personal stories).
+Every whether/source decision is seeded by (post_id, slide_index) so regeneration
+is stable and unit-testable, and every step degrades gracefully to a text-only
+layout rather than crashing carousel generation.
+"""
 import os
 import random
 import tempfile
 import urllib.request
 from datetime import datetime
-from typing import Optional, Union
+from typing import Callable, Optional, Union
 
 from lxml.etree import tostring
 from pptx import Presentation
@@ -150,7 +173,9 @@ def create_ppt(ppt_name, carousel_data: Union[
     TestimonialCarousel,
     ProductDemoCarousel],
                my_theme: PowerPointThemeColors = PowerPointThemeColors(**{"lt1": "e9d437", "dk2": "a89816"}),
-               design_number: int = 1):
+               design_number: int = 1,
+               post_id: Optional[int] = None,
+               user_id: Optional[int] = None):
     current_dir = os.path.dirname(__file__)
     generated_dir = os.path.join(current_dir, "generated_designs")
     os.makedirs(generated_dir, exist_ok=True)
@@ -159,22 +184,22 @@ def create_ppt(ppt_name, carousel_data: Union[
 
     if isinstance(carousel_data, EducationalContentCarousel):
         # Handle EducationalContentCarousel
-        prs = create_ppt_educational_content_carousel(prs, carousel_data)
+        prs = create_ppt_educational_content_carousel(prs, carousel_data, post_id=post_id, user_id=user_id)
         pass
     elif isinstance(carousel_data, CaseStudyCarousel):
         # Handle CaseStudyCarousel
-        prs = create_ppt_case_study_carousel(prs, carousel_data)
+        prs = create_ppt_case_study_carousel(prs, carousel_data, post_id=post_id, user_id=user_id)
         pass
     elif isinstance(carousel_data, PersonalStoryCarousel):
-        prs = create_ppt_personal_story_carousel(prs, carousel_data)
+        prs = create_ppt_personal_story_carousel(prs, carousel_data, post_id=post_id, user_id=user_id)
     elif isinstance(carousel_data, IndustryInsightsCarousel):
-        prs = create_ppt_industry_insights_carousel(prs, carousel_data)
+        prs = create_ppt_industry_insights_carousel(prs, carousel_data, post_id=post_id, user_id=user_id)
     elif isinstance(carousel_data, EventRecapCarousel):
-        prs = create_ppt_event_recap_carousel(prs, carousel_data)
+        prs = create_ppt_event_recap_carousel(prs, carousel_data, post_id=post_id, user_id=user_id)
     elif isinstance(carousel_data, TestimonialCarousel):
         prs = create_ppt_testimonial_carousel(prs, carousel_data)
     elif isinstance(carousel_data, ProductDemoCarousel):
-        prs = create_ppt_product_demo_carousel(prs, carousel_data)
+        prs = create_ppt_product_demo_carousel(prs, carousel_data, post_id=post_id, user_id=user_id)
 
     file_path = os.path.join(generated_dir, f"{ppt_name}.pptx")
     prs.save(file_path)
@@ -210,7 +235,189 @@ def get_pexels_image_path(query: str, default_path: Optional[str] = None) -> Opt
         return default_path
 
 
-def create_ppt_educational_content_carousel(prs: Presentation, carousel: EducationalContentCarousel) -> Presentation:
+# ── Structured, deterministic content-slide image selection ───────────────────
+# Avatar (person likeness) only helps where the slide is about the author's own
+# narrative — using it elsewhere is off-brand. Keep this narrow on purpose.
+CAROUSEL_AVATAR_RELEVANT_TYPES: set[str] = {"personal_story"}
+
+_QUERY_STOPWORDS: set[str] = {
+    "the", "a", "an", "and", "or", "but", "to", "of", "for", "in", "on", "at",
+    "with", "your", "you", "our", "we", "how", "why", "what", "when", "is", "are",
+    "be", "this", "that", "it", "as", "from", "by", "will", "can", "do", "not",
+    "more", "less", "than", "then", "so", "if", "up", "out", "into", "about",
+    "tip", "tips", "step", "steps", "way", "ways",
+}
+
+
+def _seeded_unit(post_id: Optional[int], slide_index: int, purpose: str) -> float:
+    """Deterministic float in [0, 1) keyed by (post_id, slide_index, purpose)."""
+    return random.Random(f"{post_id}:{slide_index}:{purpose}").random()
+
+
+def _heuristic_image_query(title: Optional[str], content: Optional[str],
+                           content_type: Optional[str]) -> str:
+    """Local (no-API) keyword extraction — concrete visual terms from slide text."""
+    text = " ".join([t for t in (title, content) if t]).lower()
+    words = [w.strip(".,:;!?\"'()[]") for w in text.split()]
+    keywords = [w for w in words if len(w) > 3 and w not in _QUERY_STOPWORDS]
+    if not keywords:
+        return (content_type or "professional business").replace("_", " ")
+    return " ".join(keywords[:3])
+
+
+def derive_image_query(title: Optional[str], content: Optional[str],
+                       content_type: Optional[str]) -> str:
+    """Derive visual search keywords that capture the slide's MEANING (not its raw
+    title). Uses an ``lem-simple`` LLM call when enabled; falls back to a local
+    keyword heuristic on failure or when disabled.
+    """
+    from cqc_lem.utilities.env_constants import CAROUSEL_IMAGE_QUERY_LLM
+    from cqc_lem.utilities.logger import log_debug, log_warning
+
+    if not CAROUSEL_IMAGE_QUERY_LLM:
+        return _heuristic_image_query(title, content, content_type)
+    try:
+        from cqc_lem.utilities.ai.client import client
+        prompt = (
+            "Give 2-4 concrete visual search keywords for a clean, professional stock "
+            "photo that visually reinforces this LinkedIn carousel slide's single idea. "
+            "Return ONLY the space-separated keywords, no punctuation, no quotes.\n\n"
+            f"Title: {title or ''}\nBody: {content or ''}"
+        )
+        resp = client.chat.completions.create(
+            model="lem-simple",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = (resp.choices[0].message.content or "").strip()
+        cleaned = " ".join(
+            w.strip(".,:;!?\"'()[]") for w in raw.replace("\n", " ").split()
+        ).strip()
+        if cleaned:
+            log_debug("Derived carousel image query", ai_model="lem-simple")
+            return cleaned[:80]
+        return _heuristic_image_query(title, content, content_type)
+    except Exception as e:
+        log_warning("Carousel image-query LLM failed, using heuristic", exc=e,
+                    ai_model="lem-simple")
+        return _heuristic_image_query(title, content, content_type)
+
+
+def _should_include_slide_image(post_id: Optional[int], slide_index: int) -> bool:
+    from cqc_lem.utilities.env_constants import CAROUSEL_IMAGES_ENABLED, CAROUSEL_IMAGE_RATE
+    if not CAROUSEL_IMAGES_ENABLED:
+        return False
+    if CAROUSEL_IMAGE_RATE >= 1.0:
+        return True
+    if CAROUSEL_IMAGE_RATE <= 0.0:
+        return False
+    return _seeded_unit(post_id, slide_index, "include") < CAROUSEL_IMAGE_RATE
+
+
+def _user_has_active_avatar(user_id: Optional[int]) -> bool:
+    if user_id is None:
+        return False
+    try:
+        from cqc_lem.utilities.db import get_active_avatar
+        avatar = get_active_avatar(user_id)
+        return bool(avatar and avatar.get("status") == "succeeded" and avatar.get("model_ref"))
+    except Exception:
+        return False
+
+
+def _should_generate_with_replicate(post_id: Optional[int], slide_index: int,
+                                    user_id: Optional[int], content_type: Optional[str]) -> bool:
+    """Replicate generation is gated: globally enabled, avatar-relevant content type,
+    a deterministic low-rate sample, AND the user actually has an active avatar."""
+    from cqc_lem.utilities.env_constants import CAROUSEL_REPLICATE_ENABLED, CAROUSEL_REPLICATE_RATE
+    if not CAROUSEL_REPLICATE_ENABLED or user_id is None:
+        return False
+    if (content_type or "") not in CAROUSEL_AVATAR_RELEVANT_TYPES:
+        return False
+    if _seeded_unit(post_id, slide_index, "source") >= CAROUSEL_REPLICATE_RATE:
+        return False
+    return _user_has_active_avatar(user_id)
+
+
+def _generate_avatar_slide_image(query: str, user_id: int) -> Optional[str]:
+    from cqc_lem.utilities.logger import log_warning
+    try:
+        from cqc_lem.utilities.ai.ai_helper import generate_post_image
+        prompt = f"{query}, professional, clean minimal background, high quality, editorial"
+        path = generate_post_image(prompt, user_id)
+        return path or None
+    except Exception as e:
+        log_warning("Carousel avatar image generation failed, falling back to Pexels",
+                    exc=e, user_id=user_id, api_provider="replicate")
+        return None
+
+
+def select_slide_image(
+    *,
+    title: Optional[str],
+    content: Optional[str],
+    content_type: str,
+    post_id: Optional[int],
+    slide_index: int,
+    user_id: Optional[int] = None,
+    default_path: Optional[str] = None,
+) -> Optional[str]:
+    """Deterministically decide whether a content slide gets an image, derive its
+    search query, and resolve a source (Pexels-first, then optional avatar-based
+    Replicate generation). Returns a local image path or ``default_path``/None.
+
+    Never raises — every failure degrades to ``default_path`` so carousel generation
+    (and the caller's text-only layout fallback) is never blocked.
+    """
+    from cqc_lem.utilities.env_constants import CAROUSEL_PEXELS_ENABLED
+
+    if not _should_include_slide_image(post_id, slide_index):
+        return default_path
+
+    query = derive_image_query(title, content, content_type)
+
+    if _should_generate_with_replicate(post_id, slide_index, user_id, content_type):
+        generated = _generate_avatar_slide_image(query, user_id)
+        if generated:
+            return generated
+        # fall through to Pexels on generation failure
+
+    if CAROUSEL_PEXELS_ENABLED:
+        pexels_path = get_pexels_image_path(query, default_path)
+        if pexels_path:
+            return pexels_path
+
+    return default_path
+
+
+def _content_layout_pools() -> tuple[list[Callable], list[Callable]]:
+    """(image-capable, text-only) content layout pools. Image-capable layouts have a
+    picture placeholder; text-only layouts render title+body with no image slot."""
+    image_layouts = [create_one_column_text_layout_slide, create_one_column_text_1_layout_slide]
+    text_layouts = [create_title_and_body_layout_slide, create_title_and_body_1_layout_slide]
+    return image_layouts, text_layouts
+
+
+def choose_content_layout(
+    image_path: Optional[str],
+    post_id: Optional[int],
+    slide_index: int,
+    image_layouts: Optional[list[Callable]] = None,
+    text_layouts: Optional[list[Callable]] = None,
+) -> Callable:
+    """Route a content slide to a layout. When ``image_path`` is set the slide is
+    guaranteed an IMAGE-CAPABLE layout (with a picture placeholder) so the fetched
+    image never lands on a layout that silently discards it; otherwise a text-only
+    layout is used. The choice is deterministic per (post_id, slide_index)."""
+    default_img, default_txt = _content_layout_pools()
+    image_layouts = image_layouts or default_img
+    text_layouts = text_layouts or default_txt
+    rng = random.Random(f"{post_id}:{slide_index}:layout")
+    return rng.choice(image_layouts if image_path else text_layouts)
+
+
+def create_ppt_educational_content_carousel(prs: Presentation, carousel: EducationalContentCarousel,
+                                            post_id: Optional[int] = None,
+                                            user_id: Optional[int] = None) -> Presentation:
     """
     Create a PowerPoint presentation for Educational Content Carousel.
 
@@ -236,24 +443,16 @@ def create_ppt_educational_content_carousel(prs: Presentation, carousel: Educati
         **cover_slide_args
     )
 
-    # Slide 2-5: Content/Tips
-    content_layouts = [create_title_and_body_layout_slide, create_one_column_text_layout_slide,
-                       # create_ppt_for_title_and_two_columns_layout # TODO: Figure out if and how to implement this one
-                       ]
-
-    content_slide_args = {
-        "prs": prs
-    }
-    for content in carousel.contents:
-        content_slide_args["title"] = content.title
-        content_slide_args["body_text"] = content.content
-        image_path = getattr(content, "image_path", None)
-        content_slide_args["image_path"] = image_path or get_pexels_image_path(
-            content.title or "professional", default_image_path
+    # Slide 2-5: Content/Tips — structured, deterministic image selection + layout
+    # routing so image-bearing slides land on an image-capable layout.
+    for slide_index, content in enumerate(carousel.contents, start=2):
+        image_path = getattr(content, "image_path", None) or select_slide_image(
+            title=content.title, content=content.content, content_type="educational",
+            post_id=post_id, slide_index=slide_index, user_id=user_id,
+            default_path=default_image_path,
         )
-        content_slide = random.choice(content_layouts)(
-            **content_slide_args
-        )
+        layout_fn = choose_content_layout(image_path, post_id, slide_index)
+        layout_fn(prs=prs, title=content.title, body_text=content.content, image_path=image_path)
 
     # Slide 6: Conclusion
     conclusion_layouts = [create_section_title_and_description_layout_slide, create_custom_3_1_layout_slide,
@@ -275,7 +474,9 @@ def create_ppt_educational_content_carousel(prs: Presentation, carousel: Educati
     return prs  # Return the presentation for further modifications or saving
 
 
-def create_ppt_case_study_carousel(prs: Presentation, case_study_carousel: CaseStudyCarousel) -> Presentation:
+def create_ppt_case_study_carousel(prs: Presentation, case_study_carousel: CaseStudyCarousel,
+                                   post_id: Optional[int] = None,
+                                   user_id: Optional[int] = None) -> Presentation:
     """
     Create a PowerPoint presentation for Case Study Carousel.
 
@@ -294,43 +495,45 @@ def create_ppt_case_study_carousel(prs: Presentation, case_study_carousel: CaseS
     }
     cover_slide = random.choice(cover_layouts)(**cover_kwargs)
 
+    default_image_path = get_default_image_path()
+
     # Slide 2: Challenge
-    challenge_layouts = [create_title_and_body_layout_slide, create_one_column_text_layout_slide]
-    challenge_kwargs = {
-        'prs': prs,
-        'title': case_study_carousel.challenge.title,
-        'body_text': case_study_carousel.challenge.content,
-        'image_path': getattr(case_study_carousel.challenge, 'image_path', None) or get_pexels_image_path(
-            case_study_carousel.challenge.title or "challenge", get_default_image_path()
-        ),
-    }
-    challenge_slide = random.choice(challenge_layouts)(**challenge_kwargs)
+    challenge_image = getattr(case_study_carousel.challenge, 'image_path', None) or select_slide_image(
+        title=case_study_carousel.challenge.title, content=case_study_carousel.challenge.content,
+        content_type="case_study", post_id=post_id, slide_index=2, user_id=user_id,
+        default_path=default_image_path,
+    )
+    choose_content_layout(challenge_image, post_id, 2)(
+        prs=prs, title=case_study_carousel.challenge.title,
+        body_text=case_study_carousel.challenge.content, image_path=challenge_image,
+    )
 
     # Slide 3: Solution
-    solution_layouts = [create_title_and_body_layout_slide, create_title_and_body_1_layout_slide,
-                        # create_title_and_two_columns_layout_slide # TODO: Figure how to implement this one
-                        ]
-    solution_kwargs = {
-        'prs': prs,
-        'title': case_study_carousel.solution.title,
-        'body_text': case_study_carousel.solution.content
-    }
-    solution_slide = random.choice(solution_layouts)(**solution_kwargs)
+    solution_image = getattr(case_study_carousel.solution, 'image_path', None) or select_slide_image(
+        title=case_study_carousel.solution.title, content=case_study_carousel.solution.content,
+        content_type="case_study", post_id=post_id, slide_index=3, user_id=user_id,
+        default_path=default_image_path,
+    )
+    choose_content_layout(solution_image, post_id, 3)(
+        prs=prs, title=case_study_carousel.solution.title,
+        body_text=case_study_carousel.solution.content, image_path=solution_image,
+    )
 
-    # Slide 4: Results
-    results_layouts = [create_big_number_layout_slide, create_title_and_body_layout_slide,
-                       create_one_column_text_layout_slide]
-    results_kwargs = {
-        'prs': prs,
-        'title': case_study_carousel.results.title,
-        'body_text': case_study_carousel.results.content,
-        'image_path': getattr(case_study_carousel.results, 'image_path', None) or get_pexels_image_path(
-            case_study_carousel.results.title or "results", get_default_image_path()
-        ),
-        'big_number': getattr(case_study_carousel.results, 'big_number', ''),
-        'subtitle': getattr(case_study_carousel.results, 'subtitle', case_study_carousel.results.content),
-    }
-    results_slide = random.choice(results_layouts)(**results_kwargs)
+    # Slide 4: Results — no image keeps the big-number data-viz layout available.
+    results_image = getattr(case_study_carousel.results, 'image_path', None) or select_slide_image(
+        title=case_study_carousel.results.title, content=case_study_carousel.results.content,
+        content_type="case_study", post_id=post_id, slide_index=4, user_id=user_id,
+        default_path=default_image_path,
+    )
+    choose_content_layout(
+        results_image, post_id, 4,
+        text_layouts=[create_big_number_layout_slide, create_title_and_body_1_layout_slide],
+    )(
+        prs=prs, title=case_study_carousel.results.title,
+        body_text=case_study_carousel.results.content, image_path=results_image,
+        big_number=getattr(case_study_carousel.results, 'big_number', ''),
+        subtitle=getattr(case_study_carousel.results, 'subtitle', case_study_carousel.results.content),
+    )
 
     # Slide 5: Testimonial
     testimonial_layouts = [create_caption_only_layout_slide, create_blank_1_1_layout_slide]
@@ -357,7 +560,9 @@ def create_ppt_case_study_carousel(prs: Presentation, case_study_carousel: CaseS
     return prs  # Return the presentation for further modifications or saving
 
 
-def create_ppt_personal_story_carousel(prs: Presentation, carousel: PersonalStoryCarousel) -> Presentation:
+def create_ppt_personal_story_carousel(prs: Presentation, carousel: PersonalStoryCarousel,
+                                       post_id: Optional[int] = None,
+                                       user_id: Optional[int] = None) -> Presentation:
     default_image = get_default_image_path()
 
     cover_layouts = [create_title_layout_slide, create_section_header_layout_slide, create_title_only_layout_slide]
@@ -366,13 +571,13 @@ def create_ppt_personal_story_carousel(prs: Presentation, carousel: PersonalStor
         percentage="", body_text=carousel.cover.content
     )
 
-    story_layouts = [create_title_and_body_layout_slide, create_one_column_text_layout_slide]
-    for slide_data in carousel.story_slides:
-        random.choice(story_layouts)(
-            prs=prs, title=slide_data.title, body_text=slide_data.content,
-            image_path=getattr(slide_data, "image_path", None) or get_pexels_image_path(
-                slide_data.title or "story", default_image
-            ),
+    for slide_index, slide_data in enumerate(carousel.story_slides, start=2):
+        image_path = getattr(slide_data, "image_path", None) or select_slide_image(
+            title=slide_data.title, content=slide_data.content, content_type="personal_story",
+            post_id=post_id, slide_index=slide_index, user_id=user_id, default_path=default_image,
+        )
+        choose_content_layout(image_path, post_id, slide_index)(
+            prs=prs, title=slide_data.title, body_text=slide_data.content, image_path=image_path,
         )
 
     create_title_and_body_1_layout_slide(
@@ -387,7 +592,9 @@ def create_ppt_personal_story_carousel(prs: Presentation, carousel: PersonalStor
     return prs
 
 
-def create_ppt_industry_insights_carousel(prs: Presentation, carousel: IndustryInsightsCarousel) -> Presentation:
+def create_ppt_industry_insights_carousel(prs: Presentation, carousel: IndustryInsightsCarousel,
+                                          post_id: Optional[int] = None,
+                                          user_id: Optional[int] = None) -> Presentation:
     default_image = get_default_image_path()
 
     cover_layouts = [create_title_layout_slide, create_title_only_layout_slide]
@@ -395,13 +602,13 @@ def create_ppt_industry_insights_carousel(prs: Presentation, carousel: IndustryI
         prs=prs, title=carousel.cover.title, subtitle=carousel.cover.content
     )
 
-    insight_layouts = [create_title_and_body_layout_slide, create_one_column_text_layout_slide]
-    for insight in carousel.insights:
-        random.choice(insight_layouts)(
-            prs=prs, title=insight.title, body_text=insight.content,
-            image_path=getattr(insight, "image_path", None) or get_pexels_image_path(
-                insight.title or "industry", default_image
-            ),
+    for slide_index, insight in enumerate(carousel.insights, start=2):
+        image_path = getattr(insight, "image_path", None) or select_slide_image(
+            title=insight.title, content=insight.content, content_type="industry_insights",
+            post_id=post_id, slide_index=slide_index, user_id=user_id, default_path=default_image,
+        )
+        choose_content_layout(image_path, post_id, slide_index)(
+            prs=prs, title=insight.title, body_text=insight.content, image_path=image_path,
         )
 
     cta_layouts = [create_section_title_and_description_layout_slide, create_custom_3_1_layout_slide]
@@ -412,7 +619,9 @@ def create_ppt_industry_insights_carousel(prs: Presentation, carousel: IndustryI
     return prs
 
 
-def create_ppt_event_recap_carousel(prs: Presentation, carousel: EventRecapCarousel) -> Presentation:
+def create_ppt_event_recap_carousel(prs: Presentation, carousel: EventRecapCarousel,
+                                    post_id: Optional[int] = None,
+                                    user_id: Optional[int] = None) -> Presentation:
     default_image = get_default_image_path()
 
     cover_layouts = [create_title_layout_slide, create_section_header_layout_slide]
@@ -421,13 +630,13 @@ def create_ppt_event_recap_carousel(prs: Presentation, carousel: EventRecapCarou
         percentage=""
     )
 
-    moment_layouts = [create_title_and_body_layout_slide, create_one_column_text_layout_slide]
-    for moment in carousel.key_moments:
-        random.choice(moment_layouts)(
-            prs=prs, title=moment.title, body_text=moment.content,
-            image_path=getattr(moment, "image_path", None) or get_pexels_image_path(
-                moment.title or "event", default_image
-            ),
+    for slide_index, moment in enumerate(carousel.key_moments, start=2):
+        image_path = getattr(moment, "image_path", None) or select_slide_image(
+            title=moment.title, content=moment.content, content_type="event_recap",
+            post_id=post_id, slide_index=slide_index, user_id=user_id, default_path=default_image,
+        )
+        choose_content_layout(image_path, post_id, slide_index)(
+            prs=prs, title=moment.title, body_text=moment.content, image_path=image_path,
         )
 
     cta_layouts = [create_section_title_and_description_layout_slide, create_custom_3_1_layout_slide]
@@ -459,7 +668,9 @@ def create_ppt_testimonial_carousel(prs: Presentation, carousel: TestimonialCaro
     return prs
 
 
-def create_ppt_product_demo_carousel(prs: Presentation, carousel: ProductDemoCarousel) -> Presentation:
+def create_ppt_product_demo_carousel(prs: Presentation, carousel: ProductDemoCarousel,
+                                     post_id: Optional[int] = None,
+                                     user_id: Optional[int] = None) -> Presentation:
     default_image = get_default_image_path()
 
     cover_layouts = [create_title_layout_slide, create_title_only_layout_slide]
@@ -467,20 +678,24 @@ def create_ppt_product_demo_carousel(prs: Presentation, carousel: ProductDemoCar
         prs=prs, title=carousel.cover.title, subtitle=carousel.cover.content
     )
 
-    feature_layouts = [create_title_and_body_layout_slide, create_one_column_text_layout_slide]
-    random.choice(feature_layouts)(
+    main_image = getattr(carousel.main_feature, "image_path", None) or select_slide_image(
+        title=carousel.main_feature.title, content=carousel.main_feature.content,
+        content_type="product_demo", post_id=post_id, slide_index=2, user_id=user_id,
+        default_path=default_image,
+    )
+    choose_content_layout(main_image, post_id, 2)(
         prs=prs, title=carousel.main_feature.title, body_text=carousel.main_feature.content,
-        image_path=getattr(carousel.main_feature, "image_path", None) or get_pexels_image_path(
-            carousel.main_feature.title or "product", default_image
-        ),
+        image_path=main_image,
     )
 
-    for feature in carousel.additional_features:
-        random.choice(feature_layouts)(
-            prs=prs, title=feature.title, body_text=feature.content,
-            image_path=getattr(feature, "image_path", None) or get_pexels_image_path(
-                feature.title or "feature", default_image
-            ),
+    for offset, feature in enumerate(carousel.additional_features):
+        slide_index = 3 + offset
+        image_path = getattr(feature, "image_path", None) or select_slide_image(
+            title=feature.title, content=feature.content, content_type="product_demo",
+            post_id=post_id, slide_index=slide_index, user_id=user_id, default_path=default_image,
+        )
+        choose_content_layout(image_path, post_id, slide_index)(
+            prs=prs, title=feature.title, body_text=feature.content, image_path=image_path,
         )
 
     cta_layouts = [create_section_title_and_description_layout_slide, create_custom_3_1_layout_slide]
