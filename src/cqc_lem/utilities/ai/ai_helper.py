@@ -21,6 +21,7 @@ from cqc_lem.utilities.ai.content_alignment import (
     intention_directive as _intention_directive,
     alignment_directive as _alignment_directive,
     voice_reference as _voice_reference,
+    select_focus_topic as _select_focus_topic,
 )
 from cqc_lem.utilities.ai.content_research import research_topic
 from cqc_lem.utilities.ai.tools import search_recent_news, search_with_perplexity
@@ -1256,15 +1257,31 @@ def create_video_from_prompt(prompt: str):
     )
 
 
+def _subject_anchor_line(trends: dict) -> str:
+    """SUBJECT anchor injected into trend-based post prompts when the trend analysis was anchored to
+    one of the user's focus topics — states the assigned subject explicitly so the writer model
+    builds the post around it instead of picking any random thread from the industry analysis."""
+    focus_topic = (trends or {}).get("focus_topic")
+    if not focus_topic:
+        return ""
+    industry = (trends or {}).get("industry", "")
+    return (f"\n ### SUBJECT ANCHOR: build this post around \"{focus_topic}\" (a topic the user "
+            f"wants to be known for), at its intersection with the {industry} industry when the "
+            f"trends support it. The trend analysis was gathered for that subject — do NOT drift "
+            f"into unrelated {industry} news.\n")
+
+
 def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, buyer_stage: str,
                                         prefs: dict = None, profile_synthesis: str = None,
-                                        blueprint: dict = None, lead_magnet_cta: str = None):
+                                        blueprint: dict = None, lead_magnet_cta: str = None,
+                                        post_id: int = None, history_directive: str = None):
     """
         Generate a thought leadership post based on user's expertise and industry.
         Uses the user's profile (e.g., job title, industry) and intended buyer_stage to form an insightful post.
     """
 
-    trends = get_industry_trend_analysis_based_on_user_profile(linked_user_profile, limit_to=10)
+    trends = get_industry_trend_analysis_based_on_user_profile(linked_user_profile, limit_to=10,
+                                                               prefs=prefs, sequence_index=post_id)
     industry = trends.get("industry", "Technology")
     analysis = trends.get("analysis", "")
 
@@ -1293,6 +1310,7 @@ def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, bu
 
     # Add the industry trend analysis to the prompt
     prompt += f"\n ### Current {industry} Trends: <analysis>{analysis}</analysis>"
+    prompt += _subject_anchor_line(trends)
 
     prompt += _alignment_directive(prefs, lead_magnet_cta)
     # Shared framework core: this post's assigned archetype/hook/CTA blueprint (rotated across
@@ -1300,6 +1318,7 @@ def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, bu
     prompt += _framework.blueprint_directive("post", blueprint)
     prompt += _framework.post_writing_directive()
     prompt += _style_directive(prefs, "post")
+    prompt += history_directive or ""
 
     content = [{"type": "text", "text": prompt}]
 
@@ -1381,7 +1400,8 @@ def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, bu
 
 
 def get_industry_trend_analysis_based_on_user_profile(linked_in_profile: LinkedInProfile, limit_to=None,
-                                                      randomize=True):
+                                                      randomize=True, prefs: dict = None,
+                                                      sequence_index: int = None):
     my_industries = get_industries_of_profile_from_ai(linked_in_profile, 3)
     myprint(f"Likely Industries: {my_industries}")
 
@@ -1393,21 +1413,39 @@ def get_industry_trend_analysis_based_on_user_profile(linked_in_profile: LinkedI
 
     myprint(f"Chosen Industry: {industry}")
 
+    # SUBJECT anchoring (the topic-drift fix): trends used to come ONLY from the profile's industry,
+    # so by the time the alignment directive steered the ANGLE the subject was already off the
+    # user's declared focus. When focus_topics exist, anchor the trend subject to the INTERSECTION
+    # of the industry and ONE focus topic (rotated deterministically per post via sequence_index so
+    # anchoring never collapses onto a single topic); with no intersection the focus topic itself
+    # wins. No focus topics → the original industry-only behavior, unchanged.
+    focus_topic = _select_focus_topic(prefs, sequence_index)
+    if focus_topic:
+        myprint(f"Anchoring trends to focus topic: {focus_topic}")
+        subject = (f"{focus_topic} in the {industry} industry: recent trends, developments, and "
+                   f"news at that intersection. If little exists at the intersection, cover recent "
+                   f"trends and news about {focus_topic} itself instead of generic {industry} news")
+    else:
+        subject = f"Recent trends and news in the {industry} industry"
+
     # SHARED research core (same lem-research-preferred / direct-Perplexity-fallback layer the
     # newsletter uses; POST_RESEARCH_ENABLED toggles it). When it returns findings they ARE the
     # analysis — dated stats + named examples — so no second summarization LLM call is needed.
-    research = research_topic(f"Recent trends and news in the {industry} industry",
+    research = research_topic(subject,
                               content_type="post",
-                              blueprint={"format": "industry_observation"})
+                              blueprint={"format": "industry_observation"},
+                              prefs=prefs)
     if research.get("findings"):
         return {
             'industry': industry.strip(),
             'analysis': research["findings"],
             'sources': research.get("sources") or [],
+            'focus_topic': focus_topic,
         }
 
     # Research disabled/unavailable → the free GoogleNews path + trend summarization below.
-    articles_dict = search_recent_news(industry, 7)
+    # The news query prefers the anchored focus topic for the same drift reason as above.
+    articles_dict = search_recent_news(focus_topic or industry, 7)
     articles = articles_dict.get('articles', [])
 
     myprint(f"Articles Found: {len(articles)}")
@@ -1422,24 +1460,27 @@ def get_industry_trend_analysis_based_on_user_profile(linked_in_profile: LinkedI
 
     myprint(f"Articles: {articles}")
 
-    # Get the trend analysis of the industry
-    trend_analysis = get_industry_trend_from_ai(industry, articles)
+    # Get the trend analysis of the industry (scoped to the anchored focus topic when present)
+    trend_analysis = get_industry_trend_from_ai(focus_topic or industry, articles)
 
     return {
         'industry': industry.strip(),
         'analysis': trend_analysis,
         'sources': [],
+        'focus_topic': focus_topic,
     }
 
 
 def get_industry_news_post_from_ai(linked_user_profile: LinkedInProfile, buyer_stage: str,
                                    prefs: dict = None, profile_synthesis: str = None,
-                                   blueprint: dict = None, lead_magnet_cta: str = None):
+                                   blueprint: dict = None, lead_magnet_cta: str = None,
+                                   post_id: int = None, history_directive: str = None):
     """
        Generate a post sharing industry news based on the LinkedIn user's profile and the intended buyer stage, along with the user's commentary.
     """
 
-    trends = get_industry_trend_analysis_based_on_user_profile(linked_user_profile, limit_to=3)
+    trends = get_industry_trend_analysis_based_on_user_profile(linked_user_profile, limit_to=3,
+                                                               prefs=prefs, sequence_index=post_id)
     industry = trends.get("industry", "Technology")
     analysis = trends.get("analysis", "")
 
@@ -1461,13 +1502,14 @@ def get_industry_news_post_from_ai(linked_user_profile: LinkedInProfile, buyer_s
 
     # Add the industry trend analysis to the prompt
     prompt += f"\n ### Current {industry} Trends: <analysis>{analysis}</analysis>"
+    prompt += _subject_anchor_line(trends)
 
     prompt += f"""\n\n
-    --- 
+    ---
     \n
     Make the post insightful and end with a question or prompt that invites engagement from readers.
 
-    
+
     """
 
     prompt += _alignment_directive(prefs, lead_magnet_cta)
@@ -1476,6 +1518,7 @@ def get_industry_news_post_from_ai(linked_user_profile: LinkedInProfile, buyer_s
     prompt += _framework.blueprint_directive("post", blueprint)
     prompt += _framework.post_writing_directive()
     prompt += _style_directive(prefs, "post")
+    prompt += history_directive or ""
 
     content = [{"type": "text", "text": prompt}]
 
@@ -1619,7 +1662,8 @@ def get_industry_trend_from_ai(industry: str, articles: list):
 
 def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage: str,
                                     prefs: dict = None, profile_synthesis: str = None,
-                                    blueprint: dict = None, lead_magnet_cta: str = None):
+                                    blueprint: dict = None, lead_magnet_cta: str = None,
+                                    post_id: int = None, history_directive: str = None):
     """
     Generate a post sharing a personal or professional story, based on the user's profile.
     """
@@ -1644,19 +1688,21 @@ def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage:
     # Add the Linked JSON profile to end of prompt
     prompt += f"\n ### LinkedIn Profile: {linked_in_profile_json}"
 
-    trends = get_industry_trend_analysis_based_on_user_profile(linked_user_profile, limit_to=5)
+    trends = get_industry_trend_analysis_based_on_user_profile(linked_user_profile, limit_to=5,
+                                                               prefs=prefs, sequence_index=post_id)
     industry = trends.get("industry", "Technology")
     analysis = trends.get("analysis", "")
 
     # Add the industry trend analysis to the prompt
     prompt += f"\n ### Current {industry} Trends: <analysis>{analysis}</analysis>"
+    prompt += _subject_anchor_line(trends)
 
     prompt += f"""\n\n
-        --- 
+        ---
         \n
         Conclude with an engaging question or prompt that encourages readers to reflect on similar experiences.
 
-        
+
         """
 
     prompt += _alignment_directive(prefs, lead_magnet_cta)
@@ -1665,6 +1711,7 @@ def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage:
     prompt += _framework.blueprint_directive("post", blueprint)
     prompt += _framework.post_writing_directive()
     prompt += _style_directive(prefs, "post")
+    prompt += history_directive or ""
 
     content = [{"type": "text", "text": prompt}]
 
@@ -1733,7 +1780,8 @@ def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage:
 
 def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage: str,
                                     prefs: dict = None, profile_synthesis: str = None,
-                                    blueprint: dict = None, lead_magnet_cta: str = None):
+                                    blueprint: dict = None, lead_magnet_cta: str = None,
+                                    post_id: int = None, history_directive: str = None):
     """
     Generate a question or prompt that encourages engagement from followers.
     """
@@ -1756,19 +1804,21 @@ def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage:
     # Add the Linked JSON profile to end of prompt
     prompt += f"\n ### LinkedIn Profile: {linked_in_profile_json}"
 
-    trends = get_industry_trend_analysis_based_on_user_profile(linked_user_profile)
+    trends = get_industry_trend_analysis_based_on_user_profile(linked_user_profile,
+                                                               prefs=prefs, sequence_index=post_id)
     industry = trends.get("industry", "Technology")
     analysis = trends.get("analysis", "")
 
     # Add the industry trend analysis to the prompt
     prompt += f"\n ### Current {industry} Trends: <analysis>{analysis}</analysis>"
+    prompt += _subject_anchor_line(trends)
 
     prompt += f"""\n\n
-            --- 
+            ---
             \n
             Make the question open-ended and relatable to create meaningful engagement.
 
-            
+
             """
 
     prompt += _alignment_directive(prefs, lead_magnet_cta)
@@ -1777,6 +1827,7 @@ def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage:
     prompt += _framework.blueprint_directive("post", blueprint)
     prompt += _framework.post_writing_directive()
     prompt += _style_directive(prefs, "post")
+    prompt += history_directive or ""
 
     content = [{"type": "text", "text": prompt}]
 
@@ -1843,7 +1894,8 @@ def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage:
 
 def get_blog_summary_post_from_ai(blog_post_url: str, blog_post_content: str, linked_user_profile: LinkedInProfile,
                                   stage: str, prefs: dict = None, profile_synthesis: str = None,
-                                  blueprint: dict = None, lead_magnet_cta: str = None):
+                                  blueprint: dict = None, lead_magnet_cta: str = None,
+                                  history_directive: str = None):
     """
     Generate a summary post for a blog article using the provide post url and post content from user to create interest using relevance to the provided LinkedIn Profile.
     """
@@ -1884,6 +1936,7 @@ def get_blog_summary_post_from_ai(blog_post_url: str, blog_post_content: str, li
     prompt += _framework.blueprint_directive("post", blueprint)
     prompt += _framework.post_writing_directive()
     prompt += _style_directive(prefs, "post")
+    prompt += history_directive or ""
 
     content = [{"type": "text", "text": prompt}]
 
@@ -1950,7 +2003,8 @@ def get_blog_summary_post_from_ai(blog_post_url: str, blog_post_content: str, li
 
 def get_website_content_post_from_ai(content: str, url: str, linked_user_profile: LinkedInProfile, stage: str,
                                      prefs: dict = None, profile_synthesis: str = None,
-                                     blueprint: dict = None, lead_magnet_cta: str = None):
+                                     blueprint: dict = None, lead_magnet_cta: str = None,
+                                     history_directive: str = None):
     """
         Generate a summary post for a blog article using the provide post url and post content from user to create interest using relevance to the provided LinkedIn Profile.
         """
@@ -1990,13 +2044,14 @@ def get_website_content_post_from_ai(content: str, url: str, linked_user_profile
     prompt += _framework.blueprint_directive("post", blueprint)
     prompt += _framework.post_writing_directive()
     prompt += _style_directive(prefs, "post")
+    prompt += history_directive or ""
 
     content = [{"type": "text", "text": prompt}]
 
     # System prompt to be included in every request
     system_prompt = {
         "role": "system",
-        "content": f"""Act as an informed LinkedIn content strategist with expertise in the user’s industry. You will be provided with a website URL, the website content, and LinkedIn profile information from the user. 
+        "content": f"""Act as an informed LinkedIn content strategist with expertise in the user’s industry. You will be provided with a website URL, the website content, and LinkedIn profile information from the user.
         Create an engaging LinkedIn-friendly summary post that highlights the relevance of the website content to the user’s industry and expertise.
 
             ### Instructions:

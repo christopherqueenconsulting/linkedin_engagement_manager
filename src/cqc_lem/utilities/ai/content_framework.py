@@ -8,7 +8,9 @@ This generalizes the newsletter-only blueprint system (V50): the newsletter menu
 posts/comments now rotate through their own menus with the same guarantees — no two consecutive
 pieces share a format or hook style, and nothing repeats within the recent-history window."""
 
+import os
 import random
+import re
 from typing import Optional
 
 # How many most-recent historical formats/hook styles a new piece must also avoid (beyond the
@@ -613,6 +615,126 @@ def compact_blueprint(blueprint: dict) -> Optional[dict]:
     if not isinstance(blueprint, dict):
         return None
     return {k: blueprint.get(k) for k in ("subject", "angle", "format", "hook_style", "cta_style")}
+
+
+# ---------------------------------------------------------------------------
+# Post-history uniqueness engine — the newsletter's subject-dedup (V49) + avoid_openers steering
+# applied to POSTS, plus a cheap deterministic similarity gate. Lives here (not in a parallel
+# module) because "never repeat yourself" is the same variety contract the blueprint rotation
+# above enforces for SHAPE — this enforces it for CONTENT.
+# ---------------------------------------------------------------------------
+
+# Default ceiling for the token-set overlap between a new post and any recent post. ~0.55 flags
+# rewordings of the same post (which score 0.6+) while leaving two distinct posts on the same broad
+# theme (which score ~0.2-0.4) alone. Override per-deploy with POST_SIMILARITY_MAX.
+POST_SIMILARITY_MAX_DEFAULT = 0.55
+
+
+def post_similarity_max() -> float:
+    """The similarity ceiling, read at call time (same live-env pattern as the research toggles in
+    content_research) so ops/tests can tune POST_SIMILARITY_MAX without a restart."""
+    raw = (os.environ.get("POST_SIMILARITY_MAX") or "").strip()
+    try:
+        return float(raw) if raw else POST_SIMILARITY_MAX_DEFAULT
+    except ValueError:
+        return POST_SIMILARITY_MAX_DEFAULT
+
+
+# Minimal English stopword set (incl. the common 2-letter words) — enough to keep function-word
+# overlap from inflating similarity between two unrelated posts, while keeping meaningful short
+# tokens like 'ai' or 'ml' that focus-topic matching depends on.
+_STOPWORDS = frozenset((
+    "a an and are as at be been but by can could did do does for from had has have he her here his "
+    "how i if in into is it its just me more most my no nor not of on or our out over she so some "
+    "than that the their them then there these they this those to too up us was we were what when "
+    "where which who why will with would you your").split())
+
+
+def content_tokens(text: str) -> set:
+    """Normalized meaningful-token set: lowercased word tokens minus stopwords and 1-char noise."""
+    words = re.findall(r"[a-z0-9']+", (text or "").lower())
+    return {w for w in words if len(w) > 1 and w not in _STOPWORDS}
+
+
+def text_similarity(a: str, b: str) -> float:
+    """Deterministic normalized token-set OVERLAP COEFFICIENT: |A∩B| / min(|A|, |B|). Chosen over
+    SequenceMatcher because near-duplicate posts are usually REWORDINGS (same vocabulary, different
+    order/length) — a set measure catches those where a sequence measure misses them, and it stays
+    cheap at generation volume. The min-denominator keeps a short near-copy of a longer post from
+    hiding behind the length difference. Range 0.0-1.0."""
+    ta, tb = content_tokens(a), content_tokens(b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / min(len(ta), len(tb))
+
+
+def find_most_similar(text: str, candidates: list) -> tuple:
+    """(best_score, best_candidate_text) of `text` against each candidate; (0.0, None) when there is
+    nothing to compare."""
+    best_score, best_match = 0.0, None
+    for cand in candidates or []:
+        score = text_similarity(text, cand)
+        if score > best_score:
+            best_score, best_match = score, cand
+    return best_score, best_match
+
+
+def opening_line(text: str, max_chars: int = 200) -> str:
+    """First non-empty line of a piece of content — the post-side twin of the newsletter's
+    opening_line history (V50)."""
+    return next((ln.strip() for ln in (text or "").splitlines() if ln.strip()), "")[:max_chars]
+
+
+def infer_post_subject(text: str, max_keywords: int = 5) -> str:
+    """Cheap deterministic subject fingerprint: the most frequent meaningful tokens (ties broken by
+    first appearance), joined as a keyword phrase. No LLM call — posts have no stored subject column
+    (unlike newsletter_editions.subject), so the subject is derived from content on demand."""
+    words = re.findall(r"[a-z0-9']+", (text or "").lower())
+    counts: dict = {}
+    first_pos: dict = {}
+    for i, w in enumerate(words):
+        if len(w) <= 1 or w in _STOPWORDS:
+            continue
+        counts[w] = counts.get(w, 0) + 1
+        first_pos.setdefault(w, i)
+    top = sorted(counts, key=lambda w: (-counts[w], first_pos[w]))[:max_keywords]
+    return ", ".join(sorted(top, key=lambda w: first_pos[w]))
+
+
+def history_avoidance_directive(recent_texts: list, offending_text: str = None,
+                                max_items: int = 10) -> str:
+    """The AVOID block injected into post prompts, mirroring how newsletter regeneration passes
+    avoid_subjects/avoid_openers: recent posts' opening lines + subject fingerprints the new post
+    must not reuse. `offending_text` (a similarity-gate retry) adds the specific too-similar post so
+    the retry steers hard away from it. Returns '' when there is nothing to avoid."""
+    openers, subjects = [], []
+    seen_o, seen_s = set(), set()
+    for t in recent_texts or []:
+        o = opening_line(t)
+        s = infer_post_subject(t)
+        if o and o.lower() not in seen_o and len(openers) < max_items:
+            openers.append(o)
+            seen_o.add(o.lower())
+        if s and s not in seen_s and len(subjects) < max_items:
+            subjects.append(s)
+            seen_s.add(s)
+    if not openers and not subjects and not offending_text:
+        return ""
+    lines = ["\n\nUNIQUENESS RULES — do NOT repeat the author's recent posts (repetition kills "
+             "reach and reads as automation). Bring a genuinely fresh subject, opening, and take:"]
+    if openers:
+        lines.append("- Recent posts OPENED with these exact lines. Your opening line must NOT "
+                     "reuse or resemble ANY of them — different wording, different rhetorical "
+                     "device, different rhythm:\n  * " + "\n  * ".join(openers))
+    if subjects:
+        lines.append("- Recent posts covered these subjects (keyword fingerprints). Cover "
+                     "materially different ground — a different problem, angle, or takeaway, never "
+                     "a rephrasing:\n  * " + "\n  * ".join(subjects))
+    if offending_text:
+        lines.append("- IMPORTANT: a previous draft was TOO SIMILAR to this earlier post. Choose a "
+                     "clearly different subject, opening, and structure than:\n  \""
+                     + str(offending_text).strip()[:400] + "\"")
+    return "\n".join(lines) + "\n"
 
 
 def post_writing_directive() -> str:

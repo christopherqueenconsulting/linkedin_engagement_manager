@@ -32,13 +32,16 @@ def _run_pipeline(post_id, refined_output, lead_magnet=_LM_ON, prefs=None):
     `refined_output` (what the rewrites turn the generated post into)."""
     from cqc_lem.app import run_content_plan as rcp
 
+    # **kwargs: the generators keep growing aligned kwargs (history_directive, sequence keys, …) —
+    # this stub only cares that content comes back.
     def gen(user_profile, stage, prefs=None, profile_synthesis=None, blueprint=None,
-            lead_magnet_cta=None):
+            lead_magnet_cta=None, **kwargs):
         return _GENERATED
 
     with patch(f"{_RCP}.get_engagement_preferences", return_value=prefs or {}), \
          patch(f"{_RCP}.get_or_create_profile_synthesis", return_value="voice"), \
          patch(f"{_RCP}.get_lead_magnet_settings", return_value=lead_magnet), \
+         patch(f"{_RCP}.get_recent_post_texts", return_value=[]), \
          patch(f"{_RCP}.get_recent_post_shape_history", return_value=[]), \
          patch(f"{_RCP}.update_db_post_shape"), \
          patch(f"{_RCP}.get_thought_leadership_post_from_ai", side_effect=gen), \

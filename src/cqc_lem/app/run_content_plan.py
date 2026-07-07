@@ -24,9 +24,12 @@ from cqc_lem.utilities.db import get_post_type_counts, insert_planned_post, upda
     update_db_post_video_url, update_db_post_status, PostType, get_user_preferences, \
     update_db_post_carousel_slides, get_post_content, get_user_timezone, get_engagement_preferences
 from cqc_lem.utilities.db import get_recent_post_shape_history, update_db_post_shape, get_lead_magnet_settings
-from cqc_lem.utilities.ai.content_framework import select_blueprint
+from cqc_lem.utilities.db import get_recent_post_texts
+from cqc_lem.utilities.ai.content_framework import select_blueprint, history_avoidance_directive, \
+    find_most_similar, post_similarity_max
 from cqc_lem.utilities.ai.content_alignment import (
-    should_include_lead_magnet_cta, lead_magnet_cta_directive, ensure_lead_magnet_cta)
+    should_include_lead_magnet_cta, lead_magnet_cta_directive, ensure_lead_magnet_cta,
+    content_matches_focus)
 from cqc_lem.utilities.env_constants import API_URL_FINAL, DEFAULT_VIDEO_RATIO, \
     DEFAULT_IMAGE_RATIO, AI_DISCLOSURE_ENABLED, AI_DISCLOSURE_TEXT, \
     STANDARD_VIDEO_MODEL, PREMIUM_VIDEO_MODEL, PREMIUM_TOP_VIDEO_MODEL, \
@@ -34,7 +37,7 @@ from cqc_lem.utilities.env_constants import API_URL_FINAL, DEFAULT_VIDEO_RATIO, 
 from cqc_lem.utilities.linkedin.helper import get_my_profile, load_profile_for_user
 from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin, strip_engagement_bait
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
-from cqc_lem.utilities.logger import myprint, log_info
+from cqc_lem.utilities.logger import myprint, log_info, log_warning
 from cqc_lem.utilities.selenium_util import get_driver_wait_pair, quit_gracefully
 from cqc_lem.utilities.utils import get_best_posting_time, get_post_time, create_folder_if_not_exists, save_video_url_to_dir
 from requests.adapters import HTTPAdapter
@@ -564,9 +567,72 @@ def regenerate_post_task(post_id: int, guidance: str = None):
     return regenerate_post(post_id, guidance)
 
 
+def _check_post_alignment(content: str, prefs: dict, user_id: int = None,
+                          post_id: int = None) -> bool:
+    """Lightweight focus-alignment check on a FINAL post: when the user declared focus_topics,
+    verify the post plausibly relates to at least one of them via the cheap deterministic token
+    heuristic (content_matches_focus — NO LLM call). POST_ALIGNMENT_LLM_CHECK_ENABLED (default OFF,
+    the COMMENT_RESEARCH_ENABLED cost-gating pattern) lets an LLM relevance check rescue keyword
+    misses — it only fires when the heuristic already failed, so the default path costs nothing.
+    Misalignment logs a structured warning and never blocks the pipeline."""
+    topics = [str(t).strip() for t in ((prefs or {}).get("focus_topics") or []) if str(t).strip()]
+    if not topics or not content:
+        return True
+    aligned = content_matches_focus(content, topics)
+    if not aligned and str(os.getenv("POST_ALIGNMENT_LLM_CHECK_ENABLED", "")).strip().lower() in (
+            "1", "true", "yes", "on"):
+        from cqc_lem.utilities.ai.ai_helper import post_is_relevant
+        aligned = post_is_relevant(content, topics)
+    if not aligned:
+        log_warning("Generated post does not appear to relate to any declared focus topic",
+                    user_id=user_id, post_id=post_id, task_name="create_text_post")
+    return aligned
+
+
+def _review_generated_post(user_id: int, stage: str, post_type: str, user_profile: LinkedInProfile,
+                           blueprint: dict, post_id: int, lead_magnet_cta: str, content: str,
+                           recent_texts: list, prefs: dict = None) -> str:
+    """The post-generation REVIEW GATE (the newsletter's dedup maturity applied to posts): compare
+    the finished post against the user's recent posts with the deterministic token-set overlap in
+    content_framework. Too similar (> POST_SIMILARITY_MAX) → regenerate ONCE with an explicit avoid
+    directive naming the offending post; still similar → log a structured warning and keep the
+    second attempt (never loop, never hard-block). Also runs the cheap focus-alignment check on
+    whatever content ships."""
+    threshold = post_similarity_max()
+    score, match = find_most_similar(content, recent_texts)
+    if score <= threshold:
+        _check_post_alignment(content, prefs, user_id, post_id)
+        return content
+
+    myprint(f"Post too similar to a recent post (score {score:.2f} > max {threshold:.2f}) — "
+            f"retrying once with an explicit avoid directive")
+    retry_directive = history_avoidance_directive(recent_texts, offending_text=match)
+    try:
+        second = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=True,
+                                  blueprint=blueprint, post_id=post_id,
+                                  lead_magnet_cta=lead_magnet_cta,
+                                  history_directive=retry_directive, similarity_check=False)
+    except Exception as e:
+        log_warning("Similarity retry generation failed; keeping first draft", exc=e,
+                    user_id=user_id, post_id=post_id, task_name="create_text_post")
+        second = None
+    if not second:
+        _check_post_alignment(content, prefs, user_id, post_id)
+        return content
+
+    second_score, _ = find_most_similar(second, recent_texts)
+    if second_score > threshold:
+        log_warning(f"Post still similar to a recent post after retry "
+                    f"(score {second_score:.2f} > max {threshold:.2f}); keeping second attempt",
+                    user_id=user_id, post_id=post_id, task_name="create_text_post")
+    _check_post_alignment(second, prefs, user_id, post_id)
+    return second
+
+
 def create_text_post(user_id: int, stage: str, post_type: str = None, user_profile: LinkedInProfile=None,
                      refine_final_post: bool = True, blueprint: dict = None, post_id: int = None,
-                     lead_magnet_cta: str = None):
+                     lead_magnet_cta: str = None, history_directive: str = None,
+                     similarity_check: bool = True):
     """
     Generate a text post for LinkedIn based on the user's profile, blog, or website content.
 
@@ -610,6 +676,20 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
     # in their volatile recent activity / current projects (LEM-drift).
     profile_synthesis = get_or_create_profile_synthesis(user_id, user_profile)
 
+    # Post-history dedup steering (the newsletter's avoid_subjects/avoid_openers, applied to posts):
+    # recent posts' opening lines + subject fingerprints ride into the generation prompt as an
+    # explicit AVOID block, and the same history feeds the pre-persist similarity gate below.
+    # Recursive calls (fallbacks / the similarity retry) receive an explicit history_directive so
+    # the history is fetched at most once per outermost call.
+    recent_texts: list = []
+    if similarity_check:
+        try:
+            recent_texts = get_recent_post_texts(user_id)
+        except Exception as e:
+            myprint(f"Could not load recent post history (skipping dedup steering): {e}")
+    if history_directive is None:
+        history_directive = history_avoidance_directive(recent_texts)
+
     # ONE assigned SHAPE per post from the SHARED framework core (content_framework): rotate away
     # from this user's recently used post archetypes/hook styles (V51 history) exactly the way
     # newsletter editions rotate — chosen in code, no extra LLM call.
@@ -652,7 +732,9 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
         final_content = get_thought_leadership_post_from_ai(user_profile, stage, prefs=prefs,
                                                             profile_synthesis=profile_synthesis,
                                                             blueprint=blueprint,
-                                                            lead_magnet_cta=lead_magnet_cta)
+                                                            lead_magnet_cta=lead_magnet_cta,
+                                                            post_id=post_id,
+                                                            history_directive=history_directive)
     elif post_type == "blog_summary":
         # Get the users blog url
         user_main_blog_url = get_user_blog_url(user_id)
@@ -661,21 +743,24 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             process_selected_post(blog_post_url, blog_post_content)
             final_content = get_blog_summary_post_from_ai(blog_post_url, blog_post_content, user_profile, stage,
                                                           prefs=prefs, profile_synthesis=profile_synthesis,
-                                                          blueprint=blueprint, lead_magnet_cta=lead_magnet_cta)
+                                                          blueprint=blueprint, lead_magnet_cta=lead_magnet_cta,
+                                                          history_directive=history_directive)
         else:
             myprint("No blog post found for this user. Generating another post type")
             # Chose another random post type that is not "blog_summary"
             post_types.remove("blog_summary")
             post_type = random.choice(post_types)
             final_content = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=False,
-                                             blueprint=blueprint, lead_magnet_cta=lead_magnet_cta)
+                                             blueprint=blueprint, post_id=post_id, lead_magnet_cta=lead_magnet_cta,
+                                             history_directive=history_directive, similarity_check=False)
     elif post_type == "website_content":
         # Get the users sitemap url
         sitemap_url = get_user_sitemap_url(user_id)
         if sitemap_url:
             content = generate_website_content_post(sitemap_url, user_profile, stage, prefs=prefs,
                                                     profile_synthesis=profile_synthesis,
-                                                    blueprint=blueprint, lead_magnet_cta=lead_magnet_cta)
+                                                    blueprint=blueprint, lead_magnet_cta=lead_magnet_cta,
+                                                    history_directive=history_directive)
             if content:
                 final_content = content
             else:
@@ -684,26 +769,34 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                 post_types.remove("website_content")
                 post_type = random.choice(post_types)
                 final_content = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=False,
-                                             blueprint=blueprint, lead_magnet_cta=lead_magnet_cta)
+                                             blueprint=blueprint, post_id=post_id, lead_magnet_cta=lead_magnet_cta,
+                                             history_directive=history_directive, similarity_check=False)
         else:
             myprint("No sitemap found for this user. Generating another post type")
             # Chose another random post type that is not "website_content"
             post_types.remove("website_content")
             post_type = random.choice(post_types)
             final_content = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=False,
-                                             blueprint=blueprint, lead_magnet_cta=lead_magnet_cta)
+                                             blueprint=blueprint, post_id=post_id, lead_magnet_cta=lead_magnet_cta,
+                                             history_directive=history_directive, similarity_check=False)
     elif post_type == "industry_news":
         final_content = get_industry_news_post_from_ai(user_profile, stage, prefs=prefs,
                                                        profile_synthesis=profile_synthesis,
-                                                       blueprint=blueprint, lead_magnet_cta=lead_magnet_cta)
+                                                       blueprint=blueprint, lead_magnet_cta=lead_magnet_cta,
+                                                       post_id=post_id,
+                                                       history_directive=history_directive)
     elif post_type == "personal_story":
         final_content = get_personal_story_post_from_ai(user_profile, stage, prefs=prefs,
                                                         profile_synthesis=profile_synthesis,
-                                                        blueprint=blueprint, lead_magnet_cta=lead_magnet_cta)
+                                                        blueprint=blueprint, lead_magnet_cta=lead_magnet_cta,
+                                                        post_id=post_id,
+                                                        history_directive=history_directive)
     else:
         final_content = generate_engagement_prompt_post(user_profile, stage, prefs=prefs,
                                                         profile_synthesis=profile_synthesis,
-                                                        blueprint=blueprint, lead_magnet_cta=lead_magnet_cta)
+                                                        blueprint=blueprint, lead_magnet_cta=lead_magnet_cta,
+                                                        post_id=post_id,
+                                                        history_directive=history_directive)
 
     if refine_final_post:
         final_content = get_ai_linked_post_refinement(final_content)
@@ -714,10 +807,19 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
         final_content = strip_engagement_bait(final_content)
         final_content = final_content.strip()
 
-    # The refinement passes above are LLM rewrites — verified in prod to reword the "comment
-    # KEYWORD" mechanic into a generic ask or drop it entirely, which silently kills the auto-DM
-    # keyword listener. Deterministic verify-and-repair AFTER the pipeline guarantees the mechanic
-    # ships on every selected post (variant chosen by post_id so repaired CTAs stay non-identical).
+    # Review gate (runs once, in the outermost call): deterministic near-duplicate check against the
+    # user's recent posts with ONE avoid-directive retry, plus a cheap focus-alignment check. Never
+    # a hard block — worst case it logs a warning and keeps the best attempt.
+    if final_content and refine_final_post and similarity_check:
+        final_content = _review_generated_post(user_id, stage, post_type, user_profile, blueprint,
+                                               post_id, lead_magnet_cta, final_content,
+                                               recent_texts, prefs)
+
+    # The refinement passes above (and any review-gate retry) are LLM rewrites — verified in prod to
+    # reword the "comment KEYWORD" mechanic into a generic ask or drop it entirely, which silently
+    # kills the auto-DM keyword listener. Deterministic verify-and-repair runs LAST, after every
+    # rewrite, so the mechanic ships on every selected post (no-op when already present; variant
+    # chosen by post_id so repaired CTAs stay non-identical).
     if include_cta and final_content:
         repaired = ensure_lead_magnet_cta(final_content, lead_magnet, post_id,
                                           use_emojis=bool((prefs or {}).get("use_emojis")))
@@ -887,7 +989,7 @@ def process_selected_post(url, content):
 
 def generate_website_content_post(sitemap_url, linked_user_profile, stage: str, prefs: dict = None,
                                   profile_synthesis: str = None, blueprint: dict = None,
-                                  lead_magnet_cta: str = None):
+                                  lead_magnet_cta: str = None, history_directive: str = None):
     """
     Generate a post based on content found on the user's website using their sitemap url catered to readers in the desired buyers journey stage.
     Scrapes or retrieves key points from the website's sitemap.
@@ -918,7 +1020,8 @@ def generate_website_content_post(sitemap_url, linked_user_profile, stage: str, 
             # 4. Generate a social media post based on the extracted content
             social_media_post = get_website_content_post_from_ai(content, selected_url, linked_user_profile, stage,
                                                                  prefs=prefs, profile_synthesis=profile_synthesis,
-                                                                 blueprint=blueprint, lead_magnet_cta=lead_magnet_cta)
+                                                                 blueprint=blueprint, lead_magnet_cta=lead_magnet_cta,
+                                                                 history_directive=history_directive)
             return social_media_post
         else:
             myprint("No content extracted from the selected URL.")
