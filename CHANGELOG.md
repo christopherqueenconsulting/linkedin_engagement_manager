@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.37.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.37.0...v0.37.1) (2026-07-07)
+
+
+### Bug Fixes
+
+* **content:** single clean lead-magnet ask — preserve context in rewrites, strip soft paraphrase ([3e53672](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3e536729729d57ef590e1767c204e8b8c0988a28))
+* **content:** single clean lead-magnet ask (preserve in rewrites + strip soft paraphrase) ([f5da84d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f5da84d30e286e309655f6293b71e6c53a97083f))
+
 ## [0.37.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.36.0...v0.37.0) (2026-07-07)
 
 
