@@ -661,8 +661,16 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             user_profile = get_my_profile(driver, wait, user_email, user_password, user_id=user_id)
         except Exception as e:
             myprint(f"Error getting user profile: {e}")
-            # Create empty dummy user profile
-            user_profile = LinkedInProfile(full_name="John Doe", job_title="Software Developer", company_name="ABC Inc.",)
+            # Prefer the user's cached DB profile (no Selenium) — the old hardcoded "John Doe,
+            # Software Developer at ABC Inc." dummy leaked a tech persona into generated posts
+            # whenever the live profile load hiccupped. Neutral dummy only as a last resort.
+            try:
+                user_profile = load_profile_for_user(user_id)
+            except Exception as e2:
+                myprint(f"Cached profile unavailable: {e2}")
+                user_profile = None
+            if user_profile is None:
+                user_profile = LinkedInProfile(full_name="LinkedIn Member", job_title="Professional")
         finally:
             quit_gracefully(driver)
 
@@ -799,9 +807,11 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                                                         history_directive=history_directive)
 
     if refine_final_post:
-        final_content = get_ai_linked_post_refinement(final_content)
+        # Both refinement passes get the user's prefs so the LLM rewrites can't re-introduce
+        # emojis/hashtags the user turned off (or flatten a configured tone).
+        final_content = get_ai_linked_post_refinement(final_content, prefs=prefs)
         # Hook + save-worthy pass: strong first line before the '…more' fold; save-worthy framing.
-        final_content = optimize_post_hook(final_content)
+        final_content = optimize_post_hook(final_content, prefs=prefs)
         final_content = sanitize_for_linkedin(final_content)
         # Guardrail: strip classic engagement-bait CTAs (penalized), keeping lead-magnet CTAs.
         final_content = strip_engagement_bait(final_content)

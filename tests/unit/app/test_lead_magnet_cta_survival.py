@@ -46,7 +46,7 @@ def _run_pipeline(post_id, refined_output, lead_magnet=_LM_ON, prefs=None):
          patch(f"{_RCP}.update_db_post_shape"), \
          patch(f"{_RCP}.get_thought_leadership_post_from_ai", side_effect=gen), \
          patch(f"{_RCP}.get_ai_linked_post_refinement", return_value=refined_output), \
-         patch(f"{_RCP}.optimize_post_hook", side_effect=lambda t: t):
+         patch(f"{_RCP}.optimize_post_hook", side_effect=lambda t, **kw: t):
         return rcp.create_text_post(1, "awareness", post_type="thought_leadership",
                                     user_profile=MagicMock(), refine_final_post=True,
                                     post_id=post_id)
