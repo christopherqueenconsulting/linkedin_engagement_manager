@@ -486,7 +486,8 @@ class TestGetPostByEmail:
             assert posts == ["post1"]
             assert total == 1
             mock_get_posts.assert_called_once_with(
-                42, limit=5, offset=10, sort_order="desc", status_filter="pending"
+                42, limit=5, offset=10, sort_order="desc", status_filter="pending",
+                post_type_filter=None, search=None, sort_by="scheduled_time"
             )
 
 

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '../api/client'
@@ -29,6 +29,22 @@ const STATUSES: { label: string; value: Status }[] = [
   { label: 'SCHEDULED', value: 'scheduled' },
   { label: 'POSTED', value: 'posted' },
   { label: 'REJECTED', value: 'rejected' },
+]
+
+type PostTypeFilter = 'ALL' | 'text' | 'video' | 'carousel'
+const POST_TYPE_FILTERS: { label: string; value: PostTypeFilter }[] = [
+  { label: 'All types', value: 'ALL' },
+  { label: 'Text', value: 'text' },
+  { label: 'Video', value: 'video' },
+  { label: 'Carousel', value: 'carousel' },
+]
+
+type SortBy = 'scheduled_time' | 'status' | 'post_type' | 'id'
+const SORT_BY_OPTIONS: { label: string; value: SortBy }[] = [
+  { label: 'Scheduled time', value: 'scheduled_time' },
+  { label: 'Status', value: 'status' },
+  { label: 'Type', value: 'post_type' },
+  { label: 'Created (ID)', value: 'id' },
 ]
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50]
@@ -73,9 +89,24 @@ export default function ContentStudio() {
 
   // Filter / sort / pagination state
   const [filterStatus, setFilterStatus] = useState<Status>('ALL')
+  const [filterPostType, setFilterPostType] = useState<PostTypeFilter>('ALL')
+  const [sortBy, setSortBy] = useState<SortBy>('scheduled_time')
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
+
+  // Keyword search — raw input is debounced into the applied query so we don't
+  // refetch on every keystroke. Supports boolean operators (AND / OR / NOT).
+  const [searchInput, setSearchInput] = useState('')
+  const [searchQuery, setSearchQuery] = useState('')
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setSearchQuery(searchInput.trim())
+      setPage(1)
+      setSelectedIds(new Set())
+    }, 400)
+    return () => clearTimeout(t)
+  }, [searchInput])
 
   // Selection / bulk state
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
@@ -90,7 +121,7 @@ export default function ContentStudio() {
   const [regenGuidance, setRegenGuidance] = useState('')
   const [regenNotice, setRegenNotice] = useState<string | null>(null)
 
-  const queryKey = ['posts', email, page, pageSize, sortOrder, filterStatus]
+  const queryKey = ['posts', email, page, pageSize, sortOrder, sortBy, filterStatus, filterPostType, searchQuery]
 
   const { data, isLoading } = useQuery<{ detail: PostsResponse }>({
     queryKey,
@@ -100,8 +131,11 @@ export default function ContentStudio() {
         page: String(page),
         page_size: String(pageSize),
         sort_order: sortOrder,
+        sort_by: sortBy,
       })
       if (filterStatus !== 'ALL') params.set('status_filter', filterStatus)
+      if (filterPostType !== 'ALL') params.set('post_type_filter', filterPostType)
+      if (searchQuery) params.set('search', searchQuery)
       return api.get(`/posts/?${params.toString()}`).then((r) => r.data)
     },
     enabled: !!email,
@@ -223,6 +257,19 @@ export default function ContentStudio() {
     if (newFilter !== undefined) setFilterStatus(newFilter)
   }
 
+  const hasActiveFilters = filterStatus !== 'ALL' || filterPostType !== 'ALL' || searchQuery !== ''
+
+  function clearFilters() {
+    setFilterStatus('ALL')
+    setFilterPostType('ALL')
+    setSearchInput('')
+    setSearchQuery('')
+    setSortBy('scheduled_time')
+    setPage(1)
+    setSelectedIds(new Set())
+    setEditingPost(null)
+  }
+
   const allOnPageSelected = posts.length > 0 && posts.every((p) => selectedIds.has(p.post_id))
 
   return (
@@ -300,13 +347,69 @@ export default function ContentStudio() {
         ))}
       </div>
 
-      {/* Sort + page-size controls */}
+      {/* Keyword search — boolean operators supported */}
+      <div>
+        <div className="relative">
+          <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">🔍</span>
+          <input
+            type="search"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder='Search posts… e.g.  ai AND "case study" NOT hiring'
+            aria-label="Search posts by keyword"
+            className="w-full border border-gray-300 rounded-lg pl-9 pr-8 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          {searchInput && (
+            <button
+              type="button"
+              onClick={() => setSearchInput('')}
+              aria-label="Clear search"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-base leading-none px-1"
+            >
+              ×
+            </button>
+          )}
+        </div>
+        <p className="text-xs text-gray-400 mt-1">
+          Combine keywords with <span className="font-mono font-semibold">AND</span>,{' '}
+          <span className="font-mono font-semibold">OR</span>,{' '}
+          <span className="font-mono font-semibold">NOT</span> and parentheses; wrap phrases in "quotes".
+        </p>
+      </div>
+
+      {/* Sort + type filter + page-size controls */}
       <div className="flex items-center gap-3 flex-wrap text-sm">
+        <label className="flex items-center gap-1.5 text-xs text-gray-600">
+          <span>Type</span>
+          <select
+            value={filterPostType}
+            onChange={(e) => { setFilterPostType(e.target.value as PostTypeFilter); setPage(1); setSelectedIds(new Set()) }}
+            className="border border-gray-300 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+          >
+            {POST_TYPE_FILTERS.map((t) => (
+              <option key={t.value} value={t.value}>{t.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="flex items-center gap-1.5 text-xs text-gray-600">
+          <span>Sort by</span>
+          <select
+            value={sortBy}
+            onChange={(e) => { setSortBy(e.target.value as SortBy); resetPage() }}
+            className="border border-gray-300 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+          >
+            {SORT_BY_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+        </label>
         <button
           onClick={() => { setSortOrder((o) => (o === 'asc' ? 'desc' : 'asc')); resetPage() }}
           className="flex items-center gap-1 text-gray-600 border border-gray-300 rounded-lg px-3 py-1.5 hover:border-blue-400 transition-colors text-xs font-medium"
         >
-          {sortOrder === 'asc' ? '↑ Oldest first' : '↓ Newest first'}
+          {sortBy === 'scheduled_time'
+            ? (sortOrder === 'asc' ? '↑ Oldest first' : '↓ Newest first')
+            : (sortOrder === 'asc' ? '↑ Ascending' : '↓ Descending')}
         </button>
         <div className="flex items-center gap-1.5 text-xs text-gray-600">
           <span>Show</span>
@@ -403,11 +506,18 @@ export default function ContentStudio() {
             <div className="flex flex-col items-center text-center py-12 px-4 bg-white rounded-lg border border-gray-200">
               <div className="text-4xl mb-4">📅</div>
               <p className="text-gray-600 text-sm mb-6 max-w-xs">
-                {filterStatus === 'ALL'
-                  ? 'Your scheduled posts will appear here. Generate your first week of content to get started.'
-                  : 'No posts match this filter.'}
+                {hasActiveFilters
+                  ? 'No posts match these filters.'
+                  : 'Your scheduled posts will appear here. Generate your first week of content to get started.'}
               </p>
-              {filterStatus === 'ALL' && (
+              {hasActiveFilters ? (
+                <button
+                  onClick={clearFilters}
+                  className="border border-gray-300 text-gray-600 px-5 py-2 rounded-lg text-sm font-semibold hover:bg-gray-50 transition-colors"
+                >
+                  Clear filters
+                </button>
+              ) : (
                 <button
                   onClick={() => weeklyMutation.mutate()}
                   disabled={weeklyMutation.isPending}

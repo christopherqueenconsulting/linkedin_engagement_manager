@@ -164,6 +164,175 @@ class TestGetPosts:
             count_call_params = calls[0][0][1]
             assert 'approved' in count_call_params
 
+    def test_post_type_filter_applied(self, mock_database_connection):
+        from cqc_lem.utilities.db import get_posts
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].fetchone.return_value = {"total": 0}
+            mock_database_connection["cursor"].fetchall.return_value = []
+
+            get_posts(42, post_type_filter='Video')
+
+            calls = mock_database_connection["cursor"].execute.call_args_list
+            count_sql, count_params = calls[0][0]
+            assert "post_type = %s" in count_sql
+            assert 'video' in count_params  # lowercased
+
+    def test_search_adds_like_condition(self, mock_database_connection):
+        from cqc_lem.utilities.db import get_posts
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].fetchone.return_value = {"total": 0}
+            mock_database_connection["cursor"].fetchall.return_value = []
+
+            get_posts(42, search='ai AND marketing')
+
+            count_sql, count_params = mock_database_connection["cursor"].execute.call_args_list[0][0]
+            assert "content LIKE %s" in count_sql
+            assert '%ai%' in count_params and '%marketing%' in count_params
+
+    def test_sort_by_whitelisted_column(self, mock_database_connection):
+        from cqc_lem.utilities.db import get_posts
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].fetchone.return_value = {"total": 0}
+            mock_database_connection["cursor"].fetchall.return_value = []
+
+            get_posts(42, sort_by='status')
+
+            data_sql = mock_database_connection["cursor"].execute.call_args_list[1][0][0]
+            assert "ORDER BY status" in data_sql
+
+    def test_sort_by_rejects_injection(self, mock_database_connection):
+        from cqc_lem.utilities.db import get_posts
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].fetchone.return_value = {"total": 0}
+            mock_database_connection["cursor"].fetchall.return_value = []
+
+            get_posts(42, sort_by='content; DROP TABLE posts')
+
+            data_sql = mock_database_connection["cursor"].execute.call_args_list[1][0][0]
+            assert "DROP TABLE" not in data_sql
+            assert "ORDER BY scheduled_time" in data_sql  # safe default
+
+    def test_db_error_returns_empty(self, mock_database_connection):
+        import mysql.connector
+        from cqc_lem.utilities.db import get_posts
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("boom")
+
+            posts, total = get_posts(42, search='ai')
+
+            assert posts == [] and total == 0
+
+
+@pytest.mark.unit
+class TestBuildContentSearchClause:
+    def test_empty_returns_none(self):
+        from cqc_lem.utilities.db import build_content_search_clause
+        assert build_content_search_clause('') == (None, [])
+        assert build_content_search_clause('   ') == (None, [])
+        assert build_content_search_clause(None) == (None, [])
+
+    def test_single_term(self):
+        from cqc_lem.utilities.db import build_content_search_clause
+        sql, params = build_content_search_clause('ai')
+        assert sql == 'content LIKE %s'
+        assert params == ['%ai%']
+
+    def test_and_or_not(self):
+        from cqc_lem.utilities.db import build_content_search_clause
+        sql, params = build_content_search_clause('ai AND marketing')
+        assert ' AND ' in sql and params == ['%ai%', '%marketing%']
+        sql, _ = build_content_search_clause('ai OR marketing')
+        assert ' OR ' in sql
+        sql, _ = build_content_search_clause('NOT ai')
+        assert 'NOT' in sql
+
+    def test_implicit_and(self):
+        from cqc_lem.utilities.db import build_content_search_clause
+        sql, params = build_content_search_clause('ai marketing')
+        assert ' AND ' in sql and params == ['%ai%', '%marketing%']
+
+    def test_grouping_and_phrase(self):
+        from cqc_lem.utilities.db import build_content_search_clause
+        sql, params = build_content_search_clause('(ai OR ml) AND NOT "growth hacking"')
+        assert params == ['%ai%', '%ml%', '%growth hacking%']
+        assert ' OR ' in sql and ' AND ' in sql and 'NOT' in sql
+
+    def test_wildcards_escaped(self):
+        from cqc_lem.utilities.db import build_content_search_clause
+        _, params = build_content_search_clause('50%_off')
+        assert params == ['%50\\%\\_off%']
+
+    def test_unbalanced_falls_back_to_literal(self):
+        from cqc_lem.utilities.db import build_content_search_clause
+        sql, params = build_content_search_clause('(unbalanced OR')
+        assert sql == 'content LIKE %s'
+        assert params == ['%(unbalanced OR%']
+
+    def test_custom_column(self):
+        from cqc_lem.utilities.db import build_content_search_clause
+        sql, _ = build_content_search_clause('hi', column='message')
+        assert sql == 'message LIKE %s'
+
+    def test_empty_quotes_tokenize_to_nothing(self):
+        from cqc_lem.utilities.db import build_content_search_clause
+        # Non-blank input that yields no tokens (empty quoted phrase) → treated as no search.
+        assert build_content_search_clause('""') == (None, [])
+
+    def test_too_many_terms_falls_back_to_literal(self):
+        from cqc_lem.utilities.db import build_content_search_clause
+        query = " ".join(f"t{i}" for i in range(25))  # exceeds the term cap
+        sql, params = build_content_search_clause(query)
+        assert sql == 'content LIKE %s'
+        assert params == [f"%{query}%"]
+
+    def test_open_paren_without_close_falls_back(self):
+        from cqc_lem.utilities.db import build_content_search_clause
+        sql, params = build_content_search_clause('(ai')
+        assert sql == 'content LIKE %s'
+        assert params == ['%(ai%']
+
+    def test_trailing_tokens_fall_back(self):
+        from cqc_lem.utilities.db import build_content_search_clause
+        sql, params = build_content_search_clause('ai )')
+        assert sql == 'content LIKE %s'
+        assert params == ['%ai )%']
+
+
+@pytest.mark.unit
+class TestGetPostByEmail:
+    def test_unknown_email_returns_empty(self):
+        from cqc_lem.utilities.db import get_post_by_email
+
+        with patch("cqc_lem.utilities.db.get_user_id", return_value=None):
+            assert get_post_by_email("nobody@example.com") == ([], 0)
+
+    def test_forwards_all_filters_to_get_posts(self):
+        from cqc_lem.utilities.db import get_post_by_email
+
+        with patch("cqc_lem.utilities.db.get_user_id", return_value=7), \
+             patch("cqc_lem.utilities.db.get_posts", return_value=(["p"], 1)) as mock_gp:
+            result = get_post_by_email(
+                "u@example.com", limit=5, offset=10, sort_order='desc',
+                status_filter='approved', post_type_filter='video',
+                search='ai OR ml', sort_by='status',
+            )
+
+        assert result == (["p"], 1)
+        mock_gp.assert_called_once_with(
+            7, limit=5, offset=10, sort_order='desc', status_filter='approved',
+            post_type_filter='video', search='ai OR ml', sort_by='status',
+        )
+
 
 @pytest.mark.unit
 class TestInsertPost:

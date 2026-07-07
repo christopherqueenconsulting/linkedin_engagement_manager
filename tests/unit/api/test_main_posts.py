@@ -95,6 +95,9 @@ class TestGetPostsForEmail:
             offset=5,
             sort_order="asc",
             status_filter=None,
+            post_type_filter=None,
+            search=None,
+            sort_by="scheduled_time",
         )
 
     def test_sort_order_desc(self, client):
@@ -110,6 +113,9 @@ class TestGetPostsForEmail:
             offset=0,
             sort_order="desc",
             status_filter=None,
+            post_type_filter=None,
+            search=None,
+            sort_by="scheduled_time",
         )
 
     def test_status_filter_forwarded(self, client):
@@ -125,7 +131,47 @@ class TestGetPostsForEmail:
             offset=0,
             sort_order="asc",
             status_filter="pending",
+            post_type_filter=None,
+            search=None,
+            sort_by="scheduled_time",
         )
+
+    def test_post_type_and_search_and_sort_by_forwarded(self, client):
+        with patch(f"{_DB}.get_post_by_email", return_value=([], 0)) as mock_get:
+            resp = client.get(
+                "/api/posts/",
+                params={
+                    "email": "test@example.com",
+                    "post_type_filter": "carousel",
+                    "search": "ai AND marketing",
+                    "sort_by": "status",
+                },
+            )
+        assert resp.status_code == 200
+        mock_get.assert_called_once_with(
+            "test@example.com",
+            limit=10,
+            offset=0,
+            sort_order="asc",
+            status_filter=None,
+            post_type_filter="carousel",
+            search="ai AND marketing",
+            sort_by="status",
+        )
+
+    def test_invalid_post_type_filter_422(self, client):
+        resp = client.get(
+            "/api/posts/",
+            params={"email": "test@example.com", "post_type_filter": "gif"},
+        )
+        assert resp.status_code == 422
+
+    def test_invalid_sort_by_422(self, client):
+        resp = client.get(
+            "/api/posts/",
+            params={"email": "test@example.com", "sort_by": "content"},
+        )
+        assert resp.status_code == 422
 
     def test_carousel_slides_json_string_parsed(self, client):
         """carousel_slides stored as a JSON string should be decoded to a list."""
