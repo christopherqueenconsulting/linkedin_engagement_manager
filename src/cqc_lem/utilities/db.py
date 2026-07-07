@@ -1020,9 +1020,6 @@ def get_user_password_pair_by_id(user_id: int):
 
 
 def get_active_user_password_pairs():
-    connection = get_db_connection()
-    cursor = connection.cursor()
-
     user_password_pairs = []
 
     active_users = get_active_user_ids()
@@ -1225,7 +1222,7 @@ def remove_linked_in_profile_by_email(profile_email: str):
         connection.commit()
         success = True
     except mysql.connector.Error as err:
-        myprint(f"Could not remove linkedin profile by url | Error: {err}")
+        myprint(f"Could not remove linkedin profile by email | Error: {err}")
         success = False
     finally:
         cursor.close()
@@ -1244,7 +1241,7 @@ def get_post_type_counts(user_id: int):
         post_counts = {row['post_type']: row['count'] for row in cursor.fetchall()}
     except mysql.connector.Error as err:
         myprint(f"Could not get post type counts | Error: {err}")
-        post_counts = 0
+        post_counts = {}
     finally:
         cursor.close()
         connection.close()
@@ -3890,6 +3887,15 @@ def set_active_avatar(user_id: int, avatar_id: int) -> bool:
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
+        # Validate the target avatar BEFORE deactivating anything — a bad id must leave the
+        # user's current active avatar untouched (never strand them with no active avatar).
+        cursor.execute(
+            "SELECT id FROM avatar_trainings WHERE id = %s AND user_id = %s",
+            (avatar_id, user_id),
+        )
+        if cursor.fetchone() is None:
+            myprint(f"set_active_avatar: avatar {avatar_id} not found for user_id {user_id}")
+            return False
         cursor.execute(
             "UPDATE avatar_trainings SET is_active = 0 WHERE user_id = %s",
             (user_id,),
@@ -3899,7 +3905,7 @@ def set_active_avatar(user_id: int, avatar_id: int) -> bool:
             (avatar_id, user_id),
         )
         connection.commit()
-        return cursor.rowcount > 0
+        return True
     except mysql.connector.Error as err:
         myprint(f"Could not set active avatar for user_id {user_id} | Error: {err}")
         return False
