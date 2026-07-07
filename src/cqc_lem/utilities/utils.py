@@ -75,6 +75,20 @@ def get_best_posting_times():
     # 2026 peak-engagement windows shifted to afternoons, strongest Tue–Thu (Wed ~4pm is the peak);
     # weekends taper. Times are user-local (the scheduler converts to UTC). Superseded per-user by
     # the data-driven recommend_post_times once enough post-stats data exists (see get_post_time).
+    # Operators can override the default model per-deploy with DEFAULT_POSTING_HOURS — seven
+    # comma-separated 24h hours, Monday..Sunday (e.g. "16,15,16,17,11,10,18"). Invalid values fall
+    # back to the built-in model, read at call time so tests/ops can tune without a restart.
+    raw = (os.environ.get("DEFAULT_POSTING_HOURS") or "").strip()
+    if raw:
+        from cqc_lem.utilities.logger import log_warning  # local import (matches purge_post_assets)
+        try:
+            hours = [int(h.strip()) for h in raw.split(",")]
+            if len(hours) == 7 and all(0 <= h <= 23 for h in hours):
+                return {i: time(h, 0) for i, h in enumerate(hours)}
+            log_warning(f"DEFAULT_POSTING_HOURS ignored (need 7 hours 0-23, got: {raw!r})")
+        except ValueError:
+            log_warning(f"DEFAULT_POSTING_HOURS ignored (not a comma list of ints: {raw!r})")
+
     best_times = {
         0: time(16, 0),  # Monday — 4pm
         1: time(15, 0),  # Tuesday — 3pm
