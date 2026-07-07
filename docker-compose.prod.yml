@@ -137,9 +137,10 @@ services:
       - ./logs:/app/logs
       - flower_db:/data
     environment:
-      # Replace the dev unauthenticated mode with basic auth + persistence.
-      # Kept behind Cloudflare Access as well (see cloudflared/config.yml).
-      - FLOWER_BASIC_AUTH=${CELERY_FLOWER_USER}:${CELERY_FLOWER_PASSWORD}
+      # Optional basic auth + persistence. Flower is gated by Cloudflare Zero Trust
+      # Access regardless; basic auth is extra protection. When CELERY_FLOWER_USER is
+      # unset the whole value collapses to empty (no auth) instead of a broken ":".
+      - FLOWER_BASIC_AUTH=${CELERY_FLOWER_USER:+${CELERY_FLOWER_USER}:${CELERY_FLOWER_PASSWORD}}
       - FLOWER_PERSISTENT=True
       - CELERY_TIMEZONE=${CELERY_TIMEZONE:-UTC}
     deploy:
