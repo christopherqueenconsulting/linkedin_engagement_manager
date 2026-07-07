@@ -19,18 +19,22 @@ jobs:
         id: release
         with:
           release-type: python
+          # RELEASE_DISPATCH_TOKEN (user PAT, Contents+PRs write) must author the release PR:
+          # a real-user author means the PR's CI runs automatically. With the default
+          # GITHUB_TOKEN the PR is bot-authored and EVERY check sits in action_required until
+          # someone clicks "Approve and run" (GitHub's anti-recursion safety).
+          token: ${{ secrets.RELEASE_DISPATCH_TOKEN || secrets.GITHUB_TOKEN }}
           # Manages the version in pyproject.toml + maintains CHANGELOG.md.
           # Merging the release PR creates a tag + GitHub Release (vX.Y.Z).
 
-      # The GitHub Release is published by GITHUB_TOKEN, which (by design) does
-      # NOT trigger build-and-push.yml's `release: published` event. Explicitly
-      # dispatch the build so a merged release auto-builds + auto-deploys.
-      # If GITHUB_TOKEN can't dispatch across the boundary, set RELEASE_DISPATCH_TOKEN
-      # (a PAT with actions:write) and it will be used instead.
+      # The GitHub Release is published above; explicitly dispatch the build so a merged
+      # release auto-builds + auto-deploys. GITHUB_TOKEN on purpose (NOT the PAT): it can
+      # dispatch same-repo workflows fine (proven v0.34-v0.36), while a fine-grained PAT
+      # without Actions:write 403s (broke the v0.37.0 dispatch).
       - name: Trigger build & deploy for the new release
         if: ${{ steps.release.outputs.release_created == 'true' }}
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh workflow run build-and-push.yml \
             --repo "${{ github.repository }}" \
@@ -54,7 +58,9 @@ jobs:
           fetch-depth: 0
       - name: Tag + dispatch build if the current version is untagged
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN || secrets.GITHUB_TOKEN }}
+          # GITHUB_TOKEN here too — same-repo release create + workflow dispatch both work
+          # with it, and the fine-grained PAT (no Actions:write) cannot dispatch.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           version="$(grep -m1 '^version = ' pyproject.toml | sed -E 's/^version = "(.*)"/\1/')"
           tag="v${version}"
