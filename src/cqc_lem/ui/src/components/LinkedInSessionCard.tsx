@@ -11,6 +11,20 @@ export default function LinkedInSessionCard({ connected }: { connected?: boolean
   const queryClient = useQueryClient()
   const [liAt, setLiAt] = useState('')
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [showSteps, setShowSteps] = useState(false)
+  const [tokenCopied, setTokenCopied] = useState(false)
+
+  const copyToken = async () => {
+    if (!sessionToken) return
+    try {
+      await navigator.clipboard.writeText(sessionToken)
+      setTokenCopied(true)
+      setTimeout(() => setTokenCopied(false), 2500)
+    } catch {
+      setMsg({ ok: false, text: 'Could not copy — select and copy your token manually.' })
+      setTimeout(() => setMsg(null), 4000)
+    }
+  }
 
   const mutation = useMutation({
     mutationFn: () =>
@@ -42,6 +56,56 @@ export default function LinkedInSessionCard({ connected }: { connected?: boolean
           easiest way is the one-click browser extension; or paste your <code>li_at</code>{' '}
           cookie value below.
         </p>
+      </div>
+
+      {/* Recommended path: the browser extension grabs the httpOnly li_at cookie the paste
+          flow can't reach, and sends it in one click. */}
+      <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-blue-900">Recommended: one-click extension</p>
+            <p className="text-xs text-blue-800/80">
+              Grabs your LinkedIn session automatically — no DevTools, no cookie hunting.
+            </p>
+          </div>
+          <a
+            href="/api/extension/linkedin-connect.zip"
+            className="shrink-0 bg-blue-600 text-white px-3 py-2 rounded-lg text-xs font-semibold hover:bg-blue-700 transition-colors"
+          >
+            Download extension
+          </a>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={copyToken}
+            disabled={!sessionToken}
+            className="bg-white border border-blue-300 text-blue-700 px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-blue-100 disabled:opacity-50 transition-colors"
+          >
+            {tokenCopied ? '✓ Token copied' : 'Copy my LEM token'}
+          </button>
+          <span className="text-[11px] text-blue-800/70">
+            Paste this into the extension once, then click Connect.
+          </span>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setShowSteps((s) => !s)}
+          className="text-xs font-medium text-blue-700 hover:underline"
+        >
+          {showSteps ? 'Hide install steps' : 'How to install (30 seconds)'}
+        </button>
+        {showSteps && (
+          <ol className="list-decimal list-inside text-xs text-blue-900/90 space-y-1">
+            <li>Download the extension above and unzip it.</li>
+            <li>Open <code>chrome://extensions</code> (or <code>edge://extensions</code>).</li>
+            <li>Turn on <strong>Developer mode</strong> (top-right), then click <strong>Load unpacked</strong> and pick the unzipped folder.</li>
+            <li>Open <code>linkedin.com</code> and stay signed in.</li>
+            <li>Click the <strong>LEM LinkedIn Connect</strong> extension, paste your LEM token (copied above), and click <strong>Connect</strong>.</li>
+          </ol>
+        )}
       </div>
 
       {connected && (
