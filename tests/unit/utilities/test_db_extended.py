@@ -30,7 +30,8 @@ class TestStoreCookies:
         }
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
-             patch("cqc_lem.utilities.db.get_user_id", return_value=42):
+             patch("cqc_lem.utilities.db.get_user_id", return_value=42), \
+             patch("cqc_lem.utilities.db.prune_superseded_cookies"):
             mock_conn.return_value = mock_database_connection["connection"]
 
             store_cookies("user@example.com", [cookie])
@@ -54,7 +55,8 @@ class TestStoreCookies:
         ]
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
-             patch("cqc_lem.utilities.db.get_user_id", return_value=42):
+             patch("cqc_lem.utilities.db.get_user_id", return_value=42), \
+             patch("cqc_lem.utilities.db.prune_superseded_cookies"):
             mock_conn.return_value = mock_database_connection["connection"]
 
             store_cookies("user@example.com", cookies)
@@ -77,7 +79,8 @@ class TestStoreCookies:
         }
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
-             patch("cqc_lem.utilities.db.get_user_id", return_value=10):
+             patch("cqc_lem.utilities.db.get_user_id", return_value=10), \
+             patch("cqc_lem.utilities.db.prune_superseded_cookies"):
             mock_conn.return_value = mock_database_connection["connection"]
 
             store_cookies("user@example.com", [cookie])
@@ -93,7 +96,8 @@ class TestStoreCookies:
                   "expiry": 100, "secure": True, "httpOnly": True}
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
-             patch("cqc_lem.utilities.db.get_user_id", return_value=42):
+             patch("cqc_lem.utilities.db.get_user_id", return_value=42), \
+             patch("cqc_lem.utilities.db.prune_superseded_cookies"):
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("DB error")
 
@@ -763,7 +767,8 @@ class TestInsertPostDbError:
         from cqc_lem.utilities.db import insert_post, PostType
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
-             patch("cqc_lem.utilities.db.get_user_id", return_value=42):
+             patch("cqc_lem.utilities.db.get_user_id", return_value=42), \
+             patch("cqc_lem.utilities.db.prune_superseded_cookies"):
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("err")
 
@@ -781,7 +786,8 @@ class TestInsertPostDbError:
 
         slides = ["First slide", "Second slide"]
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
-             patch("cqc_lem.utilities.db.get_user_id", return_value=42):
+             patch("cqc_lem.utilities.db.get_user_id", return_value=42), \
+             patch("cqc_lem.utilities.db.prune_superseded_cookies"):
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].rowcount = 1
 
@@ -801,7 +807,8 @@ class TestInsertPostDbError:
         from cqc_lem.utilities.db import insert_post, PostType
 
         with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn, \
-             patch("cqc_lem.utilities.db.get_user_id", return_value=42):
+             patch("cqc_lem.utilities.db.get_user_id", return_value=42), \
+             patch("cqc_lem.utilities.db.prune_superseded_cookies"):
             mock_conn.return_value = mock_database_connection["connection"]
             mock_database_connection["cursor"].rowcount = 1
 
