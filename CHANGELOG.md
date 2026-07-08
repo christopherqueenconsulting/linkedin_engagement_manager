@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.41.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.41.1...v0.41.2) (2026-07-08)
+
+
+### Bug Fixes
+
+* **api:** let the browser extension reach /api/user/linkedin-cookie ([5e40f49](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5e40f49b2df3aabdc0a65ca4d32242c03ab01c45))
+* **api:** let the browser extension reach /api/user/linkedin-cookie ([587483f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/587483f97551d3b4835004e97491c45c6dfc1a19))
+
 ## [0.41.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.41.0...v0.41.1) (2026-07-08)
 
 
