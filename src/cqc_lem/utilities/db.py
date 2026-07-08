@@ -137,6 +137,45 @@ def store_cookies(user_email: str, cookies: list[dict]):
     cursor.close()
     connection.close()
 
+    if user_id is not None:
+        prune_superseded_cookies(user_id)
+
+
+def prune_superseded_cookies(user_id: int) -> int:
+    """Keep only the most-recently-updated row per (user_id, name), deleting older duplicates
+    left behind when the same cookie is re-stored under a different domain scope — e.g. the
+    extension writes li_at on '.linkedin.com' while a prior Selenium login stored it on
+    '.www.linkedin.com'. get_cookies matches on `domain LIKE %tld%`, so a stale variant would
+    otherwise be returned alongside the fresh one and could shadow it at login.
+
+    Conservative by design: it only deletes a row when a STRICTLY newer sibling of the same
+    name exists for the same user, so it never removes the newest copy and never touches a
+    uniquely-named cookie. Best-effort — a failure here never breaks the cookie write."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    deleted = 0
+    try:
+        cursor.execute("""
+            DELETE older
+            FROM cookies older
+            JOIN cookies newer
+              ON older.user_id = newer.user_id
+             AND older.name = newer.name
+             AND (newer.updated_at > older.updated_at
+                  OR (newer.updated_at = older.updated_at AND newer.id > older.id))
+            WHERE older.user_id = %s
+        """, (user_id,))
+        deleted = cursor.rowcount
+        connection.commit()
+        if deleted:
+            myprint(f"Pruned {deleted} superseded cookie(s) for user_id {user_id}")
+    except mysql.connector.Error as err:
+        myprint(f"Could not prune superseded cookies for user_id {user_id} | Error: {err}")
+    finally:
+        cursor.close()
+        connection.close()
+    return deleted
+
 
 def get_cookies(url: str, user_email: str):
     connection = get_db_connection()
