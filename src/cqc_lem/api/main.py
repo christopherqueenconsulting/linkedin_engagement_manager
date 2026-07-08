@@ -119,9 +119,14 @@ _API_ACCESS_TOKEN_SET = {t.strip() for t in API_ACCESS_TOKENS.split(",") if t.st
 # /api/extension is public: it serves the browser-extension zip as a plain <a href>
 # download from the account page, which carries no bearer token. The bundle is
 # non-sensitive public code (destined for the Chrome Web Store); the route is GET-only.
+# /api/user/linkedin-cookie is public because the browser extension POSTs to it WITHOUT the
+# SPA's bearer token (the extension can't hold the rotating API token). It is
+# self-authenticating: the handler validates the user's own LEM session_token and 401s if
+# it's invalid — same model as the /api/auth/ endpoints. This exact leaf path only; the rest
+# of /api/user/* stays gated.
 _PUBLIC_API_PREFIXES = ("/api/auth/", "/api/billing/webhook", "/api/assets",
                         "/api/linkedin/verification-pin", "/api/app-info",
-                        "/api/extension/")
+                        "/api/extension/", "/api/user/linkedin-cookie")
 
 
 def _api_token_required(path: str) -> bool:
