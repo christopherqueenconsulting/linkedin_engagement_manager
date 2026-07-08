@@ -60,3 +60,13 @@ class TestDownloadExtension:
         with patch.object(main, "_API_ACCESS_TOKEN_SET", {"secret-token"}):
             assert main._api_token_required("/api/extension/linkedin-connect.zip") is False
             assert main._api_token_required("/api/user/account-readiness") is True
+
+    def test_cookie_post_is_public_but_rest_of_user_is_gated(self):
+        # The extension POSTs the LinkedIn session to /api/user/linkedin-cookie without the
+        # SPA bearer token; it's self-authenticated by the body's session_token. Only that
+        # exact leaf is public — sibling /api/user/* routes stay gated. Regression guard.
+        from cqc_lem.api import main
+        with patch.object(main, "_API_ACCESS_TOKEN_SET", {"secret-token"}):
+            assert main._api_token_required("/api/user/linkedin-cookie") is False
+            assert main._api_token_required("/api/user/linkedin-password") is True
+            assert main._api_token_required("/api/user/profile") is True
