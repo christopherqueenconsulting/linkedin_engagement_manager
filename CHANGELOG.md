@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.41.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.41.0...v0.41.1) (2026-07-08)
+
+
+### Bug Fixes
+
+* **api:** make the extension download route public (bypass bearer gate) ([a66be96](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a66be96df9a612f83af698390dc233092206c72d))
+* **api:** make the LinkedIn extension download route public ([fb8b42d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/fb8b42d3a03e0c14f858033599aa9e8a32a3aabc))
+
 ## [0.41.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.40.1...v0.41.0) (2026-07-08)
 
 
