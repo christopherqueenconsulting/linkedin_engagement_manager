@@ -81,6 +81,19 @@ class TestSendPinEmailSendGrid:
 
         mock_sg.send.assert_called_once()
 
+    @patch("cqc_lem.utilities.email.SENDGRID_API_KEY", "sg_test_key")
+    @patch("cqc_lem.utilities.email.SMTP_USER", None)
+    @patch("cqc_lem.utilities.email.SMTP_PASSWORD", None)
+    @patch("sendgrid.SendGridAPIClient")
+    def test_click_tracking_disabled_on_transactional_mail(self, mock_sg_class):
+        mock_sg = MagicMock()
+        mock_sg_class.return_value = mock_sg
+
+        send_pin_email("test@example.com", "123456")
+
+        sent = mock_sg.send.call_args[0][0]
+        assert sent.get()["tracking_settings"]["click_tracking"]["enable"] is False
+
 
 class TestSendPinEmailSmtpFallback:
     @patch("cqc_lem.utilities.email.SENDGRID_API_KEY", None)

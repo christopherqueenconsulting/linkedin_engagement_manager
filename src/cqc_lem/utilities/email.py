@@ -148,7 +148,9 @@ def _build_approval_html(vnc_url: str | None) -> str:
 def _sendgrid_send(to_email: str, subject: str, html_content: str, text_content: str,
                    reply_to: Optional[str], high_priority: bool) -> None:
     from sendgrid import SendGridAPIClient
-    from sendgrid.helpers.mail import Email, Header, Mail, ReplyTo
+    from sendgrid.helpers.mail import (
+        ClickTracking, Email, Header, Mail, ReplyTo, TrackingSettings,
+    )
 
     message = Mail(
         from_email=Email(SENDGRID_FROM_EMAIL, EMAIL_FROM_NAME),
@@ -157,6 +159,12 @@ def _sendgrid_send(to_email: str, subject: str, html_content: str, text_content:
         plain_text_content=text_content,
         html_content=html_content,
     )
+    # These are all security/transactional emails (sign-in codes, session reconnect). Rewriting
+    # the button href through SendGrid's click-tracking redirect makes them look like phishing and
+    # hurts trust/deliverability — keep the real account URL the user can verify.
+    tracking = TrackingSettings()
+    tracking.click_tracking = ClickTracking(False, False)
+    message.tracking_settings = tracking
     if reply_to:
         message.reply_to = ReplyTo(reply_to)
     if high_priority:

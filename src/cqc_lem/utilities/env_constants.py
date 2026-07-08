@@ -155,7 +155,7 @@ SENDGRID_API_KEY     = get_constant_from_env('SENDGRID_API_KEY')
 SENDGRID_FROM_EMAIL  = get_constant_from_env('SENDGRID_FROM_EMAIL', default_value='noreply@example.com')
 # Friendly From display name and Reply-To for outbound transactional mail. A recognizable
 # From name that matches the sending domain and a real Reply-To reduce spam/phishing scores.
-EMAIL_FROM_NAME      = get_constant_from_env('EMAIL_FROM_NAME', default_value='Christopher Queen Consulting')
+EMAIL_FROM_NAME      = get_constant_from_env('EMAIL_FROM_NAME', default_value='LinkedIn Engagement Manager')
 EMAIL_REPLY_TO       = get_constant_from_env('EMAIL_REPLY_TO', default_value='')
 
 # SMTP fallback (Gmail or any STARTTLS-capable server)
