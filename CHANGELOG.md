@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.40.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.40.0...v0.40.1) (2026-07-08)
+
+
+### Bug Fixes
+
+* **email:** brand transactional mail as LEM + disable SendGrid click-tracking ([5499fe4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5499fe4c613d08ec4d789fac8178253f3bbf790c))
+* **email:** brand transactional mail as LEM + disable SendGrid click-tracking ([ce53532](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ce53532d4a98c8e7edec8befdfee1eca71a00dc7))
+
 ## [0.40.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.39.0...v0.40.0) (2026-07-07)
 
 
