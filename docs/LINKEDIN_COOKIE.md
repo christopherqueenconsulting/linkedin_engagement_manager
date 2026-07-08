@@ -17,17 +17,25 @@ one-click capture uses a browser extension (the `chrome.cookies` API can).
 
 ## Option A — one-click browser extension (least steps)
 
-`tools/linkedin-cookie-extension/` is a minimal Chrome/Edge MV3 extension.
+The source lives at `src/cqc_lem/browser_extension/` (a minimal Chrome/Edge MV3 extension)
+and ships inside the app image. Users don't need the repo — the account page's **LinkedIn
+Session** card has a **Download extension** button, served by
+`GET /api/extension/linkedin-connect.zip`.
 
-1. `chrome://extensions` → enable **Developer mode** → **Load unpacked** →
-   select `tools/linkedin-cookie-extension/`.
-2. Be signed in to `linkedin.com` in that browser.
-3. Click the extension → set **LEM URL** (default prod) → paste your **LEM session
-   token** once (saved locally) → **Connect**.
+1. On the account page, click **Download extension** and unzip it (or, for developers,
+   use the `src/cqc_lem/browser_extension/` folder directly).
+2. `chrome://extensions` → enable **Developer mode** → **Load unpacked** → select the
+   unzipped folder.
+3. Be signed in to `linkedin.com` in that browser.
+4. Click the extension → set **LEM URL** (default prod) → paste your **LEM session
+   token** once (the account card's **Copy my LEM token** button provides it) → **Connect**.
 
 It reads `li_at` (+ `JSESSIONID`) and POSTs them to `POST /api/user/linkedin-cookie`.
 After that, automation reuses the session; re-click **Connect** if the session ever
 disconnects.
+
+> A Chrome Web Store listing (true one-click install, no Developer mode) is being prepared
+> separately and will replace the side-load steps once Google approves it.
 
 ## Option B — manual paste (no extension)
 

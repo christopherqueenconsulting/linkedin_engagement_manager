@@ -1,6 +1,8 @@
+import io
 import json
 import os
 import time
+import zipfile
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum
 from typing import Dict, List, Union
@@ -1655,6 +1657,29 @@ def store_linkedin_cookie_endpoint(request: LinkedInCookieRequest) -> ResponseMo
     return ResponseModel(
         status_code=200,
         detail="LinkedIn session saved. Automation will reuse it and skip the password login.",
+    )
+
+
+_EXTENSION_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "browser_extension"))
+
+
+@router.get("/extension/linkedin-connect.zip")
+def download_linkedin_extension() -> StreamingResponse:
+    """Package the 'LEM LinkedIn Connect' browser extension as a zip the user can load
+    unpacked in Chrome/Edge (chrome://extensions → Developer mode → Load unpacked). This is
+    the one-click session-reconnect path referenced by the account page and reconnect email;
+    until it's on the Chrome Web Store, users side-load this bundle. See docs/LINKEDIN_COOKIE.md."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, _dirs, files in os.walk(_EXTENSION_DIR):
+            for name in sorted(files):
+                fp = os.path.join(root, name)
+                zf.write(fp, arcname=os.path.relpath(fp, _EXTENSION_DIR))
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="lem-linkedin-connect.zip"'},
     )
 
 
