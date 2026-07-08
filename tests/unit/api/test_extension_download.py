@@ -51,3 +51,12 @@ class TestDownloadExtension:
         manifest = json.loads(zf.read("manifest.json"))
         assert manifest["manifest_version"] == 3
         assert "cookies" in manifest["permissions"]
+
+    def test_route_is_public_when_bearer_gate_enabled(self):
+        # The download is a plain <a href> browser GET with no Authorization header, so it
+        # must bypass the /api/* bearer-token gate (which is off in tests unless a token is
+        # configured). Regression guard for the prod 401.
+        from cqc_lem.api import main
+        with patch.object(main, "_API_ACCESS_TOKEN_SET", {"secret-token"}):
+            assert main._api_token_required("/api/extension/linkedin-connect.zip") is False
+            assert main._api_token_required("/api/user/account-readiness") is True

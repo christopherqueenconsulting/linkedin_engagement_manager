@@ -116,8 +116,12 @@ _API_ACCESS_TOKEN_SET = {t.strip() for t in API_ACCESS_TOKENS.split(",") if t.st
 # LinkedIn fetches over an unauthenticated public URL when publishing. The
 # handler (get_assets) is GET-only and path-traversal safe (_find_asset_file
 # rejects .. / separators and only returns real files under assets_dir).
+# /api/extension is public: it serves the browser-extension zip as a plain <a href>
+# download from the account page, which carries no bearer token. The bundle is
+# non-sensitive public code (destined for the Chrome Web Store); the route is GET-only.
 _PUBLIC_API_PREFIXES = ("/api/auth/", "/api/billing/webhook", "/api/assets",
-                        "/api/linkedin/verification-pin", "/api/app-info")
+                        "/api/linkedin/verification-pin", "/api/app-info",
+                        "/api/extension/")
 
 
 def _api_token_required(path: str) -> bool:
