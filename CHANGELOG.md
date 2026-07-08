@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.41.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.40.1...v0.41.0) (2026-07-08)
+
+
+### Features
+
+* **account:** ship the one-click LinkedIn extension to users ([e1fe2c0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e1fe2c0bb7d35ea8c00b5cc8d71983d21c865be6))
+* **account:** ship the one-click LinkedIn extension to users ([f511dc7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f511dc75269c601d0e337acff5bfc1b60fb7ef8e))
+
 ## [0.40.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.40.0...v0.40.1) (2026-07-08)
 
 
