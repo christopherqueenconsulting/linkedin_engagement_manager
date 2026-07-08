@@ -226,23 +226,23 @@ class TestSendLoginApprovalEmail:
 
 class TestPinEmailContent:
     def test_html_contains_code_and_no_links(self):
-        from cqc_lem.utilities.email import _build_pin_html
+        from cqc_lem.utilities.email import EMAIL_FROM_NAME, _build_pin_html
         html = _build_pin_html("123456", "sign in")
         assert "123456" in html
         assert "expires" in html.lower()
         # No links at all in a login-code email (removes link-mismatch phishing signal)
         assert "href" not in html.lower()
         assert "http://" not in html and "https://" not in html
-        # Anti-phishing reassurance + company footer
+        # Anti-phishing reassurance + brand footer
         assert "never" in html.lower()
-        assert "Christopher Queen Consulting" in html
+        assert EMAIL_FROM_NAME in html
 
     def test_text_part_contains_code_and_company(self):
-        from cqc_lem.utilities.email import _build_pin_text
+        from cqc_lem.utilities.email import EMAIL_FROM_NAME, _build_pin_text
         text = _build_pin_text("654321", "create your account")
         assert "654321" in text
         assert "create your account" in text
-        assert "Christopher Queen Consulting" in text
+        assert EMAIL_FROM_NAME in text
         # plain text must not carry HTML tags
         assert "<" not in text and ">" not in text
 
