@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.42.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.41.2...v0.42.0) (2026-07-08)
+
+
+### Features
+
+* **db:** auto-prune superseded cookies to keep sessions fresh ([29452e7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/29452e769713c505ff460e7c827c1b423f64f846))
+* **db:** auto-prune superseded cookies to keep sessions fresh ([7bf93b4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7bf93b4eeacda0a7da63708e490762486649b0ff))
+
 ## [0.41.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.41.1...v0.41.2) (2026-07-08)
 
 
