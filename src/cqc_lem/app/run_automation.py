@@ -1245,7 +1245,10 @@ def auto_seed_comment_on_post(self, user_id: int, post_id: int):
     or a behind-the-scenes insight — no links) and pin it. Seeds the comment thread that drives
     reach, and beats LinkedIn's suppression of link-in-first-comment by adding real value instead."""
     post_url = get_post_url_from_log_for_user(user_id, post_id)
-    post_message = get_post_message_from_log_for_user(user_id, post_id)
+    # Ground the AI in the canonical post body (posts table). Fall back to the log message only if
+    # the post row is gone. Historical POST logs stored a status string, so grounding on the log
+    # made seed comments read like they were about the /posts API instead of the post's subject.
+    post_message = get_post_content(post_id) or get_post_message_from_log_for_user(user_id, post_id)
     if not post_url:
         return "No post URL yet for seed comment"
     try:
@@ -1505,8 +1508,9 @@ def automate_reply_commenting(self, user_id: int, post_id: int, loop_for_duratio
         # Use the user id and the post id to get the post_url from the database
         post_url = get_post_url_from_log_for_user(user_id, post_id)
 
-        # Get the message content of the post
-        post_message = get_post_message_from_log_for_user(user_id, post_id)
+        # Ground on the canonical post body (posts table); fall back to the log message. See
+        # auto_seed_comment_on_post — a status string in the log made replies drift off-topic.
+        post_message = get_post_content(post_id) or get_post_message_from_log_for_user(user_id, post_id)
 
         # Stable VOICE synthesis reused across every reply in this run (voice source, not the raw JSON).
         profile_synthesis = get_or_create_profile_synthesis(user_id, my_profile)
