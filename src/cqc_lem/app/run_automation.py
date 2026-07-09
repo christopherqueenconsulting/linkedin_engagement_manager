@@ -2683,10 +2683,13 @@ def post_to_linkedin(self, user_id: int, post_id: int):
         except Exception as e:
             myprint(f"purge_post_assets failed for post_id={post_id}: {e}")
 
-        # Update DB with status=success in the logs table and the post url
+        # Store the ACTUAL post body as the log message — not a status string. Seed comments and
+        # thread replies read this back via get_post_message_from_log_for_user() to ground the AI in
+        # the real post; a status string like "Successfully created post..." made the model write
+        # comments about the /posts API instead of the post's subject.
         insert_new_log(user_id=user_id, action_type=LogActionType.POST, result=LogResultType.SUCCESS, post_id=post_id,
                        post_url=post_url,
-                       message=f"Successfully created post using /posts API endpoint.")
+                       message=content)
 
         # Schedule Reply to comments for 24 hours now that this has been posted
         base_kwargs = {
