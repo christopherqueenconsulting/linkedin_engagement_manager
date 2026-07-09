@@ -346,3 +346,34 @@ class TestSocialActionsComments:
         kwargs = client.delete.call_args.kwargs
         assert kwargs["path_keys"] == {"urn": "urn:li:ugcPost:99", "commentId": "6789"}
         assert kwargs["query_params"] == {"actor": "urn:li:person:sub123"}
+
+    def test_comment_uses_urn_fallback_when_no_entity_id(self):
+        from cqc_lem.utilities.linkedin.poster import comment_on_linkedin_post
+        resp = MagicMock(); resp.entity_id = None; resp.entity = {"$URN": "urn:li:comment:(x,9)"}
+        client = MagicMock(); client.create.return_value = resp
+        with patch(f"{self._P}.get_user_linked_sub_id", return_value="sub"), \
+             patch(f"{self._P}.get_user_access_token", return_value="tok"), \
+             patch(f"{self._P}._restli", return_value=client):
+            assert comment_on_linkedin_post(1, "urn:li:ugcPost:1", "hi") == "urn:li:comment:(x,9)"
+
+    def test_delete_returns_false_without_credentials(self):
+        from cqc_lem.utilities.linkedin.poster import delete_linkedin_comment
+        with patch(f"{self._P}.get_user_linked_sub_id", return_value=None), \
+             patch(f"{self._P}.get_user_access_token", return_value=None):
+            assert delete_linkedin_comment(1, "urn:li:ugcPost:1", "urn:li:comment:(x,1)") is False
+
+    def test_delete_derives_id_from_plain_urn(self):
+        from cqc_lem.utilities.linkedin.poster import delete_linkedin_comment
+        client = MagicMock()
+        with patch(f"{self._P}.get_user_linked_sub_id", return_value="sub"), \
+             patch(f"{self._P}.get_user_access_token", return_value="tok"), \
+             patch(f"{self._P}._restli", return_value=client):
+            delete_linkedin_comment(1, "urn:li:ugcPost:1", "urn:li:comment:12345")
+        assert client.delete.call_args.kwargs["path_keys"]["commentId"] == "12345"
+
+    def test_restli_factory_registers_raise_hook(self):
+        from cqc_lem.utilities.linkedin.poster import _restli
+        from linkedin_api.clients.restli.client import RestliClient
+        c = _restli()
+        assert isinstance(c, RestliClient)
+        assert len(c.session.hooks["response"]) >= 1

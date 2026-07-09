@@ -349,25 +349,9 @@ def comment_on_linkedin_post(user_id: int, object_urn: str, text: str,
     return comment_urn
 
 
-def get_my_comment_urns_on_object(user_id: int, object_urn: str) -> List[str]:
-    """URNs of comments authored by THIS user on object_urn (used to find comments to delete)."""
-    sub_id = get_user_linked_sub_id(user_id)
-    access_token = get_user_access_token(user_id)
-    if not sub_id or not access_token or not object_urn:
-        return []
-    actor = f"urn:li:person:{sub_id}"
-    resp = _restli().get_all(
-        resource_path="/socialActions/{urn}/comments",
-        path_keys={"urn": object_urn},
-        access_token=access_token,
-    )
-    mine = []
-    for el in (resp.elements or []):
-        if el.get("actor") == actor:
-            urn = el.get("$URN") or el.get("urn") or el.get("commentUrn")
-            if urn:
-                mine.append(urn)
-    return mine
+# NOTE: there is deliberately no "list my comments" helper — w_member_social grants comment
+# WRITE but not READ, so socialActions get_all returns empty for this app. Old comments made via
+# the UI/Selenium therefore can't be discovered through the API; they must be removed via Selenium.
 
 
 def delete_linkedin_comment(user_id: int, object_urn: str, comment_urn: str) -> bool:

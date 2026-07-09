@@ -103,3 +103,22 @@ class TestAutoSeedCommentOnPost:
             result = auto_seed_comment_on_post.run(user_id=1, post_id=9)
         assert "No post URL" in result
         api.assert_not_called()
+
+    def test_bails_when_urn_underivable(self):
+        from cqc_lem.app.run_automation import auto_seed_comment_on_post
+        with patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://example.com/no-urn"), \
+             patch(f"{_RA}.get_post_content", return_value="body"), \
+             patch(f"{_RA}.comment_on_linkedin_post") as api:
+            result = auto_seed_comment_on_post.run(user_id=1, post_id=9)
+        assert "object URN" in result
+        api.assert_not_called()
+
+    def test_bails_without_post_content(self):
+        from cqc_lem.app.run_automation import auto_seed_comment_on_post
+        with patch(f"{_RA}.get_post_url_from_log_for_user", return_value=_URL), \
+             patch(f"{_RA}.get_post_content", return_value=None), \
+             patch(f"{_RA}.get_post_message_from_log_for_user", return_value=None), \
+             patch(f"{_RA}.comment_on_linkedin_post") as api:
+            result = auto_seed_comment_on_post.run(user_id=1, post_id=9)
+        assert "No post content" in result
+        api.assert_not_called()
