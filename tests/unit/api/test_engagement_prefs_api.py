@@ -116,6 +116,38 @@ class TestUpdateEngagementPreferences:
         assert upd.call_args[0][1]["tone"] == long_tone
 
 
+class TestReplyCheckConfig:
+    def test_get_includes_reply_inbound_address(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_engagement_preferences",
+                   return_value={"reply_check_mode": "event"}), \
+             patch("cqc_lem.api.main.get_or_create_reply_inbound_token", return_value="tok9"), \
+             patch.dict("os.environ", {"LINKEDIN_PARSE_DOMAIN": "parse.example.com"}):
+            resp = client.get(f"/api/user/engagement-preferences?session_token={_SESSION}")
+        assert resp.status_code == 200
+        assert resp.json()["detail"]["reply_inbound_address"] == "reply+tok9@parse.example.com"
+
+    def test_reply_mode_passthrough_and_clamps(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/engagement-preferences",
+                              json={"session_token": _SESSION, "reply_check_mode": "scheduled",
+                                    "reply_sweeps_per_day": 99, "reply_max_post_age_days": 0})
+        assert resp.status_code == 200
+        arg = upd.call_args[0][1]
+        assert arg["reply_check_mode"] == "scheduled"
+        assert arg["reply_sweeps_per_day"] == 12   # clamped to max
+        assert arg["reply_max_post_age_days"] == 1  # clamped to min
+
+    def test_bad_reply_mode_coerced_to_event(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/engagement-preferences",
+                              json={"session_token": _SESSION, "reply_check_mode": "bogus"})
+        assert resp.status_code == 200
+        assert upd.call_args[0][1]["reply_check_mode"] == "event"
+
+
 class TestEngagementPersistenceRegression:
     """Guards for the class of bug that silently dropped engagement settings."""
 

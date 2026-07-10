@@ -8,13 +8,15 @@ from cqc_lem import assets_dir
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.app.run_automation import automate_commenting, automate_profile_viewer_engagement, \
     automate_appreciation_dms_for_user, clean_stale_invites, update_stale_profile, post_to_linkedin, \
-    automate_invites_to_company_page_for_user, auto_seed_comment_on_post, send_scheduled_dm
+    automate_invites_to_company_page_for_user, auto_seed_comment_on_post, send_scheduled_dm, \
+    sweep_reply_comments
 from cqc_lem.utilities.db import (
     get_ready_to_post_posts, get_orphaned_scheduled_posts, update_db_post_status,
     get_active_user_ids, PostStatus, has_linkedin_session, has_scheduled_post_today,
     get_company_linked_in_url_for_user,
     get_users_with_stripe_subscriptions, update_subscription_from_stripe,
     get_due_scheduled_dms, get_orphaned_scheduled_dms, update_scheduled_dm_status, ScheduledDmStatus,
+    get_users_with_reply_mode, get_engagement_preferences,
 )
 from cqc_lem.utilities.env_constants import SELENIUM_KEEP_VIDEOS_X_DAYS, CQC_LEM_POST_TIME_DELTA_MINUTES
 from cqc_lem.utilities.logger import myprint, log_info, log_debug, log_warning
@@ -184,6 +186,37 @@ def auto_daily_engagement():
         automate_commenting.apply_async(kwargs={'user_id': user_id, 'loop_for_duration': 60 * 15})
         dispatched += 1
     return f"Golden-hour engagement dispatched for {dispatched}/{len(users)} active user(s)"
+
+
+@shared_task.task
+def dispatch_scheduled_reply_sweeps():
+    """Beat: for users on reply_check_mode='scheduled', run a recent-posts reply sweep at their
+    configured cadence (reply_sweeps_per_day, 2–12). A per-user Redis key with TTL = the cadence
+    interval gates it: while the key exists we're within the interval and skip, so running this beat
+    every ~30 min naturally yields ~reply_sweeps_per_day sweeps. Fails open on Redis outage (dispatch
+    anyway) — sweep_reply_comments itself is QueueOnce + 429-safe, so an extra run is harmless."""
+    from cqc_lem.utilities.linkedin.rate_limit import _redis_client
+    users = get_users_with_reply_mode("scheduled")
+    if not users:
+        return "No scheduled-mode users"
+    client = _redis_client()
+    dispatched = 0
+    for user_id in users:
+        if not has_linkedin_session(user_id):
+            continue
+        sweeps = int(get_engagement_preferences(user_id).get("reply_sweeps_per_day") or 2)
+        interval_s = max(2 * 60 * 60, (24 * 60 * 60) // max(1, sweeps))  # floor 2h between sweeps
+        due = True
+        if client is not None:
+            try:
+                # nx=True sets the key only if absent (i.e. we're past the interval) → this run is due.
+                due = bool(client.set(f"linkedin:last_reply_sweep:{user_id}", "1", nx=True, ex=interval_s))
+            except Exception:
+                due = True
+        if due:
+            sweep_reply_comments.apply_async(kwargs={'user_id': user_id})
+            dispatched += 1
+    return f"Scheduled reply sweeps dispatched for {dispatched}/{len(users)} user(s)"
 
 
 def _max_dt(*dts):

@@ -19,6 +19,10 @@ export type EngPrefs = {
   max_comments_per_day: number
   max_dms_per_day: number
   default_video_quality: string
+  reply_check_mode: string
+  reply_sweeps_per_day: number
+  reply_max_post_age_days: number
+  reply_inbound_address?: string | null
 }
 
 export type DmTemplate = {

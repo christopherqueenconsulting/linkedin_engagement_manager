@@ -213,6 +213,39 @@ export default function EngagementSettingsCard() {
           <p className="text-sm font-medium text-gray-700">Reply to comments on my posts</p>
           <Toggle on={engPrefs.reply_to_own_comments} onClick={() => setEng({ reply_to_own_comments: !engPrefs.reply_to_own_comments })} />
         </div>
+        <div className="border-t border-gray-100 pt-4">
+          <label className="block text-sm font-medium text-gray-700 mb-1">Reply follow-up mode</label>
+          <select value={engPrefs.reply_check_mode ?? 'event'}
+            onChange={(e) => setEng({ reply_check_mode: e.target.value })}
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+            <option value="event">Event-driven — reply when notified (recommended)</option>
+            <option value="scheduled">Scheduled — check on a timer</option>
+            <option value="off">Off — don't auto-reply</option>
+          </select>
+          {engPrefs.reply_check_mode === 'event' && (
+            <div className="mt-2 text-xs text-gray-500 space-y-1">
+              <p>Forward LinkedIn "commented on your post" emails to the address below (Gmail → Settings → Filters → Forward), and enable LinkedIn's comment email notifications. We reply within minutes — no browser polling, so it won't trip LinkedIn's rate limits.</p>
+              {engPrefs.reply_inbound_address && (
+                <div className="flex items-center gap-2">
+                  <code className="bg-gray-100 rounded px-2 py-1 text-gray-700 break-all">{engPrefs.reply_inbound_address}</code>
+                  <button type="button" onClick={() => navigator.clipboard?.writeText(engPrefs.reply_inbound_address || '')}
+                    className="text-blue-600 hover:underline shrink-0">Copy</button>
+                </div>
+              )}
+            </div>
+          )}
+          {engPrefs.reply_check_mode === 'scheduled' && (
+            <div className="mt-2 space-y-2">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Reply checks per day (2–12)</label>
+                <input type="number" min={2} max={12} value={engPrefs.reply_sweeps_per_day ?? 2}
+                  onChange={(e) => setEng({ reply_sweeps_per_day: Math.min(12, Math.max(2, Number(e.target.value) || 2)) })}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+              </div>
+              <p className="text-xs text-amber-600">⚠ Scheduled checks open a browser session each run, which can get your account temporarily rate-limited (HTTP 429) by LinkedIn. Event-driven is recommended.</p>
+            </div>
+          )}
+        </div>
         {saveBtn('Save Targeting')}
       </div>
     </>

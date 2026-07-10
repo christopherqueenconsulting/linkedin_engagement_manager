@@ -281,3 +281,99 @@ class TestShareCarouselOnLinkedin:
 
             mock_fallback.assert_not_called()
             assert result is None
+
+
+@pytest.mark.unit
+class TestSocialActionsComments:
+    _P = "cqc_lem.utilities.linkedin.poster"
+
+    def test_object_urn_from_post_url(self):
+        from cqc_lem.utilities.linkedin.poster import object_urn_from_post_url
+        assert object_urn_from_post_url(
+            "https://www.linkedin.com/feed/update/urn:li:ugcPost:7479519458164695040/"
+        ) == "urn:li:ugcPost:7479519458164695040"
+        assert object_urn_from_post_url(
+            "https://www.linkedin.com/feed/update/urn:li:share:123/"
+        ) == "urn:li:share:123"
+        assert object_urn_from_post_url("https://example.com/no-urn") is None
+        assert object_urn_from_post_url(None) is None
+
+    def test_comment_on_linkedin_post_creates_via_api(self):
+        from cqc_lem.utilities.linkedin.poster import comment_on_linkedin_post
+        resp = MagicMock(); resp.entity_id = "urn:li:comment:(x,1)"
+        client = MagicMock(); client.create.return_value = resp
+        with patch(f"{self._P}.get_user_linked_sub_id", return_value="sub123"), \
+             patch(f"{self._P}.get_user_access_token", return_value="tok"), \
+             patch(f"{self._P}._restli", return_value=client):
+            out = comment_on_linkedin_post(1, "urn:li:ugcPost:99", "great point")
+        assert out == "urn:li:comment:(x,1)"
+        kwargs = client.create.call_args.kwargs
+        assert kwargs["path_keys"] == {"urn": "urn:li:ugcPost:99"}
+        assert kwargs["entity"]["actor"] == "urn:li:person:sub123"
+        assert kwargs["entity"]["message"] == {"text": "great point"}
+        assert "parentComment" not in kwargs["entity"]
+
+    def test_comment_reply_sets_parent(self):
+        from cqc_lem.utilities.linkedin.poster import comment_on_linkedin_post
+        resp = MagicMock(); resp.entity_id = "urn:li:comment:(x,2)"
+        client = MagicMock(); client.create.return_value = resp
+        with patch(f"{self._P}.get_user_linked_sub_id", return_value="sub123"), \
+             patch(f"{self._P}.get_user_access_token", return_value="tok"), \
+             patch(f"{self._P}._restli", return_value=client):
+            comment_on_linkedin_post(1, "urn:li:ugcPost:99", "reply", parent_comment_urn="urn:li:comment:(x,1)")
+        assert client.create.call_args.kwargs["entity"]["parentComment"] == "urn:li:comment:(x,1)"
+
+    def test_comment_returns_none_without_credentials(self):
+        from cqc_lem.utilities.linkedin.poster import comment_on_linkedin_post
+        with patch(f"{self._P}.get_user_linked_sub_id", return_value=None), \
+             patch(f"{self._P}.get_user_access_token", return_value=None):
+            assert comment_on_linkedin_post(1, "urn:li:ugcPost:99", "x") is None
+
+    def test_comment_returns_none_on_empty_text(self):
+        from cqc_lem.utilities.linkedin.poster import comment_on_linkedin_post
+        with patch(f"{self._P}.get_user_linked_sub_id", return_value="sub"), \
+             patch(f"{self._P}.get_user_access_token", return_value="tok"):
+            assert comment_on_linkedin_post(1, "urn:li:ugcPost:99", "   ") is None
+
+    def test_delete_linkedin_comment_uses_actor_and_id(self):
+        from cqc_lem.utilities.linkedin.poster import delete_linkedin_comment
+        client = MagicMock()
+        with patch(f"{self._P}.get_user_linked_sub_id", return_value="sub123"), \
+             patch(f"{self._P}.get_user_access_token", return_value="tok"), \
+             patch(f"{self._P}._restli", return_value=client):
+            ok = delete_linkedin_comment(1, "urn:li:ugcPost:99", "urn:li:comment:(urn:li:activity:5,6789)")
+        assert ok is True
+        kwargs = client.delete.call_args.kwargs
+        assert kwargs["path_keys"] == {"urn": "urn:li:ugcPost:99", "commentId": "6789"}
+        assert kwargs["query_params"] == {"actor": "urn:li:person:sub123"}
+
+    def test_comment_uses_urn_fallback_when_no_entity_id(self):
+        from cqc_lem.utilities.linkedin.poster import comment_on_linkedin_post
+        resp = MagicMock(); resp.entity_id = None; resp.entity = {"$URN": "urn:li:comment:(x,9)"}
+        client = MagicMock(); client.create.return_value = resp
+        with patch(f"{self._P}.get_user_linked_sub_id", return_value="sub"), \
+             patch(f"{self._P}.get_user_access_token", return_value="tok"), \
+             patch(f"{self._P}._restli", return_value=client):
+            assert comment_on_linkedin_post(1, "urn:li:ugcPost:1", "hi") == "urn:li:comment:(x,9)"
+
+    def test_delete_returns_false_without_credentials(self):
+        from cqc_lem.utilities.linkedin.poster import delete_linkedin_comment
+        with patch(f"{self._P}.get_user_linked_sub_id", return_value=None), \
+             patch(f"{self._P}.get_user_access_token", return_value=None):
+            assert delete_linkedin_comment(1, "urn:li:ugcPost:1", "urn:li:comment:(x,1)") is False
+
+    def test_delete_derives_id_from_plain_urn(self):
+        from cqc_lem.utilities.linkedin.poster import delete_linkedin_comment
+        client = MagicMock()
+        with patch(f"{self._P}.get_user_linked_sub_id", return_value="sub"), \
+             patch(f"{self._P}.get_user_access_token", return_value="tok"), \
+             patch(f"{self._P}._restli", return_value=client):
+            delete_linkedin_comment(1, "urn:li:ugcPost:1", "urn:li:comment:12345")
+        assert client.delete.call_args.kwargs["path_keys"]["commentId"] == "12345"
+
+    def test_restli_factory_registers_raise_hook(self):
+        from cqc_lem.utilities.linkedin.poster import _restli
+        from linkedin_api.clients.restli.client import RestliClient
+        c = _restli()
+        assert isinstance(c, RestliClient)
+        assert len(c.session.hooks["response"]) >= 1
