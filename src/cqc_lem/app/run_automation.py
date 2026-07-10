@@ -37,6 +37,7 @@ from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile,
     load_profile_for_user
 from cqc_lem.utilities.linkedin.poster import share_on_linkedin, share_carousel_on_linkedin
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
+from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
 from cqc_lem.utilities.logger import myprint, log_error, log_info, log_warning
 from cqc_lem.utilities.selenium_util import click_element_wait_retry, \
@@ -1482,14 +1483,150 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
     return result
 
 
+def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my_profile,
+                                    profile_synthesis: str) -> str:
+    """Navigate to the user's own post and reply to comments on it (thread-builder replies, plus
+    reciprocity/lead-magnet handling). Shared by the per-post reply task and the recent-posts sweep.
+    Returns a short human result string. Assumes the caller already has a live driver/profile."""
+    post_url = get_post_url_from_log_for_user(user_id, post_id)
+    if not post_url:
+        myprint(f"No successful post URL for post {post_id}; skipping replies.")
+        return "No post URL"
+    # Ground replies in the canonical post body (posts table); fall back to the log message.
+    post_message = get_post_content(post_id) or get_post_message_from_log_for_user(user_id, post_id)
+
+    myprint(f"Replying to Comments of Post ID:{post_id} ...")
+    if driver.current_url != post_url:
+        driver.get(post_url)
+
+    # SDUI: expand more replies where available, then collect comment items from the
+    # new data-testid comment list (comments are no longer article.comments-comment-entity).
+    for _ in range(5):
+        more = click_first(driver, wait,
+                           [(By.XPATH, "//button[contains(@aria-label,'more comment') or "
+                                       "contains(normalize-space(),'Load more') or "
+                                       "contains(normalize-space(),'more repl')]")],
+                           "Load more comments", required=False)
+        if not more:
+            break
+        time.sleep(2)
+
+    comments = _comment_items_from_thread(driver)
+    myprint(f"Comments Found: {len(comments)}")
+
+    # our profile slug — used to detect comments we've already replied to
+    path = urlparse(str(my_profile.profile_url)).path
+    unique_url_name = path.split("/")[2] if len(path.split("/")) > 2 else None
+
+    comments_replied_count = 0
+    lead_magnet = get_lead_magnet_settings(user_id)
+    lead_magnet_blog_url = get_user_blog_url(user_id) if lead_magnet.get("enabled") else ""
+    for comment in comments:
+        try:
+            tb = comment.find_elements(By.CSS_SELECTOR, "[data-testid='expandable-text-box']")
+            comment_text = ((tb[0].text if tb else comment.text) or "").strip()
+        except Exception:
+            continue
+        short_comment_text = comment_text[:75]
+        # Reciprocity + lead-magnet: read the commenter, record them as an engager, and
+        # (if enabled) DM them the resource when their comment contains the trigger keyword.
+        try:
+            _link = comment.find_element(By.CSS_SELECTOR, "a[href*='/in/']")
+            _ename = ((_link.text or "") or (_link.get_attribute("aria-label") or "")).strip().split("\n")[0]
+            _eprofile = (_link.get_attribute("href") or "").split("?")[0]
+            if _ename and _ename.lower() != (my_profile.full_name or "").lower():
+                upsert_engager(user_id, _ename, _eprofile)
+                if (lead_magnet.get("enabled") and lead_magnet.get("keyword") and lead_magnet.get("message")
+                        and lead_magnet["keyword"].lower() in comment_text.lower()
+                        and _eprofile and not has_received_lead_magnet(user_id, _eprofile)):
+                    lm_message = render_dm_placeholders(
+                        lead_magnet["message"],
+                        first_name=(_ename or "").split(" ")[0],
+                        blog_url=lead_magnet_blog_url or "")
+                    send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": _eprofile,
+                                                        "message": lm_message})
+                    record_lead_magnet_sent(user_id, _eprofile, post_id)
+                    myprint(f"Lead magnet DM queued to {_ename} (keyword '{lead_magnet['keyword']}')")
+        except Exception:
+            pass
+        # Already replied if our own profile link already appears in this comment's replies.
+        already_replied = False
+        if unique_url_name:
+            try:
+                already_replied = bool(comment.find_elements(By.CSS_SELECTOR, f"a[href*='{unique_url_name}']"))
+            except Exception:
+                already_replied = False
+        if already_replied:
+            myprint(f"We already replied to this comment: {short_comment_text}...")
+            continue
+        myprint(f"Responding to this comment: {short_comment_text}...")
+        # Thread-builder: reply in a way that ends with a follow-up question so the commenter
+        # replies again — first-hour thread depth is the top 2026 reach signal.
+        response = generate_thread_reply(post_message, comment_text, my_profile,
+                                         prefs=get_engagement_preferences(user_id),
+                                         profile_synthesis=profile_synthesis)
+        myprint(f"AI Generated Response to Comment: {response}")
+        if response and _reply_to_comment_inline(driver, wait, comment, response, user_id=user_id):
+            insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.REPLY,
+                           result=LogResultType.SUCCESS, post_url=post_url, message=response)
+            comments_replied_count += 1
+            time.sleep(random.uniform(5, 12))
+        else:
+            insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.REPLY,
+                           result=LogResultType.FAILURE, post_url=post_url, message=response)
+    return f"Replied to {comments_replied_count} comments"
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
+                  queue='se_engage')
+def sweep_reply_comments(self, user_id: int):
+    """Reply to new comments across the user's RECENT posts in ONE Selenium session. Triggered by a
+    forwarded comment-notification email (event mode) or the scheduled dispatcher — replacing the old
+    24h-per-post polling loop that drove the 429 rate-limiting. 429-safe: a rate-limited session logs
+    a clean skip and returns (a later trigger/sweep retries)."""
+    prefs = get_engagement_preferences(user_id)
+    days = int(prefs.get("reply_max_post_age_days") or 2)
+    post_ids = get_recent_posted_post_ids(user_id, days=days)
+    if not post_ids:
+        return "No recent posts to sweep"
+    try:
+        driver, wait, _user_email, my_profile = get_current_profile(user_id=user_id, session_name="Reply Sweep")
+    except LinkedInRateLimited as e:
+        log_warning("Reply sweep skipped — LinkedIn rate-limited", exc=e, user_id=user_id,
+                    task_name="sweep_reply_comments")
+        return "Skipped — rate limited"
+    except Exception as e:
+        log_error("Error starting reply sweep", exc=e, user_id=user_id, task_name="sweep_reply_comments")
+        return f"Failed to start reply sweep: {e}"
+    try:
+        profile_synthesis = get_or_create_profile_synthesis(user_id, my_profile)
+        swept = 0
+        for post_id in post_ids:
+            try:
+                _reply_to_comments_on_open_post(driver, wait, user_id, post_id, my_profile, profile_synthesis)
+                swept += 1
+            except Exception as e:
+                log_warning("Reply sweep: post failed", exc=e, user_id=user_id, post_id=post_id,
+                            task_name="sweep_reply_comments")
+        return f"Swept replies on {swept}/{len(post_ids)} recent posts"
+    finally:
+        quit_gracefully(driver)
+
+
 @shared_task.task(bind=True, base=QueueOnce,
                   once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id', 'post_id']},
                   queue='se_engage')
 def automate_reply_commenting(self, user_id: int, post_id: int, loop_for_duration: int = 60, future_forward=0):
-    """Reply to recent comments left on the post recently posted"""
+    """Reply to recent comments left on a single post. Retained for the manual/API trigger and
+    back-compat; the default post-publish path now uses sweep_reply_comments (event/scheduled mode).
+    429-safe: a rate-limited session returns cleanly instead of dying before the re-queue."""
 
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Reply to Comments")
+    except LinkedInRateLimited as e:
+        log_warning("Reply commenting skipped — LinkedIn rate-limited", exc=e, user_id=user_id,
+                    task_name="automate_reply_commenting")
+        return "Skipped — rate limited"
     except Exception as e:
         log_error("Error while getting profile for reply commenting", exc=e, user_id=user_id, task_name="automate_reply_commenting")
         return f"Failed to start reply commenting: {e}"
@@ -1500,103 +1637,10 @@ def automate_reply_commenting(self, user_id: int, post_id: int, loop_for_duratio
 
         start_time = datetime.now()
 
-        myprint(f"Replying to Comments of Post ID:{post_id} ...")
-
-        # Use the user id and the post id to get the post_url from the database
-        post_url = get_post_url_from_log_for_user(user_id, post_id)
-
-        # Get the message content of the post
-        post_message = get_post_message_from_log_for_user(user_id, post_id)
-
         # Stable VOICE synthesis reused across every reply in this run (voice source, not the raw JSON).
         profile_synthesis = get_or_create_profile_synthesis(user_id, my_profile)
 
-        if post_url:
-            # Navigate to the Post
-            if driver.current_url != post_url:
-                driver.get(post_url)
-
-            # SDUI: expand more replies where available, then collect comment items from the
-            # new data-testid comment list (comments are no longer article.comments-comment-entity).
-            for _ in range(5):
-                more = click_first(driver, wait,
-                                   [(By.XPATH, "//button[contains(@aria-label,'more comment') or "
-                                               "contains(normalize-space(),'Load more') or "
-                                               "contains(normalize-space(),'more repl')]")],
-                                   "Load more comments", required=False)
-                if not more:
-                    break
-                time.sleep(2)
-
-            comments = _comment_items_from_thread(driver)
-            myprint(f"Comments Found: {len(comments)}")
-            result = f"Comments Found: {len(comments)}"
-
-            # our profile slug — used to detect comments we've already replied to
-            path = urlparse(str(my_profile.profile_url)).path
-            unique_url_name = path.split("/")[2] if len(path.split("/")) > 2 else None
-
-            comments_replied_count = 0
-            lead_magnet = get_lead_magnet_settings(user_id)
-            lead_magnet_blog_url = get_user_blog_url(user_id) if lead_magnet.get("enabled") else ""
-            for comment in comments:
-                try:
-                    tb = comment.find_elements(By.CSS_SELECTOR, "[data-testid='expandable-text-box']")
-                    comment_text = ((tb[0].text if tb else comment.text) or "").strip()
-                except Exception:
-                    continue
-                short_comment_text = comment_text[:75]
-                # Reciprocity + lead-magnet: read the commenter, record them as an engager, and
-                # (if enabled) DM them the resource when their comment contains the trigger keyword.
-                try:
-                    _link = comment.find_element(By.CSS_SELECTOR, "a[href*='/in/']")
-                    _ename = ((_link.text or "") or (_link.get_attribute("aria-label") or "")).strip().split("\n")[0]
-                    _eprofile = (_link.get_attribute("href") or "").split("?")[0]
-                    if _ename and _ename.lower() != (my_profile.full_name or "").lower():
-                        upsert_engager(user_id, _ename, _eprofile)
-                        if (lead_magnet.get("enabled") and lead_magnet.get("keyword") and lead_magnet.get("message")
-                                and lead_magnet["keyword"].lower() in comment_text.lower()
-                                and _eprofile and not has_received_lead_magnet(user_id, _eprofile)):
-                            lm_message = render_dm_placeholders(
-                                lead_magnet["message"],
-                                first_name=(_ename or "").split(" ")[0],
-                                blog_url=lead_magnet_blog_url or "")
-                            send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": _eprofile,
-                                                                "message": lm_message})
-                            record_lead_magnet_sent(user_id, _eprofile, post_id)
-                            myprint(f"Lead magnet DM queued to {_ename} (keyword '{lead_magnet['keyword']}')")
-                except Exception:
-                    pass
-                # Already replied if our own profile link already appears in this comment's replies.
-                already_replied = False
-                if unique_url_name:
-                    try:
-                        already_replied = bool(comment.find_elements(By.CSS_SELECTOR, f"a[href*='{unique_url_name}']"))
-                    except Exception:
-                        already_replied = False
-                if already_replied:
-                    myprint(f"We already replied to this comment: {short_comment_text}...")
-                    continue
-                myprint(f"Responding to this comment: {short_comment_text}...")
-                # Thread-builder: reply in a way that ends with a follow-up question so the commenter
-                # replies again — first-hour thread depth is the top 2026 reach signal.
-                response = generate_thread_reply(post_message, comment_text, my_profile,
-                                                 prefs=get_engagement_preferences(user_id),
-                                                 profile_synthesis=profile_synthesis)
-                myprint(f"AI Generated Response to Comment: {response}")
-                if response and _reply_to_comment_inline(driver, wait, comment, response, user_id=user_id):
-                    insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.REPLY,
-                                   result=LogResultType.SUCCESS, post_url=post_url, message=response)
-                    comments_replied_count += 1
-                    time.sleep(random.uniform(5, 12))
-                else:
-                    insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.REPLY,
-                                   result=LogResultType.FAILURE, post_url=post_url, message=response)
-                result = f"Replied to {comments_replied_count} comments"
-
-        else:
-            myprint("Could not find successful post for this user and post_id. Sleeping...")
-            result = "Could not find successful post for this user and post_id. Sleeping..."
+        result = _reply_to_comments_on_open_post(driver, wait, user_id, post_id, my_profile, profile_synthesis)
 
         # Re-schedule the task in the queue for the future
         if loop_for_duration:
@@ -2688,14 +2732,12 @@ def post_to_linkedin(self, user_id: int, post_id: int):
                        post_url=post_url,
                        message=f"Successfully created post using /posts API endpoint.")
 
-        # Schedule Reply to comments for 24 hours now that this has been posted
-        base_kwargs = {
-            'user_id': user_id,
-            'post_id': post_id,
-            'loop_for_duration': 60 * 60 * 24,
-            'future_forward': 0
-        }
-        automate_reply_commenting.apply_async(kwargs=base_kwargs)
+        # Reply/comment follow-up per the user's reply_check_mode (replaces the old 24h polling loop
+        # that drove LinkedIn 429s). event → ONE golden-hour safety sweep as a backstop for a missed
+        # forwarded notification; scheduled → the beat dispatcher handles it; off → nothing.
+        reply_mode = get_engagement_preferences(user_id).get("reply_check_mode", "event")
+        if reply_mode == "event":
+            sweep_reply_comments.apply_async(kwargs={'user_id': user_id}, countdown=35 * 60)
 
         return f"Post successfully created"
 

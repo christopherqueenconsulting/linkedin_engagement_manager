@@ -1,5 +1,6 @@
 import json
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Optional
@@ -2500,6 +2501,7 @@ _ENGAGEMENT_DEFAULTS: dict = {
     "min_reactions": None, "max_post_age_hours": 24, "reply_to_own_comments": True,
     "max_comments_per_day": 20, "max_dms_per_day": 20, "default_buyer_stage": None,
     "default_video_quality": "standard",
+    "reply_check_mode": "event", "reply_sweeps_per_day": 2, "reply_max_post_age_days": 2,
 }
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
                            "exclude_keywords", "include_authors", "exclude_authors", "post_types",
@@ -2510,9 +2512,14 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "include_authors", "exclude_authors", "post_types", "focus_topics",
                     "business_goals", "personal_goals", "min_reactions",
                     "max_post_age_hours", "reply_to_own_comments", "max_comments_per_day",
-                    "max_dms_per_day", "default_buyer_stage", "default_video_quality")
+                    "max_dms_per_day", "default_buyer_stage", "default_video_quality",
+                    "reply_check_mode", "reply_sweeps_per_day", "reply_max_post_age_days")
 
 VALID_VIDEO_QUALITIES = ("standard", "premium", "premium_top")
+VALID_REPLY_MODES = ("event", "scheduled", "off")
+# Scheduled reply-sweep cadence bounds: floor 2×/day (as requested), cap 12×/day (every ~2h).
+REPLY_SWEEPS_MIN, REPLY_SWEEPS_MAX = 2, 12
+REPLY_MAX_AGE_DAYS_MIN, REPLY_MAX_AGE_DAYS_MAX = 1, 14
 
 
 def _coerce_json_list(value) -> list:
@@ -2556,6 +2563,22 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
     """Upsert the user's engagement preferences (INSERT ... ON DUPLICATE KEY UPDATE)."""
     merged = {**_ENGAGEMENT_DEFAULTS, **{k: v for k, v in prefs.items() if k in _ENGAGEMENT_DEFAULTS}}
 
+    # Clamp/validate reply-check config so a bad value can't overflow a column and roll back the
+    # WHOLE single-row upsert (the V52 tone incident). Bad mode → the safe default; out-of-range
+    # numbers → clamped to bounds.
+    if merged.get("reply_check_mode") not in VALID_REPLY_MODES:
+        merged["reply_check_mode"] = "event"
+    try:
+        merged["reply_sweeps_per_day"] = min(REPLY_SWEEPS_MAX, max(REPLY_SWEEPS_MIN,
+                                                                    int(merged.get("reply_sweeps_per_day") or REPLY_SWEEPS_MIN)))
+    except (TypeError, ValueError):
+        merged["reply_sweeps_per_day"] = REPLY_SWEEPS_MIN
+    try:
+        merged["reply_max_post_age_days"] = min(REPLY_MAX_AGE_DAYS_MAX, max(REPLY_MAX_AGE_DAYS_MIN,
+                                                                            int(merged.get("reply_max_post_age_days") or 2)))
+    except (TypeError, ValueError):
+        merged["reply_max_post_age_days"] = 2
+
     def _val(col):
         v = merged[col]
         if col in _ENGAGEMENT_JSON_FIELDS:
@@ -2578,6 +2601,63 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
     except mysql.connector.Error as err:
         myprint(f"Could not update engagement prefs for user_id {user_id} | Error: {err}")
         return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_or_create_reply_inbound_token(user_id: int) -> Optional[str]:
+    """The user's PERSISTENT inbound token for the comment-notification forwarding address
+    (reply+<token>@parse-domain). Minted once and stored on the users row so the Gmail forward
+    filter the user sets up keeps resolving to them. Returns None only on DB error."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT reply_inbound_token FROM users WHERE id = %s", (user_id,))
+        row = cursor.fetchone()
+        if row and row[0]:
+            return row[0]
+        token = uuid.uuid4().hex[:20]
+        cursor.execute("UPDATE users SET reply_inbound_token = %s WHERE id = %s", (token, user_id))
+        connection.commit()
+        return token
+    except mysql.connector.Error as err:
+        myprint(f"Could not get/create reply inbound token for user_id {user_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_user_id_by_reply_token(token: str) -> Optional[int]:
+    """Reverse lookup for the comment-notification webhook: token → user_id (unique index)."""
+    if not token:
+        return None
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT id FROM users WHERE reply_inbound_token = %s", (token,))
+        row = cursor.fetchone()
+        return row[0] if row else None
+    except mysql.connector.Error as err:
+        myprint(f"Could not look up user by reply token | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_users_with_reply_mode(mode: str) -> list:
+    """user_ids whose engagement prefs set reply_check_mode = mode (drives the scheduled sweep
+    dispatcher). Users with no prefs row default to 'event', so they never appear for 'scheduled'."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT user_id FROM engagement_preferences WHERE reply_check_mode = %s", (mode,))
+        return [r[0] for r in cursor.fetchall()]
+    except mysql.connector.Error as err:
+        myprint(f"Could not get users with reply mode {mode} | Error: {err}")
+        return []
     finally:
         cursor.close()
         connection.close()
