@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.43.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.43.0...v0.43.1) (2026-07-10)
+
+
+### Documentation
+
+* **ui:** full LinkedIn + Gmail setup steps for event-driven replies ([d55b1fb](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d55b1fb9084862a4d4d33a8e03e8703c593e7311))
+* **ui:** full LinkedIn + Gmail setup steps for event-driven replies ([c921911](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c921911b008a29d6740944e03978de73e9456ce6))
+
 ## [0.43.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.42.0...v0.43.0) (2026-07-10)
 
 
