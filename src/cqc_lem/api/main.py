@@ -2287,6 +2287,43 @@ def _require_api_and_admin(
         raise HTTPException(status_code=403, detail="Forbidden — missing or invalid X-Admin-Secret")
 
 
+@router.post("/admin/automation-pause", responses={200: {"description": "Automation paused"},
+                                                    403: {"description": "Forbidden"}})
+def admin_pause_automation(hours: float = 24,
+                           x_admin_secret: Optional[str] = Header(default=None)) -> ResponseModel:
+    """Kill-switch: pause ALL Selenium automation (comments/replies/DMs/stats/invites) for `hours` so
+    a 429-rate-limited account/IP can recover. Posting (API) is unaffected. Default 24h."""
+    _require_admin(x_admin_secret)
+    from cqc_lem.utilities.linkedin.rate_limit import pause_automation
+    seconds = int(max(0.0, hours) * 3600) or 3600
+    ok = pause_automation(seconds, reason="admin")
+    return ResponseModel(status_code=200, detail={"paused": ok, "seconds": seconds})
+
+
+@router.post("/admin/automation-resume", responses={200: {"description": "Automation resumed"},
+                                                     403: {"description": "Forbidden"}})
+def admin_resume_automation(x_admin_secret: Optional[str] = Header(default=None)) -> ResponseModel:
+    """Lift a manual automation pause immediately."""
+    _require_admin(x_admin_secret)
+    from cqc_lem.utilities.linkedin.rate_limit import resume_automation
+    return ResponseModel(status_code=200, detail={"resumed": resume_automation()})
+
+
+@router.get("/admin/automation-status", responses={200: {"description": "Automation status"},
+                                                   403: {"description": "Forbidden"}})
+def admin_automation_status(x_admin_secret: Optional[str] = Header(default=None)) -> ResponseModel:
+    """Current pause + 429-breaker state (seconds remaining on each)."""
+    _require_admin(x_admin_secret)
+    from cqc_lem.utilities.linkedin.rate_limit import (
+        automation_pause_remaining, rate_limit_cooldown_remaining)
+    pause_s = automation_pause_remaining()
+    return ResponseModel(status_code=200, detail={
+        "paused": pause_s > 0,
+        "pause_remaining_s": pause_s,
+        "breaker_remaining_s": rate_limit_cooldown_remaining(),
+    })
+
+
 @router.post("/admin/fix-video-urls", responses={
     200: {"description": "Video URLs updated"},
     403: {"description": "Forbidden"},

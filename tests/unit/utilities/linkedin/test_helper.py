@@ -29,6 +29,7 @@ def _breaker_closed():
     never touch Redis. Tests exercising the breaker patch these explicitly."""
     with patch(f"{_MODULE}.rate_limit_cooldown_remaining", return_value=0), \
          patch(f"{_MODULE}.mark_rate_limited"), \
+         patch(f"{_MODULE}.is_automation_paused", return_value=False), \
          patch(f"{_MODULE}.clear_rate_limit"):
         yield
 
@@ -481,6 +482,22 @@ class TestRateLimitCircuitBreaker:
              patch(f"{_MODULE}.mark_rate_limited"), patch(f"{_MODULE}.clear_rate_limit"), \
              patch(f"{_MODULE}.get_cookies") as mock_cookies, \
              pytest.raises(LinkedInRateLimited, match="circuit breaker open"):
+            from cqc_lem.utilities.linkedin.helper import login_to_linkedin
+            login_to_linkedin(driver, wait, "u@e.com", "pw")
+
+        driver.get.assert_not_called()
+        mock_cookies.assert_not_called()
+
+    def test_paused_automation_skips_navigation(self):
+        """A manual automation pause must halt login before touching LinkedIn."""
+        driver = _make_driver("https://www.linkedin.com/feed/")
+        wait = _make_wait()
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+
+        with patch(f"{_MODULE}.is_automation_paused", return_value=True), \
+             patch(f"{_MODULE}.automation_pause_remaining", return_value=3600), \
+             patch(f"{_MODULE}.get_cookies") as mock_cookies, \
+             pytest.raises(LinkedInRateLimited, match="paused"):
             from cqc_lem.utilities.linkedin.helper import login_to_linkedin
             login_to_linkedin(driver, wait, "u@e.com", "pw")
 

@@ -843,3 +843,32 @@ class TestAutoRefreshProfileSyntheses:
         syn.assert_not_called()
         setter.assert_not_called()
         assert "0/1" in result
+
+
+class TestAutomationPauseGating:
+    _M = "cqc_lem.app.run_scheduler"
+
+    def test_daily_engagement_skips_when_paused(self):
+        from cqc_lem.app.run_scheduler import auto_daily_engagement
+        with patch(f"{self._M}.is_automation_paused", return_value=True), \
+             patch(f"{self._M}.automation_pause_remaining", return_value=999), \
+             patch(f"{self._M}.get_active_user_ids") as users:
+            result = auto_daily_engagement()
+        assert "paused" in result.lower()
+        users.assert_not_called()  # short-circuits before fanning out any Selenium work
+
+    def test_appreciate_dms_skips_when_paused(self):
+        from cqc_lem.app.run_scheduler import auto_appreciate_dms
+        with patch(f"{self._M}.is_automation_paused", return_value=True), \
+             patch(f"{self._M}.automation_pause_remaining", return_value=1), \
+             patch(f"{self._M}.get_active_user_ids") as users:
+            result = auto_appreciate_dms()
+        assert "paused" in result.lower()
+        users.assert_not_called()
+
+    def test_runs_normally_when_not_paused(self):
+        from cqc_lem.app.run_scheduler import auto_daily_engagement
+        with patch(f"{self._M}.is_automation_paused", return_value=False), \
+             patch(f"{self._M}.get_active_user_ids", return_value=[]):
+            result = auto_daily_engagement()
+        assert "paused" not in result.lower()
