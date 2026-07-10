@@ -38,29 +38,87 @@ class TestPinOwnComment:
         assert _pin_own_comment(d) is False
 
 
+_URL = "https://www.linkedin.com/feed/update/urn:li:ugcPost:7479519458164695040/"
+
+
 class TestAutoSeedCommentOnPost:
-    def test_posts_and_pins(self):
+    def test_posts_via_api(self):
+        """Seed comment goes through the socialActions API (no Selenium), logs, and returns the urn."""
         from cqc_lem.app.run_automation import auto_seed_comment_on_post
-        with patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://x/feed/update/urn"), \
-             patch(f"{_RA}.get_post_message_from_log_for_user", return_value="my post"), \
-             patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+        with patch(f"{_RA}.get_post_url_from_log_for_user", return_value=_URL), \
+             patch(f"{_RA}.get_post_content", return_value="my post"), \
+             patch(f"{_RA}.load_profile_for_user", return_value=MagicMock()), \
              patch(f"{_RA}.get_engagement_preferences", return_value={}), \
+             patch(f"{_RA}.get_or_create_profile_synthesis", return_value="synth"), \
              patch(f"{_RA}.generate_seed_comment", return_value="Behind the scenes: … thoughts?"), \
-             patch(f"{_RA}.find_first", return_value=MagicMock()), \
-             patch(f"{_RA}.post_comment_inline", return_value=True) as pci, \
-             patch(f"{_RA}.insert_new_log") as log, \
-             patch(f"{_RA}._pin_own_comment", return_value=True), \
-             patch(f"{_RA}.quit_gracefully"):
+             patch(f"{_RA}.comment_on_linkedin_post", return_value="urn:li:comment:(x,1)") as api, \
+             patch(f"{_RA}.insert_new_log") as log:
             result = auto_seed_comment_on_post.run(user_id=1, post_id=9)
-        pci.assert_called_once()
+        api.assert_called_once()
+        assert api.call_args.args[1] == "urn:li:ugcPost:7479519458164695040"  # derived object urn
+        assert api.call_args.args[2] == "Behind the scenes: … thoughts?"
         log.assert_called_once()
-        assert "pinned=True" in result
+        assert "via API" in result
+
+    def test_grounds_on_post_content_not_log_status_string(self):
+        """Regression: seed comment must be grounded in the canonical post body from the posts
+        table, not the POST log message (which historically held a status string)."""
+        from cqc_lem.app.run_automation import auto_seed_comment_on_post
+        with patch(f"{_RA}.get_post_url_from_log_for_user", return_value=_URL), \
+             patch(f"{_RA}.get_post_content", return_value="The REAL post body") as gpc, \
+             patch(f"{_RA}.get_post_message_from_log_for_user",
+                   return_value="Successfully created post using /posts API endpoint.") as glog, \
+             patch(f"{_RA}.load_profile_for_user", return_value=MagicMock()), \
+             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
+             patch(f"{_RA}.get_or_create_profile_synthesis", return_value="synth"), \
+             patch(f"{_RA}.generate_seed_comment", return_value="… thoughts?") as gsc, \
+             patch(f"{_RA}.comment_on_linkedin_post", return_value="urn:li:comment:(x,1)"), \
+             patch(f"{_RA}.insert_new_log"):
+            auto_seed_comment_on_post.run(user_id=1, post_id=13)
+        gpc.assert_called_once_with(13)
+        glog.assert_not_called()  # canonical body available → never fall back to the log
+        assert gsc.call_args.args[0] == "The REAL post body"
+
+    def test_no_selenium_login_in_seed_path(self):
+        """The API seed path must never open a browser / call get_current_profile — that is what
+        exposed seeding to the 429 rate limit."""
+        from cqc_lem.app.run_automation import auto_seed_comment_on_post
+        with patch(f"{_RA}.get_post_url_from_log_for_user", return_value=_URL), \
+             patch(f"{_RA}.get_post_content", return_value="body"), \
+             patch(f"{_RA}.load_profile_for_user", return_value=MagicMock()), \
+             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
+             patch(f"{_RA}.get_or_create_profile_synthesis", return_value="synth"), \
+             patch(f"{_RA}.generate_seed_comment", return_value="seed"), \
+             patch(f"{_RA}.comment_on_linkedin_post", return_value="urn:li:comment:(x,1)"), \
+             patch(f"{_RA}.insert_new_log"), \
+             patch(f"{_RA}.get_current_profile") as gcp:
+            auto_seed_comment_on_post.run(user_id=1, post_id=9)
+        gcp.assert_not_called()
 
     def test_bails_without_post_url(self):
         from cqc_lem.app.run_automation import auto_seed_comment_on_post
         with patch(f"{_RA}.get_post_url_from_log_for_user", return_value=None), \
-             patch(f"{_RA}.get_post_message_from_log_for_user", return_value="x"), \
-             patch(f"{_RA}.get_current_profile") as gp:
+             patch(f"{_RA}.get_post_content", return_value="x"), \
+             patch(f"{_RA}.comment_on_linkedin_post") as api:
             result = auto_seed_comment_on_post.run(user_id=1, post_id=9)
         assert "No post URL" in result
-        gp.assert_not_called()
+        api.assert_not_called()
+
+    def test_bails_when_urn_underivable(self):
+        from cqc_lem.app.run_automation import auto_seed_comment_on_post
+        with patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://example.com/no-urn"), \
+             patch(f"{_RA}.get_post_content", return_value="body"), \
+             patch(f"{_RA}.comment_on_linkedin_post") as api:
+            result = auto_seed_comment_on_post.run(user_id=1, post_id=9)
+        assert "object URN" in result
+        api.assert_not_called()
+
+    def test_bails_without_post_content(self):
+        from cqc_lem.app.run_automation import auto_seed_comment_on_post
+        with patch(f"{_RA}.get_post_url_from_log_for_user", return_value=_URL), \
+             patch(f"{_RA}.get_post_content", return_value=None), \
+             patch(f"{_RA}.get_post_message_from_log_for_user", return_value=None), \
+             patch(f"{_RA}.comment_on_linkedin_post") as api:
+            result = auto_seed_comment_on_post.run(user_id=1, post_id=9)
+        assert "No post content" in result
+        api.assert_not_called()

@@ -39,6 +39,31 @@ class TestPostToLinkedinTypeBranching:
             mock_share.assert_called_once_with(1, "Post text")
             mock_carousel.assert_not_called()
 
+    def test_success_log_stores_actual_post_content_not_status_string(self):
+        """Regression: the POST success log must store the real post body — seed comments and
+        thread replies read it back to ground the AI. Storing a status string made the model
+        write comments about the /posts API instead of the post's subject."""
+        from cqc_lem.utilities.db import PostType, LogActionType, LogResultType
+        from cqc_lem.app.run_automation import post_to_linkedin
+
+        with ExitStack() as stack:
+            for target, kwargs in BASE_PATCHES:
+                if target == "cqc_lem.app.run_automation.insert_new_log":
+                    continue
+                stack.enter_context(patch(target, **kwargs))
+            mock_log = stack.enter_context(patch("cqc_lem.app.run_automation.insert_new_log"))
+            stack.enter_context(patch("cqc_lem.app.run_automation.get_post_type", return_value=PostType.TEXT))
+            stack.enter_context(patch("cqc_lem.app.run_automation.share_on_linkedin", return_value="urn:li:ugcPost:1"))
+            stack.enter_context(patch("cqc_lem.app.run_automation.share_carousel_on_linkedin"))
+
+            post_to_linkedin.run(1, 10)
+
+            post_logs = [c for c in mock_log.call_args_list
+                         if c.kwargs.get("action_type") == LogActionType.POST
+                         and c.kwargs.get("result") == LogResultType.SUCCESS]
+            assert post_logs, "expected a POST success log"
+            assert post_logs[0].kwargs["message"] == "Post text"
+
     def test_video_post_calls_share_on_linkedin_with_url(self):
         from cqc_lem.utilities.db import PostType
         from cqc_lem.app.run_automation import post_to_linkedin

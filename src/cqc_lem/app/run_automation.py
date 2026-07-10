@@ -35,7 +35,8 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
 from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
     load_profile_for_user
-from cqc_lem.utilities.linkedin.poster import share_on_linkedin, share_carousel_on_linkedin
+from cqc_lem.utilities.linkedin.poster import share_on_linkedin, share_carousel_on_linkedin, \
+    comment_on_linkedin_post, object_urn_from_post_url
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
@@ -1243,39 +1244,42 @@ def consolidate_duplicate_comments_for_user(self, user_id: int, dry_run: bool = 
                   queue='se_content')
 def auto_seed_comment_on_post(self, user_id: int, post_id: int):
     """After the user's post publishes, leave a value-adding FIRST comment on it (an open question
-    or a behind-the-scenes insight — no links) and pin it. Seeds the comment thread that drives
-    reach, and beats LinkedIn's suppression of link-in-first-comment by adding real value instead."""
+    or a behind-the-scenes insight — no links) to seed the comment thread that drives reach, and
+    beat LinkedIn's suppression of link-in-first-comment by adding real value instead.
+
+    Posts via LinkedIn's socialActions API (w_member_social — the same token that publishes posts),
+    NOT Selenium: commenting on the user's OWN post needs no browser and no login, so it is immune
+    to the feed-navigation 429 rate limit. Everything it needs (post body, voice synthesis, profile,
+    prefs) is read from the DB. Pinning is skipped here — LinkedIn exposes no pin API and the seed
+    comment's thread-starting value stands without it."""
     post_url = get_post_url_from_log_for_user(user_id, post_id)
-    post_message = get_post_message_from_log_for_user(user_id, post_id)
     if not post_url:
         return "No post URL yet for seed comment"
+    object_urn = object_urn_from_post_url(post_url)
+    if not object_urn:
+        return f"Could not derive object URN from {post_url}"
+    # Ground the AI in the canonical post body (posts table). Fall back to the log message only if
+    # the post row is gone. Historical POST logs stored a status string, so grounding on the log
+    # made seed comments read like they were about the /posts API instead of the post's subject.
+    post_message = get_post_content(post_id) or get_post_message_from_log_for_user(user_id, post_id)
+    if not post_message:
+        return "No post content to seed a comment from"
     try:
-        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Seed Comment")
-    except Exception as e:
-        log_error("Error getting profile for seed comment", exc=e, user_id=user_id, task_name="auto_seed_comment_on_post")
-        return f"Failed to start seed comment: {e}"
-    try:
-        driver.get(post_url)
-        time.sleep(random.uniform(4, 7))
+        my_profile = load_profile_for_user(user_id)  # cached DB read — no scrape/login
         seed = generate_seed_comment(post_message, my_profile, get_engagement_preferences(user_id),
                                      profile_synthesis=get_or_create_profile_synthesis(user_id, my_profile))
         if not seed:
             return "No seed comment generated"
-        card = find_first(driver, wait, [(By.CSS_SELECTOR, "div.feed-shared-update-v2"), (By.TAG_NAME, "main")],
-                          "Post container", required=False) or driver.find_element(By.TAG_NAME, "body")
-        if post_comment_inline(driver, wait, card, seed, user_id=user_id):
+        comment_urn = comment_on_linkedin_post(user_id, object_urn, seed)
+        if comment_urn:
             insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.COMMENT,
                            result=LogResultType.SUCCESS, post_url=post_url, message=seed)
-            time.sleep(random.uniform(2, 4))
-            pinned = _pin_own_comment(driver)
-            myprint(f"Seed comment posted on post {post_id} (pinned={pinned})")
-            return f"Seed comment posted (pinned={pinned})"
+            myprint(f"Seed comment posted on post {post_id} via API ({comment_urn})")
+            return f"Seed comment posted via API ({comment_urn})"
         return "Seed comment failed to post"
     except Exception as e:
         log_error("Seed comment error", exc=e, user_id=user_id, post_id=post_id, task_name="auto_seed_comment_on_post")
         return f"Seed comment error: {e}"
-    finally:
-        quit_gracefully(driver)
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
@@ -2727,10 +2731,13 @@ def post_to_linkedin(self, user_id: int, post_id: int):
         except Exception as e:
             myprint(f"purge_post_assets failed for post_id={post_id}: {e}")
 
-        # Update DB with status=success in the logs table and the post url
+        # Store the ACTUAL post body as the log message — not a status string. Seed comments and
+        # thread replies read this back via get_post_message_from_log_for_user() to ground the AI in
+        # the real post; a status string like "Successfully created post..." made the model write
+        # comments about the /posts API instead of the post's subject.
         insert_new_log(user_id=user_id, action_type=LogActionType.POST, result=LogResultType.SUCCESS, post_id=post_id,
                        post_url=post_url,
-                       message=f"Successfully created post using /posts API endpoint.")
+                       message=content)
 
         # Reply/comment follow-up per the user's reply_check_mode (replaces the old 24h polling loop
         # that drove LinkedIn 429s). event → ONE golden-hour safety sweep as a backstop for a missed
