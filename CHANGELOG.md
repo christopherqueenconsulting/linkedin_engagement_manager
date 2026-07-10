@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.43.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.42.0...v0.43.0) (2026-07-10)
+
+
+### Features
+
+* **automation:** post own-post seed comments via socialActions API, not Selenium ([1be855b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1be855b2d2cac78331108f153feb1570f4db520a))
+* **rate-limit:** adaptive 429 back-off + manual automation pause (break the doom loop) ([da69066](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/da690669ed3df18696d10372e31af948bf494af4))
+* **rate-limit:** adaptive 429 back-off escalation + manual automation pause ([a5e74cd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a5e74cd88d871d33b6a320ab989dc2c5ce1a0849))
+* **replies:** comment-notification webhook → debounced reply sweep (P2) ([3d44041](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3d440416ff8a550d53a9e6d9cf2bc6148ed1b3eb))
+* **replies:** event-driven + reduced reply/comment follow-up to cut LinkedIn 429s ([af66714](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/af6671403e04f279faac123d033bd53c98d2f696))
+* **replies:** recent-posts sweep + reply-check config to cut 429s (P1) ([e773c36](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e773c365644324592a20077b3c4aaa6597e2cedb))
+* **replies:** reply-check mode config in prefs API + Account UI (P1c) ([c048484](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c048484578c51340e52c3f2229dbc9766584991f))
+* **replies:** scheduled reply-sweep beat dispatcher (P3) ([cace01d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/cace01d7f5ed649877e3c3fba59f5783329f729e))
+
+
+### Bug Fixes
+
+* **automation:** ground seed comments & replies on canonical post body ([2d07045](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2d07045869b9ec76cfe5f7625c49e77d8b38a7bc))
+* **automation:** seed comments on own posts were about the /posts API, not the post ([18a18f1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/18a18f15e97d1708ffebddff03bc65531f04fdb4))
+* **automation:** store real post body in POST log, not a status string ([7835dec](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7835dec3dbc8cb7f30213a5c93b5fc84c6231c0e))
+
 ## [0.42.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.41.2...v0.42.0) (2026-07-08)
 
 
