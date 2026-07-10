@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import uuid
 from typing import List, Optional, Annotated, Dict
 
@@ -297,3 +298,76 @@ def share_carousel_on_linkedin(user_id: int, content: str, slide_texts: list[str
     myprint(f"Carousel shared on LinkedIn: https://www.linkedin.com/feed/update/{urn}")
     return urn
 
+
+
+# --- socialActions comments API -------------------------------------------------
+# Comments on the MEMBER'S OWN posts go through LinkedIn's official socialActions API
+# (w_member_social scope — the same token that publishes posts), NOT Selenium. This is
+# immune to the browser-navigation 429 rate limit that throttles feed automation, and
+# needs no login. Only own-post comments/replies are API-available; pinning, feed
+# comments on others' posts, and DMs remain Selenium-only (LinkedIn exposes no API).
+_URN_RE = re.compile(r"urn:li:(?:share|ugcPost|activity):[0-9]+")
+
+
+def object_urn_from_post_url(post_url: str) -> Optional[str]:
+    """Pull the share/ugcPost/activity URN out of a feed permalink like
+    https://www.linkedin.com/feed/update/urn:li:share:123/ — the socialActions path key."""
+    if not post_url:
+        return None
+    m = _URN_RE.search(post_url)
+    return m.group(0) if m else None
+
+
+def _restli() -> RestliClient:
+    client = RestliClient()
+    client.session.hooks["response"].append(lambda r: r.raise_for_status())
+    return client
+
+
+def comment_on_linkedin_post(user_id: int, object_urn: str, text: str,
+                             parent_comment_urn: Optional[str] = None) -> Optional[str]:
+    """Create a comment (or reply, when parent_comment_urn is given) on object_urn via the
+    socialActions API. Returns the created comment URN, or None on missing creds/failure."""
+    sub_id = get_user_linked_sub_id(user_id)
+    access_token = get_user_access_token(user_id)
+    if not sub_id or not access_token:
+        myprint(f"No LinkedIn credentials for user {user_id} — cannot comment via API")
+        return None
+    if not object_urn or not (text or "").strip():
+        return None
+    entity = {"actor": f"urn:li:person:{sub_id}", "message": {"text": text}}
+    if parent_comment_urn:
+        entity["parentComment"] = parent_comment_urn
+    resp = _restli().create(
+        resource_path="/socialActions/{urn}/comments",
+        path_keys={"urn": object_urn},
+        entity=entity,
+        access_token=access_token,
+    )
+    comment_urn = resp.entity_id or (resp.entity or {}).get("$URN")
+    myprint(f"Commented on {object_urn} via API: {comment_urn}")
+    return comment_urn
+
+
+# NOTE: there is deliberately no "list my comments" helper — w_member_social grants comment
+# WRITE but not READ, so socialActions get_all returns empty for this app. Old comments made via
+# the UI/Selenium therefore can't be discovered through the API; they must be removed via Selenium.
+
+
+def delete_linkedin_comment(user_id: int, object_urn: str, comment_urn: str) -> bool:
+    """Delete one of the user's own comments on object_urn via the socialActions API."""
+    sub_id = get_user_linked_sub_id(user_id)
+    access_token = get_user_access_token(user_id)
+    if not sub_id or not access_token or not object_urn or not comment_urn:
+        return False
+    # The comment path key is the numeric id at the tail of the comment URN
+    # (urn:li:comment:(activity:123,456) -> 456), per the socialActions sub-resource.
+    comment_id = comment_urn.rstrip(")").split(",")[-1] if "," in comment_urn else comment_urn.split(":")[-1]
+    _restli().delete(
+        resource_path="/socialActions/{urn}/comments/{commentId}",
+        path_keys={"urn": object_urn, "commentId": comment_id},
+        query_params={"actor": f"urn:li:person:{sub_id}"},
+        access_token=access_token,
+    )
+    myprint(f"Deleted comment {comment_urn} on {object_urn} via API")
+    return True
