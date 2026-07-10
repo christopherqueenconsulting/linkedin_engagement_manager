@@ -91,6 +91,78 @@ class TestUpdateEngagementPreferences:
         assert "5 calls/mo" in params and "thought leader" in params
 
 
+class TestReplyCheckConfig:
+    def test_defaults_include_reply_config(self):
+        conn, _ = _mock_conn(fetch_row=None)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_engagement_preferences
+            prefs = get_engagement_preferences(1)
+        assert prefs["reply_check_mode"] == "event"
+        assert prefs["reply_sweeps_per_day"] == 2
+        assert prefs["reply_max_post_age_days"] == 2
+
+    def test_clamps_bad_mode_and_out_of_range_numbers(self):
+        conn, cursor = _mock_conn(rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_engagement_preferences
+            update_engagement_preferences(3, {
+                "reply_check_mode": "bogus", "reply_sweeps_per_day": 99, "reply_max_post_age_days": 0})
+        cols = list(__import__("cqc_lem.utilities.db", fromlist=["_ENGAGEMENT_COLS"])._ENGAGEMENT_COLS)
+        params = cursor.execute.call_args[0][1]
+        # params = [user_id] + one per col, in _ENGAGEMENT_COLS order
+        by_col = dict(zip(cols, params[1:]))
+        assert by_col["reply_check_mode"] == "event"      # bad → safe default
+        assert by_col["reply_sweeps_per_day"] == 12        # clamped to max
+        assert by_col["reply_max_post_age_days"] == 1      # clamped to min
+
+    def test_valid_mode_and_floor_preserved(self):
+        conn, cursor = _mock_conn(rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_engagement_preferences
+            update_engagement_preferences(3, {"reply_check_mode": "scheduled", "reply_sweeps_per_day": 1})
+        cols = list(__import__("cqc_lem.utilities.db", fromlist=["_ENGAGEMENT_COLS"])._ENGAGEMENT_COLS)
+        by_col = dict(zip(cols, cursor.execute.call_args[0][1][1:]))
+        assert by_col["reply_check_mode"] == "scheduled"
+        assert by_col["reply_sweeps_per_day"] == 2          # floor
+
+
+class TestReplyInboundToken:
+    def test_returns_existing_token(self):
+        conn, cursor = _mock_conn(fetch_row=("existingtoken",))
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_or_create_reply_inbound_token
+            assert get_or_create_reply_inbound_token(1) == "existingtoken"
+        # no UPDATE issued when a token already exists
+        assert all("UPDATE" not in (c.args[0] if c.args else "") for c in cursor.execute.call_args_list)
+
+    def test_mints_when_missing(self):
+        conn, cursor = _mock_conn(fetch_row=(None,))
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_or_create_reply_inbound_token
+            token = get_or_create_reply_inbound_token(1)
+        assert token and len(token) == 20
+        assert any("UPDATE users SET reply_inbound_token" in (c.args[0] if c.args else "")
+                   for c in cursor.execute.call_args_list)
+
+    def test_reverse_lookup(self):
+        conn, _ = _mock_conn(fetch_row=(42,))
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_user_id_by_reply_token
+            assert get_user_id_by_reply_token("abc") == 42
+
+    def test_reverse_lookup_empty_token(self):
+        from cqc_lem.utilities.db import get_user_id_by_reply_token
+        assert get_user_id_by_reply_token("") is None
+
+    def test_users_with_reply_mode(self):
+        conn, cursor = _mock_conn()
+        cursor.fetchall.return_value = [(1,), (5,), (9,)]
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_users_with_reply_mode
+            assert get_users_with_reply_mode("scheduled") == [1, 5, 9]
+        assert "reply_check_mode = %s" in cursor.execute.call_args[0][0]
+
+
 class TestCountActions:
     def test_count_comments_today(self):
         conn, cursor = _mock_conn(fetch_row=(3,))

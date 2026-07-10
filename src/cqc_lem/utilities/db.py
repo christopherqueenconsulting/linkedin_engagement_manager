@@ -2568,14 +2568,18 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
     # numbers → clamped to bounds.
     if merged.get("reply_check_mode") not in VALID_REPLY_MODES:
         merged["reply_check_mode"] = "event"
+    # Clamp numerics WITHOUT `or` fallbacks — 0 is falsy but is a real (out-of-range) value that must
+    # clamp to the floor, not silently become the default (matches the API-layer validators).
+    _sw = merged.get("reply_sweeps_per_day")
     try:
-        merged["reply_sweeps_per_day"] = min(REPLY_SWEEPS_MAX, max(REPLY_SWEEPS_MIN,
-                                                                    int(merged.get("reply_sweeps_per_day") or REPLY_SWEEPS_MIN)))
+        merged["reply_sweeps_per_day"] = (min(REPLY_SWEEPS_MAX, max(REPLY_SWEEPS_MIN, int(_sw)))
+                                          if _sw is not None else REPLY_SWEEPS_MIN)
     except (TypeError, ValueError):
         merged["reply_sweeps_per_day"] = REPLY_SWEEPS_MIN
+    _age = merged.get("reply_max_post_age_days")
     try:
-        merged["reply_max_post_age_days"] = min(REPLY_MAX_AGE_DAYS_MAX, max(REPLY_MAX_AGE_DAYS_MIN,
-                                                                            int(merged.get("reply_max_post_age_days") or 2)))
+        merged["reply_max_post_age_days"] = (min(REPLY_MAX_AGE_DAYS_MAX, max(REPLY_MAX_AGE_DAYS_MIN, int(_age)))
+                                             if _age is not None else 2)
     except (TypeError, ValueError):
         merged["reply_max_post_age_days"] = 2
 

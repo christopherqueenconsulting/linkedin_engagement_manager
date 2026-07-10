@@ -31,7 +31,7 @@ from cqc_lem.utilities.db import (
     has_linkedin_session, get_user_password_pair_by_id,
     get_company_linked_in_url_for_user, update_company_linked_in_url_for_user,
     get_user_subscription_info, get_user_preferences, update_user_preferences,
-    get_engagement_preferences, update_engagement_preferences,
+    get_engagement_preferences, update_engagement_preferences, get_or_create_reply_inbound_token,
     get_newsletter_settings, update_newsletter_settings,
     get_pending_newsletter_editions,
     get_latest_edition_scheduled_for, update_newsletter_edition, get_newsletter_edition,
@@ -400,11 +400,35 @@ class EngagementPreferencesRequest(BaseModel):
     max_dms_per_day: int = 20
     default_buyer_stage: Optional[str] = Field(default=None, max_length=_LEN_BUYER_STAGE)
     default_video_quality: str = "standard"
+    reply_check_mode: str = "event"
+    reply_sweeps_per_day: int = 2
+    reply_max_post_age_days: int = 2
 
     @field_validator("default_video_quality")
     @classmethod
     def _coerce_video_quality(cls, v: str) -> str:
         return v if v in _VALID_VIDEO_QUALITIES else "standard"
+
+    @field_validator("reply_check_mode")
+    @classmethod
+    def _coerce_reply_mode(cls, v: str) -> str:
+        return v if v in ("event", "scheduled", "off") else "event"
+
+    @field_validator("reply_sweeps_per_day")
+    @classmethod
+    def _clamp_sweeps(cls, v: int) -> int:
+        try:
+            return min(12, max(2, int(v)))
+        except (TypeError, ValueError):
+            return 2
+
+    @field_validator("reply_max_post_age_days")
+    @classmethod
+    def _clamp_age_days(cls, v: int) -> int:
+        try:
+            return min(14, max(1, int(v)))
+        except (TypeError, ValueError):
+            return 2
 
 
 class DmTemplateItem(BaseModel):
@@ -1206,7 +1230,15 @@ def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel:
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
-    return ResponseModel(status_code=200, detail=get_engagement_preferences(user_id))
+    prefs = get_engagement_preferences(user_id)
+    # Read-only: the address the user forwards LinkedIn comment-notification emails to (event mode).
+    try:
+        from cqc_lem.utilities.linkedin.notification_email import reply_inbound_address
+        token = get_or_create_reply_inbound_token(user_id)
+        prefs["reply_inbound_address"] = reply_inbound_address(token) if token else None
+    except Exception:
+        prefs["reply_inbound_address"] = None
+    return ResponseModel(status_code=200, detail=prefs)
 
 
 @router.put("/user/engagement-preferences")
