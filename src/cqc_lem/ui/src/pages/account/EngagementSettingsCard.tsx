@@ -223,15 +223,52 @@ export default function EngagementSettingsCard() {
             <option value="off">Off — don't auto-reply</option>
           </select>
           {engPrefs.reply_check_mode === 'event' && (
-            <div className="mt-2 text-xs text-gray-500 space-y-1">
-              <p>Forward LinkedIn "commented on your post" emails to the address below (Gmail → Settings → Filters → Forward), and enable LinkedIn's comment email notifications. We reply within minutes — no browser polling, so it won't trip LinkedIn's rate limits.</p>
-              {engPrefs.reply_inbound_address && (
-                <div className="flex items-center gap-2">
-                  <code className="bg-gray-100 rounded px-2 py-1 text-gray-700 break-all">{engPrefs.reply_inbound_address}</code>
-                  <button type="button" onClick={() => navigator.clipboard?.writeText(engPrefs.reply_inbound_address || '')}
-                    className="text-blue-600 hover:underline shrink-0">Copy</button>
-                </div>
-              )}
+            <div className="mt-2 text-xs text-gray-500 space-y-3">
+              <p className="text-gray-600">
+                We reply to comments on your posts the moment LinkedIn emails you about them — no browser
+                polling, so it won't trip LinkedIn's rate limits. One-time setup (about 2 minutes):
+              </p>
+
+              <div>
+                <p className="font-medium text-gray-700">1. Turn on LinkedIn email notifications for comments</p>
+                <p>
+                  On LinkedIn: <span className="text-gray-600">Me → Settings &amp; Privacy → Notifications →
+                  “Posts, comments and mentions”</span>, and make sure <span className="font-medium">Email</span> is
+                  ON for comments &amp; replies on your posts. (Without this, LinkedIn never sends the email we listen for.)
+                </p>
+              </div>
+
+              <div>
+                <p className="font-medium text-gray-700">2. Copy your personal forwarding address</p>
+                {engPrefs.reply_inbound_address ? (
+                  <div className="flex items-center gap-2 mt-1">
+                    <code className="bg-gray-100 rounded px-2 py-1 text-gray-700 break-all">{engPrefs.reply_inbound_address}</code>
+                    <button type="button" onClick={() => navigator.clipboard?.writeText(engPrefs.reply_inbound_address || '')}
+                      className="text-blue-600 hover:underline shrink-0">Copy</button>
+                  </div>
+                ) : (
+                  <p className="text-gray-400">Save your settings once to generate your address.</p>
+                )}
+                <p className="mt-1 text-gray-400">Keep this private — it's unique to your account.</p>
+              </div>
+
+              <div>
+                <p className="font-medium text-gray-700">3. Auto-forward those emails to it (Gmail)</p>
+                <p>
+                  In Gmail: <span className="text-gray-600">Settings → Forwarding and POP/IMAP → Add a forwarding
+                  address</span> (paste the address above and confirm it). Then <span className="text-gray-600">Settings →
+                  Filters and Blocked Addresses → Create a new filter</span> with
+                  From <code className="bg-gray-100 rounded px-1">linkedin.com</code> and
+                  Subject <code className="bg-gray-100 rounded px-1">commented OR replied</code>, click
+                  <span className="italic"> Create filter</span>, then check
+                  <span className="italic"> “Forward it to”</span> and pick your address. Using another provider?
+                  Any rule that forwards LinkedIn comment emails to the address works.
+                </p>
+              </div>
+
+              <p className="text-gray-400">
+                That's it — new comments on your posts get an on-topic reply within minutes.
+              </p>
             </div>
           )}
           {engPrefs.reply_check_mode === 'scheduled' && (
