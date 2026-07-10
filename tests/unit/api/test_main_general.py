@@ -329,6 +329,58 @@ class TestGetUserLinkedInProfile:
         assert resp.json()["detail"]["linkedin_profile_url"] is None
 
 
+class TestCommentNotificationInbound:
+    """SendGrid Inbound Parse webhook for forwarded LinkedIn comment notifications."""
+    BASE = "/api/linkedin/comment-notification/inbound"
+    _DB = "cqc_lem.utilities.db.get_user_id_by_reply_token"
+
+    def test_comment_triggers_debounced_sweep(self, client):
+        with patch(self._DB, return_value=7), \
+             patch(f"{_MAIN}._reply_sweep_debounced", return_value=True), \
+             patch(f"{_MAIN}.sweep_reply_comments") as sweep:
+            resp = client.post(self.BASE, data={
+                "to": "reply+tok9@parse.example.com",
+                "subject": "Chris, Jane commented on your post",
+                "text": "great post!"})
+        assert resp.status_code == 200 and resp.json()["detail"] == "accepted"
+        sweep.apply_async.assert_called_once()
+        assert sweep.apply_async.call_args.kwargs["kwargs"] == {"user_id": 7}
+
+    def test_reaction_email_ignored(self, client):
+        with patch(self._DB, return_value=7), \
+             patch(f"{_MAIN}.sweep_reply_comments") as sweep:
+            resp = client.post(self.BASE, data={
+                "to": "reply+tok9@parse.example.com",
+                "subject": "Jane liked your post", "text": ""})
+        assert resp.json()["detail"] == "ignored"
+        sweep.apply_async.assert_not_called()
+
+    def test_unknown_token_ignored(self, client):
+        with patch(self._DB, return_value=None), \
+             patch(f"{_MAIN}.sweep_reply_comments") as sweep:
+            resp = client.post(self.BASE, data={
+                "to": "reply+stale@parse.example.com",
+                "subject": "someone commented on your post"})
+        assert resp.json()["detail"] == "ignored"
+        sweep.apply_async.assert_not_called()
+
+    def test_no_token_ignored(self, client):
+        with patch(f"{_MAIN}.sweep_reply_comments") as sweep:
+            resp = client.post(self.BASE, data={"to": "x@y.com", "subject": "commented on your post"})
+        assert resp.json()["detail"] == "ignored"
+        sweep.apply_async.assert_not_called()
+
+    def test_debounced_second_notification(self, client):
+        with patch(self._DB, return_value=7), \
+             patch(f"{_MAIN}._reply_sweep_debounced", return_value=False), \
+             patch(f"{_MAIN}.sweep_reply_comments") as sweep:
+            resp = client.post(self.BASE, data={
+                "to": "reply+tok9@parse.example.com",
+                "subject": "Jane commented on your post"})
+        assert resp.json()["detail"] == "debounced"
+        sweep.apply_async.assert_not_called()
+
+
 class TestVerificationPinInbound:
     """SendGrid Inbound Parse webhook that receives the user's PIN reply."""
     BASE = "/api/linkedin/verification-pin/inbound"
