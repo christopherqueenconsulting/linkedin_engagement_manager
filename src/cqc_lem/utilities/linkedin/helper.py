@@ -7,7 +7,7 @@ from cqc_lem.utilities.db import get_cookies, store_cookies, get_linked_in_profi
     get_linked_in_profile_by_url, get_linked_in_profile_by_user_id
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited, clear_rate_limit, \
-    mark_rate_limited, rate_limit_cooldown_remaining
+    mark_rate_limited, rate_limit_cooldown_remaining, is_automation_paused, automation_pause_remaining
 from cqc_lem.utilities.linkedin.scrapper import returnProfileInfo
 from cqc_lem.utilities.logger import myprint, log_warning, log_error
 from cqc_lem.utilities.selenium_util import load_cookies, get_element_wait_retry, \
@@ -349,6 +349,12 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
         if _wait_for_manual_approval():
             return
         raise RuntimeError(f"Unsolvable LinkedIn challenge at {label}: {driver.current_url}")
+
+    # Manual global pause: a kill-switch to let a rate-limited account recover. Central gate —
+    # every Selenium task logs in through here, so a pause halts all of them without navigating.
+    if is_automation_paused():
+        raise LinkedInRateLimited(
+            f"Automation is paused for ~{automation_pause_remaining()}s — skipping login.")
 
     # Shared 429 circuit breaker: if a recent task already hit LinkedIn's rate limit,
     # don't navigate at all — re-hitting the feed while throttled prolongs the block.

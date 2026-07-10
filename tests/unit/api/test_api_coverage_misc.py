@@ -500,6 +500,35 @@ class TestAdminEndpoints:
                 "old_base": "http://a", "new_base": "http://b"})
         assert resp.status_code == 403
 
+    def test_automation_pause(self, client):
+        with patch(f"{_M}.ADMIN_SECRET", "sekret"), \
+             patch("cqc_lem.utilities.linkedin.rate_limit.pause_automation", return_value=True) as pause:
+            resp = client.post("/api/admin/automation-pause?hours=6", headers=self._HDR)
+        assert resp.status_code == 200
+        assert resp.json()["detail"] == {"paused": True, "seconds": 6 * 3600}
+        assert pause.call_args[0][0] == 6 * 3600
+
+    def test_automation_pause_forbidden_without_secret(self, client):
+        with patch(f"{_M}.ADMIN_SECRET", "sekret"):
+            resp = client.post("/api/admin/automation-pause", headers={})
+        assert resp.status_code == 403
+
+    def test_automation_resume(self, client):
+        with patch(f"{_M}.ADMIN_SECRET", "sekret"), \
+             patch("cqc_lem.utilities.linkedin.rate_limit.resume_automation", return_value=True):
+            resp = client.post("/api/admin/automation-resume", headers=self._HDR)
+        assert resp.status_code == 200
+        assert resp.json()["detail"] == {"resumed": True}
+
+    def test_automation_status(self, client):
+        with patch(f"{_M}.ADMIN_SECRET", "sekret"), \
+             patch("cqc_lem.utilities.linkedin.rate_limit.automation_pause_remaining", return_value=120), \
+             patch("cqc_lem.utilities.linkedin.rate_limit.rate_limit_cooldown_remaining", return_value=900):
+            resp = client.get("/api/admin/automation-status", headers=self._HDR)
+        assert resp.status_code == 200
+        d = resp.json()["detail"]
+        assert d == {"paused": True, "pause_remaining_s": 120, "breaker_remaining_s": 900}
+
     def test_fix_video_urls(self, client):
         with patch(f"{_M}.ADMIN_SECRET", "sekret"), \
              patch(f"{_M}.replace_video_url_base", return_value=3) as rep:

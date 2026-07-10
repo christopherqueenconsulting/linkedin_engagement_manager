@@ -35,9 +35,34 @@ class TestCooldownSeconds:
 class TestMarkRateLimited:
     def test_sets_key_with_ttl(self, fake_redis, monkeypatch):
         monkeypatch.setenv("LINKEDIN_RATE_LIMIT_COOLDOWN_SECONDS", "120")
+        fake_redis.incr.return_value = 1  # first trip → base cooldown
         from cqc_lem.utilities.linkedin.rate_limit import mark_rate_limited
         mark_rate_limited("boom")
         fake_redis.set.assert_called_once_with("linkedin:429_cooldown", "boom", ex=120)
+
+    def test_consecutive_trips_escalate_cooldown(self, fake_redis, monkeypatch):
+        monkeypatch.setenv("LINKEDIN_RATE_LIMIT_COOLDOWN_SECONDS", "100")
+        monkeypatch.delenv("LINKEDIN_RATE_LIMIT_MAX_COOLDOWN_SECONDS", raising=False)
+        from cqc_lem.utilities.linkedin.rate_limit import mark_rate_limited
+        for trip, expected in [(1, 100), (2, 200), (3, 400), (4, 800)]:
+            fake_redis.incr.return_value = trip
+            mark_rate_limited("x")
+            assert fake_redis.set.call_args.kwargs["ex"] == expected
+
+    def test_escalation_capped(self, fake_redis, monkeypatch):
+        monkeypatch.setenv("LINKEDIN_RATE_LIMIT_COOLDOWN_SECONDS", "1800")
+        monkeypatch.setenv("LINKEDIN_RATE_LIMIT_MAX_COOLDOWN_SECONDS", "21600")  # 6h
+        fake_redis.incr.return_value = 20  # 1800 * 2^19 >> cap
+        from cqc_lem.utilities.linkedin.rate_limit import mark_rate_limited
+        mark_rate_limited("x")
+        assert fake_redis.set.call_args.kwargs["ex"] == 21600
+
+    def test_trip_counter_incremented_and_expired(self, fake_redis):
+        fake_redis.incr.return_value = 1
+        from cqc_lem.utilities.linkedin.rate_limit import mark_rate_limited
+        mark_rate_limited("x")
+        fake_redis.incr.assert_called_once_with("linkedin:429_trip_count")
+        fake_redis.expire.assert_called_once()
 
     def test_defaults_reason(self, fake_redis):
         from cqc_lem.utilities.linkedin.rate_limit import mark_rate_limited
@@ -80,10 +105,10 @@ class TestCooldownRemaining:
 
 
 class TestClearRateLimit:
-    def test_deletes_key(self, fake_redis):
+    def test_deletes_cooldown_and_trip_counter(self, fake_redis):
         from cqc_lem.utilities.linkedin.rate_limit import clear_rate_limit
         clear_rate_limit()
-        fake_redis.delete.assert_called_once_with("linkedin:429_cooldown")
+        fake_redis.delete.assert_called_once_with("linkedin:429_cooldown", "linkedin:429_trip_count")
 
     def test_no_redis_is_noop(self):
         with patch(f"{_MOD}._redis_client", return_value=None):
@@ -126,3 +151,41 @@ class TestRedisClientSelection:
             import importlib
             mod = importlib.import_module(_MOD)
             assert mod._redis_client() is None
+
+
+class TestAutomationPause:
+    def test_pause_sets_key_with_ttl(self, fake_redis):
+        from cqc_lem.utilities.linkedin.rate_limit import pause_automation
+        assert pause_automation(3600, reason="admin") is True
+        fake_redis.set.assert_called_once_with("linkedin:automation_paused", "admin", ex=3600)
+
+    def test_pause_floors_seconds_at_one(self, fake_redis):
+        from cqc_lem.utilities.linkedin.rate_limit import pause_automation
+        pause_automation(0)
+        assert fake_redis.set.call_args.kwargs["ex"] == 1
+
+    def test_pause_no_redis_returns_false(self):
+        with patch(f"{_MOD}._redis_client", return_value=None):
+            from cqc_lem.utilities.linkedin.rate_limit import pause_automation
+            assert pause_automation(60) is False
+
+    def test_resume_deletes_key(self, fake_redis):
+        from cqc_lem.utilities.linkedin.rate_limit import resume_automation
+        assert resume_automation() is True
+        fake_redis.delete.assert_called_once_with("linkedin:automation_paused")
+
+    def test_remaining_and_is_paused(self, fake_redis):
+        fake_redis.ttl.return_value = 500
+        from cqc_lem.utilities.linkedin.rate_limit import automation_pause_remaining, is_automation_paused
+        assert automation_pause_remaining() == 500
+        assert is_automation_paused() is True
+
+    def test_not_paused_when_key_absent(self, fake_redis):
+        fake_redis.ttl.return_value = -2
+        from cqc_lem.utilities.linkedin.rate_limit import is_automation_paused
+        assert is_automation_paused() is False
+
+    def test_not_paused_when_no_redis(self):
+        with patch(f"{_MOD}._redis_client", return_value=None):
+            from cqc_lem.utilities.linkedin.rate_limit import is_automation_paused
+            assert is_automation_paused() is False

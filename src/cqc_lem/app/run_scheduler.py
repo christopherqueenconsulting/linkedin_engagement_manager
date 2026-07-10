@@ -20,7 +20,19 @@ from cqc_lem.utilities.db import (
 )
 from cqc_lem.utilities.env_constants import SELENIUM_KEEP_VIDEOS_X_DAYS, CQC_LEM_POST_TIME_DELTA_MINUTES
 from cqc_lem.utilities.logger import myprint, log_info, log_debug, log_warning
+from cqc_lem.utilities.linkedin.rate_limit import is_automation_paused, automation_pause_remaining
 from cqc_lem.utilities.notifications import notify_linkedin_session
+
+
+def _skip_if_paused(name: str) -> bool:
+    """True when a manual automation pause is active — Selenium fan-out beat tasks short-circuit on
+    it so a recovering rate-limited account isn't hammered (login_to_linkedin also gates centrally,
+    but skipping here avoids spinning up Chrome sessions that would only fail). POSTING is API-driven
+    and deliberately NOT gated."""
+    if is_automation_paused():
+        log_info(f"{name} skipped — automation paused (~{automation_pause_remaining()}s left)")
+        return True
+    return False
 
 
 
@@ -131,6 +143,8 @@ def auto_check_scheduled_dms(self):
 
 @shared_task.task
 def auto_appreciate_dms():
+    if _skip_if_paused("auto_appreciate_dms"):
+        return "Automation paused"
     # For each user schedule appreciate DMS
     users = get_active_user_ids()
 
@@ -162,6 +176,8 @@ def auto_daily_engagement():
     because both this run and the pre-post runs share the per-day comment cap (enforced in
     comment_on_feed_inline), and QueueOnce (keys=['user_id']) prevents overlapping double-runs for
     the same user."""
+    if _skip_if_paused("auto_daily_engagement"):
+        return "Automation paused"
     users = get_active_user_ids()
     dispatched = 0
     for user_id in users:
@@ -490,6 +506,8 @@ def auto_sync_groups():
 @shared_task.task
 def auto_group_engagement():
     """Daily value-add commenting in each active user's ENABLED groups (shares the per-day cap)."""
+    if _skip_if_paused("auto_group_engagement"):
+        return "Automation paused"
     from cqc_lem.app.run_automation import auto_comment_in_groups
     users = get_active_user_ids()
     n = 0
@@ -520,6 +538,8 @@ def auto_group_posts():
 @shared_task.task
 def auto_scrape_stats():
     """Daily: capture engagement stats on each active user's recent posts (powers post-time recs)."""
+    if _skip_if_paused("auto_scrape_stats"):
+        return "Automation paused"
     from cqc_lem.app.run_automation import auto_scrape_post_stats
     users = get_active_user_ids()
     n = 0
@@ -533,6 +553,8 @@ def auto_scrape_stats():
 @shared_task.task
 def auto_send_due_followups():
     """Dispatch a per-user Selenium task to send due DM follow-ups (each gated by reply-detection)."""
+    if _skip_if_paused("auto_send_due_followups"):
+        return "Automation paused"
     from cqc_lem.app.run_automation import process_user_followups
     from cqc_lem.utilities.db import get_due_followups
     # due_at is stored naive-UTC; compare against naive-UTC now (not container-local time).
@@ -636,6 +658,8 @@ def auto_clean_stale_profiles():
 @shared_task.task
 def auto_invite_to_company_pages():
     """Start invite process for each active user who has a linked in company page"""
+    if _skip_if_paused("auto_invite_to_company_pages"):
+        return "Automation paused"
 
     # Get all active users and loop through them
     users = get_active_user_ids()
