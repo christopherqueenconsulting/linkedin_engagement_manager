@@ -105,6 +105,11 @@ app.conf.update(
             'task': 'cqc_lem.app.run_scheduler.auto_publish_scheduled_editions',
             'schedule': crontab(minute='5')  # Hourly: publish any edition whose scheduled slot has arrived
         },
+        'dispatch-scheduled-reply-sweeps': {
+            'task': 'cqc_lem.app.run_scheduler.dispatch_scheduled_reply_sweeps',
+            # Every 30 min; a per-user Redis interval key gates it to reply_sweeps_per_day (2–12) sweeps.
+            'schedule': crontab(minute='*/30')
+        },
         'sync-user-groups': {
             'task': 'cqc_lem.app.run_scheduler.auto_sync_groups',
             'schedule': crontab(hour='7', minute='0', day_of_week='monday')  # Refresh joined groups weekly

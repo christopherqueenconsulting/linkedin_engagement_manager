@@ -843,3 +843,57 @@ class TestAutoRefreshProfileSyntheses:
         syn.assert_not_called()
         setter.assert_not_called()
         assert "0/1" in result
+
+
+class TestDispatchScheduledReplySweeps:
+    _M = "cqc_lem.app.run_scheduler"
+
+    def test_dispatches_when_due_and_has_session(self):
+        from cqc_lem.app.run_scheduler import dispatch_scheduled_reply_sweeps
+        redis = MagicMock(); redis.set.return_value = True  # nx=True → key absent → due
+        with patch(f"{self._M}.get_users_with_reply_mode", return_value=[1, 2]), \
+             patch(f"{self._M}.has_linkedin_session", return_value=True), \
+             patch(f"{self._M}.get_engagement_preferences", return_value={"reply_sweeps_per_day": 4}), \
+             patch("cqc_lem.utilities.linkedin.rate_limit._redis_client", return_value=redis), \
+             patch(f"{self._M}.sweep_reply_comments") as sweep:
+            result = dispatch_scheduled_reply_sweeps()
+        assert sweep.apply_async.call_count == 2
+        assert "2/2" in result
+        # interval TTL for 4/day = 6h
+        assert redis.set.call_args.kwargs["ex"] == 6 * 60 * 60
+
+    def test_skips_when_interval_not_elapsed(self):
+        from cqc_lem.app.run_scheduler import dispatch_scheduled_reply_sweeps
+        redis = MagicMock(); redis.set.return_value = False  # key present → too soon
+        with patch(f"{self._M}.get_users_with_reply_mode", return_value=[1]), \
+             patch(f"{self._M}.has_linkedin_session", return_value=True), \
+             patch(f"{self._M}.get_engagement_preferences", return_value={"reply_sweeps_per_day": 2}), \
+             patch("cqc_lem.utilities.linkedin.rate_limit._redis_client", return_value=redis), \
+             patch(f"{self._M}.sweep_reply_comments") as sweep:
+            dispatch_scheduled_reply_sweeps()
+        sweep.apply_async.assert_not_called()
+
+    def test_skips_users_without_session(self):
+        from cqc_lem.app.run_scheduler import dispatch_scheduled_reply_sweeps
+        with patch(f"{self._M}.get_users_with_reply_mode", return_value=[1]), \
+             patch(f"{self._M}.has_linkedin_session", return_value=False), \
+             patch("cqc_lem.utilities.linkedin.rate_limit._redis_client", return_value=None), \
+             patch(f"{self._M}.sweep_reply_comments") as sweep:
+            dispatch_scheduled_reply_sweeps()
+        sweep.apply_async.assert_not_called()
+
+    def test_no_scheduled_users(self):
+        from cqc_lem.app.run_scheduler import dispatch_scheduled_reply_sweeps
+        with patch(f"{self._M}.get_users_with_reply_mode", return_value=[]):
+            assert "No scheduled-mode users" in dispatch_scheduled_reply_sweeps()
+
+    def test_caps_interval_floor_at_2h(self):
+        from cqc_lem.app.run_scheduler import dispatch_scheduled_reply_sweeps
+        redis = MagicMock(); redis.set.return_value = True
+        with patch(f"{self._M}.get_users_with_reply_mode", return_value=[1]), \
+             patch(f"{self._M}.has_linkedin_session", return_value=True), \
+             patch(f"{self._M}.get_engagement_preferences", return_value={"reply_sweeps_per_day": 12}), \
+             patch("cqc_lem.utilities.linkedin.rate_limit._redis_client", return_value=redis), \
+             patch(f"{self._M}.sweep_reply_comments"):
+            dispatch_scheduled_reply_sweeps()
+        assert redis.set.call_args.kwargs["ex"] == 2 * 60 * 60  # 12/day = 2h, the floor

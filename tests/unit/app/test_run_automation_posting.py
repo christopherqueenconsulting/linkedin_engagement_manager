@@ -11,7 +11,8 @@ BASE_PATCHES = [
     ("cqc_lem.app.run_automation.get_post_content", {"return_value": "Post text"}),
     ("cqc_lem.app.run_automation.insert_new_log", {}),
     ("cqc_lem.app.run_automation.update_db_post_status", {}),
-    ("cqc_lem.app.run_automation.automate_reply_commenting", {}),
+    ("cqc_lem.app.run_automation.get_engagement_preferences", {"return_value": {"reply_check_mode": "event"}}),
+    ("cqc_lem.app.run_automation.sweep_reply_comments", {}),
 ]
 
 
@@ -107,6 +108,45 @@ class TestPostToLinkedinTypeBranching:
 
             mock_carousel.assert_called_once_with(1, "Post text", slides)
             mock_share.assert_not_called()
+
+    def test_event_mode_schedules_one_golden_hour_sweep(self):
+        from cqc_lem.utilities.db import PostType
+        from cqc_lem.app.run_automation import post_to_linkedin
+
+        with ExitStack() as stack:
+            for target, kwargs in BASE_PATCHES:
+                if target.endswith("sweep_reply_comments"):
+                    continue
+                stack.enter_context(patch(target, **kwargs))
+            mock_sweep = stack.enter_context(patch("cqc_lem.app.run_automation.sweep_reply_comments"))
+            stack.enter_context(patch("cqc_lem.app.run_automation.get_post_type", return_value=PostType.TEXT))
+            stack.enter_context(patch("cqc_lem.app.run_automation.share_on_linkedin", return_value="urn:li:ugcPost:1"))
+
+            post_to_linkedin.run(1, 10)
+
+            mock_sweep.apply_async.assert_called_once()
+            assert mock_sweep.apply_async.call_args.kwargs["kwargs"] == {"user_id": 1}
+            assert mock_sweep.apply_async.call_args.kwargs["countdown"] == 35 * 60
+
+    def test_scheduled_and_off_modes_schedule_no_per_post_sweep(self):
+        from cqc_lem.utilities.db import PostType
+        from cqc_lem.app.run_automation import post_to_linkedin
+
+        for mode in ("scheduled", "off"):
+            with ExitStack() as stack:
+                for target, kwargs in BASE_PATCHES:
+                    if target.endswith("get_engagement_preferences") or target.endswith("sweep_reply_comments"):
+                        continue
+                    stack.enter_context(patch(target, **kwargs))
+                stack.enter_context(patch("cqc_lem.app.run_automation.get_engagement_preferences",
+                                          return_value={"reply_check_mode": mode}))
+                mock_sweep = stack.enter_context(patch("cqc_lem.app.run_automation.sweep_reply_comments"))
+                stack.enter_context(patch("cqc_lem.app.run_automation.get_post_type", return_value=PostType.TEXT))
+                stack.enter_context(patch("cqc_lem.app.run_automation.share_on_linkedin", return_value="urn:li:ugcPost:1"))
+
+                post_to_linkedin.run(1, 10)
+
+                mock_sweep.apply_async.assert_not_called()
 
     def test_skips_already_posted(self):
         from cqc_lem.app.run_automation import post_to_linkedin

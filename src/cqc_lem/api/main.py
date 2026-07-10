@@ -14,7 +14,7 @@ from cqc_lem.app.aws_test_celery_task import test_get_my_profile
 from cqc_lem.app.run_automation import (
     automate_invites_to_company_page_for_user, automate_reply_commenting,
     automate_commenting, automate_appreciation_dms_for_user,
-    send_private_dm, consolidate_duplicate_comments_for_user,
+    send_private_dm, consolidate_duplicate_comments_for_user, sweep_reply_comments,
 )
 from celery import chain as celery_chain
 from cqc_lem.app.run_content_plan import auto_create_weekly_content, plan_content_for_user
@@ -31,7 +31,7 @@ from cqc_lem.utilities.db import (
     has_linkedin_session, get_user_password_pair_by_id,
     get_company_linked_in_url_for_user, update_company_linked_in_url_for_user,
     get_user_subscription_info, get_user_preferences, update_user_preferences,
-    get_engagement_preferences, update_engagement_preferences,
+    get_engagement_preferences, update_engagement_preferences, get_or_create_reply_inbound_token,
     get_newsletter_settings, update_newsletter_settings,
     get_pending_newsletter_editions,
     get_latest_edition_scheduled_for, update_newsletter_edition, get_newsletter_edition,
@@ -125,7 +125,8 @@ _API_ACCESS_TOKEN_SET = {t.strip() for t in API_ACCESS_TOKENS.split(",") if t.st
 # it's invalid — same model as the /api/auth/ endpoints. This exact leaf path only; the rest
 # of /api/user/* stays gated.
 _PUBLIC_API_PREFIXES = ("/api/auth/", "/api/billing/webhook", "/api/assets",
-                        "/api/linkedin/verification-pin", "/api/app-info",
+                        "/api/linkedin/verification-pin", "/api/linkedin/comment-notification",
+                        "/api/app-info",
                         "/api/extension/", "/api/user/linkedin-cookie")
 
 
@@ -400,11 +401,35 @@ class EngagementPreferencesRequest(BaseModel):
     max_dms_per_day: int = 20
     default_buyer_stage: Optional[str] = Field(default=None, max_length=_LEN_BUYER_STAGE)
     default_video_quality: str = "standard"
+    reply_check_mode: str = "event"
+    reply_sweeps_per_day: int = 2
+    reply_max_post_age_days: int = 2
 
     @field_validator("default_video_quality")
     @classmethod
     def _coerce_video_quality(cls, v: str) -> str:
         return v if v in _VALID_VIDEO_QUALITIES else "standard"
+
+    @field_validator("reply_check_mode")
+    @classmethod
+    def _coerce_reply_mode(cls, v: str) -> str:
+        return v if v in ("event", "scheduled", "off") else "event"
+
+    @field_validator("reply_sweeps_per_day")
+    @classmethod
+    def _clamp_sweeps(cls, v: int) -> int:
+        try:
+            return min(12, max(2, int(v)))
+        except (TypeError, ValueError):
+            return 2
+
+    @field_validator("reply_max_post_age_days")
+    @classmethod
+    def _clamp_age_days(cls, v: int) -> int:
+        try:
+            return min(14, max(1, int(v)))
+        except (TypeError, ValueError):
+            return 2
 
 
 class DmTemplateItem(BaseModel):
@@ -639,6 +664,50 @@ async def linkedin_verification_pin_inbound(request: Request) -> ResponseModel:
     if user_id:
         log_info("Received LinkedIn verification PIN via email reply", user_id=user_id)
     return ResponseModel(status_code=200, detail="accepted" if user_id else "ignored")
+
+
+def _reply_sweep_debounced(user_id: int, window_s: int = 120) -> bool:
+    """True the first time we see this user within window_s — collapses a burst of comment
+    notifications into ONE reply sweep. Fails OPEN (returns True) if Redis is unavailable so a
+    notification is never silently dropped."""
+    try:
+        from cqc_lem.utilities.linkedin.rate_limit import _redis_client
+        client = _redis_client()
+        if client is None:
+            return True
+        return bool(client.set(f"linkedin:reply_sweep_debounce:{user_id}", "1", nx=True, ex=window_s))
+    except Exception:
+        return True
+
+
+@router.post("/linkedin/comment-notification/inbound")
+async def linkedin_comment_notification_inbound(request: Request) -> ResponseModel:
+    """SendGrid Inbound Parse webhook: a forwarded LinkedIn 'commented on your post' email. The
+    tokenized address (reply+<token>@parse-domain) attributes it to a user; if it's a comment (not a
+    reaction) we trigger a debounced recent-posts reply sweep — no polling, so it doesn't trip the
+    429 rate limit. Always 200 so SendGrid doesn't retry-storm on unrelated/malformed mail."""
+    from cqc_lem.utilities.linkedin.notification_email import (
+        extract_reply_token_from_address, is_comment_notification)
+    from cqc_lem.utilities.db import get_user_id_by_reply_token
+    try:
+        form = await request.form()
+    except Exception:
+        return ResponseModel(status_code=200, detail="ignored")
+    to_field = str(form.get("to") or "")
+    envelope = str(form.get("envelope") or "")
+    subject = str(form.get("subject") or "")
+    text = str(form.get("text") or form.get("html") or "")
+    token = extract_reply_token_from_address(to_field) or extract_reply_token_from_address(envelope)
+    if not token:
+        return ResponseModel(status_code=200, detail="ignored")
+    user_id = get_user_id_by_reply_token(token)
+    if not user_id or not is_comment_notification(subject, text):
+        return ResponseModel(status_code=200, detail="ignored")
+    if not _reply_sweep_debounced(user_id):
+        return ResponseModel(status_code=200, detail="debounced")
+    sweep_reply_comments.apply_async(kwargs={"user_id": user_id}, countdown=120)
+    log_info("Triggered reply sweep from comment notification", user_id=user_id)
+    return ResponseModel(status_code=200, detail="accepted")
 
 
 @router.put("/user/", responses={
@@ -1206,7 +1275,15 @@ def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel:
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
-    return ResponseModel(status_code=200, detail=get_engagement_preferences(user_id))
+    prefs = get_engagement_preferences(user_id)
+    # Read-only: the address the user forwards LinkedIn comment-notification emails to (event mode).
+    try:
+        from cqc_lem.utilities.linkedin.notification_email import reply_inbound_address
+        token = get_or_create_reply_inbound_token(user_id)
+        prefs["reply_inbound_address"] = reply_inbound_address(token) if token else None
+    except Exception:
+        prefs["reply_inbound_address"] = None
+    return ResponseModel(status_code=200, detail=prefs)
 
 
 @router.put("/user/engagement-preferences")
