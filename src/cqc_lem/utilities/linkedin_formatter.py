@@ -68,36 +68,64 @@ def linkedin_post_format_directive(max_chars: int = 2200) -> str:
 
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+# A "meta" line that should stay on its own, not be reflowed into prose (hashtag line, bare URL,
+# or a near-empty line).
+_META_LINE_RE = re.compile(r"^(#\S|https?://|\W{0,3}$)")
 
 
-def enforce_post_readability(text: str, max_chars: int = 2200, target_paragraph_chars: int = 220) -> str:
+def _reflow_into_paragraphs(prose: str, target_paragraph_chars: int) -> list:
+    """Group a single long prose string into short paragraphs of ~target_paragraph_chars, breaking
+    only on sentence boundaries."""
+    sentences = [s.strip() for s in _SENTENCE_SPLIT_RE.split(prose) if s.strip()]
+    if len(sentences) <= 1:
+        return [prose]
+    paras, cur = [], ""
+    for s in sentences:
+        if cur and len(cur) + 1 + len(s) > target_paragraph_chars:
+            paras.append(cur)
+            cur = s
+        else:
+            cur = f"{cur} {s}".strip()
+    if cur:
+        paras.append(cur)
+    return paras
+
+
+def enforce_post_readability(text: str, max_chars: int = 2200, target_paragraph_chars: int = 220,
+                             long_paragraph_chars: int = 350) -> str:
     """Deterministic QA guard for AI-generated post captions - the safety net when the model ignores
-    the format directive (e.g. a carousel caption that came back as one 3400-char paragraph):
+    the format directive (e.g. a carousel caption that came back as a wall of text):
 
-      - reflow a long 'wall of text' (a body with no blank-line paragraphs) into short, scannable
-        paragraphs, keeping any trailing hashtag/link line on its own;
+      - break any OVER-LONG paragraph (a single-line prose block longer than long_paragraph_chars)
+        into short, scannable paragraphs. This catches both a total wall (one giant paragraph) AND an
+        under-formatted post (a few very long paragraphs), while leaving already-short paragraphs and
+        multi-line blocks (lists) untouched. Trailing hashtag/link lines stay on their own.
       - hard-cap length at a sentence boundary (LinkedIn's limit is 3000; the default stays well under).
 
-    Already-formatted (has blank-line paragraphs) or short posts are returned unchanged."""
+    Well-formatted (short paragraphs) or short posts are returned unchanged."""
     if not text:
         return text
     text = text.strip()
-    if "\n\n" not in text and len(text) > 600:
-        lines = text.split("\n")
-        body, trailer = lines[0], "\n".join(lines[1:]).strip()
-        sentences = [s.strip() for s in _SENTENCE_SPLIT_RE.split(body) if s.strip()]
-        paras, cur = [], ""
-        for s in sentences:
-            if cur and len(cur) + 1 + len(s) > target_paragraph_chars:
-                paras.append(cur)
-                cur = s
-            else:
-                cur = f"{cur} {s}".strip()
-        if cur:
-            paras.append(cur)
-        text = "\n\n".join(paras)
+    out_paras = []
+    for block in re.split(r"\n\s*\n", text):
+        block = block.strip()
+        if not block:
+            continue
+        # Peel trailing meta lines (hashtags / links) so they aren't reflowed into the prose.
+        lines = block.split("\n")
+        trailer = []
+        while len(lines) > 1 and _META_LINE_RE.match(lines[-1].strip()):
+            trailer.insert(0, lines.pop().strip())
+        prose = "\n".join(lines).strip()
+        # Only reflow a SINGLE-LINE prose block that is too long; leave short blocks and multi-line
+        # blocks (lists, deliberately line-broken content) as they are.
+        if "\n" not in prose and len(prose) > long_paragraph_chars:
+            out_paras.extend(_reflow_into_paragraphs(prose, target_paragraph_chars))
+        elif prose:
+            out_paras.append(prose)
         if trailer:
-            text += "\n\n" + trailer
+            out_paras.append("\n".join(trailer))
+    text = "\n\n".join(out_paras)
     if len(text) > max_chars:
         cut = text[:max_chars]
         ends = list(re.finditer(r"[.!?](?:\s|$)", cut))
