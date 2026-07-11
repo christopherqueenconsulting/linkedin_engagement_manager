@@ -53,6 +53,58 @@ PLAIN_PUNCTUATION_DIRECTIVE = (
 )
 
 
+def linkedin_post_format_directive(max_chars: int = 2200) -> str:
+    """Shared LinkedIn post-formatting best practices for AI system prompts (the QA rules we
+    researched): hook first line, short scannable paragraphs separated by BLANK LINES, a hard length
+    cap, and no markdown. This is the PREVENTION side; enforce_post_readability() is the safety net
+    for when the model ignores it (e.g. JSON-mode carousel captions that come back as one long block)."""
+    return (
+        "FORMAT FOR LINKEDIN: Open with a scroll-stopping first line (the hook) - it is the only line "
+        "shown before the '...more' fold. Then write SHORT, scannable paragraphs of 1-2 sentences each, "
+        "each separated by a BLANK LINE (real line breaks - never one long block of text). Keep the "
+        f"entire post under {max_chars} characters. Do NOT use markdown (no **bold**, no # headers, no "
+        "bullet characters unless intentional) - LinkedIn renders it literally."
+    )
+
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def enforce_post_readability(text: str, max_chars: int = 2200, target_paragraph_chars: int = 220) -> str:
+    """Deterministic QA guard for AI-generated post captions - the safety net when the model ignores
+    the format directive (e.g. a carousel caption that came back as one 3400-char paragraph):
+
+      - reflow a long 'wall of text' (a body with no blank-line paragraphs) into short, scannable
+        paragraphs, keeping any trailing hashtag/link line on its own;
+      - hard-cap length at a sentence boundary (LinkedIn's limit is 3000; the default stays well under).
+
+    Already-formatted (has blank-line paragraphs) or short posts are returned unchanged."""
+    if not text:
+        return text
+    text = text.strip()
+    if "\n\n" not in text and len(text) > 600:
+        lines = text.split("\n")
+        body, trailer = lines[0], "\n".join(lines[1:]).strip()
+        sentences = [s.strip() for s in _SENTENCE_SPLIT_RE.split(body) if s.strip()]
+        paras, cur = [], ""
+        for s in sentences:
+            if cur and len(cur) + 1 + len(s) > target_paragraph_chars:
+                paras.append(cur)
+                cur = s
+            else:
+                cur = f"{cur} {s}".strip()
+        if cur:
+            paras.append(cur)
+        text = "\n\n".join(paras)
+        if trailer:
+            text += "\n\n" + trailer
+    if len(text) > max_chars:
+        cut = text[:max_chars]
+        ends = list(re.finditer(r"[.!?](?:\s|$)", cut))
+        text = (cut[:ends[-1].end()] if ends else cut).rstrip()
+    return text
+
+
 def sanitize_for_linkedin(text: str) -> str:
     """Strip markdown syntax from AI-generated text so it renders cleanly on LinkedIn.
 

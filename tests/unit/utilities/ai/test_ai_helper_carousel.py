@@ -103,3 +103,34 @@ class TestGenerateCarouselContent:
             from cqc_lem.utilities.ai.ai_helper import generate_carousel_content
             post_text, carousel_dict = generate_carousel_content(user_id=1, stage="awareness")
         assert isinstance(post_text, str)
+
+
+@pytest.mark.unit
+def test_wall_of_text_caption_is_reflowed_and_capped():
+    """Regression (post 72): a caption that comes back as a long single paragraph must be reflowed
+    into scannable paragraphs and hard-capped under the LinkedIn limit."""
+    from contextlib import contextmanager
+    from cqc_lem.utilities.linkedin.profile import LinkedInProfile
+
+    wall = " ".join(f"Intro sentence number {i} is here." for i in range(150))  # long, no line breaks
+    assert "\n\n" not in wall and len(wall) > 3000
+    payload = _educational_carousel_json()
+    payload["post_text"] = wall
+
+    profile = LinkedInProfile(full_name="Test User", job_title="CTO", company_name="ACME", industry="Technology")
+
+    @contextmanager
+    def _env():
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_make_llm_mock(payload)), \
+             patch("cqc_lem.utilities.db.get_user_password_pair_by_id", return_value=("t@e.com", "p")), \
+             patch("cqc_lem.utilities.selenium_util.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+             patch("cqc_lem.utilities.linkedin.helper.get_my_profile", return_value=profile), \
+             patch("cqc_lem.utilities.selenium_util.quit_gracefully"):
+            yield
+
+    with _env():
+        from cqc_lem.utilities.ai.ai_helper import generate_carousel_content, _CAROUSEL_CAPTION_MAX_CHARS
+        post_text, _ = generate_carousel_content(user_id=1, stage="awareness")
+
+    assert len(post_text) <= _CAROUSEL_CAPTION_MAX_CHARS   # hard-capped
+    assert "\n\n" in post_text                             # reflowed into paragraphs
