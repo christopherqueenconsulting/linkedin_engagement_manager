@@ -250,10 +250,24 @@ class TestEnforcePostReadability:
         s = "A short and sweet post."
         assert enforce_post_readability(s) == s
 
-    def test_already_paragraphed_post_unchanged(self):
+    def test_well_formatted_short_paragraphs_unchanged(self):
         from cqc_lem.utilities.linkedin_formatter import enforce_post_readability
-        s = "Hook line here.\n\n" + ("Body sentence. " * 40).strip()
-        assert enforce_post_readability(s, max_chars=5000) == s  # has blank lines → not reflowed
+        s = ("Hook line here.\n\n"
+             "A short first paragraph with one idea.\n\n"
+             "A short second paragraph with another idea.\n\n"
+             "#ai #linkedin")
+        assert enforce_post_readability(s, max_chars=5000) == s  # short paras → untouched
+
+    def test_breaks_up_over_long_paragraphs(self):
+        from cqc_lem.utilities.linkedin_formatter import enforce_post_readability
+        # Two giant single-line paragraphs (the under-formatted case, e.g. post 75) — each must be
+        # broken into shorter scannable paragraphs even though the post already has a blank line.
+        big = " ".join(f"Sentence {i} here." for i in range(40))  # ~600 chars, single line
+        s = big + "\n\n" + big
+        out = enforce_post_readability(s, max_chars=9000)
+        assert out.count("\n\n") > 2  # more than the original single blank line
+        # every resulting paragraph is reasonably short
+        assert all(len(p) <= 300 for p in out.split("\n\n"))
 
     def test_keeps_trailing_hashtag_line_separate(self):
         from cqc_lem.utilities.linkedin_formatter import enforce_post_readability
