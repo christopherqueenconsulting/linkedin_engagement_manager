@@ -227,3 +227,53 @@ class TestSanitizeForLinkedIn:
         assert "• Bullet one" in result
         assert "this link (https://example.com)" in result
         assert "#ai" in result
+
+
+@pytest.mark.unit
+class TestEnforcePostReadability:
+    def test_reflows_wall_of_text_into_paragraphs(self):
+        from cqc_lem.utilities.linkedin_formatter import enforce_post_readability
+        wall = " ".join(f"Sentence number {i} is here." for i in range(60))  # long, no blank lines
+        assert "\n\n" not in wall and len(wall) > 600
+        out = enforce_post_readability(wall, max_chars=5000)
+        assert out.count("\n\n") >= 3  # broke into multiple paragraphs
+
+    def test_hard_caps_length_at_sentence_boundary(self):
+        from cqc_lem.utilities.linkedin_formatter import enforce_post_readability
+        text = " ".join(f"Sentence {i}." for i in range(300))
+        out = enforce_post_readability(text, max_chars=200)
+        assert len(out) <= 200
+        assert out.rstrip().endswith(".")  # trimmed at a sentence end, not mid-word
+
+    def test_short_post_unchanged(self):
+        from cqc_lem.utilities.linkedin_formatter import enforce_post_readability
+        s = "A short and sweet post."
+        assert enforce_post_readability(s) == s
+
+    def test_already_paragraphed_post_unchanged(self):
+        from cqc_lem.utilities.linkedin_formatter import enforce_post_readability
+        s = "Hook line here.\n\n" + ("Body sentence. " * 40).strip()
+        assert enforce_post_readability(s, max_chars=5000) == s  # has blank lines → not reflowed
+
+    def test_keeps_trailing_hashtag_line_separate(self):
+        from cqc_lem.utilities.linkedin_formatter import enforce_post_readability
+        body = " ".join(f"Point {i} made here." for i in range(50))
+        text = body + "\n#ai #linkedin #ml"
+        out = enforce_post_readability(text, max_chars=5000)
+        assert out.rstrip().endswith("#ai #linkedin #ml")
+
+    def test_empty_and_none(self):
+        from cqc_lem.utilities.linkedin_formatter import enforce_post_readability
+        assert enforce_post_readability("") == ""
+        assert enforce_post_readability(None) is None
+
+
+@pytest.mark.unit
+class TestLinkedinPostFormatDirective:
+    def test_states_hook_paragraphs_and_char_cap(self):
+        from cqc_lem.utilities.linkedin_formatter import linkedin_post_format_directive
+        d = linkedin_post_format_directive(2200)
+        assert "hook" in d.lower()
+        assert "2200" in d
+        assert "blank line" in d.lower()
+        assert "markdown" in d.lower()

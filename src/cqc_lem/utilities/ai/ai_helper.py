@@ -27,7 +27,8 @@ from cqc_lem.utilities.ai.content_alignment import (
 from cqc_lem.utilities.ai.content_research import research_topic
 from cqc_lem.utilities.ai.tools import search_recent_news, search_with_perplexity
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
-from cqc_lem.utilities.linkedin_formatter import normalize_public_text, PLAIN_PUNCTUATION_DIRECTIVE
+from cqc_lem.utilities.linkedin_formatter import normalize_public_text, PLAIN_PUNCTUATION_DIRECTIVE, \
+    linkedin_post_format_directive, enforce_post_readability
 from cqc_lem.utilities.logger import myprint, log_debug, log_error, log_warning
 from cqc_lem.utilities.utils import create_folder_if_not_exists, save_video_url_to_dir
 from cqc_lem.utilities.env_constants import DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_RATIO
@@ -2641,6 +2642,11 @@ def ai_check_message_history(message_history_json: str, main_focus: str, message
     return content
 
 
+# Carousel captions are an INTRO to the slides, so keep them well under LinkedIn's 3000-char hard
+# limit; this is both the prompt target and the deterministic post-generation cap.
+_CAROUSEL_CAPTION_MAX_CHARS = 2200
+
+
 def generate_carousel_content(user_id: int, stage: str, prefs: dict = None,
                               profile_synthesis: str = None) -> tuple[str, dict]:
     """Generate structured carousel content using AI and return (post_text, carousel_dict).
@@ -2718,10 +2724,15 @@ def generate_carousel_content(user_id: int, stage: str, prefs: dict = None,
                      if (not prefs or prefs.get("use_hashtags"))
                      else "Do NOT include any hashtags.")
 
+    # Shared LinkedIn formatting/QA best practices + a hard length cap for the caption (carousels
+    # previously had NO length or formatting enforcement — one post came back as a 3400-char wall).
+    _CAROUSEL_FORMAT_DIRECTIVE = linkedin_post_format_directive(_CAROUSEL_CAPTION_MAX_CHARS)
+
     prompt = f"""You are a LinkedIn content strategist creating a visual carousel post for a {job_title} in the {industry} industry at the {stage} stage of the buyer journey.
 
 Create two things and return them as a single JSON object with these top-level keys:
-1. "post_text": A compelling 1300-2000 character LinkedIn post that introduces the carousel. Use line breaks for readability. {_hashtag_rule} Do NOT use markdown syntax — no **bold**, no *italic*, no # headers.
+1. "post_text": A compelling LinkedIn post (about 1300-2000 characters) that introduces the carousel. {_hashtag_rule}
+   In the JSON string, separate paragraphs with a real "\\n\\n" so it is scannable, not one block. {_CAROUSEL_FORMAT_DIRECTIVE}
 2. "carousel": A JSON object matching the {schema_hint}. Each slide's "title" should be 3-8 words. Each slide's "content" should be 1-3 engaging sentences (max 200 chars).
 
 Return ONLY valid JSON. No explanation, no markdown fences."""
@@ -2761,7 +2772,11 @@ Return ONLY valid JSON. No explanation, no markdown fences."""
         log_error("generate_carousel_content: LLM returned invalid JSON", exc=exc)
         parsed = {}
 
-    post_text = normalize_public_text(parsed.get("post_text", f"Explore our latest insights on {industry}."))
+    # QA guard: reflow a wall-of-text caption into scannable paragraphs and hard-cap the length,
+    # even when the model ignored the format directive (JSON mode often drops line breaks).
+    post_text = enforce_post_readability(
+        normalize_public_text(parsed.get("post_text", f"Explore our latest insights on {industry}.")),
+        max_chars=_CAROUSEL_CAPTION_MAX_CHARS)
     carousel_dict = _normalize_carousel_strings(parsed.get("carousel", {}))
     return post_text, carousel_dict
 
