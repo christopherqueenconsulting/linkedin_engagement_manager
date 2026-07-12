@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.43.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.43.1...v0.43.2) (2026-07-11)
+
+
+### Bug Fixes
+
+* **content:** enforce LinkedIn readability + length on carousel captions ([2840cf8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2840cf8238dad8f22d4540f00eaa64bbbbc2c8b8))
+* **content:** enforce LinkedIn readability + length on carousel captions ([099a5ab](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/099a5ab7fbd494be0be7112f66660e10ce800a17))
+* **content:** reflow over-long paragraphs (under-formatted posts), not just walls ([20c652a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/20c652a2b7aa30c893853ac47022890e455dea29))
+* **content:** reflow OVER-LONG paragraphs, not just total walls ([baf81e2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/baf81e25ac2eab34913d9e8a0743d8c8c5a6a4ef))
+
 ## [0.43.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.43.0...v0.43.1) (2026-07-10)
 
 
