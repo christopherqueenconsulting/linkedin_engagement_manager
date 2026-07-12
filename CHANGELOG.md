@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.44.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.43.2...v0.44.0) (2026-07-12)
+
+
+### Features
+
+* **feed:** empty-filter fallback + reach estimate for feed commenting ([f3a36b8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f3a36b8d6ca0d2d3fedfeb89f4f2a9fc2c85f86d))
+* **feed:** empty-filter fallback + reach estimate for feed commenting ([7519eba](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7519eba536cae6d7ff877e6b3d6aa32ccd82de8e))
+
 ## [0.43.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.43.1...v0.43.2) (2026-07-11)
 
 
