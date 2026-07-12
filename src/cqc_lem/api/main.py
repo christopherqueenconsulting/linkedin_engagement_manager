@@ -404,6 +404,7 @@ class EngagementPreferencesRequest(BaseModel):
     reply_check_mode: str = "event"
     reply_sweeps_per_day: int = 2
     reply_max_post_age_days: int = 2
+    feed_fallback_when_empty: bool = True
 
     @field_validator("default_video_quality")
     @classmethod
@@ -1283,6 +1284,13 @@ def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel:
         prefs["reply_inbound_address"] = reply_inbound_address(token) if token else None
     except Exception:
         prefs["reply_inbound_address"] = None
+    # Read-only: the last feed scan's reach funnel so the user can see when their targeting is too
+    # strict (posts examined -> matched their filters -> commented).
+    try:
+        from cqc_lem.app.run_automation import get_feed_funnel
+        prefs["feed_reach"] = get_feed_funnel(user_id)
+    except Exception:
+        prefs["feed_reach"] = None
     return ResponseModel(status_code=200, detail=prefs)
 
 

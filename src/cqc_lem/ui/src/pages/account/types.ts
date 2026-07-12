@@ -23,6 +23,19 @@ export type EngPrefs = {
   reply_sweeps_per_day: number
   reply_max_post_age_days: number
   reply_inbound_address?: string | null
+  feed_fallback_when_empty: boolean
+  feed_reach?: FeedReach | null
+}
+
+export type FeedReach = {
+  examined: number
+  passed_filters: number
+  matched_topics: number
+  commented: number
+  fallback_used: boolean
+  max_post_age_hours?: number
+  min_reactions?: number
+  at?: string
 }
 
 export type DmTemplate = {

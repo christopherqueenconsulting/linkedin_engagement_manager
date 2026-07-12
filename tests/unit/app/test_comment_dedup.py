@@ -23,7 +23,8 @@ def _box(text):
 
 
 def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=10,
-              author="Jane Author", is_me=False, react_returns=True, post_returns=True):
+              author="Jane Author", is_me=False, react_returns=True, post_returns=True,
+              prefs=None, matches=True):
     """Drive comment_on_feed_inline with all the SDUI/DB collaborators mocked. Returns a dict of
     the key mocks so assertions can inspect calls."""
     from cqc_lem.app import run_automation as ra
@@ -47,7 +48,7 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
 
     with ExitStack() as es:
         p = lambda name, **kw: es.enter_context(patch(f"{_RA}.{name}", **kw))
-        p("get_engagement_preferences", return_value={"max_comments_per_day": 20})
+        p("get_engagement_preferences", return_value=prefs or {"max_comments_per_day": 20})
         p("get_recent_engagers", return_value=set())
         p("count_comments_today", return_value=0)
         p("_switch_feed_to_recent")
@@ -63,7 +64,9 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
         p("_post_social_counts", return_value={"comments": 0, "reactions": 0})
         p("_literal_relevant", return_value=True)
         p("_score_feed_post", return_value=1.0)
-        p("post_matches_preferences", return_value=True)
+        p("post_matches_preferences", return_value=matches)
+        funnel_holder = {}
+        p("set_feed_funnel", side_effect=lambda uid, f: funnel_holder.update(f))
         p("claim_post_for_comment", new=claim)
         p("generate_ai_response", new=gen)
         p("post_comment_inline", new=post_inline)
@@ -78,7 +81,8 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
         posted = ra.comment_on_feed_inline(driver, wait, MagicMock(), user_id=1, max_posts=max_posts)
 
     return {"posted": posted, "claim": claim, "post_inline": post_inline, "react": react,
-            "mark": mark, "mark_reacted": mark_reacted, "release": release, "gen": gen}
+            "mark": mark, "mark_reacted": mark_reacted, "release": release, "gen": gen,
+            "funnel": funnel_holder}
 
 
 class TestFeedDedup:
@@ -213,3 +217,41 @@ class TestCommentOnPostTaskIdempotency:
         assert "already commented" in result
         claim.assert_not_called()
         gdw.assert_not_called()
+
+
+class TestFeedFunnelAndFallback:
+    def test_funnel_recorded(self):
+        r = _run_feed([_box("First post content that is long enough."),
+                       _box("Second different post content long enough.")])
+        f = r["funnel"]
+        assert f["examined"] == 2 and f["passed_filters"] == 2
+        assert f["matched_topics"] == 2 and f["commented"] == 2
+        assert f["fallback_used"] is False
+
+    def test_strict_filters_zero_matches_no_fallback_when_disabled(self):
+        # Include filters set, nothing matches, fallback OFF -> comment on nothing.
+        boxes = [_box(f"Post number {i} with enough text to qualify here.") for i in range(9)]
+        r = _run_feed(boxes, matches=False,
+                      prefs={"max_comments_per_day": 20, "include_topics": ["AI"],
+                             "feed_fallback_when_empty": False})
+        assert r["posted"] == 0
+        assert r["funnel"]["matched_topics"] == 0
+        assert r["funnel"]["fallback_used"] is False
+
+    def test_fallback_comments_when_filters_match_nothing(self):
+        # Include filters set, nothing matches, fallback ON -> after enough misses it relaxes and
+        # comments on the best feed posts anyway.
+        boxes = [_box(f"Post number {i} with enough text to qualify here.") for i in range(9)]
+        r = _run_feed(boxes, matches=False,
+                      prefs={"max_comments_per_day": 20, "include_topics": ["AI"],
+                             "feed_fallback_when_empty": True})
+        assert r["posted"] >= 1               # fallback engaged
+        assert r["funnel"]["fallback_used"] is True
+        assert r["funnel"]["matched_topics"] == 0
+
+    def test_no_include_filters_means_no_fallback_flag(self):
+        # With no include filters, everything matches; fallback is irrelevant and stays False.
+        r = _run_feed([_box("Just a normal post with sufficient length to pass.")],
+                      prefs={"max_comments_per_day": 20})
+        assert r["posted"] == 1
+        assert r["funnel"]["fallback_used"] is False

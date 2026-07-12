@@ -126,6 +126,29 @@ class TestReplyCheckConfig:
         assert by_col["reply_sweeps_per_day"] == 2          # floor
 
 
+class TestFeedFallbackPref:
+    def test_default_true(self):
+        conn, _ = _mock_conn(fetch_row=None)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_engagement_preferences
+            assert get_engagement_preferences(1)["feed_fallback_when_empty"] is True
+
+    def test_decodes_as_bool(self):
+        conn, _ = _mock_conn(fetch_row={"feed_fallback_when_empty": 0})
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_engagement_preferences
+            assert get_engagement_preferences(1)["feed_fallback_when_empty"] is False
+
+    def test_persists_as_int(self):
+        conn, cursor = _mock_conn(rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_engagement_preferences
+            update_engagement_preferences(3, {"feed_fallback_when_empty": False})
+        cols = list(__import__("cqc_lem.utilities.db", fromlist=["_ENGAGEMENT_COLS"])._ENGAGEMENT_COLS)
+        by_col = dict(zip(cols, cursor.execute.call_args[0][1][1:]))
+        assert by_col["feed_fallback_when_empty"] == 0
+
+
 class TestReplyInboundToken:
     def test_returns_existing_token(self):
         conn, cursor = _mock_conn(fetch_row=("existingtoken",))
