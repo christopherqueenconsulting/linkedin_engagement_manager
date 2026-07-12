@@ -38,7 +38,7 @@ from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile,
 from cqc_lem.utilities.linkedin.poster import share_on_linkedin, share_carousel_on_linkedin, \
     comment_on_linkedin_post, object_urn_from_post_url
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
-from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited, _redis_client
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
 from cqc_lem.utilities.logger import myprint, log_error, log_info, log_warning
 from cqc_lem.utilities.selenium_util import click_element_wait_retry, \
@@ -794,6 +794,42 @@ def _switch_feed_to_recent(driver, wait) -> None:
         log_warning("Feed recent-sort failed", exc=e, action_type="scrape")
 
 
+_FEED_FUNNEL_KEY = "linkedin:feed_funnel:{user_id}"
+_FEED_FUNNEL_TTL = 30 * 24 * 60 * 60  # keep the last scan's reach estimate for 30 days
+# Consecutive top-candidate include-misses before we relax to the fallback (comment on the best feed
+# post regardless of the include filters). Hard excludes / recency / min-reactions still apply.
+_FEED_FALLBACK_AFTER_MISSES = 6
+
+
+def set_feed_funnel(user_id: int, funnel: dict) -> None:
+    """Persist the last feed scan's reach funnel (posts examined -> matched -> commented) so the UI
+    can show the user how strict their targeting is. Best-effort; no-op without Redis."""
+    client = _redis_client()
+    if client is None:
+        return
+    try:
+        client.set(_FEED_FUNNEL_KEY.format(user_id=user_id), json.dumps(funnel), ex=_FEED_FUNNEL_TTL)
+    except Exception as e:
+        log_warning("Could not store feed funnel", exc=e, user_id=user_id, action_type="comment")
+
+
+def get_feed_funnel(user_id: int) -> "dict | None":
+    """Last feed scan's reach funnel for a user, or None if there hasn't been one recently."""
+    client = _redis_client()
+    if client is None:
+        return None
+    try:
+        raw = client.get(_FEED_FUNNEL_KEY.format(user_id=user_id))
+    except Exception:
+        return None
+    if not raw:
+        return None
+    try:
+        return json.loads(raw.decode() if isinstance(raw, (bytes, bytearray)) else raw)
+    except (ValueError, TypeError):
+        return None
+
+
 def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: int,
                            max_posts: int = 10, deadline_ts: float = None, prefs: dict = None,
                            engagers: set = None) -> int:
@@ -826,6 +862,14 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     used_comment_shapes: list = []
 
     posted, seen, scrolls = 0, set(), 0
+    # Reach funnel (surfaced to the user so they can tell when their targeting is too strict) and the
+    # empty-filter fallback. examined = posts we looked at; hard = passed excludes/recency/min-reactions;
+    # include = also matched the user's include topics/keywords/authors.
+    examined_keys, hard_keys, include_keys = set(), set(), set()
+    strict_misses, fallback_active, fallback_used = 0, False, False
+    _incl = [f for f in ((prefs.get("include_keywords") or []) + (prefs.get("include_authors") or [])
+                         + (prefs.get("include_topics") or [])) if f]
+    fallback_enabled = bool(prefs.get("feed_fallback_when_empty", True)) and bool(_incl)
     while posted < max_posts and scrolls < 15:
         if deadline_ts and time.time() >= deadline_ts:
             break
@@ -847,6 +891,7 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             key = _post_permalink_from_card(card) or _feed_post_key(author, content)
             if key in seen:
                 continue
+            examined_keys.add(key)
             # Persistent, cross-run/worker dedup: skip anything already claimed or commented
             # (commented_posts ledger), plus historical SUCCESS comment logs, plus hard excludes.
             if (has_commented_post(user_id, key) or has_user_commented_on_post_url(user_id, key)
@@ -863,14 +908,26 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
                 continue
             meta = {"author": author, "age_minutes": age, "comments": counts["comments"],
                     "reactions": counts["reactions"], "relevant": _literal_relevant(content, author, prefs)}
+            hard_keys.add(key)
             candidates.append((_score_feed_post(meta, prefs, engagers), key, card, content, author, age))
 
         if candidates:
             candidates.sort(key=lambda c: c[0], reverse=True)
             score, key, card, content, author, age = candidates[0]
             seen.add(key)  # decided on this one either way
-            # Full include check (may use the LLM topic classifier) only on the chosen post.
-            if not post_matches_preferences(content, author, prefs):
+            # Include gate (may use the LLM topic classifier) on the chosen post. If the feed keeps
+            # producing nothing that matches the user's include filters, RELAX to fallback for the rest
+            # of the run — comment on the best feed post regardless of include (LinkedIn already curates
+            # the feed to relevant content). Hard excludes / recency / min-reactions still applied.
+            if not fallback_active and fallback_enabled and strict_misses >= _FEED_FALLBACK_AFTER_MISSES:
+                fallback_active = True
+                myprint("Feed targeting matched nothing — falling back to top feed posts for this run")
+            if fallback_active:
+                fallback_used = True
+            elif post_matches_preferences(content, author, prefs):
+                include_keys.add(key)
+            else:
+                strict_misses += 1
                 continue
             # Atomically claim the post BEFORE spending an LLM call or commenting. If a prior/
             # concurrent run already holds it, we lose the race here and move on — at most one
@@ -913,6 +970,19 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
         driver.execute_script("window.scrollBy(0, 1200);")
         scrolls += 1
         time.sleep(random.uniform(2.5, 4))
+
+    set_feed_funnel(user_id, {
+        "examined": len(examined_keys),
+        "passed_filters": len(hard_keys),      # cleared excludes + recency + min-reactions
+        "matched_topics": len(include_keys),   # also matched include topics/keywords/authors
+        "commented": posted,
+        "fallback_used": fallback_used,
+        "max_post_age_hours": prefs.get("max_post_age_hours") or 24,
+        "min_reactions": min_reactions,
+        "at": datetime.now().isoformat(),
+    })
+    myprint(f"Feed scan: examined {len(examined_keys)}, passed filters {len(hard_keys)}, "
+            f"matched topics {len(include_keys)}, commented {posted}, fallback={fallback_used}")
     return posted
 
 

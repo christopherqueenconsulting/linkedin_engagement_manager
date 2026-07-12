@@ -209,6 +209,30 @@ export default function EngagementSettingsCard() {
             <p className="text-xs text-gray-400 mt-1">Premium spends video credits per auto-generated video; falls back to standard when you have none.</p>
           </div>
         </div>
+        <div className="border-t border-gray-100 pt-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="pr-4">
+              <p className="text-sm font-medium text-gray-700">Comment anyway if my filters match nothing</p>
+              <p className="text-xs text-gray-400">If none of the posts in your feed match your include topics/keywords, comment on the best feed posts anyway (excludes, recency and min-reactions still apply). LinkedIn already curates your feed to relevant content.</p>
+            </div>
+            <Toggle on={engPrefs.feed_fallback_when_empty} onClick={() => setEng({ feed_fallback_when_empty: !engPrefs.feed_fallback_when_empty })} />
+          </div>
+          {engPrefs.feed_reach && (
+            <div className="rounded-lg bg-gray-50 border border-gray-100 p-3 text-xs text-gray-600">
+              <p className="font-medium text-gray-700 mb-1">Last feed scan reach</p>
+              <p>
+                Examined <span className="font-semibold">{engPrefs.feed_reach.examined}</span> posts →{' '}
+                <span className="font-semibold">{engPrefs.feed_reach.passed_filters}</span> passed your recency / min-reactions filters →{' '}
+                <span className="font-semibold">{engPrefs.feed_reach.matched_topics}</span> matched your topics/keywords → commented on{' '}
+                <span className="font-semibold">{engPrefs.feed_reach.commented}</span>
+                {engPrefs.feed_reach.fallback_used ? ' (used fallback)' : ''}.
+              </p>
+              {engPrefs.feed_reach.examined > 0 && engPrefs.feed_reach.matched_topics === 0 && (
+                <p className="mt-1 text-amber-600">Your include filters matched nothing in the last scan — consider loosening topics/keywords, lowering min-reactions, or widening max post age.</p>
+              )}
+            </div>
+          )}
+        </div>
         <div className="flex items-center justify-between">
           <p className="text-sm font-medium text-gray-700">Reply to comments on my posts</p>
           <Toggle on={engPrefs.reply_to_own_comments} onClick={() => setEng({ reply_to_own_comments: !engPrefs.reply_to_own_comments })} />

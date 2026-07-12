@@ -178,3 +178,24 @@ class TestEngagementPersistenceRegression:
              / "compose/local/database/migrations/V52__widen_engagement_tone.sql")
         sql = p.read_text().lower()
         assert "tone" in sql and "varchar(255)" in sql
+
+
+class TestFeedFallbackAndReach:
+    def test_feed_fallback_passthrough(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/engagement-preferences",
+                              json={"session_token": _SESSION, "feed_fallback_when_empty": False})
+        assert resp.status_code == 200
+        assert upd.call_args[0][1]["feed_fallback_when_empty"] is False
+
+    def test_get_includes_feed_reach(self, client):
+        funnel = {"examined": 40, "passed_filters": 12, "matched_topics": 0,
+                  "commented": 3, "fallback_used": True}
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_engagement_preferences", return_value={}), \
+             patch("cqc_lem.api.main.get_or_create_reply_inbound_token", return_value=None), \
+             patch("cqc_lem.app.run_automation.get_feed_funnel", return_value=funnel):
+            resp = client.get(f"/api/user/engagement-preferences?session_token={_SESSION}")
+        assert resp.status_code == 200
+        assert resp.json()["detail"]["feed_reach"] == funnel
