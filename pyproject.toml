@@ -13,7 +13,7 @@ python = ">=3.12,<4.0"
 
 # --- Web / API ---
 fastapi = ">=0.115.4,<0.140.0"
-uvicorn = ">=0.32,<0.51"
+uvicorn = ">=0.32,<0.52"
 pydantic-extra-types = "^2.10.0"
 python-dotenv = "^1.0"
 python-multipart = ">=0.0.9,<1.0"

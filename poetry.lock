@@ -432,18 +432,18 @@ files = [
 
 [[package]]
 name = "boto3"
-version = "1.43.40"
+version = "1.43.46"
 description = "The AWS SDK for Python"
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "boto3-1.43.40-py3-none-any.whl", hash = "sha256:5fa80de4b4b7bab383dd8c563e235d51fcc7df4502662af56f0a2472c3c15651"},
-    {file = "boto3-1.43.40.tar.gz", hash = "sha256:a7108b9ce25b8f92d1ce96b9e35090794d5c58b219ff2f6a7a65c8986a4ed6f4"},
+    {file = "boto3-1.43.46-py3-none-any.whl", hash = "sha256:69453e2c1bcb9fd9806527ab99950cacfc2826cb0dce9a3a0414d19270c06c3c"},
+    {file = "boto3-1.43.46.tar.gz", hash = "sha256:66c0d943b049a46a492ec4ec2ebe73c930b1842c7137bee83aad6d93e95d4d96"},
 ]
 
 [package.dependencies]
-botocore = ">=1.43.40,<1.44.0"
+botocore = ">=1.43.46,<1.44.0"
 jmespath = ">=0.7.1,<2.0.0"
 s3transfer = ">=0.19.0,<0.20.0"
 
@@ -452,14 +452,14 @@ crt = ["botocore[crt] (>=1.21.0,<2.0a0)"]
 
 [[package]]
 name = "botocore"
-version = "1.43.40"
+version = "1.43.46"
 description = "Low-level, data-driven core of boto 3."
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "botocore-1.43.40-py3-none-any.whl", hash = "sha256:0bc9d352267c9e48415c5d7bb61ff05c3f193eac2fc7e69cfd229a05fbab67d6"},
-    {file = "botocore-1.43.40.tar.gz", hash = "sha256:2085a4314cfd2c8bc1d08ab8039f76c92e99278db0d2a0e2437010526d5d5d70"},
+    {file = "botocore-1.43.46-py3-none-any.whl", hash = "sha256:cb673891e623ae6e6a1bf24d94ef169504f3eb02584adb5d5bee2f6aae819b60"},
+    {file = "botocore-1.43.46.tar.gz", hash = "sha256:59f2e1ac3cdc66d191cae91c0804bc41847ce817dc8147cf43eaada8f76a5533"},
 ]
 
 [package.dependencies]
@@ -567,20 +567,20 @@ ujson = ["ujson (>=5.10.0)"]
 
 [[package]]
 name = "cdk-ecr-deployment"
-version = "4.2.26"
+version = "4.2.30"
 description = "CDK construct to deploy docker image to Amazon ECR"
 optional = false
 python-versions = ">=3.10"
 groups = ["dev"]
 files = [
-    {file = "cdk_ecr_deployment-4.2.26-py3-none-any.whl", hash = "sha256:ba67c42d2757ab54ccd04f6d874dca9197a14433d2fc60381c5ca20416c6f1e2"},
-    {file = "cdk_ecr_deployment-4.2.26.tar.gz", hash = "sha256:beef6d6d0de922ce173ccb848f1e6bcf1a34f58b95b242e639ea5282488446ee"},
+    {file = "cdk_ecr_deployment-4.2.30-py3-none-any.whl", hash = "sha256:4f685baf1aaa8a6be1fcbfbe91d6d5a70bf22d57531066def0b12e3290bb32b0"},
+    {file = "cdk_ecr_deployment-4.2.30.tar.gz", hash = "sha256:e9b1f8aea9aeae5c46309c936eb1950c640a6e54862f43d10d4d99d1ef320738"},
 ]
 
 [package.dependencies]
 aws-cdk-lib = ">=2.80.0,<3.0.0"
 constructs = ">=10.5.1,<11.0.0"
-jsii = ">=1.137.0,<2.0.0"
+jsii = ">=1.138.0,<2.0.0"
 publication = ">=0.0.3"
 
 [[package]]
@@ -1299,7 +1299,7 @@ version = "0.7.1"
 description = "XML bomb protection for Python stdlib modules"
 optional = false
 python-versions = ">=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*, !=3.4.*"
-groups = ["dev"]
+groups = ["main", "dev"]
 files = [
     {file = "defusedxml-0.7.1-py2.py3-none-any.whl", hash = "sha256:a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61"},
     {file = "defusedxml-0.7.1.tar.gz", hash = "sha256:1bb3032db185915b62d7c6209c5a8792be6a32ab2fedacc84e01b52c51aa3e69"},
@@ -3279,18 +3279,19 @@ files = [
 
 [[package]]
 name = "nltk"
-version = "3.9.4"
+version = "3.10.0"
 description = "Natural Language Toolkit"
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "nltk-3.9.4-py3-none-any.whl", hash = "sha256:f2fa301c3a12718ce4a0e9305c5675299da5ad9e26068218b69d692fda84828f"},
-    {file = "nltk-3.9.4.tar.gz", hash = "sha256:ed03bc098a40481310320808b2db712d95d13ca65b27372f8a403949c8b523d0"},
+    {file = "nltk-3.10.0-py3-none-any.whl", hash = "sha256:54ff84d4916d3ef127e8953bee0023f6a6b320b75d634a19e06ef056d3d244bf"},
+    {file = "nltk-3.10.0.tar.gz", hash = "sha256:4fbac1d98203cbcd1b5d94a2877fb822300072d80604a5e7fae49d2c5f84e8c1"},
 ]
 
 [package.dependencies]
 click = "*"
+defusedxml = "*"
 joblib = "*"
 regex = ">=2021.8.3"
 tqdm = "*"
@@ -3430,14 +3431,14 @@ files = [
 
 [[package]]
 name = "openai"
-version = "2.44.0"
+version = "2.45.0"
 description = "The official Python library for the openai API"
 optional = false
 python-versions = ">=3.9"
 groups = ["main"]
 files = [
-    {file = "openai-2.44.0-py3-none-any.whl", hash = "sha256:0a2a3ab2e29aeda368700f662ff9ba0f9df17ba4c54577a64e08b8115a3cc0ad"},
-    {file = "openai-2.44.0.tar.gz", hash = "sha256:68a5a5ffad82b8ff7d451c437529fb64f7c3b8123aaf0c021966a882d9e3947d"},
+    {file = "openai-2.45.0-py3-none-any.whl", hash = "sha256:5df105f5f8c9b711fcb9d06d2d3888cebc82506db216484c14a4e53cdf651777"},
+    {file = "openai-2.45.0.tar.gz", hash = "sha256:10d34ca9c5643bce775852fddbfc172505cb1d4de1ccd101696c3ecff358765d"},
 ]
 
 [package.dependencies]
@@ -4023,14 +4024,14 @@ testing = ["coverage", "pytest", "pytest-benchmark"]
 
 [[package]]
 name = "posthog"
-version = "7.21.3"
+version = "7.22.2"
 description = "Integrate PostHog into any python application."
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "posthog-7.21.3-py3-none-any.whl", hash = "sha256:eb6ad7e1704c0797e9cbfe0518bfb40bc3a56e3f140fd565d2a1d854c9615710"},
-    {file = "posthog-7.21.3.tar.gz", hash = "sha256:2192497210bb1291587c51bdd6edc475043aebe03072d718431e710360fcd329"},
+    {file = "posthog-7.22.2-py3-none-any.whl", hash = "sha256:8b1cf21ace6f3a077841a7a900fcfd25c2986b52c2f68eaa98710dcea9f54fd6"},
+    {file = "posthog-7.22.2.tar.gz", hash = "sha256:2e7bffa28b0032622f4661be6600f2555aff34da0f2a1cd62f72ec490b574519"},
 ]
 
 [package.dependencies]
@@ -4043,7 +4044,8 @@ typing-extensions = ">=4.2.0"
 dev = ["django-stubs", "griffe", "lxml", "mypy", "mypy-baseline", "packaging", "pre-commit", "pydantic (>=2.12.0)", "ruff", "setuptools", "tomli", "tomli_w", "twine", "types-requests", "types-setuptools", "wheel"]
 langchain = ["langchain (>=0.2.0)"]
 otel = ["opentelemetry-exporter-otlp-proto-http (>=1.20.0)", "opentelemetry-sdk (>=1.20.0)"]
-test = ["anthropic (>=0.72)", "claude-agent-sdk", "coverage", "django (>=5.2.8,<6.0)", "fastmcp (>=2.0)", "freezegun (==1.5.1)", "google-genai", "langchain-anthropic (>=1.0)", "langchain-community (>=0.4)", "langchain-core (>=1.0)", "langchain-openai (>=1.0)", "langgraph (>=1.0)", "langgraph-checkpoint (>=4.1.1)", "mcp (>=1.26.0)", "openai (>=2.0)", "opentelemetry-exporter-otlp-proto-http (>=1.20.0)", "opentelemetry-sdk (>=1.20.0)", "parameterized (>=0.8.1)", "pydantic (>=2.12.0)", "pytest", "pytest-asyncio", "pytest-bdd (>=8.1.0)", "pytest-timeout", "python-dateutil (>=2.9.0.post0)", "tiktoken (>=0.12.0)", "tzdata"]
+test = ["anthropic (>=0.72)", "claude-agent-sdk", "coverage", "django (>=5.2.8,<6.0)", "fastmcp (>=2.0)", "freezegun (==1.5.1)", "google-genai", "langchain-anthropic (>=1.0)", "langchain-community (>=0.4)", "langchain-core (>=1.0)", "langchain-openai (>=1.0)", "langgraph (>=1.0)", "langgraph-checkpoint (>=4.1.1)", "mcp (>=1.26.0)", "openai (>=2.0)", "opentelemetry-exporter-otlp-proto-http (>=1.20.0)", "opentelemetry-sdk (>=1.20.0)", "parameterized (>=0.8.1)", "pydantic (>=2.12.0)", "pytest", "pytest-asyncio", "pytest-bdd (>=8.1.0)", "pytest-timeout", "python-dateutil (>=2.9.0.post0)", "tiktoken (>=0.12.0)", "tzdata", "zstandard (>=0.23.0)"]
+zstd = ["zstandard (>=0.23.0)"]
 
 [[package]]
 name = "prometheus-client"
@@ -5521,42 +5523,42 @@ files = [
 
 [[package]]
 name = "ruff"
-version = "0.15.20"
+version = "0.15.21"
 description = "An extremely fast Python linter and code formatter, written in Rust."
 optional = false
 python-versions = ">=3.7"
 groups = ["lint"]
 files = [
-    {file = "ruff-0.15.20-py3-none-linux_armv6l.whl", hash = "sha256:00e188c53e499c3c1637f73c91dcf2fb56d576cab76ce1be50a27c4e80e37078"},
-    {file = "ruff-0.15.20-py3-none-macosx_10_12_x86_64.whl", hash = "sha256:9ebd1fd9b9c95fc0bd7b2761aebec1f030013d2e193a2901b224af68fe47251b"},
-    {file = "ruff-0.15.20-py3-none-macosx_11_0_arm64.whl", hash = "sha256:c5b16cdd67ca108185cd36dce98c576350c03b1660a751de725fb049193a0632"},
-    {file = "ruff-0.15.20-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:3413bb3c3d2ca6a8208f1f4809cd2dca3c6de6d0b491c0e70847672bde6e6efd"},
-    {file = "ruff-0.15.20-py3-none-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:bd7ec42b3bb3da066488db093308a69c4ac5ee6d2af333a86ba6e2eb2e7dd44b"},
-    {file = "ruff-0.15.20-py3-none-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:e1a36ad0eb77fba9aabfb69ede54de6f376d04ac18ebea022847046d340a8267"},
-    {file = "ruff-0.15.20-py3-none-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl", hash = "sha256:b6df3b1e4610432f0386dba04d853b5f08cbbc903410c6fcc02f620f05aff53c"},
-    {file = "ruff-0.15.20-py3-none-manylinux_2_17_s390x.manylinux2014_s390x.whl", hash = "sha256:e89f198a1ea6ef0d727c1cf16088bc91a6cb0ab947dedc966715691647186eae"},
-    {file = "ruff-0.15.20-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:309809086c2acb67624950a3c8133e80f32d0d3e27106c0cd60ff26657c9f24b"},
-    {file = "ruff-0.15.20-py3-none-manylinux_2_31_riscv64.whl", hash = "sha256:2d2374caa2f2c2f9e2b7da0a50802cfb8b79f55a9b5e49379f564544fbf56487"},
-    {file = "ruff-0.15.20-py3-none-musllinux_1_2_aarch64.whl", hash = "sha256:a1ed17b65293e0c2f22fc387bc13198a5de94bf4429589b0ff6946b0feaf21a3"},
-    {file = "ruff-0.15.20-py3-none-musllinux_1_2_armv7l.whl", hash = "sha256:f701305e66b38ea6c91882490eb73459796808e4c6362a1b765255e0cdcd4053"},
-    {file = "ruff-0.15.20-py3-none-musllinux_1_2_i686.whl", hash = "sha256:5b9c0c367ad8e5d0d5b5b8537864c469a0a0e55417aadfbeca41fa61333be9f4"},
-    {file = "ruff-0.15.20-py3-none-musllinux_1_2_x86_64.whl", hash = "sha256:01cc00dd58f0df339d0e902219dd53990ea99996a0344e5d9cc8d45d5307e460"},
-    {file = "ruff-0.15.20-py3-none-win32.whl", hash = "sha256:ed65ef510e43a137207e0f01cfcf998aeddb1aeeda5c9d35023e910284d7cf21"},
-    {file = "ruff-0.15.20-py3-none-win_amd64.whl", hash = "sha256:a525c81c70fb0380344dd1d8745d8cc1c890b7fc94a58d5a07bd8eb9557b8415"},
-    {file = "ruff-0.15.20-py3-none-win_arm64.whl", hash = "sha256:2f5b2a6d614e8700388806a14996c40fab2c47b819ef57d790a34878858ed9ca"},
-    {file = "ruff-0.15.20.tar.gz", hash = "sha256:1416eb04349192646b54de98f146c4f59afe37d0decfc02c3cbbf396f3a28566"},
+    {file = "ruff-0.15.21-py3-none-linux_armv6l.whl", hash = "sha256:63ea0e965e5d73c90e95b2434beeafc70820536717f561b32ab6e777cb9bdf5d"},
+    {file = "ruff-0.15.21-py3-none-macosx_10_12_x86_64.whl", hash = "sha256:0f212c5d7d54c01bbfe6dcab02b724a39300f3e34ed7acbe995ccb320a2c58bd"},
+    {file = "ruff-0.15.21-py3-none-macosx_11_0_arm64.whl", hash = "sha256:e6312e41bc96791299614995ea3a977c5857c3b5662b1ecef6755b02b87cb646"},
+    {file = "ruff-0.15.21-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:01d65b4831c6b2a4ba8ee6faa84049d44d982b7a706e622c4094c509e51673be"},
+    {file = "ruff-0.15.21-py3-none-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:2c5a913a589120ce67933d5d05fd6ddbcc2481c6a054980ee767f7414c72b4fd"},
+    {file = "ruff-0.15.21-py3-none-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:5ef04b681d02ad4dc9620f00f83ac5c22f652d0e9a9cfe431d219b16ad5ccc41"},
+    {file = "ruff-0.15.21-py3-none-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl", hash = "sha256:16d090c0740916594157e75b80d666eab8e78083b39b3b0e1d698f4670a17b86"},
+    {file = "ruff-0.15.21-py3-none-manylinux_2_17_s390x.manylinux2014_s390x.whl", hash = "sha256:3a10e74757dd65004d779b73e2f3c5210156d9980b41224d50d2ebcf1db51e67"},
+    {file = "ruff-0.15.21-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:bab0905d2f29e0d9fbc3c373ed23db0095edaa3f71f1f4f519ec15134d9e85c8"},
+    {file = "ruff-0.15.21-py3-none-manylinux_2_31_riscv64.whl", hash = "sha256:00eca240af5789fec6fe7df74c088cc1f9644ed83027113468efba7c92b94075"},
+    {file = "ruff-0.15.21-py3-none-musllinux_1_2_aarch64.whl", hash = "sha256:262ab31557a75141325e32d3357f3597645a7f084e732b6b054dde428ecd9341"},
+    {file = "ruff-0.15.21-py3-none-musllinux_1_2_armv7l.whl", hash = "sha256:659c4e7a4212f83306045ec7c5e5a356d16d9a6ef4ae0c7a4d872914fc655d9d"},
+    {file = "ruff-0.15.21-py3-none-musllinux_1_2_i686.whl", hash = "sha256:9e866eab611a5f959d36df2d10e446973a3610bc42b0c15b31dc27977d59c233"},
+    {file = "ruff-0.15.21-py3-none-musllinux_1_2_x86_64.whl", hash = "sha256:e89bc93c0d3803ba870b55c29671bad9dc6d94bb1eb181b056b52eb05b52854f"},
+    {file = "ruff-0.15.21-py3-none-win32.whl", hash = "sha256:01f8d5be84823c172b389e123174f781f9daf86d6c58719d603f941932195cdd"},
+    {file = "ruff-0.15.21-py3-none-win_amd64.whl", hash = "sha256:d4b8d9a2f0f12b816b50447f6eccb9f4bb01a6b82c86b50fb3b5354b458dc6d3"},
+    {file = "ruff-0.15.21-py3-none-win_arm64.whl", hash = "sha256:6e83115d4b9377c1cbc13abf0e051f069fab0ef815ea0504a8a008cee24dd0a8"},
+    {file = "ruff-0.15.21.tar.gz", hash = "sha256:d0cfc841c572283c36548f82664a54ce6565567f1b0d5b4cf2caac693d8b7500"},
 ]
 
 [[package]]
 name = "runwayml"
-version = "5.4.0"
+version = "5.9.0"
 description = "The official Python library for the runwayml API"
 optional = false
 python-versions = ">=3.9"
 groups = ["main"]
 files = [
-    {file = "runwayml-5.4.0-py3-none-any.whl", hash = "sha256:71cd4c7d729e16f9cd62c78c6f5e5cba7ef61d19f83a5a0b014ccd4826727b75"},
-    {file = "runwayml-5.4.0.tar.gz", hash = "sha256:1dda52dec865ae42fb70ee2763dbbdca837cc808d6a56d0a781d6804b24763b2"},
+    {file = "runwayml-5.9.0-py3-none-any.whl", hash = "sha256:d9575aa2e2ce8de0b352981f514524fb0d09a6c88fe4d099244031061e3c1a97"},
+    {file = "runwayml-5.9.0.tar.gz", hash = "sha256:1752f71eeb7ff1edc2b0b8fade6c66d37e5fd80e1bf2e151311cb5270e9fb55d"},
 ]
 
 [package.dependencies]
@@ -5590,14 +5592,14 @@ crt = ["botocore[crt] (>=1.37.4,<2.0a0)"]
 
 [[package]]
 name = "selenium"
-version = "4.45.0"
+version = "4.46.0"
 description = "Official Python bindings for Selenium WebDriver"
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "selenium-4.45.0-py3-none-any.whl", hash = "sha256:1fd9d0dc08192b2f8100e264ed720f83b05d2dd3a7feff673df04e0c7580df4b"},
-    {file = "selenium-4.45.0.tar.gz", hash = "sha256:563f0c4102f112df1cda30d46ce6d177b2e4a7a3d4b0756902d5dc84d3a8a365"},
+    {file = "selenium-4.46.0-py3-none-any.whl", hash = "sha256:f03e864770a21ab32009961c9d015cb2c6275eba45c926c272e02d90af423aad"},
+    {file = "selenium-4.46.0.tar.gz", hash = "sha256:54f7e1a4df5f7508ac8c38ce2ea584db1b27083dd79962b22524219219df5cbe"},
 ]
 
 [package.dependencies]
@@ -5786,14 +5788,14 @@ full = ["httpx (>=0.27.0,<0.29.0)", "httpx2 (>=2.0.0)", "itsdangerous", "jinja2"
 
 [[package]]
 name = "streamlit"
-version = "1.58.0"
+version = "1.59.2"
 description = "A faster way to build and share data apps"
 optional = false
 python-versions = ">=3.10"
 groups = ["streamlit"]
 files = [
-    {file = "streamlit-1.58.0-py3-none-any.whl", hash = "sha256:4ca8a7afc5bd16a5f176ccf4be1e34e8121cad0240becd127fb58a103ea3178d"},
-    {file = "streamlit-1.58.0.tar.gz", hash = "sha256:78a22e7085b053af7ce544442bf4b670771e68c509ba1bdaa056ba0708f49c3d"},
+    {file = "streamlit-1.59.2-py3-none-any.whl", hash = "sha256:5014cb4f0064bd16c58fe334cb0d3c4b7e2be3d1ce4c02202c07114a33576dab"},
+    {file = "streamlit-1.59.2.tar.gz", hash = "sha256:8fcb35df152868d33eec7ad2d89e276499a5351fb861eb1752b76476be7eb582"},
 ]
 
 [package.dependencies]
@@ -5810,7 +5812,7 @@ packaging = ">=20"
 pandas = ">=1.4.0,<4"
 pillow = ">=7.1.0,<13"
 protobuf = ">=3.20,<8"
-pyarrow = ">=7.0"
+pyarrow = ">=7.0,<25"
 pydeck = ">=0.8.0b4,<1"
 python-multipart = ">=0.0.10"
 requests = ">=2.27,<3"
@@ -5824,7 +5826,7 @@ websockets = ">=12.0.0"
 
 [package.extras]
 all = ["rich (>=11.0.0)", "streamlit[auth,charts,pdf,performance,snowflake,sql]"]
-auth = ["Authlib (>=1.3.2)"]
+auth = ["Authlib (>=1.3.2)", "httpx (>=0.24.1)"]
 charts = ["graphviz (>=0.19.0)", "matplotlib (>=3.0.0)", "orjson (>=3.5.0)", "plotly (>=4.0.0)"]
 pdf = ["streamlit-pdf (>=1.0.0)"]
 performance = ["orjson (>=3.5.0)", "uvloop (>=0.15.2) ; sys_platform != \"win32\" and sys_platform != \"cygwin\" and platform_python_implementation != \"PyPy\""]
@@ -5904,14 +5906,14 @@ async = ["httpx"]
 
 [[package]]
 name = "syrupy"
-version = "5.4.0"
+version = "5.5.3"
 description = "Pytest Snapshot Test Utility"
 optional = false
 python-versions = ">=3.10"
 groups = ["test"]
 files = [
-    {file = "syrupy-5.4.0-py3-none-any.whl", hash = "sha256:3079017f0c6d3c1b293b57ad2af15cc7851d8eceba922896bdb3bc4834df4ce8"},
-    {file = "syrupy-5.4.0.tar.gz", hash = "sha256:cc166e6331c735b7acc93074f9b171dd1b130444e944b185aa5123767b49b76f"},
+    {file = "syrupy-5.5.3-py3-none-any.whl", hash = "sha256:0b260a0c9dad55e1fb83818973dc36fbc1aea3fd5381592f442a986686c4171a"},
+    {file = "syrupy-5.5.3.tar.gz", hash = "sha256:fa21e4ae77c89ec5abfca513338d8a7eb916da6618ca0f8db301476e0768e57a"},
 ]
 
 [package.dependencies]
@@ -5969,16 +5971,16 @@ files = [
 
 [[package]]
 name = "timezonefinder"
-version = "8.2.4"
+version = "8.2.5"
 description = "python package for finding the timezone of any point on earth (coordinates) offline"
 optional = false
 python-versions = "<4,>=3.11"
 groups = ["main"]
 files = [
-    {file = "timezonefinder-8.2.4-cp311-abi3-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:c824271053f0e3ad0700a2c504d609317c8c288655d8e48e1f382d0da094e94c"},
-    {file = "timezonefinder-8.2.4-cp311-abi3-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:97e9336391be6e10ca85f2ccdd36491c2aa2611e5265561de0f2e3b1652c2a68"},
-    {file = "timezonefinder-8.2.4-cp311-abi3-musllinux_1_1_x86_64.whl", hash = "sha256:54f3a8cae6715bf2f6a4c1a31189dc709d2fbabc5671147d5cb461455d6c6f39"},
-    {file = "timezonefinder-8.2.4.tar.gz", hash = "sha256:d80fae37adf1497729cc3e69826c22f3b2fec16db07932bf389b6ae545400b42"},
+    {file = "timezonefinder-8.2.5-cp311-abi3-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:447fd33a39d3ae60a0b7ca2e2b9b3538b941e434a3673300659aa79996a0ae9c"},
+    {file = "timezonefinder-8.2.5-cp311-abi3-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:976230555eb9943f3651fa00fe587854a5c1b6d0aa9c7c714296d0934dccf406"},
+    {file = "timezonefinder-8.2.5-cp311-abi3-musllinux_1_1_x86_64.whl", hash = "sha256:b588e86dbe9a4487f43ce114b8ff0c488a84755a09db4fc67d3f04dacbcfdd77"},
+    {file = "timezonefinder-8.2.5.tar.gz", hash = "sha256:cca1aebf11c8034f0fe4c442fc068232dc2f355038cf61ffa67653caf90ae3e9"},
 ]
 
 [package.dependencies]
@@ -5988,7 +5990,7 @@ h3 = ">=4"
 numpy = ">=2"
 
 [package.extras]
-numba = ["numba (>=0.60,<1)"]
+numba = ["numba (>=0.60,<1)", "numpy (<2.4)"]
 pytz = ["pytz (>=2022.7.1)"]
 
 [[package]]
@@ -6251,14 +6253,14 @@ zstd = ["backports-zstd (>=1.0.0) ; python_version < \"3.14\""]
 
 [[package]]
 name = "uvicorn"
-version = "0.50.1"
+version = "0.51.0"
 description = "The lightning-fast ASGI server."
 optional = false
 python-versions = ">=3.10"
 groups = ["main", "mcp", "streamlit"]
 files = [
-    {file = "uvicorn-0.50.1-py3-none-any.whl", hash = "sha256:8139bce59602f55d497c9ed77af3117b0b5fa033e3e887193fa00a5968c38c57"},
-    {file = "uvicorn-0.50.1.tar.gz", hash = "sha256:ccb3061887829fd8471cfa6fc65b2594689342ee00792e5d257d34871755b09f"},
+    {file = "uvicorn-0.51.0-py3-none-any.whl", hash = "sha256:5d38af6cd620f2ae3849fb44fd4879e0890aa1febe8d47eb355fb45d93fe6a5b"},
+    {file = "uvicorn-0.51.0.tar.gz", hash = "sha256:f6f4b69b657c312f516dd2d268ab9ae6f254b11e4bac504f37b2ab58b24dd0b0"},
 ]
 markers = {mcp = "sys_platform != \"emscripten\""}
 
@@ -6267,7 +6269,7 @@ click = ">=7.0"
 h11 = ">=0.8"
 
 [package.extras]
-standard = ["colorama (>=0.4) ; sys_platform == \"win32\"", "httptools (>=0.8.0)", "python-dotenv (>=0.13)", "pyyaml (>=5.1)", "uvloop (>=0.15.1) ; sys_platform != \"win32\" and sys_platform != \"cygwin\" and platform_python_implementation != \"PyPy\"", "watchfiles (>=0.20)", "websockets (>=11.0)"]
+standard = ["httptools (>=0.8.0)", "python-dotenv (>=0.13)", "pyyaml (>=5.1)", "uvloop (>=0.15.1) ; sys_platform != \"win32\" and sys_platform != \"cygwin\" and platform_python_implementation != \"PyPy\"", "watchfiles (>=0.20)", "websockets (>=13.0)"]
 
 [[package]]
 name = "vine"
@@ -6635,4 +6637,4 @@ type = ["pytest-mypy (>=1.0.1) ; platform_python_implementation != \"PyPy\""]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<4.0"
-content-hash = "97ae2ed9d579e8f823860ed46277b42f1a77f94ceda6579d7c8843bafebe40ce"
+content-hash = "735d07b924a070d612b0e2ad16c240ef08ecf407644740baaad6ac3595e80ef5"
