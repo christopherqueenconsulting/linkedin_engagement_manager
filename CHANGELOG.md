@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.45.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.45.0...v0.45.1) (2026-07-13)
+
+
+### Bug Fixes
+
+* **replies:** route reply+ mail from the single SendGrid inbound URL (PIN endpoint) ([75eaea0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/75eaea03e92f8ae3a51d4c6ef6157b615c6eeeaa))
+* **replies:** route reply+ mail from the single SendGrid inbound URL (PIN endpoint) ([1433088](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1433088813990d6df2fa3938530bd7b5d1635050))
+
 ## [0.45.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.44.0...v0.45.0) (2026-07-13)
 
 
