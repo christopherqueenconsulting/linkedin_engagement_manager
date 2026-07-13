@@ -448,3 +448,43 @@ class TestVerificationPinInbound:
         # Under the public prefix — must not 401/403 even with no auth header.
         resp = client.post(self.BASE, data={"to": "x", "text": "y"})
         assert resp.status_code == 200
+
+
+class TestGmailForwardConfirmationStorage:
+    _RL = "cqc_lem.utilities.linkedin.rate_limit._redis_client"
+
+    def test_get_returns_stored(self):
+        import json
+        from unittest.mock import MagicMock
+        redis = MagicMock(); redis.get.return_value = json.dumps({"code": "1234", "confirmed": True})
+        with patch(self._RL, return_value=redis):
+            from cqc_lem.api.main import get_gmail_forward_confirmation
+            assert get_gmail_forward_confirmation(7) == {"code": "1234", "confirmed": True}
+
+    def test_get_none_when_absent(self):
+        from unittest.mock import MagicMock
+        redis = MagicMock(); redis.get.return_value = None
+        with patch(self._RL, return_value=redis):
+            from cqc_lem.api.main import get_gmail_forward_confirmation
+            assert get_gmail_forward_confirmation(7) is None
+
+    def test_get_none_without_redis(self):
+        with patch(self._RL, return_value=None):
+            from cqc_lem.api.main import get_gmail_forward_confirmation
+            assert get_gmail_forward_confirmation(7) is None
+
+    def test_confirmation_stores_status_in_redis(self, client):
+        from unittest.mock import MagicMock
+        redis = MagicMock()
+        got = type("R", (), {"status_code": 200})()
+        body = "confirm the request: https://mail.google.com/mail/vf-abc\nConfirmation code: 999888777"
+        with patch("cqc_lem.utilities.db.get_user_id_by_reply_token", return_value=7), \
+             patch("cqc_lem.api.main.requests.get", return_value=got), \
+             patch(self._RL, return_value=redis):
+            resp = client.post("/api/linkedin/comment-notification/inbound", data={
+                "to": "reply+tok9@parse.example.com",
+                "from": "forwarding-noreply@google.com",
+                "subject": "Gmail Forwarding Confirmation", "text": body})
+        assert resp.json()["detail"] == "confirmed"
+        redis.set.assert_called_once()
+        assert redis.set.call_args.args[0] == "linkedin:gmail_forward_confirm:7"
