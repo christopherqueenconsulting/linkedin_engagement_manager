@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.45.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.44.0...v0.45.0) (2026-07-13)
+
+
+### Features
+
+* **replies:** auto-confirm Gmail forwarding to the reply address ([03e0a97](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/03e0a97aa7ec35537d3c4bb3ec1401c0bd3200fe))
+* **replies:** auto-confirm Gmail forwarding to the reply address ([7d3442d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7d3442dd2e96caab996b51b19b83c334ef3ea7cb))
+
 ## [0.44.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.43.2...v0.44.0) (2026-07-12)
 
 
