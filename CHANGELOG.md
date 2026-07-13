@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.45.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.45.2...v0.45.3) (2026-07-13)
+
+
+### Bug Fixes
+
+* **replies:** loop-safety guards on the reply sweep ([fcfca89](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/fcfca89d3d3268f46487b8dfe52977e38676343c))
+* **replies:** loop-safety guards on the reply sweep (event-driven replies on own posts) ([1c0f84e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1c0f84e5e71a62b09d1dc1cffe66d4cf6b7eb49d))
+
 ## [0.45.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.45.1...v0.45.2) (2026-07-13)
 
 
