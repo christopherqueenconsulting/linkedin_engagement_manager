@@ -380,6 +380,33 @@ class TestCommentNotificationInbound:
         assert resp.json()["detail"] == "debounced"
         sweep.apply_async.assert_not_called()
 
+    def test_gmail_forwarding_confirmation_auto_clicks(self, client):
+        body = ("please click the link below to confirm the request:\n"
+                "https://mail.google.com/mail/vf-%5Babc%5D-xyz\nConfirmation code: 123456789")
+        got = type("R", (), {"status_code": 200})()
+        with patch(self._DB, return_value=7), \
+             patch(f"{_MAIN}.sweep_reply_comments") as sweep, \
+             patch(f"{_MAIN}.requests.get", return_value=got) as rget:
+            resp = client.post(self.BASE, data={
+                "to": "reply+tok9@parse.example.com",
+                "from": "forwarding-noreply@google.com",
+                "subject": "Gmail Forwarding Confirmation", "text": body})
+        assert resp.json()["detail"] == "confirmed"
+        rget.assert_called_once()
+        assert rget.call_args.args[0] == "https://mail.google.com/mail/vf-%5Babc%5D-xyz"
+        sweep.apply_async.assert_not_called()   # not a comment → no sweep
+
+    def test_gmail_confirmation_click_fails_stores_code(self, client):
+        body = "verify permission ... https://mail.google.com/mail/vf-x\nConfirmation code: 55667788"
+        with patch(self._DB, return_value=7), \
+             patch(f"{_MAIN}.requests.get", side_effect=RuntimeError("net")), \
+             patch(f"{_MAIN}.log_warning"):
+            resp = client.post(self.BASE, data={
+                "to": "reply+tok9@parse.example.com",
+                "from": "forwarding-noreply@google.com",
+                "subject": "Gmail Forwarding Confirmation", "text": body})
+        assert resp.json()["detail"] == "code_stored"
+
 
 class TestVerificationPinInbound:
     """SendGrid Inbound Parse webhook that receives the user's PIN reply."""

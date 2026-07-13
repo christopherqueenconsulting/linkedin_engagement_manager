@@ -667,6 +667,54 @@ async def linkedin_verification_pin_inbound(request: Request) -> ResponseModel:
     return ResponseModel(status_code=200, detail="accepted" if user_id else "ignored")
 
 
+_GMAIL_CONFIRM_KEY = "linkedin:gmail_forward_confirm:{user_id}"
+
+
+def _handle_gmail_forwarding_confirmation(user_id: int, body: str) -> ResponseModel:
+    """Auto-confirm the user's Gmail forwarding to our address: click the verify link server-side
+    (Gmail confirms on GET), and stash the numeric code + status so the UI can show it as a fallback
+    if the auto-click didn't take. Always 200."""
+    from cqc_lem.utilities.linkedin.notification_email import (
+        extract_gmail_confirmation_url, extract_gmail_confirmation_code)
+    url = extract_gmail_confirmation_url(body)
+    code = extract_gmail_confirmation_code(body)
+    confirmed = False
+    if url:
+        try:
+            resp = requests.get(url, timeout=15)
+            confirmed = resp.status_code < 400
+        except Exception as e:
+            log_warning("Gmail forwarding auto-confirm click failed", exc=e, user_id=user_id)
+    try:
+        from cqc_lem.utilities.linkedin.rate_limit import _redis_client
+        client = _redis_client()
+        if client is not None:
+            client.set(_GMAIL_CONFIRM_KEY.format(user_id=user_id),
+                       json.dumps({"code": code, "confirmed": confirmed, "url_found": bool(url)}),
+                       ex=7 * 24 * 60 * 60)
+    except Exception:
+        pass
+    log_info(f"Gmail forwarding confirmation: url_found={bool(url)} confirmed={confirmed} "
+             f"code={'yes' if code else 'no'}", user_id=user_id)
+    return ResponseModel(status_code=200,
+                         detail="confirmed" if confirmed else ("code_stored" if code else "ignored"))
+
+
+def get_gmail_forward_confirmation(user_id: int) -> "dict | None":
+    """Last Gmail-forwarding confirmation result for a user (auto-confirmed? code fallback?)."""
+    try:
+        from cqc_lem.utilities.linkedin.rate_limit import _redis_client
+        client = _redis_client()
+        if client is None:
+            return None
+        raw = client.get(_GMAIL_CONFIRM_KEY.format(user_id=user_id))
+        if not raw:
+            return None
+        return json.loads(raw.decode() if isinstance(raw, (bytes, bytearray)) else raw)
+    except Exception:
+        return None
+
+
 def _reply_sweep_debounced(user_id: int, window_s: int = 120) -> bool:
     """True the first time we see this user within window_s — collapses a burst of comment
     notifications into ONE reply sweep. Fails OPEN (returns True) if Redis is unavailable so a
@@ -688,7 +736,7 @@ async def linkedin_comment_notification_inbound(request: Request) -> ResponseMod
     reaction) we trigger a debounced recent-posts reply sweep — no polling, so it doesn't trip the
     429 rate limit. Always 200 so SendGrid doesn't retry-storm on unrelated/malformed mail."""
     from cqc_lem.utilities.linkedin.notification_email import (
-        extract_reply_token_from_address, is_comment_notification)
+        extract_reply_token_from_address, is_comment_notification, is_gmail_forwarding_confirmation)
     from cqc_lem.utilities.db import get_user_id_by_reply_token
     try:
         form = await request.form()
@@ -696,13 +744,20 @@ async def linkedin_comment_notification_inbound(request: Request) -> ResponseMod
         return ResponseModel(status_code=200, detail="ignored")
     to_field = str(form.get("to") or "")
     envelope = str(form.get("envelope") or "")
+    from_field = str(form.get("from") or "")
     subject = str(form.get("subject") or "")
-    text = str(form.get("text") or form.get("html") or "")
+    text = str(form.get("text") or "")
+    html = str(form.get("html") or "")
     token = extract_reply_token_from_address(to_field) or extract_reply_token_from_address(envelope)
     if not token:
         return ResponseModel(status_code=200, detail="ignored")
     user_id = get_user_id_by_reply_token(token)
-    if not user_id or not is_comment_notification(subject, text):
+    if not user_id:
+        return ResponseModel(status_code=200, detail="ignored")
+    # Gmail forwarding confirmation: the address is ours + token-gated, so auto-click the verify link.
+    if is_gmail_forwarding_confirmation(from_field, subject, text or html):
+        return _handle_gmail_forwarding_confirmation(user_id, f"{text}\n{html}")
+    if not is_comment_notification(subject, text or html):
         return ResponseModel(status_code=200, detail="ignored")
     if not _reply_sweep_debounced(user_id):
         return ResponseModel(status_code=200, detail="debounced")
@@ -1284,6 +1339,8 @@ def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel:
         prefs["reply_inbound_address"] = reply_inbound_address(token) if token else None
     except Exception:
         prefs["reply_inbound_address"] = None
+    # Gmail forwarding auto-confirmation status (so the UI can surface the code if auto-confirm failed).
+    prefs["gmail_forward_confirmation"] = get_gmail_forward_confirmation(user_id)
     # Read-only: the last feed scan's reach funnel so the user can see when their targeting is too
     # strict (posts examined -> matched their filters -> commented).
     try:

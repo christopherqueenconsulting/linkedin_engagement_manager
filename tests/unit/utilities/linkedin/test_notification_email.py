@@ -59,3 +59,43 @@ class TestIsCommentNotification:
         from cqc_lem.utilities.linkedin.notification_email import is_comment_notification
         body = "FYI\n> On Mon, someone commented on your post"
         assert is_comment_notification("Weekly digest", body) is False
+
+
+_GMAIL_BODY = (
+    "forwarding-noreply@google.com has requested to automatically forward mail to your address.\n"
+    "Confirmation code: 987654321\n\n"
+    "To allow christopher.queen@gmail.com to automatically forward mail, please click the link "
+    "below to confirm the request:\n"
+    "https://mail.google.com/mail/vf-%5BANGjdJ8xyz%5D-abc123def456\n\n"
+    "If the link is broken, copy and paste it into a new browser window."
+)
+
+
+class TestGmailForwardingConfirmation:
+    def test_detects_from_sender(self):
+        from cqc_lem.utilities.linkedin.notification_email import is_gmail_forwarding_confirmation
+        assert is_gmail_forwarding_confirmation("Gmail Team <forwarding-noreply@google.com>",
+                                                "(#123) Gmail Forwarding Confirmation", "") is True
+
+    def test_detects_from_subject(self):
+        from cqc_lem.utilities.linkedin.notification_email import is_gmail_forwarding_confirmation
+        assert is_gmail_forwarding_confirmation("x@y.com", "Gmail Forwarding Confirmation - Receive Mail", "") is True
+
+    def test_not_confirmation_for_comment(self):
+        from cqc_lem.utilities.linkedin.notification_email import is_gmail_forwarding_confirmation
+        assert is_gmail_forwarding_confirmation("notify@linkedin.com", "Jane commented on your post", "hi") is False
+
+    def test_extracts_verify_url(self):
+        from cqc_lem.utilities.linkedin.notification_email import extract_gmail_confirmation_url
+        url = extract_gmail_confirmation_url(_GMAIL_BODY)
+        assert url == "https://mail.google.com/mail/vf-%5BANGjdJ8xyz%5D-abc123def456"
+
+    def test_extracts_code(self):
+        from cqc_lem.utilities.linkedin.notification_email import extract_gmail_confirmation_code
+        assert extract_gmail_confirmation_code(_GMAIL_BODY) == "987654321"
+
+    def test_no_url_or_code(self):
+        from cqc_lem.utilities.linkedin.notification_email import (
+            extract_gmail_confirmation_url, extract_gmail_confirmation_code)
+        assert extract_gmail_confirmation_url("nothing here") is None
+        assert extract_gmail_confirmation_code("nothing here") is None
