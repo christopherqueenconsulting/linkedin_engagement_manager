@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.45.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.45.1...v0.45.2) (2026-07-13)
+
+
+### Bug Fixes
+
+* **replies:** forward Gmail confirmation to the user + robuster auto-confirm ([ff97b72](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ff97b72b5cb8c41caa1d5495e4097238e4a375a0))
+* **replies:** forward Gmail confirmation to the user + robuster auto-confirm ([66b6a66](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/66b6a660dabe15f1b3036639b9d7b824ab549dda))
+
 ## [0.45.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.45.0...v0.45.1) (2026-07-13)
 
 
