@@ -145,6 +145,42 @@ class TestReplyToCommentsOnOpenPost:
         dm.apply_async.assert_called_once()
         rec.assert_called_once()
 
+    def test_bails_when_profile_slug_unresolvable(self):
+        """LOOP SAFETY: with no profile slug we can't dedup our own / already-replied comments, so
+        the sweep must skip replying entirely rather than risk duplicate/self replies."""
+        from cqc_lem.app.run_automation import _reply_to_comments_on_open_post
+        from unittest.mock import MagicMock
+        prof = MagicMock(); prof.profile_url = None; prof.full_name = "Me"
+        with patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
+             patch(f"{_RA}.get_post_content", return_value="body"), \
+             patch(f"{_RA}.click_first", return_value=None), \
+             patch(f"{_RA}._comment_items_from_thread", return_value=[_FakeComment("hi")]), \
+             patch(f"{_RA}.get_lead_magnet_settings", return_value={"enabled": False}), \
+             patch(f"{_RA}.log_warning"), \
+             patch(f"{_RA}.generate_thread_reply") as gen, \
+             patch(f"{_RA}._reply_to_comment_inline") as rep:
+            result = _reply_to_comments_on_open_post(MagicMock(), MagicMock(), 1, 9, prof, "s")
+        assert "no profile slug" in result.lower()
+        gen.assert_not_called()
+        rep.assert_not_called()
+
+    def test_reply_cap_limits_burst(self):
+        from cqc_lem.app.run_automation import _reply_to_comments_on_open_post, _MAX_REPLIES_PER_SWEEP
+        from unittest.mock import MagicMock
+        boxes = [_FakeComment(f"comment number {i}") for i in range(_MAX_REPLIES_PER_SWEEP + 5)]
+        with patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
+             patch(f"{_RA}.get_post_content", return_value="body"), \
+             patch(f"{_RA}.click_first", return_value=None), \
+             patch(f"{_RA}._comment_items_from_thread", return_value=boxes), \
+             patch(f"{_RA}.get_lead_magnet_settings", return_value={"enabled": False}), \
+             patch(f"{_RA}.upsert_engager"), \
+             patch(f"{_RA}.generate_thread_reply", return_value="reply"), \
+             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
+             patch(f"{_RA}._reply_to_comment_inline", return_value=True) as rep, \
+             patch(f"{_RA}.insert_new_log"):
+            _reply_to_comments_on_open_post(MagicMock(), MagicMock(), 1, 9, self._profile(), "s")
+        assert rep.call_count == _MAX_REPLIES_PER_SWEEP
+
     def test_no_post_url_returns_early(self):
         from cqc_lem.app.run_automation import _reply_to_comments_on_open_post
         with patch(f"{_RA}.get_post_url_from_log_for_user", return_value=None):
