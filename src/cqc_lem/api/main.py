@@ -655,6 +655,12 @@ async def linkedin_verification_pin_inbound(request: Request) -> ResponseModel:
         return ResponseModel(status_code=200, detail="ignored")
     to_field = str(form.get("to") or "")
     envelope = str(form.get("envelope") or "")
+    # SendGrid Inbound Parse routes ALL mail for the parse host to this ONE URL, so this endpoint
+    # must also handle the reply+<token> traffic (Gmail forwarding confirmations + comment
+    # notifications), not only pin+<token> PIN replies. Dispatch by the address prefix.
+    from cqc_lem.utilities.linkedin.notification_email import extract_reply_token_from_address
+    if extract_reply_token_from_address(to_field) or extract_reply_token_from_address(envelope):
+        return _process_reply_inbound(form)
     text = str(form.get("text") or form.get("html") or "")
     subject = str(form.get("subject") or "")
     token = extract_token_from_address(to_field) or extract_token_from_address(envelope)
@@ -729,19 +735,14 @@ def _reply_sweep_debounced(user_id: int, window_s: int = 120) -> bool:
         return True
 
 
-@router.post("/linkedin/comment-notification/inbound")
-async def linkedin_comment_notification_inbound(request: Request) -> ResponseModel:
-    """SendGrid Inbound Parse webhook: a forwarded LinkedIn 'commented on your post' email. The
-    tokenized address (reply+<token>@parse-domain) attributes it to a user; if it's a comment (not a
-    reaction) we trigger a debounced recent-posts reply sweep — no polling, so it doesn't trip the
-    429 rate limit. Always 200 so SendGrid doesn't retry-storm on unrelated/malformed mail."""
+def _process_reply_inbound(form) -> ResponseModel:
+    """Handle inbound mail sent to a reply+<token>@parse-domain address: a Gmail forwarding
+    confirmation (auto-click the verify link) or a forwarded LinkedIn comment notification (trigger a
+    debounced recent-posts reply sweep). Reactions/unknown tokens are ignored. Always 200. Called
+    from BOTH inbound endpoints because SendGrid Inbound Parse posts all parse-host mail to one URL."""
     from cqc_lem.utilities.linkedin.notification_email import (
         extract_reply_token_from_address, is_comment_notification, is_gmail_forwarding_confirmation)
     from cqc_lem.utilities.db import get_user_id_by_reply_token
-    try:
-        form = await request.form()
-    except Exception:
-        return ResponseModel(status_code=200, detail="ignored")
     to_field = str(form.get("to") or "")
     envelope = str(form.get("envelope") or "")
     from_field = str(form.get("from") or "")
@@ -764,6 +765,17 @@ async def linkedin_comment_notification_inbound(request: Request) -> ResponseMod
     sweep_reply_comments.apply_async(kwargs={"user_id": user_id}, countdown=120)
     log_info("Triggered reply sweep from comment notification", user_id=user_id)
     return ResponseModel(status_code=200, detail="accepted")
+
+
+@router.post("/linkedin/comment-notification/inbound")
+async def linkedin_comment_notification_inbound(request: Request) -> ResponseModel:
+    """SendGrid Inbound Parse webhook for reply+<token> mail (kept as an explicit path; SendGrid
+    actually delivers to the shared parse URL, which also routes here via _process_reply_inbound)."""
+    try:
+        form = await request.form()
+    except Exception:
+        return ResponseModel(status_code=200, detail="ignored")
+    return _process_reply_inbound(form)
 
 
 @router.put("/user/", responses={
