@@ -11,7 +11,12 @@ Event mode replies only when a comment actually happens — no browser polling, 
 2. The user sets a mail filter to **auto-forward** those emails to a personal tokenized address:
    `reply+<token>@parse.<domain>` (shown in the account settings, "Reply follow-up mode → Event-driven").
 3. **SendGrid Inbound Parse** (already configured for the parse domain, same as the login-PIN flow)
-   delivers the forwarded email to `POST /api/linkedin/comment-notification/inbound`.
+   delivers the forwarded email to the app. NOTE: SendGrid Inbound Parse posts ALL mail for the
+   parse host to a SINGLE URL — the login-PIN endpoint `POST /api/linkedin/verification-pin/inbound`.
+   That endpoint dispatches on the address prefix: `pin+<token>` → PIN flow, `reply+<token>` →
+   `_process_reply_inbound` (Gmail forwarding confirmation + comment notifications). The dedicated
+   `POST /api/linkedin/comment-notification/inbound` path also exists and runs the same handler, but
+   SendGrid does not need to be reconfigured — no second Inbound Parse URL is required.
 4. The webhook resolves the token → user, confirms it's a *comment* (not a reaction), and triggers a
    **debounced** recent-posts reply sweep (`sweep_reply_comments`). A burst of notifications collapses
    into one sweep (120s window).

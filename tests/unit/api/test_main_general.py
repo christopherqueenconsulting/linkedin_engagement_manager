@@ -488,3 +488,37 @@ class TestGmailForwardConfirmationStorage:
         assert resp.json()["detail"] == "confirmed"
         redis.set.assert_called_once()
         assert redis.set.call_args.args[0] == "linkedin:gmail_forward_confirm:7"
+
+
+class TestSharedInboundRouting:
+    """SendGrid posts ALL parse-host mail to the PIN URL, so that endpoint must also route
+    reply+<token> mail (Gmail confirmations + comment notifications)."""
+    PIN = "/api/linkedin/verification-pin/inbound"
+
+    def test_pin_url_routes_reply_comment_to_sweep(self, client):
+        with patch("cqc_lem.utilities.db.get_user_id_by_reply_token", return_value=7), \
+             patch(f"{_MAIN}._reply_sweep_debounced", return_value=True), \
+             patch(f"{_MAIN}.sweep_reply_comments") as sweep:
+            resp = client.post(self.PIN, data={
+                "to": "reply+tok9@parse.example.com",
+                "subject": "Jane commented on your post"})
+        assert resp.json()["detail"] == "accepted"
+        sweep.apply_async.assert_called_once()
+
+    def test_pin_url_routes_gmail_confirmation(self, client):
+        got = type("R", (), {"status_code": 200})()
+        body = "confirm: https://mail.google.com/mail/vf-abc\nConfirmation code: 12345678"
+        with patch("cqc_lem.utilities.db.get_user_id_by_reply_token", return_value=7), \
+             patch(f"{_MAIN}.requests.get", return_value=got):
+            resp = client.post(self.PIN, data={
+                "to": "reply+tok9@parse.example.com",
+                "from": "forwarding-noreply@google.com",
+                "subject": "Gmail Forwarding Confirmation", "text": body})
+        assert resp.json()["detail"] == "confirmed"
+
+    def test_pin_url_still_handles_pin(self, client):
+        with patch(f"{_MAIN}.submit_pin_by_token", return_value=1) as m:
+            resp = client.post(self.PIN, data={
+                "to": "pin+abc123@parse.example.com", "text": "483920"})
+        assert resp.json()["detail"] == "accepted"
+        m.assert_called_once_with("abc123", "483920")
