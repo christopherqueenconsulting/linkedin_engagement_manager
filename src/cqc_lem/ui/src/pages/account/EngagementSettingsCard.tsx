@@ -288,6 +288,23 @@ export default function EngagementSettingsCard() {
                   <span className="italic"> “Forward it to”</span> and pick your address. Using another provider?
                   Any rule that forwards LinkedIn comment emails to the address works.
                 </p>
+                <p className="mt-1 text-green-700">
+                  Good news: when Gmail sends the "verify permission" confirmation to your address, we
+                  confirm it for you automatically — no need to fish out the code.
+                </p>
+                {engPrefs.gmail_forward_confirmation && (
+                  <div className="mt-1">
+                    {engPrefs.gmail_forward_confirmation.confirmed ? (
+                      <p className="text-green-700">✅ Gmail forwarding was auto-confirmed.</p>
+                    ) : engPrefs.gmail_forward_confirmation.code ? (
+                      <p className="text-amber-600">
+                        We received Gmail's confirmation but couldn't auto-click it. If forwarding still shows
+                        "pending" in Gmail, enter this code there:{' '}
+                        <code className="bg-gray-100 rounded px-1">{engPrefs.gmail_forward_confirmation.code}</code>
+                      </p>
+                    ) : null}
+                  </div>
+                )}
               </div>
 
               <p className="text-gray-400">

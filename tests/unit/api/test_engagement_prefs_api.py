@@ -199,3 +199,15 @@ class TestFeedFallbackAndReach:
             resp = client.get(f"/api/user/engagement-preferences?session_token={_SESSION}")
         assert resp.status_code == 200
         assert resp.json()["detail"]["feed_reach"] == funnel
+
+
+class TestGmailForwardConfirmationInPrefs:
+    def test_get_includes_gmail_forward_confirmation(self, client):
+        conf = {"code": "12345678", "confirmed": False, "url_found": True}
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_engagement_preferences", return_value={}), \
+             patch("cqc_lem.api.main.get_or_create_reply_inbound_token", return_value=None), \
+             patch("cqc_lem.api.main.get_gmail_forward_confirmation", return_value=conf):
+            resp = client.get(f"/api/user/engagement-preferences?session_token={_SESSION}")
+        assert resp.status_code == 200
+        assert resp.json()["detail"]["gmail_forward_confirmation"] == conf

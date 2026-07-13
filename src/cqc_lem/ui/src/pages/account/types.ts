@@ -23,8 +23,15 @@ export type EngPrefs = {
   reply_sweeps_per_day: number
   reply_max_post_age_days: number
   reply_inbound_address?: string | null
+  gmail_forward_confirmation?: GmailForwardConfirmation | null
   feed_fallback_when_empty: boolean
   feed_reach?: FeedReach | null
+}
+
+export type GmailForwardConfirmation = {
+  code?: string | null
+  confirmed?: boolean
+  url_found?: boolean
 }
 
 export type FeedReach = {
