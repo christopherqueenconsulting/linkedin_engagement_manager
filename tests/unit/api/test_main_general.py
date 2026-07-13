@@ -522,3 +522,40 @@ class TestSharedInboundRouting:
                 "to": "pin+abc123@parse.example.com", "text": "483920"})
         assert resp.json()["detail"] == "accepted"
         m.assert_called_once_with("abc123", "483920")
+
+
+class TestGmailConfirmationForwardToUser:
+    BASE = "/api/linkedin/comment-notification/inbound"
+
+    def test_forwards_to_user_when_click_fails(self, client):
+        body = "verify permission https://mail.google.com/mail/vf-x\nConfirmation code: 55667788"
+        with patch("cqc_lem.utilities.db.get_user_id_by_reply_token", return_value=7), \
+             patch("cqc_lem.api.main.requests.get", side_effect=RuntimeError("net")), \
+             patch("cqc_lem.api.main.log_warning"), \
+             patch("cqc_lem.utilities.db.get_user_email", return_value="chris@example.com"), \
+             patch("cqc_lem.utilities.email.send_reply_forward_confirmation_email", return_value=True) as fwd:
+            resp = client.post(self.BASE, data={
+                "to": "reply+tok9@parse.example.com",
+                "from": "forwarding-noreply@google.com",
+                "subject": "Gmail Forwarding Confirmation", "text": body})
+        assert resp.json()["detail"] == "forwarded"
+        fwd.assert_called_once()
+        assert fwd.call_args.args[0] == "chris@example.com"
+        assert fwd.call_args.args[2] == "55667788"  # code passed through
+
+
+@pytest.mark.unit
+class TestReplyForwardConfirmationEmail:
+    def test_sends_with_button_and_code(self):
+        with patch("cqc_lem.utilities.email._dispatch_email", return_value=True) as disp:
+            from cqc_lem.utilities.email import send_reply_forward_confirmation_email
+            ok = send_reply_forward_confirmation_email("u@e.com", "https://mail.google.com/mail/vf-x", "123456789")
+        assert ok is True
+        html = disp.call_args.args[2]
+        assert "https://mail.google.com/mail/vf-x" in html and "123456789" in html
+
+    def test_noop_without_url_or_code(self):
+        with patch("cqc_lem.utilities.email._dispatch_email") as disp:
+            from cqc_lem.utilities.email import send_reply_forward_confirmation_email
+            assert send_reply_forward_confirmation_email("u@e.com", None, None) is False
+        disp.assert_not_called()

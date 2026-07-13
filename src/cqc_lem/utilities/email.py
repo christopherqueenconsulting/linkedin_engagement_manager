@@ -265,6 +265,36 @@ def send_login_pin_request_email(to_email: str, reply_to: str) -> bool:
     return _dispatch_email(to_email, subject, html, reply_to=reply_to, high_priority=True)
 
 
+def send_reply_forward_confirmation_email(to_email: str, verify_url: Optional[str],
+                                          code: Optional[str]) -> bool:
+    """Forward Gmail's forwarding-confirmation to the user so they can finish it from their OWN
+    signed-in browser (the most reliable way — a server-side click may not complete Gmail's flow).
+    The confirmation was delivered to our reply+<token> address, so the user never saw it."""
+    if not verify_url and not code:
+        return False
+    button = (f'<p style="margin:18px 0"><a href="{verify_url}" '
+              'style="background:#0a66c2;color:#fff;padding:10px 18px;border-radius:6px;'
+              'text-decoration:none;font-weight:bold" target="_blank" rel="noopener">'
+              'Confirm forwarding</a></p>') if verify_url else ""
+    code_line = (f'<p>Or enter this confirmation code in Gmail (Settings &rarr; Forwarding, next to the '
+                 f'pending address): <strong style="font-size:16px">{code}</strong></p>') if code else ""
+    link_line = (f'<p style="color:#666;font-size:12px;word-break:break-all">Button not working? '
+                 f'Copy this link: {verify_url}</p>') if verify_url else ""
+    html = (
+        "<html><body style=\"font-family:Arial,Helvetica,sans-serif;color:#222;\">"
+        "<h2>Confirm comment-reply forwarding</h2>"
+        "<p>You added our address as a Gmail forwarding destination so we can auto-reply to comments "
+        "on your LinkedIn posts. Gmail sent a confirmation to that address (which you can't see), so "
+        "we're passing it to you.</p>"
+        f"{button}{code_line}{link_line}"
+        "<p style='color:#666;font-size:12px'>If your forwarding already shows as confirmed in Gmail, "
+        "you can ignore this email.</p>"
+        "</body></html>"
+    )
+    return _dispatch_email(to_email, "Confirm your LinkedIn comment-reply forwarding", html,
+                           high_priority=True)
+
+
 def _account_url() -> str:
     import os
     base = (os.getenv("LEM_APP_URL") or "https://lem.christopherqueenconsulting.com").rstrip("/")

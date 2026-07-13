@@ -64,7 +64,13 @@ def is_comment_notification(subject: str, text: str = "") -> bool:
 # can auto-confirm by clicking the verify link server-side so the user doesn't have to fish the code
 # out. The email also contains a numeric code as a manual fallback.
 _GMAIL_CONFIRM_URL_RE = re.compile(r"https://mail(?:-settings)?\.google\.com/mail/[^\s\"'<>\]\)]+")
-_GMAIL_CONFIRM_CODE_RE = re.compile(r"confirmation code[^0-9]{0,40}(\d{6,12})", re.I)
+# Gmail states the code several ways depending on client/locale — try each. The subject also carries
+# it as "(#123456789)".
+_GMAIL_CONFIRM_CODE_RES = (
+    re.compile(r"confirmation code[^0-9]{0,40}(\d{6,12})", re.I),
+    re.compile(r"\(#(\d{6,12})\)"),
+    re.compile(r"\bcode\b[^0-9]{0,20}(\d{9,12})", re.I),
+)
 
 
 def is_gmail_forwarding_confirmation(sender: str, subject: str, text: str = "") -> bool:
@@ -80,21 +86,27 @@ def is_gmail_forwarding_confirmation(sender: str, subject: str, text: str = "") 
 
 
 def extract_gmail_confirmation_url(text: str) -> Optional[str]:
-    """The Gmail verify link to click (prefers the vf-/uf- confirmation link)."""
+    """The Gmail verify link to click (prefers the vf-/uf- confirmation link). Pass the HTML part
+    when available — the plain-text part wraps the very long URL across lines, which breaks it."""
     if not text:
         return None
-    urls = _GMAIL_CONFIRM_URL_RE.findall(text)
+    # href="...&amp;..." → real & ; also undo soft-wrap that split the URL across lines.
+    cleaned = text.replace("&amp;", "&")
+    urls = _GMAIL_CONFIRM_URL_RE.findall(cleaned)
     if not urls:
         return None
     for u in urls:
         if "vf-" in u or "uf-" in u:
-            return u.rstrip(").,;")
-    return urls[0].rstrip(").,;")
+            return u.rstrip(").,;\"'>")
+    return urls[0].rstrip(").,;\"'>")
 
 
 def extract_gmail_confirmation_code(text: str) -> Optional[str]:
     """The numeric confirmation code Gmail also provides, for manual entry if auto-confirm fails."""
     if not text:
         return None
-    m = _GMAIL_CONFIRM_CODE_RE.search(text)
-    return m.group(1) if m else None
+    for rex in _GMAIL_CONFIRM_CODE_RES:
+        m = rex.search(text)
+        if m:
+            return m.group(1)
+    return None
