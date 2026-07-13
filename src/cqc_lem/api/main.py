@@ -676,34 +676,61 @@ async def linkedin_verification_pin_inbound(request: Request) -> ResponseModel:
 _GMAIL_CONFIRM_KEY = "linkedin:gmail_forward_confirm:{user_id}"
 
 
-def _handle_gmail_forwarding_confirmation(user_id: int, body: str) -> ResponseModel:
+def _handle_gmail_forwarding_confirmation(user_id: int, subject: str, text: str, html: str) -> ResponseModel:
     """Auto-confirm the user's Gmail forwarding to our address: click the verify link server-side
-    (Gmail confirms on GET), and stash the numeric code + status so the UI can show it as a fallback
-    if the auto-click didn't take. Always 200."""
+    and stash the numeric code + status so the UI can show it as a fallback if the auto-click didn't
+    take. Always 200."""
     from cqc_lem.utilities.linkedin.notification_email import (
         extract_gmail_confirmation_url, extract_gmail_confirmation_code)
-    url = extract_gmail_confirmation_url(body)
-    code = extract_gmail_confirmation_code(body)
+    # Prefer the HTML href — the plain-text part wraps the long verify URL across lines and breaks it.
+    url = extract_gmail_confirmation_url(html) or extract_gmail_confirmation_url(text)
+    code = (extract_gmail_confirmation_code(subject) or extract_gmail_confirmation_code(text)
+            or extract_gmail_confirmation_code(html))
+    # Log the shape so we can see Gmail's exact format when extraction misses.
+    log_info(f"Gmail forwarding confirmation received: url={'yes' if url else 'no'} code={code or 'none'} "
+             f"subject={subject[:120]!r} text_head={(text or '')[:500]!r}", user_id=user_id)
     confirmed = False
     if url:
         try:
             resp = requests.get(url, timeout=15)
             confirmed = resp.status_code < 400
+            # Gmail may return an interstitial confirm page; follow a nested vf-/uf- link if present.
+            page = getattr(resp, "text", "") or ""
+            nested = extract_gmail_confirmation_url(page)
+            if nested and nested != url:
+                try:
+                    confirmed = requests.get(nested, timeout=15).status_code < 400 or confirmed
+                except Exception:
+                    pass
         except Exception as e:
             log_warning("Gmail forwarding auto-confirm click failed", exc=e, user_id=user_id)
+    # Server-side clicking may not complete Gmail's flow (interstitial / datacenter IP). Forward the
+    # verify link + code to the user's real inbox so they can finish it from their own signed-in
+    # browser — the reliable path. The confirmation went to our reply+ address, so they never saw it.
+    forwarded = False
+    if url or code:
+        try:
+            from cqc_lem.utilities.db import get_user_email
+            from cqc_lem.utilities.email import send_reply_forward_confirmation_email
+            user_email = get_user_email(user_id)
+            if user_email:
+                forwarded = send_reply_forward_confirmation_email(user_email, url, code)
+        except Exception as e:
+            log_warning("Could not forward Gmail confirmation to user", exc=e, user_id=user_id)
     try:
         from cqc_lem.utilities.linkedin.rate_limit import _redis_client
         client = _redis_client()
         if client is not None:
             client.set(_GMAIL_CONFIRM_KEY.format(user_id=user_id),
-                       json.dumps({"code": code, "confirmed": confirmed, "url_found": bool(url)}),
+                       json.dumps({"code": code, "confirmed": confirmed, "url_found": bool(url),
+                                   "forwarded_to_user": forwarded}),
                        ex=7 * 24 * 60 * 60)
     except Exception:
         pass
     log_info(f"Gmail forwarding confirmation: url_found={bool(url)} confirmed={confirmed} "
-             f"code={'yes' if code else 'no'}", user_id=user_id)
-    return ResponseModel(status_code=200,
-                         detail="confirmed" if confirmed else ("code_stored" if code else "ignored"))
+             f"code={'yes' if code else 'no'} forwarded_to_user={forwarded}", user_id=user_id)
+    detail = "confirmed" if confirmed else ("forwarded" if forwarded else ("code_stored" if code else "ignored"))
+    return ResponseModel(status_code=200, detail=detail)
 
 
 def get_gmail_forward_confirmation(user_id: int) -> "dict | None":
@@ -757,7 +784,7 @@ def _process_reply_inbound(form) -> ResponseModel:
         return ResponseModel(status_code=200, detail="ignored")
     # Gmail forwarding confirmation: the address is ours + token-gated, so auto-click the verify link.
     if is_gmail_forwarding_confirmation(from_field, subject, text or html):
-        return _handle_gmail_forwarding_confirmation(user_id, f"{text}\n{html}")
+        return _handle_gmail_forwarding_confirmation(user_id, subject, text, html)
     if not is_comment_notification(subject, text or html):
         return ResponseModel(status_code=200, detail="ignored")
     if not _reply_sweep_debounced(user_id):
