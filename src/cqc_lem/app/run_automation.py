@@ -1557,6 +1557,12 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
     return result
 
 
+# Max replies posted per post in a single sweep — a volume backstop so a huge comment thread (or an
+# unexpected re-trigger) can never fire an unbounded burst. Already-replied comments are skipped
+# regardless, so this only ever caps NEW replies.
+_MAX_REPLIES_PER_SWEEP = 15
+
+
 def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my_profile,
                                     profile_synthesis: str) -> str:
     """Navigate to the user's own post and reply to comments on it (thread-builder replies, plus
@@ -1588,14 +1594,24 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
     comments = _comment_items_from_thread(driver)
     myprint(f"Comments Found: {len(comments)}")
 
-    # our profile slug — used to detect comments we've already replied to
+    # our profile slug — used to detect comments we AUTHORED or already replied to (the loop-breaker).
     path = urlparse(str(my_profile.profile_url)).path
     unique_url_name = path.split("/")[2] if len(path.split("/")) > 2 else None
+    # LOOP SAFETY: without our slug we can't tell our own comments / already-replied ones apart, so a
+    # sweep could reply to our own comments and re-reply every run. Fail SAFE — skip replying entirely.
+    if not unique_url_name:
+        log_warning("Reply sweep: could not resolve own profile slug — skipping replies to avoid "
+                    "duplicate/self replies", user_id=user_id, post_id=post_id, action_type="reply")
+        return "Skipped — no profile slug for dedup"
 
     comments_replied_count = 0
     lead_magnet = get_lead_magnet_settings(user_id)
     lead_magnet_blog_url = get_user_blog_url(user_id) if lead_magnet.get("enabled") else ""
     for comment in comments:
+        # Per-post volume backstop: never fire an unbounded burst of replies from one sweep.
+        if comments_replied_count >= _MAX_REPLIES_PER_SWEEP:
+            myprint(f"Reply cap reached ({_MAX_REPLIES_PER_SWEEP}) for post {post_id}")
+            break
         try:
             tb = comment.find_elements(By.CSS_SELECTOR, "[data-testid='expandable-text-box']")
             comment_text = ((tb[0].text if tb else comment.text) or "").strip()
