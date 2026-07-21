@@ -20,19 +20,30 @@ from cqc_lem.utilities.db import (
 )
 from cqc_lem.utilities.env_constants import SELENIUM_KEEP_VIDEOS_X_DAYS, CQC_LEM_POST_TIME_DELTA_MINUTES
 from cqc_lem.utilities.logger import myprint, log_info, log_debug, log_warning
-from cqc_lem.utilities.linkedin.rate_limit import is_automation_paused, automation_pause_remaining
+from cqc_lem.utilities.linkedin.rate_limit import is_automation_paused, automation_pause_remaining, \
+    rate_limit_cooldown_remaining
 from cqc_lem.utilities.notifications import notify_linkedin_session
 
 
-def _skip_if_paused(name: str) -> bool:
-    """True when a manual automation pause is active — Selenium fan-out beat tasks short-circuit on
-    it so a recovering rate-limited account isn't hammered (login_to_linkedin also gates centrally,
-    but skipping here avoids spinning up Chrome sessions that would only fail). POSTING is API-driven
-    and deliberately NOT gated."""
+def _skip_if_throttled(name: str) -> bool:
+    """True when Selenium engagement should NOT fan out — either a manual automation pause OR an open
+    429 circuit breaker cooldown is active. Beat dispatchers short-circuit on both so a rate-limited
+    account isn't hammered: login_to_linkedin gates centrally too, but skipping at dispatch avoids
+    spinning up Chrome sessions that would only fail AND — critically — stops tasks from probing the
+    feed the instant the cooldown expires, which is what re-tripped the breaker into a doom loop.
+    POSTING is API-driven and deliberately NOT gated."""
     if is_automation_paused():
         log_info(f"{name} skipped — automation paused (~{automation_pause_remaining()}s left)")
         return True
+    cooldown = rate_limit_cooldown_remaining()
+    if cooldown > 0:
+        log_info(f"{name} skipped — LinkedIn 429 breaker open (~{cooldown}s left)")
+        return True
     return False
+
+
+# Backward-compatible alias — historically only checked the manual pause.
+_skip_if_paused = _skip_if_throttled
 
 
 
@@ -63,8 +74,10 @@ def auto_check_scheduled_posts(self):
 
         # Only dispatch Selenium pre-post tasks for users with an active LinkedIn
         # connection and subscription. Inactive/disconnected users' sessions fail
-        # immediately and waste a Chrome slot that active users need.
-        if user_id in active_user_ids:
+        # immediately and waste a Chrome slot that active users need. Also skip them
+        # while throttled (pause / 429 breaker) so they don't probe the feed — the API
+        # post above still goes out regardless.
+        if user_id in active_user_ids and not _skip_if_throttled("pre-post Selenium"):
             base_kwargs = {'user_id': user_id, 'loop_for_duration': 60 * 15}
 
             # Start the pre-post commenting task 15 minutes before scheduled post (loop for 15 minutes)
@@ -143,7 +156,7 @@ def auto_check_scheduled_dms(self):
 
 @shared_task.task
 def auto_appreciate_dms():
-    if _skip_if_paused("auto_appreciate_dms"):
+    if _skip_if_throttled("auto_appreciate_dms"):
         return "Automation paused"
     # For each user schedule appreciate DMS
     users = get_active_user_ids()
@@ -176,7 +189,7 @@ def auto_daily_engagement():
     because both this run and the pre-post runs share the per-day comment cap (enforced in
     comment_on_feed_inline), and QueueOnce (keys=['user_id']) prevents overlapping double-runs for
     the same user."""
-    if _skip_if_paused("auto_daily_engagement"):
+    if _skip_if_throttled("auto_daily_engagement"):
         return "Automation paused"
     users = get_active_user_ids()
     dispatched = 0
@@ -195,6 +208,8 @@ def dispatch_scheduled_reply_sweeps():
     interval gates it: while the key exists we're within the interval and skip, so running this beat
     every ~30 min naturally yields ~reply_sweeps_per_day sweeps. Fails open on Redis outage (dispatch
     anyway) — sweep_reply_comments itself is QueueOnce + 429-safe, so an extra run is harmless."""
+    if _skip_if_throttled("dispatch_scheduled_reply_sweeps"):
+        return "Automation throttled"
     from cqc_lem.utilities.linkedin.rate_limit import _redis_client
     users = get_users_with_reply_mode("scheduled")
     if not users:
@@ -453,6 +468,11 @@ def regenerate_newsletter_edition(edition_id: int, guidance: str = None):
 @shared_task.task
 def auto_publish_scheduled_editions():
     """Publish any newsletter edition whose scheduled slot has arrived (approved or untouched draft)."""
+    # Newsletter publishing is Selenium-driven, so gate it on the breaker like the other fan-outs.
+    # This hourly task was the primary re-tripper of the 429 doom loop: it probed the feed the moment
+    # the cooldown lapsed and re-escalated it back to the 6h cap.
+    if _skip_if_throttled("auto_publish_scheduled_editions"):
+        return "Automation throttled"
     from cqc_lem.app.run_automation import auto_publish_edition
     from cqc_lem.utilities.db import get_editions_due_to_publish
     due = get_editions_due_to_publish(datetime.now(timezone.utc).replace(tzinfo=None))
@@ -506,7 +526,7 @@ def auto_sync_groups():
 @shared_task.task
 def auto_group_engagement():
     """Daily value-add commenting in each active user's ENABLED groups (shares the per-day cap)."""
-    if _skip_if_paused("auto_group_engagement"):
+    if _skip_if_throttled("auto_group_engagement"):
         return "Automation paused"
     from cqc_lem.app.run_automation import auto_comment_in_groups
     users = get_active_user_ids()
@@ -538,7 +558,7 @@ def auto_group_posts():
 @shared_task.task
 def auto_scrape_stats():
     """Daily: capture engagement stats on each active user's recent posts (powers post-time recs)."""
-    if _skip_if_paused("auto_scrape_stats"):
+    if _skip_if_throttled("auto_scrape_stats"):
         return "Automation paused"
     from cqc_lem.app.run_automation import auto_scrape_post_stats
     users = get_active_user_ids()
@@ -553,7 +573,7 @@ def auto_scrape_stats():
 @shared_task.task
 def auto_send_due_followups():
     """Dispatch a per-user Selenium task to send due DM follow-ups (each gated by reply-detection)."""
-    if _skip_if_paused("auto_send_due_followups"):
+    if _skip_if_throttled("auto_send_due_followups"):
         return "Automation paused"
     from cqc_lem.app.run_automation import process_user_followups
     from cqc_lem.utilities.db import get_due_followups
@@ -658,7 +678,7 @@ def auto_clean_stale_profiles():
 @shared_task.task
 def auto_invite_to_company_pages():
     """Start invite process for each active user who has a linked in company page"""
-    if _skip_if_paused("auto_invite_to_company_pages"):
+    if _skip_if_throttled("auto_invite_to_company_pages"):
         return "Automation paused"
 
     # Get all active users and loop through them

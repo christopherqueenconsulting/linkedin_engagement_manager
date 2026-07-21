@@ -1,4 +1,5 @@
 import os
+import random
 import time
 from typing import Optional
 
@@ -17,6 +18,39 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
+
+
+def _human_pause(min_seconds: float, max_seconds: float) -> None:
+    """Sleep a random human-like interval to space out automated navigations. Set
+    LINKEDIN_HUMANIZE_DELAYS=false (e.g. in tests) to make this a no-op."""
+    if os.getenv("LINKEDIN_HUMANIZE_DELAYS", "true").lower() == "false":
+        return
+    time.sleep(random.uniform(min_seconds, max_seconds))
+
+
+def _text_is_transport_error(body: str) -> bool:
+    """Chrome network/proxy error interstitial ("This site can't be reached", ERR_* codes) — a
+    transport failure (flaky residential proxy, DNS, timeout), NOT a LinkedIn throttle. Kept separate
+    so a proxy blip doesn't trip the shared 429 breaker and pause all automation."""
+    low = (body or "").lower()
+    return ("this site can’t be reached" in low or "this site can't be reached" in low
+            or "err_" in low)
+
+
+def _text_is_rate_limited(body: str) -> bool:
+    """True when the rendered page text is a LinkedIn rate-limit response (HTTP 429, or LinkedIn's
+    custom 999 anti-bot status). Deliberately does NOT fire on the bare "This page isn't working"
+    shell alone — Chrome renders that identical shell for 500/502/503 and for proxy/network errors,
+    so keying off it indiscriminately trips the breaker on transient failures."""
+    if _text_is_transport_error(body):
+        return False
+    low = (body or "").lower()
+    if "too many requests" in low or "http error 429" in low or "http error 999" in low:
+        return True
+    # Tiny HTTP-error shell: only a rate-limit status code (429 / LinkedIn's 999) counts.
+    if len(body or "") < 200 and ("this page isn’t working" in low or "this page isn't working" in low):
+        return "429" in low or "999" in low
+    return False
 
 
 def solve_arkose_challenge(driver: WebDriver, wait: WebDriverWait) -> bool:
@@ -259,18 +293,17 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
     def _is_logged_in(url: str) -> bool:
         return any(p in url for p in _LOGGED_IN_PATHS)
 
-    def _page_is_rate_limited(drv) -> bool:
-        """LinkedIn returns a 429 error page (or a tiny 'This page isn't working' body)
-        at normal URLs when throttled. Detect it from the rendered body text."""
+    def _page_body(drv) -> str:
         try:
-            body = drv.find_element(By.TAG_NAME, "body").text or ""
+            return drv.find_element(By.TAG_NAME, "body").text or ""
         except Exception:
-            return False
-        low = body.lower()
-        if len(body) < 200 and ("429" in low or "this page isn’t working" in low
-                                or "this page isn't working" in low):
-            return True
-        return "http error 429" in low or "too many requests" in low
+            return ""
+
+    def _page_is_transport_error(drv) -> bool:
+        return _text_is_transport_error(_page_body(drv))
+
+    def _page_is_rate_limited(drv) -> bool:
+        return _text_is_rate_limited(_page_body(drv))
 
     def _page_is_redirect_loop(drv) -> bool:
         """Stored cookies minted from a different egress IP (e.g. after switching to a
@@ -372,6 +405,10 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
     if cookies:
         myprint("Found previous cookies. Loading them now!")
         load_cookies(driver, cookies)
+        # Human-like jitter before hitting the feed. Rapid, perfectly-timed base→feed navigations
+        # from a headless browser are an easy automation tell; a short randomized settle lets the
+        # base page finish and spaces requests out. Tunable/zeroable via env for tests.
+        _human_pause(1.5, 4.0)
         # Navigate directly to the feed — if cookies are valid LinkedIn serves it;
         # if invalid/expired it redirects to a login or challenge page
         driver.get(feed_url)
@@ -405,6 +442,14 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
         raise LinkedInRateLimited(
             "LinkedIn is rate-limiting this session (HTTP 429). Backing off — "
             "reduce automation frequency and retry later.")
+
+    # A Chrome transport error (proxy blip / DNS / timeout) also sits on the /feed URL, so it would
+    # otherwise be mistaken for a live session below — clearing the breaker and storing junk cookies.
+    # Raise a transient error WITHOUT tripping the 429 breaker so the task simply retries later.
+    if _is_logged_in(driver.current_url) and _page_is_transport_error(driver):
+        raise LinkedInRateLimited(
+            "Feed did not load (proxy/network error) — transient, retrying later without "
+            "tripping the rate-limit breaker.")
 
     if _is_logged_in(driver.current_url):
         myprint(f"Already logged in! (current URL: {driver.current_url})")

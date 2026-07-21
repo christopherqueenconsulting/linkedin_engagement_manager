@@ -32,6 +32,23 @@ class TestCooldownSeconds:
         assert _cooldown_seconds() == 1800
 
 
+class TestTripCountGraceSeconds:
+    def test_default_when_unset(self, monkeypatch):
+        monkeypatch.delenv("LINKEDIN_RATE_LIMIT_TRIP_GRACE_SECONDS", raising=False)
+        from cqc_lem.utilities.linkedin.rate_limit import _trip_count_grace_seconds
+        assert _trip_count_grace_seconds() == 1800
+
+    def test_env_override(self, monkeypatch):
+        monkeypatch.setenv("LINKEDIN_RATE_LIMIT_TRIP_GRACE_SECONDS", "90")
+        from cqc_lem.utilities.linkedin.rate_limit import _trip_count_grace_seconds
+        assert _trip_count_grace_seconds() == 90
+
+    def test_bad_env_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("LINKEDIN_RATE_LIMIT_TRIP_GRACE_SECONDS", "nope")
+        from cqc_lem.utilities.linkedin.rate_limit import _trip_count_grace_seconds
+        assert _trip_count_grace_seconds() == 1800
+
+
 class TestMarkRateLimited:
     def test_sets_key_with_ttl(self, fake_redis, monkeypatch):
         monkeypatch.setenv("LINKEDIN_RATE_LIMIT_COOLDOWN_SECONDS", "120")
@@ -63,6 +80,26 @@ class TestMarkRateLimited:
         mark_rate_limited("x")
         fake_redis.incr.assert_called_once_with("linkedin:429_trip_count")
         fake_redis.expire.assert_called_once()
+
+    def test_trip_counter_ttl_is_cooldown_plus_grace(self, fake_redis, monkeypatch):
+        # The counter must self-expire once a full cooldown + grace elapses without a new trip, so the
+        # escalation resets instead of staying pinned at the cap (the old fixed-24h TTL doom loop).
+        monkeypatch.setenv("LINKEDIN_RATE_LIMIT_COOLDOWN_SECONDS", "100")
+        monkeypatch.setenv("LINKEDIN_RATE_LIMIT_TRIP_GRACE_SECONDS", "60")
+        monkeypatch.delenv("LINKEDIN_RATE_LIMIT_MAX_COOLDOWN_SECONDS", raising=False)
+        fake_redis.incr.return_value = 3  # cooldown = 100 * 2^2 = 400
+        from cqc_lem.utilities.linkedin.rate_limit import mark_rate_limited
+        mark_rate_limited("x")
+        fake_redis.expire.assert_called_once_with("linkedin:429_trip_count", 400 + 60)
+
+    def test_trip_counter_ttl_uses_capped_cooldown_plus_grace(self, fake_redis, monkeypatch):
+        monkeypatch.setenv("LINKEDIN_RATE_LIMIT_COOLDOWN_SECONDS", "1800")
+        monkeypatch.setenv("LINKEDIN_RATE_LIMIT_MAX_COOLDOWN_SECONDS", "21600")
+        monkeypatch.setenv("LINKEDIN_RATE_LIMIT_TRIP_GRACE_SECONDS", "1800")
+        fake_redis.incr.return_value = 20  # far past the cap → cooldown clamps to 21600
+        from cqc_lem.utilities.linkedin.rate_limit import mark_rate_limited
+        mark_rate_limited("x")
+        fake_redis.expire.assert_called_once_with("linkedin:429_trip_count", 21600 + 1800)
 
     def test_defaults_reason(self, fake_redis):
         from cqc_lem.utilities.linkedin.rate_limit import mark_rate_limited
