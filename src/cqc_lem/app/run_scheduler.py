@@ -42,10 +42,6 @@ def _skip_if_throttled(name: str) -> bool:
     return False
 
 
-# Backward-compatible alias — historically only checked the manual pause.
-_skip_if_paused = _skip_if_throttled
-
-
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, }, reject_on_worker_lost=True)
 def auto_check_scheduled_posts(self):
@@ -76,8 +72,15 @@ def auto_check_scheduled_posts(self):
         # connection and subscription. Inactive/disconnected users' sessions fail
         # immediately and waste a Chrome slot that active users need. Also skip them
         # while throttled (pause / 429 breaker) so they don't probe the feed — the API
-        # post above still goes out regardless.
-        if user_id in active_user_ids and not _skip_if_throttled("pre-post Selenium"):
+        # post above still goes out regardless. The two skip reasons are distinct, so
+        # branch them separately to keep the logs honest (the throttle path already
+        # logs its own reason inside _skip_if_throttled).
+        if user_id not in active_user_ids:
+            log_warning(
+                "Skipping pre-post Selenium tasks — user not active/connected",
+                user_id=user_id, post_id=post_id, task_name="auto_check_scheduled_posts",
+            )
+        elif not _skip_if_throttled("pre-post Selenium"):
             base_kwargs = {'user_id': user_id, 'loop_for_duration': 60 * 15}
 
             # Start the pre-post commenting task 15 minutes before scheduled post (loop for 15 minutes)
@@ -91,11 +94,6 @@ def auto_check_scheduled_posts(self):
             # Schedule the pre-post profile viewer dm task 10 minutes before scheduled post (loop for 10 minutes)
             base_kwargs['loop_for_duration'] = 60 * 10
             automate_profile_viewer_engagement.apply_async(kwargs=base_kwargs, eta=scheduled_time - timedelta(minutes=10))
-        else:
-            log_warning(
-                "Skipping pre-post Selenium tasks — user not active/connected",
-                user_id=user_id, post_id=post_id, task_name="auto_check_scheduled_posts",
-            )
 
     # Re-queue any posts that got stuck in 'scheduled' (task was lost, e.g. on container restart)
     # but never transitioned to 'posted'. The 2-hour gap ensures we don't race with a task
@@ -157,7 +155,7 @@ def auto_check_scheduled_dms(self):
 @shared_task.task
 def auto_appreciate_dms():
     if _skip_if_throttled("auto_appreciate_dms"):
-        return "Automation paused"
+        return "Automation throttled"
     # For each user schedule appreciate DMS
     users = get_active_user_ids()
 
@@ -190,7 +188,7 @@ def auto_daily_engagement():
     comment_on_feed_inline), and QueueOnce (keys=['user_id']) prevents overlapping double-runs for
     the same user."""
     if _skip_if_throttled("auto_daily_engagement"):
-        return "Automation paused"
+        return "Automation throttled"
     users = get_active_user_ids()
     dispatched = 0
     for user_id in users:
@@ -527,7 +525,7 @@ def auto_sync_groups():
 def auto_group_engagement():
     """Daily value-add commenting in each active user's ENABLED groups (shares the per-day cap)."""
     if _skip_if_throttled("auto_group_engagement"):
-        return "Automation paused"
+        return "Automation throttled"
     from cqc_lem.app.run_automation import auto_comment_in_groups
     users = get_active_user_ids()
     n = 0
@@ -559,7 +557,7 @@ def auto_group_posts():
 def auto_scrape_stats():
     """Daily: capture engagement stats on each active user's recent posts (powers post-time recs)."""
     if _skip_if_throttled("auto_scrape_stats"):
-        return "Automation paused"
+        return "Automation throttled"
     from cqc_lem.app.run_automation import auto_scrape_post_stats
     users = get_active_user_ids()
     n = 0
@@ -574,7 +572,7 @@ def auto_scrape_stats():
 def auto_send_due_followups():
     """Dispatch a per-user Selenium task to send due DM follow-ups (each gated by reply-detection)."""
     if _skip_if_throttled("auto_send_due_followups"):
-        return "Automation paused"
+        return "Automation throttled"
     from cqc_lem.app.run_automation import process_user_followups
     from cqc_lem.utilities.db import get_due_followups
     # due_at is stored naive-UTC; compare against naive-UTC now (not container-local time).
@@ -679,7 +677,7 @@ def auto_clean_stale_profiles():
 def auto_invite_to_company_pages():
     """Start invite process for each active user who has a linked in company page"""
     if _skip_if_throttled("auto_invite_to_company_pages"):
-        return "Automation paused"
+        return "Automation throttled"
 
     # Get all active users and loop through them
     users = get_active_user_ids()

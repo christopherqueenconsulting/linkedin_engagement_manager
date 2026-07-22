@@ -99,6 +99,8 @@ def mark_rate_limited(reason: str = "") -> None:
         try:
             client.expire(_TRIP_COUNT_KEY, seconds + _trip_count_grace_seconds())
         except Exception:
+            # Best-effort TTL refresh — the counter still has its previous TTL, so a failure here
+            # just means slightly less-precise self-reset timing, not a broken breaker. Swallow it.
             pass
         client.set(_COOLDOWN_KEY, reason or "429", ex=seconds)
         log_warning(f"LinkedIn 429 circuit breaker OPEN for {seconds}s (consecutive trip #{trips}) "

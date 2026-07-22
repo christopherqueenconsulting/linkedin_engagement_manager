@@ -863,7 +863,7 @@ class TestAutomationPauseGating:
              patch(f"{self._M}.automation_pause_remaining", return_value=999), \
              patch(f"{self._M}.get_active_user_ids") as users:
             result = auto_daily_engagement()
-        assert "paused" in result.lower()
+        assert "throttled" in result.lower()  # generic — the skip may be pause OR the 429 breaker
         users.assert_not_called()  # short-circuits before fanning out any Selenium work
 
     def test_appreciate_dms_skips_when_paused(self):
@@ -872,7 +872,7 @@ class TestAutomationPauseGating:
              patch(f"{self._M}.automation_pause_remaining", return_value=1), \
              patch(f"{self._M}.get_active_user_ids") as users:
             result = auto_appreciate_dms()
-        assert "paused" in result.lower()
+        assert "throttled" in result.lower()  # generic — the skip may be pause OR the 429 breaker
         users.assert_not_called()
 
     def test_runs_normally_when_not_paused(self):
@@ -961,10 +961,6 @@ class TestSkipIfThrottled:
         with patch(f"{_MOD}.is_automation_paused", return_value=False), \
              patch(f"{_MOD}.rate_limit_cooldown_remaining", return_value=900):
             assert _skip_if_throttled("x") is True
-
-    def test_legacy_alias_points_at_throttled(self):
-        from cqc_lem.app.run_scheduler import _skip_if_paused, _skip_if_throttled
-        assert _skip_if_paused is _skip_if_throttled
 
 
 class TestNewsletterPublishGatedOnBreaker:
