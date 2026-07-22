@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.45.4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.45.3...v0.45.4) (2026-07-22)
+
+
+### Bug Fixes
+
+* **engagement:** break the LinkedIn 429 breaker doom loop ([62e3ca0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/62e3ca077a77bf0c16bd40d638f0349c32b8104b))
+* **engagement:** break the LinkedIn 429 breaker doom loop ([77155cd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/77155cdf348145286dba85a81355879a00b05e46))
+* **review:** address Copilot + CodeQL feedback on PR [#370](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/370) ([e9f79bc](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e9f79bc66adde1369640dae963609e15db98674d))
+
+
+### Documentation
+
+* **claude:** document production deploy flow + local hotfix fallback ([bcbbbb9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bcbbbb9b5a0d582e161fd6a20c26a6c853d0a4f7))
+
 ## [0.45.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.45.2...v0.45.3) (2026-07-13)
 
 
