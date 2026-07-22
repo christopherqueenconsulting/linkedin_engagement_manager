@@ -14,7 +14,7 @@ def test_task(seconds):
 @shared_task.task
 def test_get_my_profile(user_id: int):
     user_email, user_password = get_user_password_pair_by_id(user_id)
-    driver, wait = get_driver_wait_pair(headless=True, session_name="AWS Test Get My Profile")
+    driver, wait = get_driver_wait_pair(headless=True, session_name="AWS Test Get My Profile", user_id=user_id)
 
     try:
 

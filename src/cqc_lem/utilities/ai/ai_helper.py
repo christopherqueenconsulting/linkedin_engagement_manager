@@ -2697,7 +2697,7 @@ def generate_carousel_content(user_id: int, stage: str, prefs: dict = None,
     # Attempt to load user profile for personalisation; fall back gracefully
     try:
         user_email, user_password = get_user_password_pair_by_id(user_id)
-        driver, wait = get_driver_wait_pair(session_name="Carousel AI")
+        driver, wait = get_driver_wait_pair(session_name="Carousel AI", user_id=user_id)
         try:
             profile = get_my_profile(driver, wait, user_email, user_password, user_id=user_id)
         finally:

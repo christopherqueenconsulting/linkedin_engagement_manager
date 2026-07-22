@@ -5,6 +5,7 @@ import time
 import zipfile
 from datetime import datetime, timedelta
 from functools import wraps
+from typing import Optional
 from urllib.parse import urlparse
 
 import requests
@@ -21,8 +22,12 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
 
 from cqc_lem.utilities.env_constants import *
-from cqc_lem.utilities.logger import myprint, log_warning
+from cqc_lem.utilities.logger import myprint, log_info, log_warning
 from cqc_lem.utilities.utils import get_aws_device_farm_url
+
+# Last-resort geolocation when a session has no user_id and therefore no stored Login Location.
+_DEFAULT_LATITUDE = 30.3321
+_DEFAULT_LONGITUDE = -81.6556
 
 
 def quit_gracefully(driver: WebDriver):
@@ -101,7 +106,17 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
     user_locale = "en-US"
     user_proxy = None
     user_country = None
-    if user_id is not None:
+    if user_id is None:
+        # Without a user_id there is no proxy, no timezone, no locale and no geo — the session
+        # egresses straight from the host (a datacenter IP on the VPS) with a mismatched location.
+        # That is the configuration that drove the sustained LinkedIn /feed 429s, and it used to
+        # happen silently at nearly every call site. Never let it be silent again.
+        log_warning(
+            f"Selenium session '{session_name}' created WITHOUT user_id — no proxy, timezone, "
+            "locale or geolocation will be applied and egress will be the host IP. Pass user_id "
+            "for any session that touches LinkedIn.",
+            action_type="login")
+    else:
         from cqc_lem.utilities.db import get_user_geo, get_user_proxy
         geo = get_user_geo(user_id)
         if geo:
@@ -118,6 +133,12 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
     # matched to the user's country → global default → none (direct egress).
     from cqc_lem.utilities.proxy import resolve_proxy
     effective_proxy = resolve_proxy(user_proxy, user_country)
+
+    # One line per session answering "was this actually proxied, and as whom?" — previously this
+    # could only be determined by shelling into the container. Host:port only; never the
+    # credentials embedded in the proxy URL.
+    log_info(f"Selenium session '{session_name}' egress={_proxy_label(effective_proxy)} "
+             f"tz={user_timezone} locale={user_locale}", user_id=user_id, action_type="login")
 
     options = getBaseOptions()
     options.add_argument("--ignore-ssl-errors=yes")
@@ -150,11 +171,21 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
         myprint(f"Could not apply stealth init script | Error: {e}")
 
     if coordinates is None:
+        # lat/lng come from the user's stored Login Location (get_user_geo above). The constants are
+        # a last-resort fallback ONLY — reporting a fixed city that contradicts the egress IP's city
+        # is itself a "new location" signal, so a session without a resolved geo is degraded, not
+        # neutral. That's part of what the missing-user_id warning below is about.
         coordinates = {
-            "latitude": lat if lat is not None else 30.3321,
-            "longitude": lng if lng is not None else -81.6556,
+            "latitude": lat if lat is not None else _DEFAULT_LATITUDE,
+            "longitude": lng if lng is not None else _DEFAULT_LONGITUDE,
             "accuracy": 100,
         }
+        if lat is None:
+            log_warning(
+                "Selenium session has no resolved geolocation — falling back to default "
+                f"coordinates ({_DEFAULT_LATITUDE}, {_DEFAULT_LONGITUDE}), which may contradict "
+                "the egress IP's location",
+                user_id=user_id, action_type="login")
     # Apply geo, timezone and locale overrides at the CDP layer so JS fingerprint
     # signals (geolocation API, Intl/Date timezone, navigator.language) are consistent.
     driver.execute_cdp_cmd("Emulation.setGeolocationOverride", coordinates)
@@ -202,6 +233,19 @@ def _build_proxy_auth_extension_b64(username: str, password: str) -> str:
         z.writestr("manifest.json", json.dumps(manifest))
         z.writestr("background.js", background)
     return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _proxy_label(proxy_url: Optional[str]) -> str:
+    """host:port of a proxy URL for logging, or 'DIRECT'. Never leaks the credentials."""
+    if not proxy_url:
+        return "DIRECT"
+    try:
+        parsed = urlparse(proxy_url)
+        if not parsed.hostname:
+            return "invalid"
+        return f"{parsed.hostname}:{parsed.port}" if parsed.port else parsed.hostname
+    except Exception:
+        return "invalid"
 
 
 def apply_proxy(options: Options, proxy_url: str) -> None:
@@ -288,11 +332,15 @@ def getBaseOptions(base_download_directory: str = None):
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
     options.add_argument("window-size=1920x1080")
-    options.add_argument(
-        # "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36"
-        #"user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.91 Safari/537.36"
-        "user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.91 Safari/537.36"
-    )
+    # NO --user-agent override. A pinned UA string is a LIABILITY, not stealth: Chrome derives
+    # User-Agent Client Hints (navigator.userAgentData, Sec-CH-UA, Sec-CH-UA-Platform) from the
+    # real build, and --user-agent does NOT change them. Any string we invent therefore contradicts
+    # the Client Hints the same request sends. This code pinned "Chrome/130 on macOS" while the
+    # selenium/standalone-chrome image silently rolled forward to Chrome 150 on Linux — a 20-version
+    # AND wrong-OS mismatch that is trivial for LinkedIn to check, and a prime suspect in the
+    # sustained /feed 429s. Chrome's own UA is always self-consistent; let it speak for itself.
+    # If a specific UA is ever genuinely required, set it via CDP Network.setUserAgentOverride WITH
+    # a matching userAgentMetadata payload — that updates the Client Hints too.
 
     # options.set_capability("browserVersion", "100.0")  # This is needed for this version
 
