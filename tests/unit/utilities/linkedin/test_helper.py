@@ -665,3 +665,73 @@ class TestRedirectLoopRecovery:
     def test_redirect_loop_recovers_to_successful_login(self):
         _, _, mock_store = self._run()
         mock_store.assert_called_once()  # fresh cookies persisted after re-auth
+
+
+# ---------------------------------------------------------------------------
+# 429 / transport-error page classification (hardened detector)
+# ---------------------------------------------------------------------------
+
+class TestPageClassification:
+    def test_explicit_429_body_is_rate_limited(self):
+        from cqc_lem.utilities.linkedin.helper import _text_is_rate_limited
+        assert _text_is_rate_limited("HTTP ERROR 429") is True
+
+    def test_too_many_requests_is_rate_limited(self):
+        from cqc_lem.utilities.linkedin.helper import _text_is_rate_limited
+        assert _text_is_rate_limited("Too Many Requests") is True
+
+    def test_linkedin_999_is_rate_limited(self):
+        from cqc_lem.utilities.linkedin.helper import _text_is_rate_limited
+        assert _text_is_rate_limited("HTTP ERROR 999") is True
+
+    def test_tiny_shell_with_429_code_is_rate_limited(self):
+        from cqc_lem.utilities.linkedin.helper import _text_is_rate_limited
+        assert _text_is_rate_limited("This page isn't working. HTTP ERROR 429") is True
+
+    def test_tiny_shell_without_code_is_not_rate_limited(self):
+        # Bare "This page isn't working" (no 429/999) must NOT trip the breaker — it's the generic
+        # Chrome HTTP-error shell also used for 500/502/503.
+        from cqc_lem.utilities.linkedin.helper import _text_is_rate_limited
+        assert _text_is_rate_limited("This page isn't working right now.") is False
+
+    def test_server_error_500_is_not_rate_limited(self):
+        from cqc_lem.utilities.linkedin.helper import _text_is_rate_limited
+        assert _text_is_rate_limited("This page isn't working. HTTP ERROR 500") is False
+
+    def test_proxy_error_is_not_rate_limited(self):
+        # A flaky residential proxy must not be mistaken for a LinkedIn throttle.
+        from cqc_lem.utilities.linkedin.helper import _text_is_rate_limited
+        assert _text_is_rate_limited("This site can't be reached. ERR_PROXY_CONNECTION_FAILED") is False
+
+    def test_proxy_error_is_transport_error(self):
+        from cqc_lem.utilities.linkedin.helper import _text_is_transport_error
+        assert _text_is_transport_error("This site can't be reached\nERR_TIMED_OUT") is True
+
+    def test_normal_feed_is_neither(self):
+        from cqc_lem.utilities.linkedin.helper import _text_is_rate_limited, _text_is_transport_error
+        body = "Home  My Network  Jobs  Messaging  Notifications  Start a post"
+        assert _text_is_rate_limited(body) is False
+        assert _text_is_transport_error(body) is False
+
+    def test_empty_body_is_neither(self):
+        from cqc_lem.utilities.linkedin.helper import _text_is_rate_limited, _text_is_transport_error
+        assert _text_is_rate_limited("") is False
+        assert _text_is_transport_error("") is False
+
+
+class TestHumanPause:
+    def test_disabled_is_noop(self, monkeypatch):
+        monkeypatch.setenv("LINKEDIN_HUMANIZE_DELAYS", "false")
+        import cqc_lem.utilities.linkedin.helper as h
+        with patch.object(h.time, "sleep") as slept:
+            h._human_pause(1.0, 2.0)
+        slept.assert_not_called()
+
+    def test_enabled_sleeps_within_range(self, monkeypatch):
+        monkeypatch.delenv("LINKEDIN_HUMANIZE_DELAYS", raising=False)
+        import cqc_lem.utilities.linkedin.helper as h
+        with patch.object(h.time, "sleep") as slept, \
+             patch.object(h.random, "uniform", return_value=1.5) as uni:
+            h._human_pause(1.0, 2.0)
+        uni.assert_called_once_with(1.0, 2.0)
+        slept.assert_called_once_with(1.5)

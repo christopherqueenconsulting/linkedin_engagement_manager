@@ -182,6 +182,29 @@ Before merging any PR, all of the following must pass:
 - `CodeQL Security Analysis`
 - `GitGuardian Security Scan`
 
+## Production Deployment & Environment
+
+LEM runs as a Docker Compose stack on a **Hostinger VPS**, exposed via a Cloudflare Tunnel. There are two checkouts on the box, and they are NOT the same:
+
+| Path | Owner | Purpose |
+|---|---|---|
+| `/home/lem/linkedin_engagement_manager` | `lem` | Dev/agent working checkout (where you edit + commit). Has `./src` on disk. |
+| `/opt/lem` | `deploy` | **Live production stack.** Compose project workdir; `scripts/deploy.sh` checks out release tags here. |
+
+**Standard release flow (the only path that keeps prod on the release train):**
+
+```
+local dev → PR to main → CI gates pass → release-please tags vX.Y.Z
+  → build-and-push.yml builds ghcr.io/christopherqueenconsulting/cqc-lem:vX.Y.Z → GHCR
+  → SSH deploy to VPS runs scripts/deploy.sh vX.Y.Z (git checkout tag, flyway migrate,
+    compose up, /health check, auto-rollback to .last_good_tag on failure)
+```
+
+- The stack is launched with **both** compose files: `docker compose -f docker-compose.yml -f docker-compose.prod.yml`. `docker-compose.yml` alone is the DEV config (it bind-mounts `./src:/app/src`); **`docker-compose.prod.yml` overrides that away**, so in PRODUCTION every app service runs the code baked into the image — editing files on disk does nothing until a new image ships. Code lives at `/app/src/cqc_lem/...` inside the image.
+- Image ref is `${DOCKER_IMAGE_NAME}:${IMAGE_TAG:-latest}`, both set in `/opt/lem/.env` (git-ignored, lives on the box); `scripts/deploy.sh` exports `IMAGE_TAG` per-deploy. App services sharing the image: `web_app`, `celery_worker`, `celery_worker_selenium`, `celery_worker_selenium_outreach`, `celery_worker_selenium_content`, `celery_beat`, `flower`. Infra services (`mysql`, `redis`, `selenium-chrome`, `litellm`, `cloudflared`, `flyway`) use their own upstream images.
+- **Runtime state (429 breaker, manual automation pause, reply-sweep cadence keys) lives in Redis**, not the DB or containers — it survives deploys. Inspect/repair it by calling the real functions in the container, e.g. `docker exec celery_worker_selenium python -c "from cqc_lem.utilities.linkedin.rate_limit import clear_rate_limit, pause_automation; ..."`, so the correct Redis URL is used.
+- **Local hotfix deploy (fallback when CI/release is too slow or blocked):** build a thin overlay image `FROM` the running release tag that only `COPY`s the changed `src` files (guarantees identical deps, seconds not minutes), then on the box set `/opt/lem/.env` `IMAGE_TAG=<hotfix-tag>` and `cd /opt/lem && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --no-deps --pull never <app-services>`. Keep the prior release image locally for instant rollback (`IMAGE_TAG=vX.Y.Z`). **This diverges prod from `main`** — the fix MUST still land via PR→release, or the next release will REVERT it. Requires `sudo` for the Docker socket on this box.
+
 ## Known Gotchas
 
 - `get_docker_driver()` previously connected to Selenium Grid hub+node. It now connects to `selenium/standalone-chrome:latest` at port 4444.

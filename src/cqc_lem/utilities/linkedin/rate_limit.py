@@ -18,7 +18,13 @@ _TRIP_COUNT_KEY = "linkedin:429_trip_count"   # consecutive trips → escalating
 _PAUSE_KEY = "linkedin:automation_paused"     # manual global Selenium pause
 _DEFAULT_COOLDOWN_SECONDS = 1800  # 30 min
 _DEFAULT_MAX_COOLDOWN_SECONDS = 6 * 60 * 60  # cap the escalation at 6h
-_TRIP_COUNT_TTL = 24 * 60 * 60  # remember consecutive trips for a day
+# Grace window added to the cooldown when setting the consecutive-trip counter's TTL. The counter is
+# what drives escalation; tying its lifetime to (cooldown + grace) instead of a fixed 24h makes the
+# escalation SELF-RESETTING: once a full cooldown elapses without a fresh trip (the throttle lifted,
+# so the post-cooldown probe either succeeded → clear_rate_limit, or simply didn't re-trip), the
+# counter expires and the next 429 starts back at the base cooldown. A fixed 24h TTL let the counter
+# outlive several 6h cooldowns, pinning escalation at the cap long after conditions improved.
+_DEFAULT_TRIP_COUNT_GRACE_SECONDS = 30 * 60  # 30 min
 
 
 class LinkedInRateLimited(RuntimeError):
@@ -41,6 +47,13 @@ def _max_cooldown_seconds() -> int:
         return int(os.getenv("LINKEDIN_RATE_LIMIT_MAX_COOLDOWN_SECONDS", str(_DEFAULT_MAX_COOLDOWN_SECONDS)))
     except ValueError:
         return _DEFAULT_MAX_COOLDOWN_SECONDS
+
+
+def _trip_count_grace_seconds() -> int:
+    try:
+        return int(os.getenv("LINKEDIN_RATE_LIMIT_TRIP_GRACE_SECONDS", str(_DEFAULT_TRIP_COUNT_GRACE_SECONDS)))
+    except ValueError:
+        return _DEFAULT_TRIP_COUNT_GRACE_SECONDS
 
 
 def _redis_client():
@@ -69,17 +82,26 @@ def mark_rate_limited(reason: str = "") -> None:
     if client is None:
         return
     try:
-        # Escalating back-off: each CONSECUTIVE trip (counter cleared only by a successful login)
-        # doubles the cooldown — base, 2x, 4x, … up to a cap. A fixed 30-min cooldown meant that as
-        # soon as it expired some task probed LinkedIn, drew a fresh 429 and re-tripped it every
-        # ~30 min forever (the doom loop). Escalation probes less and less often so the throttled IP
-        # can actually recover.
+        # Escalating back-off: each CONSECUTIVE trip doubles the cooldown — base, 2x, 4x, … up to a
+        # cap. A fixed 30-min cooldown meant that as soon as it expired some task probed LinkedIn,
+        # drew a fresh 429 and re-tripped it every ~30 min forever (the doom loop). Escalation probes
+        # less and less often so the throttled IP can actually recover. The consecutive-trip counter
+        # is cleared by a successful login (clear_rate_limit) OR self-expires once a full cooldown +
+        # grace elapses with no new trip — see the counter-TTL note below.
         try:
             trips = int(client.incr(_TRIP_COUNT_KEY))
-            client.expire(_TRIP_COUNT_KEY, _TRIP_COUNT_TTL)
         except Exception:
             trips = 1
         seconds = min(_max_cooldown_seconds(), _cooldown_seconds() * (2 ** max(0, trips - 1)))
+        # Counter lives exactly as long as this back-off window plus a grace period. If the throttle
+        # lifts, the post-cooldown probe won't re-trip within grace, the counter expires, and the
+        # NEXT 429 (if any) escalates from scratch — instead of staying pinned at the cap for a day.
+        try:
+            client.expire(_TRIP_COUNT_KEY, seconds + _trip_count_grace_seconds())
+        except Exception:
+            # Best-effort TTL refresh — the counter still has its previous TTL, so a failure here
+            # just means slightly less-precise self-reset timing, not a broken breaker. Swallow it.
+            pass
         client.set(_COOLDOWN_KEY, reason or "429", ex=seconds)
         log_warning(f"LinkedIn 429 circuit breaker OPEN for {seconds}s (consecutive trip #{trips}) "
                     "— Selenium engagement paused", action_type="rate_limit", http_status=429)

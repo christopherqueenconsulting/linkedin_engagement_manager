@@ -31,6 +31,15 @@ _PATCH_AUTOMATE_COMMENTING = f"{_MOD}.automate_commenting"
 _PATCH_AUTOMATE_PROFILE_VIEWER = f"{_MOD}.automate_profile_viewer_engagement"
 
 
+@pytest.fixture(autouse=True)
+def _not_throttled():
+    """Keep the automation throttle (manual pause + 429 breaker) OPEN=off and hermetic by default so
+    dispatcher tests never touch Redis. Tests exercising the throttle gate patch these explicitly."""
+    with patch(f"{_MOD}.is_automation_paused", return_value=False), \
+         patch(f"{_MOD}.rate_limit_cooldown_remaining", return_value=0):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -854,7 +863,7 @@ class TestAutomationPauseGating:
              patch(f"{self._M}.automation_pause_remaining", return_value=999), \
              patch(f"{self._M}.get_active_user_ids") as users:
             result = auto_daily_engagement()
-        assert "paused" in result.lower()
+        assert "throttled" in result.lower()  # generic — the skip may be pause OR the 429 breaker
         users.assert_not_called()  # short-circuits before fanning out any Selenium work
 
     def test_appreciate_dms_skips_when_paused(self):
@@ -863,7 +872,7 @@ class TestAutomationPauseGating:
              patch(f"{self._M}.automation_pause_remaining", return_value=1), \
              patch(f"{self._M}.get_active_user_ids") as users:
             result = auto_appreciate_dms()
-        assert "paused" in result.lower()
+        assert "throttled" in result.lower()  # generic — the skip may be pause OR the 429 breaker
         users.assert_not_called()
 
     def test_runs_normally_when_not_paused(self):
@@ -926,3 +935,84 @@ class TestDispatchScheduledReplySweeps:
              patch(f"{self._M}.sweep_reply_comments"):
             dispatch_scheduled_reply_sweeps()
         assert redis.set.call_args.kwargs["ex"] == 2 * 60 * 60  # 12/day = 2h, the floor
+
+
+# ---------------------------------------------------------------------------
+# _skip_if_throttled + dispatcher gating on the 429 breaker
+# ---------------------------------------------------------------------------
+
+class TestSkipIfThrottled:
+    def test_not_throttled_returns_false(self):
+        from cqc_lem.app.run_scheduler import _skip_if_throttled
+        with patch(f"{_MOD}.is_automation_paused", return_value=False), \
+             patch(f"{_MOD}.rate_limit_cooldown_remaining", return_value=0):
+            assert _skip_if_throttled("x") is False
+
+    def test_manual_pause_returns_true(self):
+        from cqc_lem.app.run_scheduler import _skip_if_throttled
+        with patch(f"{_MOD}.is_automation_paused", return_value=True), \
+             patch(f"{_MOD}.automation_pause_remaining", return_value=123), \
+             patch(f"{_MOD}.rate_limit_cooldown_remaining", return_value=0):
+            assert _skip_if_throttled("x") is True
+
+    def test_open_429_breaker_returns_true(self):
+        # The core fix: dispatchers must short-circuit on the 429 cooldown, not only the manual pause.
+        from cqc_lem.app.run_scheduler import _skip_if_throttled
+        with patch(f"{_MOD}.is_automation_paused", return_value=False), \
+             patch(f"{_MOD}.rate_limit_cooldown_remaining", return_value=900):
+            assert _skip_if_throttled("x") is True
+
+
+class TestNewsletterPublishGatedOnBreaker:
+    def test_skips_dispatch_when_breaker_open(self):
+        from cqc_lem.app.run_scheduler import auto_publish_scheduled_editions
+        with patch(f"{_MOD}.rate_limit_cooldown_remaining", return_value=900), \
+             patch(f"{_MOD}.is_automation_paused", return_value=False), \
+             patch("cqc_lem.app.run_automation.auto_publish_edition") as pub, \
+             patch("cqc_lem.utilities.db.get_editions_due_to_publish") as due:
+            result = auto_publish_scheduled_editions()
+        pub.apply_async.assert_not_called()
+        due.assert_not_called()
+        assert "throttled" in result.lower()
+
+    def test_dispatches_when_not_throttled(self):
+        from cqc_lem.app.run_scheduler import auto_publish_scheduled_editions
+        with patch("cqc_lem.app.run_automation.auto_publish_edition") as pub, \
+             patch("cqc_lem.utilities.db.get_editions_due_to_publish", return_value=[{"id": 7}]):
+            result = auto_publish_scheduled_editions()
+        pub.apply_async.assert_called_once()
+        assert "Dispatched 1" in result
+
+
+class TestReplySweepDispatchGatedOnBreaker:
+    def test_skips_dispatch_when_breaker_open(self):
+        from cqc_lem.app.run_scheduler import dispatch_scheduled_reply_sweeps
+        with patch(f"{_MOD}.rate_limit_cooldown_remaining", return_value=900), \
+             patch(f"{_MOD}.is_automation_paused", return_value=False), \
+             patch(f"{_MOD}.get_users_with_reply_mode") as get_users, \
+             patch(f"{_MOD}.sweep_reply_comments") as sweep:
+            result = dispatch_scheduled_reply_sweeps()
+        get_users.assert_not_called()
+        sweep.apply_async.assert_not_called()
+        assert "throttled" in result.lower()
+
+
+class TestPrePostSeleniumGatedOnBreaker:
+    def test_pre_post_selenium_skipped_when_breaker_open_but_post_still_dispatched(self):
+        from cqc_lem.app.run_scheduler import auto_check_scheduled_posts
+        sched = datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc)
+        with patch(f"{_MOD}.rate_limit_cooldown_remaining", return_value=900), \
+             patch(f"{_MOD}.is_automation_paused", return_value=False), \
+             patch(_PATCH_GET_POSTS, return_value=[(101, sched, 1)]), \
+             patch(_PATCH_GET_ACTIVE, return_value=[1]), \
+             patch(_PATCH_UPDATE_POST_STATUS), \
+             patch(_PATCH_GET_ORPHANED, return_value=[]), \
+             patch(_PATCH_POST_TO_LINKEDIN) as post, \
+             patch(_PATCH_AUTOMATE_COMMENTING) as commenting, \
+             patch(f"{_MOD}.auto_seed_comment_on_post") as seed, \
+             patch(_PATCH_AUTOMATE_PROFILE_VIEWER) as viewer:
+            auto_check_scheduled_posts()
+        post.apply_async.assert_called_once()      # API post still goes out
+        commenting.apply_async.assert_not_called()  # Selenium pre-post gated off
+        seed.apply_async.assert_not_called()
+        viewer.apply_async.assert_not_called()
