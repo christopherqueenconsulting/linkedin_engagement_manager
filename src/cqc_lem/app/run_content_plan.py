@@ -680,7 +680,7 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
 
     if user_profile is None:
         user_email, user_password = get_user_password_pair_by_id(user_id)
-        driver, wait = get_driver_wait_pair(session_name='Create Text Post')
+        driver, wait = get_driver_wait_pair(session_name='Create Text Post', user_id=user_id)
         try:
             user_profile = get_my_profile(driver, wait, user_email, user_password, user_id=user_id)
         except Exception as e:

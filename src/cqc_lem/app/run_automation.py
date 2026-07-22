@@ -268,7 +268,7 @@ def comment_on_post(self, user_id: int, post_link: str, comment_text: str):
         myprint("Another task already claimed this post. Skipping...")
         return "Another task already claimed this post. Skipping..."
 
-    driver, wait = get_driver_wait_pair(session_name='Post Comment')
+    driver, wait = get_driver_wait_pair(session_name='Post Comment', user_id=user_id)
 
     try:
 
@@ -1785,7 +1785,7 @@ def accept_connection_request(user_id: int):
 
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
-    driver, wait = get_driver_wait_pair(session_name='Accept Connection Requests')
+    driver, wait = get_driver_wait_pair(session_name='Accept Connection Requests', user_id=user_id)
 
     login_to_linkedin(driver, wait, user_email, user_password)
 
@@ -1979,7 +1979,7 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
 def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: int = None, future_forward: int = 60):
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
-    driver, wait = get_driver_wait_pair(session_name='Appreciation DMs')
+    driver, wait = get_driver_wait_pair(session_name='Appreciation DMs', user_id=user_id)
 
     try:
         login_to_linkedin(driver, wait, user_email, user_password)
@@ -2450,7 +2450,7 @@ def send_dm_now(user_id: int, profile_url: str, message: str) -> bool:
     (issue #306 scheduler) so both use the same send + logging path."""
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
-    driver, wait = get_driver_wait_pair(session_name='Private DM')
+    driver, wait = get_driver_wait_pair(session_name='Private DM', user_id=user_id)
 
     login_to_linkedin(driver, wait, user_email, user_password)
 
@@ -2545,7 +2545,7 @@ def send_scheduled_dm(self, dm_id: int):
 def invite_to_connect(self, user_id: int, profile_url: str, message: str = None):
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
-    driver, wait = get_driver_wait_pair(session_name='Invite to Connect')
+    driver, wait = get_driver_wait_pair(session_name='Invite to Connect', user_id=user_id)
 
     result = "Invitation to Connect Started"
 
@@ -2848,7 +2848,7 @@ def post_to_linkedin(self, user_id: int, post_id: int):
 def automate_invites_to_company_page_for_user(self, user_id: int):
     """Send invites to the company page for the given user."""
 
-    driver, wait = get_driver_wait_pair(session_name='Company Page Invites')
+    driver, wait = get_driver_wait_pair(session_name='Company Page Invites', user_id=user_id)
 
     try:
 
