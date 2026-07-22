@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.45.5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.45.4...v0.45.5) (2026-07-22)
+
+
+### Bug Fixes
+
+* **selenium:** route every LinkedIn session through the user's proxy + drop the stale UA ([4659ec7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4659ec7d83964bea2f715b3c0b7bf9240181337c))
+* **selenium:** route every LinkedIn session through the user's proxy + drop the stale UA ([a440be0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a440be0c58b139d1a91ec2b90a67c16b7ae9720b))
+
 ## [0.45.4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.45.3...v0.45.4) (2026-07-22)
 
 
