@@ -25,7 +25,7 @@ class _FakeCursor:
         self.rowcount = 0
         self.lastrowid = 0
 
-    def execute(self, sql, params=()):
+    def execute(self, sql, params=None):
         s = " ".join(sql.split())
         if s.startswith("UPDATE posts SET archetype"):
             archetype, hook_style, topic, post_id = params
