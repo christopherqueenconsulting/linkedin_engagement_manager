@@ -8,6 +8,8 @@ rubric can't silently break the A1/A3 acceptance contract.
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 from cqc_lem.utilities.ai.authenticity_rubric import (
     AI_SLOP_TELLS,
     AUTHENTICITY_CAUTION_CEILING,

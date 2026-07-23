@@ -129,12 +129,9 @@ AUTHENTICITY_JUDGE_CRITERIA: str = (
 )
 
 
-def weighted_score(dimension_scores: dict) -> float:
-    """Composite 0-100 authenticity score from per-dimension 0-100 scores.
-
-    Missing dimensions are treated as 0 (a judge that could not evidence a dimension gets no credit
-    for it). Unknown keys are ignored so the caller can pass extra judge metadata safely.
-    """
+def _weighted_score_raw(dimension_scores: dict) -> float:
+    """Unrounded composite score. Gate logic uses this so rounding can't flip a borderline draft
+    across the threshold (e.g. 59.996 -> 60.0)."""
     total = 0.0
     for name, spec in AUTHENTICITY_DIMENSIONS.items():
         raw = dimension_scores.get(name, 0)
@@ -144,7 +141,17 @@ def weighted_score(dimension_scores: dict) -> float:
             value = 0.0
         value = max(0.0, min(100.0, value))
         total += value * spec["weight"]
-    return round(total, 2)
+    return total
+
+
+def weighted_score(dimension_scores: dict) -> float:
+    """Composite 0-100 authenticity score from per-dimension 0-100 scores, rounded to 2 decimals
+    for display. Gate logic uses the raw (unrounded) value via ``gate_draft``.
+
+    Missing dimensions are treated as 0 (a judge that could not evidence a dimension gets no credit
+    for it). Unknown keys are ignored so the caller can pass extra judge metadata safely.
+    """
+    return round(_weighted_score_raw(dimension_scores), 2)
 
 
 def classify_score(score: float) -> str:
@@ -160,7 +167,7 @@ def classify_score(score: float) -> str:
 def gate_draft(dimension_scores: dict) -> bool:
     """True when the draft should be demoted (APPROVED -> PENDING) — composite below the gate
     threshold. The A1 gate calls this so the threshold has exactly one definition."""
-    return weighted_score(dimension_scores) < AUTHENTICITY_GATE_THRESHOLD
+    return _weighted_score_raw(dimension_scores) < AUTHENTICITY_GATE_THRESHOLD
 
 
 # ---------------------------------------------------------------------------
