@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.52.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.51.0...v0.52.0) (2026-07-23)
+
+
+### Features
+
+* **post-stats:** impression-normalized engagement-rate scoring (closes [#388](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/388)) ([6ab02e3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6ab02e3d957cc1e1a4fdc2406c7d9d07753bb1da))
+
 ## [0.51.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.50.2...v0.51.0) (2026-07-23)
 
 
