@@ -1138,6 +1138,44 @@ def update_db_post_shape(post_id: int, archetype: Optional[str], hook_style: Opt
     return success
 
 
+def update_db_post_authenticity_score(post_id: int, score: Optional[int]) -> bool:
+    """Persist the authenticity gate's LLM-judged score (0-100, or NULL) for a post — the reader that
+    gives the previously dead post-quality column a purpose (issue #382, V57 authenticity_score). The
+    content-plan status-setter reads this back to demote a low-scoring auto-approve to PENDING."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE posts SET authenticity_score = %s WHERE id = %s",
+            (score, post_id)
+        )
+        connection.commit()
+        success = cursor.rowcount == 1
+    except mysql.connector.Error as e:
+        success = False
+        myprint(f"Could not update authenticity score for post {post_id}. Error: {e}")
+    finally:
+        cursor.close()
+        connection.close()
+    return success
+
+
+def get_post_authenticity_score(post_id: int) -> Optional[int]:
+    """The authenticity gate's persisted score for a post (0-100), or None when unscored (issue #382)."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT authenticity_score FROM posts WHERE id = %s", (post_id,))
+        row = cursor.fetchone()
+        return int(row[0]) if row and row[0] is not None else None
+    except mysql.connector.Error as err:
+        myprint(f"Could not get authenticity score for post {post_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_recent_post_shape_history(user_id: int, limit: int = 10) -> list:
     """Recent posts' SHAPE history — {archetype, hook_style} dicts, most-recent first — fed to the
     shared content framework so a new post rotates away from recently used archetypes/hooks (the

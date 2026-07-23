@@ -83,13 +83,15 @@ class TestAutoCreateWeeklyContent:
         auto_create_weekly_content(user_id=1)
         mock_update_status.assert_called_once_with(55, PostStatus.PENDING)
 
+    @patch('cqc_lem.app.run_content_plan.get_post_authenticity_score', return_value=None)
     @patch('cqc_lem.app.run_content_plan.get_user_preferences', return_value={'auto_schedule_posts': 1})
     @patch('cqc_lem.app.run_content_plan.update_db_post_status')
     @patch('cqc_lem.app.run_content_plan.update_db_post_content')
     @patch('cqc_lem.app.run_content_plan.create_content', return_value=('Auto-on content', None))
     @patch('cqc_lem.app.run_content_plan.get_planned_posts_for_current_week')
     def test_status_is_approved_when_auto_schedule_on(
-        self, mock_current, mock_create, mock_update_content, mock_update_status, mock_prefs
+        self, mock_current, mock_create, mock_update_content, mock_update_status, mock_prefs,
+        mock_auth_score
     ):
         from cqc_lem.app.run_content_plan import auto_create_weekly_content
         from cqc_lem.utilities.db import PostStatus

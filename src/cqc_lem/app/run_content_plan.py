@@ -25,12 +25,14 @@ from cqc_lem.utilities.db import get_post_type_counts, insert_planned_post, upda
     update_db_post_carousel_slides, get_post_content, get_user_timezone, get_engagement_preferences
 from cqc_lem.utilities.db import get_recent_post_shape_history, update_db_post_shape, get_lead_magnet_settings, \
     get_shape_performance
-from cqc_lem.utilities.db import get_recent_post_texts
+from cqc_lem.utilities.db import get_recent_post_texts, update_db_post_authenticity_score, \
+    get_post_authenticity_score
 from cqc_lem.utilities.ai.content_framework import select_blueprint, history_avoidance_directive, \
     find_most_similar, post_similarity_max, has_first_person_proof
 from cqc_lem.utilities.ai.content_alignment import (
     should_include_lead_magnet_cta, lead_magnet_cta_directive, ensure_lead_magnet_cta,
-    personal_proof_directive, topic_authority_score, topic_authority_min, profile_topic_dna)
+    personal_proof_directive, topic_authority_score, topic_authority_min, profile_topic_dna,
+    content_matches_focus, score_authenticity, authenticity_gate_enabled, authenticity_score_min)
 from cqc_lem.utilities.env_constants import API_URL_FINAL, DEFAULT_VIDEO_RATIO, \
     DEFAULT_IMAGE_RATIO, AI_DISCLOSURE_ENABLED, AI_DISCLOSURE_TEXT, \
     STANDARD_VIDEO_MODEL, PREMIUM_VIDEO_MODEL, PREMIUM_TOP_VIDEO_MODEL, \
@@ -632,6 +634,32 @@ def _proof_regen_enabled() -> bool:
         "1", "true", "yes", "on")
 
 
+def _score_and_persist_authenticity(user_id: int, post_id: int, content: str,
+                                    user_profile: LinkedInProfile, profile_synthesis: str = None,
+                                    prefs: dict = None) -> None:
+    """Run the authenticity gate's LLM judge on a finished draft and persist the 0-100 score (issue
+    #382). This only SCORES + records; the demotion to PENDING happens in the content-plan
+    status-setter, which reads the score back. No-op when the gate is disabled. Best-effort — a scorer
+    or DB hiccup never blocks generation (score_authenticity itself fails open)."""
+    if not authenticity_gate_enabled():
+        return
+    try:
+        result = score_authenticity(content, profile=user_profile,
+                                    profile_synthesis=profile_synthesis, prefs=prefs)
+        update_db_post_authenticity_score(post_id, result.get("score"))
+        if result.get("flagged"):
+            log_warning(
+                f"Post flagged as low-authenticity (score {result.get('score')} < "
+                f"{authenticity_score_min()}) — will hold for review: "
+                f"{'; '.join(result.get('reasons') or []) or 'no reasons given'}",
+                user_id=user_id, post_id=post_id, task_name="create_text_post")
+        else:
+            log_info(f"Post authenticity score {result.get('score')}",
+                     user_id=user_id, post_id=post_id, task_name="create_text_post")
+    except Exception as e:
+        myprint(f"Authenticity scoring skipped for post {post_id}: {e}")
+
+
 def _review_generated_post(user_id: int, stage: str, post_type: str, user_profile: LinkedInProfile,
                            blueprint: dict, post_id: int, lead_magnet_cta: str, content: str,
                            recent_texts: list, prefs: dict = None,
@@ -897,6 +925,14 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             final_content,
             exempt_keyword=(lead_magnet or {}).get("keyword") if include_cta else None)
         final_content = final_content.strip()
+
+    # Authenticity gate (issue #382 — 360Brew defense): score the finished draft for generic-AI risk
+    # + profile-topic consistency and persist the score BEFORE the similarity gate. The gate itself is
+    # a status demotion (APPROVED -> PENDING) applied by the content-plan status-setter, which reads
+    # the persisted score back — mirroring the deterministic similarity gate's demote-not-block posture.
+    if final_content and refine_final_post and similarity_check and post_id is not None:
+        _score_and_persist_authenticity(user_id, post_id, final_content, user_profile,
+                                        profile_synthesis, prefs)
 
     # Review gate (runs once, in the outermost call): deterministic near-duplicate check against the
     # user's recent posts with ONE avoid-directive retry, plus a cheap focus-alignment check. Never
@@ -1371,6 +1407,18 @@ def auto_create_weekly_content(user_id: int = None):
         if _post_missing_required_asset(post_id, post_type, video_url):
             new_status = PostStatus.PENDING
             myprint(f"post_id {post_id}: required media asset missing — holding PENDING")
+
+        # Authenticity gate (issue #382): demote an auto-approve to PENDING when the persisted
+        # LLM-judged authenticity score (set by create_text_post's scoring step) is below threshold,
+        # so a generic-AI-flagged draft gets human review before it can post. Only downgrades an
+        # APPROVED — never upgrades a PENDING, and never blocks when unscored (score None).
+        if new_status == PostStatus.APPROVED and authenticity_gate_enabled():
+            score = get_post_authenticity_score(post_id)
+            if score is not None and score < authenticity_score_min():
+                new_status = PostStatus.PENDING
+                log_warning(f"post_id {post_id}: authenticity score {score} < "
+                            f"{authenticity_score_min()} — holding PENDING for review",
+                            user_id=user_id, post_id=post_id, task_name="create_content")
 
         myprint(f"Updating post_id: {post_id} Status={new_status}")
         update_db_post_status(post_id, new_status)

@@ -52,6 +52,9 @@ def _run(outputs, recent=None, prefs=None, post_id=77, log=None):
         patch(f"{_RCP}.optimize_post_hook", side_effect=lambda c, **kw: c),
         patch(f"{_RCP}.sanitize_for_linkedin", side_effect=lambda c, **kw: c),
         patch(f"{_RCP}.strip_engagement_bait", side_effect=lambda c, **kw: c),
+        # Authenticity gate is exercised in test_authenticity_gate.py — no-op it here so the
+        # similarity-gate tests stay focused (and don't attempt a real LLM/DB call).
+        patch(f"{_RCP}._score_and_persist_authenticity"),
     ]
     if log is not None:
         patches.append(patch(f"{_RCP}.log_warning", log))
