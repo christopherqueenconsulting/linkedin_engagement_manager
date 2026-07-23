@@ -671,7 +671,7 @@ AI_TELL_WORDS = frozenset({
 _WORD_TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z-]*")
 
 
-def find_ai_tell_words(text: str) -> list:
+def find_ai_tell_words(text: Optional[str]) -> list[str]:
     """Deterministic audit: the tier-1 AI-tell words (from AI_TELL_WORDS) present in `text`, in order
     of first appearance, de-duplicated and case-insensitive. NO LLM call."""
     out, seen = [], set()
@@ -801,8 +801,9 @@ _HUMANIZE_TYPE_NOTE = {
 }
 
 
-def humanize_text(content, content_type: str = "post", profile_synthesis: Optional[str] = None,
-                  prefs: dict = None, max_chars: Optional[int] = None):
+def humanize_text(content: Optional[str], content_type: str = "post",
+                  profile_synthesis: Optional[str] = None,
+                  prefs: Optional[dict] = None, max_chars: Optional[int] = None) -> Optional[str]:
     """READER-mode humanization pass (issue #416): the final anti-AI-tell rewrite before the A1
     authenticity gate and human review. Returns a de-slopped version of `content` in the author's
     voice — AI cliches/constructions removed, sentence-length variance restored, contractions in,
