@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import api from '../../api/client'
 import LinkedInPostPreview from '../../components/LinkedInPostPreview'
+import TopicAuthorityMeter from '../../components/TopicAuthorityMeter'
 import { useAuth } from '../../contexts/AuthContext'
 import { useUserTimezone } from '../../hooks/useUserTimezone'
 
@@ -90,6 +91,19 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
       return r.data.detail.templates as CarouselTemplate[]
     },
   })
+
+  // Focus topics drive the Topic Authority meter below the preview (issue #384). Reuse the same
+  // engagement-preferences query key/shape as the Account settings so it's served from cache.
+  const { data: engPrefs } = useQuery({
+    queryKey: ['engagement-preferences', sessionToken],
+    queryFn: () =>
+      api
+        .get(`/user/engagement-preferences?session_token=${encodeURIComponent(sessionToken!)}`)
+        .then((r) => r.data.detail as { focus_topics?: string[] }),
+    enabled: !!sessionToken,
+    staleTime: 60 * 1000,
+  })
+  const focusTopics = engPrefs?.focus_topics ?? []
 
   const templates = templatesData ?? []
   const activeAvatar = avatarData?.active_avatar
@@ -580,6 +594,9 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
               : null
           }
         />
+        {postType === 'TEXT' && (
+          <TopicAuthorityMeter content={content} focusTopics={focusTopics} />
+        )}
         {postType === 'CAROUSEL' && generatedSlideUrls.length > 0 && (
           <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
             <p className="text-sm font-semibold text-gray-700 mb-3">Slide Previews</p>

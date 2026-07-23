@@ -9,9 +9,12 @@ out of alignment with each other over time."""
 import math
 import os
 import re
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
+
+if TYPE_CHECKING:
+    from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 
 # Tight, engagement-optimized targets. Short is the default: LinkedIn rewards comments that
 # earn a REPLY (threads), and a punchy, specific comment out-performs a long essay. Even
@@ -125,14 +128,19 @@ def _focus_topics(prefs: dict = None) -> list:
     return [str(t).strip() for t in ((prefs or {}).get("focus_topics") or []) if str(t).strip()]
 
 
-def select_focus_topic(prefs: dict = None, sequence_index: Optional[int] = None) -> Optional[str]:
+def select_focus_topic(prefs: dict = None, sequence_index: Optional[int] = None,
+                       profile: "Optional[LinkedInProfile]" = None) -> Optional[str]:
     """The SUBJECT anchor for one trend-based post: rotate deterministically across the user's
     declared focus topics (keyed off a stable per-post integer — the post id — the same way the
     lead-magnet CTA rotation works) so anchoring never collapses every post onto one topic. Without
     a sequence key it deterministically falls back to the FIRST topic — reproducible and testable,
-    no per-call randomness. Returns None when the user declared no focus topics — callers keep
-    their current profile-industry-only behavior."""
+    no per-call randomness. When the user declared NO focus topics, fall back to on-niche anchors
+    derived from `profile` (Topic-DNA steering, issue #384) so subjects still stay on-niche; with no
+    usable profile anchors either, returns None and callers keep their profile-industry-only
+    behavior."""
     topics = _focus_topics(prefs)
+    if not topics and profile is not None:
+        topics = profile_niche_anchors(profile)
     if not topics:
         return None
     if sequence_index is None:
@@ -160,6 +168,125 @@ def content_matches_focus(content: str, focus_topics: list, subject: str = None)
         if hits >= max(1, math.ceil(len(needed) / 2)):
             return True
     return not checked_any
+
+
+# ---------------------------------------------------------------------------
+# Topic Authority (Topic DNA) governor — issue #384. 2026 LinkedIn ranking (per 360Brew) derives a
+# 'Topic DNA' from the author's headline / about / posting history and SUPPRESSES off-niche posts, so
+# profile↔content consistency is now a ranking input. This is the deterministic, NO-LLM measure of
+# how tightly a draft sits inside the user's niche vocabulary (declared focus topics PLUS the profile
+# headline/about), plus the profile-derived subject steering that keeps drafts on-niche in the first
+# place. It reuses content_framework.content_tokens so it stays aligned with the similarity engine.
+# ---------------------------------------------------------------------------
+
+# Minimum topic-authority score below which a draft reads as off-niche and gets flagged/steered.
+# 0.15 is deliberately lenient — the governor is meant to catch clearly off-niche drafts (which score
+# ~0.0) without punishing an on-niche post that spends most of its words on connective prose. Override
+# per-deploy with TOPIC_AUTHORITY_MIN (same live-env pattern as POST_SIMILARITY_MAX).
+TOPIC_AUTHORITY_MIN_DEFAULT = 0.15
+
+
+def topic_authority_min() -> float:
+    """The off-niche threshold, read at call time so ops/tests can tune TOPIC_AUTHORITY_MIN without a
+    restart (the POST_SIMILARITY_MAX / research-toggle live-env pattern)."""
+    raw = (os.environ.get("TOPIC_AUTHORITY_MIN") or "").strip()
+    if not raw:
+        return TOPIC_AUTHORITY_MIN_DEFAULT
+    try:
+        value = float(raw)
+    except ValueError:
+        return TOPIC_AUTHORITY_MIN_DEFAULT
+    # Reject nan/inf and out-of-range values — score is always in [0, 1], so a non-finite or
+    # out-of-band threshold would make every comparison misbehave (e.g. score >= nan is always False).
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        return TOPIC_AUTHORITY_MIN_DEFAULT
+    return value
+
+
+def topic_dna_tokens(focus_topics: list = None, headline: str = None, about: str = None) -> set:
+    """The user's 'Topic DNA' as a meaningful-token set: the union of their declared focus topics and
+    the vocabulary of their profile headline + about. Stopwords / 1-char noise are dropped by
+    content_tokens so only niche-bearing words remain."""
+    from cqc_lem.utilities.ai.content_framework import content_tokens
+    dna: set = set()
+    for t in (focus_topics or []):
+        dna |= content_tokens(str(t))
+    dna |= content_tokens(headline or "")
+    dna |= content_tokens(about or "")
+    return dna
+
+
+def topic_authority_score(content: str, focus_topics: list = None, headline: str = None,
+                          about: str = None) -> float:
+    """0.0–1.0 consistency of a draft with the user's Topic DNA (focus topics + profile headline/about
+    vocabulary). Uses the same deterministic token-set OVERLAP COEFFICIENT as
+    content_framework.text_similarity — |content∩dna| / min(|content|,|dna|) — so a short, tightly
+    on-niche post scores high and an off-niche post scores ~0. Returns 1.0 (a no-op, never flagged)
+    when there is no Topic DNA to judge against or the content has no scorable tokens, mirroring
+    content_matches_focus's empty-input behavior. NO LLM call."""
+    from cqc_lem.utilities.ai.content_framework import content_tokens
+    dna = topic_dna_tokens(focus_topics, headline, about)
+    ctokens = content_tokens(content or "")
+    if not dna or not ctokens:
+        return 1.0
+    return len(ctokens & dna) / min(len(ctokens), len(dna))
+
+
+def is_on_niche(content: str, focus_topics: list = None, headline: str = None, about: str = None,
+                threshold: Optional[float] = None) -> bool:
+    """True when the draft's topic-authority score clears the off-niche threshold (defaults to
+    topic_authority_min()). The boolean companion to topic_authority_score for gate/flag callers."""
+    t = topic_authority_min() if threshold is None else threshold
+    return topic_authority_score(content, focus_topics, headline, about) >= t
+
+
+def _typed_terms(values, limit: Optional[int] = None) -> list:
+    """Ordered, de-duplicated, whitespace-trimmed niche terms from a profile field. Only genuine
+    strings (or objects exposing a string `.name`, e.g. LinkedInSkill) are kept, so a MagicMock or a
+    stray non-string never leaks in as a bogus term. A non-sequence input (e.g. a MagicMock profile
+    field) is treated as empty rather than raising."""
+    if not isinstance(values, (list, tuple)):
+        return []
+    out, seen = [], set()
+    for v in values:
+        name = v if isinstance(v, str) else getattr(v, "name", None)
+        if not isinstance(name, str) or not name.strip():
+            continue
+        key = name.strip().lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(name.strip())
+        if limit is not None and len(out) >= limit:
+            break
+    return out
+
+
+def profile_topic_dna(profile: "Optional[LinkedInProfile]" = None,
+                      profile_synthesis: Optional[str] = None) -> tuple:
+    """Assemble the (headline, about) Topic-DNA strings from a LinkedInProfile for the scorer:
+    HEADLINE ≈ job title + industry (the LinkedIn 'headline' analogue LEM stores), ABOUT ≈ the durable
+    voice/credibility synthesis brief plus the profile's listed skills (the 'about'/expertise
+    analogue). Every field is optional and defensively typed, so a partial or mock profile yields
+    ('', '') rather than raising. NO LLM call."""
+    headline_parts = _typed_terms(
+        [getattr(profile, "job_title", None), getattr(profile, "industry", None)])
+    about_parts = []
+    if isinstance(profile_synthesis, str) and profile_synthesis.strip():
+        about_parts.append(profile_synthesis.strip())
+    about_parts.extend(_typed_terms(getattr(profile, "skills", None)))
+    return " ".join(headline_parts), " ".join(about_parts)
+
+
+def profile_niche_anchors(profile: "Optional[LinkedInProfile]" = None) -> list:
+    """Fallback Topic-DNA subject anchors derived from a profile when the user declared NO focus
+    topics — this is the on-niche subject STEERING (issue #384). Prefers explicit niche signals (the
+    listed skills) over the raw job title so the anchor is a TOPIC, not a role, and deliberately omits
+    the industry (which trend subjects already carry) to avoid an '{industry} in the {industry}'
+    tautology. Returns [] for a missing/mock profile, so callers fall back to their prior
+    profile-industry-only behavior unchanged."""
+    if profile is None:
+        return []
+    return _typed_terms(getattr(profile, "skills", None), limit=5)
 
 
 def intention_directive(prefs: dict = None) -> str:
