@@ -504,8 +504,8 @@ class TestRateLimitCircuitBreaker:
         driver.get.assert_not_called()
         mock_cookies.assert_not_called()
 
-    def test_rate_limited_feed_page_opens_breaker(self):
-        """A 429 body served at /feed/ must mark the breaker open and raise."""
+    def test_rate_limited_feed_no_cookies_opens_breaker(self):
+        """A 429 body at /feed/ with NO stored cookies (nothing to drop) opens the breaker."""
         driver = _make_driver("https://www.linkedin.com/feed/")
         wait = _make_wait()
         body_el = MagicMock()
@@ -516,7 +516,7 @@ class TestRateLimitCircuitBreaker:
         with patch(f"{_MODULE}.rate_limit_cooldown_remaining", return_value=0), \
              patch(f"{_MODULE}.mark_rate_limited") as mock_mark, \
              patch(f"{_MODULE}.clear_rate_limit") as mock_clear, \
-             patch(f"{_MODULE}.get_cookies", return_value=[{"name": "x"}]), \
+             patch(f"{_MODULE}.get_cookies", return_value=None), \
              patch(f"{_MODULE}.load_cookies"), patch(f"{_MODULE}.store_cookies"), \
              pytest.raises(LinkedInRateLimited, match="rate-limiting"):
             from cqc_lem.utilities.linkedin.helper import login_to_linkedin
@@ -524,6 +524,51 @@ class TestRateLimitCircuitBreaker:
 
         mock_mark.assert_called_once()
         mock_clear.assert_not_called()
+
+    def test_rate_limited_with_cookies_self_heals_via_fresh_login(self):
+        """A 429 at /feed/ WITH stored cookies is a stale-cookie/egress-IP mismatch: drop the
+        cookies and do a fresh credential login instead of opening the breaker."""
+        driver = _make_driver("https://www.linkedin.com/feed/")
+        wait = _make_wait()
+        # stage drives both the page body and the "logged-in" URL:
+        #   feed_429 (cookie'd feed 429) -> login (after cookie drop) -> feed_ok (after re-login)
+        state = {"stage": "feed_429"}
+        bodies = {"feed_429": "HTTP ERROR 429 Too Many Requests",
+                  "login": "Sign in to LinkedIn", "feed_ok": "Welcome to your feed"}
+
+        def _body(*_a, **_k):
+            el = MagicMock(); el.text = bodies[state["stage"]]; return el
+        driver.find_element.side_effect = _body
+
+        def _get(url):
+            if "login" in url:
+                state["stage"] = "login"
+                driver.current_url = "https://www.linkedin.com/login"
+            else:
+                driver.current_url = "https://www.linkedin.com/feed/"
+        driver.get.side_effect = _get
+
+        field = MagicMock()
+
+        def _click():  # submitting the fresh login lands back on a clean feed
+            state["stage"] = "feed_ok"
+            driver.current_url = "https://www.linkedin.com/feed/"
+        field.click.side_effect = _click
+
+        with patch(f"{_MODULE}.rate_limit_cooldown_remaining", return_value=0), \
+             patch(f"{_MODULE}.mark_rate_limited") as mock_mark, \
+             patch(f"{_MODULE}.clear_rate_limit") as mock_clear, \
+             patch(f"{_MODULE}.get_cookies", return_value=[{"name": "li_at"}]), \
+             patch(f"{_MODULE}.load_cookies"), \
+             patch(f"{_MODULE}.store_cookies") as mock_store, \
+             patch(f"{_MODULE}.get_visible_element_wait_retry", return_value=field):
+            from cqc_lem.utilities.linkedin.helper import login_to_linkedin
+            login_to_linkedin(driver, wait, "u@e.com", "pw")
+
+        driver.delete_all_cookies.assert_called_once()   # stale cookies dropped
+        mock_mark.assert_not_called()                     # self-healed — breaker NOT opened
+        mock_clear.assert_called()                        # fresh login cleared stale breaker state
+        mock_store.assert_called()                        # fresh proxy-native cookies stored
 
     def test_successful_login_clears_breaker(self):
         """A clean cookie login must clear any stale breaker state."""

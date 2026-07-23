@@ -435,13 +435,29 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
 
     # LinkedIn serves a "HTTP ERROR 429 / This page isn't working" body at the SAME
     # /feed/ URL when the account/IP is rate-limited. A naive URL check would treat
-    # that as "logged in" and downstream profile scraping would crash. Detect it and
-    # raise a transient error so callers back off instead of hammering.
+    # that as "logged in" and downstream profile scraping would crash.
+    #
+    # When we hit this WITH stored cookies, the usual cause is a cookie/egress-IP
+    # mismatch — cookies minted from a different IP (e.g. before switching to the
+    # residential proxy) replayed through the proxy — not a genuine account throttle.
+    # That is the same root cause the redirect-loop path above handles, and a fresh
+    # credential login on the current IP clears it (verified live: a stale li_at from
+    # the datacenter era 429'd on the proxy, but a cookie-less login succeeded). So drop
+    # the cookies and fall through to a fresh login instead of giving up. Only treat it
+    # as a real rate limit when we arrived here WITHOUT cookies (nothing left to drop).
     if _is_logged_in(driver.current_url) and _page_is_rate_limited(driver):
-        mark_rate_limited("429 at feed after cookie load")
-        raise LinkedInRateLimited(
-            "LinkedIn is rate-limiting this session (HTTP 429). Backing off — "
-            "reduce automation frequency and retry later.")
+        if cookies:
+            myprint("429 at feed with stored cookies — likely a stale-cookie/egress-IP "
+                    "mismatch; clearing cookies and re-authenticating fresh")
+            driver.delete_all_cookies()
+            cookies = None
+            driver.get(login_url)
+            time.sleep(1)
+        else:
+            mark_rate_limited("429 at feed (no stored cookies to drop)")
+            raise LinkedInRateLimited(
+                "LinkedIn is rate-limiting this session (HTTP 429). Backing off — "
+                "reduce automation frequency and retry later.")
 
     # A Chrome transport error (proxy blip / DNS / timeout) also sits on the /feed URL, so it would
     # otherwise be mistaken for a live session below — clearing the breaker and storing junk cookies.
@@ -524,6 +540,15 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
     time.sleep(2)
     if _is_challenge_url(driver.current_url):
         _handle_challenge("post-submit")
+
+    # A fresh credential login can still 429 when the IP/account is genuinely throttled
+    # (not just a stale-cookie mismatch). Detect it here so we back off cleanly instead
+    # of timing out on the Feed-title wait below.
+    if _page_is_rate_limited(driver):
+        mark_rate_limited("429 after fresh credential login")
+        raise LinkedInRateLimited(
+            "LinkedIn is rate-limiting this session (HTTP 429) even after a fresh login. "
+            "Backing off — reduce automation frequency and retry later.")
 
     wait.until(EC.title_contains("Feed"), "Waiting for Feed to load after login")
 
