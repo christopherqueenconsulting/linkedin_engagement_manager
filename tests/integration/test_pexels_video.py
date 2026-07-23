@@ -76,10 +76,19 @@ class TestPexelsVideoSearch:
         if not os.environ.get("PEXELS_API_KEY"):
             pytest.skip("PEXELS_API_KEY not set")
 
+        import requests
         from cqc_lem.utilities.pexels_helper import download_pexels_video
 
         dest = str(tmp_path)
-        path = download_pexels_video("technology", dest)
+        try:
+            path = download_pexels_video("technology", dest)
+        except requests.exceptions.HTTPError as e:
+            # A present-but-invalid/expired key (401/403) — e.g. Dependabot runs that cannot read
+            # the Actions-store PEXELS_API_KEY — is functionally "no key" for this live-call test.
+            status = getattr(e.response, "status_code", None)
+            if status in (401, 403):
+                pytest.skip(f"PEXELS_API_KEY unauthorized ({status})")
+            raise
 
         if path is None:
             pytest.skip("Pexels returned no video results for 'technology'")
