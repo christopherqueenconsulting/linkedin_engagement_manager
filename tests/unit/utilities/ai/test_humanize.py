@@ -198,6 +198,10 @@ class TestFindTitleSlopWords:
     def test_case_insensitive_and_deduped(self):
         assert ca.find_title_slop_words("Explosive. EXPLOSIVE growth") == ["explosive"]
 
+    def test_detects_hype_tokens_that_start_with_a_digit(self):
+        assert ca.find_title_slop_words("10x Your LinkedIn Reach") == ["10x"]
+        assert ca.find_title_slop_words("How to 10X reach") == ["10x"]
+
     def test_clean_headline_has_no_hits(self):
         assert ca.find_title_slop_words("What our best buyers actually read") == []
 
@@ -207,7 +211,7 @@ class TestFindTitleSlopWords:
 
 
 class TestHumanizeTitle:
-    def test_slopy_title_in_dehyped_title_out(self, monkeypatch):
+    def test_sloppy_title_in_dehyped_title_out(self, monkeypatch):
         monkeypatch.setenv("HUMANIZE_ENABLED", "on")
         slop = "7 Game-Changing AI Tactics for Explosive LinkedIn Growth"
         clean = "The AI tactics that actually moved our LinkedIn numbers"
@@ -286,6 +290,21 @@ class TestHumanizeTitle:
         original = "A" * 120
         with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_llm_reply("B" * 60)):
             assert ca.humanize_title(original, "newsletter", max_chars=40) == original
+
+    def test_short_draft_may_grow_up_to_the_90_char_headline_floor(self, monkeypatch):
+        # De-hyping a short hype headline needs a little room; budget = min(max_chars, max(90, len)).
+        monkeypatch.setenv("HUMANIZE_ENABLED", "on")
+        clean = "The reach numbers we actually got after six months of posting"  # 61 chars
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_llm_reply(clean)):
+            assert ca.humanize_title("10x Your Reach", "newsletter") == clean
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_llm_reply("B" * 91)):
+            assert ca.humanize_title("10x Your Reach", "newsletter") == "10x Your Reach"
+
+    def test_long_draft_may_not_grow_past_its_own_length(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "on")
+        original = "A" * 100
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_llm_reply("B" * 101)):
+            assert ca.humanize_title(original, "newsletter") == original
 
     def test_prompt_forbids_fabrication_and_lists_detected_tells(self, monkeypatch):
         monkeypatch.setenv("HUMANIZE_ENABLED", "on")

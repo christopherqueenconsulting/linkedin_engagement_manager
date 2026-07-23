@@ -868,12 +868,17 @@ TITLE_HYPE_WORDS = frozenset({
 })
 
 
+# Headline tokens may START with a digit ("10x"), unlike the prose wordbank, so this pass gets its own
+# tokenizer instead of _WORD_TOKEN_RE.
+_TITLE_TOKEN_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9-]*")
+
+
 def find_title_slop_words(text: Optional[str]) -> list[str]:
     """Deterministic audit for headlines: tier-1 AI-tell words (AI_TELL_WORDS) plus the headline-only
     hype lexicon (TITLE_HYPE_WORDS) present in `text`, in order of first appearance, de-duplicated and
     case-insensitive. NO LLM call."""
     out, seen = [], set()
-    for tok in _WORD_TOKEN_RE.findall(text or ""):
+    for tok in _TITLE_TOKEN_RE.findall(text or ""):
         low = tok.lower()
         if (low in AI_TELL_WORDS or low in TITLE_HYPE_WORDS) and low not in seen:
             seen.add(low)
@@ -928,8 +933,13 @@ def humanize_title(title: Optional[str], content_type: str = "newsletter",
     reading like "7 Game-Changing Tactics for Explosive Growth". Shares the HUMANIZE_ENABLED /
     HUMANIZE_<TYPE>_ENABLED toggles with humanize_text and FAILS OPEN the same way: returns `title`
     unchanged when the pass is disabled, the input is empty, the model errors, the reply collapses to a
-    fragment, it grows past the draft's own length or the `max_chars` budget (a reply that long is prose,
-    not a headline), or the rewrite carries more hype/AI tells than what came in."""
+    fragment, it runs past the headline budget (a reply that long is prose, not a headline), or the
+    rewrite carries more hype/AI tells than what came in.
+
+    Headline budget = min(max_chars, max(90, len(title))). The 90-char floor matches the "aim for under
+    ~90 characters" instruction in the prompt: de-hyping a SHORT hype headline ("10x Your Reach") into
+    plain words legitimately needs a little more room, so capping at the draft's own length there would
+    fail open on exactly the titles this pass exists for. Longer drafts never get to grow."""
     if not title or not str(title).strip():
         return title
     if not humanize_enabled(content_type):
@@ -959,8 +969,8 @@ def humanize_title(title: Optional[str], content_type: str = "newsletter",
         rewritten = _clean_title_line(resp.choices[0].message.content or "")
     except Exception:
         return original
-    # A headline that came back as a couple of words lost its hook (or the model refused). De-hyping
-    # never needs MORE room than the draft, so a reply that grew is prose/an explanation, not a title.
+    # A headline that came back as a couple of words lost its hook (or the model refused). Past the
+    # headline budget (see docstring) the reply is prose/an explanation, not a title.
     budget = min(int(max_chars), max(90, len(str(title).strip())))
     if len(rewritten) < 12 or len(rewritten) > budget:
         return original
