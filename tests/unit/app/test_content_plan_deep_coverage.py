@@ -163,7 +163,7 @@ class TestCreateTextPost:
                                       user_profile=_profile(), post_id=42)
         assert result == "refined:TL post"
         assert m["tl"].call_args[1]["blueprint"] == _BLUEPRINT
-        m["shape_save"].assert_called_once_with(42, "listicle", "question")
+        m["shape_save"].assert_called_once_with(42, "listicle", "question", topic=None)
 
     def test_industry_news_and_personal_story_and_prompt(self):
         from cqc_lem.app.run_content_plan import create_text_post

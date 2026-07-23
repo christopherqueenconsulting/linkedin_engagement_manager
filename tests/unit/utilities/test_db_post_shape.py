@@ -23,8 +23,16 @@ class TestUpdateDbPostShape:
             from cqc_lem.utilities.db import update_db_post_shape
             assert update_db_post_shape(7, "tactical_list", "bold_claim") is True
         sql, params = cur.execute.call_args[0]
-        assert "UPDATE posts SET archetype" in sql and "hook_style" in sql
-        assert params == ("tactical_list", "bold_claim", 7)
+        assert "UPDATE posts SET archetype" in sql and "hook_style" in sql and "topic" in sql
+        assert params == ("tactical_list", "bold_claim", None, 7)
+
+    def test_persists_topic(self):
+        conn, cur = _mock_conn()
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_db_post_shape
+            assert update_db_post_shape(7, "tactical_list", "bold_claim", topic="AI hiring") is True
+        _, params = cur.execute.call_args[0]
+        assert params == ("tactical_list", "bold_claim", "AI hiring", 7)
 
     def test_false_on_db_error(self):
         import mysql.connector
