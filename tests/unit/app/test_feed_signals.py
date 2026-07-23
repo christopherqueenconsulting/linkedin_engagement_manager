@@ -32,13 +32,16 @@ class TestPostSocialCounts:
     def test_parses_comments_and_reactions(self):
         from cqc_lem.app.run_automation import _post_social_counts
         card = self._card("Jane Doe\n3h •\nGreat post body\n1,204 reactions\n8 comments • 2 reposts")
-        assert _post_social_counts(card) == {"reactions": 1204, "comments": 8, "impressions": 0}
+        assert _post_social_counts(card) == {"reactions": 1204, "comments": 8, "reposts": 2,
+                                             "impressions": 0, "saves": 0}
 
     def test_zero_when_no_counts(self):
         from cqc_lem.app.run_automation import _post_social_counts
-        assert _post_social_counts(self._card("Just a fresh post with no engagement yet")) == {"reactions": 0, "comments": 0, "impressions": 0}
+        assert _post_social_counts(self._card("Just a fresh post with no engagement yet")) == {
+            "reactions": 0, "comments": 0, "reposts": 0, "impressions": 0, "saves": 0}
 
     def test_parses_impressions_on_own_post(self):
         from cqc_lem.app.run_automation import _post_social_counts
         card = self._card("Post impressions\n153 impressions\n5 reactions\n2 comments")
-        assert _post_social_counts(card) == {"reactions": 5, "comments": 2, "impressions": 153}
+        assert _post_social_counts(card) == {"reactions": 5, "comments": 2, "reposts": 0,
+                                             "impressions": 153, "saves": 0}

@@ -484,9 +484,46 @@ def _post_permalink_from_card(card):
 # Relative-age units → minutes. The SDUI card shows a token like "3h •", "5d •", "2w •", "10mo •".
 _AGE_UNIT_MIN = {"s": 0, "m": 1, "h": 60, "d": 1440, "w": 10080, "mo": 43200, "y": 525600}
 _AGE_TOKEN_RE = re.compile(r"^(\d+)\s?(mo|[smhdwy])", re.I)
-_COMMENTS_RE = re.compile(r"([\d,]+)\s+comments?", re.I)
-_REACTIONS_RE = re.compile(r"([\d,]+)\s+(?:reactions?|likes?)", re.I)
-_IMPRESSIONS_RE = re.compile(r"([\d,]+)\s+impressions?", re.I)
+# LinkedIn renders social counts as "1,234", "1.2K", or "3M" depending on magnitude — parse all
+# three. Anchored on the trailing label word so a bare reaction glyph count never masquerades as,
+# say, impressions. The separator is horizontal-only (`[^\S\n]`): on the stacked analytics layout
+# each count sits on its own line, so allowing \s+ here would let the PREVIOUS row's value bind to
+# the next row's label ("Comments\n1\nReposts\n0" → reposts=1). _stacked_counts handles that layout.
+_COUNT = r"([\d,]+(?:\.\d+)?[KMBkmb]?)"
+_SEP = r"[^\S\n]+"
+_COMMENTS_RE = re.compile(_COUNT + _SEP + r"comments?", re.I)
+_REACTIONS_RE = re.compile(_COUNT + _SEP + r"(?:reactions?|likes?)", re.I)
+_IMPRESSIONS_RE = re.compile(_COUNT + _SEP + r"impressions?", re.I)
+# LinkedIn labels shares as "reposts" on the SDUI social bar (older UIs said "shares"); accept both.
+_REPOSTS_RE = re.compile(_COUNT + _SEP + r"(?:reposts?|shares?)", re.I)
+# Saves surface only in the author's post analytics ("N saves"); 0 when the bar doesn't expose it.
+_SAVES_RE = re.compile(_COUNT + _SEP + r"saves?", re.I)
+
+# Live post-analytics capture (/analytics/post-summary/urn:li:activity:…/, owner grab 2026-07-23)
+# puts every label and its value in SEPARATE elements — driver.text renders one per line — and the
+# two blocks stack in OPPOSITE orders: Discovery hero stats read "72\nImpressions" (value first),
+# the Engagement breakdown reads "Reposts\n0" (label first). Matching on whole lines (not a loose
+# regex over the blob) is what keeps prose like "Save this checklist" out of the numbers.
+_STACKED_VALUE_FIRST = {"impressions"}
+_STACKED_LABEL_FIRST = {"reactions": "reactions", "comments": "comments", "reposts": "reposts",
+                        "shares": "reposts", "saves": "saves"}
+_BARE_COUNT_RE = re.compile(r"^[\d,]+(?:\.\d+)?[KMBkmb]?$")
+
+_COUNT_MULT = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
+
+
+def _parse_count(raw: "str | None") -> int:
+    """'1,234' → 1234, '1.2K' → 1200, '3M' → 3000000. 0 on anything unparseable."""
+    s = (raw or "").strip().replace(",", "")
+    if not s:
+        return 0
+    mult = _COUNT_MULT.get(s[-1].lower(), 1)
+    if mult != 1:
+        s = s[:-1]
+    try:
+        return int(round(float(s) * mult))
+    except ValueError:
+        return 0
 
 
 def _post_age_minutes(driver, card) -> "int | None":
@@ -512,21 +549,46 @@ def _post_age_minutes(driver, card) -> "int | None":
     return int(m.group(1)) * _AGE_UNIT_MIN.get(m.group(2), 60)
 
 
+def _stacked_counts(text: str) -> dict:
+    """Counts for the post-analytics layout, where a label and its value are on adjacent lines.
+    Only exact label lines pair up, and only with a neighbour that is a bare count — so a row's
+    value can never be read as the next row's, and post body text is ignored."""
+    lines = [ln.strip() for ln in (text or "").splitlines()]
+    lines = [ln for ln in lines if ln]
+    out: dict = {}
+    for i, line in enumerate(lines):
+        label = line.lower().rstrip(":")
+        if label in _STACKED_LABEL_FIRST:
+            nxt = lines[i + 1] if i + 1 < len(lines) else ""
+            if _BARE_COUNT_RE.match(nxt):
+                out.setdefault(_STACKED_LABEL_FIRST[label], _parse_count(nxt))
+        elif label in _STACKED_VALUE_FIRST:
+            prev = lines[i - 1] if i else ""
+            if _BARE_COUNT_RE.match(prev):
+                out.setdefault(label, _parse_count(prev))
+    return out
+
+
 def _post_social_counts(card) -> dict:
-    """Best-effort reaction/comment/impression counts parsed from the card's social-counts bar text.
-    Returns {reactions, comments, impressions} (0 on miss). Impressions show only on the author's own
-    post detail page; reactions/comments feed the low-weight feed 'activity' scoring signal."""
+    """Best-effort reaction/comment/repost/impression/save counts parsed from the card's social-counts
+    bar text. Returns {reactions, comments, reposts, impressions, saves} (0 on miss). Impressions and
+    saves show only on the author's own post detail/analytics view; reposts weigh 2× in the
+    engagement score (#387); reactions/comments feed the low-weight feed 'activity' scoring signal."""
+    zero = {"reactions": 0, "comments": 0, "reposts": 0, "impressions": 0, "saves": 0}
     try:
         text = card.text or ""
     except Exception:
-        return {"reactions": 0, "comments": 0, "impressions": 0}
+        return dict(zero)
 
-    def _num(rx):
+    stacked = _stacked_counts(text)
+
+    def _num(rx, key):
         m = rx.search(text)
-        return int(m.group(1).replace(",", "")) if m else 0
+        return _parse_count(m.group(1)) if m else stacked.get(key, 0)
 
-    return {"reactions": _num(_REACTIONS_RE), "comments": _num(_COMMENTS_RE),
-            "impressions": _num(_IMPRESSIONS_RE)}
+    return {"reactions": _num(_REACTIONS_RE, "reactions"), "comments": _num(_COMMENTS_RE, "comments"),
+            "reposts": _num(_REPOSTS_RE, "reposts"), "impressions": _num(_IMPRESSIONS_RE, "impressions"),
+            "saves": _num(_SAVES_RE, "saves")}
 
 
 # Feed-post prioritization weights — defaults below, each overridable per-deploy via the matching
@@ -1380,11 +1442,35 @@ def auto_seed_comment_on_post(self, user_id: int, post_id: int):
         return f"Seed comment error: {e}"
 
 
+_ANALYTICS_URL = "https://www.linkedin.com/analytics/post-summary/{urn}/"
+
+
+def _post_analytics_counts(driver, post_url: str) -> dict:
+    """Counts from the author's own post-analytics page. Prefers the URN the detail page redirected
+    to (the logged permalink holds a share/ugcPost URN; analytics keys off the activity URN LinkedIn
+    resolves it to). Best-effort — {} when no URN, no page, or nothing parseable."""
+    try:
+        current = getattr(driver, "current_url", None)
+        urn = (object_urn_from_post_url(current if isinstance(current, str) else "")
+               or object_urn_from_post_url(post_url or ""))
+        if not urn:
+            return {}
+        driver.get(_ANALYTICS_URL.format(urn=urn))
+        time.sleep(random.uniform(4, 6))
+        container = driver.find_element(By.TAG_NAME, "main")
+        return {k: v for k, v in _post_social_counts(container).items() if v}
+    except Exception as e:
+        log_warning("Post analytics page unavailable", exc=e, task_name="auto_scrape_post_stats")
+        return {}
+
+
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
                   queue='se_content')
 def auto_scrape_post_stats(self, user_id: int):
-    """Capture reactions/comments for each of the user's recent posts (feeds personalized
-    post-time recommendations). Reuses the social-count extraction on each post's detail page."""
+    """Capture reactions/comments/reposts/impressions/saves for each of the user's recent posts
+    (feeds personalized post-time recommendations + the content feedback loop). Reuses the
+    social-count extraction on each post's detail page, then on its analytics page for the
+    signals the detail page never renders (saves, impressions)."""
     post_ids = get_recent_posted_post_ids(user_id)
     if not post_ids:
         return "No recent posts to scrape"
@@ -1405,9 +1491,16 @@ def auto_scrape_post_stats(self, user_id: int):
                 container = driver.find_element(By.TAG_NAME, "main")
             except Exception:
                 container = None
-            counts = _post_social_counts(container) if container is not None else {"reactions": 0, "comments": 0, "impressions": 0}
-            record_post_stats(user_id, pid, counts["reactions"], counts["comments"],
-                              impressions=counts.get("impressions") or None)
+            counts = _post_social_counts(container) if container is not None else {}
+            # The detail page's social bar carries reactions/comments/reposts; saves and a reliable
+            # impression count exist ONLY on the author's analytics page — merge by max so a signal
+            # the analytics view doesn't render can't zero out one the detail page did.
+            for key, val in _post_analytics_counts(driver, url).items():
+                counts[key] = max(counts.get(key) or 0, val)
+            record_post_stats(user_id, pid, counts.get("reactions", 0), counts.get("comments", 0),
+                              reposts=counts.get("reposts") or 0,
+                              impressions=counts.get("impressions") or None,
+                              saves=counts.get("saves") or 0)
             scraped += 1
         return f"Scraped stats for {scraped} post(s)"
     finally:
