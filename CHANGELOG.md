@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.53.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.52.0...v0.53.0) (2026-07-23)
+
+
+### Features
+
+* **newsletter:** humanize edition titles with a title-specific de-hype pass (closes [#439](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/439)) ([aad14dd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/aad14dd4d267070967dab0a69b5393413cdeaf62))
+* **newsletter:** humanize edition titles with a title-specific de-hype pass (closes [#439](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/439)) ([d2b18f6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d2b18f6ab8b8266b8c82bf84a42bfe93bc83c2d1))
+
+
+### Bug Fixes
+
+* **newsletter:** detect digit-leading hype tokens in title slop audit ([02d6654](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/02d665402183061de48ee775542df4a853119c8c))
+
 ## [0.52.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.51.0...v0.52.0) (2026-07-23)
 
 
