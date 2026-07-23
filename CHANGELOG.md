@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.48.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.47.0...v0.48.0) (2026-07-23)
+
+
+### Features
+
+* **content:** add authenticity scoring gate before publish (closes [#382](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/382)) ([d7d785a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d7d785a487145c737715048da385aeffcc9398e5))
+* **content:** authenticity scoring gate (360Brew defense) (closes [#382](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/382)) ([4cb2010](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4cb2010e8e29c4bc17b602c6f09b49406f69a4f4))
+
 ## [0.47.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.46.0...v0.47.0) (2026-07-23)
 
 
