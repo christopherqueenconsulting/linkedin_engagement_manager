@@ -24,6 +24,11 @@ COMPOSE="sudo -n docker compose -f /opt/lem/docker-compose.yml -f /opt/lem/docke
 TIERS="lem-simple lem-medium lem-complex lem-router"
 mkdir -p "$DIR"
 
+# Python with the `openai` client (for provider probes / config rewrite). Prefer the stable
+# dev-checkout venv; fall back to `poetry run` inside REPO if that venv is absent.
+_DEV_VENV_PY="/home/lem/linkedin_engagement_manager/.venv/bin/python"
+if [ -x "$_DEV_VENV_PY" ]; then PY=("$_DEV_VENV_PY"); else PY=(poetry run python); fi
+
 log(){ echo "[$(date -u +%FT%TZ)] $*" | tee -a "$LOG" >&2; }
 
 alert(){  # log + best-effort email to the admin; never fails the run
@@ -71,7 +76,7 @@ open_pr(){  # mirror the same swap into the repo via an EPHEMERAL worktree — n
       && git worktree add -q -B auto/model-upgrade "$wt" origin/main ) || { log "worktree add failed"; return 1; }
   (
     cd "$wt" || exit 1
-    poetry run python "$REPO/scripts/model_health_check.py" --apply "$wt/.litellm/config.yaml" \
+    "${PY[@]}" "$REPO/scripts/model_health_check.py" --apply "$wt/.litellm/config.yaml" \
         --config "$wt/.litellm/config.yaml" --map "$wt/.litellm/model_upgrades.yaml" >>"$LOG" 2>&1
     git add .litellm/config.yaml
     git commit -q -m "fix(litellm): auto-swap retired Ollama model(s) [weekly model-health check]" \
@@ -90,7 +95,7 @@ log "=== weekly model-health check start ==="
 set -a; source <(sudo -n grep -E "^(OLLAMA_CLOUD_URL|OLLAMA_CLOUD_API_KEY)=" /opt/lem/.env); set +a
 
 cd "$REPO"
-PLAN="$(poetry run python scripts/model_health_check.py --plan-json --config "$BOX_CFG" --map "$MAP" 2>>"$LOG")"
+PLAN="$("${PY[@]}" scripts/model_health_check.py --plan-json --config "$BOX_CFG" --map "$MAP" 2>>"$LOG")"
 [ -z "$PLAN" ] && { log "planner produced no output — aborting"; exit 1; }
 NSWAP=$(printf '%s' "$PLAN" | python3 -c "import sys,json;print(len(json.load(sys.stdin)['swaps']))" 2>/dev/null || echo 0)
 NALERT=$(printf '%s' "$PLAN" | python3 -c "import sys,json;print(len(json.load(sys.stdin)['alerts']))" 2>/dev/null || echo 0)
@@ -105,7 +110,7 @@ if [ "$NSWAP" -gt 0 ]; then
   BK="$BOX_CFG.bak.$(date -u +%Y%m%dT%H%M%SZ)"
   sudo -n cp -a "$BOX_CFG" "$BK"; log "backed up box config -> $BK"
   TMP=$(mktemp)
-  poetry run python scripts/model_health_check.py --apply "$TMP" --config "$BOX_CFG" --map "$MAP" >>"$LOG" 2>&1
+  "${PY[@]}" scripts/model_health_check.py --apply "$TMP" --config "$BOX_CFG" --map "$MAP" >>"$LOG" 2>&1
   sudo -n cp "$TMP" "$BOX_CFG"; rm -f "$TMP"
   restart_litellm
   if smoke; then
