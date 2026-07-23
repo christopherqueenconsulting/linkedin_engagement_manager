@@ -1,0 +1,25 @@
+name: Migration Versions
+
+# Fails if two Flyway migrations share a version number. Same-version/different-filename migrations
+# don't git-conflict, so they merge clean but break `flyway migrate` at deploy — this catches them
+# at PR time. Make "Migration Versions" a required check to enforce it.
+
+on:
+  pull_request:
+
+jobs:
+  unique-versions:
+    name: Migration Versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No duplicate migration versions
+        run: |
+          cd compose/local/database/migrations
+          dups=$(ls V*.sql 2>/dev/null | sed -E 's/^(V[0-9]+)__.*/\1/' | sort | uniq -d)
+          if [ -n "$dups" ]; then
+            echo "::error::Duplicate Flyway migration version(s): $dups"
+            for v in $dups; do echo "  $v:"; ls ${v}__*.sql; done
+            exit 1
+          fi
+          echo "All migration versions are unique."
