@@ -867,6 +867,13 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     # include = also matched the user's include topics/keywords/authors.
     examined_keys, hard_keys, include_keys = set(), set(), set()
     strict_misses, fallback_active, fallback_used = 0, False, False
+    # Posts that cleared excludes + dedup but failed ONLY the recency/min-reactions gates. Tracked
+    # apart from the permanent `seen` set so the empty-feed fallback can RECONSIDER them (relaxing
+    # those two gates) when nothing clears the hard filters at all. Without this, a sparse or
+    # low-reaction feed produces zero comments even with feed_fallback_when_empty on — because the
+    # existing include-miss fallback only triggers on posts that first passed the hard gates.
+    soft_seen: set = set()
+    hard_relaxed = False
     _incl = [f for f in ((prefs.get("include_keywords") or []) + (prefs.get("include_authors") or [])
                          + (prefs.get("include_topics") or [])) if f]
     fallback_enabled = bool(prefs.get("feed_fallback_when_empty", True)) and bool(_incl)
@@ -898,14 +905,20 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
                     or not _passes_hard_excludes(content, author, prefs)):
                 seen.add(key)
                 continue
+            # Recency + min-reactions are soft gates: when the whole feed fails them the empty-feed
+            # fallback relaxes them (below), so a reject here goes to soft_seen (reconsiderable),
+            # not the permanent `seen`. Skip already-soft-rejected posts until we relax.
+            if not hard_relaxed and key in soft_seen:
+                continue
             age = _post_age_minutes(driver, card)
             counts = _post_social_counts(card)
-            if age is not None and age > max_age_min:           # recency hard gate
-                seen.add(key)
-                continue
-            if min_reactions and counts["reactions"] < min_reactions:
-                seen.add(key)
-                continue
+            if not hard_relaxed:
+                if age is not None and age > max_age_min:        # recency gate
+                    soft_seen.add(key)
+                    continue
+                if min_reactions and counts["reactions"] < min_reactions:
+                    soft_seen.add(key)
+                    continue
             meta = {"author": author, "age_minutes": age, "comments": counts["comments"],
                     "reactions": counts["reactions"], "relevant": _literal_relevant(content, author, prefs)}
             hard_keys.add(key)
@@ -966,6 +979,20 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             else:
                 release_post_claim(user_id, key)  # no comment generated — release the claim
             continue  # DOM re-rendered / candidate consumed — re-gather from the top
+        # Nothing cleared the hard filters this pass. If the whole feed keeps coming up empty
+        # (0 posts past excludes + recency + min-reactions) but some only missed the recency/
+        # min-reactions gates, relax THOSE gates once and re-scan from the top — otherwise a
+        # sparse or low-reaction feed yields zero comments even with feed_fallback_when_empty on
+        # (excludes/dedup still apply; we still comment on the best-scored post).
+        if (fallback_enabled and not hard_relaxed and posted == 0 and not hard_keys
+                and soft_seen and scrolls + 1 >= _FEED_FALLBACK_AFTER_MISSES):
+            hard_relaxed = True
+            fallback_active = True
+            myprint("No posts cleared the recency/min-reaction gates — relaxing them "
+                    "(empty-feed fallback) and re-scanning the top of the feed")
+            driver.execute_script("window.scrollTo(0, 0);")
+            time.sleep(random.uniform(2.0, 3.5))
+            continue
         # nothing actionable in view — scroll to load more
         driver.execute_script("window.scrollBy(0, 1200);")
         scrolls += 1
