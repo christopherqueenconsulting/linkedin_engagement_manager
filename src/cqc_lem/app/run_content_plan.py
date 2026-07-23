@@ -626,7 +626,7 @@ def _proof_regen_enabled() -> bool:
 def _review_generated_post(user_id: int, stage: str, post_type: str, user_profile: LinkedInProfile,
                            blueprint: dict, post_id: int, lead_magnet_cta: str, content: str,
                            recent_texts: list, prefs: dict = None,
-                           profile_synthesis: str = None) -> str:
+                           profile_synthesis: Optional[str] = None) -> str:
     """The post-generation REVIEW GATE (the newsletter's dedup maturity applied to posts): compare
     the finished post against the user's recent posts with the deterministic token-set overlap in
     content_framework, AND check the A2 personal-proof slot (a concrete first-person lived detail).
@@ -1062,7 +1062,7 @@ def process_selected_post(url, content):
 
 
 def generate_website_content_post(sitemap_url, linked_user_profile, stage: str, prefs: dict = None,
-                                  profile_synthesis: str = None, blueprint: dict = None,
+                                  profile_synthesis: Optional[str] = None, blueprint: dict = None,
                                   lead_magnet_cta: str = None, history_directive: str = None):
     """
     Generate a post based on content found on the user's website using their sitemap url catered to readers in the desired buyers journey stage.

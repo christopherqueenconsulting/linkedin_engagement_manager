@@ -679,7 +679,7 @@ _SPECIFICITY_RE = re.compile(
 _PROOF_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
 
 
-def first_person_proof_sentences(text: str) -> list:
+def first_person_proof_sentences(text: Optional[str]) -> list:
     """Sentences carrying BOTH a first-person marker AND a concrete-specificity signal — i.e. a
     lived, first-person detail rather than an abstract claim. Deterministic, no LLM. The same-sentence
     tie is what keeps an unrelated stat elsewhere in a generic post from counting as the author's own
@@ -692,7 +692,7 @@ def first_person_proof_sentences(text: str) -> list:
     return out
 
 
-def has_first_person_proof(text: str) -> bool:
+def has_first_person_proof(text: Optional[str]) -> bool:
     """True when the draft fills the A2 proof slot — at least one concrete first-person lived detail.
     Empty/None or purely-generic content → False, so the caller reject/regenerates it."""
     return bool(first_person_proof_sentences(text))
