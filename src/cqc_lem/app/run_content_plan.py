@@ -29,7 +29,7 @@ from cqc_lem.utilities.ai.content_framework import select_blueprint, history_avo
     find_most_similar, post_similarity_max, has_first_person_proof
 from cqc_lem.utilities.ai.content_alignment import (
     should_include_lead_magnet_cta, lead_magnet_cta_directive, ensure_lead_magnet_cta,
-    content_matches_focus, personal_proof_directive)
+    personal_proof_directive, topic_authority_score, topic_authority_min, profile_topic_dna)
 from cqc_lem.utilities.env_constants import API_URL_FINAL, DEFAULT_VIDEO_RATIO, \
     DEFAULT_IMAGE_RATIO, AI_DISCLOSURE_ENABLED, AI_DISCLOSURE_TEXT, \
     STANDARD_VIDEO_MODEL, PREMIUM_VIDEO_MODEL, PREMIUM_TOP_VIDEO_MODEL, \
@@ -591,24 +591,31 @@ def regenerate_post_task(post_id: int, guidance: str = None):
     return regenerate_post(post_id, guidance)
 
 
-def _check_post_alignment(content: str, prefs: dict, user_id: int = None,
-                          post_id: int = None) -> bool:
-    """Lightweight focus-alignment check on a FINAL post: when the user declared focus_topics,
-    verify the post plausibly relates to at least one of them via the cheap deterministic token
-    heuristic (content_matches_focus — NO LLM call). POST_ALIGNMENT_LLM_CHECK_ENABLED (default OFF,
-    the COMMENT_RESEARCH_ENABLED cost-gating pattern) lets an LLM relevance check rescue keyword
-    misses — it only fires when the heuristic already failed, so the default path costs nothing.
-    Misalignment logs a structured warning and never blocks the pipeline."""
+def _check_post_alignment(content: str, prefs: dict, user_id: int = None, post_id: int = None,
+                          user_profile: LinkedInProfile = None,
+                          profile_synthesis: Optional[str] = None) -> bool:
+    """Topic Authority (Topic DNA) governor on a FINAL post (issue #384): when the user declared
+    focus_topics, score how tightly the post sits inside their niche — their focus topics PLUS the
+    profile headline/about vocabulary — via the cheap deterministic overlap heuristic
+    (topic_authority_score — NO LLM call). Below the off-niche threshold, POST_ALIGNMENT_LLM_CHECK_ENABLED
+    (default OFF, the COMMENT_RESEARCH_ENABLED cost-gating pattern) lets an LLM relevance check rescue
+    keyword misses — it only fires when the heuristic already failed, so the default path costs
+    nothing. An off-niche post logs a structured warning (with its score) and never blocks the
+    pipeline."""
     topics = [str(t).strip() for t in ((prefs or {}).get("focus_topics") or []) if str(t).strip()]
     if not topics or not content:
         return True
-    aligned = content_matches_focus(content, topics)
+    headline, about = profile_topic_dna(user_profile, profile_synthesis)
+    threshold = topic_authority_min()
+    score = topic_authority_score(content, topics, headline, about)
+    aligned = score >= threshold
     if not aligned and str(os.getenv("POST_ALIGNMENT_LLM_CHECK_ENABLED", "")).strip().lower() in (
             "1", "true", "yes", "on"):
         from cqc_lem.utilities.ai.ai_helper import post_is_relevant
         aligned = post_is_relevant(content, topics)
     if not aligned:
-        log_warning("Generated post does not appear to relate to any declared focus topic",
+        log_warning(f"Generated post is off-niche vs the user's Topic DNA — does not relate to any "
+                    f"declared focus topic (topic authority {score:.2f} < min {threshold:.2f})",
                     user_id=user_id, post_id=post_id, task_name="create_text_post")
     return aligned
 
@@ -644,7 +651,7 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
         if missing_proof:
             log_warning("Generated post lacks a concrete first-person lived detail (A2 proof slot)",
                         user_id=user_id, post_id=post_id, task_name="create_text_post")
-        _check_post_alignment(content, prefs, user_id, post_id)
+        _check_post_alignment(content, prefs, user_id, post_id, user_profile, profile_synthesis)
         return content
 
     reasons = []
@@ -668,7 +675,7 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
                     user_id=user_id, post_id=post_id, task_name="create_text_post")
         second = None
     if not second:
-        _check_post_alignment(content, prefs, user_id, post_id)
+        _check_post_alignment(content, prefs, user_id, post_id, user_profile, profile_synthesis)
         return content
 
     second_score, _ = find_most_similar(second, recent_texts)
@@ -680,7 +687,7 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
         log_warning("Post still lacks a concrete first-person lived detail after retry "
                     "(A2 proof slot); keeping second attempt",
                     user_id=user_id, post_id=post_id, task_name="create_text_post")
-    _check_post_alignment(second, prefs, user_id, post_id)
+    _check_post_alignment(second, prefs, user_id, post_id, user_profile, profile_synthesis)
     return second
 
 

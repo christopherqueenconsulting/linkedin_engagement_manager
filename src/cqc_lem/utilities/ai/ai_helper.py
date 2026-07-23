@@ -1453,8 +1453,10 @@ def get_industry_trend_analysis_based_on_user_profile(linked_in_profile: LinkedI
     # user's declared focus. When focus_topics exist, anchor the trend subject to the INTERSECTION
     # of the industry and ONE focus topic (rotated deterministically per post via sequence_index so
     # anchoring never collapses onto a single topic); with no intersection the focus topic itself
-    # wins. No focus topics → the original industry-only behavior, unchanged.
-    focus_topic = _select_focus_topic(prefs, sequence_index)
+    # wins. No focus topics → fall back to on-niche anchors derived from the profile (Topic-DNA
+    # steering, issue #384); with no usable profile anchors either, the original industry-only
+    # behavior is unchanged.
+    focus_topic = _select_focus_topic(prefs, sequence_index, profile=linked_in_profile)
     if focus_topic:
         myprint(f"Anchoring trends to focus topic: {focus_topic}")
         subject = (f"{focus_topic} in the {industry} industry: recent trends, developments, and "
