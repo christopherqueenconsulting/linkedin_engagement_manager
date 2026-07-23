@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.50.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.49.0...v0.50.0) (2026-07-23)
+
+
+### Features
+
+* **content:** humanization / anti-AI-tell rewrite pass for all AI text (closes [#416](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/416)) ([08074cc](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/08074cc317e01ee162c1ee3999e10704d0450885))
+
 ## [0.49.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.48.0...v0.49.0) (2026-07-23)
 
 
