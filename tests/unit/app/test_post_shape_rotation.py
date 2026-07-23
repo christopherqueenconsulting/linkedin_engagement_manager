@@ -48,7 +48,7 @@ class TestPostShapeRotation:
         assert bp["format"] not in ("personal_lesson", "contrarian_take")
         assert bp["hook_style"] not in ("question", "surprising_stat")
         hist.assert_called_once()
-        save.assert_called_once_with(77, bp["format"], bp["hook_style"])
+        save.assert_called_once_with(77, bp["format"], bp["hook_style"], topic=bp.get("subject"))
 
     def test_no_persistence_without_post_id(self):
         out, captured, _, save = _run(post_id=None)
@@ -61,7 +61,7 @@ class TestPostShapeRotation:
         out, captured, hist, save = _run(blueprint=bp_in)
         assert captured["blueprint"] is bp_in
         hist.assert_not_called()
-        save.assert_called_once_with(77, "tactical_list", "bold_claim")
+        save.assert_called_once_with(77, "tactical_list", "bold_claim", topic=None)
 
     def test_lead_magnet_cta_woven_when_enabled_and_selected(self):
         lm = {"enabled": True, "keyword": "AUDIT", "message": "Free profile audit checklist."}

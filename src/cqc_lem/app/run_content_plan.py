@@ -914,7 +914,8 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
     # history, applied to posts via V51). Only the outermost call (which knows the post row) writes.
     if post_id is not None and final_content and blueprint:
         try:
-            update_db_post_shape(post_id, blueprint.get("format"), blueprint.get("hook_style"))
+            update_db_post_shape(post_id, blueprint.get("format"), blueprint.get("hook_style"),
+                                 topic=blueprint.get("subject"))
         except Exception as e:
             myprint(f"Could not persist post shape for post {post_id}: {e}")
 

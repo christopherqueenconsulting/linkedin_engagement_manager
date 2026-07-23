@@ -1117,15 +1117,17 @@ def update_db_post_carousel_slides(post_id: int, slides: list[str]) -> bool:
     return success
 
 
-def update_db_post_shape(post_id: int, archetype: Optional[str], hook_style: Optional[str]) -> bool:
-    """Persist the SHAPE (short-form archetype + hook style) assigned to a generated post — the
-    rotation history that keeps a user's next post from reusing a recently used shape (V51)."""
+def update_db_post_shape(post_id: int, archetype: Optional[str], hook_style: Optional[str],
+                         topic: Optional[str] = None) -> bool:
+    """Persist the SHAPE (short-form archetype + hook style + topic) assigned to a generated post —
+    the rotation history that keeps a user's next post from reusing a recently used shape (V51), and
+    the topic attribution the feedback loop reads back off each captured stat row (#386)."""
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
         cursor.execute(
-            "UPDATE posts SET archetype = %s, hook_style = %s WHERE id = %s",
-            (archetype, hook_style, post_id)
+            "UPDATE posts SET archetype = %s, hook_style = %s, topic = %s WHERE id = %s",
+            (archetype, hook_style, topic, post_id)
         )
         connection.commit()
         success = cursor.rowcount == 1
@@ -3134,10 +3136,19 @@ def record_post_stats(user_id: int, post_id: int, reactions: int, comments: int,
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
+        # Snapshot the post's content attributes at capture time so the feedback loop (#386) can
+        # learn which shape/topic earned engagement even if the post is later edited.
         cursor.execute(
-            "INSERT INTO post_stats (user_id, post_id, reactions, comments, reposts, impressions) "
-            "VALUES (%s,%s,%s,%s,%s,%s)",
-            (user_id, post_id, int(reactions or 0), int(comments or 0), int(reposts or 0), impressions))
+            "SELECT archetype, hook_style, post_type, topic, buyer_stage FROM posts WHERE id=%s",
+            (post_id,))
+        row = cursor.fetchone()
+        archetype, hook_style, fmt, topic, buyer_stage = row if row else (None, None, None, None, None)
+        cursor.execute(
+            "INSERT INTO post_stats (user_id, post_id, reactions, comments, reposts, impressions, "
+            "archetype, hook_style, `format`, topic, buyer_stage) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (user_id, post_id, int(reactions or 0), int(comments or 0), int(reposts or 0),
+             impressions, archetype, hook_style, fmt, topic, buyer_stage))
         connection.commit()
         return True
     except mysql.connector.Error as err:
@@ -3165,12 +3176,15 @@ def get_recent_posted_post_ids(user_id: int, days: int = 21) -> list:
 
 def get_post_engagement_rows(user_id: int) -> list:
     """Latest stats per post joined with when it was posted → rows of
-    (scheduled_time, reactions, comments, reposts) for post-time analysis."""
+    (scheduled_time, reactions, comments, reposts, archetype, hook_style, format, topic,
+    buyer_stage) for post-time and content-attribution analysis (#386). The attribution columns
+    are the snapshot captured on the stat row, so they reflect the post as it was when scraped."""
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
         cursor.execute(
-            "SELECT p.scheduled_time, s.reactions, s.comments, s.reposts "
+            "SELECT p.scheduled_time, s.reactions, s.comments, s.reposts, "
+            "s.archetype, s.hook_style, s.`format`, s.topic, s.buyer_stage "
             "FROM posts p JOIN post_stats s ON s.post_id=p.id AND s.user_id=p.user_id "
             "WHERE p.user_id=%s AND s.id IN "
             "(SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id)",

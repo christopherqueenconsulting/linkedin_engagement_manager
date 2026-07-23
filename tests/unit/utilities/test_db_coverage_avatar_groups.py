@@ -134,12 +134,26 @@ class TestUserGroups:
 
 class TestPostStats:
     def test_record_post_stats_coerces_none_counts(self):
+        # No matching post row → attribution snapshot is all-NULL but the stat is still recorded.
         conn, cur = _conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_post_stats
             assert record_post_stats(1, 9, None, None, reposts=None, impressions=120) is True
-        params = cur.execute.call_args[0][1]
-        assert params == (1, 9, 0, 0, 0, 120)
+        params = cur.execute.call_args[0][1]  # last execute = the INSERT
+        assert params == (1, 9, 0, 0, 0, 120, None, None, None, None, None)
+
+    def test_record_post_stats_snapshots_post_attribution(self):
+        # The post's shape/topic is snapshotted onto the stat row at capture time (#386).
+        conn, cur = _conn(fetch_one=("tactical_list", "bold_claim", "text", "AI hiring", "awareness"))
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import record_post_stats
+            assert record_post_stats(1, 9, 10, 3, reposts=1, impressions=200) is True
+        select_sql, select_params = cur.execute.call_args_list[0][0]
+        assert "FROM posts WHERE id=%s" in select_sql and select_params == (9,)
+        insert_sql, insert_params = cur.execute.call_args_list[1][0]
+        assert "INSERT INTO post_stats" in insert_sql and "`format`" in insert_sql
+        assert insert_params == (1, 9, 10, 3, 1, 200,
+                                 "tactical_list", "bold_claim", "text", "AI hiring", "awareness")
 
     def test_get_recent_posted_post_ids(self):
         conn, cur = _conn(fetch_all=[(4,), (7,)])
