@@ -854,6 +854,121 @@ def humanize_text(content: Optional[str], content_type: str = "post",
     return rewritten
 
 
+# --- Title de-hype pass (issue #439) --------------------------------------------------------------
+# A headline is not prose: the full READER-mode rewrite above flattens it into a sentence and costs the
+# open rate. Titles get their own pass that strips the hype/AI tells while KEEPING one real hook.
+
+# Headline-only hype tells (clickbait superlatives + growth-hack verbs) that aren't in the tier-1 prose
+# wordbank. Used to steer the rewrite prompt and as a deterministic, testable audit.
+TITLE_HYPE_WORDS = frozenset({
+    "explosive", "explode", "exploding", "supercharge", "supercharged", "skyrocket", "skyrocketing",
+    "insane", "jaw-dropping", "mind-blowing", "shocking", "ultimate", "secret", "secrets", "hack",
+    "hacks", "guru", "ninja", "viral", "effortless", "effortlessly", "proven", "foolproof",
+    "must-have", "no-brainer", "revolutionary", "epic", "killer", "supercharging", "10x",
+})
+
+
+def find_title_slop_words(text: Optional[str]) -> list[str]:
+    """Deterministic audit for headlines: tier-1 AI-tell words (AI_TELL_WORDS) plus the headline-only
+    hype lexicon (TITLE_HYPE_WORDS) present in `text`, in order of first appearance, de-duplicated and
+    case-insensitive. NO LLM call."""
+    out, seen = [], set()
+    for tok in _WORD_TOKEN_RE.findall(text or ""):
+        low = tok.lower()
+        if (low in AI_TELL_WORDS or low in TITLE_HYPE_WORDS) and low not in seen:
+            seen.add(low)
+            out.append(low)
+    return out
+
+
+_HUMANIZE_TITLE_SYSTEM = (
+    "You rewrite an AI-drafted HEADLINE so it reads like a human editor wrote it, without changing what "
+    "the piece is about. This headline is published in the author's own name.\n\n"
+    "HARD RULES:\n"
+    "- NEVER invent facts: no numbers, names, dates, claims, or specifics that are not already in the "
+    "draft headline (or the author-background section below, when one is given).\n"
+    "- Keep the same subject. If the draft names a real specific (a tool, a number, a place), keep it.\n"
+    "- It stays a HEADLINE: one short line, no trailing period, no quotes around it, no subtitle, no "
+    "explanation. Aim for under ~90 characters.\n"
+    "- KEEP ONE genuine hook - a tension, a specific promise, a contrarian angle, a concrete outcome. "
+    "Do NOT flatten it into a bland topic label, and do NOT turn it into a sentence of prose or a rant.\n\n"
+    "DE-HYPE (this is the job):\n"
+    "- Cut hype adjectives: game-changing, groundbreaking, revolutionary, explosive, ultimate, "
+    "unparalleled, cutting-edge, transformative, insane, must-have, secret, proven.\n"
+    "- Cut AI verbs: unlock, unleash, elevate, harness, leverage, supercharge, master, delve, "
+    "revolutionize, skyrocket.\n"
+    "- Drop clickbait scaffolds: '7 X That Will...', 'The Ultimate Guide to', 'You Won't Believe', "
+    "'Here's Why/How', 'X Is Killing Y'. A number stays only if it names something real in the draft.\n"
+    "- No emoji, no ALL-CAPS words, no exclamation marks, no em dashes, no curly quotes.\n"
+    "- Use the plain words a person would say out loud.\n\n"
+    "Output ONLY the rewritten headline."
+)
+
+_TITLE_LABEL_RE = re.compile(r"^(?:title|headline)\s*[:\-]\s*", re.IGNORECASE)
+
+
+def _clean_title_line(text: str) -> str:
+    """Coerce a model reply back into a single headline: first non-empty line, no 'Title:' label, no
+    wrapping quotes, whitespace collapsed, em-dash tells removed."""
+    line = next((ln.strip() for ln in (text or "").splitlines() if ln.strip()), "")
+    line = _TITLE_LABEL_RE.sub("", line).strip()
+    if len(line) >= 2 and line[0] == line[-1] and line[0] in "\"'":
+        line = line[1:-1].strip()
+    line = re.sub(r"\s+", " ", cap_em_dashes(line, 0)).strip()
+    if line.endswith(".") and not line.endswith("..."):
+        line = line[:-1].rstrip()
+    return line
+
+
+def humanize_title(title: Optional[str], content_type: str = "newsletter",
+                   profile_synthesis: Optional[str] = None,
+                   prefs: Optional[dict] = None, max_chars: int = 255) -> Optional[str]:
+    """Title-appropriate de-hype pass (issue #439). Strips the AI/hype tells from an AI-drafted headline
+    (wordbank hits, clickbait scaffolds, superlatives) while keeping ONE compelling hook, so titles stop
+    reading like "7 Game-Changing Tactics for Explosive Growth". Shares the HUMANIZE_ENABLED /
+    HUMANIZE_<TYPE>_ENABLED toggles with humanize_text and FAILS OPEN the same way: returns `title`
+    unchanged when the pass is disabled, the input is empty, the model errors, the reply collapses to a
+    fragment, it grows past the draft's own length or the `max_chars` budget (a reply that long is prose,
+    not a headline), or the rewrite carries more hype/AI tells than what came in."""
+    if not title or not str(title).strip():
+        return title
+    if not humanize_enabled(content_type):
+        return title
+    original = title
+    try:
+        extra = ""
+        synth = (profile_synthesis or "").strip()
+        if synth:
+            extra += ("\n\nAuthor background - the ONLY source of real specifics you may draw on (never "
+                      "copy it verbatim, never invent beyond it):\n" + synth[:400])
+        hits = find_title_slop_words(str(title))
+        if hits:
+            extra += ("\n\nRemove these hype / AI-tell words that appear in the draft headline: "
+                      + ", ".join(hits[:20]) + ".")
+        extra += f"\n\nHard limit: the headline MUST be at most {int(max_chars)} characters."
+        # Lazy import avoids a circular import (ai_helper imports this module).
+        from cqc_lem.utilities.ai.ai_helper import _call_llm
+        resp = _call_llm(
+            model="lem-simple",
+            messages=[
+                {"role": "system", "content": _HUMANIZE_TITLE_SYSTEM + extra},
+                {"role": "user", "content": str(title).strip()},
+            ],
+            temperature=0.4,
+        )
+        rewritten = _clean_title_line(resp.choices[0].message.content or "")
+    except Exception:
+        return original
+    # A headline that came back as a couple of words lost its hook (or the model refused). De-hyping
+    # never needs MORE room than the draft, so a reply that grew is prose/an explanation, not a title.
+    budget = min(int(max_chars), max(90, len(str(title).strip())))
+    if len(rewritten) < 12 or len(rewritten) > budget:
+        return original
+    if len(find_title_slop_words(rewritten)) > len(find_title_slop_words(str(title))):
+        return original
+    return rewritten
+
+
 def score_authenticity(content: str, profile=None, profile_synthesis: Optional[str] = None,
                        prefs: dict = None) -> dict:
     """LLM-judge the authenticity / generic-AI risk of a finished post draft.
