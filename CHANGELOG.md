@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.47.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.46.0...v0.47.0) (2026-07-23)
+
+
+### Features
+
+* **ai:** add anti-ai skill reference files (for [#416](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/416) humanization) ([1b0f126](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1b0f12655fb0907950aca6afcbd01ab691eec0d5))
+* **ai:** add anti-ai skill reference files (READER-mode humanization spec) ([ffcdab6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ffcdab6a58a4fce3cde80c27c539d7a42f17afaf))
+* **ci:** autonomous milestone pipeline (Claude Max implementer, Copilot reviewer) ([414abd4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/414abd405f323b5f6e87c09e607bc922ed6fe320))
+* **ci:** autonomous milestone pipeline (Claude Max implementer, Copilot reviewer) ([2f27553](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2f2755316764b61389196fa3f019ea03f0531961))
+* **content:** A1/A3 authenticity rubric + golden set (closes [#405](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/405)) ([4cfb65a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4cfb65a1062c58cb9867b49ca7e4b0219e37d2ff))
+* **content:** add A1/A3 authenticity rubric + golden set (closes [#405](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/405)) ([57103c9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/57103c9c3dc6f121f296d972f994661c6ab5f970))
+* **content:** add Topic Authority (Topic DNA) governor (closes [#384](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/384)) ([e0eb636](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e0eb636345f69fe7de0085edc3a3afc2f5779c32))
+* **content:** inject mandatory first-person proof slot into blueprints (closes [#383](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/383)) ([7624338](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/76243388f1ecf3b468d805024c49a51a11ebce28))
+* **content:** inject mandatory first-person proof slot into blueprints (closes [#383](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/383)) ([e1c9944](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e1c9944d6e828871855436675dca4167080459a5))
+* **content:** performance-aware content selection — close the loop (closes [#389](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/389)) ([799656d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/799656d64586f9ec7fe79e3fb09c3ea76854bf18))
+* **content:** performance-aware shape selection to close the loop (closes [#389](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/389)) ([304f44c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/304f44c909bce0417811b19fbcf09614431a1891))
+* **content:** Topic Authority (Topic DNA) governor (closes [#384](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/384)) ([38b83fe](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/38b83fec7ff45894e06a7320d102613a44e44863))
+
+
+### Bug Fixes
+
+* **content:** correct perf-shape scoring scale + filter posted rows (review [#420](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/420)) ([7d10d1d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7d10d1dfd2f076f9b246e5711d7babf4a82684fc))
+* **content:** use unrounded score for authenticity gate + mark unit tests ([2320e4b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2320e4b3ed2de1f184590165ec6ff61df4356f04))
+
 ## [0.46.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.45.6...v0.46.0) (2026-07-23)
 
 
