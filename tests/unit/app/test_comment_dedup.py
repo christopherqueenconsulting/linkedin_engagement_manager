@@ -255,3 +255,24 @@ class TestFeedFunnelAndFallback:
                       prefs={"max_comments_per_day": 20})
         assert r["posted"] == 1
         assert r["funnel"]["fallback_used"] is False
+
+    def test_empty_hard_filters_relaxes_when_enabled(self):
+        # Every post fails the min-reactions gate (0 < 5), so NOTHING clears the hard filters —
+        # the include-miss fallback can't help (it only triggers on posts that first passed the
+        # hard gates). With fallback ON, the empty-feed path must relax recency/min-reactions and
+        # comment anyway (this is the case feed_fallback_when_empty is named for).
+        boxes = [_box("Sparse feed post with enough text to qualify for scanning.")]
+        r = _run_feed(boxes, matches=False,
+                      prefs={"max_comments_per_day": 20, "include_topics": ["AI"],
+                             "feed_fallback_when_empty": True, "min_reactions": 5})
+        assert r["posted"] >= 1
+        assert r["funnel"]["fallback_used"] is True
+
+    def test_empty_hard_filters_no_relax_when_disabled(self):
+        # Same sparse/low-reaction feed but fallback OFF -> stays at zero comments.
+        boxes = [_box("Sparse feed post with enough text to qualify for scanning.")]
+        r = _run_feed(boxes, matches=False,
+                      prefs={"max_comments_per_day": 20, "include_topics": ["AI"],
+                             "feed_fallback_when_empty": False, "min_reactions": 5})
+        assert r["posted"] == 0
+        assert r["funnel"]["fallback_used"] is False
