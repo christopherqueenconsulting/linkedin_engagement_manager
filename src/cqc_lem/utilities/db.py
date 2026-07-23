@@ -3217,14 +3217,17 @@ def get_recent_posted_post_ids(user_id: int, days: int = 21) -> list:
 def get_post_engagement_rows(user_id: int) -> list:
     """Latest stats per post joined with when it was posted → rows of
     (scheduled_time, reactions, comments, reposts, archetype, hook_style, format, topic,
-    buyer_stage) for post-time and content-attribution analysis (#386). The attribution columns
-    are the snapshot captured on the stat row, so they reflect the post as it was when scraped."""
+    buyer_stage, impressions) for post-time and content-attribution analysis (#386). The
+    attribution columns are the snapshot captured on the stat row, so they reflect the post as it
+    was when scraped. `impressions` may be NULL (only the author's own view exposes it) — it
+    trails the tuple so index-based readers of the older shape keep working, and it lets
+    `post_stats` score by engagement RATE when coverage is complete (#388)."""
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
         cursor.execute(
             "SELECT p.scheduled_time, s.reactions, s.comments, s.reposts, "
-            "s.archetype, s.hook_style, s.`format`, s.topic, s.buyer_stage "
+            "s.archetype, s.hook_style, s.`format`, s.topic, s.buyer_stage, s.impressions "
             "FROM posts p JOIN post_stats s ON s.post_id=p.id AND s.user_id=p.user_id "
             "WHERE p.user_id=%s AND s.id IN "
             "(SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id)",

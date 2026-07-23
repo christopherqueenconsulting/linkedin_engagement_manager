@@ -1612,14 +1612,16 @@ def update_user_groups_endpoint(request: GroupTogglesRequest) -> ResponseModel:
 
 @router.get("/user/post-stats")
 def get_post_stats_endpoint(session_token: str) -> ResponseModel:
-    """Personalized best-times-to-post recommendations derived from the user's own post stats."""
-    from cqc_lem.utilities.post_stats import recommend_post_times
+    """Personalized best-times-to-post recommendations plus a which-hooks/formats/topics-win
+    ranking, both derived from the user's own post stats."""
+    from cqc_lem.utilities.post_stats import rank_content_attributes, recommend_post_times
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     rows = get_post_engagement_rows(user_id)
     return ResponseModel(status_code=200, detail={
         "recommendations": recommend_post_times(rows),
+        "rankings": rank_content_attributes(rows, top_n=5),
         "sample_size": len(rows),
     })
 
