@@ -4,7 +4,7 @@ comparison set carries impressions, and always recency-weighted so stale posts f
 
 from collections import defaultdict
 from datetime import datetime
-from typing import Iterable, Optional, Sequence
+from typing import Any, Iterable, Optional, Sequence, Tuple
 
 _WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
@@ -62,7 +62,7 @@ def recency_weight(scheduled_time: Optional[datetime], now: Optional[datetime] =
     return 0.5 ** (age_days / half_life_days)
 
 
-def _cell(row: Sequence, index: int):
+def _cell(row: Sequence, index: int) -> Any:
     return row[index] if len(row) > index else None
 
 
@@ -87,12 +87,15 @@ def _round(value: float, rate_mode: bool) -> float:
 
 
 def _group_metrics(rows: Iterable[Sequence], rate_mode: bool, now: Optional[datetime],
-                   half_life_days: float, prior: float = SUPPORT_PRIOR) -> dict:
+                   half_life_days: float, prior: float = SUPPORT_PRIOR) -> Tuple[float, dict]:
     """Score one group of rows (a time bucket or an attribute value): the recency-weighted mean
     metric, its `support` (sum of recency weights = effective recent sample size) and the ranking
     `score`, which shrinks the mean toward 0 by support/(support + prior). Shrinkage is what makes
     the recency weighting bite ACROSS groups too — a group whose only evidence is old has little
-    support left, so it cannot outrank a well-sampled recent one on a stale fluke."""
+    support left, so it cannot outrank a well-sampled recent one on a stale fluke.
+
+    Returns (unrounded score, payload) — callers rank on the unrounded value so display rounding
+    can never flip the ordering, and only ever emit the rounded `score`."""
     weighted = 0.0
     support = 0.0
     samples = 0
@@ -103,9 +106,9 @@ def _group_metrics(rows: Iterable[Sequence], rate_mode: bool, now: Optional[date
         samples += 1
     average = weighted / support if support > 0 else 0.0
     score = average * (support / (support + prior)) if support + prior > 0 else 0.0
-    return {"avg_engagement": _round(average, rate_mode), "score": _round(score, rate_mode),
-            "support": round(support, 3), "samples": samples,
-            "metric": METRIC_RATE if rate_mode else METRIC_COUNT}
+    return score, {"avg_engagement": _round(average, rate_mode), "score": _round(score, rate_mode),
+                   "support": round(support, 3), "samples": samples,
+                   "metric": METRIC_RATE if rate_mode else METRIC_COUNT}
 
 
 def recommend_post_times(rows: Iterable[Sequence], top_n: int = 3, min_posts: int = 3,
@@ -125,11 +128,12 @@ def recommend_post_times(rows: Iterable[Sequence], top_n: int = 3, min_posts: in
         buckets[(scheduled.weekday(), scheduled.hour)].append(row)
     ranked = []
     for (weekday, hour), bucket_rows in buckets.items():
-        metrics = _group_metrics(bucket_rows, rate_mode, now, half_life_days)
-        ranked.append({"weekday": _WEEKDAYS[weekday], "weekday_num": weekday, "hour": hour,
-                       "sample": metrics.pop("samples"), **metrics})
-    ranked.sort(key=lambda b: (-b["score"], -b["sample"], b["weekday_num"], b["hour"]))
-    return ranked[:top_n]
+        raw_score, metrics = _group_metrics(bucket_rows, rate_mode, now, half_life_days)
+        ranked.append((raw_score, {"weekday": _WEEKDAYS[weekday], "weekday_num": weekday,
+                                   "hour": hour, "sample": metrics.pop("samples"), **metrics}))
+    ranked.sort(key=lambda entry: (-entry[0], -entry[1]["sample"], entry[1]["weekday_num"],
+                                   entry[1]["hour"]))
+    return [bucket for _, bucket in ranked[:top_n]]
 
 
 def rank_content_attributes(rows: Iterable[Sequence], attributes: Optional[Iterable[str]] = None,
@@ -158,8 +162,11 @@ def rank_content_attributes(rows: Iterable[Sequence], attributes: Optional[Itera
         groups = {key: group for key, group in groups.items() if len(group) >= min_samples}
         # Scale is decided across the whole attribute so its keys stay comparable to each other.
         rate_mode = _rate_mode([row for group in groups.values() for row in group])
-        ranked = [{"key": key, **_group_metrics(group, rate_mode, now, half_life_days)}
-                  for key, group in groups.items()]
-        ranked.sort(key=lambda entry: (-entry["score"], -entry["samples"], str(entry["key"])))
+        scored = []
+        for key, group in groups.items():
+            raw_score, metrics = _group_metrics(group, rate_mode, now, half_life_days)
+            scored.append((raw_score, {"key": key, **metrics}))
+        scored.sort(key=lambda entry: (-entry[0], -entry[1]["samples"], str(entry[1]["key"])))
+        ranked = [entry for _, entry in scored]
         result[name] = ranked[:top_n] if top_n else ranked
     return result

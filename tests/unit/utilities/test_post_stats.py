@@ -140,6 +140,18 @@ class TestRecommendPostTimes:
         recs = recommend_post_times(rows, min_posts=3, now=_NOW)
         assert recs[0]["weekday"] == "Thursday" and recs[0]["hour"] == 11
 
+    def test_display_rounding_does_not_flip_order(self):
+        """Ranking is on the unrounded score: these two slots tie at display precision, and the
+        weekday tiebreak would otherwise put the WORSE (Monday) slot first."""
+        from cqc_lem.utilities.post_stats import recommend_post_times
+        rows = [
+            _stat_row(dt.datetime(2026, 7, 27, 9, 0), reactions=1, impressions=1_000_000),
+            _stat_row(dt.datetime(2026, 7, 28, 9, 0), reactions=2, impressions=1_000_000),
+        ]
+        recs = recommend_post_times(rows, min_posts=2, now=_NOW)
+        assert [r["weekday"] for r in recs] == ["Tuesday", "Monday"]
+        assert recs[0]["score"] == recs[1]["score"] == 0.0
+
 
 class TestRankContentAttributes:
     def _rows(self):
@@ -185,6 +197,19 @@ class TestRankContentAttributes:
         assert [e["key"] for e in ranking["topic"]] == ["niche", "broad"]
         assert ranking["topic"][0]["metric"] == METRIC_RATE
         assert ranking["topic"][0]["avg_engagement"] == pytest.approx(0.05)
+
+    def test_display_rounding_does_not_flip_order(self):
+        """Same guarantee as the time buckets: the alphabetical tiebreak must not promote the
+        weaker key just because both scores round to the same displayed value."""
+        from cqc_lem.utilities.post_stats import rank_content_attributes
+        recent = dt.datetime(2026, 7, 25, 9, 0)
+        rows = [
+            _stat_row(recent, reactions=1, topic="a_weaker", impressions=1_000_000),
+            _stat_row(recent, reactions=2, topic="b_stronger", impressions=1_000_000),
+        ]
+        ranking = rank_content_attributes(rows, attributes=["topic"], now=_NOW)
+        assert [e["key"] for e in ranking["topic"]] == ["b_stronger", "a_weaker"]
+        assert ranking["topic"][0]["score"] == ranking["topic"][1]["score"] == 0.0
 
     def test_min_samples_drops_thin_keys_and_top_n_truncates(self):
         from cqc_lem.utilities.post_stats import rank_content_attributes
