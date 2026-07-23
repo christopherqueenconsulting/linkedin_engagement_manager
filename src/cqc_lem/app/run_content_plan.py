@@ -26,10 +26,10 @@ from cqc_lem.utilities.db import get_post_type_counts, insert_planned_post, upda
 from cqc_lem.utilities.db import get_recent_post_shape_history, update_db_post_shape, get_lead_magnet_settings
 from cqc_lem.utilities.db import get_recent_post_texts
 from cqc_lem.utilities.ai.content_framework import select_blueprint, history_avoidance_directive, \
-    find_most_similar, post_similarity_max
+    find_most_similar, post_similarity_max, has_first_person_proof
 from cqc_lem.utilities.ai.content_alignment import (
     should_include_lead_magnet_cta, lead_magnet_cta_directive, ensure_lead_magnet_cta,
-    content_matches_focus)
+    content_matches_focus, personal_proof_directive)
 from cqc_lem.utilities.env_constants import API_URL_FINAL, DEFAULT_VIDEO_RATIO, \
     DEFAULT_IMAGE_RATIO, AI_DISCLOSURE_ENABLED, AI_DISCLOSURE_TEXT, \
     STANDARD_VIDEO_MODEL, PREMIUM_VIDEO_MODEL, PREMIUM_TOP_VIDEO_MODEL, \
@@ -613,31 +613,58 @@ def _check_post_alignment(content: str, prefs: dict, user_id: int = None,
     return aligned
 
 
+def _proof_regen_enabled() -> bool:
+    """Whether a draft missing its A2 first-person proof slot is regenerated (vs. only logged). Read
+    at call time (the POST_SIMILARITY_MAX / research-toggle live-env pattern) so ops can dial the
+    extra generation cost back without a restart. Defaults ON — the reject/regenerate is the point of
+    issue #383; the detector still runs and warns even when regeneration is off, so the A1/anti-slop
+    signal is never lost."""
+    return str(os.getenv("POST_PROOF_REGEN_ENABLED", "on")).strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 def _review_generated_post(user_id: int, stage: str, post_type: str, user_profile: LinkedInProfile,
                            blueprint: dict, post_id: int, lead_magnet_cta: str, content: str,
-                           recent_texts: list, prefs: dict = None) -> str:
+                           recent_texts: list, prefs: dict = None,
+                           profile_synthesis: Optional[str] = None) -> str:
     """The post-generation REVIEW GATE (the newsletter's dedup maturity applied to posts): compare
     the finished post against the user's recent posts with the deterministic token-set overlap in
-    content_framework. Too similar (> POST_SIMILARITY_MAX) → regenerate ONCE with an explicit avoid
-    directive naming the offending post; still similar → log a structured warning and keep the
-    second attempt (never loop, never hard-block). Also runs the cheap focus-alignment check on
-    whatever content ships."""
+    content_framework, AND check the A2 personal-proof slot (a concrete first-person lived detail).
+    Too similar (> POST_SIMILARITY_MAX) or missing proof → regenerate ONCE with an explicit
+    avoid/proof directive; still failing → log a structured warning and keep the second attempt
+    (never loop, never hard-block). Also runs the cheap focus-alignment check on whatever content
+    ships."""
     threshold = post_similarity_max()
     score, match = find_most_similar(content, recent_texts)
-    if score <= threshold:
+    too_similar = score > threshold
+    missing_proof = not has_first_person_proof(content)
+    proof_regen = missing_proof and _proof_regen_enabled()
+
+    if not too_similar and not proof_regen:
+        if missing_proof:
+            log_warning("Generated post lacks a concrete first-person lived detail (A2 proof slot)",
+                        user_id=user_id, post_id=post_id, task_name="create_text_post")
         _check_post_alignment(content, prefs, user_id, post_id)
         return content
 
-    myprint(f"Post too similar to a recent post (score {score:.2f} > max {threshold:.2f}) — "
-            f"retrying once with an explicit avoid directive")
-    retry_directive = history_avoidance_directive(recent_texts, offending_text=match)
+    reasons = []
+    if too_similar:
+        reasons.append(f"too similar to a recent post (score {score:.2f} > max {threshold:.2f})")
+    if proof_regen:
+        reasons.append("missing a concrete first-person lived detail (A2 proof slot)")
+    myprint(f"Post {'; '.join(reasons)} — retrying once with an explicit avoid/proof directive")
+
+    retry_directive = history_avoidance_directive(
+        recent_texts, offending_text=match if too_similar else None)
+    if proof_regen:
+        retry_directive += personal_proof_directive(profile_synthesis)
     try:
         second = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=True,
                                   blueprint=blueprint, post_id=post_id,
                                   lead_magnet_cta=lead_magnet_cta,
                                   history_directive=retry_directive, similarity_check=False)
     except Exception as e:
-        log_warning("Similarity retry generation failed; keeping first draft", exc=e,
+        log_warning("Review-gate retry generation failed; keeping first draft", exc=e,
                     user_id=user_id, post_id=post_id, task_name="create_text_post")
         second = None
     if not second:
@@ -648,6 +675,10 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
     if second_score > threshold:
         log_warning(f"Post still similar to a recent post after retry "
                     f"(score {second_score:.2f} > max {threshold:.2f}); keeping second attempt",
+                    user_id=user_id, post_id=post_id, task_name="create_text_post")
+    if not has_first_person_proof(second):
+        log_warning("Post still lacks a concrete first-person lived detail after retry "
+                    "(A2 proof slot); keeping second attempt",
                     user_id=user_id, post_id=post_id, task_name="create_text_post")
     _check_post_alignment(second, prefs, user_id, post_id)
     return second
@@ -856,7 +887,7 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
     if final_content and refine_final_post and similarity_check:
         final_content = _review_generated_post(user_id, stage, post_type, user_profile, blueprint,
                                                post_id, lead_magnet_cta, final_content,
-                                               recent_texts, prefs)
+                                               recent_texts, prefs, profile_synthesis)
 
     # The refinement passes above (and any review-gate retry) are LLM rewrites — verified in prod to
     # reword the "comment KEYWORD" mechanic into a generic ask or drop it entirely, which silently
@@ -1031,7 +1062,7 @@ def process_selected_post(url, content):
 
 
 def generate_website_content_post(sitemap_url, linked_user_profile, stage: str, prefs: dict = None,
-                                  profile_synthesis: str = None, blueprint: dict = None,
+                                  profile_synthesis: Optional[str] = None, blueprint: dict = None,
                                   lead_magnet_cta: str = None, history_directive: str = None):
     """
     Generate a post based on content found on the user's website using their sitemap url catered to readers in the desired buyers journey stage.

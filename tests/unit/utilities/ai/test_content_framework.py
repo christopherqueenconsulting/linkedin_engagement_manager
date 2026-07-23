@@ -266,3 +266,73 @@ class TestDirectivesAndCompact:
         # The old one-size-fits-all viral template is gone for good.
         assert "10 relevant hashtags" not in text
         assert "SUCKS" not in text
+
+
+class TestPersonalProofSlot:
+    """A2: every post/newsletter blueprint carries a mandatory first-person proof slot, and comments
+    (grounded in the target post) are exempt."""
+
+    def test_post_directive_carries_proof_slot(self):
+        text = fw.blueprint_directive("post", {"format": "contrarian_take", "hook_style": "bold_claim"})
+        assert fw.PERSONAL_PROOF_SLOT in text
+        assert "MANDATORY PERSONAL-PROOF SLOT" in text
+
+    def test_newsletter_directive_carries_proof_slot(self):
+        text = fw.blueprint_directive("newsletter", {"format": "case_study"})
+        assert fw.PERSONAL_PROOF_SLOT in text
+
+    def test_comment_directive_has_no_proof_slot(self):
+        text = fw.blueprint_directive("comment", {"format": "expander"})
+        assert "MANDATORY PERSONAL-PROOF SLOT" not in text
+
+    def test_proof_slot_is_not_self_promo(self):
+        # The slot asks for lived expertise, never a plug — it must stay inside the guardrail.
+        assert "not self-promotion" in fw.PERSONAL_PROOF_SLOT
+        assert "first person" in fw.PERSONAL_PROOF_SLOT.lower()
+
+
+class TestFirstPersonProofDetector:
+    """The deterministic gate: a draft with a concrete first-person lived detail passes; a generic,
+    could-be-anyone draft (no such detail) is rejected."""
+
+    _WITH_PROOF = ("Three years ago I shipped a feature that tanked our activation rate by 40%.\n\n"
+                   "I learned that shipping fast without a rollback plan is how you lose a quarter.")
+
+    _NAMED_MONTH_PROOF = ("Last March I sat across from a skeptical CFO who cut my budget in half.\n\n"
+                          "We rebuilt the roadmap around what actually moved revenue.")
+
+    _GENERIC = ("Authenticity is what wins on LinkedIn.\n\n"
+                "Great leaders build trust by being consistent, showing up, and adding value to "
+                "their audience every single day. That is how influence compounds over time.")
+
+    _NUMBER_BUT_NO_FIRST_PERSON = ("Studies show that 70% of B2B buyers research on LinkedIn.\n\n"
+                                   "The platform rewards consistency and genuine engagement.")
+
+    _FIRST_PERSON_BUT_ABSTRACT = ("I believe authenticity is everything.\n\n"
+                                  "We should all strive to add value and build real relationships.")
+
+    def test_draft_with_first_person_number_passes(self):
+        assert fw.has_first_person_proof(self._WITH_PROOF)
+        sents = fw.first_person_proof_sentences(self._WITH_PROOF)
+        assert any("40%" in s for s in sents)
+
+    def test_named_month_lived_detail_passes(self):
+        assert fw.has_first_person_proof(self._NAMED_MONTH_PROOF)
+
+    def test_generic_draft_is_rejected(self):
+        assert not fw.has_first_person_proof(self._GENERIC)
+
+    def test_number_without_first_person_is_rejected(self):
+        # A stat elsewhere in the post is not the AUTHOR's own proof.
+        assert not fw.has_first_person_proof(self._NUMBER_BUT_NO_FIRST_PERSON)
+
+    def test_first_person_without_specificity_is_rejected(self):
+        assert not fw.has_first_person_proof(self._FIRST_PERSON_BUT_ABSTRACT)
+
+    def test_empty_or_none_is_rejected(self):
+        assert not fw.has_first_person_proof("")
+        assert not fw.has_first_person_proof(None)
+        assert fw.first_person_proof_sentences(None) == []
+
+    def test_detector_is_deterministic(self):
+        assert fw.has_first_person_proof(self._WITH_PROOF) == fw.has_first_person_proof(self._WITH_PROOF)

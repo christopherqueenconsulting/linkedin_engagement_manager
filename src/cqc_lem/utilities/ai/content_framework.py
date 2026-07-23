@@ -607,6 +607,8 @@ def blueprint_directive(content_type: str, blueprint: dict) -> str:
     if cta:
         c_meta = menu["ctas"][cta]
         lines.append(f"CTA STYLE: {c_meta['label']}. {c_meta['guidance']}")
+    if content_type in _PROOF_SLOT_TYPES:
+        lines.append(PERSONAL_PROOF_SLOT)
     return "\n".join(lines) + "\n"
 
 
@@ -615,6 +617,85 @@ def compact_blueprint(blueprint: dict) -> Optional[dict]:
     if not isinstance(blueprint, dict):
         return None
     return {k: blueprint.get(k) for k in ("subject", "angle", "format", "hook_style", "cta_style")}
+
+
+# ---------------------------------------------------------------------------
+# Personal-expertise / first-person proof slot (A2). 2026 authenticity guidance: AI content that
+# reads as generic gets demoted, so every long/short-form piece must carry at least ONE concrete,
+# FIRST-PERSON lived detail — a real number, a moment in time, a named example, or an outcome from
+# the author's own experience, not an abstract claim. blueprint_directive() injects the mandatory
+# "proof slot" below into the writer prompt (the specific material is the author's voice/expertise
+# reference already in the prompt — see content_alignment.personal_proof_directive), and the
+# deterministic (no-LLM) detector further down is the gate run_content_plan uses to reject and
+# regenerate a draft whose proof slot came back empty or generic (the signal the A1 anti-slop gate
+# also consumes).
+# ---------------------------------------------------------------------------
+
+# Content types that must fill the proof slot. Comments stay grounded in the TARGET post (that is
+# their proof), so forcing the author's own numbers into every comment would drift them off-topic —
+# comments are exempt.
+_PROOF_SLOT_TYPES = frozenset({"post", "newsletter"})
+
+# The mandatory A2 proof-slot line appended to the writer directive. Kept distinct from self-promo:
+# it asks for the author's lived EXPERTISE (credibility), never a plug for anything they are building.
+PERSONAL_PROOF_SLOT = (
+    "MANDATORY PERSONAL-PROOF SLOT: somewhere in the body, land at least ONE specific, first-person "
+    "lived detail only THIS author could write — a real number, a moment in time, a named example, "
+    "or a concrete outcome from their own experience or work (draw it from the author voice & "
+    "expertise reference above). Own it in the first person (\"I\"/\"we\"). Generic, could-be-anyone "
+    "claims do NOT satisfy this — this is what separates real expertise from generic AI content. This "
+    "is proof of experience, not self-promotion: never turn it into a plug for anything the author "
+    "is building."
+)
+
+# First-person ownership markers — the "this happened to ME" half of a lived detail.
+_FIRST_PERSON_RE = re.compile(
+    r"\b(?:i|i'm|i've|i'd|i'll|me|my|myself|mine|we|we're|we've|we'd|we'll|our|ours|us)\b",
+    re.IGNORECASE)
+
+_PROOF_MONTHS = ("january|february|march|april|may|june|july|august|september|october|november|"
+                 "december")
+_PROOF_WEEKDAYS = "monday|tuesday|wednesday|thursday|friday|saturday|sunday"
+
+# Concrete-specificity signals — the "and here is the CHECKABLE particular" half. A number (digit or
+# spelled), a relative-time anchor, or a named day/month grounds the claim in a real moment instead
+# of an abstraction. The gate flags genuinely generic drafts (no number AND no time anchor tied to a
+# first-person clause), not merely digit-free ones — it only regenerates, never hard-blocks, and the
+# proof slot steers writers toward exactly these anchors. Erring toward "counts as proof" keeps the
+# extra generation cost down: a false pass ships a slightly-less-proven post, a false fail burns a
+# regeneration.
+_SPECIFICITY_RE = re.compile(
+    r"\d"
+    r"|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+    r"dozens?|hundreds?|thousands?|millions?|billions?)\b"
+    r"|\b(?:years?|months?|weeks?|weekends?|days?|hours?|decades?)\s+ago\b"
+    r"|\b(?:last|past|next|first|second|third)\s+"
+    r"(?:year|month|week|weekend|quarter|decade|time|day|night|morning)\b"
+    r"|\bback\s+in\b"
+    rf"|\b(?:{_PROOF_MONTHS})\b"
+    rf"|\b(?:{_PROOF_WEEKDAYS})\b",
+    re.IGNORECASE)
+
+_PROOF_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def first_person_proof_sentences(text: Optional[str]) -> list:
+    """Sentences carrying BOTH a first-person marker AND a concrete-specificity signal — i.e. a
+    lived, first-person detail rather than an abstract claim. Deterministic, no LLM. The same-sentence
+    tie is what keeps an unrelated stat elsewhere in a generic post from counting as the author's own
+    proof."""
+    out = []
+    for sentence in _PROOF_SENTENCE_SPLIT.split(text or ""):
+        s = sentence.strip()
+        if s and _FIRST_PERSON_RE.search(s) and _SPECIFICITY_RE.search(s):
+            out.append(s)
+    return out
+
+
+def has_first_person_proof(text: Optional[str]) -> bool:
+    """True when the draft fills the A2 proof slot — at least one concrete first-person lived detail.
+    Empty/None or purely-generic content → False, so the caller reject/regenerates it."""
+    return bool(first_person_proof_sentences(text))
 
 
 # ---------------------------------------------------------------------------
