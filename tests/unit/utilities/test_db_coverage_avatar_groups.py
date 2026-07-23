@@ -149,7 +149,7 @@ class TestPostStats:
             from cqc_lem.utilities.db import record_post_stats
             assert record_post_stats(1, 9, 10, 3, reposts=1, impressions=200) is True
         select_sql, select_params = cur.execute.call_args_list[0][0]
-        assert "FROM posts WHERE id=%s" in select_sql and select_params == (9,)
+        assert "FROM posts WHERE id=%s AND user_id=%s" in select_sql and select_params == (9, 1)
         insert_sql, insert_params = cur.execute.call_args_list[1][0]
         assert "INSERT INTO post_stats" in insert_sql and "`format`" in insert_sql
         assert insert_params == (1, 9, 10, 3, 1, 200,

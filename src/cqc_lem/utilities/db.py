@@ -3139,8 +3139,9 @@ def record_post_stats(user_id: int, post_id: int, reactions: int, comments: int,
         # Snapshot the post's content attributes at capture time so the feedback loop (#386) can
         # learn which shape/topic earned engagement even if the post is later edited.
         cursor.execute(
-            "SELECT archetype, hook_style, post_type, topic, buyer_stage FROM posts WHERE id=%s",
-            (post_id,))
+            "SELECT archetype, hook_style, post_type, topic, buyer_stage "
+            "FROM posts WHERE id=%s AND user_id=%s",
+            (post_id, user_id))
         row = cursor.fetchone()
         archetype, hook_style, fmt, topic, buyer_stage = row if row else (None, None, None, None, None)
         cursor.execute(
