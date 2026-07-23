@@ -1,8 +1,11 @@
 name: Migration Versions
 
-# Fails if two Flyway migrations share a version number. Same-version/different-filename migrations
-# don't git-conflict, so they merge clean but break `flyway migrate` at deploy — this catches them
-# at PR time. Make "Migration Versions" a required check to enforce it.
+# Guards Flyway migrations on every PR:
+#   1. No two migrations share a version (a duplicate breaks `flyway migrate` at deploy).
+#   2. Every NEW migration uses a 14-digit TIMESTAMP version V<YYYYMMDDHHMMSS>__ ; legacy V1-V58
+#      are grandfathered. Timestamps are unique per authoring second and sort after all legacy
+#      integers, so parallel PRs can never collide again.
+# Make "Migration Versions" a required check to enforce it.
 
 on:
   pull_request:
@@ -13,13 +16,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: No duplicate migration versions
+      - name: Unique versions + timestamp format for new migrations
         run: |
           cd compose/local/database/migrations
-          dups=$(ls V*.sql 2>/dev/null | sed -E 's/^(V[0-9]+)__.*/\1/' | sort | uniq -d)
-          if [ -n "$dups" ]; then
-            echo "::error::Duplicate Flyway migration version(s): $dups"
-            for v in $dups; do echo "  $v:"; ls ${v}__*.sql; done
-            exit 1
-          fi
-          echo "All migration versions are unique."
+          fail=0
+          dups=$(ls V*.sql 2>/dev/null | sed -E 's/^V([0-9]+)__.*/\1/' | sort | uniq -d || true)
+          if [ -n "$dups" ]; then echo "::error::Duplicate Flyway migration version(s): $dups"; fail=1; fi
+          for f in V*.sql; do
+            v=$(echo "$f" | sed -E 's/^V([0-9]+)__.*/\1/')
+            # grandfather legacy integer migrations (<= 58)
+            if echo "$v" | grep -qE '^[0-9]{1,2}$' && [ "$v" -le 58 ]; then continue; fi
+            # everything else must be a 14-digit timestamp V<YYYYMMDDHHMMSS>__
+            if ! echo "$v" | grep -qE '^[0-9]{14}$'; then
+              echo "::error::$f — new migrations must use a 14-digit timestamp version 'V<YYYYMMDDHHMMSS>__' (run: date -u +%Y%m%d%H%M%S). Legacy V<=58 are grandfathered. Got '$v'."
+              fail=1
+            fi
+          done
+          if [ "$fail" = 0 ]; then echo "Migrations OK: unique versions, new ones are timestamps."; else exit 1; fi
