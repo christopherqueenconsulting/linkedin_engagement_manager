@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.50.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.50.1...v0.50.2) (2026-07-23)
+
+
+### Bug Fixes
+
+* **db:** renumber duplicate V57 migration (unblock deploy) + version-uniqueness check ([17df6b5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/17df6b5ba039d6a21fb9fa6b2cf68afeb3b6de13))
+* **db:** renumber duplicate V57 migration + add Migration Versions check ([9ee09f9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9ee09f9cd6de57647108846cc4f8431b9625d22e))
+
 ## [0.50.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.50.0...v0.50.1) (2026-07-23)
 
 
