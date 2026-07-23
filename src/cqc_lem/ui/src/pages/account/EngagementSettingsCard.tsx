@@ -145,6 +145,26 @@ export default function EngagementSettingsCard() {
             placeholder="e.g. Build a reputation as a thoughtful voice in supply-chain tech"
             className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
         </div>
+        <div className="border-t border-gray-100 pt-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="pr-4">
+              <p className="text-sm font-medium text-gray-700">Disclose AI assistance on posts</p>
+              <p className="text-xs text-gray-400">Append a subtle line to generated posts noting they were drafted with AI assistance — supports LinkedIn's authenticity/provenance guidance. Off by default.</p>
+            </div>
+            <Toggle on={engPrefs.ai_disclosure_enabled} onClick={() => setEng({ ai_disclosure_enabled: !engPrefs.ai_disclosure_enabled })} />
+          </div>
+          {engPrefs.ai_disclosure_enabled && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Disclosure wording</label>
+              <input type="text" value={engPrefs.ai_disclosure_text || ''}
+                maxLength={FIELD_LIMITS.ai_disclosure_text}
+                onChange={(e) => setEng({ ai_disclosure_text: e.target.value })}
+                placeholder="Drafted with AI assistance."
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+              <p className="text-xs text-gray-400 mt-1">Leave blank to use the default wording.</p>
+            </div>
+          )}
+        </div>
         {saveBtn('Save Focus & Goals')}
       </div>
 

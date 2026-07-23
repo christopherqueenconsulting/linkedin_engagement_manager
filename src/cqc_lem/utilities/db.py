@@ -2503,12 +2503,13 @@ _ENGAGEMENT_DEFAULTS: dict = {
     "default_video_quality": "standard",
     "reply_check_mode": "event", "reply_sweeps_per_day": 2, "reply_max_post_age_days": 2,
     "feed_fallback_when_empty": True,
+    "ai_disclosure_enabled": False, "ai_disclosure_text": None,
 }
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
                            "exclude_keywords", "include_authors", "exclude_authors", "post_types",
                            "focus_topics")
 _ENGAGEMENT_BOOL_FIELDS = ("use_emojis", "use_hashtags", "reply_to_own_comments",
-                           "feed_fallback_when_empty")
+                           "feed_fallback_when_empty", "ai_disclosure_enabled")
 _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "use_hashtags",
                     "include_topics", "exclude_topics", "include_keywords", "exclude_keywords",
                     "include_authors", "exclude_authors", "post_types", "focus_topics",
@@ -2516,13 +2517,16 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "max_post_age_hours", "reply_to_own_comments", "max_comments_per_day",
                     "max_dms_per_day", "default_buyer_stage", "default_video_quality",
                     "reply_check_mode", "reply_sweeps_per_day", "reply_max_post_age_days",
-                    "feed_fallback_when_empty")
+                    "feed_fallback_when_empty", "ai_disclosure_enabled", "ai_disclosure_text")
 
 VALID_VIDEO_QUALITIES = ("standard", "premium", "premium_top")
 VALID_REPLY_MODES = ("event", "scheduled", "off")
 # Scheduled reply-sweep cadence bounds: floor 2×/day (as requested), cap 12×/day (every ~2h).
 REPLY_SWEEPS_MIN, REPLY_SWEEPS_MAX = 2, 12
 REPLY_MAX_AGE_DAYS_MIN, REPLY_MAX_AGE_DAYS_MAX = 1, 14
+# AI-assistance disclosure text (issue #385). Clamp to the column width so an over-long value can't
+# overflow ai_disclosure_text VARCHAR(255) and roll back the whole single-row upsert (V52 lesson).
+AI_DISCLOSURE_TEXT_MAX = 255
 
 
 def _coerce_json_list(value) -> list:
@@ -2585,6 +2589,13 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
                                              if _age is not None else 2)
     except (TypeError, ValueError):
         merged["reply_max_post_age_days"] = 2
+
+    # Clamp the disclosure text to the column width (VARCHAR(255)) so an over-long value can't
+    # overflow and roll back the whole single-row upsert. Blank/whitespace → None (code default).
+    _disc = merged.get("ai_disclosure_text")
+    if _disc is not None:
+        _disc = str(_disc).strip()
+        merged["ai_disclosure_text"] = _disc[:AI_DISCLOSURE_TEXT_MAX] if _disc else None
 
     def _val(col):
         v = merged[col]

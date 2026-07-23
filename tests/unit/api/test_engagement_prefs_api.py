@@ -201,6 +201,36 @@ class TestFeedFallbackAndReach:
         assert resp.json()["detail"]["feed_reach"] == funnel
 
 
+class TestAiDisclosurePref:
+    def test_enabled_and_text_passthrough(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/engagement-preferences",
+                              json={"session_token": _SESSION, "ai_disclosure_enabled": True,
+                                    "ai_disclosure_text": "Written with AI help."})
+        assert resp.status_code == 200
+        arg = upd.call_args[0][1]
+        assert arg["ai_disclosure_enabled"] is True
+        assert arg["ai_disclosure_text"] == "Written with AI help."
+
+    def test_defaults_off_when_omitted(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/engagement-preferences", json={"session_token": _SESSION})
+        assert resp.status_code == 200
+        arg = upd.call_args[0][1]
+        assert arg["ai_disclosure_enabled"] is False
+        assert arg["ai_disclosure_text"] is None
+
+    def test_over_limit_disclosure_text_rejected_with_422(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/engagement-preferences",
+                              json={"session_token": _SESSION, "ai_disclosure_text": "x" * 256})
+        assert resp.status_code == 422
+        upd.assert_not_called()
+
+
 class TestGmailForwardConfirmationInPrefs:
     def test_get_includes_gmail_forward_confirmation(self, client):
         conf = {"code": "12345678", "confirmed": False, "url_found": True}

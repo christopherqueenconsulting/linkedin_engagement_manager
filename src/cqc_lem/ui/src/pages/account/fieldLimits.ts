@@ -11,4 +11,5 @@ export const FIELD_LIMITS = {
   dm_template: 2000, // dm_templates.template_text (TEXT; app cap)
   nl_title: 255, // newsletter_settings.title VARCHAR(255)
   nl_topic: 512, // newsletter_settings.topic VARCHAR(512)
+  ai_disclosure_text: 255, // engagement_preferences.ai_disclosure_text VARCHAR(255) (V57)
 } as const

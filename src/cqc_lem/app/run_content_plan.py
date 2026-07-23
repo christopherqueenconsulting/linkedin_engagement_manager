@@ -351,6 +351,26 @@ def _apply_ai_disclosure(content: str) -> str:
     return content + AI_DISCLOSURE_TEXT
 
 
+# A4 (issue #385): default AI-assistance provenance line appended to generated posts when the user
+# opts in (engagement_preferences.ai_disclosure_enabled). Distinct from the AI-VISUALS disclosure
+# above — this discloses that the text itself was AI-assisted, per LinkedIn's 2026 Authenticity
+# Update. Users can override the wording via ai_disclosure_text; blank falls back to this.
+DEFAULT_AI_ASSIST_DISCLOSURE = "Drafted with AI assistance."
+
+
+def _apply_ai_assist_disclosure(content: str, prefs: dict) -> str:
+    """Append the per-user AI-assistance disclosure to a post when the user opted in (idempotent).
+
+    No-op unless the user set ai_disclosure_enabled. The disclosure is appended LAST (after every
+    LLM refinement pass) so no rewrite can strip or reword it."""
+    if not content or not prefs or not prefs.get("ai_disclosure_enabled"):
+        return content
+    text = (prefs.get("ai_disclosure_text") or "").strip() or DEFAULT_AI_ASSIST_DISCLOSURE
+    if text in content:
+        return content
+    return content.rstrip() + "\n\n" + text
+
+
 def _premium_tier_for_quality(quality: str):
     """Map a post's video_quality to (model, credits, audio); None for standard/free."""
     if quality == "premium":
@@ -917,6 +937,12 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             update_db_post_shape(post_id, blueprint.get("format"), blueprint.get("hook_style"))
         except Exception as e:
             myprint(f"Could not persist post shape for post {post_id}: {e}")
+
+    # A4 (issue #385): append the user's opt-in AI-assistance disclosure LAST — after every LLM
+    # refinement/repair pass so no rewrite can strip or reword it. Only the outermost call (which
+    # owns the final content) appends; recursive fallbacks return raw content and it rides up here.
+    if final_content and refine_final_post and similarity_check:
+        final_content = _apply_ai_assist_disclosure(final_content, prefs)
 
     return final_content
 

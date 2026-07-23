@@ -149,6 +149,54 @@ class TestFeedFallbackPref:
         assert by_col["feed_fallback_when_empty"] == 0
 
 
+class TestAiDisclosurePref:
+    def test_default_off_and_no_text(self):
+        conn, _ = _mock_conn(fetch_row=None)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_engagement_preferences
+            prefs = get_engagement_preferences(1)
+        assert prefs["ai_disclosure_enabled"] is False
+        assert prefs["ai_disclosure_text"] is None
+
+    def test_decodes_enabled_as_bool(self):
+        conn, _ = _mock_conn(fetch_row={"ai_disclosure_enabled": 1,
+                                        "ai_disclosure_text": "Written with AI help."})
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_engagement_preferences
+            prefs = get_engagement_preferences(1)
+        assert prefs["ai_disclosure_enabled"] is True
+        assert prefs["ai_disclosure_text"] == "Written with AI help."
+
+    def test_persists_toggle_and_text(self):
+        conn, cursor = _mock_conn(rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_engagement_preferences
+            update_engagement_preferences(3, {"ai_disclosure_enabled": True,
+                                              "ai_disclosure_text": "  Drafted with AI.  "})
+        cols = list(__import__("cqc_lem.utilities.db", fromlist=["_ENGAGEMENT_COLS"])._ENGAGEMENT_COLS)
+        by_col = dict(zip(cols, cursor.execute.call_args[0][1][1:]))
+        assert by_col["ai_disclosure_enabled"] == 1
+        assert by_col["ai_disclosure_text"] == "Drafted with AI."  # trimmed
+
+    def test_blank_text_becomes_none(self):
+        conn, cursor = _mock_conn(rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_engagement_preferences
+            update_engagement_preferences(3, {"ai_disclosure_text": "   "})
+        cols = list(__import__("cqc_lem.utilities.db", fromlist=["_ENGAGEMENT_COLS"])._ENGAGEMENT_COLS)
+        by_col = dict(zip(cols, cursor.execute.call_args[0][1][1:]))
+        assert by_col["ai_disclosure_text"] is None
+
+    def test_over_long_text_clamped_to_column_width(self):
+        conn, cursor = _mock_conn(rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_engagement_preferences, AI_DISCLOSURE_TEXT_MAX
+            update_engagement_preferences(3, {"ai_disclosure_text": "y" * 500})
+        cols = list(__import__("cqc_lem.utilities.db", fromlist=["_ENGAGEMENT_COLS"])._ENGAGEMENT_COLS)
+        by_col = dict(zip(cols, cursor.execute.call_args[0][1][1:]))
+        assert len(by_col["ai_disclosure_text"]) == AI_DISCLOSURE_TEXT_MAX
+
+
 class TestReplyInboundToken:
     def test_returns_existing_token(self):
         conn, cursor = _mock_conn(fetch_row=("existingtoken",))

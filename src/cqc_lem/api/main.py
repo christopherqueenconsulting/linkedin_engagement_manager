@@ -298,6 +298,7 @@ _LEN_TONE = 255           # engagement_preferences.tone (V52: VARCHAR(255))
 _LEN_COMMENT_STYLE = 255  # engagement_preferences.comment_style VARCHAR(255)
 _LEN_GOALS = 2000         # engagement_preferences.business_goals/personal_goals (TEXT; app cap)
 _LEN_BUYER_STAGE = 32     # engagement_preferences.default_buyer_stage VARCHAR(32)
+_LEN_AI_DISCLOSURE = 255  # engagement_preferences.ai_disclosure_text VARCHAR(255) (V57)
 _VALID_VIDEO_QUALITIES = ("standard", "premium", "premium_top")  # engagement_preferences.default_video_quality
 _LEN_LM_KEYWORD = 128     # lead_magnet_settings.keyword VARCHAR(128)
 _LEN_LM_MESSAGE = 2000    # lead_magnet_settings.message (TEXT; app cap)
@@ -405,6 +406,8 @@ class EngagementPreferencesRequest(BaseModel):
     reply_sweeps_per_day: int = 2
     reply_max_post_age_days: int = 2
     feed_fallback_when_empty: bool = True
+    ai_disclosure_enabled: bool = False
+    ai_disclosure_text: Optional[str] = Field(default=None, max_length=_LEN_AI_DISCLOSURE)
 
     @field_validator("default_video_quality")
     @classmethod
