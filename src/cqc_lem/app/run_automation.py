@@ -484,9 +484,33 @@ def _post_permalink_from_card(card):
 # Relative-age units → minutes. The SDUI card shows a token like "3h •", "5d •", "2w •", "10mo •".
 _AGE_UNIT_MIN = {"s": 0, "m": 1, "h": 60, "d": 1440, "w": 10080, "mo": 43200, "y": 525600}
 _AGE_TOKEN_RE = re.compile(r"^(\d+)\s?(mo|[smhdwy])", re.I)
-_COMMENTS_RE = re.compile(r"([\d,]+)\s+comments?", re.I)
-_REACTIONS_RE = re.compile(r"([\d,]+)\s+(?:reactions?|likes?)", re.I)
-_IMPRESSIONS_RE = re.compile(r"([\d,]+)\s+impressions?", re.I)
+# LinkedIn renders social counts as "1,234", "1.2K", or "3M" depending on magnitude — parse all
+# three. Anchored on the trailing label word so a bare reaction glyph count never masquerades as,
+# say, impressions.
+_COUNT = r"([\d,]+(?:\.\d+)?[KMBkmb]?)"
+_COMMENTS_RE = re.compile(_COUNT + r"\s+comments?", re.I)
+_REACTIONS_RE = re.compile(_COUNT + r"\s+(?:reactions?|likes?)", re.I)
+_IMPRESSIONS_RE = re.compile(_COUNT + r"\s+impressions?", re.I)
+# LinkedIn labels shares as "reposts" on the SDUI social bar (older UIs said "shares"); accept both.
+_REPOSTS_RE = re.compile(_COUNT + r"\s+(?:reposts?|shares?)", re.I)
+# Saves surface only in the author's post analytics ("N saves"); 0 when the bar doesn't expose it.
+_SAVES_RE = re.compile(_COUNT + r"\s+saves?", re.I)
+
+_COUNT_MULT = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
+
+
+def _parse_count(raw: str) -> int:
+    """'1,234' → 1234, '1.2K' → 1200, '3M' → 3000000. 0 on anything unparseable."""
+    s = (raw or "").strip().replace(",", "")
+    if not s:
+        return 0
+    mult = _COUNT_MULT.get(s[-1].lower(), 1)
+    if mult != 1:
+        s = s[:-1]
+    try:
+        return int(round(float(s) * mult))
+    except ValueError:
+        return 0
 
 
 def _post_age_minutes(driver, card) -> "int | None":
@@ -513,20 +537,23 @@ def _post_age_minutes(driver, card) -> "int | None":
 
 
 def _post_social_counts(card) -> dict:
-    """Best-effort reaction/comment/impression counts parsed from the card's social-counts bar text.
-    Returns {reactions, comments, impressions} (0 on miss). Impressions show only on the author's own
-    post detail page; reactions/comments feed the low-weight feed 'activity' scoring signal."""
+    """Best-effort reaction/comment/repost/impression/save counts parsed from the card's social-counts
+    bar text. Returns {reactions, comments, reposts, impressions, saves} (0 on miss). Impressions and
+    saves show only on the author's own post detail/analytics view; reposts weigh 2× in the
+    engagement score (#387); reactions/comments feed the low-weight feed 'activity' scoring signal."""
+    zero = {"reactions": 0, "comments": 0, "reposts": 0, "impressions": 0, "saves": 0}
     try:
         text = card.text or ""
     except Exception:
-        return {"reactions": 0, "comments": 0, "impressions": 0}
+        return dict(zero)
 
     def _num(rx):
         m = rx.search(text)
-        return int(m.group(1).replace(",", "")) if m else 0
+        return _parse_count(m.group(1)) if m else 0
 
     return {"reactions": _num(_REACTIONS_RE), "comments": _num(_COMMENTS_RE),
-            "impressions": _num(_IMPRESSIONS_RE)}
+            "reposts": _num(_REPOSTS_RE), "impressions": _num(_IMPRESSIONS_RE),
+            "saves": _num(_SAVES_RE)}
 
 
 # Feed-post prioritization weights — defaults below, each overridable per-deploy via the matching
@@ -1383,8 +1410,9 @@ def auto_seed_comment_on_post(self, user_id: int, post_id: int):
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
                   queue='se_content')
 def auto_scrape_post_stats(self, user_id: int):
-    """Capture reactions/comments for each of the user's recent posts (feeds personalized
-    post-time recommendations). Reuses the social-count extraction on each post's detail page."""
+    """Capture reactions/comments/reposts/impressions/saves for each of the user's recent posts
+    (feeds personalized post-time recommendations + the content feedback loop). Reuses the
+    social-count extraction on each post's detail page."""
     post_ids = get_recent_posted_post_ids(user_id)
     if not post_ids:
         return "No recent posts to scrape"
@@ -1405,9 +1433,11 @@ def auto_scrape_post_stats(self, user_id: int):
                 container = driver.find_element(By.TAG_NAME, "main")
             except Exception:
                 container = None
-            counts = _post_social_counts(container) if container is not None else {"reactions": 0, "comments": 0, "impressions": 0}
-            record_post_stats(user_id, pid, counts["reactions"], counts["comments"],
-                              impressions=counts.get("impressions") or None)
+            counts = _post_social_counts(container) if container is not None else {}
+            record_post_stats(user_id, pid, counts.get("reactions", 0), counts.get("comments", 0),
+                              reposts=counts.get("reposts") or 0,
+                              impressions=counts.get("impressions") or None,
+                              saves=counts.get("saves") or 0)
             scraped += 1
         return f"Scraped stats for {scraped} post(s)"
     finally:

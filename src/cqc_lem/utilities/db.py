@@ -3170,7 +3170,7 @@ def set_groups_enabled(user_id: int, group_states: dict) -> bool:
 
 
 def record_post_stats(user_id: int, post_id: int, reactions: int, comments: int,
-                      reposts: int = 0, impressions: int = None) -> bool:
+                      reposts: int = 0, impressions: int = None, saves: int = 0) -> bool:
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -3184,10 +3184,10 @@ def record_post_stats(user_id: int, post_id: int, reactions: int, comments: int,
         archetype, hook_style, fmt, topic, buyer_stage = row if row else (None, None, None, None, None)
         cursor.execute(
             "INSERT INTO post_stats (user_id, post_id, reactions, comments, reposts, impressions, "
-            "archetype, hook_style, `format`, topic, buyer_stage) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "saves, archetype, hook_style, `format`, topic, buyer_stage) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (user_id, post_id, int(reactions or 0), int(comments or 0), int(reposts or 0),
-             impressions, archetype, hook_style, fmt, topic, buyer_stage))
+             impressions, int(saves or 0), archetype, hook_style, fmt, topic, buyer_stage))
         connection.commit()
         return True
     except mysql.connector.Error as err:
