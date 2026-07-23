@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.49.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.48.0...v0.49.0) (2026-07-23)
+
+
+### Features
+
+* **db:** content-attribution schema for post_stats (closes [#386](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/386)) ([4e1a50f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4e1a50ffd2db283de7d138c55dfc63671999eae3))
+
+
+### Bug Fixes
+
+* **db:** scope post_stats attribution snapshot to user_id (tenant-safe) ([ab46de6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ab46de67befa7cdc70aff6a930931f56d7e7d9f4))
+
 ## [0.48.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.47.0...v0.48.0) (2026-07-23)
 
 
