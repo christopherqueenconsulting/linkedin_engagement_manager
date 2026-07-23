@@ -490,9 +490,14 @@ class TestRegenerateNewsletterEdition:
 
 class TestPublishScheduledEditions:
     def test_dispatches_due_editions(self):
+        # Two DIFFERENT users each with one due edition -> one dispatch each (<=1 per user per run).
+        from datetime import datetime
         from cqc_lem.app.run_scheduler import auto_publish_scheduled_editions
         with patch("cqc_lem.utilities.db.get_editions_due_to_publish",
-                   return_value=[{"id": 3}, {"id": 8}]), \
+                   return_value=[{"id": 3, "user_id": 1}, {"id": 8, "user_id": 2}]), \
+             patch("cqc_lem.utilities.db.get_pending_newsletter_editions",
+                   side_effect=lambda uid: [{"id": 3 if uid == 1 else 8,
+                                             "scheduled_for": datetime(2026, 1, 1)}]), \
              patch("cqc_lem.app.run_automation.auto_publish_edition") as task:
             result = auto_publish_scheduled_editions()
         assert task.apply_async.call_count == 2

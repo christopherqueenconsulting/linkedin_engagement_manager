@@ -463,9 +463,58 @@ def regenerate_newsletter_edition(edition_id: int, guidance: str = None):
     return f"Regenerated newsletter edition {edition_id}"
 
 
+def _reschedule_pending_editions_forward(user_id: int, editions: list, now: datetime) -> int:
+    """Re-slot the given pending editions (ordered by scheduled_for) onto the next consecutive cadence
+    slots after `now`, preserving their order. Used when slots were missed so a backlog SHIFTS forward
+    as an ordered sequence — the user's planned order is kept and nothing is dropped. Returns how many
+    editions actually moved."""
+    if not editions:
+        return 0
+    import pytz
+    from cqc_lem.utilities.db import (get_newsletter_settings, get_user_timezone,
+                                      update_newsletter_edition)
+    from cqc_lem.utilities.newsletter import upcoming_publish_slots
+    settings = get_newsletter_settings(user_id)
+    tz = pytz.timezone(get_user_timezone(user_id))
+    slots = upcoming_publish_slots(settings.get("publish_day", 1), settings.get("publish_hour", 9),
+                                   settings.get("cadence", "weekly"), now, tz, now, len(editions))
+    moved = 0
+    for e, slot in zip(editions, slots):
+        if e.get("scheduled_for") != slot and update_newsletter_edition(
+                e["id"], user_id, scheduled_for=slot):
+            moved += 1
+    return moved
+
+
+def _publish_next_due_edition_for_user(user_id: int, now: datetime, dispatch) -> int:
+    """Publish at most ONE — the oldest — due edition for a user this run. When more than one is due
+    (slots were missed and a backlog built up), publish the oldest and SHIFT the remaining pending
+    editions forward onto future cadence slots (order preserved) so a subscriber never receives
+    several editions at once. `dispatch(edition_id)` queues the actual Selenium publish. Returns 1 if
+    an edition was dispatched, else 0."""
+    from cqc_lem.utilities.db import get_pending_newsletter_editions
+    pending = get_pending_newsletter_editions(user_id)  # ordered by scheduled_for ASC
+    due = [e for e in pending
+           if e.get("scheduled_for") is not None and e["scheduled_for"] <= now]
+    if not due:
+        return 0
+    oldest = due[0]
+    dispatch(oldest["id"])
+    if len(due) > 1:
+        remaining = [e for e in pending if e["id"] != oldest["id"]]
+        moved = _reschedule_pending_editions_forward(user_id, remaining, now)
+        log_info(f"Newsletter backlog: published oldest due edition {oldest['id']} and shifted "
+                 f"{moved} later edition(s) forward to preserve planned order/cadence",
+                 user_id=user_id, task_name="auto_publish_scheduled_editions")
+    return 1
+
+
 @shared_task.task
 def auto_publish_scheduled_editions():
-    """Publish any newsletter edition whose scheduled slot has arrived (approved or untouched draft)."""
+    """Publish due newsletter editions — at most ONE per user per run. When slots were missed and a
+    backlog built up (e.g. after a throttle/pause), publish the oldest due edition and SHIFT the rest
+    forward onto future cadence slots, so a subscriber never gets several editions at once and the
+    user's planned order is preserved (nothing is dropped)."""
     # Newsletter publishing is Selenium-driven, so gate it on the breaker like the other fan-outs.
     # This hourly task was the primary re-tripper of the 429 doom loop: it probed the feed the moment
     # the cooldown lapsed and re-escalated it back to the 6h cap.
@@ -473,10 +522,14 @@ def auto_publish_scheduled_editions():
         return "Automation throttled"
     from cqc_lem.app.run_automation import auto_publish_edition
     from cqc_lem.utilities.db import get_editions_due_to_publish
-    due = get_editions_due_to_publish(datetime.now(timezone.utc).replace(tzinfo=None))
-    for e in due:
-        auto_publish_edition.apply_async(kwargs={'edition_id': e['id']})
-    return f"Dispatched {len(due)} newsletter edition(s)"
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    due = get_editions_due_to_publish(now)
+    user_ids = sorted({e["user_id"] for e in due})
+    dispatched = 0
+    for uid in user_ids:
+        dispatched += _publish_next_due_edition_for_user(
+            uid, now, lambda eid: auto_publish_edition.apply_async(kwargs={"edition_id": eid}))
+    return f"Dispatched {dispatched} newsletter edition(s) (<=1/user; backlog shifted forward)"
 
 
 @shared_task.task
