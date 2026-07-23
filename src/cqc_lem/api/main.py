@@ -944,7 +944,7 @@ def get_posts_for_email(
     sort_order: str = Query(default='asc', pattern='^(asc|desc)$'),
     sort_by: str = Query(default='scheduled_time', pattern='^(scheduled_time|status|post_type|id)$'),
     status_filter: Optional[str] = Query(default=None),
-    post_type_filter: Optional[str] = Query(default=None, pattern='^(text|video|carousel)$'),
+    post_type_filter: Optional[str] = Query(default=None, pattern='^(text|video|carousel|document)$'),
     search: Optional[str] = Query(default=None, max_length=500),
 ) -> ResponseModel:
     if not email:
@@ -2563,7 +2563,8 @@ def admin_regenerate_carousel(
     _require_admin(x_admin_secret)
 
     post_type = get_post_type(request.post_id)
-    if post_type != PostType.CAROUSEL:
+    # Document posts are carousels published as a native PDF — same slide regeneration path.
+    if post_type not in (PostType.CAROUSEL, PostType.DOCUMENT):
         raise HTTPException(status_code=404, detail="Post not found or not a carousel post")
 
     stage = get_post_buyer_stage(request.post_id) or "awareness"
