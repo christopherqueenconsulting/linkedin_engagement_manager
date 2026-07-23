@@ -403,6 +403,31 @@ def ensure_lead_magnet_cta(content: Optional[str], lead_magnet: Optional[dict], 
     return normalize_public_text(deduped.rstrip() + "\n\n" + line)
 
 
+def personal_proof_directive(profile_synthesis: Optional[str] = None) -> str:
+    """The A2 first-person proof requirement, SOURCED from the durable profile synthesis (the
+    author's real credibility/expertise brief from get_or_create_profile_synthesis) plus whatever
+    blog/experience content already rides in the prompt: instruct the writer to mine ONE concrete,
+    lived detail — a real number, a moment in time, a named example, or a concrete outcome — out of
+    that background and land it in the first person. This is the sourcing half of the mandatory proof
+    slot content_framework.blueprint_directive injects; content_framework.has_first_person_proof is
+    the deterministic gate that reject/regenerates a draft that comes back generic. Always returns a
+    non-empty directive so callers can append it unconditionally on a regeneration retry. It asks for
+    lived EXPERTISE, never a plug — so it stays inside the NO_SELF_PROMO_GUARDRAIL."""
+    directive = (
+        "\n\nFIRST-PERSON PROOF (required — 2026 authenticity, feeds the anti-generic gate):\n"
+        "- Include at least ONE specific, first-person lived detail the author has actually earned: "
+        "a real number, a moment in time, a named example, or a concrete outcome from their own work "
+        "or experience — never a generic, could-be-anyone claim, and never invented.\n"
+        "- Own it in the first person (\"I\"/\"we\") so it reads as genuine expertise, not AI filler. "
+        "This is proof of experience, not self-promotion — do not turn it into a plug.\n")
+    synth = (profile_synthesis or "").strip()
+    if synth:
+        directive += ("- Draw that detail from the author's real background below; pick a concrete "
+                      "specific already grounded in it rather than inventing one:\n"
+                      + synth[:800] + "\n")
+    return directive
+
+
 def voice_reference(profile, profile_synthesis: Optional[str] = None) -> str:
     """The VOICE/TONE/credibility reference string dropped into a generation prompt. Prefers the
     compact, stable synthesis; falls back to the guarded full profile JSON only when no synthesis was

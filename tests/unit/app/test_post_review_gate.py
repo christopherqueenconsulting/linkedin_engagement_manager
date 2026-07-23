@@ -25,6 +25,15 @@ _FRESH = ("AI reliability starts with observability.\n\nWe traced a silent failu
           "production to one retry loop nobody owned. Dashboards did not catch it; distributed "
           "tracing did. Instrument before you scale.")
 
+# Carries a concrete first-person lived detail (the A2 proof slot): first person + a real number.
+_WITH_PROOF = ("Cutting AI cost is a routing problem, not a model problem.\n\nLast quarter I routed "
+               "our simplest calls to a cheap model and dropped our bill by 38%. The frontier model "
+               "now only sees the genuinely hard prompts.")
+
+# First-person voice but NO concrete lived detail — should trip the A2 proof gate.
+_NO_PROOF = ("Authenticity is what wins on LinkedIn.\n\nI believe leaders build trust by showing up "
+             "and adding value. We should all strive to be genuine and put people first, always.")
+
 
 def _run(outputs, recent=None, prefs=None, post_id=77, log=None):
     """Drive create_text_post with a generator that returns `outputs` in order."""
@@ -116,11 +125,13 @@ class TestSimilarityGate:
 
     def test_threshold_env_override_allows_similar_content(self, monkeypatch):
         monkeypatch.setenv("POST_SIMILARITY_MAX", "0.99")
+        monkeypatch.setenv("POST_PROOF_REGEN_ENABLED", "off")  # isolate the similarity gate
         out, gen = _run([_NEAR_DUP], recent=[_RECENT])
         assert out == _NEAR_DUP
         assert gen.call_count == 1  # ceiling raised → no retry
 
-    def test_no_recent_posts_no_gate(self):
+    def test_no_recent_posts_no_gate(self, monkeypatch):
+        monkeypatch.setenv("POST_PROOF_REGEN_ENABLED", "off")  # isolate the similarity gate
         out, gen = _run([_NEAR_DUP], recent=[])
         assert out == _NEAR_DUP
         assert gen.call_count == 1
@@ -143,7 +154,8 @@ class TestAlignmentCheck:
         assert out == off_focus  # never blocks
         assert any("focus topic" in str(c.args[0]) for c in log.call_args_list)
 
-    def test_empty_focus_topics_is_noop(self):
+    def test_empty_focus_topics_is_noop(self, monkeypatch):
+        monkeypatch.setenv("POST_PROOF_REGEN_ENABLED", "off")  # isolate the focus-alignment check
         log = MagicMock()
         out, _ = _run(["Anything at all about any subject whatsoever."],
                       recent=[], prefs={"focus_topics": []}, log=log)
@@ -163,3 +175,47 @@ class TestAlignmentCheck:
             _run([off_focus], recent=[], prefs=self._PREFS, log=log)
         llm_check.assert_called_once()
         assert not any("focus topic" in str(c.args[0]) for c in log.call_args_list)
+
+
+class TestProofGate:
+    """A2 personal-expertise gate: a finished post lacking a concrete first-person lived detail is
+    regenerated once (never hard-blocked); one that already carries proof ships untouched."""
+
+    def test_post_with_proof_passes_untouched(self):
+        out, gen = _run([_WITH_PROOF], recent=[])
+        assert out == _WITH_PROOF
+        assert gen.call_count == 1
+
+    def test_post_without_proof_triggers_one_retry_with_proof_directive(self):
+        out, gen = _run([_NO_PROOF, _WITH_PROOF], recent=[])
+        assert out == _WITH_PROOF
+        assert gen.call_count == 2
+        retry_directive = gen.call_args_list[1].kwargs["history_directive"]
+        assert "FIRST-PERSON PROOF" in retry_directive
+
+    def test_second_attempt_still_no_proof_keeps_it_and_warns(self):
+        log = MagicMock()
+        out, gen = _run([_NO_PROOF, _NO_PROOF], recent=[], log=log)
+        assert out == _NO_PROOF  # never loops, never blocks
+        assert gen.call_count == 2
+        assert any("lived detail" in str(c.args[0]) for c in log.call_args_list)
+
+    def test_proof_directive_sourced_from_synthesis(self):
+        # get_or_create_profile_synthesis is patched to "voice" in _run; the retry proof directive
+        # sources its concrete detail from that synthesis text.
+        _, gen = _run([_NO_PROOF, _WITH_PROOF], recent=[])
+        retry_directive = gen.call_args_list[1].kwargs["history_directive"]
+        assert "voice" in retry_directive
+
+    def test_proof_regen_disabled_logs_but_keeps_first_draft(self, monkeypatch):
+        monkeypatch.setenv("POST_PROOF_REGEN_ENABLED", "off")
+        log = MagicMock()
+        out, gen = _run([_NO_PROOF], recent=[], log=log)
+        assert out == _NO_PROOF
+        assert gen.call_count == 1  # detector still runs, but regeneration is off
+        assert any("lived detail" in str(c.args[0]) for c in log.call_args_list)
+
+    def test_retry_failure_keeps_first_draft(self):
+        out, gen = _run([_NO_PROOF, RuntimeError("llm down")], recent=[])
+        assert out == _NO_PROOF
+        assert gen.call_count == 2

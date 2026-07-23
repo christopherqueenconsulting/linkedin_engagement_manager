@@ -2,6 +2,8 @@
 create_text_post routing/refinement/shape persistence, premium video tiers, and
 regenerate task wrappers."""
 
+import os
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -139,6 +141,9 @@ class _TextPostHarness:
             "bait": patch(f"{_RCP}.strip_engagement_bait", side_effect=lambda c, **kw: c),
             "shape_save": patch(f"{_RCP}.update_db_post_shape",
                                 side_effect=self.overrides.get("shape_exc")),
+            # These tests exercise routing/refinement/shape persistence, not the A2 proof gate —
+            # keep the stub post bodies from triggering a proof regeneration.
+            "proof_env": patch.dict(os.environ, {"POST_PROOF_REGEN_ENABLED": "off"}),
         }
         self.mocks = {k: p.start() for k, p in self.patchers.items()}
         return self.mocks

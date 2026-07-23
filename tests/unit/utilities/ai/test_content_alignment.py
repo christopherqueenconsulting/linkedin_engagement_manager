@@ -264,3 +264,33 @@ class TestEnsureLeadMagnetCta:
         assert "the resource" in out
         assert "This is a" not in out  # never a garbled 'my This is a checklist...' label
         assert "http" not in out.lower() and "#" not in out
+
+
+class TestPersonalProofDirective:
+    """A2: the proof requirement, sourced from the profile synthesis, appended on a regeneration."""
+
+    def test_directive_always_non_empty(self):
+        assert ca.personal_proof_directive().strip()
+        assert ca.personal_proof_directive(None).strip()
+        assert ca.personal_proof_directive("").strip()
+
+    def test_directive_demands_first_person_specificity(self):
+        text = ca.personal_proof_directive()
+        assert "FIRST-PERSON PROOF" in text
+        assert "first person" in text.lower()
+        assert "generic" in text.lower()
+
+    def test_directive_sources_from_synthesis_when_provided(self):
+        synth = "Founder who scaled a fintech from 0 to 12,000 users; led a 9-person team."
+        text = ca.personal_proof_directive(synth)
+        assert synth in text
+
+    def test_synthesis_is_length_capped(self):
+        synth = "x" * 5000
+        text = ca.personal_proof_directive(synth)
+        assert "x" * 800 in text
+        assert "x" * 900 not in text
+
+    def test_directive_is_not_self_promo(self):
+        # Proof of experience, never a plug — stays inside NO_SELF_PROMO_GUARDRAIL.
+        assert "not self-promotion" in ca.personal_proof_directive()

@@ -1,6 +1,8 @@
 """Unit tests for the tightened lead-magnet CTA flow: strengthened prompt contract, rewrite-pass
 preservation context, and soft-paraphrase dedup at repair time."""
 
+import os
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -120,7 +122,8 @@ class TestCreateTextPostThreadsKeyword:
         def gen(*a, **kw):
             return "generated body"
 
-        with patch(f"{_RCP}.get_engagement_preferences", return_value={}), \
+        with patch.dict(os.environ, {"POST_PROOF_REGEN_ENABLED": "off"}), \
+             patch(f"{_RCP}.get_engagement_preferences", return_value={}), \
              patch(f"{_RCP}.get_or_create_profile_synthesis", return_value="voice"), \
              patch(f"{_RCP}.get_lead_magnet_settings", return_value=_LM), \
              patch(f"{_RCP}.get_recent_post_texts", return_value=[]), \
@@ -142,7 +145,8 @@ class TestCreateTextPostThreadsKeyword:
         def gen(*a, **kw):
             return "generated body"
 
-        with patch(f"{_RCP}.get_engagement_preferences", return_value={}), \
+        with patch.dict(os.environ, {"POST_PROOF_REGEN_ENABLED": "off"}), \
+             patch(f"{_RCP}.get_engagement_preferences", return_value={}), \
              patch(f"{_RCP}.get_or_create_profile_synthesis", return_value="voice"), \
              patch(f"{_RCP}.get_lead_magnet_settings", return_value=_LM), \
              patch(f"{_RCP}.get_recent_post_texts", return_value=[]), \
