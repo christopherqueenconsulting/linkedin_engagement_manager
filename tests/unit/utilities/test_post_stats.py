@@ -1,9 +1,18 @@
-"""Unit tests for post-time recommendation logic."""
+"""Unit tests for post-time recommendation and content-attribution ranking logic."""
 
 import datetime as dt
 import pytest
 
 pytestmark = pytest.mark.unit
+
+_NOW = dt.datetime(2026, 8, 1, 12, 0)
+
+
+def _stat_row(scheduled_time, reactions=0, comments=0, reposts=0, archetype=None,
+              hook_style=None, fmt=None, topic=None, buyer_stage=None, impressions=None):
+    """A `db.get_post_engagement_rows` tuple."""
+    return (scheduled_time, reactions, comments, reposts, archetype, hook_style, fmt, topic,
+            buyer_stage, impressions)
 
 
 class TestEngagementScore:
@@ -12,6 +21,44 @@ class TestEngagementScore:
         assert engagement_score(10, 0, 0) == 10
         assert engagement_score(0, 5, 0) == 10          # comments ×2
         assert engagement_score(0, 0, 3) == 6           # reposts ×2
+
+
+class TestEngagementRate:
+    def test_normalizes_by_impressions(self):
+        from cqc_lem.utilities.post_stats import engagement_rate
+        # score = 20 + 2*10 + 2*5 = 50 over 1000 impressions
+        assert engagement_rate(20, 10, 5, 1000) == pytest.approx(0.05)
+
+    def test_none_without_impressions(self):
+        from cqc_lem.utilities.post_stats import engagement_rate
+        assert engagement_rate(20, 10, 5, None) is None
+        assert engagement_rate(20, 10, 5, 0) is None
+
+    def test_small_reach_post_beats_big_reach_post(self):
+        """The whole point of B3: 30 signals on 300 views outranks 100 on 100k views."""
+        from cqc_lem.utilities.post_stats import engagement_rate
+        assert engagement_rate(30, 0, 0, 300) > engagement_rate(100, 0, 0, 100_000)
+
+
+class TestRecencyWeight:
+    def test_halves_every_half_life(self):
+        from cqc_lem.utilities.post_stats import recency_weight
+        assert recency_weight(_NOW - dt.timedelta(days=30), now=_NOW,
+                              half_life_days=30) == pytest.approx(0.5)
+        assert recency_weight(_NOW - dt.timedelta(days=60), now=_NOW,
+                              half_life_days=30) == pytest.approx(0.25)
+
+    def test_recent_and_future_are_unweighted(self):
+        from cqc_lem.utilities.post_stats import recency_weight
+        assert recency_weight(_NOW, now=_NOW) == 1.0
+        assert recency_weight(_NOW + dt.timedelta(days=5), now=_NOW) == 1.0
+
+    def test_missing_or_mismatched_timestamp_degrades_to_one(self):
+        from cqc_lem.utilities.post_stats import recency_weight
+        aware = dt.datetime(2026, 7, 1, 9, 0, tzinfo=dt.timezone.utc)
+        assert recency_weight(None, now=_NOW) == 1.0
+        assert recency_weight(aware, now=_NOW) == 1.0   # naive vs aware → no weighting
+        assert 0.0 < recency_weight(aware) <= 1.0       # default `now` matches the row's tz
 
 
 class TestRecommendPostTimes:
@@ -41,6 +88,124 @@ class TestRecommendPostTimes:
         rows = [(None, 100, 100, 0)] + [self._row(3, 17, 20, 5) for _ in range(3)]
         recs = recommend_post_times(rows, min_posts=3)
         assert recs and recs[0]["weekday"] == "Thursday"
+
+    def test_impression_normalized_when_every_row_has_impressions(self):
+        """Raw counts favor the wide-reach slot; engagement RATE flips it to the efficient one."""
+        from cqc_lem.utilities.post_stats import METRIC_RATE, recommend_post_times
+        rows = [
+            # Mon 09:00 — big raw numbers, poor rate (100/50_000 = 0.002)
+            _stat_row(dt.datetime(2026, 7, 27, 9, 0), reactions=100, impressions=50_000),
+            _stat_row(dt.datetime(2026, 7, 20, 9, 0), reactions=100, impressions=50_000),
+            # Tue 10:00 — small raw numbers, strong rate (30/500 = 0.06)
+            _stat_row(dt.datetime(2026, 7, 28, 10, 0), reactions=30, impressions=500),
+            _stat_row(dt.datetime(2026, 7, 21, 10, 0), reactions=30, impressions=500),
+        ]
+        recs = recommend_post_times(rows, top_n=2, min_posts=3, now=_NOW)
+        assert recs[0]["weekday"] == "Tuesday" and recs[0]["hour"] == 10
+        assert recs[0]["metric"] == METRIC_RATE
+        assert recs[0]["avg_engagement"] == pytest.approx(0.06)
+
+    def test_falls_back_to_counts_when_impressions_incomplete(self):
+        from cqc_lem.utilities.post_stats import METRIC_COUNT, recommend_post_times
+        rows = [
+            _stat_row(dt.datetime(2026, 7, 27, 9, 0), reactions=100, impressions=50_000),
+            _stat_row(dt.datetime(2026, 7, 20, 9, 0), reactions=100, impressions=None),
+            _stat_row(dt.datetime(2026, 7, 28, 10, 0), reactions=30, impressions=500),
+            _stat_row(dt.datetime(2026, 7, 21, 10, 0), reactions=30, impressions=500),
+        ]
+        recs = recommend_post_times(rows, top_n=2, min_posts=3, now=_NOW)
+        assert recs[0]["weekday"] == "Monday" and recs[0]["metric"] == METRIC_COUNT
+        assert recs[0]["avg_engagement"] == pytest.approx(100.0)
+
+    def test_recent_slot_outranks_equal_but_stale_slot(self):
+        from cqc_lem.utilities.post_stats import recommend_post_times
+        stale = [_stat_row(dt.datetime(2026, 1, 5, 9, 0) + dt.timedelta(days=7 * i), reactions=40)
+                 for i in range(2)]                                        # Mondays, ~7 months old
+        fresh = [_stat_row(dt.datetime(2026, 7, 21, 10, 0) - dt.timedelta(days=7 * i), reactions=40)
+                 for i in range(2)]                                        # Tuesdays, ~2 weeks old
+        recs = recommend_post_times(stale + fresh, top_n=2, min_posts=3, now=_NOW)
+        assert recs[0]["weekday"] == "Tuesday"
+        # Same average engagement either way — recency support is what separates them.
+        assert recs[0]["avg_engagement"] == recs[1]["avg_engagement"] == pytest.approx(40.0)
+        assert recs[0]["score"] > recs[1]["score"] and recs[0]["support"] > recs[1]["support"]
+
+    def test_single_stale_post_does_not_top_a_sampled_slot(self):
+        from cqc_lem.utilities.post_stats import recommend_post_times
+        rows = [
+            _stat_row(dt.datetime(2026, 1, 7, 15, 0), reactions=90),        # lone old Wed spike
+            _stat_row(dt.datetime(2026, 7, 30, 11, 0), reactions=60),       # steady recent Thu
+            _stat_row(dt.datetime(2026, 7, 23, 11, 0), reactions=60),
+            _stat_row(dt.datetime(2026, 7, 16, 11, 0), reactions=60),
+        ]
+        recs = recommend_post_times(rows, min_posts=3, now=_NOW)
+        assert recs[0]["weekday"] == "Thursday" and recs[0]["hour"] == 11
+
+
+class TestRankContentAttributes:
+    def _rows(self):
+        recent = dt.datetime(2026, 7, 25, 9, 0)
+        return [
+            # story/question/text/"AI onboarding" — the winner
+            _stat_row(recent, reactions=40, comments=20, archetype="personal_story",
+                      hook_style="question", fmt="text", topic="AI onboarding",
+                      buyer_stage="awareness"),
+            _stat_row(recent - dt.timedelta(days=3), reactions=36, comments=22,
+                      archetype="personal_story", hook_style="question", fmt="text",
+                      topic="AI onboarding", buyer_stage="awareness"),
+            # tactical_list/bold_claim/carousel/"hiring" — the loser
+            _stat_row(recent - dt.timedelta(days=1), reactions=5, comments=1,
+                      archetype="tactical_list", hook_style="bold_claim", fmt="carousel",
+                      topic="hiring", buyer_stage="consideration"),
+            _stat_row(recent - dt.timedelta(days=5), reactions=4, comments=0,
+                      archetype="tactical_list", hook_style="bold_claim", fmt="carousel",
+                      topic="hiring", buyer_stage="consideration"),
+        ]
+
+    def test_ranks_every_attribute_best_first(self):
+        from cqc_lem.utilities.post_stats import rank_content_attributes
+        ranking = rank_content_attributes(self._rows(), now=_NOW)
+        assert [e["key"] for e in ranking["archetype"]] == ["personal_story", "tactical_list"]
+        assert [e["key"] for e in ranking["hook_style"]] == ["question", "bold_claim"]
+        assert [e["key"] for e in ranking["format"]] == ["text", "carousel"]
+        assert [e["key"] for e in ranking["topic"]] == ["AI onboarding", "hiring"]
+        assert [e["key"] for e in ranking["buyer_stage"]] == ["awareness", "consideration"]
+        winner = ranking["archetype"][0]
+        assert winner["samples"] == 2 and winner["score"] > 0
+
+    def test_impression_normalized_ranking_flips_raw_count_order(self):
+        from cqc_lem.utilities.post_stats import METRIC_RATE, rank_content_attributes
+        recent = dt.datetime(2026, 7, 25, 9, 0)
+        rows = [
+            _stat_row(recent, reactions=200, topic="broad", impressions=100_000),
+            _stat_row(recent, reactions=200, topic="broad", impressions=100_000),
+            _stat_row(recent, reactions=40, topic="niche", impressions=800),
+            _stat_row(recent, reactions=40, topic="niche", impressions=800),
+        ]
+        ranking = rank_content_attributes(rows, attributes=["topic"], now=_NOW)
+        assert [e["key"] for e in ranking["topic"]] == ["niche", "broad"]
+        assert ranking["topic"][0]["metric"] == METRIC_RATE
+        assert ranking["topic"][0]["avg_engagement"] == pytest.approx(0.05)
+
+    def test_min_samples_drops_thin_keys_and_top_n_truncates(self):
+        from cqc_lem.utilities.post_stats import rank_content_attributes
+        rows = self._rows() + [
+            _stat_row(dt.datetime(2026, 7, 26, 9, 0), reactions=500, archetype="one_off"),
+        ]
+        ranking = rank_content_attributes(rows, attributes=["archetype"], min_samples=2, now=_NOW)
+        assert [e["key"] for e in ranking["archetype"]] == ["personal_story", "tactical_list"]
+        capped = rank_content_attributes(rows, attributes=["archetype"], top_n=1, now=_NOW)
+        assert len(capped["archetype"]) == 1 and capped["archetype"][0]["key"] == "one_off"
+
+    def test_unknown_attribute_and_empty_rows(self):
+        from cqc_lem.utilities.post_stats import rank_content_attributes
+        assert rank_content_attributes([], attributes=["topic"]) == {"topic": []}
+        assert rank_content_attributes(self._rows(), attributes=["nonsense"]) == {"nonsense": []}
+
+    def test_accepts_a_one_shot_iterable(self):
+        from cqc_lem.utilities.post_stats import rank_content_attributes
+        ranking = rank_content_attributes(iter(self._rows()), now=_NOW)
+        assert ranking["topic"][0]["key"] == "AI onboarding"
+        assert ranking["hook_style"][0]["key"] == "question"
 
 
 class TestScrapeStatsTask:

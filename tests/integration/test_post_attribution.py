@@ -55,7 +55,7 @@ class _FakeCursor:
             self._result = [
                 (self.posts[r["post_id"]]["scheduled_time"], r["reactions"], r["comments"],
                  r["reposts"], r["archetype"], r["hook_style"], r["format"], r["topic"],
-                 r["buyer_stage"])
+                 r["buyer_stage"], r["impressions"])
                 for r in latest.values() if r["post_id"] in self.posts
             ]
         else:  # pragma: no cover - defensive
@@ -107,8 +107,9 @@ class TestPostAttributionFeedbackLoop:
             rows = get_post_engagement_rows(1)
 
         assert len(rows) == 1
-        scheduled_time, reactions, comments, reposts, archetype, hook_style, fmt, topic, stage = rows[0]
-        assert (reactions, comments, reposts) == (42, 7, 3)
+        (scheduled_time, reactions, comments, reposts, archetype, hook_style, fmt, topic, stage,
+         impressions) = rows[0]
+        assert (reactions, comments, reposts, impressions) == (42, 7, 3, 900)
         assert archetype == "case_study"
         assert hook_style == "bold_claim"
         assert fmt == "carousel"          # from posts.post_type
@@ -134,5 +135,5 @@ class TestPostAttributionFeedbackLoop:
             update_db_post_shape(5, "tactical_list", "story", topic="retention")
             rows = get_post_engagement_rows(1)
 
-        _, _, _, _, archetype, hook_style, _, topic, _ = rows[0]
+        _, _, _, _, archetype, hook_style, _, topic, _, _ = rows[0]
         assert (archetype, hook_style, topic) == ("myth_bust", "question", "hiring")
