@@ -1,11 +1,11 @@
 name: UI Build
 
-# Runs the strict `npm ci` + production build the Docker image does, on every PR — so a
-# dependency change that breaks the image (e.g. an ERESOLVE peer conflict) fails CI here
-# instead of silently breaking release/deploy. Make "UI Build" a required check to enforce it.
+# Strict `npm ci` + production build (what the Docker image does) on every PR AND in the merge
+# queue — so a dependency change that breaks the image fails CI instead of breaking release/deploy.
 
 on:
   pull_request:
+  merge_group:
 
 jobs:
   ui-build:

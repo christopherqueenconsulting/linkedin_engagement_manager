@@ -1,14 +1,11 @@
 name: Migration Versions
 
-# Guards Flyway migrations on every PR:
-#   1. No two migrations share a version (a duplicate breaks `flyway migrate` at deploy).
-#   2. Every NEW migration uses a 14-digit TIMESTAMP version V<YYYYMMDDHHMMSS>__ ; legacy V1-V58
-#      are grandfathered. Timestamps are unique per authoring second and sort after all legacy
-#      integers, so parallel PRs can never collide again.
-# Make "Migration Versions" a required check to enforce it.
+# Unique Flyway versions + timestamp format for new migrations. Runs on every PR AND in the merge
+# queue. Legacy V1-V58 are grandfathered; new migrations must be V<YYYYMMDDHHMMSS>__ timestamps.
 
 on:
   pull_request:
+  merge_group:
 
 jobs:
   unique-versions:
@@ -24,11 +21,9 @@ jobs:
           if [ -n "$dups" ]; then echo "::error::Duplicate Flyway migration version(s): $dups"; fail=1; fi
           for f in V*.sql; do
             v=$(echo "$f" | sed -E 's/^V([0-9]+)__.*/\1/')
-            # grandfather legacy integer migrations (<= 58)
             if echo "$v" | grep -qE '^[0-9]{1,2}$' && [ "$v" -le 58 ]; then continue; fi
-            # everything else must be a 14-digit timestamp V<YYYYMMDDHHMMSS>__
             if ! echo "$v" | grep -qE '^[0-9]{14}$'; then
-              echo "::error::$f — new migrations must use a 14-digit timestamp version 'V<YYYYMMDDHHMMSS>__' (run: date -u +%Y%m%d%H%M%S). Legacy V<=58 are grandfathered. Got '$v'."
+              echo "::error::$f — new migrations must use a 14-digit timestamp version 'V<YYYYMMDDHHMMSS>__' (run: date -u +%Y%m%d%H%M%S). Legacy V<=58 grandfathered. Got '$v'."
               fail=1
             fi
           done
