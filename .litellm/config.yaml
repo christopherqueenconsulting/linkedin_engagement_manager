@@ -9,14 +9,11 @@ model_list:
       request_timeout: 90
       rpm: 100
 
-  - model_name: lem-simple
-    litellm_params:
-      model: openai/ministral-3:8b
-      api_base: os.environ/OLLAMA_CLOUD_URL
-      api_key: os.environ/OLLAMA_CLOUD_API_KEY
-      max_parallel_requests: 8
-      request_timeout: 60
-      rpm: 120
+  # NOTE: openai/ministral-3:8b was RETIRED 2026-07-15 (returns 410) and was removed — same
+  # class of breakage as kimi-k2:1t below. Under latency-based routing it kept getting picked
+  # (a 410 is "fast"), so a share of lem-simple calls failed; the profile scrape (lem-simple)
+  # then aborted auto-commenting with "Profile unavailable". gpt-oss:20b stays primary, with
+  # gpt-4o-mini as the in-group OpenAI fallback.
 
   # OpenAI fallback (when Ollama Cloud is unavailable)
   - model_name: lem-simple
