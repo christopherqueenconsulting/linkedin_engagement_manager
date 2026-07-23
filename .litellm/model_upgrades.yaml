@@ -1,0 +1,20 @@
+# Ollama Cloud model retirement map, consumed by scripts/model_health_check.py.
+#
+# When the weekly check finds a configured model that the provider has RETIRED (HTTP 410),
+# it looks the bare model name up here and:
+#   - "<replacement>"  -> auto-swaps to it (AFTER verifying the replacement works), opens a PR,
+#                         restarts litellm, smoke-tests all tiers, and rolls back on any failure.
+#   - "REMOVE"         -> alerts a human (block deletion is not auto-applied — a tier could be
+#                         left with no working deployment). ministral/kimi-k2:1t were REMOVEs,
+#                         handled manually, and are recorded here so the check labels them
+#                         "known/handled" instead of "unknown retirement".
+# A 410 with NO entry here is an UNKNOWN retirement -> the check alerts so a mapping is added.
+#
+# Keys/values are the bare Ollama model names (no "openai/" prefix — the check strips it).
+upgrades:
+  # --- confirmed retirements + recommended replacements ---
+  "minimax-m2.5": "minimax-m2.7"
+  "kimi-k2.5": "kimi-k2.6"
+  # --- retired with no drop-in replacement (removed from config manually) ---
+  "ministral-3:8b": "REMOVE"
+  "kimi-k2:1t": "REMOVE"
