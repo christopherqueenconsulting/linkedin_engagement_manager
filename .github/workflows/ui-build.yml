@@ -1,0 +1,28 @@
+name: UI Build
+
+# Strict `npm ci` + production build (what the Docker image does) on every PR AND in the merge
+# queue — so a dependency change that breaks the image fails CI instead of breaking release/deploy.
+
+on:
+  pull_request:
+  merge_group:
+
+jobs:
+  ui-build:
+    name: UI Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: src/cqc_lem/ui/package-lock.json
+      - name: npm ci (strict — matches the Docker build)
+        working-directory: src/cqc_lem/ui
+        run: npm ci
+      - name: Production build
+        working-directory: src/cqc_lem/ui
+        run: npm run build
+        env:
+          VITE_API_TOKEN: ${{ secrets.UI_API_TOKEN }}

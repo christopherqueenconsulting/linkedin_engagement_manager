@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "linkedin-engagement-manager"
-version = "0.50.0"
+version = "0.51.0"
 description = ""
 authors = ["gitchrisqueen <christopher.queen@gmail.com>"]
 readme = "README.md"
@@ -113,7 +113,7 @@ aws-cdk-aws-lambda-python-alpha = "^2.177.0a0"
 optional = true
 
 [tool.poetry.group.lint.dependencies]
-ruff = ">=0.1.5,<0.16.0"
+ruff = ">=0.1.5,<0.17.0"
 
 [tool.poetry.group.mcp]
 optional = true

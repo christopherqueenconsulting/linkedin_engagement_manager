@@ -1,0 +1,30 @@
+name: Migration Versions
+
+# Unique Flyway versions + timestamp format for new migrations. Runs on every PR AND in the merge
+# queue. Legacy V1-V58 are grandfathered; new migrations must be V<YYYYMMDDHHMMSS>__ timestamps.
+
+on:
+  pull_request:
+  merge_group:
+
+jobs:
+  unique-versions:
+    name: Migration Versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unique versions + timestamp format for new migrations
+        run: |
+          cd compose/local/database/migrations
+          fail=0
+          dups=$(ls V*.sql 2>/dev/null | sed -E 's/^V([0-9]+)__.*/\1/' | sort | uniq -d || true)
+          if [ -n "$dups" ]; then echo "::error::Duplicate Flyway migration version(s): $dups"; fail=1; fi
+          for f in V*.sql; do
+            v=$(echo "$f" | sed -E 's/^V([0-9]+)__.*/\1/')
+            if echo "$v" | grep -qE '^[0-9]{1,2}$' && [ "$v" -le 58 ]; then continue; fi
+            if ! echo "$v" | grep -qE '^[0-9]{14}$'; then
+              echo "::error::$f — new migrations must use a 14-digit timestamp version 'V<YYYYMMDDHHMMSS>__' (run: date -u +%Y%m%d%H%M%S). Legacy V<=58 grandfathered. Got '$v'."
+              fail=1
+            fi
+          done
+          if [ "$fail" = 0 ]; then echo "Migrations OK: unique versions, new ones are timestamps."; else exit 1; fi

@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.51.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.50.2...v0.51.0) (2026-07-23)
+
+
+### Features
+
+* **stats:** capture reposts, saves & reliable impressions (closes [#387](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/387)) ([acb7cb7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/acb7cb71096fe15657cfa6ce1e3d4f3c4eb64c06))
+
+
+### Bug Fixes
+
+* **db:** use a timestamp version for the post_stats saves migration ([baf0c58](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/baf0c58a73f35c9a4f16d65c559e760fb793de79))
+
+## [0.50.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.50.1...v0.50.2) (2026-07-23)
+
+
+### Bug Fixes
+
+* **db:** renumber duplicate V57 migration (unblock deploy) + version-uniqueness check ([17df6b5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/17df6b5ba039d6a21fb9fa6b2cf68afeb3b6de13))
+* **db:** renumber duplicate V57 migration + add Migration Versions check ([9ee09f9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9ee09f9cd6de57647108846cc4f8431b9625d22e))
+
+## [0.50.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.50.0...v0.50.1) (2026-07-23)
+
+
+### Bug Fixes
+
+* **ui:** pin typescript to 6.0.x (unbreak prod Docker build) ([a9faf56](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a9faf5626a44cec57ecd2ec2c60e06f8a64a8264))
+* **ui:** pin typescript to 6.0.x to unbreak the Docker image build ([5bd5958](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5bd5958034939af9a3ae0705efa7cfe3b222ee80))
+
 ## [0.50.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.49.0...v0.50.0) (2026-07-23)
 
 

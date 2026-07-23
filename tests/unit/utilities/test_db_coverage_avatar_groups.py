@@ -138,21 +138,21 @@ class TestPostStats:
         conn, cur = _conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_post_stats
-            assert record_post_stats(1, 9, None, None, reposts=None, impressions=120) is True
+            assert record_post_stats(1, 9, None, None, reposts=None, impressions=120, saves=None) is True
         params = cur.execute.call_args[0][1]  # last execute = the INSERT
-        assert params == (1, 9, 0, 0, 0, 120, None, None, None, None, None)
+        assert params == (1, 9, 0, 0, 0, 120, 0, None, None, None, None, None)
 
     def test_record_post_stats_snapshots_post_attribution(self):
         # The post's shape/topic is snapshotted onto the stat row at capture time (#386).
         conn, cur = _conn(fetch_one=("tactical_list", "bold_claim", "text", "AI hiring", "awareness"))
         with patch(f"{_DB}.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_post_stats
-            assert record_post_stats(1, 9, 10, 3, reposts=1, impressions=200) is True
+            assert record_post_stats(1, 9, 10, 3, reposts=1, impressions=200, saves=6) is True
         select_sql, select_params = cur.execute.call_args_list[0][0]
         assert "FROM posts WHERE id=%s AND user_id=%s" in select_sql and select_params == (9, 1)
         insert_sql, insert_params = cur.execute.call_args_list[1][0]
         assert "INSERT INTO post_stats" in insert_sql and "`format`" in insert_sql
-        assert insert_params == (1, 9, 10, 3, 1, 200,
+        assert insert_params == (1, 9, 10, 3, 1, 200, 6,
                                  "tactical_list", "bold_claim", "text", "AI hiring", "awareness")
 
     def test_get_recent_posted_post_ids(self):
