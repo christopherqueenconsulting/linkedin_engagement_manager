@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.45.6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.45.5...v0.45.6) (2026-07-23)
+
+
+### Bug Fixes
+
+* **deploy:** persist IMAGE_TAG to .env after deploy/rollback ([57c4369](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/57c4369f029871538701bef907accc20b8976141))
+* **deploy:** persist IMAGE_TAG to .env after deploy/rollback ([afe765a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/afe765a15566b84b5754f5eb7131d8d91f2cbc33))
+* **engagement:** make feed_fallback_when_empty relax the hard gates too ([dbed71e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/dbed71e83fefe7f11fe74624c88d3da46881304c))
+* **engagement:** make feed_fallback_when_empty relax the hard gates too ([1e58269](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1e58269580ddd54c719eef0260aeb84620bfb516))
+* **linkedin:** self-heal a 429-after-cookie-load with a fresh login ([7a3abf2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7a3abf2b5520742479e5cbc588fe8d04886e6629))
+* **linkedin:** self-heal a 429-after-cookie-load with a fresh login ([735c2bc](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/735c2bc2980c6bac15885f7e9300c72a3d731384))
+* **litellm:** drop retired ministral-3:8b from lem-simple ([ccc4285](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ccc428505c8c6e5822b4103ea8cc2ced824d40fd))
+* **litellm:** drop retired ministral-3:8b from lem-simple ([12bee63](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/12bee630cfd46feddabbaecea92db29857dae938))
+
 ## [0.45.5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.45.4...v0.45.5) (2026-07-22)
 
 
