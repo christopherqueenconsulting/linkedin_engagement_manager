@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.46.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.45.6...v0.46.0) (2026-07-23)
+
+
+### Features
+
+* **litellm:** weekly model-health check with auto-upgrade + safe deploy reload ([5a6df5e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5a6df5e914da6dc948338fd5e5bebe3a04c69630))
+* **litellm:** weekly model-health check with auto-upgrade + safe deploy reload ([48bfb50](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/48bfb502b47b9281e86836c206f806275e7a1ae4))
+
+
+### Bug Fixes
+
+* **model-check:** use the dev-venv python (openai) instead of poetry-run ([ecf5ee0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ecf5ee0f7a8613acb53dc8c3242c583e2d02ac9e))
+* **newsletter:** publish one edition per run and shift a missed-slot backlog forward ([d27d8fc](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d27d8fc811cfe66a01a6cbd30dcb3417a38e43c9))
+* **newsletter:** publish one per run and shift a missed-slot backlog forward ([2498983](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/249898319c309c6072be060031db64c3742f6ef7))
+
 ## [0.45.6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.45.5...v0.45.6) (2026-07-23)
 
 
