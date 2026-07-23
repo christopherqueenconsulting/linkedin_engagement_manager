@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.51.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.50.2...v0.51.0) (2026-07-23)
+
+
+### Features
+
+* **stats:** capture reposts, saves & reliable impressions (closes [#387](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/387)) ([acb7cb7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/acb7cb71096fe15657cfa6ce1e3d4f3c4eb64c06))
+
+
+### Bug Fixes
+
+* **db:** use a timestamp version for the post_stats saves migration ([baf0c58](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/baf0c58a73f35c9a4f16d65c559e760fb793de79))
+
 ## [0.50.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.50.1...v0.50.2) (2026-07-23)
 
 
