@@ -23,7 +23,8 @@ from cqc_lem.utilities.db import get_post_type_counts, insert_planned_post, upda
     get_user_blog_url, get_user_sitemap_url, get_active_user_ids, get_planned_posts_for_next_week, PostStatus, \
     update_db_post_video_url, update_db_post_status, PostType, get_user_preferences, \
     update_db_post_carousel_slides, get_post_content, get_user_timezone, get_engagement_preferences
-from cqc_lem.utilities.db import get_recent_post_shape_history, update_db_post_shape, get_lead_magnet_settings
+from cqc_lem.utilities.db import get_recent_post_shape_history, update_db_post_shape, get_lead_magnet_settings, \
+    get_shape_performance
 from cqc_lem.utilities.db import get_recent_post_texts
 from cqc_lem.utilities.ai.content_framework import select_blueprint, history_avoidance_directive, \
     find_most_similar, post_similarity_max, has_first_person_proof
@@ -770,10 +771,18 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
         except Exception as e:
             myprint(f"Could not load post shape history (rotating without it): {e}")
             shape_history = []
+        # Close the feedback loop (issue #389 / B4): bias shape selection away from the user's
+        # historically under-performing archetypes/hooks while keeping rotation + exploration.
+        try:
+            performance = get_shape_performance(user_id)
+        except Exception as e:
+            myprint(f"Could not load shape performance (selecting without it): {e}")
+            performance = None
         blueprint = select_blueprint(
             "post",
             recent_formats=[h.get("archetype") for h in shape_history if h.get("archetype")],
-            recent_hook_styles=[h.get("hook_style") for h in shape_history if h.get("hook_style")])
+            recent_hook_styles=[h.get("hook_style") for h in shape_history if h.get("hook_style")],
+            performance=performance)
     myprint(f"Post blueprint: format={blueprint.get('format')} hook={blueprint.get('hook_style')} "
             f"cta={blueprint.get('cta_style')}")
 

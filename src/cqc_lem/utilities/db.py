@@ -3184,6 +3184,52 @@ def get_post_engagement_rows(user_id: int) -> list:
         connection.close()
 
 
+def get_shape_performance(user_id: int, days: int = 90) -> dict:
+    """Per-SHAPE engagement totals for a user's recently posted content — the outcomes side of the
+    performance→content feedback loop (issue #389 / B4). Joins each posted post's assigned shape
+    (`posts.archetype` = short-form FORMAT key, `posts.hook_style`) with its LATEST captured
+    `post_stats` row and aggregates raw signal counts per shape key.
+
+    Returns ``{"format": {archetype: agg}, "hook": {hook_style: agg}}`` where each ``agg`` is
+    ``{"samples", "reactions", "comments", "reposts", "impressions", "impression_samples"}``.
+    ``impressions`` sums only rows where impressions is non-NULL (``impression_samples`` counts
+    them) so the caller can tell whether impression-normalized scoring is available yet (B2/B3).
+    The engagement-metric/weighting policy lives in ``content_framework``; this stays pure access."""
+    result = {"format": {}, "hook": {}}
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        for column, bucket in (("archetype", "format"), ("hook_style", "hook")):
+            cursor.execute(
+                f"SELECT p.{column}, COUNT(*), "
+                "COALESCE(SUM(s.reactions),0), COALESCE(SUM(s.comments),0), "
+                "COALESCE(SUM(s.reposts),0), COALESCE(SUM(s.impressions),0), "
+                "SUM(CASE WHEN s.impressions IS NOT NULL THEN 1 ELSE 0 END) "
+                "FROM posts p JOIN post_stats s "
+                "ON s.post_id=p.id AND s.user_id=p.user_id "
+                f"WHERE p.user_id=%s AND p.{column} IS NOT NULL "
+                "AND p.scheduled_time >= (NOW() - INTERVAL %s DAY) "
+                "AND s.id IN (SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id) "
+                f"GROUP BY p.{column}",
+                (user_id, days, user_id))
+            for key, samples, reactions, comments, reposts, impressions, imp_samples in cursor.fetchall():
+                result[bucket][key] = {
+                    "samples": int(samples or 0),
+                    "reactions": int(reactions or 0),
+                    "comments": int(comments or 0),
+                    "reposts": int(reposts or 0),
+                    "impressions": int(impressions or 0),
+                    "impression_samples": int(imp_samples or 0),
+                }
+        return result
+    except mysql.connector.Error as err:
+        myprint(f"Could not get shape performance for user {user_id} | Error: {err}")
+        return {"format": {}, "hook": {}}
+    finally:
+        cursor.close()
+        connection.close()
+
+
 _LEAD_MAGNET_DEFAULTS: dict = {"enabled": False, "keyword": None, "message": None}
 
 

@@ -17,6 +17,14 @@ from typing import Optional
 # strict no-consecutive-repeat rule). 3 keeps rotation fresh while the menus stay pickable.
 _AVOID_WINDOW = 3
 
+# Performance-aware selection (issue #389 / B4 — close the feedback loop). Below this many total
+# observed samples for a shape KIND (format or hook) we have too little signal to steer, so
+# selection stays pure rotation (behavior unchanged). The exploration floor is the smallest weight
+# an under-performing shape may be reduced to — never 0, so we keep sampling every shape and never
+# collapse to a single winner. Both read at call time so ops/tests can tune without a restart.
+PERF_MIN_SAMPLES_DEFAULT = 5
+PERF_EXPLORATION_FLOOR_DEFAULT = 0.25
+
 # ---------------------------------------------------------------------------
 # NEWSLETTER menu (long-form editions) — unchanged from the V50 blueprint system.
 # ---------------------------------------------------------------------------
@@ -487,9 +495,93 @@ def options_text(content_type: str) -> str:
     return "\n".join(lines)
 
 
-def _pick(options: dict, recency: list, forbidden: set) -> str:
-    """Pick the least-recently-used option outside `forbidden`, choosing RANDOMLY among ties (so a
-    user with no history still gets variety instead of always the first menu key). `recency` is
+def _perf_min_samples() -> int:
+    raw = (os.environ.get("PERF_MIN_SAMPLES") or "").strip()
+    try:
+        return max(1, int(raw)) if raw else PERF_MIN_SAMPLES_DEFAULT
+    except ValueError:
+        return PERF_MIN_SAMPLES_DEFAULT
+
+
+def _perf_exploration_floor() -> float:
+    raw = (os.environ.get("PERF_EXPLORATION_FLOOR") or "").strip()
+    try:
+        val = float(raw) if raw else PERF_EXPLORATION_FLOOR_DEFAULT
+    except ValueError:
+        return PERF_EXPLORATION_FLOOR_DEFAULT
+    return min(1.0, max(0.0, val))
+
+
+def _shape_engagement(agg: dict) -> float:
+    """Per-post engagement metric for one shape's aggregated stats. Weights comments (2×) and
+    reposts (3×) above reactions since they signal stronger reach on the 2026 feed. Impression-
+    normalized (engagement rate) ONLY when every sample for this shape carries impressions
+    (B2/B3 populated); otherwise average engagement per post. The caller keeps all shapes of a
+    kind on the same scale (see `performance_weights`)."""
+    samples = agg.get("samples", 0) or 0
+    if samples <= 0:
+        return 0.0
+    engagement = (agg.get("reactions", 0) or 0) + 2 * (agg.get("comments", 0) or 0) \
+        + 3 * (agg.get("reposts", 0) or 0)
+    impressions = agg.get("impressions", 0) or 0
+    if agg.get("impression_samples", 0) == samples and impressions > 0:
+        return engagement / impressions
+    return engagement / samples
+
+
+def _all_impression_covered(perf: dict) -> bool:
+    """True only when every sampled shape has full impression coverage — the gate for using
+    engagement-RATE scoring uniformly instead of average-per-post (mixing the two scales across
+    shapes would make the comparison meaningless)."""
+    sampled = [a for a in perf.values() if (a.get("samples", 0) or 0) > 0]
+    return bool(sampled) and all(
+        a.get("impression_samples", 0) == a.get("samples", 0) and (a.get("impressions", 0) or 0) > 0
+        for a in sampled)
+
+
+def performance_weights(perf: Optional[dict], keys, min_samples: int = None,
+                        floor: float = None) -> dict:
+    """Turn per-shape outcome aggregates into multiplicative SELECTION weights for `_pick` (issue
+    #389 / B4). `perf` maps shape key → aggregate (from `db.get_shape_performance`); `keys` is the
+    menu's full key set for this kind. Returns {} (⇒ pure rotation, behavior unchanged) until at
+    least `min_samples` total observations exist. Otherwise: shapes performing below the sampled
+    mean are down-weighted proportionally, floored at the exploration floor so they're never
+    dropped; at-or-above-mean and unsampled shapes stay at weight 1.0 (unsampled = keep exploring).
+    """
+    if not perf:
+        return {}
+    min_samples = _perf_min_samples() if min_samples is None else min_samples
+    floor = _perf_exploration_floor() if floor is None else floor
+    total = sum((a.get("samples", 0) or 0) for a in perf.values())
+    if total < min_samples:
+        return {}
+    rate_mode = _all_impression_covered(perf)
+    metrics = {}
+    for key, agg in perf.items():
+        if (agg.get("samples", 0) or 0) <= 0:
+            continue
+        m = _shape_engagement(agg)
+        # In rate_mode every metric is already a rate; otherwise all are avg-per-post. Same scale.
+        metrics[key] = m
+    if not metrics:
+        return {}
+    mean = sum(metrics.values()) / len(metrics)
+    weights = {}
+    for key in keys:
+        if key not in metrics:
+            weights[key] = 1.0  # unsampled shape — neutral, so exploration keeps sampling it
+        elif mean <= 0:
+            weights[key] = 1.0
+        else:
+            weights[key] = max(floor, min(1.0, metrics[key] / mean))
+    return weights
+
+
+def _pick(options: dict, recency: list, forbidden: set, weights: dict = None) -> str:
+    """Pick the least-recently-used option outside `forbidden`, choosing among ties by `weights`
+    (a shape→multiplier map; missing/None ⇒ uniform, preserving prior behavior). Recency stays the
+    PRIMARY axis so variety is never sacrificed; performance only biases the random tie-break so
+    under-performing shapes surface less often while every shape can still be picked. `recency` is
     most-recent-first; options never used rank best. Relaxes `forbidden` rather than ever failing."""
     keys = list(options.keys())
     candidates = [k for k in keys if k not in forbidden]
@@ -501,7 +593,12 @@ def _pick(options: dict, recency: list, forbidden: set) -> str:
         return recency.index(k) if k in recency else len(recency) + 1
 
     best = max(rank(k) for k in candidates)
-    return random.choice([k for k in candidates if rank(k) == best])
+    tied = [k for k in candidates if rank(k) == best]
+    if weights:
+        w = [max(0.0, weights.get(k, 1.0)) for k in tied]
+        if sum(w) > 0:
+            return random.choices(tied, weights=w, k=1)[0]
+    return random.choice(tied)
 
 
 def enforce_variety(content_type: str, blueprints: list, recent_formats: list = None,
@@ -554,11 +651,13 @@ def enforce_variety(content_type: str, blueprints: list, recent_formats: list = 
 
 def select_blueprint(content_type: str, subject: str = None, angle: str = None,
                      recent_formats: list = None, recent_hook_styles: list = None,
-                     guidance: str = None) -> dict:
+                     guidance: str = None, performance: Optional[dict] = None) -> dict:
     """A fresh blueprint for ONE piece of any content type, chosen in code (no LLM call): rotate
     away from the recent formats/hooks — including the piece's own previous shape — so consecutive
     pieces change form, not just words. Free-text `guidance` may name a format (e.g. 'make it a
-    case study'); honor it when it does."""
+    case study'); honor it when it does. `performance` (from `db.get_shape_performance`, keys
+    'format'/'hook') closes the feedback loop — under-performing shapes are surfaced less often
+    while rotation and exploration are preserved (issue #389 / B4)."""
     menu = _menu(content_type)
     formats, hooks, ctas = menu["formats"], menu["hooks"], menu["ctas"]
     hinted = _normalize(guidance, formats) if guidance else None
@@ -570,10 +669,13 @@ def select_blueprint(content_type: str, subject: str = None, angle: str = None,
                 break
     rf = [f for f in (_normalize(x, formats) for x in (recent_formats or [])) if f]
     rh = [h for h in (_normalize(x, hooks) for x in (recent_hook_styles or [])) if h]
-    fmt = hinted or _pick(formats, rf, {rf[0] if rf else None} | set(rf[:_AVOID_WINDOW]))
+    fmt_weights = performance_weights((performance or {}).get("format"), formats.keys())
+    hook_weights = performance_weights((performance or {}).get("hook"), hooks.keys())
+    fmt = hinted or _pick(formats, rf, {rf[0] if rf else None} | set(rf[:_AVOID_WINDOW]), fmt_weights)
     out = {"subject": subject, "angle": angle or "", "format": fmt,
            "structure": list(formats[fmt]["structure"])}
-    out["hook_style"] = _pick(hooks, rh, {rh[0] if rh else None} | set(rh[:_AVOID_WINDOW])) if hooks else None
+    out["hook_style"] = _pick(hooks, rh, {rh[0] if rh else None} | set(rh[:_AVOID_WINDOW]),
+                              hook_weights) if hooks else None
     out["cta_style"] = _pick(ctas, [], set()) if ctas else None
     return out
 
