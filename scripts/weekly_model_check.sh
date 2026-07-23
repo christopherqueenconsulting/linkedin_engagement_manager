@@ -13,7 +13,9 @@
 set -uo pipefail
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/lem/.local/bin"
 
-REPO="/home/lem/linkedin_engagement_manager"
+# Self-locate the repo root so this can run from a dedicated cron clone, isolated from any
+# interactive dev checkout (overridable via REPO=... for tests).
+REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 BOX_CFG="/opt/lem/.litellm/config.yaml"
 MAP="$REPO/.litellm/model_upgrades.yaml"
 DIR="/home/lem/model-check"
