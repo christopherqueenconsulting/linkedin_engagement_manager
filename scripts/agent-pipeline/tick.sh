@@ -59,8 +59,10 @@ select_next_issue() {
 }
 
 open_agent_pr() {
+  # Prefer a CONFLICTING (DIRTY) PR — it needs a rebase and blocks its own merge — then by PR number.
   gh pr list --repo "$SLUG" --state open --label "agent:working" \
-    --json number,headRefName,labels | jq -r '.[0] // empty | @json'
+    --json number,headRefName,labels,mergeStateStatus \
+    | jq -r 'sort_by((if .mergeStateStatus=="DIRTY" then 0 else 1 end), .number) | .[0] // empty | @json'
 }
 
 # Count of UNRESOLVED review threads whose first comment is authored by Copilot.
@@ -83,8 +85,9 @@ copilot_last_review_at() {  # $1=pr
 
 add_worktree() {  # $1=branch  $2=base(ref)  -> path on stdout
   local branch="$1" base="$2" wt="$WORKROOT/$1"
-  git -C "$REPO" worktree prune >/dev/null 2>&1
+  git -C "$REPO" worktree remove --force "$wt" >/dev/null 2>&1 || true
   rm -rf "$wt"
+  git -C "$REPO" worktree prune >/dev/null 2>&1
   if git -C "$REPO" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
     git -C "$REPO" worktree add "$wt" "origin/$branch" >/dev/null 2>&1
     git -C "$wt" checkout -B "$branch" "origin/$branch" >/dev/null 2>&1
@@ -107,6 +110,32 @@ run_claude() {  # $1=worktree  $2=prompt
 # --- state machine ---
 git -C "$REPO" fetch origin --prune >/dev/null 2>&1
 
+# ---- PRIORITY LANE: Dependabot CI failures (labeled agent:depfix by the router workflow) ----
+# Handled before roadmap work so dependency PRs get unblocked fast. One Claude call per tick.
+DEPFIX="$(gh pr list --repo "$SLUG" --state open --label "agent:depfix" \
+  --json number,headRefName,labels \
+  | jq -r 'map(select((.labels|map(.name))|index("needs-human")|not))|.[0]//empty|@json')"
+if [ -n "$DEPFIX" ]; then
+  DPR="$(echo "$DEPFIX" | jq -r .number)"
+  DBR="$(echo "$DEPFIX" | jq -r .headRefName)"
+  CLAUDE_TRIES="$(git -C "$REPO" log "origin/$DBR" --grep='Co-Authored-By: Claude' --format=%h 2>/dev/null | wc -l | tr -d ' ')"
+  if [ "${CLAUDE_TRIES:-0}" -ge 3 ]; then
+    log "Dependabot PR #$DPR still failing after $CLAUDE_TRIES Claude attempts — escalating."
+    if [ "$DRY_RUN" != "1" ]; then
+      gh pr edit "$DPR" --repo "$SLUG" --add-label needs-human --remove-label agent:depfix >/dev/null 2>&1
+      gh issue comment "$DPR" --repo "$SLUG" --body "🚧 Claude couldn't fix CI after $CLAUDE_TRIES attempts on this Dependabot PR. Assigning @$ASSIGNEE." >/dev/null 2>&1
+      gh pr edit "$DPR" --repo "$SLUG" --add-assignee "$ASSIGNEE" >/dev/null 2>&1
+    fi
+    exit 0
+  fi
+  log "Dependabot PR #$DPR failing — invoking depfix (priority lane, try $((CLAUDE_TRIES+1)))."
+  if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would run MODE=depfix for #$DPR ($DBR)."; exit 0; fi
+  WT="$(add_worktree "$DBR" origin/main)"
+  export MODE=depfix PR="$DPR" BRANCH="$DBR" WORKTREE="$WT"
+  run_claude "$WT" "Read $RUNBOOK and follow MODE=depfix. PR=$DPR BRANCH=$DBR."
+  exit 0
+fi
+
 PR_JSON="$(open_agent_pr)"
 
 if [ -n "$PR_JSON" ]; then
@@ -116,6 +145,17 @@ if [ -n "$PR_JSON" ]; then
            | jq -r '(.body,.title)|scan("#([0-9]{3,})")|.[0]' | head -1)"
   HEAD_DATE="$(git -C "$REPO" log -1 --format=%cI "origin/$BRANCH" 2>/dev/null)"
   log "In-flight PR #$PR (branch $BRANCH, issue #${ISSUE:-?})."
+
+  # 0) Stale/conflicting with main (went dirty while other PRs merged) -> rebase before anything else.
+  MSTATE="$(gh pr view "$PR" --repo "$SLUG" --json mergeStateStatus --jq .mergeStateStatus 2>/dev/null)"
+  if [ "$MSTATE" = "DIRTY" ]; then
+    log "PR #$PR is CONFLICTING with main — invoking rebase."
+    if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would run MODE=rebase for #$PR."; exit 0; fi
+    WT="$(add_worktree "$BRANCH" origin/main)"
+    export MODE=rebase PR ISSUE WORKTREE="$WT" BRANCH
+    run_claude "$WT" "Read $RUNBOOK and follow MODE=rebase. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH."
+    exit 0
+  fi
 
   ROLLUP="$(gh pr view "$PR" --repo "$SLUG" --json statusCheckRollup \
     | jq -r '[.statusCheckRollup[]? | {s:(.conclusion//.state//"PENDING")}]')"
@@ -159,14 +199,23 @@ if [ -n "$PR_JSON" ]; then
     exit 0
   fi
 
-  # 4) CI green + no unresolved Copilot threads. Require Copilot to have reviewed the CURRENT head.
-  if [ -z "$CP_AT" ] || [ "$(epoch "$CP_AT")" -lt "$(epoch "$HEAD_DATE")" ]; then
-    log "PR #$PR — green, but waiting for Copilot to review the current head commit before merge."
+  # 4) CI green + no unresolved Copilot threads. Copilot must have reviewed at least once, and
+  #    either it reviewed the current head OR the head has been stable past a grace window
+  #    (Copilot does not re-review every push — don't deadlock waiting for a re-review that
+  #    may never come; unresolved threads on new code would be caught by step 2 anyway).
+  REVIEW_GRACE_SECONDS="${REVIEW_GRACE_SECONDS:-1200}"   # 20 min
+  if [ -z "$CP_AT" ]; then
+    log "PR #$PR — green; waiting for Copilot's first review before merge."
+    exit 0
+  fi
+  if [ "$(epoch "$CP_AT")" -lt "$(epoch "$HEAD_DATE")" ] \
+     && [ "$(( $(date +%s) - $(epoch "$HEAD_DATE") ))" -lt "$REVIEW_GRACE_SECONDS" ]; then
+    log "PR #$PR — green; Copilot hasn't re-reviewed the latest push yet (within ${REVIEW_GRACE_SECONDS}s grace). Waiting."
     exit 0
   fi
 
-  # 5) Green + Copilot reviewed head + all threads resolved -> merge (runner-controlled).
-  log "PR #$PR — green, Copilot reviewed & all threads resolved. Merging."
+  # 5) Green + Copilot reviewed (head or past grace) + all threads resolved -> merge.
+  log "PR #$PR — green, Copilot review satisfied & all threads resolved. Merging."
   if [ "$DRY_RUN" != "1" ]; then
     gh pr merge --auto "$(gh pr view "$PR" --repo "$SLUG" --json url --jq .url)" >/dev/null 2>&1 \
       && gh pr comment "$PR" --repo "$SLUG" --body "✅ CI green, Copilot review addressed & resolved — merging." >/dev/null 2>&1

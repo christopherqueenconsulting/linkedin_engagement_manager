@@ -1,4 +1,10 @@
-name: Dependabot CI Auto-Fix Trigger
+name: Dependabot CI Auto-Fix Router
+
+# When a Dependabot PR's CI fails, route the fix to the Claude pipeline (label agent:depfix)
+# instead of spending Copilot coding-agent credits with "@copilot fix". The local Claude runner
+# picks up agent:depfix PRs in a PRIORITY lane, smart-triages the failure (fix the bump on-branch,
+# or open a main-side fix PR + @dependabot rebase when it isn't the bump's fault), then clears the
+# label. Copilot remains the (free) reviewer only.
 
 on:
   workflow_run:
@@ -11,8 +17,8 @@ on:
       - completed
 
 jobs:
-  post-copilot-fix:
-    name: Post @copilot fix on Dependabot CI failure
+  route-to-claude:
+    name: Route Dependabot CI failure to the Claude pipeline
     runs-on: ubuntu-latest
     if: |
       github.event.workflow_run.conclusion == 'failure' &&
@@ -23,10 +29,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v7
-
-      - name: Get PR for workflow run
-        id: get-pr
+      - name: Label the failing Dependabot PR for Claude
         uses: actions/github-script@v7
         with:
           script: |
@@ -39,37 +42,14 @@ jobs:
             });
             if (pulls.data.length === 0) return;
             const pr = pulls.data[0];
-            if (pr.user.login !== 'dependabot[bot]') return;
-            core.setOutput('pr_number', pr.number);
-            core.setOutput('head_sha', run.head_sha);
-
-      - name: Check for existing @copilot fix comment
-        if: steps.get-pr.outputs.pr_number != ''
-        id: check-comment
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const comments = await github.rest.issues.listComments({
+            if (pr.user.login !== 'dependabot[bot]') {
+              console.log(`#${pr.number} is not a Dependabot PR — skipping.`);
+              return;
+            }
+            await github.rest.issues.addLabels({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: parseInt('${{ steps.get-pr.outputs.pr_number }}'),
+              issue_number: pr.number,
+              labels: ['agent:depfix'],
             });
-            const sha = '${{ steps.get-pr.outputs.head_sha }}';
-            const alreadyPosted = comments.data.some(c =>
-              c.body.includes('@copilot fix') && c.body.includes(sha)
-            );
-            core.setOutput('already_posted', alreadyPosted ? 'true' : 'false');
-
-      - name: Post @copilot fix comment
-        if: |
-          steps.get-pr.outputs.pr_number != '' &&
-          steps.check-comment.outputs.already_posted == 'false'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: parseInt('${{ steps.get-pr.outputs.pr_number }}'),
-              body: `@copilot fix\n\n<!-- sha:${{ steps.get-pr.outputs.head_sha }} -->`,
-            });
+            console.log(`Labeled #${pr.number} agent:depfix — Claude pipeline will handle it.`);
