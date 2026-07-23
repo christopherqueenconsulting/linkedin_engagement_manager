@@ -1,0 +1,26 @@
+{
+  "skill_name": "anti-ai",
+  "evals": [
+    {
+      "id": 0,
+      "name": "linkedin-ai-post",
+      "prompt": "I used chatgpt to draft this linkedin post and it 100% smells like AI. rewrite it so nobody can tell — keep my story (10 years of productivity hacks, the point that clarity beats tools) and keep it a linkedin post, roughly the same length:\n\nI spent 10 years chasing productivity hacks. Then I realized the truth.\n\nIt's not about doing more — it's about doing what matters.\n\nHere's the kicker: most people don't have a productivity problem. They have a clarity problem.\n\n✅ They chase every new tool\n✅ They optimize their calendars\n✅ They wake up at 5am\n\nBut here's the thing — none of it works without focus.\n\nWhen I finally embraced this mindset shift, everything changed. My output soared. My stress plummeted. My clients noticed.\n\nThe lesson? Productivity isn't about squeezing more into your day. It's about unlocking what truly matters.\n\nIn today's fast-paced world, focus is your superpower. Harness it.\n\nAgree? ♻️ Repost if this resonated.",
+      "expected_output": "A LinkedIn post with the same story that keeps no AI tells: no emoji bullets, at most one em dash, no negative parallelism, no 'here's the kicker', no pep-talk close, varied rhythm, concrete specifics.",
+      "files": []
+    },
+    {
+      "id": 1,
+      "name": "remote-work-blog",
+      "prompt": "This is the intro section of a blog article for my company site about remote work. It reads super AI-generated. Audit it and rewrite it heavily so it feels written by a human editor. Keep it around 250-300 words:\n\nThe Future of Remote Work: Navigating a Changing Landscape\n\nIn today's fast-paced digital world, remote work has become a pivotal aspect of the modern workplace. Companies across the globe are grappling with the complexities of hybrid arrangements, seeking to strike a balance between flexibility and collaboration. This article delves into the evolving landscape of remote work and explores the key trends shaping its future.\n\nFirst and foremost, it is important to note that remote work is not merely a temporary trend — it represents a fundamental shift in how we approach our professional lives. Studies show that a significant majority of employees prefer flexible arrangements, underscoring the enduring appeal of remote work. Furthermore, organizations that embrace this shift often experience enhanced productivity, improved employee satisfaction, and reduced overhead costs.\n\nHowever, remote work is not without its challenges. Maintaining company culture, fostering meaningful connections, and ensuring seamless communication remain crucial concerns for leaders navigating this new terrain. Moreover, the blurring of boundaries between work and personal life can lead to burnout if not carefully managed.\n\nUltimately, the future of remote work will be shaped by a delicate interplay between technology, culture, and human needs. Organizations that leverage innovative tools while prioritizing employee well-being will be best positioned to thrive. In conclusion, remote work stands as a testament to our capacity for adaptation, and embracing this transformation will be key as we move into the future.",
+      "expected_output": "A rewritten blog intro (~250-300 words) with zero tier-1 vocabulary, no title-case colon headline, no 'In conclusion' recap, committed stances instead of hedging, named/specific details or flagged placeholders, and bursty rhythm.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "newsletter-anecdote",
+      "prompt": "here's a section from my personal newsletter. i love the story but it sounds like a robot wrote a hallmark card. make it sound like a real person wrote it, you can change whatever you need:\n\nLast month, I visited my grandmother's house for the first time since she passed. As I stepped through the door, a wave of nostalgia washed over me. The house was quiet — thick with memories of Sunday dinners and laughter.\n\nI couldn't help but feel a profound sense of loss as I sorted through her belongings. Each item told a story: a worn recipe book, a faded photograph, a hand-knitted scarf. They were testaments to a life lived with unwavering dedication to family.\n\nIn her desk drawer, I stumbled upon a stack of letters she had written but never sent. Little did I know, these letters would change my perspective on everything. As I read her words, my heart pounding, I felt a newfound sense of purpose wash over me.\n\nFrom that day forward, I made a commitment to write one letter every week to someone I love. It's not about grand gestures — it's about showing up, consistently, for the people who matter.\n\nHer legacy serves as a stark reminder that the little things are, in fact, the big things. And in a world of instant messages and fleeting connections, perhaps a handwritten letter is the most powerful way to truly connect.",
+      "expected_output": "The same story told in a human voice: narrative clichés gone (washed over, couldn't help but feel, little did I know, from that day forward, testament, unwavering), specific sensory details or tangents added, no 'It's not X it's Y', no tidy moral-of-the-story ending.",
+      "files": []
+    }
+  ]
+}
