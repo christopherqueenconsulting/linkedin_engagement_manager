@@ -512,7 +512,7 @@ _BARE_COUNT_RE = re.compile(r"^[\d,]+(?:\.\d+)?[KMBkmb]?$")
 _COUNT_MULT = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
 
 
-def _parse_count(raw: str) -> int:
+def _parse_count(raw: "str | None") -> int:
     """'1,234' → 1234, '1.2K' → 1200, '3M' → 3000000. 0 on anything unparseable."""
     s = (raw or "").strip().replace(",", "")
     if not s:

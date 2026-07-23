@@ -3169,8 +3169,9 @@ def set_groups_enabled(user_id: int, group_states: dict) -> bool:
         connection.close()
 
 
-def record_post_stats(user_id: int, post_id: int, reactions: int, comments: int,
-                      reposts: int = 0, impressions: int = None, saves: int = 0) -> bool:
+def record_post_stats(user_id: int, post_id: int, reactions: Optional[int], comments: Optional[int],
+                      reposts: Optional[int] = 0, impressions: Optional[int] = None,
+                      saves: Optional[int] = 0) -> bool:
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
