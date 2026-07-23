@@ -62,20 +62,25 @@ smoke(){  # 0 iff every tier answers
   return $bad
 }
 
-open_pr(){  # mirror the same swap into the repo config and open a PR
-  cd "$REPO" || return 1
-  git fetch -q origin main
-  git checkout -q -B auto/model-upgrade origin/main
-  poetry run python scripts/model_health_check.py --apply "$REPO/.litellm/config.yaml" \
-      --config "$REPO/.litellm/config.yaml" --map "$MAP" >>"$LOG" 2>&1
-  git add .litellm/config.yaml
-  git commit -q -m "fix(litellm): auto-swap retired Ollama model(s) [weekly model-health check]" \
-      -m "Opened by scripts/weekly_model_check.sh after verifying the replacement against the provider and smoke-testing every tier on the live box." >>"$LOG" 2>&1 || { log "no repo diff to PR"; return 0; }
-  git push -q -u origin auto/model-upgrade >>"$LOG" 2>&1
-  gh pr create --base main --head auto/model-upgrade \
-     --title "fix(litellm): auto-swap retired Ollama model(s)" \
-     --body "Automated by the weekly model-health check. The replacement was verified against Ollama Cloud and every tier smoke-tested on the box before this PR." >>"$LOG" 2>&1 \
-     && log "PR opened" || log "PR create skipped (maybe one already open)"
+open_pr(){  # mirror the same swap into the repo via an EPHEMERAL worktree — never touches the
+            # shared dev checkout's branch/working tree (a human may be working there).
+  local wt; wt="$(mktemp -d /tmp/model-upgrade-wt.XXXXXX)"
+  ( cd "$REPO" && git fetch -q origin main \
+      && git worktree add -q -B auto/model-upgrade "$wt" origin/main ) || { log "worktree add failed"; return 1; }
+  (
+    cd "$wt" || exit 1
+    poetry run python "$REPO/scripts/model_health_check.py" --apply "$wt/.litellm/config.yaml" \
+        --config "$wt/.litellm/config.yaml" --map "$wt/.litellm/model_upgrades.yaml" >>"$LOG" 2>&1
+    git add .litellm/config.yaml
+    git commit -q -m "fix(litellm): auto-swap retired Ollama model(s) [weekly model-health check]" \
+        -m "Opened by scripts/weekly_model_check.sh after verifying the replacement against the provider and smoke-testing every tier on the live box." >>"$LOG" 2>&1 || { log "no repo diff to PR"; exit 0; }
+    git push -q -u origin auto/model-upgrade >>"$LOG" 2>&1
+    gh pr create --base main --head auto/model-upgrade \
+       --title "fix(litellm): auto-swap retired Ollama model(s)" \
+       --body "Automated by the weekly model-health check. The replacement was verified against Ollama Cloud and every tier smoke-tested on the box before this PR." >>"$LOG" 2>&1 \
+       && log "PR opened" || log "PR create skipped (maybe one already open)"
+  )
+  ( cd "$REPO" && git worktree remove --force "$wt" 2>/dev/null ) || true
 }
 
 log "=== weekly model-health check start ==="
