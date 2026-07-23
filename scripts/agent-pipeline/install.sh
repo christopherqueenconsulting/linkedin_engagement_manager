@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# One-time installer for the LEM agent pipeline. Run as user `lem` on the VPS.
+# Copies the runner to /home/lem/agent-pipeline, starts it PAUSED, and adds an hourly cron.
+set -euo pipefail
+SRC="$(cd "$(dirname "$0")" && pwd)"
+DEST="/home/lem/agent-pipeline"
+
+mkdir -p "$DEST/logs" "$DEST/work"
+cp "$SRC/tick.sh" "$DEST/tick.sh"
+cp "$SRC/RUNBOOK.md" "$DEST/RUNBOOK.md"
+chmod +x "$DEST/tick.sh"
+touch "$DEST/PAUSED"   # start paused — nothing runs until you remove this file
+echo "Installed to $DEST (PAUSED)."
+
+# Add hourly cron for lem if not already present
+LINE="0 * * * * /home/lem/agent-pipeline/tick.sh >/dev/null 2>&1"
+if crontab -l 2>/dev/null | grep -qF "/home/lem/agent-pipeline/tick.sh"; then
+  echo "cron entry already present."
+else
+  ( crontab -l 2>/dev/null; echo "$LINE" ) | crontab -
+  echo "cron entry added (hourly)."
+fi
+
+cat <<'EOF'
+
+Next steps:
+  1. Dry-run once to validate selection/state logic (no code changes, no Claude call):
+       DRY_RUN=1 /home/lem/agent-pipeline/tick.sh ; tail -n 40 /home/lem/agent-pipeline/logs/tick-*.log
+  2. Go LIVE:      rm /home/lem/agent-pipeline/PAUSED
+  3. Pause again:  touch /home/lem/agent-pipeline/PAUSED
+  4. Watch:        tail -f /home/lem/agent-pipeline/logs/tick-*.log
+  5. Run one tick manually now (instead of waiting for cron):
+       /home/lem/agent-pipeline/tick.sh
+EOF
