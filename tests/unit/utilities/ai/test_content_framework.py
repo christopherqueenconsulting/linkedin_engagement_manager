@@ -336,3 +336,115 @@ class TestFirstPersonProofDetector:
 
     def test_detector_is_deterministic(self):
         assert fw.has_first_person_proof(self._WITH_PROOF) == fw.has_first_person_proof(self._WITH_PROOF)
+
+
+class TestPerformanceWeights:
+    """Issue #389 / B4 — outcome aggregates become selection weights that down-weight
+    under-performing shapes while keeping rotation and exploration intact."""
+
+    def _agg(self, samples, reactions=0, comments=0, reposts=0,
+             impressions=0, impression_samples=0):
+        return {"samples": samples, "reactions": reactions, "comments": comments,
+                "reposts": reposts, "impressions": impressions,
+                "impression_samples": impression_samples}
+
+    def test_below_min_samples_returns_empty(self):
+        # Too little data → no steering (empty ⇒ pure rotation, behavior unchanged).
+        perf = {"question": self._agg(2, reactions=1)}
+        assert fw.performance_weights(perf, fw.HOOK_STYLES.keys(), min_samples=5) == {}
+
+    def test_none_perf_returns_empty(self):
+        assert fw.performance_weights(None, fw.HOOK_STYLES.keys()) == {}
+        assert fw.performance_weights({}, fw.HOOK_STYLES.keys()) == {}
+
+    def test_under_performer_down_weighted_others_neutral(self):
+        perf = {
+            "question": self._agg(4, reactions=2),          # weak: metric 0.5/post
+            "bold_claim": self._agg(4, reactions=40),       # strong: metric 10/post
+        }
+        w = fw.performance_weights(perf, fw.HOOK_STYLES.keys(), min_samples=5, floor=0.25)
+        assert w["question"] < w["bold_claim"]
+        assert w["bold_claim"] == 1.0                        # at/above mean stays full
+        assert w["question"] >= 0.25                         # never below the exploration floor
+        # Unsampled shapes stay neutral so exploration keeps sampling them.
+        assert w["micro_story"] == 1.0
+
+    def test_floor_is_respected(self):
+        perf = {
+            "question": self._agg(5, reactions=0),           # metric 0 → would be 0 without floor
+            "bold_claim": self._agg(5, reactions=100),
+        }
+        w = fw.performance_weights(perf, fw.HOOK_STYLES.keys(), min_samples=5, floor=0.3)
+        assert w["question"] == 0.3
+
+    def test_rate_mode_when_all_impressions_present(self):
+        # Same raw engagement, very different impressions → the low-CTR shape is down-weighted.
+        perf = {
+            "question": self._agg(5, reactions=50, impressions=10000, impression_samples=5),
+            "bold_claim": self._agg(5, reactions=50, impressions=500, impression_samples=5),
+        }
+        w = fw.performance_weights(perf, fw.HOOK_STYLES.keys(), min_samples=5)
+        assert w["question"] < w["bold_claim"]
+
+    def test_partial_impressions_falls_back_to_per_post(self):
+        # Mixed coverage must NOT use rate mode (would mix incomparable scales).
+        perf = {
+            "question": self._agg(5, reactions=10, impressions=1000, impression_samples=3),
+            "bold_claim": self._agg(5, reactions=20),
+        }
+        w = fw.performance_weights(perf, fw.HOOK_STYLES.keys(), min_samples=5)
+        assert w["question"] < w["bold_claim"] == 1.0
+
+    def test_one_shape_fully_covered_does_not_rate_scale_when_another_lacks_it(self):
+        # Regression for the scale-mixing bug: 'question' has full per-shape impression coverage
+        # but 'bold_claim' has none, so rate_mode must be OFF and BOTH scored avg-per-post. If
+        # 'question' were rate-scored (0.01/post) while 'bold_claim' stayed per-post (10/post) the
+        # scales would be incomparable and 'question' would be spuriously crushed to the floor.
+        perf = {
+            "question": self._agg(5, reactions=50, impressions=5000, impression_samples=5),
+            "bold_claim": self._agg(5, reactions=50, impressions=0, impression_samples=0),
+        }
+        w = fw.performance_weights(perf, fw.HOOK_STYLES.keys(), min_samples=5, floor=0.25)
+        # Equal avg-per-post (10 each) ⇒ equal weights, both at the mean (1.0), none floored.
+        assert w["question"] == w["bold_claim"] == 1.0
+
+
+class TestPerformanceAwareSelection:
+    """The end-to-end acceptance: a seeded under-performing hook is selected less often once
+    enough data exists, and selection is unchanged below the min-sample threshold."""
+
+    def _count_hook(self, hook, performance, n=600, min_samples=5):
+        import os
+        import random
+        random.seed(1337)  # deterministic RNG so the statistical assertions never flake
+        os.environ["PERF_MIN_SAMPLES"] = str(min_samples)
+        try:
+            hits = 0
+            for _ in range(n):
+                bp = fw.select_blueprint("post", performance=performance)
+                if bp["hook_style"] == hook:
+                    hits += 1
+            return hits
+        finally:
+            os.environ.pop("PERF_MIN_SAMPLES", None)
+
+    def _perf(self, weak_hook, strong_hook, samples):
+        agg = lambda s, r: {"samples": s, "reactions": r, "comments": 0, "reposts": 0,
+                            "impressions": 0, "impression_samples": 0}
+        return {"format": {}, "hook": {weak_hook: agg(samples, 1), strong_hook: agg(samples, 200)}}
+
+    def test_underperformer_selected_less_after_enough_data(self):
+        weak, strong = "question", "bold_claim"
+        perf = self._perf(weak, strong, samples=10)          # well above min_samples
+        weak_hits = self._count_hook(weak, perf)
+        strong_hits = self._count_hook(strong, perf)
+        assert weak_hits < strong_hits
+
+    def test_behavior_unchanged_below_min_sample_threshold(self):
+        weak, strong = "question", "bold_claim"
+        # Only 2 samples each (4 total) < min_samples(5) → no steering, roughly equal.
+        perf = self._perf(weak, strong, samples=2)
+        weak_hits = self._count_hook(weak, perf)
+        strong_hits = self._count_hook(strong, perf)
+        # Without steering both are equally likely among the same tie group.
+        assert abs(weak_hits - strong_hits) < weak_hits * 0.4
