@@ -637,6 +637,223 @@ def _coerce_authenticity_result(raw_text: str) -> Optional[dict]:
     return {"score": max(0, min(100, score)), "reasons": reasons}
 
 
+# --- Humanization / anti-AI-tell rewrite pass (issue #416 — A5) -----------------------------------
+# The FINAL de-slop rewrite before the A1 authenticity gate (#382) and human review, applied to every
+# AI-written text LEM publishes (posts, newsletters, DMs, comments, seed comments). It reimplements the
+# READER-mode rules of the owner-supplied `anti-ai` skill (reference set committed under
+# `anti_ai_skill/`): kill AI cliché lexicon + constructions, restore sentence-length variance, add
+# contractions, cap em-dashes, end on a concrete point. DETECTOR-mode fracture is deliberately OUT of
+# this automated path — it fabricates first-person specifics a human must replace before publishing.
+# HARD CONSTRAINT: this pass NEVER invents facts — it draws real specifics ONLY from the draft or the
+# author's own profile synthesis, and fails OPEN (returns the input unchanged) on disable/empty/error,
+# so it can never block or corrupt publishing.
+
+# Tier-1 AI-tell lexicon from anti_ai_skill/references/wordbank.md — words that read as machine-written
+# and must go to zero. Used both to steer the rewrite prompt and as a deterministic, testable audit.
+AI_TELL_WORDS = frozenset({
+    # verbs
+    "delve", "leverage", "underscore", "harness", "foster", "utilize", "facilitate", "streamline",
+    "bolster", "illuminate", "showcase", "embark", "elevate", "empower", "unleash", "unlock",
+    "uncover", "optimize", "garner", "resonate", "revolutionize", "synthesize", "elucidate",
+    "transcend", "reimagine", "intertwine", "entwine", "espouse", "exemplify", "underpin",
+    # nouns
+    "tapestry", "landscape", "realm", "ecosystem", "paradigm", "synergy", "testament", "beacon",
+    "journey", "interplay", "intricacies", "symphony", "kaleidoscope", "tempest", "whimsy", "quest",
+    "roadmap", "endeavor", "myriad", "plethora", "advancements", "trajectory",
+    # adjectives / adverbs
+    "pivotal", "crucial", "seamless", "seamlessly", "robust", "vibrant", "intricate", "meticulous",
+    "meticulously", "nuanced", "cutting-edge", "transformative", "game-changing", "groundbreaking",
+    "unparalleled", "invaluable", "multifaceted", "commendable", "indelible", "poignant", "profound",
+    "profoundly", "relentless", "relentlessly", "tireless", "tirelessly", "unwavering", "unyielding",
+    "timeless", "ever-evolving", "fast-paced",
+})
+
+_WORD_TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z-]*")
+
+
+def find_ai_tell_words(text: Optional[str]) -> list[str]:
+    """Deterministic audit: the tier-1 AI-tell words (from AI_TELL_WORDS) present in `text`, in order
+    of first appearance, de-duplicated and case-insensitive. NO LLM call."""
+    out, seen = [], set()
+    for tok in _WORD_TOKEN_RE.findall(text or ""):
+        low = tok.lower()
+        if low in AI_TELL_WORDS and low not in seen:
+            seen.add(low)
+            out.append(low)
+    return out
+
+
+# Em-dash "—" and the double-hyphen "--" variant — both count as the em-dash tell (the compulsive
+# mid-sentence pivot). Surrounding whitespace is consumed so a replacement reads cleanly.
+_EM_DASH_TOKEN_RE = re.compile(r"\s*(?:—|--)\s*")
+
+
+def count_em_dashes(text: str) -> int:
+    """Deterministic count of em-dash tells (— and --) in `text`. NO LLM call."""
+    return len(_EM_DASH_TOKEN_RE.findall(text or ""))
+
+
+def cap_em_dashes(text: str, max_dashes: int = 1) -> str:
+    """Hold em-dash tells (— and --) to at most `max_dashes`, replacing the excess with a comma (the
+    plain human default from the tell checklist). Keeps the FIRST `max_dashes` as-is. Deterministic."""
+    if not text:
+        return text
+    state = {"n": 0}
+
+    def _repl(m):
+        state["n"] += 1
+        return m.group(0) if state["n"] <= max_dashes else ", "
+
+    return _EM_DASH_TOKEN_RE.sub(_repl, text)
+
+
+# Conservative, unambiguous "X is/are/not" -> contraction map (the wordbank's top human marker).
+# Replacement stored lowercase; _apply_contractions restores a leading capital from the match.
+_CONTRACTIONS = (
+    (r"it is", "it's"), (r"that is", "that's"), (r"there is", "there's"), (r"here is", "here's"),
+    (r"what is", "what's"), (r"who is", "who's"), (r"he is", "he's"), (r"she is", "she's"),
+    (r"we are", "we're"), (r"you are", "you're"), (r"they are", "they're"),
+    (r"we will", "we'll"), (r"you will", "you'll"), (r"I am", "i'm"), (r"I will", "i'll"),
+    (r"I have", "i've"), (r"we have", "we've"), (r"you have", "you've"),
+    (r"do not", "don't"), (r"does not", "doesn't"), (r"did not", "didn't"), (r"is not", "isn't"),
+    (r"are not", "aren't"), (r"was not", "wasn't"), (r"were not", "weren't"), (r"will not", "won't"),
+    (r"cannot", "can't"), (r"can not", "can't"), (r"would not", "wouldn't"),
+    (r"could not", "couldn't"), (r"should not", "shouldn't"), (r"have not", "haven't"),
+    (r"has not", "hasn't"),
+)
+_CONTRACTION_RES = tuple((re.compile(rf"\b{p}\b", re.IGNORECASE), r) for p, r in _CONTRACTIONS)
+
+
+def apply_contractions(text: str) -> str:
+    """Deterministically fold the common expanded forms ("it is" -> "it's", "do not" -> "don't") into
+    contractions, preserving a leading capital. Idempotent — already-contracted text is untouched."""
+    if not text:
+        return text
+
+    def _mk(repl):
+        def _f(m):
+            return repl[0].upper() + repl[1:] if m.group(0)[:1].isupper() else repl
+        return _f
+
+    for rx, repl in _CONTRACTION_RES:
+        text = rx.sub(_mk(repl), text)
+    return text
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = (os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
+
+
+def humanize_enabled(content_type: Optional[str] = None) -> bool:
+    """Master + per-type toggle for the humanization pass. HUMANIZE_ENABLED (default ON) gates
+    everything; an explicit per-type flag HUMANIZE_<TYPE>_ENABLED (e.g. HUMANIZE_COMMENT_ENABLED) can
+    further disable one content type without touching the others. Read live so ops can flip it without
+    a restart. HUMANIZE_ENABLED=off restores the exact prior behavior everywhere."""
+    if not _env_flag("HUMANIZE_ENABLED", True):
+        return False
+    if content_type:
+        raw = (os.environ.get(f"HUMANIZE_{content_type.strip().upper()}_ENABLED") or "").strip().lower()
+        if raw:
+            return raw in ("1", "true", "yes", "on")
+    return True
+
+
+_HUMANIZE_SYSTEM = (
+    "You rewrite AI-drafted text so no human reader can tell a machine wrote it, WITHOUT changing its "
+    "meaning, its facts, its format, or the author's intent. This is a final polish before the text is "
+    "published in the author's own name.\n\n"
+    "HARD RULES (these override everything else):\n"
+    "- NEVER invent or add facts: no names, numbers, dates, prices, places, quotes, statistics, or "
+    "events that are not already in the draft (or in the author-background section below, when one is "
+    "given). If a sentence wants a concrete specific and none is available, make it plainer instead of "
+    "inventing one. Never add placeholder text like [example].\n"
+    "- Keep the same format (a post stays a post, a comment stays a comment) and roughly the same "
+    "length. Keep every claim the draft actually makes — you may cut filler, never facts.\n\n"
+    "REWRITE FOR A REAL HUMAN VOICE:\n"
+    "- Kill AI cliche words; use the plain word you'd say out loud: use (not leverage/utilize), deal "
+    "with (not navigate), big or key (not pivotal/crucial), show (not showcase/underscore), a lot of "
+    "(not myriad/plethora). Drop delve, tapestry, realm, ecosystem, paradigm, seamless, robust, "
+    "testament, journey, transformative, foster, unlock, elevate, landscape, and their kin.\n"
+    "- Cut AI constructions: no 'It's not X, it's Y' framing (just say Y), no 'not only... but also', "
+    "no rule-of-three lists built for rhythm, no rhetorical 'The result? ...', no 'serves as / stands "
+    "as' (use 'is'), no hedge stacks ('it's important to note'), no 'In conclusion / In summary', no "
+    "'Here's the kicker / the thing'.\n"
+    "- Restore burstiness: mix at least one very short sentence (<=6 words) with a long one (25+ "
+    "words); let paragraphs be uneven; you may start a sentence with And, But, or Because.\n"
+    "- Turn expanded forms into contractions (it's, don't, we're, you're).\n"
+    "- At most ONE em-dash in the whole piece; prefer a comma or a period.\n"
+    "- Strip emoji bullets, bold-first bullets, and Title-Case headings; end on a concrete point, "
+    "never a pep-talk or a restated summary.\n"
+    "- Keep a real voice: a mild opinion, a dry aside, or an admission is good. Do NOT scrub the text "
+    "into something tell-free but flat and personality-free.\n\n"
+    "Output ONLY the rewritten text — no preface, no notes, no explanation, no quotes around it."
+)
+
+_HUMANIZE_TYPE_NOTE = {
+    "comment": "\n\nThis is a short LinkedIn comment: keep it to a few sentences and stay conversational.",
+    "dm": "\n\nThis is a short direct message: keep it brief and warm, and do not add a subject line.",
+    "newsletter": ("\n\nThis is a newsletter body: keep its sections and depth — humanize the prose, "
+                   "do not shorten the substance."),
+    "post": "\n\nThis is a LinkedIn post: keep the hook up front and the same overall shape.",
+}
+
+
+def humanize_text(content: Optional[str], content_type: str = "post",
+                  profile_synthesis: Optional[str] = None,
+                  prefs: Optional[dict] = None, max_chars: Optional[int] = None) -> Optional[str]:
+    """READER-mode humanization pass (issue #416): the final anti-AI-tell rewrite before the A1
+    authenticity gate and human review. Returns a de-slopped version of `content` in the author's
+    voice — AI cliches/constructions removed, sentence-length variance restored, contractions in,
+    em-dashes capped at one — WITHOUT fabricating any fact (real specifics come ONLY from the draft or
+    `profile_synthesis`). FAILS OPEN: returns `content` byte-identical when the pass is disabled, the
+    input is empty, the model errors, the rewrite looks truncated, or (when `max_chars` is set) the
+    rewrite would exceed the caller's hard length budget — so it can never block or corrupt publishing."""
+    if not content or not str(content).strip():
+        return content
+    if not humanize_enabled(content_type):
+        return content
+    original = content
+    try:
+        extra = _HUMANIZE_TYPE_NOTE.get(content_type, _HUMANIZE_TYPE_NOTE["post"])
+        synth = (profile_synthesis or "").strip()
+        if synth:
+            extra += ("\n\nAuthor background — the ONLY source of real specifics you may draw on (never "
+                      "copy it verbatim, never invent beyond it):\n" + synth[:800])
+        hits = find_ai_tell_words(str(content))
+        if hits:
+            extra += "\n\nRemove these AI-tell words that appear in the draft: " + ", ".join(hits[:20]) + "."
+        if max_chars:
+            extra += f"\n\nHard limit: the rewrite MUST be at most {int(max_chars)} characters."
+        # Lazy import avoids a circular import (ai_helper imports this module).
+        from cqc_lem.utilities.ai.ai_helper import _call_llm
+        resp = _call_llm(
+            model="lem-medium",
+            messages=[
+                {"role": "system", "content": _HUMANIZE_SYSTEM + extra},
+                {"role": "user", "content": str(content)},
+            ],
+            temperature=0.4,
+        )
+        rewritten = (resp.choices[0].message.content or "").strip()
+    except Exception:
+        return original
+    if not rewritten:
+        return original
+    # A legitimate de-slop trims some length; a collapse to a fragment of a long draft means the model
+    # refused or got cut off — keep the original rather than ship a truncated post.
+    if len(rewritten) < max(24, int(len(original.strip()) * 0.25)):
+        return original
+    rewritten = apply_contractions(cap_em_dashes(rewritten, 1)).strip()
+    # Never ship a rewrite that blew past the caller's hard budget (e.g. a DM over its char cap) — the
+    # pre-humanize text was already within budget.
+    if max_chars and len(rewritten) > int(max_chars):
+        return original
+    return rewritten
+
+
 def score_authenticity(content: str, profile=None, profile_synthesis: Optional[str] = None,
                        prefs: dict = None) -> dict:
     """LLM-judge the authenticity / generic-AI risk of a finished post draft.

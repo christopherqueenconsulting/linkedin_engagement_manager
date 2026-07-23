@@ -23,6 +23,7 @@ from cqc_lem.utilities.ai.content_alignment import (
     voice_reference as _voice_reference,
     select_focus_topic as _select_focus_topic,
     lead_magnet_preserve_note as _lead_magnet_preserve_note,
+    humanize_text as _humanize_text,
 )
 from cqc_lem.utilities.ai.content_research import research_topic
 from cqc_lem.utilities.ai.tools import search_recent_news, search_with_perplexity
@@ -329,7 +330,11 @@ def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=No
     )
 
     content = response.choices[0].message.content
-    return content.strip() if content is not None else None
+    if content is None:
+        return None
+    # Humanization pass (issue #416 — A5): de-slop the comment before it's posted.
+    return _humanize_text(content.strip(), content_type="comment",
+                          profile_synthesis=profile_synthesis, prefs=prefs)
 
 
 # LinkedIn's reaction set, safest-first (also the random-fallback preference order). 'Funny' is
@@ -622,7 +627,10 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
         data = _json.loads(content)
         if data.get("title") and data.get("body"):
             title = normalize_public_text(str(data["title"]).strip())[:255]
-            body = _clean_newsletter_body(str(data["body"]).strip())
+            # Humanization pass (issue #416 — A5): de-slop the edition body before it's persisted/reviewed.
+            body = _clean_newsletter_body(_humanize_text(
+                str(data["body"]).strip(), content_type="newsletter",
+                profile_synthesis=profile_synthesis, prefs=prefs))
             subtitle = normalize_public_text(str(data.get("subtitle") or "").strip())[:150]
             if not subtitle:
                 subtitle = (subject or topic or title).strip()[:150]
@@ -633,7 +641,9 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
         pass
     parts = content.strip().split("\n", 1)   # fallback: first line = title, remainder = body
     title = parts[0].strip()[:255]
-    body = _clean_newsletter_body(parts[1].strip() if len(parts) > 1 else content.strip())
+    body = _clean_newsletter_body(_humanize_text(
+        parts[1].strip() if len(parts) > 1 else content.strip(),
+        content_type="newsletter", profile_synthesis=profile_synthesis, prefs=prefs))
     return {"title": title, "subtitle": (subject or topic or title).strip()[:150],
             "subject": _default_subject or title[:500], "body": body,
             "opening_line": _opening_line(body), **shape}
@@ -684,7 +694,11 @@ def generate_seed_comment(post_content, profile: "LinkedInProfile", prefs: dict 
     response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt],
                          temperature=round(random.uniform(0.5, 0.7), 2))
     content = response.choices[0].message.content
-    return content.strip() if content is not None else None
+    if content is None:
+        return None
+    # Humanization pass (issue #416 — A5): de-slop the seed comment before it's posted.
+    return _humanize_text(content.strip(), content_type="comment",
+                          profile_synthesis=profile_synthesis, prefs=prefs)
 
 
 def generate_thread_reply(post_content: str, comment_text: str, profile: "LinkedInProfile",
@@ -706,7 +720,11 @@ def generate_thread_reply(post_content: str, comment_text: str, profile: "Linked
     response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt],
                          temperature=round(random.uniform(0.5, 0.7), 2))
     content = response.choices[0].message.content
-    return content.strip() if content is not None else None
+    if content is None:
+        return None
+    # Humanization pass (issue #416 — A5): de-slop the reply before it's posted.
+    return _humanize_text(content.strip(), content_type="comment",
+                          profile_synthesis=profile_synthesis, prefs=prefs)
 
 
 def optimize_post_hook(post_content: str, prefs: dict = None,
