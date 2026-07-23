@@ -33,6 +33,16 @@ def setup_test_environment():
     os.environ.setdefault("PEXELS_API_KEY", "test-pexels-api-key-12345")
 
 
+@pytest.fixture(autouse=True)
+def _humanize_disabled_by_default(monkeypatch):
+    """Issue #416: the humanization pass (humanize_text) is default-ON in production, but it makes a
+    second LLM call after every generator, which perturbs the many unit tests that introspect a single
+    _call_llm. Default it OFF for the suite so those tests keep asserting on the generation call
+    directly (this is exactly the "HUMANIZE_ENABLED=off restores prior behavior" guarantee). The
+    humanization pass's own tests opt back in with HUMANIZE_ENABLED=on."""
+    monkeypatch.setenv("HUMANIZE_ENABLED", "off")
+
+
 @pytest.fixture
 def mock_openai_client():
     """Mock OpenAI client for testing AI-related functions."""

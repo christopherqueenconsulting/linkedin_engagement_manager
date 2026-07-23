@@ -19,6 +19,7 @@ from cqc_lem.utilities.ai.ai_helper import generate_ai_response, get_ai_message_
     ai_check_message_history, post_is_relevant, generate_newsletter_edition, generate_group_post, \
     generate_thread_reply, generate_seed_comment, choose_post_reaction, get_or_create_profile_synthesis, \
     synthesize_profile
+from cqc_lem.utilities.ai.content_alignment import humanize_text
 from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, insert_new_log, LogActionType, \
     get_engagement_preferences, count_comments_today, get_recent_engagers, upsert_engager, \
@@ -1905,7 +1906,9 @@ def build_dm_from_template(user_id: int, event_type: str, first_name: str,
                                       headline=headline, blog_url=blog_url)
     try:
         refined = get_ai_message_refinement(rendered, character_limit=300)
-        return (refined or rendered).strip()
+        # Humanization pass (issue #416 — A5): de-slop the DM before it's sent. Fails open and keeps
+        # the pre-humanize text if a rewrite would exceed the 300-char DM budget.
+        return humanize_text((refined or rendered).strip(), content_type="dm", max_chars=300)
     except Exception as e:
         log_warning("DM refinement failed; sending rendered template", exc=e, action_type="dm", user_id=user_id)
         return rendered.strip()

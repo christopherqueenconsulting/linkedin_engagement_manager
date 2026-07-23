@@ -32,7 +32,8 @@ from cqc_lem.utilities.ai.content_framework import select_blueprint, history_avo
 from cqc_lem.utilities.ai.content_alignment import (
     should_include_lead_magnet_cta, lead_magnet_cta_directive, ensure_lead_magnet_cta,
     personal_proof_directive, topic_authority_score, topic_authority_min, profile_topic_dna,
-    content_matches_focus, score_authenticity, authenticity_gate_enabled, authenticity_score_min)
+    content_matches_focus, score_authenticity, authenticity_gate_enabled, authenticity_score_min,
+    humanize_text)
 from cqc_lem.utilities.env_constants import API_URL_FINAL, DEFAULT_VIDEO_RATIO, \
     DEFAULT_IMAGE_RATIO, AI_DISCLOSURE_ENABLED, AI_DISCLOSURE_TEXT, \
     STANDARD_VIDEO_MODEL, PREMIUM_VIDEO_MODEL, PREMIUM_TOP_VIDEO_MODEL, \
@@ -925,6 +926,15 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             final_content,
             exempt_keyword=(lead_magnet or {}).get("keyword") if include_cta else None)
         final_content = final_content.strip()
+
+    # Humanization pass (issue #416 — A5): the final anti-AI-tell rewrite, BEFORE the authenticity gate
+    # so A1 scores the humanized text (generate -> A2 proof -> humanize -> A1 -> review). READER mode
+    # only, never fabricates, fails open. Outermost call only (mirrors the A1/review gates). The
+    # lead-magnet CTA mechanic is re-verified/repaired by ensure_lead_magnet_cta below, so a rewrite
+    # that reworded it is recovered deterministically.
+    if final_content and refine_final_post and similarity_check:
+        final_content = humanize_text(final_content, content_type="post",
+                                      profile_synthesis=profile_synthesis, prefs=prefs)
 
     # Authenticity gate (issue #382 — 360Brew defense): score the finished draft for generic-AI risk
     # + profile-topic consistency and persist the score BEFORE the similarity gate. The gate itself is
