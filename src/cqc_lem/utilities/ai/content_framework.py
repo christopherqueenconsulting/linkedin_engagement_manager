@@ -512,19 +512,20 @@ def _perf_exploration_floor() -> float:
     return min(1.0, max(0.0, val))
 
 
-def _shape_engagement(agg: dict) -> float:
+def _shape_engagement(agg: dict, rate_mode: bool = False) -> float:
     """Per-post engagement metric for one shape's aggregated stats. Weights comments (2×) and
     reposts (3×) above reactions since they signal stronger reach on the 2026 feed. Impression-
-    normalized (engagement rate) ONLY when every sample for this shape carries impressions
-    (B2/B3 populated); otherwise average engagement per post. The caller keeps all shapes of a
-    kind on the same scale (see `performance_weights`)."""
+    normalized (engagement rate) ONLY when the caller passes `rate_mode` — i.e. EVERY sampled
+    shape of this kind has full impression coverage (see `_all_impression_covered`); otherwise
+    average engagement per post. The rate/per-post decision is made once by the caller so all
+    shapes of a kind stay on the same scale (see `performance_weights`)."""
     samples = agg.get("samples", 0) or 0
     if samples <= 0:
         return 0.0
     engagement = (agg.get("reactions", 0) or 0) + 2 * (agg.get("comments", 0) or 0) \
         + 3 * (agg.get("reposts", 0) or 0)
     impressions = agg.get("impressions", 0) or 0
-    if agg.get("impression_samples", 0) == samples and impressions > 0:
+    if rate_mode and impressions > 0:
         return engagement / impressions
     return engagement / samples
 
@@ -560,9 +561,9 @@ def performance_weights(perf: Optional[dict], keys, min_samples: int = None,
     for key, agg in perf.items():
         if (agg.get("samples", 0) or 0) <= 0:
             continue
-        m = _shape_engagement(agg)
-        # In rate_mode every metric is already a rate; otherwise all are avg-per-post. Same scale.
-        metrics[key] = m
+        # rate_mode gates the scale for ALL shapes at once: engagement-rate when every sampled
+        # shape has full impression coverage, else avg-per-post everywhere. Same scale either way.
+        metrics[key] = _shape_engagement(agg, rate_mode)
     if not metrics:
         return {}
     mean = sum(metrics.values()) / len(metrics)

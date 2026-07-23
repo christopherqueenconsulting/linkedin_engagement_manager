@@ -3207,7 +3207,7 @@ def get_shape_performance(user_id: int, days: int = 90) -> dict:
                 "SUM(CASE WHEN s.impressions IS NOT NULL THEN 1 ELSE 0 END) "
                 "FROM posts p JOIN post_stats s "
                 "ON s.post_id=p.id AND s.user_id=p.user_id "
-                f"WHERE p.user_id=%s AND p.{column} IS NOT NULL "
+                f"WHERE p.user_id=%s AND p.status='posted' AND p.{column} IS NOT NULL "
                 "AND p.scheduled_time >= (NOW() - INTERVAL %s DAY) "
                 "AND s.id IN (SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id) "
                 f"GROUP BY p.{column}",

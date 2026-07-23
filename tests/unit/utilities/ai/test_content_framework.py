@@ -395,6 +395,19 @@ class TestPerformanceWeights:
         w = fw.performance_weights(perf, fw.HOOK_STYLES.keys(), min_samples=5)
         assert w["question"] < w["bold_claim"] == 1.0
 
+    def test_one_shape_fully_covered_does_not_rate_scale_when_another_lacks_it(self):
+        # Regression for the scale-mixing bug: 'question' has full per-shape impression coverage
+        # but 'bold_claim' has none, so rate_mode must be OFF and BOTH scored avg-per-post. If
+        # 'question' were rate-scored (0.01/post) while 'bold_claim' stayed per-post (10/post) the
+        # scales would be incomparable and 'question' would be spuriously crushed to the floor.
+        perf = {
+            "question": self._agg(5, reactions=50, impressions=5000, impression_samples=5),
+            "bold_claim": self._agg(5, reactions=50, impressions=0, impression_samples=0),
+        }
+        w = fw.performance_weights(perf, fw.HOOK_STYLES.keys(), min_samples=5, floor=0.25)
+        # Equal avg-per-post (10 each) ⇒ equal weights, both at the mean (1.0), none floored.
+        assert w["question"] == w["bold_claim"] == 1.0
+
 
 class TestPerformanceAwareSelection:
     """The end-to-end acceptance: a seeded under-performing hook is selected less often once
@@ -402,6 +415,8 @@ class TestPerformanceAwareSelection:
 
     def _count_hook(self, hook, performance, n=600, min_samples=5):
         import os
+        import random
+        random.seed(1337)  # deterministic RNG so the statistical assertions never flake
         os.environ["PERF_MIN_SAMPLES"] = str(min_samples)
         try:
             hits = 0
