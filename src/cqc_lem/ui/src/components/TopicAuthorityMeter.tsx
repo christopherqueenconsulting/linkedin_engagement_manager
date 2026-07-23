@@ -69,6 +69,10 @@ export default function TopicAuthorityMeter({
   const label = offNiche ? 'Off-niche' : strong ? 'On-niche' : 'Loosely on-niche'
   const labelColor = offNiche ? 'text-red-600' : strong ? 'text-green-600' : 'text-amber-600'
 
+  // Only claim the profile is part of the score when profile inputs are actually wired in.
+  const scoredAgainst =
+    headline?.trim() || about?.trim() ? 'focus topics and profile' : 'focus topics'
+
   return (
     <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
       <div className="flex items-center justify-between mb-1">
@@ -86,7 +90,7 @@ export default function TopicAuthorityMeter({
       <p className="mt-1.5 text-[11px] leading-snug text-gray-500">
         {offNiche
           ? 'This draft drifts off your focus topics. 2026 LinkedIn suppresses off-niche posts — steer it back toward your Topic DNA.'
-          : 'How tightly this draft sits inside your focus topics and profile — LinkedIn now rewards profile↔content consistency.'}
+          : `How tightly this draft sits inside your ${scoredAgainst} — LinkedIn now rewards profile↔content consistency.`}
       </p>
     </div>
   )

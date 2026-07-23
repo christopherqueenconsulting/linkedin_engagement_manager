@@ -91,6 +91,16 @@ class TestThresholdConfig:
         monkeypatch.setenv("TOPIC_AUTHORITY_MIN", "not-a-number")
         assert topic_authority_min() == pytest.approx(0.15)
 
+    @pytest.mark.parametrize("bad", ["nan", "inf", "-inf", "-0.5", "1.5", "2.0"])
+    def test_non_finite_or_out_of_range_falls_back_to_default(self, monkeypatch, bad):
+        monkeypatch.setenv("TOPIC_AUTHORITY_MIN", bad)
+        assert topic_authority_min() == pytest.approx(0.15)
+
+    @pytest.mark.parametrize("good", ["0", "0.0", "1", "1.0", "0.5"])
+    def test_in_range_values_are_honored(self, monkeypatch, good):
+        monkeypatch.setenv("TOPIC_AUTHORITY_MIN", good)
+        assert topic_authority_min() == pytest.approx(float(good))
+
     def test_explicit_threshold_arg_overrides_env(self, monkeypatch):
         monkeypatch.setenv("TOPIC_AUTHORITY_MIN", "0.99")
         assert is_on_niche(_ON_NICHE, _FOCUS, threshold=0.1)

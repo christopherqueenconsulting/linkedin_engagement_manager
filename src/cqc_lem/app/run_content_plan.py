@@ -614,9 +614,10 @@ def _check_post_alignment(content: str, prefs: dict, user_id: int = None, post_i
         from cqc_lem.utilities.ai.ai_helper import post_is_relevant
         aligned = post_is_relevant(content, topics)
     if not aligned:
-        log_warning(f"Generated post is off-niche vs the user's Topic DNA — does not relate to any "
-                    f"declared focus topic (topic authority {score:.2f} < min {threshold:.2f})",
-                    user_id=user_id, post_id=post_id, task_name="create_text_post")
+        log_warning("Generated post is off-niche vs the user's Topic DNA — does not relate to any "
+                    "declared focus topic",
+                    user_id=user_id, post_id=post_id, task_name="create_text_post",
+                    topic_authority_score=round(score, 4), topic_authority_min=round(threshold, 4))
     return aligned
 
 

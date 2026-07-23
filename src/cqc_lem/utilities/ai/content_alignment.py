@@ -9,9 +9,12 @@ out of alignment with each other over time."""
 import math
 import os
 import re
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
+
+if TYPE_CHECKING:
+    from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 
 # Tight, engagement-optimized targets. Short is the default: LinkedIn rewards comments that
 # earn a REPLY (threads), and a punchy, specific comment out-performs a long essay. Even
@@ -126,7 +129,7 @@ def _focus_topics(prefs: dict = None) -> list:
 
 
 def select_focus_topic(prefs: dict = None, sequence_index: Optional[int] = None,
-                       profile=None) -> Optional[str]:
+                       profile: "Optional[LinkedInProfile]" = None) -> Optional[str]:
     """The SUBJECT anchor for one trend-based post: rotate deterministically across the user's
     declared focus topics (keyed off a stable per-post integer — the post id — the same way the
     lead-magnet CTA rotation works) so anchoring never collapses every post onto one topic. Without
@@ -187,10 +190,17 @@ def topic_authority_min() -> float:
     """The off-niche threshold, read at call time so ops/tests can tune TOPIC_AUTHORITY_MIN without a
     restart (the POST_SIMILARITY_MAX / research-toggle live-env pattern)."""
     raw = (os.environ.get("TOPIC_AUTHORITY_MIN") or "").strip()
+    if not raw:
+        return TOPIC_AUTHORITY_MIN_DEFAULT
     try:
-        return float(raw) if raw else TOPIC_AUTHORITY_MIN_DEFAULT
+        value = float(raw)
     except ValueError:
         return TOPIC_AUTHORITY_MIN_DEFAULT
+    # Reject nan/inf and out-of-range values — score is always in [0, 1], so a non-finite or
+    # out-of-band threshold would make every comparison misbehave (e.g. score >= nan is always False).
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        return TOPIC_AUTHORITY_MIN_DEFAULT
+    return value
 
 
 def topic_dna_tokens(focus_topics: list = None, headline: str = None, about: str = None) -> set:
@@ -251,7 +261,8 @@ def _typed_terms(values, limit: Optional[int] = None) -> list:
     return out
 
 
-def profile_topic_dna(profile=None, profile_synthesis: Optional[str] = None) -> tuple:
+def profile_topic_dna(profile: "Optional[LinkedInProfile]" = None,
+                      profile_synthesis: Optional[str] = None) -> tuple:
     """Assemble the (headline, about) Topic-DNA strings from a LinkedInProfile for the scorer:
     HEADLINE ≈ job title + industry (the LinkedIn 'headline' analogue LEM stores), ABOUT ≈ the durable
     voice/credibility synthesis brief plus the profile's listed skills (the 'about'/expertise
@@ -266,7 +277,7 @@ def profile_topic_dna(profile=None, profile_synthesis: Optional[str] = None) -> 
     return " ".join(headline_parts), " ".join(about_parts)
 
 
-def profile_niche_anchors(profile=None) -> list:
+def profile_niche_anchors(profile: "Optional[LinkedInProfile]" = None) -> list:
     """Fallback Topic-DNA subject anchors derived from a profile when the user declared NO focus
     topics — this is the on-niche subject STEERING (issue #384). Prefers explicit niche signals (the
     listed skills) over the raw job title so the anchor is a TOPIC, not a role, and deliberately omits
