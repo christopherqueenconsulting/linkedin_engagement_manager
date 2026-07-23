@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.50.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.50.0...v0.50.1) (2026-07-23)
+
+
+### Bug Fixes
+
+* **ui:** pin typescript to 6.0.x (unbreak prod Docker build) ([a9faf56](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a9faf5626a44cec57ecd2ec2c60e06f8a64a8264))
+* **ui:** pin typescript to 6.0.x to unbreak the Docker image build ([5bd5958](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5bd5958034939af9a3ae0705efa7cfe3b222ee80))
+
 ## [0.50.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.49.0...v0.50.0) (2026-07-23)
 
 
