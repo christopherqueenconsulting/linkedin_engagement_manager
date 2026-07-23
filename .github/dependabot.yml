@@ -83,3 +83,7 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    ignore:
+      # typescript major (7.x) breaks typescript-eslint's peer (<6.1.0) and the Docker npm ci.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
