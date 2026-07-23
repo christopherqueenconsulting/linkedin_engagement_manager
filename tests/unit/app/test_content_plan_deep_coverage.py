@@ -144,6 +144,7 @@ class _TextPostHarness:
             # These tests exercise routing/refinement/shape persistence, not the A2 proof gate —
             # keep the stub post bodies from triggering a proof regeneration.
             "proof_env": patch.dict(os.environ, {"POST_PROOF_REGEN_ENABLED": "off"}),
+            "authenticity": patch(f"{_RCP}._score_and_persist_authenticity"),
         }
         self.mocks = {k: p.start() for k, p in self.patchers.items()}
         return self.mocks

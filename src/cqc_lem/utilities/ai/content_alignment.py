@@ -6,6 +6,7 @@ a HARD no-self-promo guardrail for comments/posts, a LIGHT soft-promo allowance 
 own newsletter. Keeping all of this in one module is what stops the content types from drifting
 out of alignment with each other over time."""
 
+import json
 import math
 import os
 import re
@@ -562,3 +563,114 @@ def voice_reference(profile, profile_synthesis: Optional[str] = None) -> str:
     if profile_synthesis and profile_synthesis.strip():
         return profile_synthesis.strip()
     return profile.model_dump_json()
+
+
+# --- Authenticity gate (issue #382 — 360Brew / LinkedIn 2026 Authenticity Update defense) ---------
+# LinkedIn's 2026 ranking (360Brew + the Authenticity Update) demotes generic AI content — the single
+# biggest threat to an AI-content-heavy product. Before the deterministic similarity gate, an LLM judge
+# (reusing lem-medium) scores a FINISHED draft on how generically-AI it reads AND how consistent it is
+# with the author's own profile/topics: 0 = obviously generic AI slop, 100 = authentic, specific, and
+# on-voice. Drafts below AUTHENTICITY_SCORE_MIN are held for human review instead of auto-approved —
+# the same demote-not-block posture as the similarity gate. Fails OPEN (a scorer hiccup never blocks
+# publishing). Rubric anchored to the 360Brew failure modes: no specifics, hollow buzzwords, listicle
+# scaffolding, and drift away from the author's stated expertise.
+AUTHENTICITY_SCORE_MIN_DEFAULT = 60
+
+
+def authenticity_score_min() -> int:
+    """Score below which a draft is demoted APPROVED -> PENDING. Read live (like post_similarity_max)
+    so ops/tests can tune AUTHENTICITY_SCORE_MIN without a restart. Clamped to 0-100."""
+    raw = (os.environ.get("AUTHENTICITY_SCORE_MIN") or "").strip()
+    try:
+        value = int(raw) if raw else AUTHENTICITY_SCORE_MIN_DEFAULT
+    except ValueError:
+        value = AUTHENTICITY_SCORE_MIN_DEFAULT
+    return max(0, min(100, value))
+
+
+def authenticity_gate_enabled() -> bool:
+    """The authenticity gate defaults ON — it is the core 360Brew defense. Set AUTHENTICITY_GATE_ENABLED
+    to a falsey value (0/false/no/off) to disable it per-deploy."""
+    raw = (os.environ.get("AUTHENTICITY_GATE_ENABLED") or "").strip().lower()
+    if not raw:
+        return True
+    return raw in ("1", "true", "yes", "on")
+
+
+_AUTHENTICITY_JUDGE_SYSTEM = (
+    "You are a strict LinkedIn content authenticity judge modeling LinkedIn's 2026 ranking (360Brew + "
+    "the Authenticity Update), which DEMOTES generic AI-written content. Score how AUTHENTIC and "
+    "human/specific a post reads, and how CONSISTENT it is with the author's stated expertise and voice.\n"
+    "Penalize (lower score): generic buzzword filler with no concrete specifics; interchangeable "
+    "'thought-leader' phrasing that could be posted by anyone; hollow listicle scaffolding; obvious "
+    "AI tells; and topic drift away from the author's actual expertise.\n"
+    "Reward (higher score): a specific point of view, concrete detail/example/number, a genuine "
+    "personal or first-hand angle, and clear consistency with the author's profile topics.\n"
+    "0 = obviously generic AI slop; 100 = authentic, specific, and unmistakably on-voice.\n"
+    "Respond ONLY with a compact JSON object: {\"score\": <int 0-100>, \"reasons\": [\"...\", \"...\"]}."
+)
+
+
+def _coerce_authenticity_result(raw_text: str) -> Optional[dict]:
+    """Parse the judge's JSON reply into {score:int 0-100, reasons:list[str]} or None if unusable."""
+    if not raw_text:
+        return None
+    text = raw_text.strip()
+    # Tolerate ```json fences and any prose around the object.
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group(0))
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict) or "score" not in data:
+        return None
+    try:
+        score = int(round(float(data["score"])))
+    except (ValueError, TypeError):
+        return None
+    reasons = data.get("reasons") or []
+    if isinstance(reasons, str):
+        reasons = [reasons]
+    reasons = [str(r).strip() for r in reasons if str(r).strip()]
+    return {"score": max(0, min(100, score)), "reasons": reasons}
+
+
+def score_authenticity(content: str, profile=None, profile_synthesis: Optional[str] = None,
+                       prefs: dict = None) -> dict:
+    """LLM-judge the authenticity / generic-AI risk of a finished post draft.
+
+    Returns {"score": int 0-100, "reasons": list[str], "flagged": bool} where flagged means the score
+    fell below authenticity_score_min(). Reuses lem-medium. FAILS OPEN — on any error (or empty input)
+    it returns a passing, unflagged result so a judge hiccup never blocks publishing."""
+    passing = {"score": 100, "reasons": [], "flagged": False}
+    if not content or not content.strip():
+        return passing
+    try:
+        voice = voice_reference(profile, profile_synthesis) if profile is not None else ""
+        topics = ", ".join(_focus_topics(prefs)) if prefs else ""
+        context_lines = []
+        if voice:
+            context_lines.append(f"Author voice/profile reference:\n{voice[:1500]}")
+        if topics:
+            context_lines.append(f"Author's declared focus topics: {topics}")
+        context = ("\n\n".join(context_lines) + "\n\n") if context_lines else ""
+
+        # Lazy import avoids a circular import (ai_helper imports this module).
+        from cqc_lem.utilities.ai.ai_helper import _call_llm
+        resp = _call_llm(
+            model="lem-medium",
+            messages=[
+                {"role": "system", "content": _AUTHENTICITY_JUDGE_SYSTEM},
+                {"role": "user", "content": f"{context}Post to score:\n{content[:3000]}"},
+            ],
+            temperature=0,
+        )
+        parsed = _coerce_authenticity_result(resp.choices[0].message.content or "")
+        if parsed is None:
+            return passing
+        parsed["flagged"] = parsed["score"] < authenticity_score_min()
+        return parsed
+    except Exception:
+        return passing

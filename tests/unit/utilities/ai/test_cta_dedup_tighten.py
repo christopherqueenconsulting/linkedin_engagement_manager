@@ -129,6 +129,7 @@ class TestCreateTextPostThreadsKeyword:
              patch(f"{_RCP}.get_recent_post_texts", return_value=[]), \
              patch(f"{_RCP}.get_recent_post_shape_history", return_value=[]), \
              patch(f"{_RCP}.update_db_post_shape"), \
+             patch(f"{_RCP}._score_and_persist_authenticity"), \
              patch(f"{_RCP}.get_thought_leadership_post_from_ai", side_effect=gen), \
              patch(f"{_RCP}.get_ai_linked_post_refinement",
                    side_effect=lambda c, **kw: c) as refine, \
@@ -152,6 +153,7 @@ class TestCreateTextPostThreadsKeyword:
              patch(f"{_RCP}.get_recent_post_texts", return_value=[]), \
              patch(f"{_RCP}.get_recent_post_shape_history", return_value=[]), \
              patch(f"{_RCP}.update_db_post_shape"), \
+             patch(f"{_RCP}._score_and_persist_authenticity"), \
              patch(f"{_RCP}.get_thought_leadership_post_from_ai", side_effect=gen), \
              patch(f"{_RCP}.get_ai_linked_post_refinement",
                    side_effect=lambda c, **kw: c) as refine, \

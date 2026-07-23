@@ -160,6 +160,7 @@ class TestAutoCreateWeeklyContentVideoPath:
              patch(f"{_RCP}.update_db_post_status") as upd_status, \
              patch(f"{_RCP}.get_user_preferences", return_value={"auto_schedule_posts": True}), \
              patch(f"{_RCP}._post_missing_required_asset", return_value=False), \
+             patch(f"{_RCP}.get_post_authenticity_score", return_value=None), \
              patch.object(rcp, "AI_DISCLOSURE_ENABLED", True), \
              patch.object(rcp, "AI_DISCLOSURE_TEXT", "\n\nAI visuals."):
             rcp.auto_create_weekly_content(user_id=1)
@@ -187,6 +188,7 @@ class TestAutoCreateWeeklyContentVideoPath:
              patch(f"{_RCP}.update_db_post_status"), \
              patch(f"{_RCP}.get_user_preferences", return_value={"auto_schedule_posts": True}), \
              patch(f"{_RCP}._post_missing_required_asset", return_value=False), \
+             patch(f"{_RCP}.get_post_authenticity_score", return_value=None), \
              patch.object(rcp, "AI_DISCLOSURE_ENABLED", True), \
              patch.object(rcp, "AI_DISCLOSURE_TEXT", "\n\nAI visuals."):
             rcp.auto_create_weekly_content(user_id=1)
