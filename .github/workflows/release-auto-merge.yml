@@ -1,0 +1,29 @@
+name: Auto-merge Release PRs
+
+# Enables auto-merge on release-please PRs so a green release merges itself -> tag -> build -> VPS deploy,
+# with no manual "Merge when ready" click. Mirrors dependabot-auto-merge.yml: uses GHCR_PAT when present
+# (a PAT behaves like a human enqueue and reliably drains this repo's merge queue; the built-in
+# GITHUB_TOKEN from a bot action does not). No strategy flag — the merge queue fixes the strategy.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, ready_for_review]
+
+jobs:
+  auto-merge:
+    name: Auto-merge release-please PRs
+    runs-on: ubuntu-latest
+    if: |
+      startsWith(github.event.pull_request.head.ref, 'release-please--') ||
+      contains(github.event.pull_request.labels.*.name, 'autorelease: pending')
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Enable auto-merge on the release PR
+        run: gh pr merge --auto "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}

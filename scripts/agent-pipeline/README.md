@@ -5,13 +5,15 @@ subscription** (no API cost) as the implementer and **GitHub Copilot** as the fr
 
 ## Flow (one issue at a time)
 ```
-cron (hourly) → tick.sh advances the pipeline by ONE step:
+cron (every 15 min) → tick.sh advances the pipeline by ONE step:
+  • Dependabot PR failing (agent:depfix) → PRIORITY lane: Claude smart-triages the fix
+                       (bump-caused → fix on branch; not-the-bump's-fault → main-side fix PR + rebase)
+  • in-flight PR is CONFLICTING → Claude rebases it onto main (resolves conflicts, bumps migration #s)
   • no PR in flight  → pick next `agent:ready` issue (M7→M12, by priority) → Claude implements
-                       in an isolated git worktree → pushes → opens PR → enables auto-merge
-                       (or holds it, if risky)
+                       in an isolated git worktree → pushes → opens PR (holds it if risky)
   • PR CI failing    → Claude fixes on the same branch (≤4 attempts, then escalates to you)
-  • Copilot requested changes → Claude addresses every comment
-  • CI green, no change-requests → auto-merge lands it → release-please → build → VPS deploy
+  • Copilot unresolved threads → Claude addresses + resolves each one
+  • CI green + Copilot reviewed + threads resolved → runner enqueues the merge → release → deploy
   • risky / stuck / needs live-LinkedIn → label `needs-human`, assign you, stop
 ```
 `tick.sh` only spends Max tokens when there's real work (implement / fix / address review).

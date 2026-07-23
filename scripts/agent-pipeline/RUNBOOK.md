@@ -78,6 +78,40 @@ The runner will NOT merge while any Copilot thread is unresolved, so you must bo
 3. Commit + `git push` (re-triggers CI; Copilot re-reviews the new head and may open fresh threads —
    a later tick will loop back here until Copilot has nothing left). STOP.
 
+## MODE=depfix  (env: PR, BRANCH, WORKTREE)
+A **Dependabot** PR #$PR (branch `$BRANCH`) has failing CI and was routed to you (label `agent:depfix`)
+instead of Copilot. The worktree is checked out on the Dependabot branch. **Smart-triage** the failure —
+do NOT blindly patch the branch:
+1. Read the failing CI logs: `gh pr checks $PR` then `gh run view <run-id> --log-failed`. Identify the exact failure.
+2. Decide the root cause and act accordingly:
+   - **(a) The dependency bump broke it** (compat break, changed API, lockfile/type mismatch introduced by the
+     bumped versions) → fix it **on this Dependabot branch**: make the minimal compat change, commit
+     (with the Claude co-author trailer), `git push`. Note: pushing makes Dependabot stop managing the branch —
+     acceptable to land the fix.
+   - **(b) NOT the bump's fault** (a flaky test, a live-API/secret issue like a 401 in a keyless CI context, or a
+     pre-existing failure also present on `main`) → do NOT hack the Dependabot branch. Instead open a small fix PR
+     to `main` (branch `fix/<slug>`, mirror the pexels 401-skip fix), then `gh pr comment $PR --body "@dependabot rebase"`
+     so this PR re-runs on the fixed `main`.
+   - **(c) Unclear / you can't safely fix it** → escalate: `gh pr edit $PR --add-label needs-human --add-assignee gitchrisqueen --remove-label agent:depfix`, comment what's needed, STOP.
+3. **Clear the flag** so this failure isn't reprocessed: `gh pr edit $PR --remove-label agent:depfix`.
+   (If CI fails again later, the router workflow re-labels it and you'll get another pass; the runner caps at
+   ~3 Claude attempts per branch, then escalates automatically.) STOP.
+   Once the Dependabot PR is green, the existing `dependabot-auto-merge` workflow enqueues it — you do NOT merge it.
+
+## MODE=rebase  (env: PR, ISSUE, BRANCH, WORKTREE)
+PR #$PR is **CONFLICTING** with `main` — it went stale while other PRs merged. The worktree is on `$BRANCH`.
+Rebase it cleanly onto current `main`:
+1. `git fetch origin main` then `git rebase origin/main`.
+2. Resolve **every** conflict, preserving BOTH this PR's intent AND what landed on `main`. If `main` added
+   overlapping code (e.g. another PR already added authenticity/attribution logic to the same file),
+   **integrate** with it — do not clobber what's on main, and don't duplicate it.
+3. **Migration numbers:** if this PR adds `compose/local/database/migrations/V##__*.sql` and that number now
+   exists on `main`, rename yours to the next free `V##` and update any code/tests that reference it.
+4. Run `poetry run pytest tests/unit -q` on the touched areas if feasible.
+5. `git push --force-with-lease` (re-triggers CI + a fresh Copilot review). STOP.
+6. If the conflicts are too complex to resolve safely, escalate:
+   `gh pr edit $PR --add-label needs-human --add-assignee gitchrisqueen`, comment exactly what conflicts, STOP.
+
 ---
 Keep each tick focused and finite. Prefer correctness and convention-compliance over speed — a clean PR that
 passes CI and Copilot review the first time is the goal.
