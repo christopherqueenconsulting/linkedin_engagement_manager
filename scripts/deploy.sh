@@ -12,9 +12,24 @@ cd "$ROOT_DIR"
 TAG="${1:?Usage: deploy.sh <image-tag>}"
 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
 LAST_GOOD_FILE="${ROOT_DIR}/.last_good_tag"
+ENV_FILE="${ROOT_DIR}/.env"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-180}"
 
 log() { echo "[deploy $(date -u +%H:%M:%S)] $*"; }
+
+# Persist IMAGE_TAG into .env so a reboot or a manual `compose up` (run without
+# this script) stays on the deployed tag. We only `export` IMAGE_TAG for our own
+# compose calls below; without writing it back, .env drifts a release behind and
+# the next unscripted `up` silently reverts every app service to the stale tag.
+persist_image_tag() {
+  local tag="$1"
+  if [[ -f "${ENV_FILE}" ]] && grep -qE '^IMAGE_TAG=' "${ENV_FILE}"; then
+    sed -i -E "s|^IMAGE_TAG=.*|IMAGE_TAG=${tag}|" "${ENV_FILE}"
+  else
+    echo "IMAGE_TAG=${tag}" >> "${ENV_FILE}"
+  fi
+  log "Persisted IMAGE_TAG=${tag} to ${ENV_FILE}"
+}
 
 # 1. Sync compose files + Flyway migrations to the released ref.
 log "Fetching git ref ${TAG}"
@@ -64,6 +79,7 @@ if [[ "${healthy}" != true ]]; then
     log "Rolling back to ${prev}"
     git checkout --quiet "${prev}" 2>/dev/null || git checkout --quiet "tags/${prev}" || true
     export IMAGE_TAG="${prev}"
+    persist_image_tag "${prev}"
     ${COMPOSE} up -d --remove-orphans
   fi
   exit 1
@@ -71,6 +87,7 @@ fi
 
 # 8. Record the new good tag and prune old artifacts.
 echo "${TAG}" > "${LAST_GOOD_FILE}"
+persist_image_tag "${TAG}"
 log "Deploy of ${TAG} OK. Pruning old images/build cache (>168h)."
 docker image prune -af --filter "until=168h" >/dev/null 2>&1 || true
 docker builder prune -af --filter "until=168h" >/dev/null 2>&1 || true
