@@ -24,6 +24,7 @@ from cqc_lem.utilities.ai.content_alignment import (
     select_focus_topic as _select_focus_topic,
     lead_magnet_preserve_note as _lead_magnet_preserve_note,
     humanize_text as _humanize_text,
+    humanize_title as _humanize_title,
 )
 from cqc_lem.utilities.ai.content_research import research_topic
 from cqc_lem.utilities.ai.tools import search_recent_news, search_with_perplexity
@@ -626,7 +627,11 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
     try:
         data = _json.loads(content)
         if data.get("title") and data.get("body"):
-            title = normalize_public_text(str(data["title"]).strip())[:255]
+            # Titles get the title-specific de-hype pass (issue #439), not the prose rewrite — a
+            # headline must keep its hook while losing the wordbank/clickbait tells.
+            title = normalize_public_text(_humanize_title(
+                str(data["title"]).strip(), content_type="newsletter",
+                profile_synthesis=profile_synthesis, prefs=prefs, max_chars=255))[:255]
             # Humanization pass (issue #416 — A5): de-slop the edition body before it's persisted/reviewed.
             body = _clean_newsletter_body(_humanize_text(
                 str(data["body"]).strip(), content_type="newsletter",
@@ -640,7 +645,9 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
     except (ValueError, TypeError, AttributeError):
         pass
     parts = content.strip().split("\n", 1)   # fallback: first line = title, remainder = body
-    title = parts[0].strip()[:255]
+    title = normalize_public_text(_humanize_title(
+        parts[0].strip(), content_type="newsletter",
+        profile_synthesis=profile_synthesis, prefs=prefs, max_chars=255))[:255]
     body = _clean_newsletter_body(_humanize_text(
         parts[1].strip() if len(parts) > 1 else content.strip(),
         content_type="newsletter", profile_synthesis=profile_synthesis, prefs=prefs))

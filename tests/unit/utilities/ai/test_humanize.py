@@ -187,6 +187,144 @@ class TestHumanizeText:
         assert "leverage" in system and "tapestry" in system
 
 
+class TestFindTitleSlopWords:
+    def test_detects_hype_and_tier1_words(self):
+        hits = ca.find_title_slop_words(
+            "7 Game-Changing AI Tactics for Explosive LinkedIn Growth")
+        assert set(hits) >= {"game-changing", "explosive"}
+        assert "unlock" in ca.find_title_slop_words("Unlock the Ultimate Secret")
+        assert "ultimate" in ca.find_title_slop_words("Unlock the Ultimate Secret")
+
+    def test_case_insensitive_and_deduped(self):
+        assert ca.find_title_slop_words("Explosive. EXPLOSIVE growth") == ["explosive"]
+
+    def test_detects_hype_tokens_that_start_with_a_digit(self):
+        assert ca.find_title_slop_words("10x Your LinkedIn Reach") == ["10x"]
+        assert ca.find_title_slop_words("How to 10X reach") == ["10x"]
+
+    def test_clean_headline_has_no_hits(self):
+        assert ca.find_title_slop_words("What our best buyers actually read") == []
+
+    def test_empty_input(self):
+        assert ca.find_title_slop_words("") == []
+        assert ca.find_title_slop_words(None) == []
+
+
+class TestHumanizeTitle:
+    def test_sloppy_title_in_dehyped_title_out(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "on")
+        slop = "7 Game-Changing AI Tactics for Explosive LinkedIn Growth"
+        clean = "The AI tactics that actually moved our LinkedIn numbers"
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_llm_reply(clean)):
+            out = ca.humanize_title(slop, "newsletter")
+        assert out == clean
+        assert ca.find_title_slop_words(out) == []
+
+    def test_disabled_returns_byte_identical(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "off")
+        slop = "Unlock Explosive Growth With These Game-Changing Tactics"
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm") as m:
+            assert ca.humanize_title(slop, "newsletter") == slop
+            m.assert_not_called()
+
+    def test_per_type_toggle_disables_newsletter_titles(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "on")
+        monkeypatch.setenv("HUMANIZE_NEWSLETTER_ENABLED", "off")
+        slop = "Unlock Explosive Growth With These Game-Changing Tactics"
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm") as m:
+            assert ca.humanize_title(slop, "newsletter") == slop
+            m.assert_not_called()
+
+    def test_empty_input_is_returned_unchanged(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "on")
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm") as m:
+            assert ca.humanize_title("", "newsletter") == ""
+            assert ca.humanize_title(None, "newsletter") is None
+            m.assert_not_called()
+
+    def test_reply_is_coerced_back_into_one_headline(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "on")
+        messy = 'Title: "The AI tactics that actually moved our numbers."\n\n(kept the hook)'
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_llm_reply(messy)):
+            out = ca.humanize_title("Unlock Explosive Growth Today With AI", "newsletter")
+        assert out == "The AI tactics that actually moved our numbers"
+
+    def test_em_dashes_are_stripped_from_the_headline(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "on")
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   return_value=_llm_reply("Buyers ignored our best work — here is what changed")):
+            out = ca.humanize_title("Why Impressive AI Content Repels Your Best Buyers", "newsletter")
+        assert ca.count_em_dashes(out) == 0
+        assert out == "Buyers ignored our best work, here is what changed"
+
+    def test_fails_open_on_llm_error(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "on")
+        original = "Why Impressive AI Content Repels Your Best Buyers"
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", side_effect=RuntimeError("proxy down")):
+            assert ca.humanize_title(original, "newsletter") == original
+
+    def test_fails_open_on_empty_or_fragment_reply(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "on")
+        original = "Why Impressive AI Content Repels Your Best Buyers"
+        for reply in ("", "   ", "AI"):
+            with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_llm_reply(reply)):
+                assert ca.humanize_title(original, "newsletter") == original
+
+    def test_fails_open_when_reply_is_prose_not_a_headline(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "on")
+        original = "Why Impressive AI Content Repels Your Best Buyers"
+        prose = ("Here is a rewritten headline for you, and I kept the hook while removing the hype "
+                 "words you asked me to remove from the original draft headline.")
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_llm_reply(prose)):
+            assert ca.humanize_title(original, "newsletter") == original
+
+    def test_fails_open_when_rewrite_is_slopier(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "on")
+        original = "How we rebuilt our newsletter open rates"
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   return_value=_llm_reply("Unlock Explosive Open Rates")):
+            assert ca.humanize_title(original, "newsletter") == original
+
+    def test_max_chars_budget_keeps_original_when_exceeded(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "on")
+        original = "A" * 120
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_llm_reply("B" * 60)):
+            assert ca.humanize_title(original, "newsletter", max_chars=40) == original
+
+    def test_short_draft_may_grow_up_to_the_90_char_headline_floor(self, monkeypatch):
+        # De-hyping a short hype headline needs a little room; budget = min(max_chars, max(90, len)).
+        monkeypatch.setenv("HUMANIZE_ENABLED", "on")
+        clean = "The reach numbers we actually got after six months of posting"  # 61 chars
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_llm_reply(clean)):
+            assert ca.humanize_title("10x Your Reach", "newsletter") == clean
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_llm_reply("B" * 91)):
+            assert ca.humanize_title("10x Your Reach", "newsletter") == "10x Your Reach"
+
+    def test_long_draft_may_not_grow_past_its_own_length(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "on")
+        original = "A" * 100
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_llm_reply("B" * 101)):
+            assert ca.humanize_title(original, "newsletter") == original
+
+    def test_prompt_forbids_fabrication_and_lists_detected_tells(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "on")
+        captured = {}
+
+        def _fake(**kwargs):
+            captured["messages"] = kwargs["messages"]
+            return _llm_reply("The AI tactics that actually moved our numbers")
+
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", side_effect=_fake):
+            ca.humanize_title("7 Game-Changing Tactics to Unlock Explosive Growth", "newsletter",
+                              profile_synthesis="Ran a 12-person agency for 8 years.")
+        system = captured["messages"][0]["content"]
+        assert "NEVER invent facts" in system
+        assert "Ran a 12-person agency" in system
+        for tell in ("game-changing", "unlock", "explosive"):
+            assert tell in system
+        assert "at most 255 characters" in system
+
+
 class TestGeneratorsRouteThroughHumanize:
     """Acceptance: all four content types run through the humanization pass before review. Each test
     turns the pass ON, spies on the wired humanize_text, and asserts the generator's output is the
@@ -243,6 +381,52 @@ class TestGeneratorsRouteThroughHumanize:
         assert edition is not None
         assert "HUMANIZED[newsletter]" in edition["body"]
         h.assert_called_once()
+
+    def test_newsletter_title_routes_through_title_dehype(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "on")
+        from cqc_lem.utilities.ai import ai_helper
+        seen = {}
+
+        def _spy(title, content_type="post", **kw):
+            seen["content_type"] = content_type
+            seen["title"] = title
+            return "The AI tactics that actually moved our numbers"
+
+        edition_json = ('{"title": "7 Game-Changing AI Tactics for Explosive Growth", '
+                        '"subtitle": "S", "body": "raw newsletter body"}')
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_llm_reply(edition_json)), \
+             patch("cqc_lem.utilities.ai.ai_helper._humanize_text", side_effect=lambda t, **kw: t), \
+             patch("cqc_lem.utilities.ai.ai_helper._humanize_title", side_effect=_spy):
+            edition = ai_helper.generate_newsletter_edition(self._profile(), topic="x")
+        assert edition is not None
+        assert edition["title"] == "The AI tactics that actually moved our numbers"
+        assert seen["content_type"] == "newsletter"
+        assert seen["title"] == "7 Game-Changing AI Tactics for Explosive Growth"
+
+    def test_newsletter_fallback_title_routes_through_title_dehype(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "on")
+        from cqc_lem.utilities.ai import ai_helper
+        # Non-JSON reply -> the fallback path (first line = title, remainder = body).
+        raw = "Unlock Explosive Growth With AI\n\nThe body of the edition goes here."
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_llm_reply(raw)), \
+             patch("cqc_lem.utilities.ai.ai_helper._humanize_text", side_effect=lambda t, **kw: t), \
+             patch("cqc_lem.utilities.ai.ai_helper._humanize_title",
+                   side_effect=lambda t, content_type="post", **kw: f"TITLE[{content_type}]"):
+            edition = ai_helper.generate_newsletter_edition(self._profile(), topic="x")
+        assert edition is not None
+        assert edition["title"] == "TITLE[newsletter]"
+
+    def test_newsletter_title_unchanged_when_humanize_disabled(self, monkeypatch):
+        monkeypatch.setenv("HUMANIZE_ENABLED", "off")
+        from cqc_lem.utilities.ai import ai_helper
+        raw_title = "7 Game-Changing AI Tactics for Explosive Growth"
+        edition_json = ('{"title": "' + raw_title + '", "subtitle": "S", '
+                        '"body": "raw newsletter body"}')
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_llm_reply(edition_json)):
+            edition = ai_helper.generate_newsletter_edition(self._profile(), topic="x")
+        assert edition is not None
+        assert edition["title"] == raw_title
+        assert edition["body"] == "raw newsletter body"
 
     def test_dm_builder_routes_through(self, monkeypatch):
         monkeypatch.setenv("HUMANIZE_ENABLED", "on")
