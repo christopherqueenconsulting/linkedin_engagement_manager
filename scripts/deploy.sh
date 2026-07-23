@@ -32,9 +32,23 @@ persist_image_tag() {
 }
 
 # 1. Sync compose files + Flyway migrations to the released ref.
+PREV_TAG="$(cat "${LAST_GOOD_FILE}" 2>/dev/null || echo "")"
 log "Fetching git ref ${TAG}"
 git fetch --tags --quiet origin
+# Discard any transient on-box .litellm hotfix (e.g. from the weekly model-health check) so the
+# release tag's config is authoritative and the checkout below can't fail on a dirty tracked file.
+# The durable version of any such hotfix arrives through that check's PR, not the box edit.
+git checkout -- .litellm 2>/dev/null || true
 git checkout --quiet "${TAG}" 2>/dev/null || git checkout --quiet "tags/${TAG}"
+
+# litellm reads its bind-mounted .litellm/config.yaml ONLY at startup, and `compose up -d` does
+# not recreate it on a mere file change — so a config edit (e.g. dropping a retired model) would
+# otherwise sit inert until a manual restart. Restart it below when the config changed vs the last
+# good tag (or when there's no baseline to compare against).
+LITELLM_RESTART=0
+if [[ -z "${PREV_TAG}" ]] || ! git diff --quiet "${PREV_TAG}" "${TAG}" -- .litellm/config.yaml 2>/dev/null; then
+  LITELLM_RESTART=1
+fi
 
 # 2. Validate env before touching containers.
 ./scripts/check_env.sh
@@ -59,6 +73,12 @@ ${COMPOSE} run --rm flyway
 # 6. Recreate changed services.
 log "Starting stack"
 ${COMPOSE} up -d --remove-orphans
+
+# 6b. Reload litellm if its config changed (compose won't recreate it on a bind-mount edit alone).
+if [[ "${LITELLM_RESTART}" == "1" ]]; then
+  log "litellm config changed vs ${PREV_TAG:-<none>} — restarting litellm to reload it"
+  ${COMPOSE} restart litellm || log "WARN: litellm restart failed (continuing)"
+fi
 
 # 7. Wait for the web app to report healthy; roll back on failure.
 log "Waiting up to ${HEALTH_TIMEOUT}s for web_app health"
