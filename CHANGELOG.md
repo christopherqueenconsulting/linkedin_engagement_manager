@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.59.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.59.0...v0.59.1) (2026-07-24)
+
+
+### Documentation
+
+* **format:** address Copilot review — fix call-count wording, drop wiki links ([#406](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/406)) ([5f77721](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5f7772126f25e1eccf68392a93b3a5cfa90b47b0))
+* **format:** R3 spike — document vs article/newsletter API feasibility (closes [#406](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/406)) ([38a7acc](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/38a7acc9ffdd7f41fb1a66babb3a8aa3df4cfffb))
+* **format:** R3 spike — document vs article/newsletter API feasibility (closes [#406](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/406)) ([16468d1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/16468d19b0b19abb5d903ddb68f06ade02d07128))
+
 ## [0.59.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.58.1...v0.59.0) (2026-07-24)
 
 
