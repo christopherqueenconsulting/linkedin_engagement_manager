@@ -103,6 +103,17 @@ app.conf.update(
             'task': 'cqc_lem.app.run_scheduler.auto_process_outreach_funnel',
             'schedule': crontab(minute='*/30')  # Advance approved comment->connect->DM funnel steps
         },
+        'scan-catchup-moments': {
+            'task': 'cqc_lem.app.run_scheduler.auto_scan_catchup_moments',
+            # Daily draft-only pass over the LinkedIn Catch-up feed (issue #482). Nothing sends here —
+            # it queues approval-gated congratulations for the review UI.
+            'schedule': crontab(hour='12', minute='30')
+        },
+        'send-catchup-touches': {
+            'task': 'cqc_lem.app.run_scheduler.auto_check_catchup_touches',
+            # Slow drip of APPROVED catch-up congratulations, per-user daily capped
+            'schedule': crontab(minute='*/20')
+        },
         'daily-golden-hour-engagement': {
             'task': 'cqc_lem.app.run_scheduler.auto_daily_engagement',
             'schedule': crontab(hour='13', minute='0')  # Daily peak-hour feed commenting (~9am ET), on top of pre-post

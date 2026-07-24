@@ -84,6 +84,7 @@ export default function DmTemplatesCard() {
         { token: '{first_name}', desc: "The recipient's first name" },
         { token: '{headline}', desc: "The recipient's headline / role" },
         { token: '{blog_url}', desc: 'Your configured blog URL' },
+        { token: '{event_detail}', desc: 'The Catch-up milestone (e.g. "started a new position at Acme")' },
       ]} />
       {DM_EVENTS.map((ev) => {
         const steps = dmTemplates.filter((t) => t.event_type === ev.key).sort((a, b) => a.step - b.step)

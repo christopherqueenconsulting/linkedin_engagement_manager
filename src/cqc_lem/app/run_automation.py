@@ -45,13 +45,15 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     get_dm_template, enqueue_followup, get_due_followups, mark_followup, stop_followups_for_profile, \
     set_profile_synthesis, get_duplicate_comment_posts, count_dms_sent_today, \
     get_approved_outreach_targets, update_outreach_target, update_outreach_target_status, \
-    OutreachStage, OutreachStatus, \
+    OutreachStage, OutreachStatus, insert_outreach_target, get_outreach_target_by_url, \
     insert_lead_signal, has_lead_signal, get_lead_signal, update_lead_signal, \
     LeadSignalSource, LeadSignalChannel, LeadSignalStatus, \
     insert_scheduled_dm, has_open_scheduled_dm, count_scheduled_dms_created_today, \
     ScheduledDmStatus, SCHEDULED_DM_SOURCE_NURTURE, \
     insert_connection_request, count_open_connection_requests, get_requested_person_keys, \
-    get_engager_candidates, get_profile_facts, count_invites_sent_today, ConnectionRequestStatus
+    get_engager_candidates, get_profile_facts, count_invites_sent_today, ConnectionRequestStatus, \
+    CatchupTouchStatus, insert_catchup_touch, has_catchup_touch, get_catchup_touch, \
+    update_catchup_touch_status, count_catchup_touches_sent_today
 from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
     load_profile_for_user
@@ -68,7 +70,7 @@ from cqc_lem.utilities.selenium_util import click_element_wait_retry, \
     get_element_wait_retry, get_elements_as_list_wait_stale, getText, close_tab, get_driver_wait_pair, quit_gracefully, \
     wait_for_ajax, find_first, click_first, find_all_first
 from dotenv import load_dotenv
-from selenium.common import NoSuchElementException, JavascriptException
+from selenium.common import NoSuchElementException, JavascriptException, StaleElementReferenceException
 from selenium.webdriver import ActionChains, Keys
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
@@ -2747,37 +2749,42 @@ class _SafePlaceholders(dict):
 
 
 def render_dm_placeholders(text: str, *, first_name: str = "", headline: str = "",
-                           blog_url: str = "") -> str:
+                           blog_url: str = "", event_detail: str = "") -> str:
     """Single source of truth for filling DM / lead-magnet {placeholders}: {first_name},
-    {headline}, {blog_url}. Used by BOTH the DM-template path and the Comment->DM lead magnet
-    so their substitution can never drift. Tolerates unknown/malformed tokens gracefully."""
+    {headline}, {blog_url}, {event_detail}. Used by BOTH the DM-template path and the Comment->DM
+    lead magnet so their substitution can never drift. Tolerates unknown/malformed tokens gracefully."""
     if not text:
         return text or ""
     ctx = _SafePlaceholders(first_name=first_name or "there",
                             headline=headline or "my professional field",
-                            blog_url=blog_url or "")
+                            blog_url=blog_url or "",
+                            # Catch-up templates (issue #482) reference the specific milestone; the
+                            # fallback keeps the sentence grammatical if the detail didn't scrape.
+                            event_detail=event_detail or "the news")
     try:
         return text.format_map(ctx)
     except (IndexError, ValueError):
         # malformed/positional braces (e.g. a stray "{") — replace known tokens only
         out = text
-        for k in ("first_name", "headline", "blog_url"):
+        for k in ("first_name", "headline", "blog_url", "event_detail"):
             out = out.replace("{" + k + "}", str(ctx[k]))
         return out
 
 
 @attribute_llm_cost(FEATURE_DM)
 def build_dm_from_template(user_id: int, event_type: str, first_name: str,
-                           my_profile: LinkedInProfile, step: int = 0, blog_url: str = "") -> "str | None":
-    """Render the user's DM template for an event (filling {first_name}/{headline}/{blog_url})
-    and LLM-refine it to their voice (<=300 chars). Falls back to the code-default template;
-    returns None only when no template exists for that (event, step)."""
+                           my_profile: LinkedInProfile, step: int = 0, blog_url: str = "",
+                           event_detail: str = "") -> "str | None":
+    """Render the user's DM template for an event (filling {first_name}/{headline}/{blog_url}/
+    {event_detail}) and LLM-refine it to their voice (<=300 chars). Falls back to the code-default
+    template; returns None only when no template exists for that (event, step)."""
     tmpl = get_dm_template(user_id, event_type, step)
     if not tmpl:
         return None
     headline = getattr(my_profile, "job_title", None) or "my professional field"
     rendered = render_dm_placeholders(tmpl["template_text"], first_name=first_name,
-                                      headline=headline, blog_url=blog_url)
+                                      headline=headline, blog_url=blog_url,
+                                      event_detail=event_detail)
     try:
         refined = get_ai_message_refinement(rendered, character_limit=300)
         # Humanization pass (issue #416 — A5): de-slop the DM before it's sent. Fails open and keeps
@@ -3008,6 +3015,11 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
                 if _nurture_after_reply(user_id, f, their_message, my_profile,
                                         prefs=lead_ctx["prefs"], profile_synthesis=lead_ctx["synthesis"]):
                     nurtured += 1
+                elif not is_stop_intent(classify_reply_intent(their_message, use_llm=False)["intent"]):
+                    # Nurture (#485) owns the drafted next message whenever it produced one, so the
+                    # catch-up funnel hand-off (#482) is the fallback — one approval-gated draft per
+                    # replying prospect, and none at all when their reply was an explicit no.
+                    _route_replied_catchup_to_funnel(user_id, f)
                 continue
             if str(f["event_type"]) == NURTURE_EVENT_TYPE:
                 # A nurture re-check with no new reply. Nothing to send: the drafted message is the
@@ -4142,6 +4154,339 @@ def process_outreach_funnel(self, user_id: int, max_per_run: int = 25):
             update_outreach_target_status(target["id"], OutreachStatus.FAILED)
             results.append(f"target {target['id']}: error")
     return "; ".join(results)
+
+
+# --- LinkedIn Catch-up automation (issue #482) — trigger-event congratulations, approval-gated ---
+# The catch-up feed is a daily stream of network "moments". New job / promotion moments are genuine
+# trigger events (a reason to reconnect that isn't salesy); birthdays are small talk. So every moment
+# is CLASSIFIED, ICP-SCORED against the user's targeting prefs, DEDUPED on the milestone, drafted from
+# the user's own DM template, and held for human approval before a single message goes out.
+CATCHUP_URL = "https://www.linkedin.com/mynetwork/catch-up/all/"
+# Moments scoring below this are recorded as 'skipped' tombstones (dedup) instead of drafted — a
+# generic "Congrats!" is worse than saying nothing.
+CATCHUP_MIN_SCORE = int(os.getenv("CATCHUP_MIN_SCORE", "30"))
+
+# Ordered fallback chain for the catch-up cards. LinkedIn's SDUI ships hashed classes, so we prefer
+# data-view-name, then the semantic list, then any main-content list item that links to a profile.
+# NOTE: needs a supervised live-grounding pass on a real account before broad enablement (see #478).
+_CATCHUP_CARD_LOCATORS = [
+    (By.CSS_SELECTOR, "div[data-view-name='catch-up-card']"),
+    (By.CSS_SELECTOR, "li[data-view-name='catch-up-card']"),
+    (By.CSS_SELECTOR, "section[data-view-name*='catch-up'] li"),
+    (By.CSS_SELECTOR, "main li:has(a[href*='/in/'])"),
+    (By.XPATH, "//main//li[.//a[contains(@href,'/in/')]]"),
+]
+_CATCHUP_PROFILE_LINK_LOCATORS = [
+    (By.CSS_SELECTOR, "a[data-view-name='catch-up-card-profile-link']"),
+    (By.CSS_SELECTOR, "a[href*='/in/']"),
+]
+
+# Base value of each milestone type. New job / promotion are the BD goldmine; a birthday is not.
+# Read together with CATCHUP_MIN_SCORE (30): job change, promotion, in-the-news and work anniversary
+# clear the bar on their own, while education and birthday only clear it for people who also match the
+# user's targeting (+25 literal / +15 LLM topical). So enabling "birthday" means "congratulate the
+# birthdays of people in my ICP", not "congratulate everyone's birthday".
+_CATCHUP_EVENT_BASE = {
+    "job_change": 50,
+    "promotion": 50,
+    "in_the_news": 35,
+    "work_anniversary": 30,
+    "education": 25,
+    "birthday": 10,
+}
+_CATCHUP_ICP_BONUS = 25    # a targeting keyword/topic appears in the moment text
+_CATCHUP_TOPIC_BONUS = 15  # LLM says the moment is topically relevant to the user's include_topics
+
+# Ordered classifiers — first match wins, so more specific phrasings are tested first ("promoted to X
+# at Y" and "celebrating 5 years at Y" both contain the new-position "at" pattern).
+_CATCHUP_CLASSIFIERS = [
+    ("promotion", re.compile(r"\bpromot(?:ed|ion)\b", re.IGNORECASE)),
+    ("work_anniversary", re.compile(r"work anniversary|\b\d+\s*(?:year|yr)s?\b\s*(?:at|with)\b", re.IGNORECASE)),
+    ("job_change", re.compile(r"start\w*\s+a\s+new\s+(?:position|job|role)|new\s+(?:position|role|job)\s+(?:as|at)\b"
+                              r"|\bis\s+now\b.*\bat\b|\bjoined\b.*\bas\b", re.IGNORECASE)),
+    ("birthday", re.compile(r"\bbirthday\b", re.IGNORECASE)),
+    ("education", re.compile(r"\bgraduat\w*|\bearned\b.*\b(?:degree|diploma|certificat\w*)"
+                             r"|\bcomplet\w*\b.*\b(?:degree|program|certificat\w*)", re.IGNORECASE)),
+    ("in_the_news", re.compile(r"in the news|\bwas\s+(?:featured|mentioned|quoted)\b|\bfeatured in\b",
+                               re.IGNORECASE)),
+]
+
+# Annual milestones dedup by YEAR; one-off milestones by MONTH (so a genuinely new job change later in
+# the year can still earn a touch, but the same card re-appearing for days cannot).
+_CATCHUP_ANNUAL_EVENTS = ("work_anniversary", "birthday")
+# The milestone types worth nurturing toward a real BD conversation once they reply.
+_CATCHUP_HIGH_VALUE_EVENTS = ("job_change", "promotion")
+
+
+def _normalize_profile_url(url: str) -> str:
+    """Strip query/fragment/trailing slash so the same person can't enter the dedup ledger twice
+    under two URL spellings (LinkedIn appends tracking params to catch-up links)."""
+    if not url:
+        return ""
+    parsed = urlparse(url.strip())
+    path = (parsed.path or "").rstrip("/")
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}{path}"
+    return path
+
+
+def _classify_catchup_moment(text: str) -> "str | None":
+    """Map a catch-up card's text to a CatchupEventType value, or None when it isn't a moment we
+    know how to congratulate (LinkedIn also renders suggestions/ads in this feed)."""
+    if not text:
+        return None
+    for event_type, pattern in _CATCHUP_CLASSIFIERS:
+        if pattern.search(text):
+            return event_type
+    return None
+
+
+def _catchup_event_period(event_type: str, now: datetime = None) -> str:
+    """Dedup bucket for a milestone — see _CATCHUP_ANNUAL_EVENTS."""
+    moment = now or datetime.now(timezone.utc)
+    return moment.strftime("%Y") if event_type in _CATCHUP_ANNUAL_EVENTS else moment.strftime("%Y-%m")
+
+
+def _catchup_excluded(moment: dict, prefs: dict) -> bool:
+    """Honor the user's exclusion targeting — an excluded author/keyword is never touched at all."""
+    haystack = f"{moment.get('name', '')} {moment.get('text', '')}".lower()
+    for author in (prefs.get("exclude_authors") or []):
+        if str(author).strip() and str(author).strip().lower() in (moment.get("name") or "").lower():
+            return True
+    for term in list(prefs.get("exclude_keywords") or []) + list(prefs.get("exclude_topics") or []):
+        if str(term).strip() and str(term).strip().lower() in haystack:
+            return True
+    return False
+
+
+def _score_catchup_moment(moment: dict, prefs: dict) -> int:
+    """Score = milestone value + ICP fit. The literal keyword check is free; the LLM relevance check
+    only runs when the literal one missed AND the user configured include_topics, so scoring a day's
+    feed costs at most a handful of lem-simple calls."""
+    score = _CATCHUP_EVENT_BASE.get(moment.get("event_type"), 0)
+    haystack = f"{moment.get('name', '')} {moment.get('text', '')}".lower()
+    literal_terms = (list(prefs.get("focus_topics") or []) + list(prefs.get("include_keywords") or [])
+                     + list(prefs.get("include_topics") or []))
+    if any(str(t).strip() and str(t).strip().lower() in haystack for t in literal_terms):
+        return score + _CATCHUP_ICP_BONUS
+    include_topics = prefs.get("include_topics") or []
+    if include_topics and post_is_relevant(moment.get("text", ""), include_topics):
+        score += _CATCHUP_TOPIC_BONUS
+    return score
+
+
+def _card_profile_link(card: WebElement) -> "WebElement | None":
+    """First profile link inside a catch-up card, trying the ordered locator chain. Searched directly
+    (no WebDriverWait) because the card is already in the DOM — a per-card wait would cost the full
+    timeout on every non-person card LinkedIn mixes into the feed."""
+    for find_by, value in _CATCHUP_PROFILE_LINK_LOCATORS:
+        try:
+            els = card.find_elements(find_by, value)
+        except (StaleElementReferenceException, NoSuchElementException):
+            continue
+        if els:
+            return els[0]
+    return None
+
+
+def _scrape_catchup_moments(driver: WebDriver, max_moments: int = 40,
+                            user_id: int = None) -> List[dict]:
+    """Scrape the catch-up feed into [{name, profile_url, text}] — one entry per card, deduped by
+    profile+text. Best-effort by design: a selector miss returns fewer moments (logged) rather than
+    failing the run."""
+    driver.get(CATCHUP_URL)
+    time.sleep(random.uniform(3, 5))
+
+    moments: List[dict] = []
+    seen: set = set()
+    for _ in range(3):  # the feed lazy-loads; a few scrolls cover a normal day's moments
+        cards = find_all_first(driver, _CATCHUP_CARD_LOCATORS)
+        for card in cards:
+            if len(moments) >= max_moments:
+                break
+            link = _card_profile_link(card)
+            if link is None:
+                continue
+            try:
+                profile_url = _normalize_profile_url(link.get_attribute("href") or "")
+                text = normalize_public_text(getText(card) or "").replace("\n", " ").strip()
+            except (StaleElementReferenceException, NoSuchElementException):
+                continue
+            if not profile_url or "/in/" not in profile_url or not text:
+                continue
+            key = (profile_url, text)
+            if key in seen:
+                continue
+            seen.add(key)
+            moments.append({"name": _catchup_name_from_card(text, link), "profile_url": profile_url,
+                            "text": text})
+        if len(moments) >= max_moments:
+            break
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(random.uniform(2, 4))
+
+    if not moments:
+        log_warning("Catch-up feed produced no moments", user_id=user_id, action_type="catchup")
+    return moments
+
+
+def _catchup_name_from_card(text: str, link) -> str:
+    """The card's person name: the profile link's own text when LinkedIn renders it, else the first
+    line of the card (which leads with the name)."""
+    try:
+        name = (getText(link) or "").strip().split("\n")[0]
+    except (StaleElementReferenceException, NoSuchElementException):
+        name = ""
+    if not name:
+        name = (text or "").strip().split(" ·")[0]
+    return name[:255]
+
+
+def _draft_catchup_message(user_id: int, moment: dict, my_profile: LinkedInProfile) -> "str | None":
+    """Render the user's DM template for this milestone type, in their voice, referencing the actual
+    event. Returns None when the user has deactivated the template for that event type."""
+    first_name = (moment.get("name") or "").strip().split(" ")[0] or "there"
+    return build_dm_from_template(user_id, moment["event_type"], first_name, my_profile,
+                                  event_detail=moment.get("event_detail") or moment.get("text", ""))
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
+                  reject_on_worker_lost=True, rate_limit='2/m', queue='se_outreach')
+def automate_catchup_touches(self, user_id: int, max_moments: int = 40, max_drafts: int = 10):
+    """Scrape -> score -> draft the user's LinkedIn Catch-up congratulations (issue #482).
+
+    NOTHING is sent here. Qualifying moments become 'pending' rows in catchup_touches for human
+    approval (or 'approved' when the user opted into catchup_touch_mode='auto_approve'), and the
+    capped scanner sends them later. Only milestone types the user enabled are drafted, each
+    milestone is deduped on (person, event_type, period), and moments scoring below CATCHUP_MIN_SCORE
+    are tombstoned as 'skipped' so we neither draft nor re-score them."""
+    prefs = get_engagement_preferences(user_id)
+    enabled = {str(t) for t in (prefs.get("catchup_event_types") or [])}
+    if not enabled:
+        return f"Catch-up touches disabled for user {user_id} (no event types enabled)"
+
+    try:
+        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id,
+                                                                   session_name="Catch-up Moments")
+    except LinkedInRateLimited as e:
+        myprint(f"automate_catchup_touches deferred (throttled): {e}")
+        return "Catch-up scan deferred (LinkedIn throttled)"
+    except Exception as e:
+        log_error("Failed to get profile for catch-up scan", exc=e, user_id=user_id,
+                  task_name="automate_catchup_touches")
+        return f"Failed to start catch-up scan: {e}"
+
+    drafted = skipped = 0
+    try:
+        moments = _scrape_catchup_moments(driver, max_moments=max_moments, user_id=user_id)
+    except LinkedInRateLimited as e:
+        myprint(f"automate_catchup_touches deferred mid-scrape (throttled): {e}")
+        return "Catch-up scan deferred (LinkedIn throttled)"
+    except Exception as e:
+        log_error("Catch-up scrape failed", exc=e, user_id=user_id, task_name="automate_catchup_touches")
+        return f"Catch-up scrape failed: {e}"
+    finally:
+        quit_gracefully(driver)
+
+    auto_approve = str(prefs.get("catchup_touch_mode") or "pre_review") == "auto_approve"
+    for moment in moments:
+        if drafted >= max_drafts:
+            break
+        event_type = _classify_catchup_moment(moment.get("text", ""))
+        if event_type is None or event_type not in enabled:
+            continue
+        if _catchup_excluded(moment, prefs):
+            continue
+        moment["event_type"] = event_type
+        period = _catchup_event_period(event_type)
+        if has_catchup_touch(user_id, moment["profile_url"], event_type, period):
+            continue
+        score = _score_catchup_moment(moment, prefs)
+        if score < CATCHUP_MIN_SCORE:
+            insert_catchup_touch(user_id, moment["profile_url"], event_type, period,
+                                 person_name=moment.get("name"), event_detail=moment.get("text"),
+                                 score=score, status=CatchupTouchStatus.SKIPPED)
+            skipped += 1
+            continue
+        try:
+            message = _draft_catchup_message(user_id, moment, my_profile)
+        except Exception as e:
+            log_warning("Could not draft catch-up message", exc=e, user_id=user_id, action_type="catchup")
+            continue
+        if not message:
+            continue
+        status = CatchupTouchStatus.APPROVED if auto_approve else CatchupTouchStatus.PENDING
+        if insert_catchup_touch(user_id, moment["profile_url"], event_type, period,
+                                person_name=moment.get("name"), event_detail=moment.get("text"),
+                                message=message, score=score, status=status):
+            drafted += 1
+
+    log_info(f"Catch-up scan drafted {drafted} touch(es) from {len(moments)} moment(s)",
+             user_id=user_id, task_name="automate_catchup_touches", action_type="catchup")
+    return (f"Catch-up: {len(moments)} moment(s) scanned, {drafted} drafted "
+            f"({'approved' if auto_approve else 'awaiting approval'}), {skipped} below the bar")
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['touch_id']},
+                  reject_on_worker_lost=True, rate_limit='1/m', queue='se_outreach')
+def send_catchup_touch(self, touch_id: int):
+    """Send one APPROVED catch-up congratulations (issue #482). Enforces BOTH the catch-up per-day cap
+    and the overall DM cap at send time — either one trips the touch back to 'approved' for the next
+    scan rather than sending — and reuses send_dm_now, so it honors the 429 breaker / kill-switch and
+    the shared DM logging. A high-value milestone also enqueues the user's follow-up sequence, which is
+    what routes a replying prospect into the BD nurture."""
+    touch = get_catchup_touch(touch_id)
+    if not touch or touch["status"] not in (CatchupTouchStatus.APPROVED, CatchupTouchStatus.SENDING):
+        return f"Catch-up touch {touch_id} not sendable (status={touch['status'] if touch else 'missing'})"
+    if not (touch.get("message") or "").strip():
+        update_catchup_touch_status(touch_id, CatchupTouchStatus.SKIPPED)
+        log_warning("Catch-up touch approved with no message; skipping", user_id=touch["user_id"],
+                    action_type="catchup")
+        return f"Catch-up touch {touch_id} skipped (no message)"
+
+    user_id = touch["user_id"]
+    prefs = get_engagement_preferences(user_id)
+    if count_catchup_touches_sent_today(user_id) >= int(prefs.get("max_catchup_touches_per_day") or 0):
+        update_catchup_touch_status(touch_id, CatchupTouchStatus.APPROVED)  # retry on the next scan
+        return f"Catch-up touch {touch_id} deferred (daily catch-up cap reached)"
+    if count_dms_sent_today(user_id) >= int(prefs.get("max_dms_per_day") or 0):
+        update_catchup_touch_status(touch_id, CatchupTouchStatus.APPROVED)
+        return f"Catch-up touch {touch_id} deferred (daily DM cap reached)"
+
+    try:
+        sent = send_dm_now(user_id, touch["profile_url"], touch["message"])
+    except LinkedInRateLimited as e:
+        myprint(f"send_catchup_touch: throttled, deferring {touch_id}: {e}")
+        update_catchup_touch_status(touch_id, CatchupTouchStatus.APPROVED)
+        return f"Catch-up touch {touch_id} deferred (LinkedIn throttled)"
+    update_catchup_touch_status(touch_id, CatchupTouchStatus.SENT if sent else CatchupTouchStatus.FAILED)
+    if sent:
+        first_name = (touch.get("person_name") or "").strip().split(" ")[0] or "there"
+        enqueue_next_followup(user_id, touch["profile_url"], first_name, str(touch["event_type"]), 0)
+    return f"Catch-up touch {touch_id} -> {'sent' if sent else 'failed'}"
+
+
+def _route_replied_catchup_to_funnel(user_id: int, followup: dict) -> None:
+    """A reply to a new-job/promotion congratulations is the opening of a real conversation — drop that
+    prospect into the comment-first outreach funnel at the DM stage as 'pending' so the operator can
+    nurture it toward a BD conversation (issue #482, step 5). Approval-gated like every funnel stage,
+    and never duplicates a target already in the funnel. Best-effort: never breaks the follow-up loop."""
+    event_type = str(followup.get("event_type") or "")
+    if event_type not in _CATCHUP_HIGH_VALUE_EVENTS:
+        return
+    profile_url = followup.get("profile_url")
+    try:
+        if get_outreach_target_by_url(user_id, profile_url):
+            return
+        target = {"target_name": followup.get("first_name"), "target_profile_url": profile_url}
+        insert_outreach_target(user_id, profile_url, target_name=followup.get("first_name"),
+                               draft_text=_draft_funnel_stage(user_id, OutreachStage.DM, target),
+                               stage=OutreachStage.DM, status=OutreachStatus.PENDING)
+        log_info("Routed replying catch-up prospect into the outreach funnel", user_id=user_id,
+                 action_type="catchup")
+    except Exception as e:
+        log_warning("Could not route catch-up reply into the outreach funnel", exc=e,
+                    user_id=user_id, action_type="catchup")
 
 
 def final_method(drivers: List[WebDriver]):

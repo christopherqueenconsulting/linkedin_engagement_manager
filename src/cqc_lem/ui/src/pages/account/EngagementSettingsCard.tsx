@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
 import Toggle from '../../components/Toggle'
-import { csv, parseCsv } from './types'
+import { csv, parseCsv, CATCHUP_EVENTS } from './types'
 import type { EngPrefs } from './types'
 import { useRegisterSaveSection } from './SettingsSaveContext'
 import { FIELD_LIMITS } from './fieldLimits'
@@ -251,6 +251,23 @@ export default function EngagementSettingsCard() {
             <p className="text-xs text-gray-400 mt-1">Profile URLs of thought leaders or competitors in your space. LEM harvests the people commenting on their recent posts as warm 2nd-degree candidates. Leave blank to only target people who engage with your own posts.</p>
           </div>
           <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Max catch-up touches/day</label>
+            <input type="number" min={0} max={25} value={engPrefs.max_catchup_touches_per_day ?? 5}
+              onChange={(e) => setEng({ max_catchup_touches_per_day: Number(e.target.value) })}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+            <p className="text-xs text-gray-400 mt-1">Congratulations DMs sent per day from your LinkedIn Catch-up feed. They also count against Max DMs/day.</p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Catch-up approval</label>
+            <select value={engPrefs.catchup_touch_mode ?? 'pre_review'}
+              onChange={(e) => setEng({ catchup_touch_mode: e.target.value })}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+              <option value="pre_review">Pre-review (approve each message first)</option>
+              <option value="auto_approve">Auto-approve (queue drafts immediately)</option>
+            </select>
+            <p className="text-xs text-gray-400 mt-1">Pre-review holds each drafted congratulations in the Catch-up tab until you approve it.</p>
+          </div>
+          <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Auto-generated video quality</label>
             <select value={engPrefs.default_video_quality ?? 'standard'}
               onChange={(e) => setEng({ default_video_quality: e.target.value })}
@@ -292,6 +309,29 @@ export default function EngagementSettingsCard() {
             <p className="text-xs text-gray-400">When a post contains an external link, publish the post without it and drop the link into the first comment instead. Links in the body cost roughly 60-68% of a post's reach.</p>
           </div>
           <Toggle on={engPrefs.link_in_first_comment} onClick={() => setEng({ link_in_first_comment: !engPrefs.link_in_first_comment })} />
+        </div>
+        <div className="border-t border-gray-100 pt-4">
+          <p className="text-sm font-medium text-gray-700">Catch-up milestones to congratulate</p>
+          <p className="text-xs text-gray-400 mb-2">
+            Which network moments LEM drafts a congratulations for. New job and promotion are real
+            reasons to reconnect; the rest are optional. Unchecking every type turns Catch-up off.
+          </p>
+          <div className="flex flex-wrap gap-3">
+            {CATCHUP_EVENTS.map((ev) => {
+              const selected = (engPrefs.catchup_event_types ?? []).includes(ev.key)
+              return (
+                <label key={ev.key} className="flex items-center gap-1.5 text-sm text-gray-600">
+                  <input type="checkbox" checked={selected}
+                    onChange={() => setEng({
+                      catchup_event_types: selected
+                        ? (engPrefs.catchup_event_types ?? []).filter((k) => k !== ev.key)
+                        : [...(engPrefs.catchup_event_types ?? []), ev.key],
+                    })} />
+                  {ev.label}
+                </label>
+              )
+            })}
+          </div>
         </div>
         <div className="flex items-center justify-between">
           <p className="text-sm font-medium text-gray-700">Reply to comments on my posts</p>

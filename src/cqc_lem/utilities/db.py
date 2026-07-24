@@ -97,6 +97,28 @@ class ConnectionRequestStatus(StrEnum):
     CANCELED = 'canceled'    # canceled before send
 
 
+class CatchupEventType(StrEnum):
+    """A LinkedIn Catch-up "moment" we can congratulate on (issue #482). Ordered most→least
+    BD-relevant: a new job or promotion is a real trigger event, a birthday is small talk."""
+    JOB_CHANGE = 'job_change'
+    PROMOTION = 'promotion'
+    WORK_ANNIVERSARY = 'work_anniversary'
+    EDUCATION = 'education'
+    IN_THE_NEWS = 'in_the_news'
+    BIRTHDAY = 'birthday'
+
+
+class CatchupTouchStatus(StrEnum):
+    """Status of a drafted catch-up congratulations DM (issue #482), mirroring ConnectionRequestStatus."""
+    PENDING = 'pending'      # drafted, awaiting human approval
+    APPROVED = 'approved'    # approved, waiting for the capped scanner
+    SENDING = 'sending'      # scanner dispatched the send task
+    SENT = 'sent'            # DM sent
+    SKIPPED = 'skipped'      # scored below the bar / event type disabled — kept as a dedup tombstone
+    FAILED = 'failed'        # send failed
+    CANCELED = 'canceled'    # operator canceled before send
+
+
 class OutreachStage(StrEnum):
     """Stage of a comment-first outreach funnel target (issue #399)."""
     COMMENT = 'comment'      # leave a value-adding comment on the prospect's post
@@ -2685,6 +2707,12 @@ def update_user_preferences(
         connection.close()
 
 
+# Catch-up milestone types eligible for a congratulations touch out of the box (issue #482): the two
+# real trigger events. Birthdays/anniversaries are opt-in — congratulating those at volume reads as spam.
+DEFAULT_CATCHUP_EVENT_TYPES = ("job_change", "promotion")
+VALID_CATCHUP_TOUCH_MODES = ("pre_review", "auto_approve")
+CATCHUP_TOUCHES_MIN, CATCHUP_TOUCHES_MAX = 0, 25
+
 _ENGAGEMENT_DEFAULTS: dict = {
     # Default to MEDIUM (issue #394): 2026 LinkedIn weights substantive ≥15-word comments ~2.5× short
     # one-liners, so the out-of-the-box length produces a real, specific reply rather than a throwaway.
@@ -2706,10 +2734,14 @@ _ENGAGEMENT_DEFAULTS: dict = {
     "default_video_quality": "standard",
     "reply_check_mode": "event", "reply_sweeps_per_day": 2, "reply_max_post_age_days": 2,
     "feed_fallback_when_empty": True, "link_in_first_comment": True,
+    # Catch-up congratulations (issue #482): small cap, human approval, and only the BD-relevant
+    # milestone types out of the box — a generic "Congrats!" at volume is worse than nothing.
+    "max_catchup_touches_per_day": 5, "catchup_touch_mode": "pre_review",
+    "catchup_event_types": list(DEFAULT_CATCHUP_EVENT_TYPES),
 }
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
                            "exclude_keywords", "include_authors", "exclude_authors", "post_types",
-                           "focus_topics", "connection_target_authors")
+                           "focus_topics", "connection_target_authors", "catchup_event_types")
 _ENGAGEMENT_BOOL_FIELDS = ("use_emojis", "use_hashtags", "reply_to_own_comments",
                            "feed_fallback_when_empty", "link_in_first_comment")
 _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "use_hashtags",
@@ -2722,7 +2754,8 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "min_connection_icp_score",
                     "default_buyer_stage", "default_video_quality",
                     "reply_check_mode", "reply_sweeps_per_day", "reply_max_post_age_days",
-                    "feed_fallback_when_empty", "link_in_first_comment")
+                    "feed_fallback_when_empty", "link_in_first_comment",
+                    "max_catchup_touches_per_day", "catchup_touch_mode", "catchup_event_types")
 
 VALID_VIDEO_QUALITIES = ("standard", "premium", "premium_top")
 VALID_REPLY_MODES = ("event", "scheduled", "off")
@@ -2761,6 +2794,11 @@ def get_engagement_preferences(user_id: int) -> dict:
         row = cursor.fetchone()
         if row is None:
             return dict(_ENGAGEMENT_DEFAULTS)
+        # A NULL catchup_event_types (every row predating the V20260724211808 migration) means
+        # "never configured" -> the default BD subset. An explicit empty list means the user turned
+        # catch-up touches off, so only coerce the NULL case.
+        if row.get("catchup_event_types") is None:
+            row["catchup_event_types"] = list(DEFAULT_CATCHUP_EVENT_TYPES)
         for f in _ENGAGEMENT_JSON_FIELDS:
             row[f] = _coerce_json_list(row.get(f))
         for f in _ENGAGEMENT_BOOL_FIELDS:
@@ -2807,6 +2845,18 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
                                              if _age is not None else 2)
     except (TypeError, ValueError):
         merged["reply_max_post_age_days"] = 2
+    if merged.get("catchup_touch_mode") not in VALID_CATCHUP_TOUCH_MODES:
+        merged["catchup_touch_mode"] = "pre_review"
+    _ct = merged.get("max_catchup_touches_per_day")
+    try:
+        merged["max_catchup_touches_per_day"] = (
+            min(CATCHUP_TOUCHES_MAX, max(CATCHUP_TOUCHES_MIN, int(_ct))) if _ct is not None
+            else _ENGAGEMENT_DEFAULTS["max_catchup_touches_per_day"])
+    except (TypeError, ValueError):
+        merged["max_catchup_touches_per_day"] = _ENGAGEMENT_DEFAULTS["max_catchup_touches_per_day"]
+    # Drop unknown milestone types before they hit the ENUM-validated ledger.
+    merged["catchup_event_types"] = [t for t in (merged.get("catchup_event_types") or [])
+                                     if t in tuple(CatchupEventType)]
 
     def _val(col):
         v = merged[col]
@@ -3582,6 +3632,210 @@ def update_outreach_target(target_id: int, target_profile_url: str = None, targe
         return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not update outreach target {target_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+# --- LinkedIn Catch-up touches (issue #482) — approval-gated, deduped milestone congratulations ---
+_CATCHUP_COLS = ("id", "user_id", "profile_url", "person_name", "event_type", "event_detail",
+                 "event_period", "score", "message", "status", "created_at", "updated_at")
+
+
+def insert_catchup_touch(user_id: int, profile_url: str, event_type: "CatchupEventType",
+                         event_period: str, person_name: str = None, event_detail: str = None,
+                         message: str = None, score: int = 0,
+                         status: "CatchupTouchStatus" = CatchupTouchStatus.PENDING) -> Optional[int]:
+    """Record a drafted catch-up touch. Returns None when the milestone is already in the ledger —
+    the (user, profile, event_type, event_period) unique key is the dedup guarantee, so a moment that
+    stays in the feed for days can never be messaged twice."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO catchup_touches (user_id, profile_url, person_name, event_type, "
+            "event_detail, event_period, score, message, status) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (user_id, profile_url, person_name, str(event_type), event_detail, event_period,
+             int(score), message, str(status)))
+        connection.commit()
+        return cursor.lastrowid
+    except mysql.connector.Error as err:
+        myprint(f"Could not insert catchup touch for user_id {user_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_catchup_touch(touch_id: int) -> Optional[dict]:
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(f"SELECT {', '.join(_CATCHUP_COLS)} FROM catchup_touches WHERE id = %s",
+                       (touch_id,))
+        return cursor.fetchone()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get catchup touch {touch_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_catchup_touch_user_id(touch_id: int) -> Optional[int]:
+    row = get_catchup_touch(touch_id)
+    return row["user_id"] if row else None
+
+
+def has_catchup_touch(user_id: int, profile_url: str, event_type: "CatchupEventType",
+                      event_period: str) -> bool:
+    """True if this exact milestone has already been drafted/sent — checked before drafting so we
+    don't spend an LLM call on a moment the unique key would reject anyway."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT 1 FROM catchup_touches WHERE user_id = %s AND profile_url = %s "
+            "AND event_type = %s AND event_period = %s LIMIT 1",
+            (user_id, profile_url, str(event_type), event_period))
+        return cursor.fetchone() is not None
+    except mysql.connector.Error as err:
+        myprint(f"Could not check catchup touch for user_id {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_catchup_touches(user_id: int, status_filter: str = None, event_type_filter: str = None,
+                        page: int = 1, page_size: int = 25, sort_order: str = "desc") -> dict:
+    """Paginated list of a user's catch-up touches (mirrors get_connection_requests)."""
+    order = "ASC" if str(sort_order).lower() == "asc" else "DESC"
+    where = "WHERE user_id = %s"
+    params: list = [user_id]
+    if status_filter:
+        where += " AND status = %s"
+        params.append(status_filter)
+    if event_type_filter:
+        where += " AND event_type = %s"
+        params.append(event_type_filter)
+    offset = max(0, (max(1, page) - 1) * page_size)
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(f"SELECT COUNT(*) AS c FROM catchup_touches {where}", tuple(params))
+        total = int(cursor.fetchone()["c"])
+        cursor.execute(
+            f"SELECT {', '.join(_CATCHUP_COLS)} FROM catchup_touches {where} "
+            f"ORDER BY score DESC, created_at {order} LIMIT %s OFFSET %s",
+            tuple(params + [page_size, offset]))
+        rows = cursor.fetchall()
+        for r in rows:
+            for k in ("created_at", "updated_at"):
+                if isinstance(r.get(k), datetime):
+                    r[k] = r[k].isoformat()
+        return {"touches": rows, "total": total, "page": page, "page_size": page_size}
+    except mysql.connector.Error as err:
+        myprint(f"Could not list catchup touches for user_id {user_id} | Error: {err}")
+        return {"touches": [], "total": 0, "page": page, "page_size": page_size}
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_approved_catchup_touches() -> list:
+    """Approved touches waiting to be sent, highest-scoring first so the best moments go out within
+    the daily cap. Returns (id, user_id) tuples; the cap is enforced by the scanner/send task."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT id, user_id FROM catchup_touches WHERE status = 'approved' "
+            "ORDER BY score DESC, created_at ASC")
+        return cursor.fetchall()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get approved catchup touches | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_orphaned_catchup_touches(lookback_hours: int = 2) -> list:
+    """Touches stuck in 'sending' whose send task was lost (e.g. Celery queue purged on restart).
+    Mirrors get_orphaned_connection_requests. Returns (id, user_id) tuples."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT id, user_id FROM catchup_touches WHERE status = 'sending' "
+            "AND updated_at <= %s ORDER BY updated_at ASC", (cutoff,))
+        return cursor.fetchall()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get orphaned catchup touches | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def count_catchup_touches_sent_today(user_id: int) -> int:
+    """Catch-up DMs sent today (UTC) — the per-day cap is on top of the overall DM cap."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM catchup_touches WHERE user_id = %s AND status = 'sent' "
+            "AND updated_at >= CURDATE()", (user_id,))
+        r = cursor.fetchone()
+        return int(r[0]) if r else 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not count catchup touches for user_id {user_id} | Error: {err}")
+        return 0
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_catchup_touch_status(touch_id: int, status: "CatchupTouchStatus") -> bool:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("UPDATE catchup_touches SET status = %s WHERE id = %s",
+                       (str(status), touch_id))
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not update catchup touch {touch_id} status | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_catchup_touch(touch_id: int, message: str = None, person_name: str = None,
+                         status: "CatchupTouchStatus" = None) -> bool:
+    fields, params = [], []
+    for col, val in (("message", message), ("person_name", person_name)):
+        if val is not None:
+            fields.append(f"{col} = %s")
+            params.append(val)
+    if status is not None:
+        fields.append("status = %s")
+        params.append(str(status))
+    if not fields:
+        return False
+    params.append(touch_id)
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(f"UPDATE catchup_touches SET {', '.join(fields)} WHERE id = %s", tuple(params))
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not update catchup touch {touch_id} | Error: {err}")
         return False
     finally:
         cursor.close()
@@ -5166,6 +5420,20 @@ _DM_DEFAULT_TEMPLATES = {
     "nurture": "Thanks for coming back to me, {first_name} — that's helpful context. Happy to share "
                "what I've seen work on {headline}; would a short call be useful, or shall I just "
                "send over the one thing that would help most?",
+    # Catch-up milestone congratulations (issue #482). The congrats IS the message — no pitch. Each
+    # references the specific moment ({event_detail}) so it can never read as a generic "Congrats!".
+    "job_change": "Hi {first_name}, congratulations on the new role — {event_detail}. That's a great "
+                  "step. What drew you to it?",
+    "promotion": "Hi {first_name}, congratulations on the promotion — {event_detail}. Well earned. "
+                 "What are you most looking forward to in the new scope?",
+    "work_anniversary": "Hi {first_name}, congratulations on the work anniversary — {event_detail}. "
+                        "That's a real milestone. What's changed most for you over that stretch?",
+    "birthday": "Hi {first_name}, happy birthday! Hope you get to step away from the inbox for a bit "
+                "today.",
+    "education": "Hi {first_name}, congratulations — {event_detail}. That's a big commitment to see "
+                 "through. What's next now that it's done?",
+    "in_the_news": "Hi {first_name}, saw you in the news — {event_detail}. Congratulations, that's "
+                   "great visibility. How did it come about?",
 }
 
 
