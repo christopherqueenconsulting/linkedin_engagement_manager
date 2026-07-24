@@ -190,8 +190,22 @@ _BAIT_PATTERNS = [
     r"double[- ]tap",
     r"(repost|share)\s+(this\s+)?if",
     r"comment\s+[\"']?(yes|agree|below|amen|me|👇)\b",
+    # 2026 additions (issue #393): reflex-action asks the algorithm now demotes outright.
+    r"follow\s+(me\s+|us\s+)?for\s+more",
+    r"(hit|smash|tap)\s+(that\s+|the\s+)?(save|follow|subscribe)",
+    r"type\s+[\"'“”]?\w+[\"'“”]?\s+(below|in the comments)",
+    r"drop\s+(a|an)\s+(like|emoji|\d+)\b",
+    r"drop\s+(a|an)\s+[\U0001F300-\U0001FAFF]",
 ]
 _BAIT_RE = re.compile("|".join(_BAIT_PATTERNS), re.IGNORECASE)
+
+
+def contains_engagement_bait(text: Optional[str]) -> bool:
+    """True when `text` asks for a reflex engagement action for its own sake (a one-word reply, a
+    like, a tag, a follow) — the closes LinkedIn demotes in 2026. This is the ONE bait detector:
+    `strip_engagement_bait` removes such lines from drafts, `is_bait_keyword` rejects colliding
+    lead-magnet trigger words, and the content-framework CTA menus are guarded against it."""
+    return bool(text) and bool(_BAIT_RE.search(str(text)))
 
 
 def is_bait_keyword(keyword: Optional[str]) -> bool:

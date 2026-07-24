@@ -85,6 +85,7 @@ def style_directive(prefs: dict = None, content_type: str = "comment") -> str:
     the profile-inferred defaults (tone, length, emoji/hashtag rules, freeform style). The
     comment-length cap only applies to comments — posts and newsletters carry their own length
     guidance in their prompts."""
+    from cqc_lem.utilities.ai.content_framework import hashtag_directive
     if not prefs:
         return ""
     parts = []
@@ -96,7 +97,7 @@ def style_directive(prefs: dict = None, content_type: str = "comment") -> str:
         parts.append(f"Keep it {length} — at most ~{COMMENT_LENGTH_CHARS.get(length, 180)} characters "
                      f"(a few sentences); brevity beats length.")
     parts.append("You may use one tasteful emoji." if prefs.get("use_emojis") else "Do not use emojis.")
-    parts.append("Relevant hashtags are okay." if prefs.get("use_hashtags") else "Do not use any hashtags.")
+    parts.append(hashtag_directive(prefs))
     if prefs.get("comment_style"):
         parts.append(f"Style guidance: {prefs['comment_style']}.")
     return "\n\nStyle requirements (follow these):\n- " + "\n- ".join(parts) + "\n"

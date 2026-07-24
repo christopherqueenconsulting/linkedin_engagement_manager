@@ -1,6 +1,6 @@
 """Configurability-audit tests: generation/refinement prompts must be driven by the user's
-engagement preferences (use_emojis / use_hashtags / tone) when set, and keep the pre-audit
-default wording when no prefs are supplied — no behavior change for unconfigured callers."""
+engagement preferences (use_emojis / use_hashtags / tone) when set. Hashtags follow the shared
+2026 policy (issue #393) — OFF unless the user explicitly opted in, in every prompt builder."""
 
 import json
 
@@ -29,22 +29,22 @@ class TestPostRefinementPrefs:
             get_ai_linked_post_refinement("Draft post", prefs=prefs)
         return _messages_text(llm)
 
-    def test_default_keeps_original_emoji_and_hashtag_lines(self):
+    def test_default_keeps_emoji_line_but_drops_hashtags(self):
         text = self._run(prefs=None)
         assert "Use emojis (✅, 👉, 🔑, 💡)" in text
-        assert "Place all hashtags together on the final line" in text
+        assert "Do NOT include any hashtags" in text
         assert "Do NOT use any emojis" not in text
 
     def test_emojis_off_instructs_removal(self):
         text = self._run(prefs={"use_emojis": False, "use_hashtags": True})
         assert "Do NOT use any emojis" in text
         assert "Use emojis (✅, 👉, 🔑, 💡)" not in text
-        assert "Place all hashtags together on the final line" in text
+        assert "at most 3 highly relevant hashtags" in text
 
     def test_hashtags_off_instructs_removal(self):
         text = self._run(prefs={"use_emojis": True, "use_hashtags": False})
-        assert "Do NOT add hashtags" in text
-        assert "Place all hashtags together on the final line" not in text
+        assert "Do NOT include any hashtags" in text
+        assert "at most 3 highly relevant hashtags" not in text
         assert "Use emojis (✅, 👉, 🔑, 💡)" in text
 
     def test_configured_tone_is_preserved(self):
@@ -80,14 +80,13 @@ class TestSummaryPostHashtagPrefs:
         from cqc_lem.utilities.linkedin.profile import LinkedInProfile
         return LinkedInProfile(**sample_linkedin_profile)
 
-    def test_blog_summary_default_keeps_hashtag_instruction(self, sample_linkedin_profile):
+    def test_blog_summary_default_has_no_hashtags(self, sample_linkedin_profile):
         from cqc_lem.utilities.ai.ai_helper import get_blog_summary_post_from_ai
         with patch(f"{_AI}._call_llm", return_value=_resp("post")) as llm:
             get_blog_summary_post_from_ai("https://x.test/a", "blog body",
                                           self._profile(sample_linkedin_profile), "awareness")
         text = _messages_text(llm)
-        assert "Use up to 5 relevant hashtags" in text
-        assert "Do NOT include any hashtags" not in text
+        assert "Do NOT include any hashtags" in text
 
     def test_blog_summary_hashtags_off(self, sample_linkedin_profile):
         from cqc_lem.utilities.ai.ai_helper import get_blog_summary_post_from_ai
@@ -97,7 +96,6 @@ class TestSummaryPostHashtagPrefs:
                                           prefs={"use_hashtags": False, "use_emojis": False})
         text = _messages_text(llm)
         assert "Do NOT include any hashtags" in text
-        assert "Use up to 5 relevant hashtags" not in text
         assert "Do NOT use any emojis" in text
 
     def test_website_post_hashtags_off(self, sample_linkedin_profile):
@@ -110,12 +108,12 @@ class TestSummaryPostHashtagPrefs:
         assert "Do NOT include any hashtags" in text
         assert "You can use emojis" in text
 
-    def test_website_post_default_unchanged(self, sample_linkedin_profile):
+    def test_website_post_default_has_no_hashtags(self, sample_linkedin_profile):
         from cqc_lem.utilities.ai.ai_helper import get_website_content_post_from_ai
         with patch(f"{_AI}._call_llm", return_value=_resp("post")) as llm:
             get_website_content_post_from_ai("site body", "https://x.test",
                                              self._profile(sample_linkedin_profile), "awareness")
-        assert "Use up to 5 relevant hashtags" in _messages_text(llm)
+        assert "Do NOT include any hashtags" in _messages_text(llm)
 
 
 class TestCarouselHashtagPref:
@@ -136,14 +134,19 @@ class TestCarouselHashtagPref:
             generate_carousel_content(user_id=1, stage="awareness", prefs=prefs)
         return _messages_text(llm)
 
-    def test_default_keeps_hashtag_instruction(self):
+    def test_default_has_no_hashtags(self):
         text = self._run(prefs=None)
-        assert "End with 5-10 relevant hashtags on the final line." in text
+        assert "Do NOT include any hashtags" in text
+        assert "End with 5-10 relevant hashtags" not in text
 
     def test_hashtags_off(self):
         text = self._run(prefs={"use_hashtags": False})
-        assert "Do NOT include any hashtags." in text
+        assert "Do NOT include any hashtags" in text
         assert "End with 5-10 relevant hashtags" not in text
+
+    def test_hashtags_opt_in_is_capped(self):
+        text = self._run(prefs={"use_hashtags": True})
+        assert "at most 3 highly relevant hashtags" in text
 
     def test_falls_back_to_cached_profile_before_generic_persona(self):
         from cqc_lem.utilities.ai.ai_helper import generate_carousel_content

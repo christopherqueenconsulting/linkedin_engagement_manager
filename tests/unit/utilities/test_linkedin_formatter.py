@@ -4,7 +4,41 @@ import pytest
 from cqc_lem.utilities.ai.content_alignment import LEAD_MAGNET_CTA_REPAIR_MENU
 from cqc_lem.utilities.linkedin_formatter import (
     sanitize_for_linkedin, normalize_public_text, PLAIN_PUNCTUATION_DIRECTIVE,
-    strip_engagement_bait, is_bait_keyword)
+    strip_engagement_bait, is_bait_keyword, contains_engagement_bait)
+
+
+@pytest.mark.unit
+class TestContainsEngagementBait:
+    """The ONE bait detector — shared by the stripper, the lead-magnet keyword guard, and the
+    content-framework CTA-menu test (issue #393)."""
+
+    @pytest.mark.parametrize("bait", [
+        "Follow for more tips like this.",
+        "Follow me for more.",
+        "Smash that save button.",
+        "Hit follow if this helped.",
+        "Type INFO below and I'll send it.",
+        "Type 'GUIDE' in the comments.",
+        "Drop a like if you're with me.",
+        "Drop a 🔥 if you relate.",
+    ])
+    def test_detects_2026_bait(self, bait):
+        assert contains_engagement_bait(bait)
+
+    @pytest.mark.parametrize("clean", [
+        "",
+        None,
+        "What would you do differently, and why?",
+        "Comment AUDIT and I'll DM you the checklist.",
+        "Save this for the next time you scope a launch.",
+        "Tell me where I'm wrong in the comments.",
+    ])
+    def test_leaves_genuine_ctas_alone(self, clean):
+        assert not contains_engagement_bait(clean)
+
+    def test_new_patterns_are_stripped_from_drafts(self):
+        text = "A real insight worth reading.\n\nFollow for more tips like this."
+        assert strip_engagement_bait(text) == "A real insight worth reading."
 
 
 @pytest.mark.unit
