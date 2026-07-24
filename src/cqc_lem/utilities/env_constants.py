@@ -33,7 +33,10 @@ LI_CLIENT_ID = get_constant_from_env('LI_CLIENT_ID')
 LI_CLIENT_SECRET = get_constant_from_env('LI_CLIENT_SECRET')
 LI_REDIRECT_URL = get_constant_from_env('LI_REDIRECT_URL')
 LI_STATE_SALT = get_constant_from_env('LI_STATE_SALT')
-LI_API_VERSION = get_constant_from_env('LI_API_VERSION', default_value='202501')
+# LinkedIn retires versioned-API versions ~a year after issue; a retired value makes every
+# /rest/* call fail 426 NONEXISTENT_VERSION. Bump this — AND LI_API_VERSION in the deployment
+# .env, which overrides it — at least annually. See upload_document() in linkedin/poster.py.
+LI_API_VERSION = get_constant_from_env('LI_API_VERSION', default_value='202606')
 PEXELS_API_KEY = get_constant_from_env('PEXELS_API_KEY')
 PERPLEXITY_API_KEY = get_constant_from_env('PERPLEXITY_API_KEY')
 HF_TOKEN = get_constant_from_env('HF_TOKEN')

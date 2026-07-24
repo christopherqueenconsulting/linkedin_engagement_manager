@@ -410,7 +410,7 @@ class TestPlanContentForUser:
         from cqc_lem.app.run_content_plan import plan_content_for_user
         plan_content_for_user.run(user_id=1)
         plan = mock_save.call_args.args[1]
-        valid_types = {"carousel", "text", "video"}
+        valid_types = {"carousel", "text", "video", "document"}
         for entry in plan:
             assert entry["post_type"] in valid_types
 

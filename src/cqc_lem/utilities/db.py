@@ -64,6 +64,7 @@ class PostType(StrEnum):
     TEXT = 'text'
     CAROUSEL = 'carousel'
     VIDEO = 'video'
+    DOCUMENT = 'document'  # native PDF/document post — highest-reach 2026 format
 
 
 class PostStatus(StrEnum):
@@ -4340,7 +4341,7 @@ def get_unposted_posts_missing_assets(within_days: int = 14) -> list:
               AND scheduled_time <= NOW() + INTERVAL %s DAY
               AND (
                     (post_type = 'video'    AND (video_url IS NULL OR video_url = ''))
-                 OR (post_type = 'carousel' AND (
+                 OR (post_type IN ('carousel', 'document') AND (
                         carousel_slides IS NULL OR carousel_slides = '' OR carousel_slides = '[]'
                         OR (carousel_slides NOT LIKE '%%http%%'
                             AND carousel_slides NOT LIKE '%%/assets%%'

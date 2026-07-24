@@ -1,6 +1,8 @@
 import json
 import os
 import re
+import shutil
+import tempfile
 import uuid
 from typing import List, Optional, Annotated, Dict
 
@@ -10,13 +12,14 @@ from pydantic import BaseModel, Field
 from pydantic.types import StringConstraints
 
 from cqc_lem.utilities.db import get_user_linked_sub_id, get_user_access_token
-from cqc_lem.utilities.logger import myprint
+from cqc_lem.utilities.env_constants import LI_API_VERSION
+from cqc_lem.utilities.logger import myprint, log_info, log_warning, log_error
 from cqc_lem.utilities.mime_type_helper import get_file_mime_type
 from cqc_lem.utilities.utils import get_file_extension_from_filepath
 
 # Define annotations for constrained strings
 ReadyStatus = Annotated[str, StringConstraints(pattern=r'^(READY)$')]
-ShareMediaCategory = Annotated[str, StringConstraints(pattern=r'^(NONE|ARTICLE|IMAGE|VIDEO)$')]
+ShareMediaCategory = Annotated[str, StringConstraints(pattern=r'^(NONE|ARTICLE|IMAGE|VIDEO|DOCUMENT)$')]
 NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
 
 
@@ -298,6 +301,229 @@ def share_carousel_on_linkedin(user_id: int, content: str, slide_texts: list[str
     myprint(f"Carousel shared on LinkedIn: https://www.linkedin.com/feed/update/{urn}")
     return urn
 
+
+# --- native document (PDF) posts -----------------------------------------------
+# LinkedIn's document format is a DIFFERENT feed object than a multi-image share: it
+# renders as a swipeable, downloadable deck and is the highest-reach 2026 format. It is
+# published through the VERSIONED Documents API (/rest/documents + /rest/posts), not the
+# legacy multi-image ugcPost path used by share_carousel_on_linkedin. The legacy
+# assets/ugcPost DOCUMENT path is kept as a fallback for tokens whose app is not
+# provisioned for the versioned API.
+
+DOCUMENT_TITLE_MAX = 100
+
+
+def _document_title(content: str, fallback: str = "Document") -> str:
+    """Derive the in-feed deck title from the post body's first non-empty line."""
+    for line in (content or "").splitlines():
+        line = line.strip()
+        if line:
+            return line[:DOCUMENT_TITLE_MAX]
+    return fallback
+
+
+def upload_document(access_token: str, owner_sub_id: str, document_path: str) -> Optional[str]:
+    """Upload a PDF via the versioned Documents API. Returns the urn:li:document:... URN."""
+    init_response = requests.post(
+        "https://api.linkedin.com/rest/documents?action=initializeUpload",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "LinkedIn-Version": LI_API_VERSION,
+            "X-Restli-Protocol-Version": "2.0.0",
+        },
+        json={"initializeUploadRequest": {"owner": f"urn:li:person:{owner_sub_id}"}},
+        timeout=30,
+    )
+    # A retired LinkedIn-Version answers 426 NONEXISTENT_VERSION on every versioned call, which
+    # would otherwise look like "app not provisioned" and silently demote every document post to
+    # the legacy path. Name the real cause so it's a config fix, not a debugging session.
+    if init_response.status_code == 426:
+        log_error(f"LinkedIn API version {LI_API_VERSION} is retired — set LI_API_VERSION to a "
+                  f"current version to publish native documents",
+                  api_provider="linkedin", http_status=426)
+    init_response.raise_for_status()
+
+    value = init_response.json().get("value", {})
+    upload_url = value.get("uploadUrl")
+    document_urn = value.get("document")
+    if not upload_url or not document_urn:
+        raise ValueError(f"Documents API returned no upload URL/URN: {value}")
+
+    with open(document_path, "rb") as document_file:
+        document_bytes = document_file.read()
+
+    upload_response = requests.put(
+        upload_url,
+        headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/octet-stream"},
+        data=document_bytes,
+        timeout=120,
+    )
+    if upload_response.status_code not in (200, 201):
+        raise RuntimeError(f"Document upload failed with status {upload_response.status_code}")
+
+    log_info("Document uploaded to LinkedIn", api_provider="linkedin")
+    return document_urn
+
+
+def _create_document_post_versioned(access_token: str, author: str, content: str,
+                                    document_urn: str, title: str) -> Optional[str]:
+    """Publish the uploaded document through the versioned /rest/posts endpoint."""
+    response = requests.post(
+        "https://api.linkedin.com/rest/posts",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "LinkedIn-Version": LI_API_VERSION,
+            "X-Restli-Protocol-Version": "2.0.0",
+        },
+        json={
+            "author": author,
+            "commentary": content,
+            "visibility": "PUBLIC",
+            "distribution": {
+                "feedDistribution": "MAIN_FEED",
+                "targetEntities": [],
+                "thirdPartyDistributionChannels": [],
+            },
+            "content": {"media": {"title": title, "id": document_urn}},
+            "lifecycleState": "PUBLISHED",
+            "isReshareDisabledByAuthor": False,
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+
+    # The versioned API returns the new post's URN in the x-restli-id header; some
+    # responses echo it in the body instead.
+    urn = response.headers.get("x-restli-id")
+    if not urn:
+        try:
+            urn = response.json().get("id")
+        except ValueError:
+            urn = None
+    return urn
+
+
+def _create_document_post_legacy(access_token: str, owner_sub_id: str, content: str,
+                                 document_path: str, title: str) -> Optional[str]:
+    """Fallback: legacy assets upload + ugcPost with shareMediaCategory=DOCUMENT."""
+    asset_urn = upload_media(access_token, owner_sub_id, document_path, "document")
+
+    share_content = ShareContent(
+        shareCommentary={"text": content},
+        shareMediaCategory="DOCUMENT",
+        media=[ShareMedia(status="READY", media=asset_urn, title={"text": title}).model_dump()],
+    ).model_dump()
+
+    restli_client = _restli()
+    posts_create_response = restli_client.create(
+        resource_path="/ugcPosts",
+        entity={
+            "author": f"urn:li:person:{owner_sub_id}",
+            "lifecycleState": "PUBLISHED",
+            "specificContent": {
+                "com.linkedin.ugc.ShareContent": {
+                    **share_content
+                }
+            },
+            "visibility": {
+                "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"
+            },
+        },
+        access_token=access_token,
+    )
+    return posts_create_response.entity_id
+
+
+def share_document_on_linkedin(user_id: int, content: str, slides: list[str],
+                               post_id: Optional[int] = None,
+                               title: Optional[str] = None) -> Optional[str]:
+    """Publish a NATIVE document post: the rendered carousel slides bundled into one PDF.
+
+    ``slides`` holds the same entries as a carousel post — absolute paths to slide PNGs or
+    asset URLs. Every slide must resolve to a real image; a partial deck is never posted
+    (the caller flags the post 'error' instead), matching share_carousel_on_linkedin.
+    """
+    from cqc_lem.utilities.carousel_creator import create_carousel_pdf
+
+    linked_sub_id = get_user_linked_sub_id(user_id)
+    access_token = get_user_access_token(user_id)
+
+    if not linked_sub_id or not access_token:
+        log_warning("No LinkedIn credentials found — cannot post document", user_id=user_id)
+        return None
+
+    local_paths: List[str] = []
+    tmp_paths: List[str] = []
+    # Without a post_id there is no per-post assets dir to write the PDF into, so it goes to
+    # a temp dir that we own and delete once the upload is done (or has failed).
+    tmp_pdf_dir: Optional[str] = None
+    try:
+        for slide in slides or []:
+            if _is_image_url(slide):
+                path = download_media(slide)
+                tmp_paths.append(path)
+            elif _is_local_image_path(slide) and os.path.isfile(slide):
+                path = slide
+            else:
+                log_warning("Document slide is not a real image — not posting",
+                            user_id=user_id, post_id=post_id)
+                return None
+            local_paths.append(path)
+
+        if not local_paths:
+            log_warning("Document post has no slides — not posting", user_id=user_id, post_id=post_id)
+            return None
+
+        if post_id is None:
+            tmp_pdf_dir = tempfile.mkdtemp()
+        pdf_path = create_carousel_pdf(
+            local_paths,
+            post_id if post_id is not None else user_id,
+            output_dir=tmp_pdf_dir,
+        )
+
+        if not pdf_path:
+            log_warning("Could not build document PDF from slides", user_id=user_id, post_id=post_id)
+            return None
+
+        deck_title = title or _document_title(content)
+
+        try:
+            document_urn = upload_document(access_token, linked_sub_id, pdf_path)
+            urn = _create_document_post_versioned(access_token, f"urn:li:person:{linked_sub_id}",
+                                                  content, document_urn, deck_title)
+        except Exception as e:
+            # Nothing is published until /rest/posts succeeds, so retrying on the legacy path
+            # cannot duplicate the post.
+            log_warning("Versioned Documents API failed — falling back to legacy ugcPost document",
+                        exc=e, user_id=user_id, post_id=post_id, api_provider="linkedin")
+            try:
+                urn = _create_document_post_legacy(access_token, linked_sub_id, content, pdf_path, deck_title)
+            except Exception as legacy_error:
+                log_error("Document post failed on both the versioned and legacy paths",
+                          exc=legacy_error, user_id=user_id, post_id=post_id, api_provider="linkedin")
+                return None
+
+        if not urn:
+            log_error("Document post returned no URN", user_id=user_id, post_id=post_id, api_provider="linkedin")
+            return None
+
+        log_info(f"Document shared on LinkedIn: https://www.linkedin.com/feed/update/{urn}",
+                 user_id=user_id, post_id=post_id, api_provider="linkedin")
+        return urn
+    finally:
+        # Best-effort scratch cleanup: the post is already published (or already failed) at this
+        # point, so a leftover temp file must never change the outcome — log it and move on.
+        for path in tmp_paths:
+            try:
+                os.remove(path)
+            except OSError as e:
+                log_warning("Could not remove temporary document slide", exc=e,
+                            user_id=user_id, post_id=post_id)
+        if tmp_pdf_dir:
+            shutil.rmtree(tmp_pdf_dir, ignore_errors=True)
 
 
 # --- socialActions comments API -------------------------------------------------

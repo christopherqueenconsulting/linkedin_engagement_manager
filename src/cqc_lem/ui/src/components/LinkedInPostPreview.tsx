@@ -114,7 +114,9 @@ export default function LinkedInPostPreview({
   const hasMore = lines.length > 3 || content.length > 300
 
   const showVideo = (postType === 'video' || !!videoUrl) && !!videoUrl
-  const showCarousel = !showVideo && postType === 'carousel' && !!slides && slides.length > 0
+  // A native document post is the same slide deck as a carousel, published as one PDF.
+  const showCarousel = !showVideo && (postType === 'carousel' || postType === 'document')
+    && !!slides && slides.length > 0
   const showImage = !showVideo && !showCarousel && !!mediaUrl
 
   return (

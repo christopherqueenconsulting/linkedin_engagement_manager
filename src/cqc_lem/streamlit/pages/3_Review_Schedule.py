@@ -6,7 +6,7 @@ import pandas as pd
 import pytz
 import requests
 import streamlit as st
-from cqc_lem.utilities.db import PostStatus
+from cqc_lem.utilities.db import PostStatus, PostType
 from cqc_lem.utilities.env_constants import LINKEDIN_PREVIEW_URL, CODE_TRACING, TZ, API_URL_FINAL
 from cqc_lem.utilities.jaeger_tracer_helper import get_jaeger_tracer
 from st_aggrid import AgGrid, GridOptionsBuilder, DataReturnMode, GridUpdateMode
@@ -104,7 +104,7 @@ with (tracer.start_as_current_span("review_schedule") if tracer else nullcontext
 
         # Configure post_type column as a dropdown with enum values
         gb.configure_column("post_type", editable=True, cellEditor='agSelectCellEditor',
-                            cellEditorParams={'values': ['text', 'carousel', 'video']})
+                            cellEditorParams={'values': [post_type.value for post_type in PostType]})
         # Configure status column as a dropdown with custom values
         gb.configure_column("status", editable_wheel=True, cellEditor='agSelectCellEditor',
                             cellEditorParams={'values': [status.value for status in PostStatus]})
