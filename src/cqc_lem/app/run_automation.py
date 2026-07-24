@@ -2103,12 +2103,50 @@ def _followup_reply_key(post_key: str, replier_href: str, reply_text: str) -> st
     return f"{post_key}#reply:{slug}:{digest}"
 
 
+# SDUI comment thread (validated live 2026-07-24 on a moderated group post, issue #478):
+#   * comments render as [data-testid='expandable-text-box'] INSIDE [data-testid*='commentList']
+#     — but ONLY once scrolled into view (a long post pushes them far below the fold);
+#   * a comment's author is the header /in/ link that is NOT inside the text box (an @mention in a
+#     reply body is also an /in/ link — that was the false "mine" match);
+#   * replies are nested inside their parent comment's container (DOM containment);
+#   * the like control is a button whose aria-label starts "React " (e.g. "React Like"); the reply
+#     control is aria-label="Reply". "…more" truncates long replies until expanded.
+_COMMENTLIST_TEXTBOX = "[data-testid*='commentList'] [data-testid='expandable-text-box']"
+
+
+def _comment_header_author(driver, container) -> str:
+    """A comment's author profile href from its HEADER link — never an @mention inside the body
+    text box (that false match flagged a reply that mentioned us as 'ours')."""
+    try:
+        return driver.execute_script(
+            "const c=arguments[0];"
+            "for(const a of c.querySelectorAll(\"a[href*='/in/']\")){"
+            "  if(!a.closest(\"[data-testid='expandable-text-box']\")) return (a.href||'').split('?')[0];"
+            "}return '';", container) or ""
+    except Exception:
+        return ""
+
+
+def _comment_container(driver, textbox):
+    """Smallest ancestor of a comment text box that carries a HEADER author link and is not the
+    post wrapper (which uniquely has the GIF/Repost/Emoji composer buttons)."""
+    try:
+        return driver.execute_script(
+            "let el=arguments[0],d=0;while(el&&d<10){"
+            " const hdr=[...el.querySelectorAll(\"a[href*='/in/']\")].some(a=>!a.closest(\"[data-testid='expandable-text-box']\"));"
+            " const post=[...el.querySelectorAll('button')].some(b=>/GIF|Repost|Emoji Picker/.test(b.getAttribute('aria-label')||''));"
+            " if(hdr&&!post) return el; el=el.parentElement;d++;}return null;", textbox)
+    except Exception:
+        return None
+
+
 def _react_to_comment_inline(driver, wait, comment_el, user_id: int = None) -> bool:
-    """Like a specific comment/reply element (best-effort, non-fatal). Skips if already reacted."""
+    """Like a comment/reply (best-effort, non-fatal). The like button's aria-label starts 'React '
+    (e.g. 'React Like'); skip if already reacted (aria-pressed)."""
     try:
         btns = comment_el.find_elements(
             By.CSS_SELECTOR,
-            "button[aria-label^='React Like'], button[aria-label='Like'], button[aria-label*='Like']")
+            "button[aria-label^='React '], button[aria-label='Like'], button[aria-label*='Like']")
         for b in btns:
             if (b.get_attribute("aria-pressed") or "").lower() == "true":
                 return False  # already liked
@@ -2117,59 +2155,21 @@ def _react_to_comment_inline(driver, wait, comment_el, user_id: int = None) -> b
             b.click()
             time.sleep(random.uniform(1, 2))
             return True
+        # Log what IS present so a live run surfaces the real label if this misses.
+        labels = [b.get_attribute("aria-label") for b in comment_el.find_elements(By.CSS_SELECTOR, "button")]
+        log_warning(f"No like button matched on reply; buttons={[l for l in labels if l][:8]}",
+                    action_type="engaged", user_id=user_id)
         return False
     except Exception as e:
         log_warning("Could not react to comment reply", exc=e, action_type="engaged", user_id=user_id)
         return False
 
 
-def _our_comment_elements(driver, comments, our_slug: str) -> list:
-    """From the thread's comment items, the ones WE authored (our profile slug in an author link)."""
-    ours = []
-    for c in comments:
-        try:
-            if c.find_elements(By.CSS_SELECTOR, f"a[href*='/in/{our_slug}']"):
-                ours.append(c)
-        except Exception:
-            continue
-    return ours
-
-
-def _replies_under_comment(driver, our_comment_el, our_slug: str) -> list:
-    """(reply_item, replier_href) for each reply nested under our comment that is NOT ours. Walks up
-    from each non-self /in/ author link inside our comment's subtree to the reply's text container."""
-    out, seen = [], set()
-    try:
-        links = our_comment_el.find_elements(By.CSS_SELECTOR, "a[href*='/in/']")
-    except Exception:
-        return out
-    for a in links:
-        try:
-            href = (a.get_attribute("href") or "").split("?")[0]
-        except Exception:
-            continue
-        if not href or f"/in/{our_slug}" in href:
-            continue  # our own author link (the parent comment)
-        item = driver.execute_script(
-            "let el=arguments[0],d=0;while(el&&d<6){"
-            "if(el.querySelector&&el.querySelector(\"[data-testid='expandable-text-box']\"))return el;"
-            "el=el.parentElement;d++;}return null;", a)
-        if item is None:
-            continue
-        marker = href + "|" + (item.get_attribute("data-id") or item.id or "")
-        if marker in seen:
-            continue
-        seen.add(marker)
-        out.append((item, href))
-    return out
-
-
 def _followup_on_post_comment_replies(driver, wait, user_id: int, post_url: str, post_key: str,
                                       my_profile, profile_synthesis: str, prefs: dict,
                                       replies_remaining: int) -> dict:
     """Revisit ONE post we commented on: react to replies to our comment, and answer question-replies.
-    Returns {'reacted': n, 'replied': n}. Best-effort/non-fatal; DOM targeting is validated on a
-    supervised first run (issue #478)."""
+    Returns {'reacted': n, 'replied': n}. Best-effort/non-fatal (issue #478)."""
     result = {"reacted": 0, "replied": 0}
     path = urlparse(str(my_profile.profile_url)).path
     our_slug = path.split("/")[2] if len(path.split("/")) > 2 else None
@@ -2180,51 +2180,72 @@ def _followup_on_post_comment_replies(driver, wait, user_id: int, post_url: str,
     if driver.current_url.split("?")[0].rstrip("/") != post_url.split("?")[0].rstrip("/"):
         driver.get(post_url)
         time.sleep(random.uniform(2.5, 4))
-    # Expand hidden replies so ours (and their replies) are in the DOM.
-    for _ in range(5):
-        if not click_first(driver, wait,
-                           [(By.XPATH, "//button[contains(@aria-label,'more repl') or "
-                                       "contains(normalize-space(),'more repl') or "
-                                       "contains(normalize-space(),'Load more')]")],
-                           "Expand replies", required=False):
+    # A long post pushes comments far below the fold; scroll thoroughly so they lazy-render.
+    for _ in range(10):
+        driver.execute_script("window.scrollBy(0, 1000);")
+        time.sleep(random.uniform(0.9, 1.4))
+        cl = driver.find_elements(By.CSS_SELECTOR, "[data-testid*='commentList']")
+        if cl:
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", cl[0])
+    # Expand truncated replies + hidden reply threads.
+    for _ in range(6):
+        exp = [b for b in driver.find_elements(By.CSS_SELECTOR, "[data-testid*='commentList'] button")
+               if re.search(r'\bmore\b|repl', (b.text or ''), re.I)]
+        if not exp:
             break
-        time.sleep(random.uniform(1.5, 2.5))
+        try:
+            driver.execute_script("arguments[0].click();", exp[0]); time.sleep(random.uniform(1.2, 2))
+        except Exception:
+            break
 
-    comments = _comment_items_from_thread(driver)
-    for our_comment in _our_comment_elements(driver, comments, our_slug):
-        for reply_item, replier_href in _replies_under_comment(driver, our_comment, our_slug):
-            if result["reacted"] >= _MAX_FOLLOWUP_REACTS_PER_RUN:
-                return result
-            try:
-                tb = reply_item.find_elements(By.CSS_SELECTOR, "[data-testid='expandable-text-box']")
-                reply_text = ((tb[0].text if tb else reply_item.text) or "").strip()
-            except Exception:
-                continue
-            if not reply_text:
-                continue
-            reply_key = _followup_reply_key(post_key, replier_href, reply_text)
-            state = get_comment_followup(user_id, reply_key) or {}
-            did_react = bool(state.get("reacted"))
-            did_reply = bool(state.get("replied"))
-            if not did_react:
-                if _react_to_comment_inline(driver, wait, reply_item, user_id=user_id):
-                    result["reacted"] += 1
-                    did_react = True
-                    record_comment_followup(user_id, post_key, reply_key, reacted=True)
-                    insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
-                                   result=LogResultType.SUCCESS, post_url=post_url,
-                                   message="Reacted to reply on our comment")
-            # Auto-reply only to questions, and only while under the daily reply cap.
-            if not did_reply and replies_remaining > 0 and _reply_is_question(reply_text):
-                response = generate_thread_reply(reply_text, reply_text, my_profile, prefs=prefs,
-                                                 profile_synthesis=profile_synthesis)
-                if response and _reply_to_comment_inline(driver, wait, reply_item, response, user_id=user_id):
-                    result["replied"] += 1
-                    replies_remaining -= 1
-                    record_comment_followup(user_id, post_key, reply_key, reacted=did_react, replied=True)
-                    insert_new_log(user_id=user_id, action_type=LogActionType.REPLY,
-                                   result=LogResultType.SUCCESS, post_url=post_url, message=response)
-                    time.sleep(random.uniform(5, 12))
+    boxes = driver.find_elements(By.CSS_SELECTOR, _COMMENTLIST_TEXTBOX)
+    # Map each comment text box -> (container, author_href).
+    items = []
+    for tb in boxes:
+        cont = _comment_container(driver, tb)
+        if cont is None:
+            continue
+        items.append((tb, cont, _comment_header_author(driver, cont)))
+    our_conts = [c for (_tb, c, a) in items if f"/in/{our_slug}" in a]
+    log_info(f"Follow-up: {len(boxes)} comment box(es), {len(our_conts)} ours, on {post_url}",
+             user_id=user_id, task_name="sweep_comment_followups")
+
+    for tb, cont, author in items:
+        if result["reacted"] >= _MAX_FOLLOWUP_REACTS_PER_RUN:
+            break
+        if not author or f"/in/{our_slug}" in author:
+            continue  # skip our own comments/replies
+        # Only replies to OUR comment: the reply's container is nested inside one of ours.
+        if not any(driver.execute_script("return arguments[0].contains(arguments[1]);", oc, cont)
+                   for oc in our_conts):
+            continue
+        try:
+            reply_text = (tb.text or "").strip()
+        except Exception:
+            continue
+        if not reply_text:
+            continue
+        reply_key = _followup_reply_key(post_key, author, reply_text)
+        state = get_comment_followup(user_id, reply_key) or {}
+        did_react = bool(state.get("reacted"))
+        did_reply = bool(state.get("replied"))
+        if not did_react and _react_to_comment_inline(driver, wait, cont, user_id=user_id):
+            result["reacted"] += 1
+            did_react = True
+            record_comment_followup(user_id, post_key, reply_key, reacted=True)
+            insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
+                           result=LogResultType.SUCCESS, post_url=post_url,
+                           message="Reacted to reply on our comment")
+        if not did_reply and replies_remaining > 0 and _reply_is_question(reply_text):
+            response = generate_thread_reply(reply_text, reply_text, my_profile, prefs=prefs,
+                                             profile_synthesis=profile_synthesis)
+            if response and _reply_to_comment_inline(driver, wait, cont, response, user_id=user_id):
+                result["replied"] += 1
+                replies_remaining -= 1
+                record_comment_followup(user_id, post_key, reply_key, reacted=did_react, replied=True)
+                insert_new_log(user_id=user_id, action_type=LogActionType.REPLY,
+                               result=LogResultType.SUCCESS, post_url=post_url, message=response)
+                time.sleep(random.uniform(5, 12))
     return result
 
 
