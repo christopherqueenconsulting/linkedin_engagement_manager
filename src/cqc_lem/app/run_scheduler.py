@@ -9,7 +9,7 @@ from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.app.run_automation import automate_commenting, automate_profile_viewer_engagement, \
     automate_appreciation_dms_for_user, clean_stale_invites, update_stale_profile, post_to_linkedin, \
     automate_invites_to_company_page_for_user, send_scheduled_dm, send_connection_request, \
-    sweep_reply_comments
+    sweep_reply_comments, sweep_comment_followups
 from cqc_lem.utilities.db import (
     get_ready_to_post_posts, get_orphaned_scheduled_posts, update_db_post_status,
     get_active_user_ids, PostStatus, has_linkedin_session, has_scheduled_post_today,
@@ -279,6 +279,36 @@ def dispatch_scheduled_reply_sweeps():
             sweep_reply_comments.apply_async(kwargs={'user_id': user_id})
             dispatched += 1
     return f"Scheduled reply sweeps dispatched for {dispatched}/{len(users)} user(s)"
+
+
+@shared_task.task
+def dispatch_comment_followups():
+    """Beat: revisit posts each user automated a comment on recently and follow up on replies to our
+    comment — react, and answer question-replies (issue #478). One sweep per active user with a
+    LinkedIn session, per-user interval-gated to ~twice a day; sweep_comment_followups is QueueOnce +
+    429-safe so an extra dispatch is harmless."""
+    if _skip_if_throttled("dispatch_comment_followups"):
+        return "Automation throttled"
+    from cqc_lem.utilities.linkedin.rate_limit import _redis_client
+    users = get_active_user_ids()
+    if not users:
+        return "No active users"
+    client = _redis_client()
+    dispatched = 0
+    for user_id in users:
+        if not has_linkedin_session(user_id):
+            continue
+        due = True
+        if client is not None:
+            try:
+                due = bool(client.set(f"linkedin:last_comment_followup:{user_id}", "1",
+                                      nx=True, ex=12 * 60 * 60))  # ~twice a day
+            except Exception:
+                due = True
+        if due:
+            sweep_comment_followups.apply_async(kwargs={'user_id': user_id})
+            dispatched += 1
+    return f"Comment follow-up sweeps dispatched for {dispatched}/{len(users)} user(s)"
 
 
 def _max_dt(*dts):

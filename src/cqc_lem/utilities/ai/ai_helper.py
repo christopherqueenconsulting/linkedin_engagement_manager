@@ -734,6 +734,38 @@ def generate_thread_reply(post_content: str, comment_text: str, profile: "Linked
                           profile_synthesis=profile_synthesis, prefs=prefs)
 
 
+def generate_comment_reply_followup(their_reply: str, profile: "LinkedInProfile",
+                                    our_comment: str = None, post_content: str = None,
+                                    prefs: dict = None, profile_synthesis: str = None) -> "str | None":
+    """Reply to someone who replied to OUR comment on SOMEONE ELSE'S post (issue #478). Unlike
+    generate_thread_reply, we are NOT the post author here — we're a guest in their thread, so the
+    prompt must not speak as if we own the post. Acknowledge their specific point, add one useful
+    thought, optionally a light question. Short, in our own voice."""
+    system_prompt = {
+        "role": "system",
+        "content": """You are replying to someone who responded to YOUR comment on SOMEONE ELSE'S
+        post. You are a helpful guest in their thread — do NOT speak as if you own the post or thank
+        them for posting. Briefly acknowledge their SPECIFIC point, add ONE useful thought, and
+        optionally end with a light, genuine question. Warm, human, in your own voice, 1–3 sentences.
+        No links, no hashtags, no generic 'thanks for sharing'. """ + _NO_SELF_PROMO_GUARDRAIL,
+    }
+    ctx = ""
+    if post_content:
+        ctx += f"The post (NOT mine):\n{post_content}\n\n"
+    if our_comment:
+        ctx += f"My earlier comment:\n{our_comment}\n\n"
+    user_prompt = {"role": "user", "content":
+        f"My voice:\n{_voice_reference(profile, profile_synthesis)}\n\n{ctx}"
+        f"Their reply to me:\n{their_reply}\n{_intention_directive(prefs)}{_style_directive(prefs)}"}
+    response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt],
+                         temperature=round(random.uniform(0.5, 0.7), 2))
+    content = response.choices[0].message.content
+    if content is None:
+        return None
+    return _humanize_text(content.strip(), content_type="comment",
+                          profile_synthesis=profile_synthesis, prefs=prefs)
+
+
 def optimize_post_hook(post_content: str, prefs: dict = None,
                        preserve_cta_keyword: str = None) -> str:
     """Rewrite a generated post so it opens with a scroll-stopping hook within the first ~210

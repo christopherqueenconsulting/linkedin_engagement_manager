@@ -17,7 +17,8 @@ from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.utilities.ai.content_framework import select_blueprint
 from cqc_lem.utilities.ai.ai_helper import generate_ai_response, get_ai_message_refinement, summarize_recent_activity, \
     ai_check_message_history, post_is_relevant, generate_newsletter_edition, generate_group_post, \
-    generate_thread_reply, generate_seed_comment, choose_post_reaction, get_or_create_profile_synthesis, \
+    generate_thread_reply, generate_comment_reply_followup, generate_seed_comment, choose_post_reaction, \
+    get_or_create_profile_synthesis, \
     synthesize_profile
 from cqc_lem.utilities.ai.content_alignment import humanize_text, split_link_for_first_comment, \
     append_link_to_comment
@@ -31,6 +32,8 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     get_lead_magnet_settings, has_received_lead_magnet, record_lead_magnet_sent, \
     LogResultType, has_user_commented_on_post_url, get_post_url_from_log_for_user, get_post_message_from_log_for_user, \
     claim_post_for_comment, mark_post_commented, mark_post_reacted, release_post_claim, has_commented_post, \
+    get_recent_navigable_commented_posts, get_comment_followup, record_comment_followup, \
+    count_followup_replies_today, update_commented_post_key, get_recent_commented_rows_with_text, \
     has_engaged_url_with_x_days, get_post_content, get_post_video_url, update_db_post_status, PostStatus, PostType, \
     update_db_post_content, update_db_post_first_comment_link, get_post_first_comment_link, \
     get_dm_history_for_profile, get_post_status, get_user_blog_url, get_post_type, get_carousel_slides, \
@@ -2017,14 +2020,25 @@ def sweep_reply_comments(self, user_id: int, sweep_slot: int = 0):
     post_ids = get_recent_posted_post_ids(user_id, days=days)
     if not post_ids:
         return "No recent posts to sweep"
+    # Single-flight: QueueOnce uses unlock_before_run (frees the lock at task START to avoid a
+    # crashed task holding it forever), which leaves a narrow window where the email-event trigger
+    # and the scheduled dispatcher could start two concurrent sweeps and double-reply. This lock
+    # closes that window; it fails OPEN if Redis is down. (Belt-and-suspenders with #474.)
+    lock_name = f"sweep_reply_comments:{user_id}"
+    lock_token = acquire_run_lock(lock_name, ttl_seconds=1800)
+    if lock_token is None:
+        myprint(f"Another reply sweep is already running for user {user_id} — skipping.")
+        return "Skipped — another reply sweep in progress"
     try:
         driver, wait, _user_email, my_profile = get_current_profile(user_id=user_id, session_name="Reply Sweep")
     except LinkedInRateLimited as e:
         log_warning("Reply sweep skipped — LinkedIn rate-limited", exc=e, user_id=user_id,
                     task_name="sweep_reply_comments")
+        release_run_lock(lock_name, lock_token)
         return "Skipped — rate limited"
     except Exception as e:
         log_error("Error starting reply sweep", exc=e, user_id=user_id, task_name="sweep_reply_comments")
+        release_run_lock(lock_name, lock_token)
         return f"Failed to start reply sweep: {e}"
     try:
         profile_synthesis = get_or_create_profile_synthesis(user_id, my_profile)
@@ -2039,6 +2053,455 @@ def sweep_reply_comments(self, user_id: int, sweep_slot: int = 0):
         return f"Swept replies on {swept}/{len(post_ids)} recent posts"
     finally:
         quit_gracefully(driver)
+        release_run_lock(lock_name, lock_token)
+
+
+# --- follow-up on replies to OUR automated comments on OTHERS' posts (issue #478) --------------
+# When someone (usually the author) replies to a comment WE automated, we react to their reply and,
+# if it asks a question, post a voice-aligned answer. Scoped to OUR automated comments ONLY: the
+# posts come from the commented_posts ledger (which only holds comments comment_on_feed_inline made
+# — never anything the user typed by hand), so a manual comment is structurally out of scope.
+_FOLLOWUP_WINDOW_DAYS = 3           # only revisit posts we commented on this recently
+_MAX_FOLLOWUP_REACTS_PER_RUN = 25   # volume backstop per post-sweep
+_MAX_FOLLOWUP_REPLIES_PER_DAY = 10  # cap on auto-replies/day (a real DM-like touch)
+
+
+def _post_url_from_key(key: str) -> "str | None":
+    """A navigable LinkedIn post URL from a ledger key. feedurn://urn:li:activity:<id> ->
+    https://www.linkedin.com/feed/update/urn:li:activity:<id>/. Returns None for the legacy
+    feedpost:// hash keys (not navigable) or anything unrecognized."""
+    if not key:
+        return None
+    key = str(key)
+    if key.startswith("feedurn://"):
+        urn = key[len("feedurn://"):]
+        return f"https://www.linkedin.com/feed/update/{urn}/" if urn.startswith("urn:li:") else None
+    if key.startswith("http"):
+        return key
+    return None
+
+
+def _reply_is_question(text: str) -> bool:
+    """True if a reply is asking us something (worth an auto-reply). A literal '?' is the primary
+    signal; strip URLs first so a link's query string never counts. Reactions are handled
+    separately — this only gates whether we also post a reply."""
+    if not text:
+        return False
+    stripped = re.sub(r"https?://\S+", " ", text)
+    return "?" in stripped
+
+
+def _followup_reply_key(post_key: str, replier_href: str, reply_text: str) -> str:
+    """Stable dedup id for a specific reply so we react/reply to it AT MOST ONCE (the #474 lesson —
+    key on identity, not raw text). Anchored to the post, the replier's profile slug, and a
+    NORMALIZED hash of the reply text."""
+    slug = ""
+    if replier_href:
+        m = re.search(r"/in/([^/?#]+)", replier_href)
+        slug = (m.group(1).lower() if m else "")
+    norm = _normalize_post_text(reply_text)[:200]
+    digest = hashlib.sha1(f"{slug}|{norm}".encode("utf-8", "ignore")).hexdigest()[:16]
+    return f"{post_key}#reply:{slug}:{digest}"
+
+
+# SDUI comment thread (validated live 2026-07-24 on a moderated group post, issue #478):
+#   * comments render as [data-testid='expandable-text-box'] INSIDE [data-testid*='commentList']
+#     — but ONLY once scrolled into view (a long post pushes them far below the fold);
+#   * a comment's author is the header /in/ link that is NOT inside the text box (an @mention in a
+#     reply body is also an /in/ link — that was the false "mine" match);
+#   * replies are nested inside their parent comment's container (DOM containment);
+#   * the like control is a button whose aria-label starts "React " (e.g. "React Like"); the reply
+#     control is aria-label="Reply". "…more" truncates long replies until expanded.
+_COMMENTLIST_TEXTBOX = "[data-testid*='commentList'] [data-testid='expandable-text-box']"
+
+
+def _comment_header_author(driver, container) -> str:
+    """A comment's author profile href from its HEADER link — never an @mention inside the body
+    text box (that false match flagged a reply that mentioned us as 'ours')."""
+    try:
+        return driver.execute_script(
+            "const c=arguments[0];"
+            "for(const a of c.querySelectorAll(\"a[href*='/in/']\")){"
+            "  if(!a.closest(\"[data-testid='expandable-text-box']\")) return (a.href||'').split('?')[0];"
+            "}return '';", container) or ""
+    except Exception:
+        return ""
+
+
+def _comment_container(driver, textbox):
+    """Smallest ancestor of a comment text box that carries a HEADER author link and is not the
+    post wrapper (which uniquely has the GIF/Repost/Emoji composer buttons)."""
+    try:
+        return driver.execute_script(
+            "let el=arguments[0],d=0;while(el&&d<10){"
+            " const hdr=[...el.querySelectorAll(\"a[href*='/in/']\")].some(a=>!a.closest(\"[data-testid='expandable-text-box']\"));"
+            " const post=[...el.querySelectorAll('button')].some(b=>/GIF|Repost|Emoji Picker/.test(b.getAttribute('aria-label')||''));"
+            " if(hdr&&!post) return el; el=el.parentElement;d++;}return null;", textbox)
+    except Exception:
+        return None
+
+
+def _react_to_comment_inline(driver, wait, comment_el, user_id: int = None) -> bool:
+    """Like a comment/reply (best-effort, non-fatal). The action bar is HOVER-HIDDEN (the react
+    button is zero-size until the comment is hovered), so hover first, then click the react control
+    ('Open reactions menu' on this SDUI; a single click applies the default Like). If the click
+    opens the reaction flyout instead, pick the visible 'Like'. Skips if already reacted."""
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", comment_el)
+        try:
+            ActionChains(driver).move_to_element(comment_el).pause(0.7).perform()  # reveal the bar
+            time.sleep(random.uniform(0.5, 1.0))
+        except Exception:
+            pass  # hover is best-effort; a headless/again-stale element still gets the click below
+        btns = comment_el.find_elements(
+            By.CSS_SELECTOR,
+            "button[aria-label^='React '], button[aria-label='Like'], "
+            "button[aria-label='Open reactions menu'], button[aria-label*='Like']")
+        for b in btns:
+            if (b.get_attribute("aria-pressed") or "").lower() == "true":
+                return False  # already liked
+            try:
+                sz = b.size or {}
+                if sz.get("width", 0) > 0 and sz.get("height", 0) > 0:
+                    ActionChains(driver).move_to_element(b).pause(0.3).click(b).perform()
+                else:  # still zero-size after hover — bypass interactability
+                    driver.execute_script("arguments[0].click();", b)
+            except Exception:
+                driver.execute_script("arguments[0].click();", b)
+            time.sleep(random.uniform(1, 2))
+            # If a reaction flyout opened rather than applying Like, click the visible Like option.
+            if (b.get_attribute("aria-pressed") or "").lower() != "true":
+                for lk in driver.find_elements(
+                        By.CSS_SELECTOR, "button[aria-label='Like'], button[aria-label^='React Like']"):
+                    try:
+                        if lk.is_displayed() and (lk.size or {}).get("width", 0) > 0:
+                            ActionChains(driver).move_to_element(lk).pause(0.2).click(lk).perform()
+                            time.sleep(random.uniform(0.8, 1.4)); break
+                    except Exception:
+                        continue
+            return True
+        labels = [b.get_attribute("aria-label") for b in comment_el.find_elements(By.CSS_SELECTOR, "button")]
+        log_warning(f"No like button matched on reply; buttons={[l for l in labels if l][:8]}",
+                    action_type="engaged", user_id=user_id)
+        return False
+    except Exception as e:
+        log_warning("Could not react to comment reply", exc=e, action_type="engaged", user_id=user_id)
+        return False
+
+
+def _reply_under_comment_inline(driver, wait, comment_el, reply_text: str, user_id: int = None) -> bool:
+    """Reply UNDER a specific comment — NOT as a new top-level comment. The bug: clicking a comment's
+    Reply then taking the first page-wide role=textbox grabbed the post's main 'Add a comment' box, so
+    the reply posted as a standalone comment. Fix: after opening the reply box, type into the composer
+    NEAREST the comment (the inline reply box opens right below it), never the far-away main box."""
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", comment_el)
+        try:
+            ActionChains(driver).move_to_element(comment_el).pause(0.5).perform()  # reveal action bar
+        except Exception:
+            pass  # hover is best-effort; the Reply button lookup below still runs
+        rbtns = comment_el.find_elements(By.CSS_SELECTOR, "button[aria-label='Reply']")
+        if not rbtns:
+            log_warning("Reply-under-comment: no Reply button found", action_type="reply", user_id=user_id)
+            return False
+        try:
+            ActionChains(driver).move_to_element(rbtns[0]).pause(0.2).click(rbtns[0]).perform()
+        except Exception:
+            driver.execute_script("arguments[0].click();", rbtns[0])
+        time.sleep(random.uniform(1.5, 2.8))
+        # Pick the VISIBLE composer nearest the comment (the reply box that just opened below it);
+        # heavily penalise any composer above the comment (that's the main top comment box).
+        composer = driver.execute_script(
+            "const a=arguments[0].getBoundingClientRect();"
+            "const boxes=[...document.querySelectorAll(\"div[role='textbox']\")].filter(e=>{"
+            "  const r=e.getBoundingClientRect(); return r.width>0 && r.height>0;});"
+            "let best=null,bd=1e12;"
+            "for(const e of boxes){const r=e.getBoundingClientRect();"
+            "  let d=Math.abs(r.top-a.bottom)+(r.top<a.top?1e6:0);"
+            "  if(d<bd){bd=d;best=e;}} return best;", comment_el)
+        if composer is None:
+            log_warning("Reply-under-comment: no composer near the comment", action_type="reply", user_id=user_id)
+            return False
+        reply_text = _strip_non_bmp(reply_text)
+        if not reply_text.strip():
+            return False
+        composer.click()
+        composer.send_keys(reply_text)
+        time.sleep(random.uniform(1, 2))
+        if not driver.execute_script(_SUBMIT_NEAR_COMPOSER_JS, composer):
+            composer.send_keys(Keys.CONTROL, Keys.RETURN)  # fallback
+        time.sleep(random.uniform(3, 5))
+        return _composer_submitted(driver, composer, reply_text)
+    except Exception as e:
+        log_warning("Reply-under-comment failed", exc=e, action_type="reply", user_id=user_id)
+        return False
+
+
+def _followup_on_post_comment_replies(driver, wait, user_id: int, post_url: str, post_key: str,
+                                      my_profile, profile_synthesis: str, prefs: dict,
+                                      replies_remaining: int) -> dict:
+    """Revisit ONE post we commented on: react to replies to our comment, and answer question-replies.
+    Returns {'reacted': n, 'replied': n}. Best-effort/non-fatal (issue #478)."""
+    result = {"reacted": 0, "replied": 0}
+    path = urlparse(str(my_profile.profile_url)).path
+    our_slug = path.split("/")[2] if len(path.split("/")) > 2 else None
+    if not our_slug:
+        log_warning("Follow-up: no profile slug — skipping to avoid mis-scoping", user_id=user_id,
+                    action_type="reply")
+        return result
+    # A very long post pushes comments far below the fold; a TALL viewport is what actually makes
+    # them lazy-render (scrolling alone on the default 1080-tall window did not). Validated live.
+    try:
+        driver.set_window_size(1400, 3400)
+    except Exception:
+        pass  # some drivers reject resize; scrolling below is the fallback
+    if driver.current_url.split("?")[0].rstrip("/") != post_url.split("?")[0].rstrip("/"):
+        driver.get(post_url)
+        time.sleep(random.uniform(2.5, 4))
+    # A long post pushes comments far below the fold; scroll thoroughly so they lazy-render.
+    for _ in range(10):
+        driver.execute_script("window.scrollBy(0, 1000);")
+        time.sleep(random.uniform(0.9, 1.4))
+        cl = driver.find_elements(By.CSS_SELECTOR, "[data-testid*='commentList']")
+        if cl:
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", cl[0])
+    # Expand truncated replies + hidden reply threads.
+    for _ in range(6):
+        exp = [b for b in driver.find_elements(By.CSS_SELECTOR, "[data-testid*='commentList'] button")
+               if re.search(r'\bmore\b|repl', (b.text or ''), re.I)]
+        if not exp:
+            break
+        try:
+            driver.execute_script("arguments[0].click();", exp[0]); time.sleep(random.uniform(1.2, 2))
+        except Exception:
+            break
+
+    boxes = driver.find_elements(By.CSS_SELECTOR, _COMMENTLIST_TEXTBOX)
+    # Map each comment text box -> (container, author_href).
+    items = []
+    for tb in boxes:
+        cont = _comment_container(driver, tb)
+        if cont is None:
+            continue
+        items.append((tb, cont, _comment_header_author(driver, cont)))
+    our_conts = [c for (_tb, c, a) in items if f"/in/{our_slug}" in a]
+    log_info(f"Follow-up: {len(boxes)} comment box(es), {len(our_conts)} ours, on {post_url}",
+             user_id=user_id, task_name="sweep_comment_followups")
+
+    for tb, cont, author in items:
+        if result["reacted"] >= _MAX_FOLLOWUP_REACTS_PER_RUN:
+            break
+        if not author or f"/in/{our_slug}" in author:
+            continue  # skip our own comments/replies
+        # A reply is "to our comment" if its block is nested in our comment's thread OR its body
+        # @mentions us — LinkedIn auto-prepends the @mention of the person being replied to, so a
+        # reply to us reliably carries our /in/ link inside its text box.
+        nested = any(driver.execute_script("return arguments[0].contains(arguments[1]);", oc, cont)
+                     for oc in our_conts)
+        try:
+            mentions_us = bool(tb.find_elements(By.CSS_SELECTOR, f"a[href*='/in/{our_slug}']"))
+        except Exception:
+            mentions_us = False
+        if not (nested or mentions_us):
+            continue
+        try:
+            reply_text = (tb.text or "").strip()
+        except Exception:
+            continue
+        if not reply_text:
+            continue
+        reply_key = _followup_reply_key(post_key, author, reply_text)
+        state = get_comment_followup(user_id, reply_key) or {}
+        did_react = bool(state.get("reacted"))
+        did_reply = bool(state.get("replied"))
+        if not did_react and _react_to_comment_inline(driver, wait, cont, user_id=user_id):
+            result["reacted"] += 1
+            did_react = True
+            record_comment_followup(user_id, post_key, reply_key, reacted=True)
+            insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
+                           result=LogResultType.SUCCESS, post_url=post_url,
+                           message="Reacted to reply on our comment")
+        if not did_reply and replies_remaining > 0 and _reply_is_question(reply_text):
+            # We are a GUEST replying in someone else's thread — not the post author (issue #478).
+            response = generate_comment_reply_followup(reply_text, my_profile, prefs=prefs,
+                                                       profile_synthesis=profile_synthesis)
+            if response and _reply_under_comment_inline(driver, wait, cont, response, user_id=user_id):
+                result["replied"] += 1
+                replies_remaining -= 1
+                record_comment_followup(user_id, post_key, reply_key, reacted=did_react, replied=True)
+                insert_new_log(user_id=user_id, action_type=LogActionType.REPLY,
+                               result=LogResultType.SUCCESS, post_url=post_url, message=response)
+                time.sleep(random.uniform(5, 12))
+    return result
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
+                  queue='se_engage')
+def sweep_comment_followups(self, user_id: int):
+    """Revisit posts we automated a comment on in the last few days and follow up on replies to our
+    comment: react to each reply, and answer question-replies (issue #478). Only touches OUR
+    automated comments (the commented_posts ledger). QueueOnce + single-flight lock + 429-safe."""
+    return _run_comment_followups_sweep(user_id)
+
+
+def _run_comment_followups_sweep(user_id: int) -> str:
+    """Body of sweep_comment_followups, extracted so it is unit-testable without the QueueOnce/Redis
+    task wrapper."""
+    posts = get_recent_navigable_commented_posts(user_id, days=_FOLLOWUP_WINDOW_DAYS)
+    if not posts:
+        return "No recent navigable commented posts to follow up on"
+    lock_name = f"sweep_comment_followups:{user_id}"
+    lock_token = acquire_run_lock(lock_name, ttl_seconds=1800)
+    if lock_token is None:
+        return "Skipped — another follow-up sweep in progress"
+    prefs = get_engagement_preferences(user_id)
+    replies_remaining = max(0, _MAX_FOLLOWUP_REPLIES_PER_DAY - count_followup_replies_today(user_id))
+    try:
+        driver, wait, _email, my_profile = get_current_profile(user_id=user_id, session_name="Comment Follow-ups")
+    except LinkedInRateLimited as e:
+        log_warning("Follow-up sweep skipped — rate-limited", exc=e, user_id=user_id,
+                    task_name="sweep_comment_followups")
+        release_run_lock(lock_name, lock_token)
+        return "Skipped — rate limited"
+    except Exception as e:
+        log_error("Error starting follow-up sweep", exc=e, user_id=user_id, task_name="sweep_comment_followups")
+        release_run_lock(lock_name, lock_token)
+        return f"Failed to start follow-up sweep: {e}"
+    try:
+        synthesis = get_or_create_profile_synthesis(user_id, my_profile)
+        reacted = replied = 0
+        for row in posts:
+            key = row.get("post_key")
+            url = _post_url_from_key(key)
+            if not url:
+                continue
+            try:
+                r = _followup_on_post_comment_replies(driver, wait, user_id, url, key, my_profile,
+                                                      synthesis, prefs, replies_remaining)
+                reacted += r["reacted"]; replied += r["replied"]; replies_remaining -= r["replied"]
+            except Exception as e:
+                log_warning("Follow-up: post failed", exc=e, user_id=user_id,
+                            task_name="sweep_comment_followups")
+        return f"Follow-ups: reacted {reacted}, replied {replied} across {len(posts)} post(s)"
+    finally:
+        quit_gracefully(driver)
+        release_run_lock(lock_name, lock_token)
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id', 'post_url']},
+                  queue='se_engage')
+def process_comment_followups_for_url(self, user_id: int, post_url: str):
+    """Single-post entrypoint for the follow-up feature — run it against ONE post URL (manual/API/
+    verification), independent of the ledger. Reacts to replies on our comment and answers
+    questions, same as the sweep (issue #478)."""
+    return _run_single_post_followup(user_id, post_url)
+
+
+def _run_single_post_followup(user_id: int, post_url: str) -> str:
+    """Body of process_comment_followups_for_url, extracted for unit testing (no QueueOnce/Redis)."""
+    key = None
+    m = re.search(r"urn:li:(?:activity|ugcPost|share):\d+", post_url or "")
+    if m:
+        key = f"feedurn://{m.group(0).lower()}"
+    if not key:
+        return "No activity URN in the given URL"
+    lock_name = f"sweep_comment_followups:{user_id}"
+    lock_token = acquire_run_lock(lock_name, ttl_seconds=1800)
+    if lock_token is None:
+        return "Skipped — another follow-up run in progress"
+    prefs = get_engagement_preferences(user_id)
+    replies_remaining = max(0, _MAX_FOLLOWUP_REPLIES_PER_DAY - count_followup_replies_today(user_id))
+    try:
+        driver, wait, _email, my_profile = get_current_profile(user_id=user_id, session_name="Comment Follow-up (single)")
+    except Exception as e:
+        log_error("Error starting single follow-up", exc=e, user_id=user_id,
+                  task_name="process_comment_followups_for_url")
+        release_run_lock(lock_name, lock_token)
+        return f"Failed: {e}"
+    try:
+        synthesis = get_or_create_profile_synthesis(user_id, my_profile)
+        url = _post_url_from_key(key)
+        r = _followup_on_post_comment_replies(driver, wait, user_id, url, key, my_profile,
+                                              synthesis, prefs, replies_remaining)
+        return f"Follow-up on {url}: reacted {r['reacted']}, replied {r['replied']}"
+    finally:
+        quit_gracefully(driver)
+        release_run_lock(lock_name, lock_token)
+
+
+def _scrape_activity_comment_urns(driver, wait, my_profile) -> dict:
+    """Map {normalized comment text -> post URL} from the user's own recent-activity/comments page.
+    Each activity card holds the post's /feed/update/ permalink plus the comment we left, so we can
+    recover the navigable URN for comments the ledger only has a hash for. Best-effort; validated on
+    a supervised run (issue #478)."""
+    mapping = {}
+    path = urlparse(str(my_profile.profile_url)).path.rstrip("/")
+    if not path:
+        return mapping
+    driver.get(f"https://www.linkedin.com{path}/recent-activity/comments/")
+    time.sleep(random.uniform(3, 5))
+    for _ in range(8):
+        driver.execute_script("window.scrollBy(0, 1400);")
+        time.sleep(random.uniform(1.5, 2.5))
+    for box in driver.find_elements(By.CSS_SELECTOR, _FEED_POST_TEXT_SEL):
+        try:
+            text = (box.text or "").strip()
+            if len(text) < 15:
+                continue
+            card = _card_for_textbox(driver, box) or box
+            url = _post_permalink_from_card(card)
+            if not url:
+                urn = _feed_post_urn_from_card(card)
+                url = f"https://www.linkedin.com/feed/update/{urn}/" if urn else None
+            if url:
+                mapping[_normalize_post_text(text)[:200]] = url
+        except Exception:
+            continue
+    return mapping
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
+                  queue='se_engage')
+def reconcile_recent_comment_urns(self, user_id: int, days: int = _FOLLOWUP_WINDOW_DAYS):
+    """Backfill: recover navigable URNs for recent 'feedpost://' ledger rows via the user's own
+    recent-activity/comments page, so pre-#474 comments become follow-up-able. Matches each activity
+    comment to a ledger row by our comment text, then upgrades the key to feedurn:// (issue #478)."""
+    return _run_reconcile_comment_urns(user_id, days)
+
+
+def _run_reconcile_comment_urns(user_id: int, days: int = _FOLLOWUP_WINDOW_DAYS) -> str:
+    """Body of reconcile_recent_comment_urns, extracted for unit testing (no QueueOnce/Redis)."""
+    stale = [r for r in get_recent_commented_rows_with_text(user_id, days=days)
+             if str(r.get("post_key", "")).startswith("feedpost://")]
+    if not stale:
+        return "No stale (feedpost://) commented posts in window"
+    lock_name = f"reconcile_comment_urns:{user_id}"
+    lock_token = acquire_run_lock(lock_name, ttl_seconds=1200)
+    if lock_token is None:
+        return "Skipped — reconcile already running"
+    try:
+        driver, wait, _email, my_profile = get_current_profile(user_id=user_id, session_name="Reconcile Comment URNs")
+    except Exception as e:
+        log_error("Error starting reconcile", exc=e, user_id=user_id, task_name="reconcile_recent_comment_urns")
+        release_run_lock(lock_name, lock_token)
+        return f"Failed: {e}"
+    try:
+        mapping = _scrape_activity_comment_urns(driver, wait, my_profile)  # {our_comment_text_norm: post_url}
+        upgraded = 0
+        for row in stale:
+            old_key = row["post_key"]
+            body = (row.get("comment_text") or "").strip()
+            url = mapping.get(_normalize_post_text(body)[:200]) if body else None
+            m = re.search(r"urn:li:(?:activity|ugcPost|share):\d+", url or "")
+            if not m:
+                continue
+            new_key = f"feedurn://{m.group(0).lower()}"
+            if update_commented_post_key(user_id, old_key, new_key):
+                upgraded += 1
+        return f"Reconciled {upgraded}/{len(stale)} stale commented-post keys"
+    finally:
+        quit_gracefully(driver)
+        release_run_lock(lock_name, lock_token)
 
 
 @shared_task.task(bind=True, base=QueueOnce,
