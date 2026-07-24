@@ -52,6 +52,18 @@ class TestStyleDirectivePerType:
         d = ca.style_directive(self._PREFS, "comment")
         assert "550" in d and "warm" in d
 
+    def test_comment_enforces_substantive_word_floor(self):
+        # Issue #394: every comment directive must carry the ≥15-word substantive floor,
+        # regardless of the length preference (short still clears the floor).
+        for length in ("short", "medium", "long"):
+            d = ca.style_directive({"comment_length": length}, "comment")
+            assert f"at least {ca.COMMENT_MIN_WORDS} words" in d
+            assert length in d
+
+    def test_comment_length_defaults_to_medium(self):
+        d = ca.style_directive({"use_emojis": False}, "comment")
+        assert "medium" in d and "320" in d
+
     @pytest.mark.parametrize("content_type", ["post", "newsletter"])
     def test_long_form_types_drop_comment_length_cap(self, content_type):
         d = ca.style_directive(self._PREFS, content_type)

@@ -92,6 +92,29 @@ class TestUpdateEngagementPreferences:
         assert resp.status_code == 200
         assert upd.call_args[0][1]["default_video_quality"] == "standard"
 
+    def test_comment_length_passthrough(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/engagement-preferences",
+                              json={"session_token": _SESSION, "comment_length": "long"})
+        assert resp.status_code == 200
+        assert upd.call_args[0][1]["comment_length"] == "long"
+
+    def test_comment_length_defaults_medium_when_omitted(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/engagement-preferences", json={"session_token": _SESSION})
+        assert resp.status_code == 200
+        assert upd.call_args[0][1]["comment_length"] == "medium"
+
+    def test_invalid_comment_length_coerced_to_medium(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/engagement-preferences",
+                              json={"session_token": _SESSION, "comment_length": "bogus"})
+        assert resp.status_code == 200
+        assert upd.call_args[0][1]["comment_length"] == "medium"
+
     def test_500_on_failure(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
              patch("cqc_lem.api.main.update_engagement_preferences", return_value=False):

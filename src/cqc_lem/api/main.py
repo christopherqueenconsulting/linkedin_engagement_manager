@@ -380,7 +380,7 @@ class DmDeleteRequest(BaseModel):
 class EngagementPreferencesRequest(BaseModel):
     session_token: str
     tone: Optional[str] = Field(default=None, max_length=_LEN_TONE)
-    comment_length: str = "short"
+    comment_length: str = "medium"
     comment_style: Optional[str] = Field(default=None, max_length=_LEN_COMMENT_STYLE)
     use_emojis: bool = True
     use_hashtags: bool = False
@@ -406,6 +406,11 @@ class EngagementPreferencesRequest(BaseModel):
     reply_max_post_age_days: int = 2
     feed_fallback_when_empty: bool = True
     link_in_first_comment: bool = True
+
+    @field_validator("comment_length")
+    @classmethod
+    def _coerce_comment_length(cls, v: str) -> str:
+        return v if v in ("short", "medium", "long") else "medium"
 
     @field_validator("default_video_quality")
     @classmethod
