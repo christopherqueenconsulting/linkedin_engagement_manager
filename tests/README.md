@@ -158,6 +158,63 @@ poetry run pytest -x
 poetry run pytest --lf
 ```
 
+## Unit-Suite Performance
+
+The unit lane is the merge-queue feedback loop, so it is kept deliberately fast. Issue #480 profiled
+it and cut the CI-shaped run (`-m "not slow" --cov`) from **~49s to ~20s** with byte-identical
+coverage. Two things keep it there:
+
+### 1. The unit lane is hermetic (`tests/unit/conftest.py`)
+
+Two autouse guards make un-mocked external I/O fail *instantly* instead of dialling out:
+
+| Guard | What it does | Why |
+|---|---|---|
+| `_no_real_llm_calls` | Raises `APIConnectionError` from the shared `ai.client.client` | A few tests never mocked the client. Each one spent ~1.3s in httpx connect + the OpenAI SDK's retry back-off before the production `except` branch ran. Four carousel tests alone cost 12.8s. |
+| `_no_real_redis` | Makes `redis.Redis.from_url` raise, so `_redis_client()` returns `None` | CI has no Redis in the unit lane, so those call sites already took the fails-open branch. On a dev box running the compose stack the same tests would connect to the live broker and read/write real 429-breaker keys. |
+
+Both guards reproduce the behaviour the tests already had in CI — they only remove the waiting and
+the dev-box non-determinism. A test that wants a *working* LLM/Redis handle patches it itself; that
+patch nests inside the guard and wins.
+
+**When adding tests:** mock the collaborator explicitly. If a test only passes because a guard failed
+the call for it, that is accidental coverage — assert the failure path on purpose instead.
+
+### 2. Coverage uses the `sysmon` core
+
+`[tool.coverage.run] core = "sysmon"` in `pyproject.toml` selects coverage.py's `sys.monitoring`
+tracer (CPython 3.12+, which this project requires). Measured on the unit suite: 33s with the default
+C tracer vs 19s with sysmon, identical line-coverage totals.
+
+### Known inherently-slow tests (leave them alone)
+
+These are the slowest survivors. Each is slow because it does real work the test is specifically
+there to verify — do not mock it away:
+
+| Test | ~Cost | Why it stays |
+|---|---|---|
+| `test_date.py::test_purge_removes_unparseable_dates` | 1.0s | First unparseable input makes `dateparser` load its full language/locale set. One-time process cost, not per-test. |
+| `test_admin_engagement_test_runs.py` setup | 0.9s | Builds the whole FastAPI app + OpenAPI schema. Already `scope="module"`, so it is paid once per file. |
+| `test_geocoding.py::TestGeocodeCity` (3 tests) | 1.3s | Real `timezonefinder` lat/long→IANA lookups; the assertions are on real timezone output. |
+| `test_carousel_image_selection.py::TestPillowComposition` | 1.5s | Real Pillow slide composition; the assertions inspect the rendered pixels. |
+
+### Parallelism (`pytest-xdist`) — measured, not adopted
+
+`-n auto --dist loadfile` was benchmarked on this suite: 12.5s on an 8-core box, but only ~19s at
+`-n 4` (the width of a GitHub-hosted runner) versus ~20s serial. At ~3200 fast tests the worker
+startup and coverage-combine overhead eats the gain, so xdist is **not** a dependency here. Re-run
+the benchmark before adding it — it becomes worthwhile if the suite grows well past ~60s.
+
+### Re-profiling
+
+```bash
+# Rank the slowest tests (and slowest setup/teardown)
+poetry run pytest tests/unit -m "not slow" --durations=50
+
+# cProfile a single offender
+poetry run pytest tests/unit/path/to/test_x.py::TestY::test_z --profile
+```
+
 ## Fixtures
 
 Shared fixtures are defined in `conftest.py`:
@@ -347,6 +404,8 @@ poetry install --with test
 - Mark slow tests with `@pytest.mark.slow`
 - Run quick tests: `pytest -m "not slow"`
 - Use mocks instead of real services
+- See [Unit-Suite Performance](#unit-suite-performance) for the profiling workflow and the
+  already-triaged offenders
 
 ## Resources
 

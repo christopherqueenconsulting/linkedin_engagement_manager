@@ -144,6 +144,10 @@ pytest-playwright = ">=0.4.0,<1.0.0"
 
 
 [tool.coverage.run]
+# sys.monitoring-based tracer (CPython 3.12+, which this project requires). Same line-coverage
+# results as the C tracer at roughly half the measurement overhead — issue #480 measured the
+# unit suite at 33s with the default core vs 19s with sysmon, byte-identical coverage totals.
+core = "sysmon"
 omit = [
     "tests/*",
     "src/cqc_lem/aws/*",
