@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.56.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.55.0...v0.56.0) (2026-07-24)
+
+
+### Features
+
+* **linkedin:** weekly API-version check with gated auto-bump and rollback ([6b58478](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6b58478cf35860d311be4273804b7c51aa46ed97))
+
+
+### Bug Fixes
+
+* **flower:** an empty FLOWER_BASIC_AUTH must mean no auth, not a lockout ([0b45939](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0b459397a728899ed9c3e7ef379336ac7e2cdaa5))
+* **flower:** require BOTH user and password before enabling basic auth ([83f5ea9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/83f5ea9c3af1f94beca06b592bf4f34a19d5ce3f))
+* **linkedin:** only trust conclusive probe responses; harden the orchestrator ([a5a11ab](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a5a11ab968760bb874650d1ad34a8431c4ff1e45))
+
 ## [0.55.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.54.0...v0.55.0) (2026-07-24)
 
 
