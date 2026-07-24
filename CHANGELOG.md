@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.64.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.63.0...v0.64.0) (2026-07-24)
+
+
+### Features
+
+* **outbound:** auto-approve mode, combined invite cap, 5-min drip ([#398](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/398) review) ([680ef7e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/680ef7e8f3766b11b0a271662d437ce5f31c4bc5))
+* **outbound:** human-approved proactive connection requests (closes [#398](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/398)) ([490b515](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/490b5153287a52e2d2e386c8c8597815ebd70a1d))
+* **outbound:** human-approved proactive connection requests (closes [#398](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/398)) ([f14ea5d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f14ea5de4e769ae35bc90baf6865996c3d100b56))
+
+
+### Bug Fixes
+
+* **outbound:** Copilot review — strict rowcount, local test import ([#398](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/398)) ([cb02952](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/cb02952c2f9833430c8afc0768d05b7904039c57))
+
 ## [0.63.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.62.0...v0.63.0) (2026-07-24)
 
 
