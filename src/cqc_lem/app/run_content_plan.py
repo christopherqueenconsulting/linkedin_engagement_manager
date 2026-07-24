@@ -178,9 +178,6 @@ def plan_content_for_user(self, user_id: int):
         # Choose a buyer journey stage in a round-robin fashion
         stage = journey_stages[day % len(journey_stages)]
 
-        # TODO: Delete below |  Call the helper function to create content for this post type and buyer journey stage
-        # create_content(user_id, post_type, stage)
-
         # Add this post to the daily plan
         post_date = start_date + timedelta(days=day)
 

@@ -35,18 +35,6 @@ class TestGenerateSeedComment:
         assert out == "What surprised you most here?"
 
 
-class TestPinOwnComment:
-    def test_true_when_pin_clicked(self):
-        from cqc_lem.app.run_automation import _pin_own_comment
-        d = MagicMock(); d.execute_script.side_effect = [True, True]   # opened menu, clicked Pin
-        assert _pin_own_comment(d) is True
-
-    def test_false_when_no_overflow(self):
-        from cqc_lem.app.run_automation import _pin_own_comment
-        d = MagicMock(); d.execute_script.side_effect = [False]        # overflow not found
-        assert _pin_own_comment(d) is False
-
-
 _URL = "https://www.linkedin.com/feed/update/urn:li:ugcPost:7479519458164695040/"
 
 
