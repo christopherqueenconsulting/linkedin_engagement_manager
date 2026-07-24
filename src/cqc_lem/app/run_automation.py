@@ -2918,16 +2918,11 @@ def post_to_linkedin(self, user_id: int, post_id: int):
     # Link-in-first-comment (issue #392 - C3): an external link in the BODY costs ~60-68% reach, so
     # hold the link back here - the single choke point every post (generated OR hand-written) passes
     # through - and stash it for the seed comment dispatched below. Only links that will actually be
-    # carried are removed, so nothing is ever silently lost.
+    # carried are removed, so nothing is ever silently lost. The split is in-memory only; the DB is
+    # not touched until the publish succeeds, so a failed share leaves the original body+link intact
+    # for a retry.
     content, first_comment_links = split_link_for_first_comment(
         content, enabled=bool(prefs.get("link_in_first_comment", True)))
-    if first_comment_links:
-        # Keep the stored post in sync with what actually publishes (the preview, the seed comment's
-        # grounding, and the post history all read this back).
-        update_db_post_content(post_id, content)
-        update_db_post_first_comment_link(post_id, "\n".join(first_comment_links))
-        log_info(f"Held {len(first_comment_links)} link(s) back for the first comment",
-                 user_id=user_id, post_id=post_id, action_type="post", task_name="post_to_linkedin")
 
     myprint(f"Posting to LinkedIn: {content}")
 
@@ -2962,6 +2957,15 @@ def post_to_linkedin(self, user_id: int, post_id: int):
 
         # Update DB with status=posted
         update_db_post_status(post_id, PostStatus.POSTED)
+
+        # Only now — with the post actually live — persist the link split. Keeps the stored post in
+        # sync with what published (the preview, the seed comment's grounding, and the post history
+        # all read this back) without stranding the post in a link-held-back state if sharing failed.
+        if first_comment_links:
+            update_db_post_content(post_id, content)
+            update_db_post_first_comment_link(post_id, "\n".join(first_comment_links))
+            log_info(f"Held {len(first_comment_links)} link(s) back for the first comment",
+                     user_id=user_id, post_id=post_id, action_type="post", task_name="post_to_linkedin")
 
         # Purge local media now that LinkedIn has re-hosted it — keeps the assets
         # volume bounded. Best-effort: never let cleanup failure break posting.

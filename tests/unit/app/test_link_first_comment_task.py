@@ -91,6 +91,35 @@ class TestPostToLinkedinHoldsLinkBack:
             post_to_linkedin.run(1, 10)
         m["auto_seed_comment_on_post"].apply_async.assert_not_called()
 
+    def test_failed_publish_leaves_the_stored_post_intact(self):
+        """The split is in-memory until the share succeeds — a failed publish must not strand the
+        post in the link-held-back state, or a retry would publish a body whose link is gone."""
+        from cqc_lem.app.run_automation import post_to_linkedin
+        with ExitStack() as stack:
+            _post_patches(stack, _BODY_WITH_LINK, share_urn=None)
+            content_upd = stack.enter_context(patch(f"{_RA}.update_db_post_content"))
+            link_upd = stack.enter_context(patch(f"{_RA}.update_db_post_first_comment_link"))
+            post_to_linkedin.run(1, 10)
+
+        content_upd.assert_not_called()
+        link_upd.assert_not_called()
+
+    def test_failed_carousel_leaves_the_stored_post_intact(self):
+        """Same for the carousel early-return path (no usable slide images)."""
+        from cqc_lem.utilities.db import PostType
+        from cqc_lem.app.run_automation import post_to_linkedin
+        with ExitStack() as stack:
+            m = _post_patches(stack, _BODY_WITH_LINK)
+            m["get_post_type"].return_value = PostType.CAROUSEL
+            stack.enter_context(patch(f"{_RA}.get_carousel_slides", return_value=[]))
+            stack.enter_context(patch(f"{_RA}.log_error"))
+            content_upd = stack.enter_context(patch(f"{_RA}.update_db_post_content"))
+            link_upd = stack.enter_context(patch(f"{_RA}.update_db_post_first_comment_link"))
+            post_to_linkedin.run(1, 10)
+
+        content_upd.assert_not_called()
+        link_upd.assert_not_called()
+
 
 class TestSeedCommentDeliversTheLink:
     def _seed(self, stack, held_link, seed_text="What surprised you most?", already_commented=False):
