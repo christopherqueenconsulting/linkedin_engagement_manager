@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.59.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.58.1...v0.59.0) (2026-07-24)
+
+
+### Features
+
+* **engagement:** default to substantive ≥15-word comments (closes [#394](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/394)) ([ed46287](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ed46287c70fe23cd393389e1633e4c2d7a03dcc1))
+
 ## [0.58.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.58.0...v0.58.1) (2026-07-24)
 
 
