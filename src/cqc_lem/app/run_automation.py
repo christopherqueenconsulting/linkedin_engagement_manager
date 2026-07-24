@@ -2695,9 +2695,15 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True}, reject_on_worker_lost=True,
                   rate_limit='2/m', queue='se_outreach')
 def clean_stale_invites(self, user_id: int):
-    """Cleans up stale invites that the user has sent. Not yet implemented — no-op stub."""
+    """Cleans up stale invites that the user has sent. Not yet implemented — no-op stub.
 
-    pass
+    Emits an explicit log line and returns a descriptive marker so operators can tell an
+    intentional stub run apart from a real cleanup run in logs/metrics."""
+
+    log_info("clean_stale_invites is a no-op stub (not yet implemented) — skipping",
+             user_id=user_id, task_name="clean_stale_invites", action_type="invite")
+
+    return {"status": "not_implemented", "cleaned": 0, "user_id": user_id}
 
 
 def send_dm_now(user_id: int, profile_url: str, message: str) -> bool:
