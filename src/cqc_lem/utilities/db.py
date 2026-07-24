@@ -4331,10 +4331,26 @@ def get_lead_activity(user_id: int, days: int = 90) -> list:
         connection.close()
 
 
+def _profile_url_variants(profile_url: str) -> list:
+    """Every spelling of one profile URL worth looking up. Activity rows carry tracking
+    querystrings and inconsistent trailing slashes (`/in/jane?trk=feed` vs `/in/jane/`) while
+    `profiles` stores whichever form the scraper saw, so an exact match would miss most people —
+    same reason get_linked_in_profile_by_url() queries both slash variants."""
+    raw = str(profile_url or "").strip()
+    if not raw:
+        return []
+    base = raw.split("#", 1)[0].split("?", 1)[0].rstrip("/")
+    if not base:
+        return [raw]
+    return list(dict.fromkeys([raw, base, base + "/"]))
+
+
 def get_profile_facts(profile_urls: list) -> dict:
-    """ICP facts (title / company / industry) for the profiles we HAVE scraped, keyed by profile
-    URL. People we never scraped simply aren't in the result — the scorer treats them as neutral."""
-    urls = [u for u in (profile_urls or []) if u]
+    """ICP facts (title / company / industry) for the profiles we HAVE scraped, keyed by the
+    profile URL as stored in `profiles` (callers match on the /in/ slug, not the raw string).
+    People we never scraped simply aren't in the result — the scorer treats them as neutral."""
+    urls = list(dict.fromkeys(v for u in (profile_urls or []) if u
+                              for v in _profile_url_variants(u)))
     if not urls:
         return {}
     connection = get_db_connection()
@@ -4358,14 +4374,16 @@ def get_profile_facts(profile_urls: list) -> dict:
 
 def reset_lead_scores(user_id: int) -> bool:
     """Zero every computed score before a rebuild so someone who went quiet actually decays out of
-    'hot' instead of keeping a stale score forever. Operator columns (manual_stage, notes,
-    dismissed) are untouched."""
+    'hot' instead of keeping a stale score forever. next_action is cleared with the rest: a lead
+    with no fresh activity gets no upsert, and a leftover 'reach out today' on someone who decayed
+    to cold is worse than no recommendation. Operator columns (manual_stage, notes, dismissed) are
+    untouched."""
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
         cursor.execute(
             "UPDATE leads SET score=0, engagement_score=0, stage='cold', signal_count=0, "
-            "signals=NULL, reasons=NULL WHERE user_id=%s", (user_id,))
+            "signals=NULL, reasons=NULL, next_action=NULL WHERE user_id=%s", (user_id,))
         connection.commit()
         return True
     except mysql.connector.Error as err:

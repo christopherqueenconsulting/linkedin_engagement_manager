@@ -68,7 +68,25 @@ class TestGetProfileFacts:
             from cqc_lem.utilities.db import get_profile_facts
             facts = get_profile_facts(["u1", "u2"])
         assert facts["u1"]["job_title"] == "CTO"
-        assert cursor.execute.call_args[0][1] == ("u1", "u2")
+        assert set(cursor.execute.call_args[0][1]) == {"u1", "u1/", "u2", "u2/"}
+
+    def test_looks_up_querystring_and_trailing_slash_variants(self):
+        conn, cursor = _mock_conn(fetch_all=[])
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_profile_facts
+            get_profile_facts(["https://www.linkedin.com/in/jane-doe?trk=feed"])
+        params = set(cursor.execute.call_args[0][1])
+        assert "https://www.linkedin.com/in/jane-doe" in params
+        assert "https://www.linkedin.com/in/jane-doe/" in params
+
+    def test_variants_of_the_same_person_are_not_queried_twice(self):
+        conn, cursor = _mock_conn(fetch_all=[])
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_profile_facts
+            get_profile_facts(["https://linkedin.com/in/jane/",
+                               "https://linkedin.com/in/jane?trk=x"])
+        params = cursor.execute.call_args[0][1]
+        assert len(params) == len(set(params))
 
     def test_no_urls_skips_the_query(self):
         with patch(f"{_DB}.get_db_connection") as get:
@@ -93,6 +111,13 @@ class TestResetLeadScores:
         assert "score=0" in sql and "stage='cold'" in sql
         for operator_col in ("manual_stage", "notes", "dismissed"):
             assert operator_col not in sql
+
+    def test_clears_the_stale_recommended_action(self):
+        conn, cursor = _mock_conn()
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import reset_lead_scores
+            reset_lead_scores(3)
+        assert "next_action=NULL" in cursor.execute.call_args[0][0]
 
     def test_db_error_is_reported_not_raised(self):
         conn, _ = _mock_conn(side_effect=mysql.connector.Error("boom"))

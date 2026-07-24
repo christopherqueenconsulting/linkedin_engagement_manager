@@ -215,7 +215,7 @@ class TestScoreLead:
 
 
 class TestGroupActivity:
-    def test_merges_the_same_person_across_sources(self):
+    def test_name_only_and_url_rows_stay_separate_leads(self):
         rows = [
             {"kind": "engaged", "person_name": "Jane Doe", "person_profile_url": None,
              "occurred_at": _NOW},

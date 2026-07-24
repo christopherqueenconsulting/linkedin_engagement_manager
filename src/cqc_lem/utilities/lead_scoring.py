@@ -263,9 +263,14 @@ def score_lead(activities: list, now: datetime, person_name: str = None,
 
 
 def group_activity(rows: Iterable[dict]) -> dict:
-    """Collapse raw activity rows (from db.get_lead_activity) into {person_key: {...}}. Rows for the
-    same human arriving under different sources merge here — the profile URL from ANY row becomes
-    the lead's URL, so a name-only comment and a DM to the same person stay one lead."""
+    """Collapse raw activity rows (from db.get_lead_activity) into {person_key: {...}}, keyed by
+    person_key() — so rows carrying a profile URL merge across every source regardless of trailing
+    slashes or tracking params, and the name (or non-/in/ URL) from ANY of those rows fills in what
+    the others were missing.
+
+    A name-only row does NOT merge into a URL row for the same human: display names collide and we
+    have nothing to tie them together with, so a wrong merge would silently blend two people's
+    signals. Those rows stay a separate name-keyed lead until a source gives us their URL."""
     people: dict = {}
     for row in rows or []:
         name = (row.get("person_name") or "").strip() or None
