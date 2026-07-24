@@ -3404,6 +3404,62 @@ def get_post_performance_rows(user_id: int, days: Optional[int] = None) -> list:
         connection.close()
 
 
+def record_shipped_variant(user_id: int, post_id: int, variant_key: str,
+                           combo: Optional[dict] = None, batch_id: Optional[str] = None,
+                           variant_index: Optional[int] = None) -> bool:
+    """Persist which A/B variant actually SHIPPED for a post (issue #396 / D2) so its realized
+    `post_stats` can be attributed back to that variant when picking winners. One row per post —
+    re-recording overwrites. `combo` is stored as JSON for provenance."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO post_variants (user_id, post_id, batch_id, variant_index, variant_key, combo) "
+            "VALUES (%s,%s,%s,%s,%s,%s) "
+            "ON DUPLICATE KEY UPDATE batch_id=VALUES(batch_id), variant_index=VALUES(variant_index), "
+            "variant_key=VALUES(variant_key), combo=VALUES(combo), shipped_at=CURRENT_TIMESTAMP",
+            (user_id, post_id, batch_id, variant_index, variant_key,
+             json.dumps(combo, default=str) if combo is not None else None))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not record shipped variant for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_variant_outcome_rows(user_id: int) -> list:
+    """Realized outcomes for shipped A/B variants (issue #396 / D2). Joins each recorded shipped
+    variant (`post_variants`) with its post's LATEST captured `post_stats` row → dicts of
+    ``{variant_key, scheduled_time, reactions, comments, reposts, impressions}`` that feed
+    ``post_stats.select_variant_winners``. `impressions` may be NULL (only the author's own view
+    exposes it), so winner selection falls back to raw counts until coverage is complete."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT v.variant_key, p.scheduled_time, s.reactions, s.comments, s.reposts, s.impressions "
+            "FROM post_variants v "
+            "JOIN posts p ON p.id=v.post_id AND p.user_id=v.user_id "
+            "JOIN post_stats s ON s.post_id=v.post_id AND s.user_id=v.user_id "
+            "WHERE v.user_id=%s AND s.id IN "
+            "(SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id)",
+            (user_id, user_id))
+        return [
+            {"variant_key": r[0], "scheduled_time": r[1], "reactions": r[2],
+             "comments": r[3], "reposts": r[4], "impressions": r[5]}
+            for r in (cursor.fetchall() or [])
+        ]
+    except mysql.connector.Error as err:
+        myprint(f"Could not get variant outcome rows for user {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
 _LEAD_MAGNET_DEFAULTS: dict = {"enabled": False, "keyword": None, "message": None}
 
 

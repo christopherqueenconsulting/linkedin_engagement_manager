@@ -93,6 +93,8 @@ _ERROR_CASES = [
     ("record_post_stats", (1, 2, 3, 4), False),
     ("get_recent_posted_post_ids", (1,), []),
     ("get_post_engagement_rows", (1,), []),
+    ("record_shipped_variant", (1, 2, "flux|gen4|1:1"), False),
+    ("get_variant_outcome_rows", (1,), []),
     ("has_received_lead_magnet", (1, "u"), True),  # fail-safe: never double-DM
     ("record_lead_magnet_sent", (1, "u"), False),
     ("update_newsletter_settings", (1, {"enabled": True}), False),

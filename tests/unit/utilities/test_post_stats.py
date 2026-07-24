@@ -356,3 +356,67 @@ class TestScrapeStatsTask:
             from cqc_lem.app.run_automation import auto_scrape_post_stats
             result = auto_scrape_post_stats.run(user_id=1)
         assert rec.call_count == 2 and "Scraped stats for 2" in result
+
+
+def _variant_row(variant_key, scheduled_time, reactions=0, comments=0, reposts=0, impressions=None):
+    """A `db.get_variant_outcome_rows` dict."""
+    return {"variant_key": variant_key, "scheduled_time": scheduled_time, "reactions": reactions,
+            "comments": comments, "reposts": reposts, "impressions": impressions}
+
+
+class TestSelectVariantWinners:
+    def test_winner_reflects_seeded_results(self):
+        from cqc_lem.utilities.post_stats import select_variant_winners
+        rows = [
+            _variant_row("A", _NOW - dt.timedelta(days=2), reactions=5, comments=1),
+            _variant_row("B", _NOW - dt.timedelta(days=2), reactions=40, comments=10),
+        ]
+        out = select_variant_winners(rows, now=_NOW)
+        assert out["winner"] == "B"
+        assert [r["key"] for r in out["ranking"]] == ["B", "A"]
+        assert out["ranking"][0]["metric"] == "engagement"
+
+    def test_rate_mode_when_all_have_impressions(self):
+        """Small-reach variant with a far higher RATE wins over a big-reach loser."""
+        from cqc_lem.utilities.post_stats import select_variant_winners
+        rows = [
+            _variant_row("small", _NOW - dt.timedelta(days=1), reactions=30, impressions=300),
+            _variant_row("big", _NOW - dt.timedelta(days=1), reactions=100, impressions=100_000),
+        ]
+        out = select_variant_winners(rows, now=_NOW)
+        assert out["winner"] == "small"
+        assert out["ranking"][0]["metric"] == "engagement_rate"
+
+    def test_recent_evidence_beats_stale_fluke(self):
+        from cqc_lem.utilities.post_stats import select_variant_winners
+        rows = [
+            _variant_row("stale", _NOW - dt.timedelta(days=400), reactions=200),
+            _variant_row("fresh", _NOW - dt.timedelta(days=1), reactions=30),
+            _variant_row("fresh", _NOW - dt.timedelta(days=2), reactions=28),
+        ]
+        out = select_variant_winners(rows, now=_NOW)
+        assert out["winner"] == "fresh"
+
+    def test_min_samples_drops_thin_variants(self):
+        from cqc_lem.utilities.post_stats import select_variant_winners
+        rows = [
+            _variant_row("A", _NOW - dt.timedelta(days=1), reactions=5),
+            _variant_row("B", _NOW - dt.timedelta(days=1), reactions=99),
+            _variant_row("B", _NOW - dt.timedelta(days=2), reactions=90),
+        ]
+        out = select_variant_winners(rows, min_samples=2, now=_NOW)
+        assert [r["key"] for r in out["ranking"]] == ["B"]
+
+    def test_top_n_truncates(self):
+        from cqc_lem.utilities.post_stats import select_variant_winners
+        rows = [_variant_row(k, _NOW - dt.timedelta(days=1), reactions=n)
+                for k, n in (("A", 30), ("B", 20), ("C", 10))]
+        out = select_variant_winners(rows, top_n=2, now=_NOW)
+        assert [r["key"] for r in out["ranking"]] == ["A", "B"]
+
+    def test_empty_and_keyless_rows(self):
+        from cqc_lem.utilities.post_stats import select_variant_winners
+        assert select_variant_winners([]) == {"winner": None, "ranking": []}
+        out = select_variant_winners([None, {"variant_key": None, "reactions": 5},
+                                      {"variant_key": "", "reactions": 5}])
+        assert out == {"winner": None, "ranking": []}
