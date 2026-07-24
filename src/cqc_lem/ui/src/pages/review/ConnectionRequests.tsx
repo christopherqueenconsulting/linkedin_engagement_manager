@@ -58,14 +58,15 @@ export default function ConnectionRequests({ userTimezone }: { userTimezone: str
   const flash = (ok: boolean, text: string) => { setMsg({ ok, text }); setTimeout(() => setMsg(null), 4000) }
   const invalidate = () => qc.invalidateQueries({ queryKey: ['connection-requests'] })
 
+  // No status is sent — the server applies the account's Connection approval mode (auto-approve queues
+  // it immediately; pre-review holds it as a draft here for approval).
   const createMutation = useMutation({
-    mutationFn: (status: 'pending' | 'approved') =>
+    mutationFn: () =>
       api.post('/connection_request', {
         session_token: sessionToken,
         recipient_profile_url: url.trim(),
         recipient_name: name.trim() || null,
         message: note.trim() || null,
-        status,
       }),
     onSuccess: () => {
       invalidate(); setUrl(''); setName(''); setNote('')
@@ -90,9 +91,11 @@ export default function ConnectionRequests({ userTimezone }: { userTimezone: str
       <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-5 space-y-3">
         <h3 className="font-semibold text-gray-700">Add a connection target</h3>
         <p className="text-xs text-gray-500">
-          Add an ICP-fit prospect to invite. Approving queues the request for a slow, daily-capped
-          drip — sends honor your Max invites/day cap and pause automatically when LinkedIn throttles.
-          Every request is approved by you; this is not volume prospecting.
+          Add an ICP-fit prospect to invite. New targets follow your account's Connection approval mode
+          (Account → Connection approval): <strong>auto-approve</strong> queues them for a slow,
+          daily-capped drip immediately, while <strong>pre-review</strong> holds them here as drafts for
+          you to approve first. Sends honor your combined Max invites/day cap and pause automatically
+          when LinkedIn throttles. This is not volume prospecting.
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <input type="url" value={url} onChange={(e) => setUrl(e.target.value)} maxLength={512}
@@ -106,13 +109,9 @@ export default function ConnectionRequests({ userTimezone }: { userTimezone: str
           placeholder="Connection note (optional, ≤300 chars)"
           className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
         <div className="flex flex-wrap items-center gap-3">
-          <button onClick={() => createMutation.mutate('pending')} disabled={!canSubmit || createMutation.isPending}
-            className="px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50">
-            Save draft
-          </button>
-          <button onClick={() => createMutation.mutate('approved')} disabled={!canSubmit || createMutation.isPending}
+          <button onClick={() => createMutation.mutate()} disabled={!canSubmit || createMutation.isPending}
             className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50">
-            {createMutation.isPending ? 'Adding…' : 'Approve & queue'}
+            {createMutation.isPending ? 'Adding…' : 'Add target'}
           </button>
         </div>
       </div>

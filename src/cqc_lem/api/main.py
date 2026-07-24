@@ -385,7 +385,9 @@ class ConnectionRequestCreate(BaseModel):
     recipient_profile_url: str = Field(max_length=_LEN_DM_RECIPIENT_URL)
     recipient_name: Optional[str] = Field(default=None, max_length=_LEN_DM_RECIPIENT_NAME)
     message: Optional[str] = Field(default=None, max_length=_LEN_CONNECT_NOTE)  # optional connect note
-    status: str = "pending"  # 'pending' (draft) or 'approved' (queue for the daily-capped drip)
+    # None → follow the user's connection_request_mode (auto_approve queues it, pre_review holds it as a
+    # draft). An explicit 'pending' or 'approved' overrides that; any other value is rejected (422).
+    status: Optional[str] = None
 
 
 class ConnectionRequestUpdate(BaseModel):
@@ -425,6 +427,7 @@ class EngagementPreferencesRequest(BaseModel):
     max_comments_per_day: int = 20
     max_dms_per_day: int = 20
     max_invites_per_day: int = 10
+    connection_request_mode: str = "auto_approve"  # 'auto_approve' (default) | 'pre_review'
     default_buyer_stage: Optional[str] = Field(default=None, max_length=_LEN_BUYER_STAGE)
     default_video_quality: str = "standard"
     reply_check_mode: str = "event"
@@ -447,6 +450,11 @@ class EngagementPreferencesRequest(BaseModel):
     @classmethod
     def _coerce_reply_mode(cls, v: str) -> str:
         return v if v in ("event", "scheduled", "off") else "event"
+
+    @field_validator("connection_request_mode")
+    @classmethod
+    def _coerce_connection_mode(cls, v: str) -> str:
+        return v if v in ("auto_approve", "pre_review") else "auto_approve"
 
     @field_validator("reply_sweeps_per_day")
     @classmethod
@@ -1621,14 +1629,24 @@ def delete_scheduled_dm_endpoint(request: DmDeleteRequest) -> ResponseModel:
 
 @router.post("/connection_request")
 def create_connection_request_endpoint(request: ConnectionRequestCreate) -> ResponseModel:
-    """Add a proactive connection-request target (issue #398). Drafts are 'pending'; approving queues
-    it for the daily-capped drip (auto_check_connection_requests → send_connection_request), which
-    reuses invite_to_connect and honors the rate-limit / kill-switch. NO volume prospecting."""
+    """Add a proactive connection-request target (issue #398). If no status is supplied the user's
+    connection_request_mode governs it — 'auto_approve' (default) queues the target for the daily-capped
+    drip immediately, 'pre_review' holds it as a draft awaiting explicit approval. An explicit status
+    ('pending'|'approved') overrides that; anything else is rejected. The drip reuses invite_to_connect
+    and honors the rate-limit / kill-switch and the combined daily invite cap. NO volume prospecting."""
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
-    status = (ConnectionRequestStatus.APPROVED if request.status == "approved"
-              else ConnectionRequestStatus.PENDING)
+    if request.status is None:
+        mode = get_engagement_preferences(user_id).get("connection_request_mode", "auto_approve")
+        status = (ConnectionRequestStatus.APPROVED if mode == "auto_approve"
+                  else ConnectionRequestStatus.PENDING)
+    elif request.status in ("pending", "approved"):
+        status = (ConnectionRequestStatus.APPROVED if request.status == "approved"
+                  else ConnectionRequestStatus.PENDING)
+    else:
+        raise HTTPException(status_code=422,
+                            detail=f"Invalid status '{request.status}' — expected 'pending' or 'approved'")
     request_id = insert_connection_request(user_id, request.recipient_profile_url,
                                            message=request.message,
                                            recipient_name=request.recipient_name, status=status)

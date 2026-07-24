@@ -32,8 +32,11 @@ _U = 5
 
 
 class TestCreateConnectionRequest:
-    def test_creates_pending(self, client):
+    def test_no_status_auto_approve_mode_queues(self, client):
+        # Default mode auto_approve → a newly-added target is queued (APPROVED) with no explicit status.
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_engagement_preferences",
+                   return_value={"connection_request_mode": "auto_approve"}), \
              patch("cqc_lem.api.main.insert_connection_request", return_value=11) as ins:
             resp = client.post("/api/connection_request", json={
                 "session_token": _S, "recipient_profile_url": "https://x/in/jane",
@@ -41,9 +44,21 @@ class TestCreateConnectionRequest:
         assert resp.status_code == 200
         assert resp.json()["detail"]["request_id"] == 11
         from cqc_lem.utilities.db import ConnectionRequestStatus
+        assert ins.call_args.kwargs["status"] == ConnectionRequestStatus.APPROVED
+
+    def test_no_status_pre_review_mode_pending(self, client):
+        # Pre-review mode → a newly-added target waits as a draft (PENDING) for human approval.
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_engagement_preferences",
+                   return_value={"connection_request_mode": "pre_review"}), \
+             patch("cqc_lem.api.main.insert_connection_request", return_value=11) as ins:
+            resp = client.post("/api/connection_request", json={
+                "session_token": _S, "recipient_profile_url": "https://x/in/jane"})
+        assert resp.status_code == 200
+        from cqc_lem.utilities.db import ConnectionRequestStatus
         assert ins.call_args.kwargs["status"] == ConnectionRequestStatus.PENDING
 
-    def test_approved_status_maps(self, client):
+    def test_explicit_approved_status_maps(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
              patch("cqc_lem.api.main.insert_connection_request", return_value=12) as ins:
             resp = client.post("/api/connection_request", json={
@@ -52,6 +67,16 @@ class TestCreateConnectionRequest:
         assert resp.status_code == 200
         from cqc_lem.utilities.db import ConnectionRequestStatus
         assert ins.call_args.kwargs["status"] == ConnectionRequestStatus.APPROVED
+
+    def test_invalid_status_rejected_422(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.insert_connection_request", return_value=1) as ins:
+            resp = client.post("/api/connection_request", json={
+                "session_token": _S, "recipient_profile_url": "https://x/in/jane",
+                "status": "sent"})
+        assert resp.status_code == 422
+        assert "Invalid status" in resp.json()["detail"]
+        ins.assert_not_called()
 
     def test_over_limit_note_rejected_422(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \

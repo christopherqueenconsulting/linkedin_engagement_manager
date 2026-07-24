@@ -23,8 +23,15 @@ CREATE TABLE IF NOT EXISTS connection_requests (
     INDEX idx_connection_requests_user (user_id, status)
 );
 
--- Conservative per-day cap for the proactive connect flow (separate from max_dms_per_day). Default 10
--- keeps it well under LinkedIn's weekly invite ceiling; operators can lower it, and the flow is still
--- gated on manual approval on top of this cap.
+-- Conservative per-day cap for the proactive connect flow. Default 10 keeps it well under LinkedIn's
+-- weekly invite ceiling. Per owner review the cap is now a COMBINED daily invite budget: reactive
+-- profile-viewer invites AND proactive (issue #398) sends both count against it (both send via
+-- invite_to_connect_now — see db.count_invites_sent_today).
 ALTER TABLE engagement_preferences
     ADD COLUMN max_invites_per_day INT NOT NULL DEFAULT 10;
+
+-- Approval posture for the proactive connect flow (owner review). 'auto_approve' (default) queues a
+-- newly-added target for the daily-capped drip immediately; 'pre_review' holds it as a draft awaiting
+-- explicit human approve/reject in the Connections review UI.
+ALTER TABLE engagement_preferences
+    ADD COLUMN connection_request_mode ENUM('auto_approve','pre_review') NOT NULL DEFAULT 'auto_approve';

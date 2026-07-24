@@ -212,6 +212,17 @@ export default function EngagementSettingsCard() {
             <input type="number" min={0} value={engPrefs.max_invites_per_day ?? 10}
               onChange={(e) => setEng({ max_invites_per_day: Number(e.target.value) })}
               className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+            <p className="text-xs text-gray-400 mt-1">Combined daily cap across both proactive connect targets and reactive profile-viewer invites.</p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Connection approval</label>
+            <select value={engPrefs.connection_request_mode ?? 'auto_approve'}
+              onChange={(e) => setEng({ connection_request_mode: e.target.value })}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+              <option value="auto_approve">Auto-approve (queue targets immediately)</option>
+              <option value="pre_review">Pre-review (approve each target first)</option>
+            </select>
+            <p className="text-xs text-gray-400 mt-1">Pre-review holds new connection targets in the Connections tab for your approval before LEM sends them.</p>
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Auto-generated video quality</label>

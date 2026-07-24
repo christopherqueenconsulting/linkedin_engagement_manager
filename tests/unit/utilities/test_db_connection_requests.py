@@ -49,14 +49,16 @@ class TestConnectionRequestDb:
         assert params[0] <= datetime.now(timezone.utc) - timedelta(hours=2) + timedelta(seconds=5)
 
     def test_count_invites_sent_today(self):
+        # Combined daily budget (owner review): counted from the immutable ENGAGED/SUCCESS invite logs
+        # (which cover BOTH reactive and proactive sends), not from connection_requests.updated_at.
         conn, cur = _conn()
         cur.fetchone.return_value = (4,)
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import count_invites_sent_today
+            from cqc_lem.utilities.db import count_invites_sent_today, CONNECTION_REQUEST_SENT_MESSAGE
             assert count_invites_sent_today(1) == 4
         sql, params = cur.execute.call_args[0]
-        assert "FROM connection_requests" in sql and "status=%s" in sql and "CURDATE()" in sql
-        assert params == (1, "sent")
+        assert "FROM logs" in sql and "action_type=%s" in sql and "message=%s" in sql and "CURDATE()" in sql
+        assert params == (1, "engaged", "success", CONNECTION_REQUEST_SENT_MESSAGE)
 
     def test_list_returns_pagination_shape(self):
         conn, cur = _conn()

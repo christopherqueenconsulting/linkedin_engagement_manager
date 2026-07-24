@@ -113,6 +113,12 @@ class LogResultType(StrEnum):
     FAILURE = 'failure'
 
 
+# Marker message logged (as ENGAGED/SUCCESS) whenever a LinkedIn invite is actually sent — reactive
+# profile-viewer AND proactive (issue #398) sends both flow through invite_to_connect_now, so the
+# combined daily invite budget is counted from these log rows (see count_invites_sent_today).
+CONNECTION_REQUEST_SENT_MESSAGE = "Connection Request Sent Successfully"
+
+
 def store_cookies(user_email: str, cookies: list[dict]):
     connection = get_db_connection()
     cursor = connection.cursor()
@@ -2631,6 +2637,7 @@ _ENGAGEMENT_DEFAULTS: dict = {
     "focus_topics": [], "business_goals": None, "personal_goals": None,
     "min_reactions": None, "max_post_age_hours": 24, "reply_to_own_comments": True,
     "max_comments_per_day": 20, "max_dms_per_day": 20, "max_invites_per_day": 10,
+    "connection_request_mode": "auto_approve",
     "default_buyer_stage": None,
     "default_video_quality": "standard",
     "reply_check_mode": "event", "reply_sweeps_per_day": 2, "reply_max_post_age_days": 2,
@@ -2646,12 +2653,15 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "include_authors", "exclude_authors", "post_types", "focus_topics",
                     "business_goals", "personal_goals", "min_reactions",
                     "max_post_age_hours", "reply_to_own_comments", "max_comments_per_day",
-                    "max_dms_per_day", "max_invites_per_day", "default_buyer_stage", "default_video_quality",
+                    "max_dms_per_day", "max_invites_per_day", "connection_request_mode",
+                    "default_buyer_stage", "default_video_quality",
                     "reply_check_mode", "reply_sweeps_per_day", "reply_max_post_age_days",
                     "feed_fallback_when_empty", "link_in_first_comment")
 
 VALID_VIDEO_QUALITIES = ("standard", "premium", "premium_top")
 VALID_REPLY_MODES = ("event", "scheduled", "off")
+# Approval posture for the proactive connect flow (issue #398 owner review).
+VALID_CONNECTION_REQUEST_MODES = ("auto_approve", "pre_review")
 # Scheduled reply-sweep cadence bounds: floor 2×/day (as requested), cap 12×/day (every ~2h).
 REPLY_SWEEPS_MIN, REPLY_SWEEPS_MAX = 2, 12
 REPLY_MAX_AGE_DAYS_MIN, REPLY_MAX_AGE_DAYS_MAX = 1, 14
@@ -2703,6 +2713,8 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
     # numbers → clamped to bounds.
     if merged.get("reply_check_mode") not in VALID_REPLY_MODES:
         merged["reply_check_mode"] = "event"
+    if merged.get("connection_request_mode") not in VALID_CONNECTION_REQUEST_MODES:
+        merged["connection_request_mode"] = "auto_approve"
     # Clamp numerics WITHOUT `or` fallbacks — 0 is falsy but is a real (out-of-range) value that must
     # clamp to the floor, not silently become the default (matches the API-layer validators).
     _sw = merged.get("reply_sweeps_per_day")
@@ -2998,16 +3010,19 @@ def update_scheduled_dm(dm_id: int, recipient_profile_url: str = None, recipient
 
 
 def count_invites_sent_today(user_id: int) -> int:
-    """Invitations sent today via the proactive connect flow (issue #398). Counted from
-    connection_requests (status='sent', updated today) rather than the shared LogActionType.ENGAGED
-    logs so the proactive per-day cap isn't diluted by reactive profile-viewer engagement."""
+    """Invitations actually sent today, counted as a COMBINED daily budget (issue #398 owner review):
+    both the reactive profile-viewer flow and the proactive connect flow send via invite_to_connect_now,
+    which logs an ENGAGED/SUCCESS row with CONNECTION_REQUEST_SENT_MESSAGE on every real send. Counting
+    those immutable logs (by created_at) covers both flows without double-counting a proactive send (which
+    also has a connection_requests row) and avoids the mutable connection_requests.updated_at clock."""
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
         cursor.execute(
-            "SELECT COUNT(*) FROM connection_requests WHERE user_id=%s AND status=%s "
-            "AND updated_at >= CURDATE()",
-            (user_id, str(ConnectionRequestStatus.SENT)))
+            "SELECT COUNT(*) FROM logs WHERE user_id=%s AND action_type=%s AND result=%s "
+            "AND message=%s AND created_at >= CURDATE()",
+            (user_id, LogActionType.ENGAGED.value, LogResultType.SUCCESS.value,
+             CONNECTION_REQUEST_SENT_MESSAGE))
         r = cursor.fetchone()
         return int(r[0]) if r else 0
     except mysql.connector.Error as err:

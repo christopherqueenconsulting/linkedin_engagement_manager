@@ -75,9 +75,9 @@ app.conf.update(
         },
         'check-connection-requests': {
             'task': 'cqc_lem.app.run_scheduler.auto_check_connection_requests',
-            # Approved proactive connect requests (issue #398); daily-capped at dispatch. 15-min
-            # cadence keeps the drip slow and human-paced (no volume prospecting).
-            'schedule': crontab(minute='*/15')
+            # Approved proactive connect requests (issue #398); daily-capped at dispatch. 5-min
+            # cadence keeps the drip human-paced while staying responsive (no volume prospecting).
+            'schedule': crontab(minute='*/5')
         },
         'generate-content-plan': {
             'task': 'cqc_lem.app.run_content_plan.auto_generate_content',

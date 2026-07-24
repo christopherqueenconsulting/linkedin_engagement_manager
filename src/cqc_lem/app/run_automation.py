@@ -23,6 +23,7 @@ from cqc_lem.utilities.ai.content_alignment import humanize_text, split_link_for
     append_link_to_comment
 from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, insert_new_log, LogActionType, \
+    CONNECTION_REQUEST_SENT_MESSAGE, \
     get_engagement_preferences, count_comments_today, get_recent_engagers, upsert_engager, \
     get_newsletter_settings, mark_newsletter_published, \
     get_newsletter_edition, mark_edition_published, mark_edition_failed, \
@@ -2804,7 +2805,7 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -
                                          "Finding Send Connection Button", use_action_chain=True)
 
                 myprint("Found Send Connection Button and clicked it")
-                result = "Connection Request Sent Successfully"
+                result = CONNECTION_REQUEST_SENT_MESSAGE
             except Exception as e:
                 log_error("Failed to add a note to connection request", exc=e, user_id=user_id, action_type="invite_connect")
                 result = f"Failed to Add a note. Error: {str(e)}"
@@ -2816,7 +2817,7 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -
                                          "Finding Send Without Note Button", use_action_chain=True)
 
                 myprint("Found Send Without a Note Button and clicked it")
-                result = "Connection Request Sent Successfully"
+                result = CONNECTION_REQUEST_SENT_MESSAGE
             except Exception as e:
                 log_error("Failed to find send-without-note connection button", exc=e, user_id=user_id, action_type="invite_connect")
                 result = f"Failed to find send without a note connection button. Error: {str(e)}"
@@ -2829,7 +2830,7 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -
         insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
                        result=LogResultType.FAILURE, post_url=profile_url, message=str(e))
     else:
-        invite_sent = result == "Connection Request Sent Successfully"
+        invite_sent = result == CONNECTION_REQUEST_SENT_MESSAGE
         insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
                        result=LogResultType.SUCCESS if invite_sent else LogResultType.FAILURE,
                        post_url=profile_url, message=result)
@@ -2849,7 +2850,7 @@ def invite_to_connect(self, user_id: int, profile_url: str, message: str = None)
     except LinkedInRateLimited as e:
         myprint(f"invite_to_connect deferred (throttled): {e}")
         return "Invitation deferred (LinkedIn throttled)"
-    return "Connection Request Sent Successfully" if sent else "Connection Request Failed"
+    return CONNECTION_REQUEST_SENT_MESSAGE if sent else "Connection Request Failed"
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['request_id']},

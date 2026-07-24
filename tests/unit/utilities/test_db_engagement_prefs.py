@@ -125,6 +125,28 @@ class TestReplyCheckConfig:
         assert by_col["reply_check_mode"] == "scheduled"
         assert by_col["reply_sweeps_per_day"] == 2          # floor
 
+    def test_connection_request_mode_default_and_coercion(self):
+        conn, _ = _mock_conn(fetch_row=None)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_engagement_preferences
+            assert get_engagement_preferences(1)["connection_request_mode"] == "auto_approve"
+        conn, cursor = _mock_conn(rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_engagement_preferences
+            update_engagement_preferences(3, {"connection_request_mode": "bogus"})
+        cols = list(__import__("cqc_lem.utilities.db", fromlist=["_ENGAGEMENT_COLS"])._ENGAGEMENT_COLS)
+        by_col = dict(zip(cols, cursor.execute.call_args[0][1][1:]))
+        assert by_col["connection_request_mode"] == "auto_approve"  # bad → safe default
+
+    def test_connection_request_mode_valid_preserved(self):
+        conn, cursor = _mock_conn(rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_engagement_preferences
+            update_engagement_preferences(3, {"connection_request_mode": "pre_review"})
+        cols = list(__import__("cqc_lem.utilities.db", fromlist=["_ENGAGEMENT_COLS"])._ENGAGEMENT_COLS)
+        by_col = dict(zip(cols, cursor.execute.call_args[0][1][1:]))
+        assert by_col["connection_request_mode"] == "pre_review"
+
 
 class TestFeedFallbackPref:
     def test_default_true(self):
