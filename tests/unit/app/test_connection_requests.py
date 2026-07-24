@@ -3,8 +3,6 @@
 import pytest
 from unittest.mock import patch
 
-from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
-
 pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"
@@ -56,6 +54,7 @@ class TestSendConnectionRequest:
     def test_defers_when_throttled(self):
         # Kill-switch / 429 breaker open mid-send → invite_to_connect_now raises → defer, not fail.
         from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
         with patch("cqc_lem.utilities.db.get_connection_request", return_value=self._req()), \
              patch("cqc_lem.utilities.db.count_invites_sent_today", return_value=0), \
              patch(f"{_RA}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
@@ -78,6 +77,7 @@ class TestSendConnectionRequest:
 class TestInviteToConnectWrapper:
     def test_deferred_on_throttle(self):
         from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
         with patch(f"{_RA}.invite_to_connect_now", side_effect=LinkedInRateLimited("throttled")):
             out = ra.invite_to_connect(1, "https://x/in/jane", "hi")
         assert "deferred" in out.lower()

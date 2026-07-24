@@ -3158,7 +3158,7 @@ def update_connection_request_status(request_id: int, status: "ConnectionRequest
         cursor.execute("UPDATE connection_requests SET status = %s WHERE id = %s",
                        (str(status), request_id))
         connection.commit()
-        return cursor.rowcount >= 0
+        return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not update connection request {request_id} status | Error: {err}")
         return False
@@ -3187,7 +3187,7 @@ def update_connection_request(request_id: int, recipient_profile_url: str = None
     try:
         cursor.execute(f"UPDATE connection_requests SET {', '.join(fields)} WHERE id = %s", tuple(params))
         connection.commit()
-        return cursor.rowcount >= 0
+        return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not update connection request {request_id} | Error: {err}")
         return False
