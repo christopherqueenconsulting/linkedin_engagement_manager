@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.54.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.53.0...v0.54.0) (2026-07-24)
+
+
+### Features
+
+* **content:** dwell-time-optimized content shaping (closes [#391](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/391)) ([824a841](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/824a8410a12c86e6140203e70b37eaecf2f7752d))
+* **content:** dwell-time-optimized content shaping (closes [#391](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/391)) ([94f9d00](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/94f9d0015b81cb55a8ac5d24078905f75fab213b))
+
 ## [0.53.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.52.0...v0.53.0) (2026-07-23)
 
 
