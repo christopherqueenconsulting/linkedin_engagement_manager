@@ -746,7 +746,10 @@ def optimize_post_hook(post_content: str, prefs: dict = None,
         "role": "system",
         "content": """You are a LinkedIn post editor. Rewrite the post so its FIRST LINE is a
         scroll-stopping hook that lands within the first 210 characters (before the '…more' fold) —
-        a bold claim, a surprising stat, or a sharp question. Keep the author's substance and voice.
+        a bold claim, a surprising stat, or a sharp question. The hook must OPEN a loop, never close
+        it: the payoff belongs below the fold so expanding is the obvious next move. Keep the
+        author's substance and voice. Keep every paragraph under 300 characters with a blank line
+        between them — a wall of text loses the reader in under three seconds.
         If the content lends itself to it, shape the body as a save-worthy framework or checklist and
         add ONE short, soft 'worth saving for later' style invite near the end. NO engagement-bait
         (no 'comment YES'), NO external links, do not add hashtags. Return ONLY the rewritten post."""
@@ -2763,6 +2766,11 @@ Create two things and return them as a single JSON object with these top-level k
 2. "carousel": A JSON object matching the {schema_hint}. Each slide's "title" should be 3-8 words. Each slide's "content" should be 1-3 engaging sentences (max 200 chars).
 
 Return ONLY valid JSON. No explanation, no markdown fences."""
+
+    # Save-worthy / reference framing (issue #391 — C2): a carousel earns its reach from saves and
+    # slide-by-slide dwell, so it must read as a reusable checklist/playbook, not an announcement.
+    # Shared directive from the framework core — never a parallel per-content-type prompt helper.
+    prompt += _framework.save_worthy_directive("carousel")
 
     # Same alignment core as text posts: voice synthesis when available, prefs steering, and the
     # hard anti-self-promo guardrail — carousels must not drift while text posts stay aligned.

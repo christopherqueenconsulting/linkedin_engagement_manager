@@ -26,9 +26,10 @@ from cqc_lem.utilities.db import get_post_type_counts, insert_planned_post, upda
 from cqc_lem.utilities.db import get_recent_post_shape_history, update_db_post_shape, get_lead_magnet_settings, \
     get_shape_performance
 from cqc_lem.utilities.db import get_recent_post_texts, update_db_post_authenticity_score, \
-    get_post_authenticity_score
+    get_post_authenticity_score, update_db_post_dwell_score
 from cqc_lem.utilities.ai.content_framework import select_blueprint, history_avoidance_directive, \
-    find_most_similar, post_similarity_max, has_first_person_proof
+    find_most_similar, post_similarity_max, has_first_person_proof, shape_for_dwell, dwell_report, \
+    dwell_score_min
 from cqc_lem.utilities.ai.content_alignment import (
     should_include_lead_magnet_cta, lead_magnet_cta_directive, ensure_lead_magnet_cta,
     personal_proof_directive, topic_authority_score, topic_authority_min, profile_topic_dna,
@@ -531,6 +532,7 @@ def regenerate_post_carousel_task(post_id: int):
     stage = get_post_buyer_stage(post_id) or "awareness"
     content = create_carousel_content(user_id, stage, post_id)
     if content:
+        _score_and_persist_dwell(user_id, post_id, content)
         update_db_post_content(post_id, content)
 
     # If real slide images now exist, heal the post back to 'approved' (e.g. from 'error').
@@ -583,6 +585,8 @@ def regenerate_post(post_id: int, guidance: str = None) -> Optional[str]:
         except Exception as e:
             myprint(f"regenerate_post: guidance pass failed for post {post_id} ({e}); keeping base regen")
 
+    # Re-score dwell for the regenerated body so the stored score never describes the old draft.
+    _score_and_persist_dwell(user_id, post_id, content)
     update_db_post_content(post_id, content)
     update_db_post_status(post_id, PostStatus.PENDING)
     myprint(f"regenerate_post: post {post_id} regenerated → pending")
@@ -659,6 +663,34 @@ def _score_and_persist_authenticity(user_id: int, post_id: int, content: str,
                      user_id=user_id, post_id=post_id, task_name="create_text_post")
     except Exception as e:
         myprint(f"Authenticity scoring skipped for post {post_id}: {e}")
+
+
+def _score_and_persist_dwell(user_id: int, post_id: int, content: str) -> Optional[int]:
+    """Compute the deterministic dwell-proxy score for a finished post and persist it next to the
+    authenticity score (issue #391 — C2). No LLM, no gate: dwell is the dominant 2026 ranking signal
+    but our score is a heuristic proxy, so a weak one only logs the specific structural reasons for
+    review. Best-effort — a DB hiccup never blocks the pipeline."""
+    if not content or post_id is None:
+        return None
+    try:
+        report = dwell_report(content)
+        score = report["score"]
+        update_db_post_dwell_score(post_id, score)
+        metrics = report["metrics"]
+        min_score = dwell_score_min()
+        if score < min_score:
+            log_warning(f"Post dwell-proxy score {score} < {min_score}: "
+                        f"{'; '.join(report['issues']) or 'no specific issues'}",
+                        user_id=user_id, post_id=post_id, task_name="create_content")
+        else:
+            log_info(f"Post dwell-proxy score {score} "
+                     f"({metrics['words']} words, ~{metrics['read_seconds']}s read, "
+                     f"{metrics['paragraphs']} paragraphs)",
+                     user_id=user_id, post_id=post_id, task_name="create_content")
+        return score
+    except Exception as e:
+        myprint(f"Dwell scoring skipped for post {post_id}: {e}")
+        return None
 
 
 def _review_generated_post(user_id: int, stage: str, post_type: str, user_profile: LinkedInProfile,
@@ -951,6 +983,14 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
         final_content = _review_generated_post(user_id, stage, post_type, user_profile, blueprint,
                                                post_id, lead_magnet_cta, final_content,
                                                recent_texts, prefs, profile_synthesis)
+
+        # Dwell shaping (issue #391 — C2): deterministic, no-LLM repair of the structural dwell
+        # killer every LLM rewrite above can re-introduce — wall-of-text paragraphs. Runs on
+        # whichever draft the review gate kept, reflows ONLY over-long paragraphs, and never
+        # truncates, so the CTA/proof/hashtag lines survive. The hook-before-fold and read-time
+        # targets are steered in the prompt (content_framework.dwell_directive) and measured into
+        # the persisted dwell-proxy score when the post is saved.
+        final_content = shape_for_dwell(final_content)
 
     # The refinement passes above (and any review-gate retry) are LLM rewrites — verified in prod to
     # reword the "comment KEYWORD" mechanic into a generic ask or drop it entirely, which silently
@@ -1399,6 +1439,11 @@ def auto_create_weekly_content(user_id: int = None):
         # Disclose AI-generated visuals in the caption (caption-line fallback for C2PA)
         if ai_video:
             content = _apply_ai_disclosure(content)
+
+        # Dwell-proxy score (issue #391 — C2) for EVERY post type: the text post, the carousel
+        # caption, and the video caption all live or die on holding the reader past the fold.
+        # Deterministic and advisory — recorded next to the authenticity score, never a gate.
+        _score_and_persist_dwell(user_id, post_id, content)
 
         # Update the database with the created content
         myprint(f"Updating content for post_id: {post_id}")

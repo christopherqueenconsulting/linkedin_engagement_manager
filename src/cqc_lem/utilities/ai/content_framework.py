@@ -921,6 +921,218 @@ def history_avoidance_directive(recent_texts: list, offending_text: str = None,
     return "\n".join(lines) + "\n"
 
 
+# ---------------------------------------------------------------------------
+# Dwell-time optimization (issue #391 / C2). Dwell — how long a reader HOLDS on a post — is the
+# dominant 2026 ranking signal (a 60s+ hold correlates with ~15.6% engagement vs ~1.2% for a sub-3s
+# scroll-past), and it is not something a like/comment count can proxy. Two halves, both here so the
+# writer side and the measuring side can never drift: `dwell_directive()` steers generation (fold
+# placement, read-time target, scannable structure) and `dwell_report()` measures the finished draft
+# deterministically (no LLM) into a 0-100 dwell PROXY score stored next to the authenticity score.
+# ---------------------------------------------------------------------------
+
+# Characters LinkedIn shows in the feed before the '...more' fold — the entire budget the hook has
+# to earn the expand click that starts the dwell clock.
+LINKEDIN_FOLD_CHARS = 210
+# LinkedIn's hard post limit; used as the no-truncation ceiling when reflowing (never as a target).
+LINKEDIN_MAX_CHARS = 3000
+# Average considered-reading speed for feed prose. 200 wpm is the conservative middle of the
+# 180-240 range, so read-time estimates lean long rather than over-promising a 60s hold.
+DWELL_READ_WPM = 200
+# Word band that lands a post in the 55-120 second read window: enough substance for a 60s+ hold,
+# short enough that a scroller still finishes. Matches the 1300-2000 char craft rule (~6 chars/word).
+DWELL_TARGET_WORDS_MIN = 180
+DWELL_TARGET_WORDS_MAX = 400
+# A paragraph longer than this reads as a wall and gets scrolled past; `shape_for_dwell` reflows it.
+DWELL_PARAGRAPH_MAX_CHARS = 300
+# Fewer paragraphs than this means no white space to descend through — the other wall-of-text shape.
+DWELL_MIN_PARAGRAPHS = 4
+# Below this proxy score a draft is logged as dwell-weak. Advisory only (like the authenticity
+# score's demote-not-block posture, minus the demotion) — it never blocks or regenerates a post.
+DWELL_SCORE_MIN_DEFAULT = 60
+
+# Re-readable structure — a numbered step, a bullet, or a checkbox line. This is the shape readers
+# scroll back up through and SAVE, which is both a dwell multiplier and the strongest 2026 signal.
+_LIST_LINE_RE = re.compile(r"^\s*(?:\d+[.)]\s+|[-*•‣▪✓✔☑]\s+|step\s+\d+\b)", re.IGNORECASE | re.MULTILINE)
+
+_PARAGRAPH_SPLIT_RE = re.compile(r"\n\s*\n")
+
+
+def dwell_score_min() -> int:
+    """The dwell-proxy warning threshold, read at call time (the POST_SIMILARITY_MAX live-env
+    pattern) so ops can tune DWELL_SCORE_MIN without a restart."""
+    raw = (os.environ.get("DWELL_SCORE_MIN") or "").strip()
+    try:
+        return max(0, min(100, int(raw))) if raw else DWELL_SCORE_MIN_DEFAULT
+    except ValueError:
+        return DWELL_SCORE_MIN_DEFAULT
+
+
+def read_seconds(text: Optional[str]) -> float:
+    """Estimated read time in seconds at DWELL_READ_WPM — the closest cheap proxy for dwell there
+    is without impression data."""
+    words = len(re.findall(r"\S+", text or ""))
+    return round(words / DWELL_READ_WPM * 60, 1)
+
+
+def dwell_metrics(text: Optional[str]) -> dict:
+    """The raw deterministic dwell measurements of a finished draft: length/read-time, where the
+    hook lands relative to the '...more' fold, and how scannable the body is. No LLM, no I/O."""
+    body = (text or "").strip()
+    words = len(re.findall(r"\S+", body))
+    paragraphs = [p.strip() for p in _PARAGRAPH_SPLIT_RE.split(body) if p.strip()]
+    hook = next((ln.strip() for ln in body.splitlines() if ln.strip()), "")
+    longest = max((len(p) for p in paragraphs), default=0)
+    return {
+        "chars": len(body),
+        "words": words,
+        "read_seconds": read_seconds(body),
+        "hook_chars": len(hook),
+        # The hook must be READABLE IN FULL before the fold — a first line that runs past it gets
+        # truncated mid-thought, which reads as noise instead of an open loop.
+        "hook_within_fold": bool(hook) and len(hook) <= LINKEDIN_FOLD_CHARS,
+        "fold_text": body[:LINKEDIN_FOLD_CHARS],
+        "paragraphs": len(paragraphs),
+        "longest_paragraph_chars": longest,
+        "wall_of_text": longest > DWELL_PARAGRAPH_MAX_CHARS,
+        "has_list": bool(_LIST_LINE_RE.search(body)),
+    }
+
+
+def dwell_report(text: Optional[str]) -> dict:
+    """The dwell PROXY: `dwell_metrics` folded into a 0-100 score with its per-component breakdown
+    and the human-readable issues behind any lost points. Weights follow what actually buys hold
+    time: the fold decides whether the post is read AT ALL (30), read-time is the dwell itself (30),
+    scannability decides whether the reader survives the body (25), and re-readable structure is
+    what earns the save/scroll-back (15)."""
+    m = dwell_metrics(text)
+    issues = []
+
+    if not m["chars"]:
+        return {"score": 0, "components": {"hook_fold": 0.0, "read_time": 0.0,
+                                           "scannability": 0.0, "structure": 0.0},
+                "metrics": m, "issues": ["empty content"]}
+
+    if m["hook_within_fold"]:
+        hook_points = 30.0
+    elif m["hook_chars"] <= LINKEDIN_FOLD_CHARS * 1.5:
+        hook_points = 15.0  # spills just past the fold — truncated, but the gist still lands
+        issues.append(f"hook runs {m['hook_chars']} chars, past the {LINKEDIN_FOLD_CHARS}-char fold")
+    else:
+        hook_points = 0.0
+        issues.append(f"no hook before the fold (first line is {m['hook_chars']} chars)")
+
+    words = m["words"]
+    if DWELL_TARGET_WORDS_MIN <= words <= DWELL_TARGET_WORDS_MAX:
+        read_points = 30.0
+    else:
+        ratio = (words / DWELL_TARGET_WORDS_MIN) if words < DWELL_TARGET_WORDS_MIN \
+            else (DWELL_TARGET_WORDS_MAX / words)
+        read_points = round(30.0 * max(0.0, min(1.0, ratio)), 2)
+        issues.append(f"read time {m['read_seconds']}s ({words} words) outside the "
+                      f"{DWELL_TARGET_WORDS_MIN}-{DWELL_TARGET_WORDS_MAX} word dwell target")
+
+    para_points = round(15.0 * min(1.0, m["paragraphs"] / DWELL_MIN_PARAGRAPHS), 2)
+    if m["paragraphs"] < DWELL_MIN_PARAGRAPHS:
+        issues.append(f"only {m['paragraphs']} paragraph(s) — too little white space to descend through")
+    wall_points = 0.0 if m["wall_of_text"] else 10.0
+    if m["wall_of_text"]:
+        issues.append(f"wall-of-text paragraph ({m['longest_paragraph_chars']} chars > "
+                      f"{DWELL_PARAGRAPH_MAX_CHARS})")
+    scan_points = round(para_points + wall_points, 2)
+
+    if m["has_list"]:
+        structure_points = 15.0
+    elif m["paragraphs"] >= DWELL_MIN_PARAGRAPHS:
+        structure_points = 8.0  # rhythmic paragraphs still give the eye somewhere to land
+        issues.append("no numbered/bulleted block — nothing obvious to scroll back to or save")
+    else:
+        structure_points = 0.0
+        issues.append("no re-readable structure (list, steps, or checklist)")
+
+    components = {"hook_fold": hook_points, "read_time": read_points,
+                  "scannability": scan_points, "structure": structure_points}
+    return {"score": int(round(sum(components.values()))), "components": components,
+            "metrics": m, "issues": issues}
+
+
+def dwell_score(text: Optional[str]) -> int:
+    """The 0-100 dwell-proxy score alone — what gets persisted alongside the authenticity score."""
+    return dwell_report(text)["score"]
+
+
+def meets_dwell_heuristics(text: Optional[str]) -> bool:
+    """True when a draft passes the structural dwell contract: a full hook before the '...more'
+    fold, no wall-of-text paragraph, and enough paragraphs to give the reader white space. Read
+    time is scored (and steered) but deliberately NOT part of the pass/fail — a slightly short post
+    is weaker, not broken."""
+    m = dwell_metrics(text)
+    return bool(m["hook_within_fold"] and not m["wall_of_text"]
+                and m["paragraphs"] >= DWELL_MIN_PARAGRAPHS)
+
+
+def shape_for_dwell(text: Optional[str]) -> Optional[str]:
+    """Deterministic dwell REPAIR of the one failure a rewrite keeps re-introducing: prose that came
+    back as wall-of-text paragraphs. Reflows only over-long paragraphs (reusing the formatter's
+    sentence-boundary reflow — no parallel implementation). The only trim is the formatter's
+    sentence-boundary cap at LINKEDIN_MAX_CHARS — LinkedIn's own hard limit, which such a post
+    already exceeds — so within a postable draft no CTA, hashtag line, or proof detail can be lost.
+    Falsy input and already-scannable text are returned unchanged."""
+    from cqc_lem.utilities.linkedin_formatter import enforce_post_readability
+    if not text or not dwell_metrics(text)["wall_of_text"]:
+        return text
+    return enforce_post_readability(text, max_chars=LINKEDIN_MAX_CHARS,
+                                    target_paragraph_chars=220,
+                                    long_paragraph_chars=DWELL_PARAGRAPH_MAX_CHARS)
+
+
+def dwell_directive() -> str:
+    """The WRITER-side dwell rules appended to every post prompt (see `post_writing_directive`):
+    hold the reader past the fold, past a minute, and give them something worth coming back to."""
+    return (
+        "\n\nDWELL TIME (the dominant 2026 ranking signal — a reader who holds for 60+ seconds is "
+        "worth far more than a like):\n"
+        f"- The first {LINKEDIN_FOLD_CHARS} characters are ALL that show before the '...more' fold. "
+        "Open an information gap there and do NOT close it: name the stakes, the number, or the "
+        "surprise, and put the payoff BELOW the fold so expanding is the obvious next move.\n"
+        "- Never resolve the hook in the opening line. A first line that already gave the answer "
+        "gets scrolled past in under three seconds.\n"
+        f"- Target {DWELL_TARGET_WORDS_MIN}-{DWELL_TARGET_WORDS_MAX} words — roughly "
+        f"{int(DWELL_TARGET_WORDS_MIN / DWELL_READ_WPM * 60)}-"
+        f"{int(DWELL_TARGET_WORDS_MAX / DWELL_READ_WPM * 60)} seconds of reading. Earn the length "
+        "with substance; padding to hit the count is worse than a short post.\n"
+        f"- At least {DWELL_MIN_PARAGRAPHS} paragraphs, each separated by a BLANK LINE, and no "
+        f"paragraph longer than {DWELL_PARAGRAPH_MAX_CHARS} characters. White space is what keeps "
+        "the eye descending.\n"
+        "- Every paragraph must earn the next one: end sections on a small open loop, a question, "
+        "or a turn, so stopping mid-post feels like leaving something unfinished.\n"
+        "- Where the content allows, include a short numbered list, set of steps, or checklist — "
+        "re-readable structure is what readers scroll back through and SAVE.\n"
+    )
+
+
+def save_worthy_directive(content_type: str = "carousel") -> str:
+    """Reference-framing rules that make a CAROUSEL/document worth SAVING rather than swiping past
+    (issue #391 / C2). A saved carousel is the strongest 2026 signal there is: it holds the reader
+    slide-by-slide (dwell) and gets re-opened later. The whole trick is to design a REFERENCE the
+    reader expects to need again, not an ad they consume once."""
+    noun = "carousel" if content_type == "carousel" else "document"
+    return (
+        f"\n\nDESIGN THIS {noun.upper()} TO BE SAVED (saves and slide-by-slide dwell are the "
+        "strongest 2026 signals — a swipe-past teaches the feed to bury the next one):\n"
+        f"- Frame it as a REUSABLE REFERENCE the reader will need again: a checklist, a playbook, a "
+        f"named framework, or a before/after comparison — never a one-time announcement.\n"
+        "- The cover slide must promise exactly what the reader gets and how many parts it has "
+        "(e.g. 'The 5 checks I run before every launch'), so the count itself pulls the swipe.\n"
+        "- ONE idea per slide, self-contained enough to be screenshotted alone, in a numbered "
+        "sequence the reader can return to at step 3 without re-reading steps 1 and 2.\n"
+        "- Each slide's body must carry a specific: a number, a named example, or a concrete "
+        "action. Abstract slides are what readers swipe past.\n"
+        "- The final slide recaps the whole thing as a compact list worth screenshotting, and the "
+        "call to action closes with a soft 'save this for the next time you...' — never "
+        "engagement-bait, never 'follow for more'.\n"
+    )
+
+
 def post_writing_directive() -> str:
     """Channel-craft rules for SHORT-FORM feed posts, appended to every post prompt. This replaces
     the old one-size-fits-all 'viral post framework' suffix (which forced every post into the same
@@ -943,5 +1155,6 @@ def post_writing_directive() -> str:
         "- If hashtags are allowed by the style requirements, at most 3-5 relevant ones on the final "
         "line; otherwise none.\n"
         "- " + PLAIN_PUNCTUATION_DIRECTIVE + "\n"
-        "- Output ONLY the final post text — no quotes, no labels, no explanation.\n"
+        + dwell_directive()
+        + "\n- Output ONLY the final post text — no quotes, no labels, no explanation.\n"
     )
