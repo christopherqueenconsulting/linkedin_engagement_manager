@@ -1702,6 +1702,24 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
 # regardless, so this only ever caps NEW replies.
 _MAX_REPLIES_PER_SWEEP = 15
 
+# Golden-hour reply amplifier (#401): the first ~hour after publishing is the top 2026 reach window,
+# so on event mode we sweep own-post comments repeatedly across it instead of once — every comment
+# left while the post is still being distributed gets a timely, substantive reply. Sweep count is
+# env-tunable (GOLDEN_HOUR_REPLY_SWEEPS); each sweep is QueueOnce + 429-safe, so an extra/overlapping
+# run is harmless and a rate-limited session skips cleanly.
+_GOLDEN_HOUR_MINUTES = 60
+_GOLDEN_HOUR_REPLY_SWEEPS = 3
+
+
+def _golden_hour_sweep_countdowns(sweeps: int = _GOLDEN_HOUR_REPLY_SWEEPS,
+                                  window_minutes: int = _GOLDEN_HOUR_MINUTES) -> list:
+    """Countdown seconds (from publish) for the golden-hour reply sweeps, spread evenly across the
+    window so a comment left at any point in the golden hour is answered within window/sweeps minutes.
+    e.g. 3 sweeps over 60 min → [1200, 2400, 3600] (20, 40, 60 min in)."""
+    n = max(1, int(sweeps))
+    step = (window_minutes * 60) / n
+    return [int(round(step * i)) for i in range(1, n + 1)]
+
 
 def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my_profile,
                                     profile_synthesis: str) -> str:
@@ -3009,11 +3027,15 @@ def post_to_linkedin(self, user_id: int, post_id: int):
                                               countdown=3 * 60)
 
         # Reply/comment follow-up per the user's reply_check_mode (replaces the old 24h polling loop
-        # that drove LinkedIn 429s). event → ONE golden-hour safety sweep as a backstop for a missed
-        # forwarded notification; scheduled → the beat dispatcher handles it; off → nothing.
+        # that drove LinkedIn 429s). event → a golden-hour reply amplifier: several sweeps spread
+        # across the first hour (#401) so every comment left while the post is being distributed gets
+        # a timely reply, not just one at 35 min; scheduled → the beat dispatcher handles it; off →
+        # nothing.
         reply_mode = prefs.get("reply_check_mode", "event")
         if reply_mode == "event":
-            sweep_reply_comments.apply_async(kwargs={'user_id': user_id}, countdown=35 * 60)
+            sweeps = int(_env_float("GOLDEN_HOUR_REPLY_SWEEPS", _GOLDEN_HOUR_REPLY_SWEEPS))
+            for countdown in _golden_hour_sweep_countdowns(sweeps):
+                sweep_reply_comments.apply_async(kwargs={'user_id': user_id}, countdown=countdown)
 
         return f"Post successfully created"
 

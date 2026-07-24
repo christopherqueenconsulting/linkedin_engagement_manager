@@ -62,6 +62,28 @@ class TestSweepReplyComments:
         assert "1/2" in result  # first post errored, second succeeded
 
 
+class TestGoldenHourSweepCountdowns:
+    def test_three_sweeps_spread_across_the_hour(self):
+        from cqc_lem.app.run_automation import _golden_hour_sweep_countdowns
+        assert _golden_hour_sweep_countdowns(3) == [20 * 60, 40 * 60, 60 * 60]
+
+    def test_default_matches_module_constant(self):
+        from cqc_lem.app.run_automation import (_golden_hour_sweep_countdowns,
+                                                _GOLDEN_HOUR_REPLY_SWEEPS)
+        assert len(_golden_hour_sweep_countdowns()) == _GOLDEN_HOUR_REPLY_SWEEPS
+
+    def test_last_sweep_lands_at_end_of_window(self):
+        from cqc_lem.app.run_automation import _golden_hour_sweep_countdowns, _GOLDEN_HOUR_MINUTES
+        for n in (1, 2, 4, 6):
+            cds = _golden_hour_sweep_countdowns(n)
+            assert cds[-1] == _GOLDEN_HOUR_MINUTES * 60      # last sweep closes the golden hour
+            assert cds == sorted(cds) and len(cds) == n       # strictly ordered, right count
+
+    def test_non_positive_count_floors_to_one(self):
+        from cqc_lem.app.run_automation import _golden_hour_sweep_countdowns, _GOLDEN_HOUR_MINUTES
+        assert _golden_hour_sweep_countdowns(0) == [_GOLDEN_HOUR_MINUTES * 60]
+
+
 class _FakeComment:
     def __init__(self, text, author="Jane Doe", href="https://www.linkedin.com/in/jane", already=False):
         self._text, self._author, self._href, self._already = text, author, href, already

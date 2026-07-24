@@ -111,7 +111,7 @@ class TestPostToLinkedinTypeBranching:
             mock_carousel.assert_called_once_with(1, "Post text", slides)
             mock_share.assert_not_called()
 
-    def test_event_mode_schedules_one_golden_hour_sweep(self):
+    def test_event_mode_schedules_golden_hour_amplifier_sweeps(self):
         from cqc_lem.utilities.db import PostType
         from cqc_lem.app.run_automation import post_to_linkedin
 
@@ -126,9 +126,12 @@ class TestPostToLinkedinTypeBranching:
 
             post_to_linkedin.run(1, 10)
 
-            mock_sweep.apply_async.assert_called_once()
-            assert mock_sweep.apply_async.call_args.kwargs["kwargs"] == {"user_id": 1}
-            assert mock_sweep.apply_async.call_args.kwargs["countdown"] == 35 * 60
+            # Golden-hour amplifier (#401): several sweeps spread across the first hour, not one.
+            assert mock_sweep.apply_async.call_count == 3
+            countdowns = [c.kwargs["countdown"] for c in mock_sweep.apply_async.call_args_list]
+            assert countdowns == [20 * 60, 40 * 60, 60 * 60]
+            for c in mock_sweep.apply_async.call_args_list:
+                assert c.kwargs["kwargs"] == {"user_id": 1}
 
     def test_scheduled_and_off_modes_schedule_no_per_post_sweep(self):
         from cqc_lem.utilities.db import PostType
