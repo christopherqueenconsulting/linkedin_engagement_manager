@@ -130,8 +130,12 @@ class TestPostToLinkedinTypeBranching:
             assert mock_sweep.apply_async.call_count == 3
             countdowns = [c.kwargs["countdown"] for c in mock_sweep.apply_async.call_args_list]
             assert countdowns == [20 * 60, 40 * 60, 60 * 60]
+            # Each sweep carries a DISTINCT sweep_slot so celery-once's user_id-keyed lock doesn't
+            # drop the 2nd/3rd apply_async as duplicates (which would collapse the amplifier to one run).
+            slots = [c.kwargs["kwargs"]["sweep_slot"] for c in mock_sweep.apply_async.call_args_list]
+            assert slots == [0, 1, 2]
             for c in mock_sweep.apply_async.call_args_list:
-                assert c.kwargs["kwargs"] == {"user_id": 1}
+                assert c.kwargs["kwargs"]["user_id"] == 1
 
     def test_scheduled_and_off_modes_schedule_no_per_post_sweep(self):
         from cqc_lem.utilities.db import PostType

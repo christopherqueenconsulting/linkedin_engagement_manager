@@ -83,6 +83,11 @@ class TestGoldenHourSweepCountdowns:
         from cqc_lem.app.run_automation import _golden_hour_sweep_countdowns, _GOLDEN_HOUR_MINUTES
         assert _golden_hour_sweep_countdowns(0) == [_GOLDEN_HOUR_MINUTES * 60]
 
+    def test_oversized_count_is_clamped(self):
+        from cqc_lem.app.run_automation import _golden_hour_sweep_countdowns, _GOLDEN_HOUR_MAX_SWEEPS
+        # A misconfigured huge value can't schedule an unbounded number of ETA sweeps.
+        assert len(_golden_hour_sweep_countdowns(1000)) == _GOLDEN_HOUR_MAX_SWEEPS
+
 
 class _FakeComment:
     def __init__(self, text, author="Jane Doe", href="https://www.linkedin.com/in/jane", already=False):

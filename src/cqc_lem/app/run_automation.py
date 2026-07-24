@@ -1709,14 +1709,18 @@ _MAX_REPLIES_PER_SWEEP = 15
 # run is harmless and a rate-limited session skips cleanly.
 _GOLDEN_HOUR_MINUTES = 60
 _GOLDEN_HOUR_REPLY_SWEEPS = 3
+# Hard cap on scheduled sweeps — a misconfigured GOLDEN_HOUR_REPLY_SWEEPS can't flood the broker
+# with ETA tasks or fragment the golden hour into meaninglessly tight intervals.
+_GOLDEN_HOUR_MAX_SWEEPS = 12
 
 
 def _golden_hour_sweep_countdowns(sweeps: int = _GOLDEN_HOUR_REPLY_SWEEPS,
-                                  window_minutes: int = _GOLDEN_HOUR_MINUTES) -> list:
+                                  window_minutes: int = _GOLDEN_HOUR_MINUTES) -> list[int]:
     """Countdown seconds (from publish) for the golden-hour reply sweeps, spread evenly across the
     window so a comment left at any point in the golden hour is answered within window/sweeps minutes.
-    e.g. 3 sweeps over 60 min → [1200, 2400, 3600] (20, 40, 60 min in)."""
-    n = max(1, int(sweeps))
+    e.g. 3 sweeps over 60 min → [1200, 2400, 3600] (20, 40, 60 min in). Sweep count is floored to 1
+    and capped at _GOLDEN_HOUR_MAX_SWEEPS so misconfiguration can't schedule an unbounded burst."""
+    n = max(1, min(_GOLDEN_HOUR_MAX_SWEEPS, int(sweeps)))
     step = (window_minutes * 60) / n
     return [int(round(step * i)) for i in range(1, n + 1)]
 
@@ -1825,13 +1829,16 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
     return f"Replied to {comments_replied_count} comments"
 
 
-@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
+@shared_task.task(bind=True, base=QueueOnce,
+                  once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id', 'sweep_slot']},
                   queue='se_engage')
-def sweep_reply_comments(self, user_id: int):
+def sweep_reply_comments(self, user_id: int, sweep_slot: int = 0):
     """Reply to new comments across the user's RECENT posts in ONE Selenium session. Triggered by a
     forwarded comment-notification email (event mode) or the scheduled dispatcher — replacing the old
     24h-per-post polling loop that drove the 429 rate-limiting. 429-safe: a rate-limited session logs
-    a clean skip and returns (a later trigger/sweep retries)."""
+    a clean skip and returns (a later trigger/sweep retries). sweep_slot is part of the QueueOnce key
+    so the golden-hour amplifier can enqueue several distinct sweeps for one user (same user_id+slot
+    still dedups); the single-shot scheduled/API triggers leave it at 0."""
     prefs = get_engagement_preferences(user_id)
     days = int(prefs.get("reply_max_post_age_days") or 2)
     post_ids = get_recent_posted_post_ids(user_id, days=days)
@@ -3034,8 +3041,11 @@ def post_to_linkedin(self, user_id: int, post_id: int):
         reply_mode = prefs.get("reply_check_mode", "event")
         if reply_mode == "event":
             sweeps = int(_env_float("GOLDEN_HOUR_REPLY_SWEEPS", _GOLDEN_HOUR_REPLY_SWEEPS))
-            for countdown in _golden_hour_sweep_countdowns(sweeps):
-                sweep_reply_comments.apply_async(kwargs={'user_id': user_id}, countdown=countdown)
+            # Distinct sweep_slot per sweep → distinct QueueOnce key, so celery-once enqueues all of
+            # them; keyed only on user_id, the 2nd/3rd apply_async would be dropped as duplicates.
+            for slot, countdown in enumerate(_golden_hour_sweep_countdowns(sweeps)):
+                sweep_reply_comments.apply_async(kwargs={'user_id': user_id, 'sweep_slot': slot},
+                                                 countdown=countdown)
 
         return f"Post successfully created"
 
