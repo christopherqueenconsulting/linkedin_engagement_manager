@@ -12,7 +12,18 @@ fi
 # older migration is "resolved but not applied below the high-water mark", so `validate`
 # fails and every deploy dies at this step. The migrations are independent additive DDL,
 # so applying them out of order is safe; this makes deploys self-heal that situation.
-FLYWAY_ARGS="-baselineOnMigrate=True -validateMigrationNaming=True -outOfOrder=True -url=jdbc:mysql://${MYSQL_HOST}/${MYSQL_DATABASE}?allowPublicKeyRetrieval=true -schemas=${MYSQL_DATABASE} -user=${MYSQL_USER} -password=${MYSQL_PASSWORD} -connectRetries=3"
+# An array (expanded as "${FLYWAY_ARGS[@]}") keeps each flag a single word — a password with a
+# space or a glob char like * / ? would otherwise be split or expanded by an unquoted string.
+FLYWAY_ARGS=(
+  -baselineOnMigrate=true
+  -validateMigrationNaming=true
+  -outOfOrder=true
+  -url="jdbc:mysql://${MYSQL_HOST}/${MYSQL_DATABASE}?allowPublicKeyRetrieval=true"
+  -schemas="${MYSQL_DATABASE}"
+  -user="${MYSQL_USER}"
+  -password="${MYSQL_PASSWORD}"
+  -connectRetries=3
+)
 
-flyway ${FLYWAY_ARGS} repair
-flyway ${FLYWAY_ARGS} migrate
+flyway "${FLYWAY_ARGS[@]}" repair
+flyway "${FLYWAY_ARGS[@]}" migrate
