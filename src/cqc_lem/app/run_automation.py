@@ -35,7 +35,9 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     update_db_post_content, update_db_post_first_comment_link, get_post_first_comment_link, \
     get_dm_history_for_profile, get_post_status, get_user_blog_url, get_post_type, get_carousel_slides, \
     get_dm_template, enqueue_followup, get_due_followups, mark_followup, stop_followups_for_profile, \
-    set_profile_synthesis, get_duplicate_comment_posts
+    set_profile_synthesis, get_duplicate_comment_posts, count_dms_sent_today, \
+    get_approved_outreach_targets, update_outreach_target, update_outreach_target_status, \
+    OutreachStage, OutreachStatus
 from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
     load_profile_for_user
@@ -2882,6 +2884,108 @@ def send_connection_request(self, request_id: int):
     update_connection_request_status(
         request_id, ConnectionRequestStatus.SENT if sent else ConnectionRequestStatus.FAILED)
     return f"Connection request {request_id} -> {'sent' if sent else 'failed'}"
+
+
+# --- Comment-first outreach funnel (issue #399) — approval-gated comment->connect->DM ---
+_FUNNEL_CONNECT_NOTE = ("Hi {first_name}, I've been enjoying your posts and the perspective you "
+                        "share — would love to connect and keep in touch.")
+
+
+def _funnel_first_name(target: dict) -> str:
+    name = (target.get("target_name") or "").strip()
+    return name.split()[0] if name else "there"
+
+
+def _draft_funnel_stage(user_id: int, stage: str, target: dict) -> str:
+    """Draft the voice-aligned action text for the NEXT funnel stage. Connect notes are refined to
+    the user's voice; the DM is rendered from the user's 'funnel' DM template (existing machinery).
+    Returns '' when there's nothing to pre-draft — the operator can still edit before approving."""
+    first_name = _funnel_first_name(target)
+    if stage == OutreachStage.CONNECT:
+        base = _FUNNEL_CONNECT_NOTE.format(first_name=first_name)
+        try:
+            return (get_ai_message_refinement(base, character_limit=300) or base).strip()
+        except Exception as e:
+            log_warning("Funnel connect-note refinement failed", exc=e, user_id=user_id,
+                        action_type="outreach_funnel")
+            return base
+    if stage == OutreachStage.DM:
+        # my_profile is only used for the {headline} fallback; None is safe (see build_dm_from_template).
+        return (build_dm_from_template(user_id, "funnel", first_name, None) or "").strip()
+    return ""
+
+
+def _fire_funnel_stage(user_id: int, target: dict) -> str:
+    """Fire one APPROVED funnel stage by enqueuing the existing primitive, then advance the target to
+    the next stage as 'pending' (needs a fresh approval). Daily caps DEFER a stage (leave it approved
+    for the next run) rather than auto-firing it."""
+    target_id = target["id"]
+    stage = str(target.get("stage"))
+    profile_url = target.get("target_profile_url")
+    draft = (target.get("draft_text") or "").strip()
+    first_name = _funnel_first_name(target)
+    prefs = get_engagement_preferences(user_id)
+
+    if not draft:
+        update_outreach_target_status(target_id, OutreachStatus.SKIPPED)
+        log_warning("Funnel target approved with no draft text; skipping stage",
+                    user_id=user_id, action_type="outreach_funnel")
+        return f"target {target_id}: skipped {stage} (no draft)"
+
+    if stage == OutreachStage.COMMENT:
+        if count_comments_today(user_id) >= int(prefs.get("max_comments_per_day") or 0):
+            return f"target {target_id}: comment deferred (daily comment cap)"
+        context_url = target.get("context_url")
+        if not context_url:
+            update_outreach_target_status(target_id, OutreachStatus.FAILED)
+            log_warning("Funnel comment stage has no post URL to comment on",
+                        user_id=user_id, action_type="outreach_funnel")
+            return f"target {target_id}: comment failed (no post url)"
+        comment_on_post.apply_async(kwargs={"user_id": user_id, "post_link": context_url,
+                                            "comment_text": draft})
+        next_stage = OutreachStage.CONNECT
+    elif stage == OutreachStage.CONNECT:
+        invite_to_connect.apply_async(kwargs={"user_id": user_id, "profile_url": profile_url,
+                                              "message": draft})
+        next_stage = OutreachStage.DM
+    elif stage == OutreachStage.DM:
+        if count_dms_sent_today(user_id) >= int(prefs.get("max_dms_per_day") or 0):
+            return f"target {target_id}: DM deferred (daily DM cap)"
+        send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": profile_url,
+                                            "message": draft})
+        enqueue_next_followup(user_id, profile_url, first_name, "funnel", 0)
+        update_outreach_target(target_id, stage=OutreachStage.COMPLETED, status=OutreachStatus.ACTED)
+        return f"target {target_id}: DM sent -> funnel completed"
+    else:
+        return f"target {target_id}: nothing to do (stage={stage})"
+
+    next_draft = _draft_funnel_stage(user_id, next_stage, target)
+    update_outreach_target(target_id, stage=next_stage, status=OutreachStatus.PENDING,
+                           draft_text=next_draft)
+    return f"target {target_id}: {stage} fired -> {next_stage} pending approval"
+
+
+@shared_task.task(bind=True, base=QueueOnce,
+                  once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']})
+def process_outreach_funnel(self, user_id: int, max_per_run: int = 25):
+    """Advance a user's APPROVED comment->connect->DM funnel targets one stage each (issue #399).
+    Every stage is approval-gated: only status='approved' rows are acted on, and each fired stage
+    drops the target to the NEXT stage as 'pending' — requiring a fresh human approval — so no step
+    ever auto-fires at volume. Reuses comment_on_post / invite_to_connect / send_private_dm and the
+    DM follow-up machinery; daily comment/DM caps defer a stage rather than fire it."""
+    targets = get_approved_outreach_targets(user_id)
+    if not targets:
+        return f"No approved outreach targets for user {user_id}"
+    results = []
+    for target in targets[:max_per_run]:
+        try:
+            results.append(_fire_funnel_stage(user_id, target))
+        except Exception as e:
+            log_error("Outreach funnel stage failed", exc=e, user_id=user_id,
+                      action_type="outreach_funnel")
+            update_outreach_target_status(target["id"], OutreachStatus.FAILED)
+            results.append(f"target {target['id']}: error")
+    return "; ".join(results)
 
 
 def final_method(drivers: List[WebDriver]):

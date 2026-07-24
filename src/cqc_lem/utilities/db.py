@@ -97,6 +97,24 @@ class ConnectionRequestStatus(StrEnum):
     CANCELED = 'canceled'    # canceled before send
 
 
+class OutreachStage(StrEnum):
+    """Stage of a comment-first outreach funnel target (issue #399)."""
+    COMMENT = 'comment'      # leave a value-adding comment on the prospect's post
+    CONNECT = 'connect'      # send a connection request (with a note)
+    DM = 'dm'                # send the voice-aligned DM (must be a 1st-degree connection)
+    COMPLETED = 'completed'  # terminal: the DM fired
+
+
+class OutreachStatus(StrEnum):
+    """Status of the current funnel stage (issue #399), mirroring the approval-gated DM lifecycle."""
+    PENDING = 'pending'      # draft awaiting human approval
+    APPROVED = 'approved'    # human approved; the processor will fire this stage
+    ACTED = 'acted'          # terminal: the final (dm) stage fired
+    SKIPPED = 'skipped'      # current stage skipped without firing
+    FAILED = 'failed'        # firing the stage errored
+    CANCELED = 'canceled'    # operator canceled the whole funnel for this target
+
+
 # Enum for log actions types
 class LogActionType(StrEnum):
     COMMENT = 'comment'
@@ -3196,6 +3214,187 @@ def update_connection_request(request_id: int, recipient_profile_url: str = None
         connection.close()
 
 
+# --- Comment-first outreach funnel (issue #399) — approval-gated comment->connect->DM ---
+_OUTREACH_COLS = ("id", "user_id", "target_profile_url", "target_name", "stage", "status",
+                  "context_url", "draft_text", "notes", "created_at", "updated_at")
+
+
+def insert_outreach_target(user_id: int, target_profile_url: str, target_name: str = None,
+                           context_url: str = None, draft_text: str = None,
+                           stage: "OutreachStage" = OutreachStage.COMMENT,
+                           status: "OutreachStatus" = OutreachStatus.PENDING) -> Optional[int]:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO outreach_funnel_targets (user_id, target_profile_url, target_name, stage, "
+            "status, context_url, draft_text) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            (user_id, target_profile_url, target_name, str(stage), str(status), context_url, draft_text))
+        connection.commit()
+        return cursor.lastrowid
+    except mysql.connector.Error as err:
+        myprint(f"Could not insert outreach target for user_id {user_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_outreach_target(target_id: int) -> Optional[dict]:
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            f"SELECT {', '.join(_OUTREACH_COLS)} FROM outreach_funnel_targets WHERE id = %s", (target_id,))
+        return cursor.fetchone()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get outreach target {target_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_outreach_target_user_id(target_id: int) -> Optional[int]:
+    row = get_outreach_target(target_id)
+    return row["user_id"] if row else None
+
+
+def get_outreach_target_by_url(user_id: int, target_profile_url: str) -> Optional[dict]:
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            f"SELECT {', '.join(_OUTREACH_COLS)} FROM outreach_funnel_targets "
+            "WHERE user_id = %s AND target_profile_url = %s", (user_id, target_profile_url))
+        return cursor.fetchone()
+    except mysql.connector.Error as err:
+        myprint(f"Could not look up outreach target for user_id {user_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_outreach_targets(user_id: int, status_filter: str = None, stage_filter: str = None,
+                         page: int = 1, page_size: int = 25, sort_order: str = "asc") -> dict:
+    """Paginated list of a user's outreach-funnel targets (mirrors the scheduled-DM list response)."""
+    order = "DESC" if str(sort_order).lower() == "desc" else "ASC"
+    where = "WHERE user_id = %s"
+    params: list = [user_id]
+    if status_filter:
+        where += " AND status = %s"
+        params.append(status_filter)
+    if stage_filter:
+        where += " AND stage = %s"
+        params.append(stage_filter)
+    offset = max(0, (max(1, page) - 1) * page_size)
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(f"SELECT COUNT(*) AS c FROM outreach_funnel_targets {where}", tuple(params))
+        total = int(cursor.fetchone()["c"])
+        cursor.execute(
+            f"SELECT {', '.join(_OUTREACH_COLS)} FROM outreach_funnel_targets {where} "
+            f"ORDER BY updated_at {order} LIMIT %s OFFSET %s",
+            tuple(params + [page_size, offset]))
+        rows = cursor.fetchall()
+        for r in rows:
+            for k in ("created_at", "updated_at"):
+                if isinstance(r.get(k), datetime):
+                    r[k] = r[k].isoformat()
+        return {"targets": rows, "total": total, "page": page, "page_size": page_size}
+    except mysql.connector.Error as err:
+        myprint(f"Could not list outreach targets for user_id {user_id} | Error: {err}")
+        return {"targets": [], "total": 0, "page": page, "page_size": page_size}
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_approved_outreach_targets(user_id: int) -> list:
+    """Approved, not-yet-completed funnel targets for a user — the rows the processor may fire.
+    Oldest-updated first so a backlog drains in order. Returns dict rows."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            f"SELECT {', '.join(_OUTREACH_COLS)} FROM outreach_funnel_targets "
+            "WHERE user_id = %s AND status = 'approved' AND stage <> 'completed' "
+            "ORDER BY updated_at ASC", (user_id,))
+        return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        myprint(f"Could not get approved outreach targets for user_id {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_users_with_approved_outreach() -> list:
+    """Distinct user_ids that have at least one approved, non-completed funnel target (dispatcher)."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT DISTINCT user_id FROM outreach_funnel_targets "
+            "WHERE status = 'approved' AND stage <> 'completed'")
+        return [r[0] for r in cursor.fetchall()]
+    except mysql.connector.Error as err:
+        myprint(f"Could not get users with approved outreach | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_outreach_target_status(target_id: int, status: "OutreachStatus") -> bool:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("UPDATE outreach_funnel_targets SET status = %s WHERE id = %s",
+                       (str(status), target_id))
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not update outreach target {target_id} status | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_outreach_target(target_id: int, target_profile_url: str = None, target_name: str = None,
+                           context_url: str = None, draft_text: str = None, notes: str = None,
+                           stage: "OutreachStage" = None, status: "OutreachStatus" = None) -> bool:
+    fields, params = [], []
+    for col, val in (("target_profile_url", target_profile_url), ("target_name", target_name),
+                     ("context_url", context_url), ("draft_text", draft_text), ("notes", notes)):
+        if val is not None:
+            fields.append(f"{col} = %s")
+            params.append(val)
+    for col, val in (("stage", stage), ("status", status)):
+        if val is not None:
+            fields.append(f"{col} = %s")
+            params.append(str(val))
+    if not fields:
+        return False
+    params.append(target_id)
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(f"UPDATE outreach_funnel_targets SET {', '.join(fields)} WHERE id = %s",
+                       tuple(params))
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not update outreach target {target_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def has_scheduled_post_today(user_id: int) -> bool:
     """True if the user has a post going out today (UTC) — those days are already covered by the
     pre-post commenting trigger, so the standalone daily engagement run should skip them. Fails
@@ -4128,6 +4327,8 @@ _DM_DEFAULT_TEMPLATES = {
                       "I share insights on {headline} and thought there might be synergy between our work. "
                       "Would love to connect more directly — feel free to share what you're working on!",
     "manual": "Hi {first_name}, thanks for connecting!",
+    "funnel": "Hi {first_name}, really glad we connected. I've enjoyed following the work you're "
+              "sharing and would love to swap notes sometime. What are you focused on this quarter?",
 }
 
 
