@@ -6,10 +6,14 @@ set -o nounset
 # Flower turns basic auth ON whenever FLOWER_BASIC_AUTH is DEFINED — an empty value parses as a
 # credential list holding one empty entry, so it locks everyone out rather than meaning "no auth".
 # Compose always defines the key (`FOO=${BAR:+...}` yields "" when BAR is unset), so unset it here
-# when empty to make the intended "no credentials configured = no auth" actually true.
-if [ -z "${FLOWER_BASIC_AUTH:-}" ]; then
-  unset FLOWER_BASIC_AUTH
-fi
+# when empty to make the intended "no credentials configured = no auth" actually true. A half-blank
+# "user:" / ":pass" is dropped too — that would otherwise enforce a credential nobody intended —
+# but noisily, so a typo'd password doesn't quietly look like it's protecting anything.
+case "${FLOWER_BASIC_AUTH:-}" in
+  "")      unset FLOWER_BASIC_AUTH ;;
+  *: | :*) >&2 echo "WARNING: FLOWER_BASIC_AUTH is missing a user or password — ignoring it (no basic auth)."
+           unset FLOWER_BASIC_AUTH ;;
+esac
 
 celery --app cqc_lem.app.my_celery \
   flower \

@@ -137,12 +137,14 @@ services:
       - ./logs:/app/logs
       - flower_db:/data
     environment:
-      # Optional basic auth + persistence. Flower is gated by Cloudflare Zero Trust
-      # Access regardless; basic auth is extra protection. When CELERY_FLOWER_USER is
-      # unset this collapses to an EMPTY value — which Flower still treats as "auth on"
-      # (an empty credential list nobody can satisfy), so the flower start script unsets
-      # it when empty. That is what actually makes "no user configured = no auth" true.
-      - FLOWER_BASIC_AUTH=${CELERY_FLOWER_USER:+${CELERY_FLOWER_USER}:${CELERY_FLOWER_PASSWORD}}
+      # Optional basic auth + persistence. Flower is gated by Cloudflare Zero Trust Access
+      # regardless; basic auth is extra protection. Requires BOTH user and password: with only
+      # one set this would expand to "user:" or ":pass", which Flower would happily enforce as
+      # a half-blank credential. Unset either one and the value collapses to EMPTY — which
+      # Flower still treats as "auth on" (an empty credential nobody can satisfy), so the
+      # flower start script unsets it when empty. Together those make the intended
+      # "no credentials configured = no auth" actually true.
+      - FLOWER_BASIC_AUTH=${CELERY_FLOWER_PASSWORD:+${CELERY_FLOWER_USER:+${CELERY_FLOWER_USER}:${CELERY_FLOWER_PASSWORD}}}
       - FLOWER_PERSISTENT=True
       - CELERY_TIMEZONE=${CELERY_TIMEZONE:-UTC}
     deploy:

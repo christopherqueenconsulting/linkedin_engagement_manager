@@ -13,11 +13,13 @@ until worker_ready; do
 done
 >&2 echo 'Celery workers is available'
 
-# See start-no-wait: an empty FLOWER_BASIC_AUTH still ENABLES auth (with a credential nobody
-# can supply), so unset it rather than let compose's always-defined empty value lock us out.
-if [ -z "${FLOWER_BASIC_AUTH:-}" ]; then
-  unset FLOWER_BASIC_AUTH
-fi
+# See start-no-wait: an empty (or half-blank) FLOWER_BASIC_AUTH still ENABLES auth with a
+# credential nobody can supply, so drop it rather than let it lock us out.
+case "${FLOWER_BASIC_AUTH:-}" in
+  "")      unset FLOWER_BASIC_AUTH ;;
+  *: | :*) >&2 echo "WARNING: FLOWER_BASIC_AUTH is missing a user or password — ignoring it (no basic auth)."
+           unset FLOWER_BASIC_AUTH ;;
+esac
 
 celery --app cqc_lem.app.my_celery \
   --broker="${CELERY_BROKER_URL}" \
