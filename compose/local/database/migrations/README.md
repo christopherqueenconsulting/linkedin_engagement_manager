@@ -24,5 +24,11 @@ unique per authoring second and always sort **after** the legacy integer migrati
 - Legacy `V1`–`V58` are frozen and grandfathered; everything new is a timestamp.
 - Enforced by the **Migration Versions** CI check.
 
-Flyway runs `outOfOrder=false` with validation on, so a duplicate/out-of-order migration *fails
-the deploy* rather than silently skipping — timestamps prevent it entirely.
+Flyway runs with `outOfOrder=true` (see `../flyway-entrypoint.sh`). Timestamps make versions
+unique, but PRs merge in an arbitrary order — a PR held open for review lands its *older*
+timestamp after newer migrations are already applied to prod. With `outOfOrder=false` that older
+migration is "resolved but not applied below the high-water mark", which makes `validate` fail and
+kills every deploy at the migration step. `outOfOrder=true` applies it in place instead. This is
+safe because migrations are independent additive DDL — do **not** author a migration that depends
+on a later-timestamped one having already run. Duplicate *versions* are still rejected (and caught
+pre-merge by the **Migration Versions** check); only out-of-order *application* is allowed.
