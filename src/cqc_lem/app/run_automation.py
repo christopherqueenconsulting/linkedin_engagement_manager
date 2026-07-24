@@ -2248,6 +2248,12 @@ def _followup_on_post_comment_replies(driver, wait, user_id: int, post_url: str,
         log_warning("Follow-up: no profile slug — skipping to avoid mis-scoping", user_id=user_id,
                     action_type="reply")
         return result
+    # A very long post pushes comments far below the fold; a TALL viewport is what actually makes
+    # them lazy-render (scrolling alone on the default 1080-tall window did not). Validated live.
+    try:
+        driver.set_window_size(1400, 3400)
+    except Exception:
+        pass
     if driver.current_url.split("?")[0].rstrip("/") != post_url.split("?")[0].rstrip("/"):
         driver.get(post_url)
         time.sleep(random.uniform(2.5, 4))
