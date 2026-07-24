@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.66.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.65.0...v0.66.0) (2026-07-24)
+
+
+### Features
+
+* **newsletter:** subscriber-growth tracking + opt-in invite flow (closes [#400](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/400)) ([5aeb9fb](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5aeb9fb650c3840d950b1e917200864eae6e8503))
+
 ## [0.65.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.64.0...v0.65.0) (2026-07-24)
 
 
