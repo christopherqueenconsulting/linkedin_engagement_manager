@@ -24,7 +24,7 @@ from cqc_lem.utilities.ai.content_alignment import humanize_text, split_link_for
 from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, insert_new_log, LogActionType, \
     get_engagement_preferences, count_comments_today, get_recent_engagers, upsert_engager, \
-    get_newsletter_settings, mark_newsletter_published, \
+    get_newsletter_settings, mark_newsletter_published, record_newsletter_subscriber_stat, \
     get_newsletter_edition, mark_edition_published, mark_edition_failed, \
     upsert_user_group, get_enabled_group_ids, record_post_stats, get_recent_posted_post_ids, \
     get_lead_magnet_settings, has_received_lead_magnet, record_lead_magnet_sent, \
@@ -1250,6 +1250,123 @@ def auto_publish_edition(self, edition_id: int):
         log_error("Newsletter edition publish error", exc=e, user_id=user_id, task_name="auto_publish_edition")
         mark_edition_failed(edition_id)
         return f"Newsletter edition error: {e}"
+    finally:
+        quit_gracefully(driver)
+
+
+def _parse_subscriber_count(text: str) -> "int | None":
+    """Pull a subscriber count out of LinkedIn's label text, e.g. '1,234 subscribers' -> 1234,
+    '3.2K subscribers' -> 3200. Returns None when no count is present."""
+    if not text:
+        return None
+    m = re.search(r"([\d.,]+)\s*([KkMm]?)\s*subscriber", text)
+    if not m:
+        return None
+    num, suffix = m.group(1), m.group(2).upper()
+    try:
+        value = float(num.replace(",", ""))
+    except ValueError:
+        return None
+    if suffix == "K":
+        value *= 1_000
+    elif suffix == "M":
+        value *= 1_000_000
+    return int(value)
+
+
+def _read_newsletter_subscriber_count(driver, wait, newsletter_url: str) -> "int | None":
+    """Best-effort: open the user's newsletter page and read its 'N subscribers' label. LinkedIn
+    renders the count in a header near the newsletter title; selectors vary, so we scan a few
+    candidates and fall back to a page-text regex. Returns None when the count can't be read —
+    never raises (validated on a supervised first real run)."""
+    if not newsletter_url:
+        return None
+    driver.get(newsletter_url)
+    time.sleep(random.uniform(4, 7))
+    el = find_first(driver, wait,
+                    [(By.XPATH, "//*[contains(translate(text(),'SUBSCRIBER','subscriber'),'subscriber')]")],
+                    "Subscriber count", visible_only=True, required=False, max_try=1)
+    if el is not None:
+        count = _parse_subscriber_count(getText(el) or "")
+        if count is not None:
+            return count
+    try:
+        return _parse_subscriber_count(driver.find_element(By.TAG_NAME, "body").text)
+    except Exception:
+        return None
+
+
+def _invite_connections_to_newsletter(driver, wait, cap: int) -> int:
+    """Best-effort: from the open newsletter page, invite up to `cap` connections to subscribe.
+    Opens the 'Invite' dialog (LinkedIn labels it 'Invite connections'/'Manage'), selects up to
+    `cap` connection checkboxes, and sends. Returns the number invited (0 when the flow isn't
+    available or cap<=0). Never raises — caps are enforced here, opt-in is enforced by the caller
+    (validated on a supervised first real run)."""
+    if cap <= 0:
+        return 0
+    if click_first(driver, wait,
+                   [(By.XPATH, "//button[contains(translate(@aria-label,'INVITE','invite'),'invite')]"),
+                    (By.XPATH, "//button[contains(translate(normalize-space(),'INVITE','invite'),'invite')]")],
+                   "Invite connections", required=False, max_try=1) is None:
+        return 0
+    time.sleep(random.uniform(2, 4))
+    checkboxes = get_elements_as_list_wait_stale(
+        wait, "//input[@type='checkbox' and contains(@id,'invitee')]",
+        "Newsletter invitee checkboxes", max_retry=0) or []
+    selected = 0
+    for cb in checkboxes:
+        if selected >= cap:
+            break
+        try:
+            driver.execute_script("arguments[0].click();", cb)
+            selected += 1
+            time.sleep(random.uniform(0.2, 0.6))
+        except Exception:
+            continue
+    if selected == 0:
+        return 0
+    if click_first(driver, wait,
+                   [(By.XPATH, "//button[contains(translate(normalize-space(),'INVITE','invite'),'invite') "
+                               "and not(@disabled)]")],
+                   "Send newsletter invites", required=False, max_try=1) is None:
+        return 0
+    time.sleep(random.uniform(2, 4))
+    return selected
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
+                  queue='se_content')
+def track_newsletter_subscribers(self, user_id: int):
+    """Capture the user's newsletter subscriber count over time and, when opted in, invite
+    connections to subscribe within the per-run cap (issue #400). Reads the count from the
+    newsletter page and records a growth snapshot; inviting only runs when
+    invite_connections_enabled is set and stops at max_invites_per_run. Best-effort Selenium —
+    the first real run should be supervised."""
+    settings = get_newsletter_settings(user_id)
+    if not settings.get("enabled"):
+        return "Newsletter not enabled"
+    newsletter_url = settings.get("newsletter_url")
+    if not newsletter_url:
+        return "No newsletter URL yet"
+    try:
+        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Newsletter")
+    except Exception as e:
+        log_error("Error getting profile for newsletter tracking", exc=e, user_id=user_id,
+                  task_name="track_newsletter_subscribers")
+        return f"Failed to start newsletter tracking: {e}"
+    try:
+        count = _read_newsletter_subscriber_count(driver, wait, newsletter_url)
+        invited = 0
+        if settings.get("invite_connections_enabled"):
+            invited = _invite_connections_to_newsletter(driver, wait, int(settings.get("max_invites_per_run") or 0))
+        record_newsletter_subscriber_stat(user_id, subscriber_count=count, invites_sent=invited)
+        log_info("Newsletter subscriber snapshot", user_id=user_id,
+                 task_name="track_newsletter_subscribers")
+        return f"Subscribers: {count if count is not None else 'unknown'}; invited {invited}"
+    except Exception as e:
+        log_error("Newsletter subscriber tracking error", exc=e, user_id=user_id,
+                  task_name="track_newsletter_subscribers")
+        return f"Newsletter tracking error: {e}"
     finally:
         quit_gracefully(driver)
 

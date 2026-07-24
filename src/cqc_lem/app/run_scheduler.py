@@ -368,6 +368,24 @@ def auto_generate_newsletter_drafts():
 
 
 @shared_task.task
+def auto_track_newsletter_subscribers():
+    """Fan out per-user newsletter subscriber-growth tracking for every enabled newsletter user
+    (issue #400). Each per-user task reads the subscriber count into the growth time-series and,
+    when opted in, invites connections within the per-run cap. Selenium-backed, so it respects the
+    global throttle breaker."""
+    if _skip_if_throttled("auto_track_newsletter_subscribers"):
+        return "Skipped (throttled)"
+    from cqc_lem.app.run_automation import track_newsletter_subscribers
+    from cqc_lem.utilities.db import get_enabled_newsletter_user_ids
+
+    dispatched = 0
+    for user_id in get_enabled_newsletter_user_ids():
+        track_newsletter_subscribers.apply_async(kwargs={"user_id": user_id})
+        dispatched += 1
+    return f"Dispatched newsletter subscriber tracking for {dispatched} user(s)"
+
+
+@shared_task.task
 def generate_newsletter_drafts_for_user(user_id: int):
     """Top up a single user's newsletter review queue on demand (e.g. right after they raise their
     max_queued_drafts in settings), so new slots don't wait for the daily beat. Skips the bootstrap

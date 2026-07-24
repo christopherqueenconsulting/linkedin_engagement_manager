@@ -3536,9 +3536,11 @@ _NEWSLETTER_DEFAULTS: dict = {
     "enabled": False, "title": None, "topic": None, "cadence": "weekly",
     "align_with_blog": True, "newsletter_url": None, "last_published_at": None,
     "publish_day": 1, "publish_hour": 9, "generate_lead_days": 3, "max_queued_drafts": 1,
+    "invite_connections_enabled": False, "max_invites_per_run": 50,
 }
 _NEWSLETTER_COLS = ("enabled", "title", "topic", "cadence", "align_with_blog", "newsletter_url",
-                    "publish_day", "publish_hour", "generate_lead_days", "max_queued_drafts")
+                    "publish_day", "publish_hour", "generate_lead_days", "max_queued_drafts",
+                    "invite_connections_enabled", "max_invites_per_run")
 
 
 def get_newsletter_settings(user_id: int) -> dict:
@@ -3548,19 +3550,23 @@ def get_newsletter_settings(user_id: int) -> dict:
     try:
         cursor.execute(
             "SELECT enabled, title, topic, cadence, align_with_blog, newsletter_url, last_published_at, "
-            "publish_day, publish_hour, generate_lead_days, max_queued_drafts "
+            "publish_day, publish_hour, generate_lead_days, max_queued_drafts, "
+            "invite_connections_enabled, max_invites_per_run "
             "FROM newsletter_settings WHERE user_id = %s", (user_id,))
         row = cursor.fetchone()
         if row is None:
             return dict(_NEWSLETTER_DEFAULTS)
         row["enabled"] = bool(row.get("enabled"))
         row["align_with_blog"] = bool(row.get("align_with_blog"))
+        row["invite_connections_enabled"] = bool(row.get("invite_connections_enabled"))
         row["publish_day"] = int(row.get("publish_day") if row.get("publish_day") is not None else 1)
         row["publish_hour"] = int(row.get("publish_hour") if row.get("publish_hour") is not None else 9)
         row["generate_lead_days"] = int(
             row.get("generate_lead_days") if row.get("generate_lead_days") is not None else 3)
         row["max_queued_drafts"] = int(
             row.get("max_queued_drafts") if row.get("max_queued_drafts") is not None else 1)
+        row["max_invites_per_run"] = int(
+            row.get("max_invites_per_run") if row.get("max_invites_per_run") is not None else 50)
         return row
     except mysql.connector.Error as err:
         myprint(f"Could not get newsletter settings for user {user_id} | Error: {err}")
@@ -3574,7 +3580,8 @@ def update_newsletter_settings(user_id: int, settings: dict) -> bool:
     """Upsert the user's newsletter config (title/topic/cadence/enabled/align_with_blog)."""
     merged = {**_NEWSLETTER_DEFAULTS, **{k: v for k, v in settings.items() if k in _NEWSLETTER_COLS}}
     values = [user_id] + [
-        (1 if merged[c] else 0) if c in ("enabled", "align_with_blog") else merged[c]
+        (1 if merged[c] else 0) if c in ("enabled", "align_with_blog", "invite_connections_enabled")
+        else merged[c]
         for c in _NEWSLETTER_COLS]
     placeholders = ", ".join(["%s"] * (len(_NEWSLETTER_COLS) + 1))
     updates = ", ".join(f"{c}=VALUES({c})" for c in _NEWSLETTER_COLS)
@@ -3608,6 +3615,65 @@ def mark_newsletter_published(user_id: int, newsletter_url: str = None) -> bool:
     except mysql.connector.Error as err:
         myprint(f"Could not mark newsletter published for user {user_id} | Error: {err}")
         return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def record_newsletter_subscriber_stat(user_id: int, subscriber_count: "int | None" = None,
+                                      invites_sent: int = 0) -> bool:
+    """Append one subscriber-growth snapshot for the user: the scraped subscriber_count (NULL when
+    the page couldn't be read) and how many connections were invited on this run. One row per
+    tracking run so growth can be charted over time (issue #400)."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO newsletter_subscriber_stats (user_id, subscriber_count, invites_sent) "
+            "VALUES (%s, %s, %s)",
+            (user_id, subscriber_count, int(invites_sent or 0)))
+        connection.commit()
+        return cursor.rowcount == 1
+    except mysql.connector.Error as err:
+        myprint(f"Could not record newsletter subscriber stat for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_newsletter_subscriber_stats(user_id: int, limit: int = 52) -> list:
+    """Return the user's subscriber-growth snapshots, most recent first (default last 52 runs — a
+    year of weekly tracking). Each item: subscriber_count, invites_sent, captured_at."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT subscriber_count, invites_sent, captured_at FROM newsletter_subscriber_stats "
+            "WHERE user_id = %s ORDER BY captured_at DESC, id DESC LIMIT %s", (user_id, limit))
+        return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        myprint(f"Could not get newsletter subscriber stats for user {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_latest_newsletter_subscriber_count(user_id: int) -> "int | None":
+    """Most recent non-NULL subscriber_count for the user, or None if never captured."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT subscriber_count FROM newsletter_subscriber_stats "
+            "WHERE user_id = %s AND subscriber_count IS NOT NULL "
+            "ORDER BY captured_at DESC, id DESC LIMIT 1", (user_id,))
+        row = cursor.fetchone()
+        return int(row[0]) if row and row[0] is not None else None
+    except mysql.connector.Error as err:
+        myprint(f"Could not get latest newsletter subscriber count for user {user_id} | Error: {err}")
+        return None
     finally:
         cursor.close()
         connection.close()

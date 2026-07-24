@@ -64,6 +64,19 @@ export type NewsletterSettings = {
   publish_hour: number
   generate_lead_days: number
   max_queued_drafts: number
+  invite_connections_enabled: boolean
+  max_invites_per_run: number
+}
+
+export type NewsletterSubscriberStat = {
+  subscriber_count: number | null
+  invites_sent: number
+  captured_at: string
+}
+
+export type NewsletterSubscribers = {
+  latest: number | null
+  history: NewsletterSubscriberStat[]
 }
 
 export type NewsletterEdition = {
