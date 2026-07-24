@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 pytestmark = pytest.mark.unit
 
 _LI = "cqc_lem.utilities.ai.lead_intent"
+_AI = "cqc_lem.utilities.ai.ai_helper"
 
 
 def _detect(*args, **kwargs):
@@ -104,33 +105,29 @@ class TestLlmTier:
         return resp
 
     def test_yes_is_a_lead(self):
-        from cqc_lem.utilities.ai.lead_intent import _llm_says_lead
-        client = MagicMock()
-        client.chat.completions.create.return_value = self._response("Yes")
-        with patch("cqc_lem.utilities.ai.client.client", client):
+        from cqc_lem.utilities.ai.lead_intent import _llm_says_lead, _LLM_MAX_TOKENS
+        with patch(f"{_AI}._call_llm", return_value=self._response("Yes")) as call:
             assert _llm_says_lead("do you do this?") is True
-        assert client.chat.completions.create.call_args.kwargs["model"] == "lem-simple"
+        # _call_llm is what emits the PostHog llm_call event, so routing through it keeps this
+        # high-volume classifier in the usage metrics — and the answer is one word.
+        assert call.call_args.kwargs["model"] == "lem-simple"
+        assert call.call_args.kwargs["max_tokens"] == _LLM_MAX_TOKENS
 
     def test_no_is_not_a_lead(self):
         from cqc_lem.utilities.ai.lead_intent import _llm_says_lead
-        client = MagicMock()
-        client.chat.completions.create.return_value = self._response("no")
-        with patch("cqc_lem.utilities.ai.client.client", client):
+        with patch(f"{_AI}._call_llm", return_value=self._response("no")):
             assert _llm_says_lead("nice work") is False
 
     def test_failure_fails_closed(self):
         from cqc_lem.utilities.ai.lead_intent import _llm_says_lead
-        client = MagicMock()
-        client.chat.completions.create.side_effect = RuntimeError("proxy down")
-        with patch("cqc_lem.utilities.ai.client.client", client), patch(f"{_LI}.log_warning") as warn:
+        with patch(f"{_AI}._call_llm", side_effect=RuntimeError("proxy down")), \
+                patch(f"{_LI}.log_warning") as warn:
             assert _llm_says_lead("maybe?") is False
         warn.assert_called_once()
 
     def test_empty_content_is_not_a_lead(self):
         from cqc_lem.utilities.ai.lead_intent import _llm_says_lead
-        client = MagicMock()
-        client.chat.completions.create.return_value = self._response(None)
-        with patch("cqc_lem.utilities.ai.client.client", client):
+        with patch(f"{_AI}._call_llm", return_value=self._response(None)):
             assert _llm_says_lead("hmm") is False
 
 

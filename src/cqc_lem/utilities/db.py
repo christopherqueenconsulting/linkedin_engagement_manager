@@ -4169,11 +4169,6 @@ def get_lead_signal(signal_id: int) -> Optional[dict]:
         connection.close()
 
 
-def get_lead_signal_user_id(signal_id: int) -> Optional[int]:
-    row = get_lead_signal(signal_id)
-    return row["user_id"] if row else None
-
-
 def get_lead_signals(user_id: int, status_filter: str = None, page: int = 1, page_size: int = 25,
                      sort_order: str = "desc") -> dict:
     """Paginated leads inbox for a user (mirrors the scheduled-DM/outreach list response). Hottest

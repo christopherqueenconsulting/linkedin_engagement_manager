@@ -33,6 +33,8 @@ _LLM_SCORE = 55
 _MIN_TEXT_CHARS = 8
 # Cap what we send to the classifier / store as evidence.
 _MAX_TEXT_CHARS = 1200
+# The tier-2 answer is one word ('yes'/'no') — no reason to pay for more.
+_LLM_MAX_TOKENS = 3
 
 _STRONG_PATTERNS: "list[tuple[str, str]]" = [
     ("pricing", r"\b(how much|pricing|price list|prices?|what (does|would) (it|this|that) cost|"
@@ -88,10 +90,13 @@ def _min_score() -> int:
 
 def _llm_says_lead(text: str) -> bool:
     """Tier-2 check for the ambiguous band. Fails CLOSED (False) — a classifier hiccup must not
-    flood the operator's leads inbox with noise; a genuine lead usually carries a strong keyword."""
-    from cqc_lem.utilities.ai.client import client
+    flood the operator's leads inbox with noise; a genuine lead usually carries a strong keyword.
+
+    Routed through `_call_llm` so this high-volume classifier's tokens/latency land in PostHog with
+    every other LLM call."""
+    from cqc_lem.utilities.ai.ai_helper import _call_llm
     try:
-        response = client.chat.completions.create(
+        response = _call_llm(
             model="lem-simple",
             messages=[
                 {"role": "system", "content": _LLM_SYSTEM},
@@ -99,6 +104,7 @@ def _llm_says_lead(text: str) -> bool:
                                             f"Answer yes or no."},
             ],
             temperature=0,
+            max_tokens=_LLM_MAX_TOKENS,
         )
         answer = (response.choices[0].message.content or "").strip().lower()
         return answer.startswith("y")

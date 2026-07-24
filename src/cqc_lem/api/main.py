@@ -31,7 +31,7 @@ from cqc_lem.utilities.db import (
     insert_outreach_target, get_outreach_targets, get_outreach_target_user_id,
     get_outreach_target_by_url, update_outreach_target, update_outreach_target_status,
     OutreachStatus,
-    get_lead_signals, get_lead_signal, get_lead_signal_user_id, update_lead_signal,
+    get_lead_signals, get_lead_signal, update_lead_signal,
     count_new_lead_signals, LeadSignalStatus,
     create_pin_for_email, verify_pin_for_email, delete_pin_for_email,
     create_session, get_session_user_id, delete_session,

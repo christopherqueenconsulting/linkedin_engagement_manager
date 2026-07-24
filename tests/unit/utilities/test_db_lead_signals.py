@@ -117,15 +117,16 @@ class TestGetLeadSignal:
     def test_returns_the_row_and_its_owner(self):
         conn, _ = _mock_conn(fetch_row={"id": 3, "user_id": 5})
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_lead_signal, get_lead_signal_user_id
-            assert get_lead_signal(3)["id"] == 3
-            assert get_lead_signal_user_id(3) == 5
+            from cqc_lem.utilities.db import get_lead_signal
+            row = get_lead_signal(3)
+        assert row["id"] == 3
+        assert row["user_id"] == 5
 
-    def test_missing_row_has_no_owner(self):
+    def test_missing_row_is_none(self):
         conn, _ = _mock_conn(fetch_row=None)
         with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import get_lead_signal_user_id
-            assert get_lead_signal_user_id(3) is None
+            from cqc_lem.utilities.db import get_lead_signal
+            assert get_lead_signal(3) is None
 
     def test_db_error_returns_none(self):
         conn, _ = _mock_conn(side_effect=mysql.connector.Error("boom"))
