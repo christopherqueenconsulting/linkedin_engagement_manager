@@ -233,6 +233,96 @@ class TestRankContentAttributes:
         assert ranking["hook_style"][0]["key"] == "question"
 
 
+def _perf_row(post_id, scheduled_time, reactions=0, comments=0, reposts=0, saves=0,
+              impressions=None, archetype=None, hook_style=None, fmt=None, topic=None,
+              buyer_stage=None):
+    """A `db.get_post_performance_rows` dict."""
+    return {"post_id": post_id, "scheduled_time": scheduled_time, "reactions": reactions,
+            "comments": comments, "reposts": reposts, "saves": saves, "impressions": impressions,
+            "archetype": archetype, "hook_style": hook_style, "format": fmt, "topic": topic,
+            "buyer_stage": buyer_stage}
+
+
+class TestBuildPerformanceTable:
+    def test_derives_engagement_and_rate_and_sorts_newest_first(self):
+        from cqc_lem.utilities.post_stats import build_performance_table
+        rows = [
+            _perf_row(1, dt.datetime(2026, 7, 20, 9, 0), reactions=20, comments=10, reposts=5,
+                      saves=3, impressions=1000, fmt="carousel", hook_style="question"),
+            _perf_row(2, dt.datetime(2026, 7, 22, 9, 0), reactions=4, comments=1),
+        ]
+        table = build_performance_table(rows)
+        assert [r["post_id"] for r in table] == [2, 1]          # newest first
+        first = table[1]
+        assert first["engagement"] == 50                         # 20 + 2*10 + 2*5
+        assert first["engagement_rate"] == pytest.approx(0.05)
+        assert first["scheduled_time"] == "2026-07-20T09:00:00"  # ISO-serialized
+        assert first["format"] == "carousel" and first["saves"] == 3
+
+    def test_rate_none_without_impressions(self):
+        from cqc_lem.utilities.post_stats import build_performance_table
+        table = build_performance_table([_perf_row(1, dt.datetime(2026, 7, 20, 9, 0),
+                                                    reactions=5, comments=1)])
+        assert table[0]["engagement_rate"] is None
+        assert table[0]["impressions"] is None
+
+    def test_ignores_empty_rows(self):
+        from cqc_lem.utilities.post_stats import build_performance_table
+        assert build_performance_table([None, {}]) == build_performance_table([])
+        assert build_performance_table([]) == []
+
+
+class TestBuildEngagementTrend:
+    def test_buckets_by_day_ascending_and_sums_signals(self):
+        from cqc_lem.utilities.post_stats import build_engagement_trend
+        rows = [
+            _perf_row(1, dt.datetime(2026, 7, 20, 9, 0), reactions=10, comments=2, impressions=500),
+            _perf_row(2, dt.datetime(2026, 7, 20, 18, 0), reactions=6, comments=0, impressions=500),
+            _perf_row(3, dt.datetime(2026, 7, 22, 9, 0), reactions=4, comments=1, impressions=200),
+        ]
+        trend = build_engagement_trend(rows)
+        assert [p["date"] for p in trend] == ["2026-07-20", "2026-07-22"]  # ascending
+        day0 = trend[0]
+        assert day0["posts"] == 2
+        assert day0["reactions"] == 16 and day0["comments"] == 2
+        assert day0["impressions"] == 1000
+        assert day0["engagement"] == 20                                    # (10+6) + 2*2
+        assert day0["engagement_rate"] == pytest.approx(0.02)              # 20 / 1000
+
+    def test_rate_none_when_any_post_that_day_lacks_impressions(self):
+        from cqc_lem.utilities.post_stats import build_engagement_trend
+        rows = [
+            _perf_row(1, dt.datetime(2026, 7, 20, 9, 0), reactions=10, impressions=500),
+            _perf_row(2, dt.datetime(2026, 7, 20, 18, 0), reactions=6),  # no impressions
+        ]
+        trend = build_engagement_trend(rows)
+        assert trend[0]["engagement_rate"] is None
+        assert trend[0]["impressions"] is None                            # incomplete → hidden
+
+    def test_skips_rows_without_a_timestamp(self):
+        from cqc_lem.utilities.post_stats import build_engagement_trend
+        rows = [_perf_row(1, None, reactions=5), _perf_row(2, dt.datetime(2026, 7, 20, 9, 0),
+                                                           reactions=3)]
+        trend = build_engagement_trend(rows)
+        assert len(trend) == 1 and trend[0]["date"] == "2026-07-20"
+
+    def test_empty_input(self):
+        from cqc_lem.utilities.post_stats import build_engagement_trend
+        assert build_engagement_trend([]) == []
+
+    def test_ignores_empty_rows(self):
+        from cqc_lem.utilities.post_stats import build_engagement_trend
+        rows = [None, _perf_row(1, dt.datetime(2026, 7, 20, 9, 0), reactions=3)]
+        trend = build_engagement_trend(rows)
+        assert len(trend) == 1 and trend[0]["posts"] == 1
+
+    def test_non_numeric_signal_degrades_to_zero(self):
+        from cqc_lem.utilities.post_stats import build_engagement_trend
+        rows = [_perf_row(1, dt.datetime(2026, 7, 20, 9, 0), reactions="oops", comments=2)]
+        trend = build_engagement_trend(rows)
+        assert trend[0]["reactions"] == 0 and trend[0]["comments"] == 2
+
+
 class TestScrapeStatsTask:
     def test_records_each_post(self):
         from unittest.mock import MagicMock, patch

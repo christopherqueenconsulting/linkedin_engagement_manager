@@ -3368,6 +3368,42 @@ def get_shape_performance(user_id: int, days: int = 90) -> dict:
         connection.close()
 
 
+def get_post_performance_rows(user_id: int, days: Optional[int] = None) -> list:
+    """Latest captured stat per POSTED post as attribution-tagged dicts for the analytics
+    dashboard (issue #395) — the per-post performance table and the engagement-rate/impression
+    trend both read this. Like ``get_post_engagement_rows`` it keeps only the newest stat row per
+    post (``MAX(id)``), but returns dicts carrying ``post_id`` and ``saves`` so the UI can key each
+    row and surface the save signal (#387). ``impressions`` may be NULL (only the author's own view
+    exposes it). ``days`` optionally windows to posts scheduled within the last N days (None = all),
+    newest first."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        window = "AND p.scheduled_time >= (NOW() - INTERVAL %s DAY) " if days is not None else ""
+        params = (user_id, user_id, days) if days is not None else (user_id, user_id)
+        cursor.execute(
+            "SELECT p.id, p.scheduled_time, s.reactions, s.comments, s.reposts, s.impressions, "
+            "s.saves, s.archetype, s.hook_style, s.`format`, s.topic, s.buyer_stage "
+            "FROM posts p JOIN post_stats s ON s.post_id=p.id AND s.user_id=p.user_id "
+            "WHERE p.user_id=%s AND p.status='posted' "
+            "AND s.id IN (SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id) "
+            + window +
+            "ORDER BY p.scheduled_time DESC",
+            params)
+        return [
+            {"post_id": r[0], "scheduled_time": r[1], "reactions": r[2], "comments": r[3],
+             "reposts": r[4], "impressions": r[5], "saves": r[6], "archetype": r[7],
+             "hook_style": r[8], "format": r[9], "topic": r[10], "buyer_stage": r[11]}
+            for r in (cursor.fetchall() or [])
+        ]
+    except mysql.connector.Error as err:
+        myprint(f"Could not get post performance rows for user {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
 _LEAD_MAGNET_DEFAULTS: dict = {"enabled": False, "keyword": None, "message": None}
 
 

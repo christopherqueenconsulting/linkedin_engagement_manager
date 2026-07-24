@@ -5,10 +5,64 @@ import { useAuth } from '../contexts/AuthContext'
 import { useUserTimezone } from '../hooks/useUserTimezone'
 import { formatInTimezone } from '../utils/datetime'
 import { isHttpUrl, commentsActivityUrl } from '../utils/links'
+import LineChart, { type LinePoint } from '../components/charts/LineChart'
+import Leaderboard, { type RankEntry } from '../components/charts/Leaderboard'
+import { compactNumber, formatRate } from '../components/charts/palette'
 
 interface PostStats {
   recommendations: { weekday: string; hour: number; avg_engagement: number; sample: number }[]
+  rankings: Record<string, RankEntry[]>
   sample_size: number
+}
+
+interface PerPost {
+  post_id: number
+  scheduled_time: string | null
+  format: string | null
+  archetype: string | null
+  hook_style: string | null
+  topic: string | null
+  buyer_stage: string | null
+  reactions: number
+  comments: number
+  reposts: number
+  saves: number
+  impressions: number | null
+  engagement: number
+  engagement_rate: number | null
+}
+
+interface TrendPoint {
+  date: string
+  reactions: number
+  comments: number
+  reposts: number
+  saves: number
+  impressions: number | null
+  engagement: number
+  engagement_rate: number | null
+  posts: number
+}
+
+interface Analytics {
+  per_post: PerPost[]
+  trend: TrendPoint[]
+  sample_size: number
+  days: number
+}
+
+// "2026-07-20" → "Jul 20" for compact chart/table axes (dates are tz-agnostic calendar days).
+const _MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+function shortDate(iso: string): string {
+  const [, m, d] = iso.split('-')
+  const mi = Number(m) - 1
+  return mi >= 0 && mi < 12 ? `${_MONTHS[mi]} ${Number(d)}` : iso
+}
+
+function titleCase(k: string | null): string {
+  if (!k) return '—'
+  const s = String(k).replace(/[_-]+/g, ' ').trim()
+  return s.charAt(0).toUpperCase() + s.slice(1)
 }
 
 interface DashboardStats {
@@ -82,6 +136,17 @@ export default function Dashboard() {
     staleTime: 5 * 60 * 1000,
   })
 
+  // Engagement-rate / impression trend + per-post performance, from captured post_stats (#395).
+  const { data: analytics } = useQuery({
+    queryKey: ['engagement-analytics', sessionToken],
+    queryFn: () =>
+      api
+        .get(`/user/engagement-analytics?session_token=${encodeURIComponent(sessionToken!)}&days=90`)
+        .then((r) => r.data.detail as Analytics),
+    enabled: !!sessionToken,
+    staleTime: 5 * 60 * 1000,
+  })
+
   const { data: statsData } = useQuery<{ detail: DashboardStats }>({
     queryKey: ['dashboard-stats', email],
     queryFn: () => api.get(`/dashboard/stats/?email=${encodeURIComponent(email)}`).then((r) => r.data),
@@ -126,6 +191,22 @@ export default function Dashboard() {
 
   const activity = activityData?.detail ?? []
 
+  const perPost = analytics?.per_post ?? []
+  const trend = analytics?.trend ?? []
+  const hasAnalytics = (analytics?.sample_size ?? 0) > 0
+
+  const rateTrend: LinePoint[] = trend.map((t) => ({ x: shortDate(t.date), y: t.engagement_rate }))
+  const impressionTrend: LinePoint[] = trend.map((t) => ({ x: shortDate(t.date), y: t.impressions }))
+
+  const formatBoard = postStats?.rankings?.format ?? []
+  const hookBoard = postStats?.rankings?.hook_style ?? []
+
+  // Window totals for the KPI row.
+  const totalImpressions = perPost.reduce((s, p) => s + (p.impressions ?? 0), 0)
+  const totalEngagement = perPost.reduce((s, p) => s + p.engagement, 0)
+  const rateComplete = perPost.length > 0 && perPost.every((p) => p.impressions != null && p.impressions > 0)
+  const overallRate = rateComplete && totalImpressions > 0 ? totalEngagement / totalImpressions : null
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -152,6 +233,112 @@ export default function Dashboard() {
         <StatCard label="Pending review" value={stats.pending_review} color="border-yellow-500" />
         <StatCard label="Total posted" value={stats.posted_total} color="border-green-500" />
       </div>
+
+      {/* Engagement analytics — trends, leaderboards, and per-post drill-down from post_stats (#395) */}
+      {sessionToken && (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-6">
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-lg font-semibold text-gray-700">Engagement Analytics</h2>
+            <span className="text-xs text-gray-400">Last {analytics?.days ?? 90} days</span>
+          </div>
+
+          {!hasAnalytics ? (
+            <p className="text-sm text-gray-400 py-4 text-center">
+              Gathering data — engagement analytics appear once your posted content has captured
+              stats{analytics ? ` (currently ${analytics.sample_size})` : ''}.
+            </p>
+          ) : (
+            <>
+              {/* KPI row */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <div>
+                  <p className="text-2xl font-bold text-gray-800">{perPost.length}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">Posts measured</p>
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-gray-800">{compactNumber(totalImpressions)}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">Impressions</p>
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-gray-800">{compactNumber(totalEngagement)}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">Engagement (weighted)</p>
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-gray-800">
+                    {overallRate != null ? formatRate(overallRate) : '—'}
+                  </p>
+                  <p className="text-xs text-gray-500 mt-0.5">Engagement rate</p>
+                </div>
+              </div>
+
+              {/* Trends — two single-series charts (never a dual axis) */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <LineChart
+                  title="Engagement rate"
+                  subtitle="Weighted engagement per impression, by day posted"
+                  points={rateTrend}
+                  format={formatRate}
+                  valueLabel="Engagement rate"
+                  emptyMessage="No impression data yet — rate needs your own-view impressions."
+                />
+                <LineChart
+                  title="Impressions"
+                  subtitle="Total impressions on posts, by day posted"
+                  points={impressionTrend}
+                  format={compactNumber}
+                  valueLabel="Impressions"
+                  emptyMessage="No impression data captured yet."
+                />
+              </div>
+
+              {/* Format & hook leaderboards (from /user/post-stats rankings) */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <Leaderboard title="Top formats" entries={formatBoard} humanizeKey={titleCase} />
+                <Leaderboard title="Top hooks" entries={hookBoard} humanizeKey={titleCase} />
+              </div>
+
+              {/* Per-post performance drill-down */}
+              <div>
+                <h3 className="text-sm font-semibold text-gray-700 mb-2">Per-post performance</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs text-left tabular-nums">
+                    <thead>
+                      <tr className="text-gray-500 border-b border-gray-200">
+                        <th className="py-1.5 pr-3 font-medium">Date</th>
+                        <th className="py-1.5 pr-3 font-medium">Format</th>
+                        <th className="py-1.5 pr-3 font-medium">Hook</th>
+                        <th className="py-1.5 pr-3 font-medium text-right">Impr.</th>
+                        <th className="py-1.5 pr-3 font-medium text-right">Reactions</th>
+                        <th className="py-1.5 pr-3 font-medium text-right">Comments</th>
+                        <th className="py-1.5 pr-3 font-medium text-right">Reposts</th>
+                        <th className="py-1.5 pr-3 font-medium text-right">Saves</th>
+                        <th className="py-1.5 font-medium text-right">Eng. rate</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {perPost.map((p) => (
+                        <tr key={p.post_id} className="border-b border-gray-100 last:border-0 text-gray-700">
+                          <td className="py-1.5 pr-3 whitespace-nowrap">
+                            {p.scheduled_time ? shortDate(p.scheduled_time.slice(0, 10)) : '—'}
+                          </td>
+                          <td className="py-1.5 pr-3">{titleCase(p.format)}</td>
+                          <td className="py-1.5 pr-3">{titleCase(p.hook_style)}</td>
+                          <td className="py-1.5 pr-3 text-right">{p.impressions != null ? compactNumber(p.impressions) : '—'}</td>
+                          <td className="py-1.5 pr-3 text-right">{p.reactions.toLocaleString()}</td>
+                          <td className="py-1.5 pr-3 text-right">{p.comments.toLocaleString()}</td>
+                          <td className="py-1.5 pr-3 text-right">{p.reposts.toLocaleString()}</td>
+                          <td className="py-1.5 pr-3 text-right">{p.saves.toLocaleString()}</td>
+                          <td className="py-1.5 text-right">{p.engagement_rate != null ? formatRate(p.engagement_rate) : '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Planned Tasks — upcoming posts queue */}

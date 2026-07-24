@@ -36,7 +36,7 @@ from cqc_lem.utilities.db import (
     get_pending_newsletter_editions,
     get_latest_edition_scheduled_for, update_newsletter_edition, get_newsletter_edition,
     get_user_timezone,
-    get_user_groups, set_groups_enabled, get_post_engagement_rows,
+    get_user_groups, set_groups_enabled, get_post_engagement_rows, get_post_performance_rows,
     get_lead_magnet_settings, update_lead_magnet_settings,
     get_dm_templates, upsert_dm_templates,
     update_subscription_from_stripe, update_user_linkedin_token,
@@ -1629,6 +1629,25 @@ def get_post_stats_endpoint(session_token: str) -> ResponseModel:
         "recommendations": recommend_post_times(rows),
         "rankings": rank_content_attributes(rows, top_n=5),
         "sample_size": len(rows),
+    })
+
+
+@router.get("/user/engagement-analytics")
+def get_engagement_analytics_endpoint(session_token: str, days: int = 90) -> ResponseModel:
+    """Per-post performance table + a daily engagement-rate / impression trend for the analytics
+    dashboard (issue #395), derived from the user's captured post_stats. The hook/format
+    leaderboard is served by /user/post-stats (rankings)."""
+    from cqc_lem.utilities.post_stats import build_engagement_trend, build_performance_table
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    days = max(1, min(int(days), 365))
+    rows = get_post_performance_rows(user_id, days=days)
+    return ResponseModel(status_code=200, detail={
+        "per_post": build_performance_table(rows),
+        "trend": build_engagement_trend(rows),
+        "sample_size": len(rows),
+        "days": days,
     })
 
 

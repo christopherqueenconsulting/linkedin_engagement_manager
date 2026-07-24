@@ -4,7 +4,7 @@ comparison set carries impressions, and always recency-weighted so stale posts f
 
 from collections import defaultdict
 from datetime import datetime
-from typing import Any, Iterable, Optional, Sequence, Tuple
+from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
 
 _WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
@@ -170,3 +170,91 @@ def rank_content_attributes(rows: Iterable[Sequence], attributes: Optional[Itera
         ranked = [entry for _, entry in scored]
         result[name] = ranked[:top_n] if top_n else ranked
     return result
+
+
+def _int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _iso(value: Any) -> Optional[str]:
+    return value.isoformat() if hasattr(value, "isoformat") else (value or None)
+
+
+def build_performance_table(rows: Iterable[Mapping]) -> list:
+    """Per-post performance rows for the analytics dashboard (#395). Takes the dicts from
+    `db.get_post_performance_rows` and returns JSON-ready rows newest-first, each with its raw
+    signals plus the derived `engagement` (weighted count) and `engagement_rate` (per impression;
+    None when impressions are unknown). Pure — no DB and no recency weighting: the table shows the
+    actual per-post outcome, not the recency-decayed ranking metric used by `recommend_post_times`
+    / `rank_content_attributes`."""
+    out = []
+    for r in rows:
+        if not r:
+            continue
+        reactions, comments, reposts = r.get("reactions"), r.get("comments"), r.get("reposts")
+        rate = engagement_rate(reactions, comments, reposts, r.get("impressions"))
+        out.append({
+            "post_id": r.get("post_id"),
+            "scheduled_time": _iso(r.get("scheduled_time")),
+            "format": r.get("format"),
+            "archetype": r.get("archetype"),
+            "hook_style": r.get("hook_style"),
+            "topic": r.get("topic"),
+            "buyer_stage": r.get("buyer_stage"),
+            "reactions": _int(reactions),
+            "comments": _int(comments),
+            "reposts": _int(reposts),
+            "saves": _int(r.get("saves")),
+            "impressions": _int(r.get("impressions")) if r.get("impressions") is not None else None,
+            "engagement": engagement_score(reactions, comments, reposts),
+            "engagement_rate": round(rate, 5) if rate is not None else None,
+        })
+    out.sort(key=lambda row: row["scheduled_time"] or "", reverse=True)
+    return out
+
+
+def build_engagement_trend(rows: Iterable[Mapping]) -> list:
+    """Daily engagement-rate / impression trend for the analytics dashboard (#395). Buckets the
+    per-post rows by calendar day (post date), sums each signal, and returns points ascending in
+    time. `engagement_rate` is filled only when EVERY post that day carried impressions — otherwise
+    the day's impression total is incomplete and a rate would mislead, so both `impressions` and
+    `engagement_rate` come back None (the same rate-mode gate `post_stats` uses elsewhere). Pure —
+    no DB."""
+    buckets: dict = {}
+    for r in rows:
+        if not r:
+            continue
+        scheduled = r.get("scheduled_time")
+        day = scheduled.date() if hasattr(scheduled, "date") else None
+        if day is None:
+            continue
+        bucket = buckets.setdefault(day, {"reactions": 0, "comments": 0, "reposts": 0, "saves": 0,
+                                          "impressions": 0, "impressions_complete": True, "posts": 0})
+        bucket["reactions"] += _int(r.get("reactions"))
+        bucket["comments"] += _int(r.get("comments"))
+        bucket["reposts"] += _int(r.get("reposts"))
+        bucket["saves"] += _int(r.get("saves"))
+        if r.get("impressions") is None:
+            bucket["impressions_complete"] = False
+        else:
+            bucket["impressions"] += _int(r.get("impressions"))
+        bucket["posts"] += 1
+    trend = []
+    for day in sorted(buckets):
+        b = buckets[day]
+        complete = b["impressions_complete"] and b["impressions"] > 0
+        rate = (engagement_rate(b["reactions"], b["comments"], b["reposts"], b["impressions"])
+                if complete else None)
+        trend.append({
+            "date": day.isoformat(),
+            "reactions": b["reactions"], "comments": b["comments"], "reposts": b["reposts"],
+            "saves": b["saves"],
+            "impressions": b["impressions"] if b["impressions_complete"] else None,
+            "engagement": engagement_score(b["reactions"], b["comments"], b["reposts"]),
+            "engagement_rate": round(rate, 5) if rate is not None else None,
+            "posts": b["posts"],
+        })
+    return trend
