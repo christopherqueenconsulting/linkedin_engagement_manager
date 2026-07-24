@@ -1178,6 +1178,44 @@ def get_post_authenticity_score(post_id: int) -> Optional[int]:
         connection.close()
 
 
+def update_db_post_dwell_score(post_id: int, score: Optional[int]) -> bool:
+    """Persist the deterministic 0-100 dwell-proxy score for a post (issue #391, dwell_score column).
+    Advisory metric stored next to authenticity_score — it is never read back to gate a status, so a
+    failed write only costs the datapoint."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE posts SET dwell_score = %s WHERE id = %s",
+            (score, post_id)
+        )
+        connection.commit()
+        success = cursor.rowcount == 1
+    except mysql.connector.Error as e:
+        success = False
+        myprint(f"Could not update dwell score for post {post_id}. Error: {e}")
+    finally:
+        cursor.close()
+        connection.close()
+    return success
+
+
+def get_post_dwell_score(post_id: int) -> Optional[int]:
+    """The persisted dwell-proxy score for a post (0-100), or None when unscored (issue #391)."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT dwell_score FROM posts WHERE id = %s", (post_id,))
+        row = cursor.fetchone()
+        return int(row[0]) if row and row[0] is not None else None
+    except mysql.connector.Error as err:
+        myprint(f"Could not get dwell score for post {post_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_recent_post_shape_history(user_id: int, limit: int = 10) -> list:
     """Recent posts' SHAPE history — {archetype, hook_style} dicts, most-recent first — fed to the
     shared content framework so a new post rotates away from recently used archetypes/hooks (the
