@@ -3564,6 +3564,144 @@ def has_commented_post(user_id: int, post_key: str) -> bool:
         connection.close()
 
 
+def get_recent_navigable_commented_posts(user_id: int, days: int = 3) -> list:
+    """Posts we automated a comment on in the last `days` whose ledger key is a NAVIGABLE URN
+    (feedurn://urn:li:...), newest first. These are the posts the follow-up sweep can revisit to
+    handle replies to our comment (issue #478). Pre-#474 'feedpost://' hash keys aren't navigable
+    and are excluded."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT post_key, created_at FROM commented_posts "
+            "WHERE user_id=%s AND status='commented' AND post_key LIKE 'feedurn://%%' "
+            "AND created_at >= (NOW() - INTERVAL %s DAY) ORDER BY created_at DESC",
+            (user_id, int(days)))
+        return list(cursor.fetchall() or [])
+    except mysql.connector.Error:
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_recent_commented_rows_with_text(user_id: int, days: int = 3) -> list:
+    """Recent commented_posts rows plus the comment text we left (from the most recent matching
+    SUCCESS comment log), for the URN reconcile backfill. Includes legacy 'feedpost://' rows so
+    they can be matched by text and upgraded (issue #478)."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT cp.post_key, cp.created_at, "
+            "  (SELECT l.message FROM logs l WHERE l.user_id=cp.user_id AND l.post_url=cp.post_key "
+            "   AND l.action_type='comment' AND l.result='success' "
+            "   ORDER BY l.created_at DESC LIMIT 1) AS comment_text "
+            "FROM commented_posts cp "
+            "WHERE cp.user_id=%s AND cp.status='commented' "
+            "  AND cp.created_at >= (NOW() - INTERVAL %s DAY) "
+            "ORDER BY cp.created_at DESC",
+            (user_id, int(days)))
+        return list(cursor.fetchall() or [])
+    except mysql.connector.Error:
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_comment_followup(user_id: int, reply_key: str) -> "dict | None":
+    """The follow-up ledger row for a specific reply (reacted/replied flags), or None if we have
+    never handled this reply. Dedup anchor for the follow-up sweep."""
+    if not reply_key:
+        return None
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT reacted, replied FROM comment_followups WHERE user_id=%s AND reply_key=%s",
+            (user_id, str(reply_key)[:255]))
+        return cursor.fetchone()
+    except mysql.connector.Error:
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def record_comment_followup(user_id: int, post_key: str, reply_key: str,
+                            reacted: bool = False, replied: bool = False) -> bool:
+    """Upsert a follow-up record for a reply. Flags are latched ON (never cleared) so a later
+    partial pass can't undo an earlier action, and the UNIQUE(user_id, reply_key) constraint makes
+    this the single source of truth for 'already reacted/replied to this reply'."""
+    if not reply_key:
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO comment_followups (user_id, post_key, reply_key, reacted, replied) "
+            "VALUES (%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE "
+            "reacted=GREATEST(reacted, VALUES(reacted)), replied=GREATEST(replied, VALUES(replied))",
+            (user_id, str(post_key)[:255], str(reply_key)[:255], int(bool(reacted)), int(bool(replied))))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not record comment followup for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def count_followup_replies_today(user_id: int) -> int:
+    """Auto-replies posted to comment-replies today — the daily cap for the follow-up feature."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM comment_followups "
+            "WHERE user_id=%s AND replied=1 AND updated_at >= CURDATE()",
+            (user_id,))
+        row = cursor.fetchone()
+        return int(row[0]) if row and row[0] else 0
+    except mysql.connector.Error:
+        return 0
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_commented_post_key(user_id: int, old_key: str, new_key: str) -> bool:
+    """Backfill: upgrade a commented_posts row's key from the old 'feedpost://' content hash to the
+    navigable 'feedurn://' URN once we recover it (issue #478 reconcile). If the new key already
+    exists for this user (already commented under the URN), drop the stale hash row instead so the
+    UNIQUE(user_id, post_key) constraint isn't violated."""
+    if not old_key or not new_key or old_key == new_key:
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM commented_posts WHERE user_id=%s AND post_key=%s",
+            (user_id, str(new_key)[:255]))
+        exists = bool((cursor.fetchone() or [0])[0])
+        if exists:
+            cursor.execute("DELETE FROM commented_posts WHERE user_id=%s AND post_key=%s",
+                           (user_id, str(old_key)[:255]))
+        else:
+            cursor.execute("UPDATE commented_posts SET post_key=%s WHERE user_id=%s AND post_key=%s",
+                           (str(new_key)[:255], user_id, str(old_key)[:255]))
+        connection.commit()
+        return cursor.rowcount >= 1
+    except mysql.connector.Error as err:
+        myprint(f"Could not update commented post key for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_duplicate_comment_posts(user_id: int, hours: int = 24):
     """Read-only report: posts the user commented on MORE THAN ONCE in the last `hours`, from the
     SUCCESS comment logs. Returns list of (post_url, comment_count, first_at, last_at) ordered by

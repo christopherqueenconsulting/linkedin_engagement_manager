@@ -107,6 +107,12 @@ app.conf.update(
             'task': 'cqc_lem.app.run_scheduler.auto_daily_engagement',
             'schedule': crontab(hour='13', minute='0')  # Daily peak-hour feed commenting (~9am ET), on top of pre-post
         },
+        'dispatch-comment-followups': {
+            'task': 'cqc_lem.app.run_scheduler.dispatch_comment_followups',
+            # Every 6h; a per-user 12h Redis interval gates it to ~twice a day. React + answer
+            # question-replies on our automated comments (issue #478).
+            'schedule': crontab(minute='0', hour='*/6')
+        },
         'generate-newsletter-drafts': {
             'task': 'cqc_lem.app.run_scheduler.auto_generate_newsletter_drafts',
             'schedule': crontab(hour='10', minute='0')  # Daily: top up each user's newsletter draft queue for review
