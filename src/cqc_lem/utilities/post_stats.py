@@ -172,6 +172,47 @@ def rank_content_attributes(rows: Iterable[Sequence], attributes: Optional[Itera
     return result
 
 
+def select_variant_winners(rows: Iterable[Mapping], top_n: Optional[int] = None,
+                           min_samples: int = 1, now: Optional[datetime] = None,
+                           half_life_days: float = RECENCY_HALF_LIFE_DAYS) -> dict:
+    """Outcome-tracked A/B winner selection (issue #396 / D2). `rows` are the dicts from
+    `db.get_variant_outcome_rows` — each a post that SHIPPED a given `variant_key`, carrying its
+    latest captured signals. Groups by variant_key and ranks by the SAME recency-weighted,
+    impression-normalized metric as `rank_content_attributes`, so a variant only wins on enough
+    RECENT evidence (a single stale fluke can't top the ranking). Returns
+    ``{"winner": <key or None>, "ranking": [{"key","score","avg_engagement","support","samples",
+    "metric"}, ...]}`` best-first; keys seen fewer than `min_samples` times are dropped. Pure — no
+    DB. The ranking entries share `rank_content_attributes`' shape so B3/B4 consumers can read
+    them the same way."""
+    groups: dict = defaultdict(list)
+    for r in rows:
+        if not r:
+            continue
+        key = r.get("variant_key")
+        if key is None or key == "":
+            continue
+        # Rebuild the canonical positional layout so the shared scoring machinery applies.
+        row = [None] * (_IDX_IMPRESSIONS + 1)
+        row[_IDX_SCHEDULED] = r.get("scheduled_time")
+        row[_IDX_REACTIONS] = r.get("reactions")
+        row[_IDX_COMMENTS] = r.get("comments")
+        row[_IDX_REPOSTS] = r.get("reposts")
+        row[_IDX_IMPRESSIONS] = r.get("impressions")
+        groups[key].append(row)
+    groups = {key: group for key, group in groups.items() if len(group) >= min_samples}
+    # Scale is decided across every variant so their keys stay comparable to each other.
+    rate_mode = _rate_mode([row for group in groups.values() for row in group])
+    scored = []
+    for key, group in groups.items():
+        raw_score, metrics = _group_metrics(group, rate_mode, now, half_life_days)
+        scored.append((raw_score, {"key": key, **metrics}))
+    scored.sort(key=lambda entry: (-entry[0], -entry[1]["samples"], str(entry[1]["key"])))
+    ranking = [entry for _, entry in scored]
+    if top_n:
+        ranking = ranking[:top_n]
+    return {"winner": ranking[0]["key"] if ranking else None, "ranking": ranking}
+
+
 def _int(value: Any) -> int:
     try:
         return int(value or 0)

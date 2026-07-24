@@ -20,7 +20,7 @@ from cqc_lem.utilities.ai.ai_helper import (
     get_runway_ml_video_prompt_from_ai, create_runway_video,
 )
 from cqc_lem.utilities.ai.video_models import estimate_video_cost, RATIO_ALIASES
-from cqc_lem.utilities.db import get_post_content
+from cqc_lem.utilities.db import get_post_content, record_shipped_variant as _db_record_shipped_variant
 from cqc_lem.utilities.env_constants import (
     API_URL_FINAL, DEFAULT_VIDEO_MODEL, DEFAULT_VIDEO_RATIO, DEFAULT_IMAGE_MODEL,
 )
@@ -59,6 +59,34 @@ def _image_cost(image_model: str) -> float:
     return _IMAGE_COST.get(image_model, 0.03)
 
 
+def combo_key(combo: dict) -> str:
+    """Stable A/B identity for a variant combo — the key realized `post_stats` are attributed to
+    (issue #396). Combos that render the same look collapse to the same key; ``seed`` and the
+    video-off case are only encoded when they actually differ the output."""
+    image = combo.get("image_model", DEFAULT_IMAGE_MODEL)
+    include_video = combo.get("include_video", True)
+    video = combo.get("video_model", DEFAULT_VIDEO_MODEL) if include_video else "none"
+    # Collapse a Runway resolution alias (e.g. "960:960") to its friendly aspect ("1:1")
+    # so equivalent ratios don't fragment outcome attribution into separate keys.
+    ratio = combo.get("ratio", DEFAULT_VIDEO_RATIO)
+    ratio = _RES_TO_ASPECT.get(ratio, ratio)
+    key = f"{image}|{video}|{ratio}"
+    seed = combo.get("seed")
+    if seed is not None:
+        key += f"|seed={seed}"
+    return key
+
+
+def record_shipped_variant(user_id: int, post_id: int, combo: dict, *,
+                           batch_id: Optional[str] = None, variant_index: Optional[int] = None) -> bool:
+    """Record which variant `combo` actually shipped for `post_id` so its outcome can be attributed
+    later (issue #396 / D2). Derives the stable `combo_key` and persists via db; returns False on
+    any DB error rather than raising, so a shipping path is never broken by tracking."""
+    return _db_record_shipped_variant(
+        user_id, post_id, combo_key(combo), combo=combo,
+        batch_id=batch_id, variant_index=variant_index)
+
+
 def _public_url(batch_id: str, file_name: str) -> str:
     return f"{API_URL_FINAL}/api/assets?file_name=variants/{batch_id}/{file_name}"
 
@@ -86,7 +114,8 @@ def _generate_one_variant(idx: int, combo: dict, source_text: str, profile, user
         "duration": duration, "seed": seed, "include_video": include_video,
     }
     result = {
-        "combo": normalized_combo, "image_url": None, "video_url": None,
+        "combo": normalized_combo, "variant_key": combo_key(normalized_combo),
+        "image_url": None, "video_url": None,
         "image_prompt": "", "video_prompt": None,
         "estimated_cost_usd": 0.0, "error": None,
     }
@@ -156,7 +185,8 @@ def generate_media_variants(*, post_id: Optional[int] = None, text: Optional[str
         except Exception as e:
             log_warning(f"Variant {idx} failed", exc=e)
             variants.append({
-                "combo": combo, "image_url": None, "video_url": None,
+                "combo": combo, "variant_key": combo_key(combo),
+                "image_url": None, "video_url": None,
                 "image_prompt": "", "video_prompt": None,
                 "estimated_cost_usd": 0.0, "error": f"{type(e).__name__}: {e}",
             })
