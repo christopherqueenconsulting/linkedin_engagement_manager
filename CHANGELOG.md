@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.65.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.64.0...v0.65.0) (2026-07-24)
+
+
+### Features
+
+* **outreach:** approval-gated comment→connect→DM funnel (closes [#399](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/399)) ([4390254](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/43902543788776c01d1d56248489e791912c3d88))
+* **outreach:** comment→connect→DM outreach funnel, approval-gated (closes [#399](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/399)) ([2765ace](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2765aced0542135f9b9c2ce5f80df12a5f832f8a))
+
+
+### Bug Fixes
+
+* **outreach:** Copilot review — strip target fields, retry failed/skipped stages ([b94de21](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b94de210ad92ee55b3f0b106c5b01063c5d4f59e))
+
 ## [0.64.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.63.0...v0.64.0) (2026-07-24)
 
 
