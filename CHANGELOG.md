@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.62.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.61.0...v0.62.0) (2026-07-24)
+
+
+### Features
+
+* **analytics:** real LLM token/cost + post-outcome PostHog events (closes [#397](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/397)) ([0cc5854](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0cc5854a31190bcaaef2e60f10fcde9bfce48848))
+* **analytics:** real LLM token/cost + post-outcome PostHog events (closes [#397](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/397)) ([144250d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/144250d7f445c11a30f3978c6fb3d078bfd1dd30))
+
 ## [0.61.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.60.0...v0.61.0) (2026-07-24)
 
 
