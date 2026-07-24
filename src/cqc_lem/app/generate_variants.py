@@ -66,7 +66,10 @@ def combo_key(combo: dict) -> str:
     image = combo.get("image_model", DEFAULT_IMAGE_MODEL)
     include_video = combo.get("include_video", True)
     video = combo.get("video_model", DEFAULT_VIDEO_MODEL) if include_video else "none"
+    # Collapse a Runway resolution alias (e.g. "960:960") to its friendly aspect ("1:1")
+    # so equivalent ratios don't fragment outcome attribution into separate keys.
     ratio = combo.get("ratio", DEFAULT_VIDEO_RATIO)
+    ratio = _RES_TO_ASPECT.get(ratio, ratio)
     key = f"{image}|{video}|{ratio}"
     seed = combo.get("seed")
     if seed is not None:

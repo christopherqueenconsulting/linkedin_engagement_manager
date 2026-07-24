@@ -101,6 +101,14 @@ class TestComboKey:
                          "ratio": "1:1", "include_video": False})
         assert key == "m|none|1:1"
 
+    def test_resolution_alias_collapses_to_friendly_ratio(self):
+        from cqc_lem.app.generate_variants import combo_key
+        base = {"image_model": "m", "video_model": "gen4_turbo"}
+        # A Runway resolution alias and its friendly aspect must yield the same key
+        # so equivalent ratios don't fragment outcome attribution.
+        assert combo_key({**base, "ratio": "960:960"}) == combo_key({**base, "ratio": "1:1"})
+        assert combo_key({**base, "ratio": "960:960"}) == "m|gen4_turbo|1:1"
+
 
 class TestVariantKeyInPayload:
     def test_each_variant_carries_its_key(self, tmp_path):

@@ -7,7 +7,6 @@ its post's engagement is captured (`record_post_stats`), the two are joined back
 seeded results — the acceptance criterion — without a live MySQL container.
 """
 import json
-import re
 import pytest
 from datetime import datetime
 
