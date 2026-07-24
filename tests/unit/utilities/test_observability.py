@@ -260,6 +260,13 @@ class TestEstimateLlmCost:
             from cqc_lem.utilities.observability import estimate_llm_cost_usd
             assert estimate_llm_cost_usd("lem-simple", 1000, 0) == pytest.approx(0.00015)
 
+    def test_tiny_cost_not_collapsed_to_zero(self):
+        # A few prompt tokens on the cheapest tier costs < 1e-6 USD; must stay non-zero (no rounding).
+        from cqc_lem.utilities.observability import estimate_llm_cost_usd
+        cost = estimate_llm_cost_usd("lem-simple", 3, 0)
+        assert cost > 0.0
+        assert cost == pytest.approx(3 / 1000.0 * 0.00015)
+
 
 class TestTrackPostOutcome:
     def test_captures_post_outcome_event(self):

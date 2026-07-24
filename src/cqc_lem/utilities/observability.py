@@ -34,16 +34,30 @@ _DEFAULT_COST_PER_1K = {
 }
 
 
+# Cache the parsed cost table keyed by the raw LLM_COST_PER_1K value so track_llm_call() — which
+# runs on every LLM invocation — doesn't reparse the JSON each call. Rebuilt only when the env var
+# changes (sentinel distinguishes "unset" from "" so both are cached).
+_UNSET = object()
+_cost_table_cache: Optional[dict] = None
+_cost_table_raw = _UNSET
+
+
 def _cost_table() -> dict:
-    table = dict(_DEFAULT_COST_PER_1K)
+    global _cost_table_cache, _cost_table_raw
     raw = os.getenv("LLM_COST_PER_1K")
+    if _cost_table_cache is not None and raw == _cost_table_raw:
+        return _cost_table_cache
+    table = dict(_DEFAULT_COST_PER_1K)
     if raw:
         try:
             for key, val in json.loads(raw).items():
                 if isinstance(val, (list, tuple)) and len(val) == 2:
                     table[key] = (float(val[0]), float(val[1]))
         except (ValueError, TypeError):
+            # Malformed override JSON: keep the built-in defaults rather than crash the tracked call.
             pass
+    _cost_table_cache = table
+    _cost_table_raw = raw
     return table
 
 
@@ -60,8 +74,9 @@ def estimate_llm_cost_usd(model: str, prompt_tokens: int, completion_tokens: int
     if rates is None:
         key = next((k for k in table if k != "lem-image" and k in (model or "")), None)
         rates = table[key] if key else table["lem-medium"]
-    cost = (prompt / 1000.0) * rates[0] + (completion / 1000.0) * rates[1]
-    return round(cost, 6)
+    # No rounding: a few prompt tokens on a cheap tier round to 0.0 at 6dp, which would erase the
+    # non-zero cost signal for real calls. PostHog handles display rounding.
+    return (prompt / 1000.0) * rates[0] + (completion / 1000.0) * rates[1]
 
 
 def _extract_token_usage(result) -> Tuple[int, int]:
