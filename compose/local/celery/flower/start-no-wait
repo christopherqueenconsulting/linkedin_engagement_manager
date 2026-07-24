@@ -3,6 +3,14 @@
 set -o errexit
 set -o nounset
 
+# Flower turns basic auth ON whenever FLOWER_BASIC_AUTH is DEFINED — an empty value parses as a
+# credential list holding one empty entry, so it locks everyone out rather than meaning "no auth".
+# Compose always defines the key (`FOO=${BAR:+...}` yields "" when BAR is unset), so unset it here
+# when empty to make the intended "no credentials configured = no auth" actually true.
+if [ -z "${FLOWER_BASIC_AUTH:-}" ]; then
+  unset FLOWER_BASIC_AUTH
+fi
+
 celery --app cqc_lem.app.my_celery \
   flower \
   --port="${CELERY_FLOWER_PORT}" \
