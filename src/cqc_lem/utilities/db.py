@@ -2610,7 +2610,9 @@ def update_user_preferences(
 
 
 _ENGAGEMENT_DEFAULTS: dict = {
-    "tone": None, "comment_length": "short", "comment_style": None,
+    # Default to MEDIUM (issue #394): 2026 LinkedIn weights substantive ≥15-word comments ~2.5× short
+    # one-liners, so the out-of-the-box length produces a real, specific reply rather than a throwaway.
+    "tone": None, "comment_length": "medium", "comment_style": None,
     # use_hashtags stays OFF by default (issue #393): hashtags no longer expand reach in 2026 and
     # hashtag-free posts out-perform tagged ones. See content_framework.hashtag_directive.
     "use_emojis": True, "use_hashtags": False,

@@ -380,7 +380,7 @@ class DmDeleteRequest(BaseModel):
 class EngagementPreferencesRequest(BaseModel):
     session_token: str
     tone: Optional[str] = Field(default=None, max_length=_LEN_TONE)
-    comment_length: str = "short"
+    comment_length: str = "medium"
     comment_style: Optional[str] = Field(default=None, max_length=_LEN_COMMENT_STYLE)
     use_emojis: bool = True
     use_hashtags: bool = False

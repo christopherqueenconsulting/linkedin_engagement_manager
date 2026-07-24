@@ -17,10 +17,13 @@ from cqc_lem.utilities.linkedin_formatter import normalize_public_text
 if TYPE_CHECKING:
     from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 
-# Tight, engagement-optimized targets. Short is the default: LinkedIn rewards comments that
-# earn a REPLY (threads), and a punchy, specific comment out-performs a long essay. Even
-# "short" stays >~25 words so it clears the quality floor.
+# Engagement-optimized upper caps. MEDIUM is the default (issue #394): 2026 LinkedIn weights a
+# substantive comment (≥15 words) ~2.5× a short one-liner, so the baseline aims for a real, specific
+# reply that can earn a thread — not a throwaway. Every length still clears a ≥15-word floor (see
+# COMMENT_MIN_WORDS); the cap only bounds the top end so "long" doesn't become an essay.
 COMMENT_LENGTH_CHARS = {"short": 180, "medium": 320, "long": 550}
+# Substantive floor applied to every generated comment/reply regardless of the length preference.
+COMMENT_MIN_WORDS = 15
 
 # Hard guardrail attached to EVERY generated comment, reply, and post. Without it, a user whose
 # profile / recent activity is dominated by a project they are building (e.g. their own internal
@@ -93,9 +96,11 @@ def style_directive(prefs: dict = None, content_type: str = "comment") -> str:
     if tone:
         parts.append(f"Write in a {tone} tone.")
     if content_type == "comment":
-        length = prefs.get("comment_length") or "short"
-        parts.append(f"Keep it {length} — at most ~{COMMENT_LENGTH_CHARS.get(length, 180)} characters "
-                     f"(a few sentences); brevity beats length.")
+        length = prefs.get("comment_length") or "medium"
+        parts.append(f"Write a substantive comment of at least {COMMENT_MIN_WORDS} words — add a specific "
+                     f"insight, example, or genuine question that invites a reply; never a generic "
+                     f"one-liner like \"Great post!\". Keep it {length}: up to "
+                     f"~{COMMENT_LENGTH_CHARS.get(length, 320)} characters.")
     parts.append("You may use one tasteful emoji." if prefs.get("use_emojis") else "Do not use emojis.")
     parts.append(hashtag_directive(prefs))
     if prefs.get("comment_style"):

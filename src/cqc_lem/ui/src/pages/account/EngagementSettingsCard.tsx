@@ -90,10 +90,13 @@ export default function EngagementSettingsCard() {
             <label className="block text-sm font-medium text-gray-700 mb-1">Comment length</label>
             <select value={engPrefs.comment_length} onChange={(e) => setEng({ comment_length: e.target.value })}
               className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
-              <option value="short">Short (~300 chars)</option>
-              <option value="medium">Medium (~600 chars)</option>
-              <option value="long">Long (~1100 chars)</option>
+              <option value="short">Short (~30 words)</option>
+              <option value="medium">Medium (~55 words · recommended)</option>
+              <option value="long">Long (~90 words)</option>
             </select>
+            <p className="text-xs text-gray-500 mt-1">
+              Every comment stays substantive (≥15 words) — LinkedIn weights these far above one-liners. Medium is the default.
+            </p>
           </div>
         </div>
         <div>
