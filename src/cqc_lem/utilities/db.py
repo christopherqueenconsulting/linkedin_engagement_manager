@@ -137,6 +137,26 @@ class LeadSignalStatus(StrEnum):
     FAILED = 'failed'        # delivery errored
 
 
+class LeadStage(StrEnum):
+    """Warmth of a scored lead in the CRM-lite pipeline (issue #484), coldest first."""
+    COLD = 'cold'                        # in our orbit, no meaningful recent signal
+    WARM = 'warm'                        # engaging often enough to be worth nurturing
+    HOT = 'hot'                          # strong ICP fit + heavy engagement, or an unanswered buying question
+    IN_CONVERSATION = 'in_conversation'  # a live DM thread with someone who also engages with us
+    OPPORTUNITY = 'opportunity'          # they asked a buying question and we are answering it
+
+
+class LeadSignalKind(StrEnum):
+    """The engagement signals a lead score is built from (issue #484). Every one is read from data
+    the automation already records — no new scraping."""
+    ENGAGED = 'engaged'            # commented/reacted on one of our posts (post_engagers)
+    INTENT = 'intent'              # raised a buying signal (lead_signals, issue #483)
+    DM = 'dm'                      # we sent them a DM (scheduled_dms / dm_followups)
+    PROFILE_VIEW = 'profile_view'  # they viewed our profile (dm_followups, profile_viewer event)
+    CONNECT = 'connect'            # we sent them a connection request (connection_requests)
+    FUNNEL = 'funnel'              # they are in the comment->connect->DM funnel (issue #399)
+
+
 # Enum for log actions types
 class LogActionType(StrEnum):
     COMMENT = 'comment'
@@ -4242,6 +4262,276 @@ def count_new_lead_signals(user_id: int) -> int:
         return int(row[0]) if row and row[0] else 0
     except mysql.connector.Error:
         return 0
+    finally:
+        cursor.close()
+        connection.close()
+
+
+# --- lead scoring & CRM-lite pipeline (issue #484) ---------------------------------------------
+# Every source below is engagement we ALREADY record, read back as one normalized activity stream
+# (kind, person_name, person_profile_url, occurred_at, detail). No new scraping.
+_LEAD_ACTIVITY_SOURCES: tuple = (
+    (LeadSignalKind.ENGAGED,
+     "SELECT engager_name AS person_name, engager_profile_url AS person_profile_url, "
+     "last_engaged_at AS occurred_at, '' AS detail FROM post_engagers "
+     "WHERE user_id=%s AND last_engaged_at >= (NOW() - INTERVAL %s DAY)"),
+    (LeadSignalKind.INTENT,
+     "SELECT person_name, person_profile_url, created_at AS occurred_at, status AS detail "
+     "FROM lead_signals WHERE user_id=%s AND created_at >= (NOW() - INTERVAL %s DAY) "
+     "AND status <> 'dismissed'"),
+    (LeadSignalKind.DM,
+     "SELECT recipient_name AS person_name, recipient_profile_url AS person_profile_url, "
+     "updated_at AS occurred_at, status AS detail FROM scheduled_dms "
+     "WHERE user_id=%s AND status='sent' AND updated_at >= (NOW() - INTERVAL %s DAY)"),
+    (LeadSignalKind.DM,
+     "SELECT first_name AS person_name, profile_url AS person_profile_url, "
+     "created_at AS occurred_at, event_type AS detail FROM dm_followups "
+     "WHERE user_id=%s AND event_type <> 'profile_viewer' "
+     "AND created_at >= (NOW() - INTERVAL %s DAY)"),
+    (LeadSignalKind.PROFILE_VIEW,
+     "SELECT first_name AS person_name, profile_url AS person_profile_url, "
+     "created_at AS occurred_at, event_type AS detail FROM dm_followups "
+     "WHERE user_id=%s AND event_type='profile_viewer' "
+     "AND created_at >= (NOW() - INTERVAL %s DAY)"),
+    (LeadSignalKind.CONNECT,
+     "SELECT recipient_name AS person_name, recipient_profile_url AS person_profile_url, "
+     "updated_at AS occurred_at, status AS detail FROM connection_requests "
+     "WHERE user_id=%s AND status='sent' AND updated_at >= (NOW() - INTERVAL %s DAY)"),
+    (LeadSignalKind.FUNNEL,
+     "SELECT target_name AS person_name, target_profile_url AS person_profile_url, "
+     "updated_at AS occurred_at, stage AS detail FROM outreach_funnel_targets "
+     "WHERE user_id=%s AND status <> 'canceled' AND updated_at >= (NOW() - INTERVAL %s DAY)"),
+)
+
+_LEAD_COLS = ("id", "user_id", "person_key", "person_name", "person_profile_url", "score",
+              "icp_score", "engagement_score", "stage", "signals", "signal_count", "reasons",
+              "next_action", "first_signal_at", "last_signal_at", "manual_stage", "notes",
+              "dismissed", "created_at", "updated_at")
+
+
+def get_lead_activity(user_id: int, days: int = 90) -> list:
+    """Every engagement signal about every person who touched this user in the window, normalized
+    for the scorer. Each source is queried independently so one unavailable table degrades that
+    signal instead of losing the whole pipeline."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    rows: list = []
+    try:
+        for kind, sql in _LEAD_ACTIVITY_SOURCES:
+            try:
+                cursor.execute(sql, (user_id, days))
+                for row in cursor.fetchall():
+                    row["kind"] = str(kind)
+                    rows.append(row)
+            except mysql.connector.Error as err:
+                myprint(f"Could not read {kind} lead activity for user {user_id} | Error: {err}")
+        return rows
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_profile_facts(profile_urls: list) -> dict:
+    """ICP facts (title / company / industry) for the profiles we HAVE scraped, keyed by profile
+    URL. People we never scraped simply aren't in the result — the scorer treats them as neutral."""
+    urls = [u for u in (profile_urls or []) if u]
+    if not urls:
+        return {}
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        placeholders = ", ".join(["%s"] * len(urls))
+        cursor.execute(
+            "SELECT profile_url, "
+            "JSON_UNQUOTE(JSON_EXTRACT(data, '$.job_title')) AS job_title, "
+            "JSON_UNQUOTE(JSON_EXTRACT(data, '$.company_name')) AS company_name, "
+            "JSON_UNQUOTE(JSON_EXTRACT(data, '$.industry')) AS industry "
+            f"FROM profiles WHERE profile_url IN ({placeholders})", tuple(urls))
+        return {r["profile_url"]: r for r in cursor.fetchall() if r.get("profile_url")}
+    except mysql.connector.Error as err:
+        myprint(f"Could not read profile facts | Error: {err}")
+        return {}
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def reset_lead_scores(user_id: int) -> bool:
+    """Zero every computed score before a rebuild so someone who went quiet actually decays out of
+    'hot' instead of keeping a stale score forever. Operator columns (manual_stage, notes,
+    dismissed) are untouched."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE leads SET score=0, engagement_score=0, stage='cold', signal_count=0, "
+            "signals=NULL, reasons=NULL WHERE user_id=%s", (user_id,))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not reset lead scores for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def upsert_lead(user_id: int, person_key: str, person_name: str = None,
+                person_profile_url: str = None, score: int = 0, icp_score: int = 0,
+                engagement_score: int = 0, stage: "LeadStage" = LeadStage.COLD,
+                signals: str = None, signal_count: int = 0, reasons: str = None,
+                next_action: str = None, first_signal_at: "datetime" = None,
+                last_signal_at: "datetime" = None) -> bool:
+    """Write one scored lead. Idempotent on (user_id, person_key) — the nightly rebuild re-runs
+    freely. Only COMPUTED columns are updated: an operator's manual_stage, notes, and dismissal
+    survive every re-score."""
+    if not person_key:
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO leads (user_id, person_key, person_name, person_profile_url, score, "
+            "icp_score, engagement_score, stage, signals, signal_count, reasons, next_action, "
+            "first_signal_at, last_signal_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "ON DUPLICATE KEY UPDATE "
+            "person_name=COALESCE(VALUES(person_name), person_name), "
+            "person_profile_url=COALESCE(VALUES(person_profile_url), person_profile_url), "
+            "score=VALUES(score), icp_score=VALUES(icp_score), "
+            "engagement_score=VALUES(engagement_score), stage=VALUES(stage), "
+            "signals=VALUES(signals), signal_count=VALUES(signal_count), "
+            "reasons=VALUES(reasons), next_action=VALUES(next_action), "
+            "first_signal_at=LEAST(COALESCE(first_signal_at, VALUES(first_signal_at)), "
+            "                      COALESCE(VALUES(first_signal_at), first_signal_at)), "
+            "last_signal_at=GREATEST(COALESCE(last_signal_at, VALUES(last_signal_at)), "
+            "                        COALESCE(VALUES(last_signal_at), last_signal_at))",
+            (user_id, str(person_key)[:255], (person_name or None), (person_profile_url or None),
+             max(0, min(255, int(score or 0))), max(0, min(255, int(icp_score or 0))),
+             max(0, min(255, int(engagement_score or 0))), str(stage),
+             (signals or None), max(0, int(signal_count or 0)), (reasons or None),
+             (next_action or None), first_signal_at, last_signal_at))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not upsert lead for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_lead(lead_id: int) -> Optional[dict]:
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(f"SELECT {', '.join(_LEAD_COLS)} FROM leads WHERE id=%s", (lead_id,))
+        return cursor.fetchone()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get lead {lead_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_leads(user_id: int, stage_filter: str = None, include_dismissed: bool = False,
+              page: int = 1, page_size: int = 100) -> dict:
+    """The pipeline board: scored leads hottest first. A manual_stage overrides the computed stage
+    for filtering, so moving someone by hand actually moves them on the board."""
+    where = "WHERE user_id = %s"
+    params: list = [user_id]
+    if not include_dismissed:
+        where += " AND dismissed = 0"
+    if stage_filter:
+        where += " AND COALESCE(manual_stage, stage) = %s"
+        params.append(stage_filter)
+    offset = max(0, (max(1, page) - 1) * page_size)
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(f"SELECT COUNT(*) AS c FROM leads {where}", tuple(params))
+        total = int(cursor.fetchone()["c"])
+        cursor.execute(
+            f"SELECT {', '.join(_LEAD_COLS)} FROM leads {where} "
+            "ORDER BY score DESC, last_signal_at DESC, id DESC LIMIT %s OFFSET %s",
+            tuple(params + [page_size, offset]))
+        rows = cursor.fetchall()
+        for r in rows:
+            for k in ("first_signal_at", "last_signal_at", "created_at", "updated_at"):
+                if isinstance(r.get(k), datetime):
+                    r[k] = r[k].isoformat()
+            r["dismissed"] = bool(r.get("dismissed"))
+        return {"leads": rows, "total": total, "page": page, "page_size": page_size}
+    except mysql.connector.Error as err:
+        myprint(f"Could not list leads for user {user_id} | Error: {err}")
+        return {"leads": [], "total": 0, "page": page, "page_size": page_size}
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_hot_leads(user_id: int, limit: int = 10) -> list:
+    """Today's hot list — the leads worth acting on now, with the WHY and the suggested action."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            f"SELECT {', '.join(_LEAD_COLS)} FROM leads WHERE user_id=%s AND dismissed=0 "
+            "AND COALESCE(manual_stage, stage) IN ('hot','in_conversation','opportunity') "
+            "ORDER BY score DESC, last_signal_at DESC LIMIT %s", (user_id, max(1, int(limit))))
+        return cursor.fetchall()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get hot leads for user {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def count_hot_leads(user_id: int) -> int:
+    """Board badge: how many leads are hot or further along."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM leads WHERE user_id=%s AND dismissed=0 "
+            "AND COALESCE(manual_stage, stage) IN ('hot','in_conversation','opportunity')",
+            (user_id,))
+        row = cursor.fetchone()
+        return int(row[0]) if row and row[0] else 0
+    except mysql.connector.Error:
+        return 0
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_lead(lead_id: int, notes: str = None, manual_stage: "LeadStage" = None,
+                dismissed: bool = None) -> bool:
+    """Operator edits only — the nightly rebuild never writes these columns, so a correction sticks.
+    Passing manual_stage='' clears the override and hands the lead back to the scorer."""
+    fields, params = [], []
+    if notes is not None:
+        fields.append("notes = %s")
+        params.append(notes[:512] or None)
+    if manual_stage is not None:
+        fields.append("manual_stage = %s")
+        params.append(str(manual_stage) or None)
+    if dismissed is not None:
+        fields.append("dismissed = %s")
+        params.append(1 if dismissed else 0)
+    if not fields:
+        return False
+    params.append(lead_id)
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(f"UPDATE leads SET {', '.join(fields)} WHERE id = %s", tuple(params))
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not update lead {lead_id} | Error: {err}")
+        return False
     finally:
         cursor.close()
         connection.close()

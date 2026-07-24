@@ -748,6 +748,66 @@ def auto_process_outreach_funnel():
     return f"Dispatched outreach funnel for {len(user_ids)} user(s)"
 
 
+# Lead scoring & CRM-lite pipeline (issue #484). Nothing here touches LinkedIn — it re-reads
+# engagement we already stored — so it is deliberately NOT gated on the 429 breaker / pause: a
+# rate-limited account still deserves an accurate hot-leads list.
+LEAD_ACTIVITY_WINDOW_DAYS = 90
+
+
+def _lead_target_terms(prefs: dict) -> list:
+    """What "good fit" means for this user, straight from their engagement preferences."""
+    terms: list = []
+    for key in ("focus_topics", "include_topics", "include_keywords"):
+        terms.extend(prefs.get(key) or [])
+    return [str(t).strip() for t in terms if str(t or "").strip()]
+
+
+def _rebuild_leads_for_user(user_id: int, days: int = LEAD_ACTIVITY_WINDOW_DAYS) -> int:
+    """Re-score one user's whole pipeline from existing engagement data. The reset runs first (and
+    even when there's no activity at all) so people who went quiet decay out of 'hot'."""
+    from cqc_lem.utilities.db import (get_lead_activity, get_profile_facts, reset_lead_scores,
+                                      upsert_lead)
+    from cqc_lem.utilities.lead_scoring import score_leads
+
+    reset_lead_scores(user_id)
+    rows = get_lead_activity(user_id, days=days)
+    if not rows:
+        return 0
+    prefs = get_engagement_preferences(user_id) or {}
+    urls = sorted({r.get("person_profile_url") for r in rows if r.get("person_profile_url")})
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    leads = score_leads(rows, now, facts_by_url=get_profile_facts(urls),
+                        target_terms=_lead_target_terms(prefs))
+    saved = 0
+    for lead in leads:
+        if upsert_lead(user_id, lead.person_key, person_name=lead.person_name,
+                       person_profile_url=lead.person_profile_url, score=lead.score,
+                       icp_score=lead.icp_score, engagement_score=lead.engagement_score,
+                       stage=lead.stage, signals=",".join(lead.signals)[:255],
+                       signal_count=lead.signal_count, reasons=lead.reasons,
+                       next_action=lead.next_action, first_signal_at=lead.first_signal_at,
+                       last_signal_at=lead.last_signal_at):
+            saved += 1
+    log_info(f"Rebuilt {saved} lead(s) for user {user_id}", user_id=user_id,
+             task_name="rebuild_leads_for_user")
+    return saved
+
+
+@shared_task.task
+def rebuild_leads_for_user(user_id: int):
+    """Re-score a single user's lead pipeline (nightly, or on demand from the pipeline board)."""
+    return f"Scored {_rebuild_leads_for_user(user_id)} lead(s) for user {user_id}"
+
+
+@shared_task.task
+def rebuild_lead_scores():
+    """Nightly: re-score every active user's leads so the hot-leads list is fresh each morning."""
+    users = get_active_user_ids()
+    for uid in users:
+        rebuild_leads_for_user.apply_async(kwargs={"user_id": uid})
+    return f"Lead re-scoring dispatched for {len(users)} user(s)"
+
+
 @shared_task.task
 def auto_notify_missing_linkedin_session():
     """Email active users who have no validated LinkedIn session cookie, prompting them
