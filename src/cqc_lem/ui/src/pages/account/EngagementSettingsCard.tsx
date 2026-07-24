@@ -95,7 +95,7 @@ export default function EngagementSettingsCard() {
               <option value="long">Long (~90 words)</option>
             </select>
             <p className="text-xs text-gray-500 mt-1">
-              Every comment stays substantive (≥15 words) — LinkedIn weights these far above one-liners. Medium is the default.
+              Comments target substantive depth (≥15 words) — LinkedIn weights these far above one-liners. Medium is the default.
             </p>
           </div>
         </div>

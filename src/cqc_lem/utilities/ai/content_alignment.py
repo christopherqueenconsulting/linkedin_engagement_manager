@@ -19,10 +19,12 @@ if TYPE_CHECKING:
 
 # Engagement-optimized upper caps. MEDIUM is the default (issue #394): 2026 LinkedIn weights a
 # substantive comment (≥15 words) ~2.5× a short one-liner, so the baseline aims for a real, specific
-# reply that can earn a thread — not a throwaway. Every length still clears a ≥15-word floor (see
-# COMMENT_MIN_WORDS); the cap only bounds the top end so "long" doesn't become an essay.
+# reply that can earn a thread — not a throwaway. The ≥15-word target is steered via the prompt (see
+# COMMENT_MIN_WORDS / style_directive), not enforced by post-generation validation; the char cap only
+# bounds the top end so "long" doesn't become an essay.
 COMMENT_LENGTH_CHARS = {"short": 180, "medium": 320, "long": 550}
-# Substantive floor applied to every generated comment/reply regardless of the length preference.
+# Substantive-length TARGET injected into the comment/reply prompt regardless of the length
+# preference. This is prompt guidance (the model is told to meet it), not a runtime word-count gate.
 COMMENT_MIN_WORDS = 15
 
 # Hard guardrail attached to EVERY generated comment, reply, and post. Without it, a user whose

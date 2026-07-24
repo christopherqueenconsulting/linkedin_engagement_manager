@@ -407,6 +407,11 @@ class EngagementPreferencesRequest(BaseModel):
     feed_fallback_when_empty: bool = True
     link_in_first_comment: bool = True
 
+    @field_validator("comment_length")
+    @classmethod
+    def _coerce_comment_length(cls, v: str) -> str:
+        return v if v in ("short", "medium", "long") else "medium"
+
     @field_validator("default_video_quality")
     @classmethod
     def _coerce_video_quality(cls, v: str) -> str:
