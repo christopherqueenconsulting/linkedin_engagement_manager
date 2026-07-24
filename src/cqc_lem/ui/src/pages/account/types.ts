@@ -25,6 +25,7 @@ export type EngPrefs = {
   reply_inbound_address?: string | null
   gmail_forward_confirmation?: GmailForwardConfirmation | null
   feed_fallback_when_empty: boolean
+  link_in_first_comment: boolean
   feed_reach?: FeedReach | null
 }
 

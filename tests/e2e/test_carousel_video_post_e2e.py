@@ -26,6 +26,7 @@ class TestCarouselPostE2E:
              patch("cqc_lem.app.run_automation.insert_new_log", return_value=None), \
              patch("cqc_lem.app.run_automation.share_carousel_on_linkedin",
                    return_value=expected_urn) as mock_share, \
+             patch("cqc_lem.app.run_automation.auto_seed_comment_on_post"), \
              patch("cqc_lem.app.run_automation.automate_reply_commenting"):
             from cqc_lem.utilities.db import PostType
             mock_get_type.return_value = PostType.CAROUSEL
@@ -99,6 +100,7 @@ class TestVideoPostE2E:
              patch("cqc_lem.app.run_automation.insert_new_log", return_value=None), \
              patch("cqc_lem.app.run_automation.share_on_linkedin",
                    return_value=expected_urn) as mock_share, \
+             patch("cqc_lem.app.run_automation.auto_seed_comment_on_post"), \
              patch("cqc_lem.app.run_automation.automate_reply_commenting"):
             from cqc_lem.utilities.db import PostType
             mock_get_type.return_value = PostType.VIDEO

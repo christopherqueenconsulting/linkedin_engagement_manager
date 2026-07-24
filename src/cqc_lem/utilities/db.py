@@ -1217,6 +1217,44 @@ def get_post_dwell_score(post_id: int) -> Optional[int]:
         connection.close()
 
 
+def update_db_post_first_comment_link(post_id: int, link: Optional[str]) -> bool:
+    """Stash the external link(s) stripped from a post body at publish time (issue #392, C3) so the
+    seed-comment task can deliver them in the author's first comment. Newline-separated for multiple
+    links; None clears it."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE posts SET first_comment_link = %s WHERE id = %s",
+            (link, post_id)
+        )
+        connection.commit()
+        success = cursor.rowcount == 1
+    except mysql.connector.Error as e:
+        success = False
+        myprint(f"Could not update first comment link for post {post_id}. Error: {e}")
+    finally:
+        cursor.close()
+        connection.close()
+    return success
+
+
+def get_post_first_comment_link(post_id: int) -> Optional[str]:
+    """The link(s) held back from a post's body for its first comment, or None (issue #392)."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT first_comment_link FROM posts WHERE id = %s", (post_id,))
+        row = cursor.fetchone()
+        return row[0] if row and row[0] else None
+    except mysql.connector.Error as err:
+        myprint(f"Could not get first comment link for post {post_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_recent_post_shape_history(user_id: int, limit: int = 10) -> list:
     """Recent posts' SHAPE history — {archetype, hook_style} dicts, most-recent first — fed to the
     shared content framework so a new post rotates away from recently used archetypes/hooks (the
@@ -2581,13 +2619,13 @@ _ENGAGEMENT_DEFAULTS: dict = {
     "max_comments_per_day": 20, "max_dms_per_day": 20, "default_buyer_stage": None,
     "default_video_quality": "standard",
     "reply_check_mode": "event", "reply_sweeps_per_day": 2, "reply_max_post_age_days": 2,
-    "feed_fallback_when_empty": True,
+    "feed_fallback_when_empty": True, "link_in_first_comment": True,
 }
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
                            "exclude_keywords", "include_authors", "exclude_authors", "post_types",
                            "focus_topics")
 _ENGAGEMENT_BOOL_FIELDS = ("use_emojis", "use_hashtags", "reply_to_own_comments",
-                           "feed_fallback_when_empty")
+                           "feed_fallback_when_empty", "link_in_first_comment")
 _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "use_hashtags",
                     "include_topics", "exclude_topics", "include_keywords", "exclude_keywords",
                     "include_authors", "exclude_authors", "post_types", "focus_topics",
@@ -2595,7 +2633,7 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "max_post_age_hours", "reply_to_own_comments", "max_comments_per_day",
                     "max_dms_per_day", "default_buyer_stage", "default_video_quality",
                     "reply_check_mode", "reply_sweeps_per_day", "reply_max_post_age_days",
-                    "feed_fallback_when_empty")
+                    "feed_fallback_when_empty", "link_in_first_comment")
 
 VALID_VIDEO_QUALITIES = ("standard", "premium", "premium_top")
 VALID_REPLY_MODES = ("event", "scheduled", "off")

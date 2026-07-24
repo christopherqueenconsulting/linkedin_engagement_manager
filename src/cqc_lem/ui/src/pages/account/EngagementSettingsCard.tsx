@@ -234,6 +234,13 @@ export default function EngagementSettingsCard() {
           )}
         </div>
         <div className="flex items-center justify-between">
+          <div className="pr-4">
+            <p className="text-sm font-medium text-gray-700">Put links in the first comment</p>
+            <p className="text-xs text-gray-400">When a post contains an external link, publish the post without it and drop the link into the first comment instead. Links in the body cost roughly 60-68% of a post's reach.</p>
+          </div>
+          <Toggle on={engPrefs.link_in_first_comment} onClick={() => setEng({ link_in_first_comment: !engPrefs.link_in_first_comment })} />
+        </div>
+        <div className="flex items-center justify-between">
           <p className="text-sm font-medium text-gray-700">Reply to comments on my posts</p>
           <Toggle on={engPrefs.reply_to_own_comments} onClick={() => setEng({ reply_to_own_comments: !engPrefs.reply_to_own_comments })} />
         </div>

@@ -531,6 +531,133 @@ def ensure_lead_magnet_cta(content: Optional[str], lead_magnet: Optional[dict], 
     return normalize_public_text(deduped.rstrip() + "\n\n" + line)
 
 
+# --- Link-in-first-comment (issue #392 - C3) ------------------------------------------------------
+# An external link in the post BODY carries a ~60-68% reach penalty; the SAME link in the author's
+# first comment costs nothing. These helpers are the deterministic (no-LLM) half of the mechanic:
+# split the carried links out of a finished body at publish time, and rebuild the comment line that
+# delivers them. LinkedIn's own URLs are left alone - they are not the off-platform penalty.
+_LINK_RE = re.compile(r"(?:https?://|www\.)[^\s<>\[\]{}|\\^\"']+", re.IGNORECASE)
+_INTERNAL_LINK_HOSTS = ("linkedin.com", "lnkd.in")
+# Sentence punctuation that commonly abuts a URL and does not belong to it.
+_LINK_TRAILING_PUNCT = ".,;:!?\"'"
+
+# Carry at most a few links, and never more than the posts.first_comment_link column holds - links
+# beyond the budget stay in the body rather than being silently dropped.
+FIRST_COMMENT_LINK_MAX = 3
+FIRST_COMMENT_LINK_MAX_CHARS = 1000
+
+# Rotated by post_id (the LEAD_MAGNET_CTA_REPAIR_MENU idiom) so a user's first comments are not
+# word-for-word identical post after post.
+FIRST_COMMENT_LINK_MENU = (
+    "Link to the full piece: {link}",
+    "Full write-up here: {link}",
+    "Here's the link if you want the details: {link}",
+    "The whole thing lives here: {link}",
+    "Details are here: {link}",
+)
+
+
+def _clean_link(raw: str) -> str:
+    """Trim sentence punctuation the URL regex swallowed, and drop a trailing ')' that closes a
+    parenthetical rather than being part of the URL."""
+    link = (raw or "").strip()
+    while link and link[-1] in _LINK_TRAILING_PUNCT:
+        link = link[:-1]
+    while link.endswith(")") and link.count(")") > link.count("("):
+        link = link[:-1]
+    return link
+
+
+def is_external_link(url: Optional[str]) -> bool:
+    """True for an off-platform link (the one LinkedIn's reach penalty applies to)."""
+    link = (url or "").strip().lower()
+    if not link:
+        return False
+    host = re.sub(r"^(?:https?://)?(?:www\.)?", "", link).split("/")[0].split("?")[0]
+    return not any(host == h or host.endswith("." + h) for h in _INTERNAL_LINK_HOSTS)
+
+
+def extract_external_links(content: Optional[str]) -> list:
+    """Ordered, de-duplicated external links found in the content."""
+    links = []
+    for match in _LINK_RE.findall(content or ""):
+        link = _clean_link(match)
+        if link and is_external_link(link) and link not in links:
+            links.append(link)
+    return links
+
+
+def _tidy_after_link_removal(line: str) -> str:
+    """Repair the seam a removed URL leaves behind: empty brackets, a dangling 'here:' colon or
+    arrow, doubled spaces, and a space before sentence punctuation."""
+    line = re.sub(r"\(\s*\)|\[\s*\]|<\s*>", "", line)
+    # A connector that pointed AT the link ("Read more:", "Full piece ->") now points at nothing.
+    line = re.sub(r"[ \t]*[:>\-][ \t]*(?=[.,;!?]|$)", "", line)
+    line = re.sub(r"[ \t]+([.,;:!?])", r"\1", line)
+    line = re.sub(r"[ \t]{2,}", " ", line)
+    return line.rstrip()
+
+
+def split_link_for_first_comment(content: Optional[str], enabled: bool = True,
+                                 max_links: int = FIRST_COMMENT_LINK_MAX,
+                                 max_chars: int = FIRST_COMMENT_LINK_MAX_CHARS) -> tuple:
+    """Split a finished post body into (body_without_carried_links, carried_links).
+
+    Only links that will actually be carried into the first comment are removed, so a link can never
+    be lost: over-budget links stay in the body. Returns the content unchanged with an empty list
+    when disabled or when there is nothing external to move."""
+    if not content or not enabled:
+        return content, []
+    links = extract_external_links(content)
+    if not links:
+        return content, []
+
+    carried, budget = [], 0
+    for link in links[:max_links]:
+        cost = len(link) + (1 if carried else 0)  # newline-joined when persisted
+        if budget + cost > max_chars:
+            break
+        carried.append(link)
+        budget += cost
+    if not carried:
+        return content, []
+
+    body = content
+    # Longest first: removing "https://x.io/a" before "https://x.io/a/b" would corrupt the longer one.
+    for link in sorted(carried, key=len, reverse=True):
+        # The body may hold the link with trailing punctuation attached; only the URL itself goes.
+        body = body.replace(link, "")
+    cleaned_lines = []
+    for raw_line in body.split("\n"):
+        line = _tidy_after_link_removal(raw_line)
+        # A line that existed only to hold the link disappears entirely.
+        if line or not raw_line.strip():
+            cleaned_lines.append(line)
+    body = re.sub(r"\n{3,}", "\n\n", "\n".join(cleaned_lines)).strip()
+    return body, carried
+
+
+def first_comment_link_text(links, post_id: Optional[int] = None) -> str:
+    """The link-delivery line(s) for the author's first comment. Empty string when no links."""
+    links = [str(l).strip() for l in (links or []) if str(l or "").strip()]
+    if not links:
+        return ""
+    idx = (int(post_id) % len(FIRST_COMMENT_LINK_MENU)) if post_id is not None else 0
+    lines = [FIRST_COMMENT_LINK_MENU[idx].format(link=links[0])] + links[1:]
+    return "\n".join(lines)
+
+
+def append_link_to_comment(comment: Optional[str], links, post_id: Optional[int] = None) -> str:
+    """Attach the carried link(s) to the generated seed comment. The AI half never writes links (the
+    prompt forbids them), so this deterministic append is what actually delivers the mechanic - and
+    it still returns a link-only comment when seed generation came back empty."""
+    link_text = first_comment_link_text(links, post_id)
+    base = (comment or "").strip()
+    if not link_text:
+        return base
+    return normalize_public_text(f"{base}\n\n{link_text}" if base else link_text)
+
+
 def personal_proof_directive(profile_synthesis: Optional[str] = None) -> str:
     """The A2 first-person proof requirement, SOURCED from the durable profile synthesis (the
     author's real credibility/expertise brief from get_or_create_profile_synthesis) plus whatever

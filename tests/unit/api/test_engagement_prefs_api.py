@@ -189,6 +189,18 @@ class TestFeedFallbackAndReach:
         assert resp.status_code == 200
         assert upd.call_args[0][1]["feed_fallback_when_empty"] is False
 
+    def test_link_in_first_comment_passthrough(self, client):
+        """The #392 opt-out reaches the DB layer, and defaults ON when the client omits it."""
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+            off = client.put("/api/user/engagement-preferences",
+                             json={"session_token": _SESSION, "link_in_first_comment": False})
+            default = client.put("/api/user/engagement-preferences",
+                                 json={"session_token": _SESSION})
+        assert off.status_code == 200 and default.status_code == 200
+        assert upd.call_args_list[0][0][1]["link_in_first_comment"] is False
+        assert upd.call_args_list[1][0][1]["link_in_first_comment"] is True
+
     def test_get_includes_feed_reach(self, client):
         funnel = {"examined": 40, "passed_filters": 12, "matched_topics": 0,
                   "commented": 3, "fallback_used": True}

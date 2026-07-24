@@ -12,6 +12,8 @@ BASE_PATCHES = [
     ("cqc_lem.app.run_automation.update_db_post_status", {}),
     ("cqc_lem.app.run_automation.get_engagement_preferences", {"return_value": {"reply_check_mode": "event"}}),
     ("cqc_lem.app.run_automation.sweep_reply_comments", {}),
+    # post_to_linkedin dispatches the seed first comment itself once the post is live (#392).
+    ("cqc_lem.app.run_automation.auto_seed_comment_on_post", {}),
 ]
 
 
