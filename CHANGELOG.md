@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.63.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.62.0...v0.63.0) (2026-07-24)
+
+
+### Features
+
+* **automation:** golden-hour reply amplifier for own-post comments (closes [#401](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/401)) ([f6d960d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f6d960d15fa8e2472f4b6919f147f216f011b5c0))
+* **automation:** golden-hour reply amplifier for own-post comments (closes [#401](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/401)) ([9e81cab](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9e81cabce6bcd01d834fa7701b6baa86cbeae0e9))
+
+
+### Bug Fixes
+
+* **automation:** make golden-hour reply sweeps actually all run ([#401](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/401)) ([6e0fbc4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6e0fbc44119844f88906968a782dfb2f6c6b9fba))
+
 ## [0.62.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.61.0...v0.62.0) (2026-07-24)
 
 
