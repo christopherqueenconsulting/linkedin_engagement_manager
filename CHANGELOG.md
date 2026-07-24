@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.57.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.56.0...v0.57.0) (2026-07-24)
+
+
+### Features
+
+* **content:** link-in-first-comment mechanic (closes [#392](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/392)) ([04aee3c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/04aee3c8ece43811bfdd993ef3463361afd756cc))
+
 ## [0.56.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.55.0...v0.56.0) (2026-07-24)
 
 
