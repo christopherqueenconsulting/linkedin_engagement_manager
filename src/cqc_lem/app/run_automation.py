@@ -2141,29 +2141,41 @@ def _comment_container(driver, textbox):
 
 
 def _react_to_comment_inline(driver, wait, comment_el, user_id: int = None) -> bool:
-    """Like a comment/reply (best-effort, non-fatal). On this SDUI the react control's aria-label is
-    'Open reactions menu' (a single click applies the default Like); older markup used 'React Like'.
-    Skips if already reacted (aria-pressed). If a click opens the reaction flyout instead of liking,
-    picks the visible 'Like' option."""
+    """Like a comment/reply (best-effort, non-fatal). The action bar is HOVER-HIDDEN (the react
+    button is zero-size until the comment is hovered), so hover first, then click the react control
+    ('Open reactions menu' on this SDUI; a single click applies the default Like). If the click
+    opens the reaction flyout instead, pick the visible 'Like'. Skips if already reacted."""
     try:
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", comment_el)
+        try:
+            ActionChains(driver).move_to_element(comment_el).pause(0.7).perform()  # reveal the bar
+            time.sleep(random.uniform(0.5, 1.0))
+        except Exception:
+            pass
         btns = comment_el.find_elements(
             By.CSS_SELECTOR,
-            "button[aria-label='Open reactions menu'], button[aria-label^='React '], "
-            "button[aria-label='Like'], button[aria-label*='Like']")
+            "button[aria-label^='React '], button[aria-label='Like'], "
+            "button[aria-label='Open reactions menu'], button[aria-label*='Like']")
         for b in btns:
             if (b.get_attribute("aria-pressed") or "").lower() == "true":
                 return False  # already liked
-            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", b)
-            time.sleep(random.uniform(0.6, 1.4))
-            b.click()
+            try:
+                sz = b.size or {}
+                if sz.get("width", 0) > 0 and sz.get("height", 0) > 0:
+                    ActionChains(driver).move_to_element(b).pause(0.3).click(b).perform()
+                else:  # still zero-size after hover — bypass interactability
+                    driver.execute_script("arguments[0].click();", b)
+            except Exception:
+                driver.execute_script("arguments[0].click();", b)
             time.sleep(random.uniform(1, 2))
-            # If the reaction flyout opened instead of applying Like, click the visible Like option.
+            # If a reaction flyout opened rather than applying Like, click the visible Like option.
             if (b.get_attribute("aria-pressed") or "").lower() != "true":
                 for lk in driver.find_elements(
                         By.CSS_SELECTOR, "button[aria-label='Like'], button[aria-label^='React Like']"):
                     try:
-                        if lk.is_displayed():
-                            lk.click(); time.sleep(random.uniform(0.8, 1.4)); break
+                        if lk.is_displayed() and (lk.size or {}).get("width", 0) > 0:
+                            ActionChains(driver).move_to_element(lk).pause(0.2).click(lk).perform()
+                            time.sleep(random.uniform(0.8, 1.4)); break
                     except Exception:
                         continue
             return True
