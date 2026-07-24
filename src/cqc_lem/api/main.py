@@ -1744,11 +1744,18 @@ def create_outreach_target_endpoint(request: OutreachTargetRequest) -> ResponseM
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
-    if get_outreach_target_by_url(user_id, request.target_profile_url):
+    # Normalize at the boundary so whitespace variants ("…/in/jane" vs "…/in/jane ") can't slip past
+    # the duplicate check and the unique constraint as distinct rows.
+    target_profile_url = request.target_profile_url.strip()
+    target_name = request.target_name.strip() if request.target_name else None
+    context_url = request.context_url.strip() if request.context_url else None
+    if not target_profile_url:
+        raise HTTPException(status_code=422, detail="target_profile_url is required")
+    if get_outreach_target_by_url(user_id, target_profile_url):
         raise HTTPException(status_code=409, detail="Target is already in the outreach funnel")
     status = OutreachStatus.APPROVED if request.status == "approved" else OutreachStatus.PENDING
-    target_id = insert_outreach_target(user_id, request.target_profile_url,
-                                       target_name=request.target_name, context_url=request.context_url,
+    target_id = insert_outreach_target(user_id, target_profile_url,
+                                       target_name=target_name, context_url=context_url,
                                        draft_text=request.draft_text, status=status)
     if not target_id:
         raise HTTPException(status_code=500, detail="Could not create outreach target")

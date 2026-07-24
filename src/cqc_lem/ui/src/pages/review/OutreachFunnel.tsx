@@ -204,11 +204,11 @@ export default function OutreachFunnel() {
                       className="px-3 py-1 border border-gray-300 text-gray-600 rounded text-xs font-semibold hover:bg-gray-50 disabled:opacity-50">
                       Save draft
                     </button>
-                    {t.status === 'pending' && (
+                    {['pending', 'failed', 'skipped'].includes(t.status) && (
                       <button onClick={() => actionMutation.mutate({ id: t.id, action: 'approve' })}
                         disabled={actionMutation.isPending}
                         className="px-3 py-1 bg-green-600 text-white rounded text-xs font-semibold hover:bg-green-700 disabled:opacity-50">
-                        Approve {t.stage}
+                        {t.status === 'pending' ? 'Approve' : 'Retry'} {t.stage}
                       </button>
                     )}
                     <button onClick={() => actionMutation.mutate({ id: t.id, action: 'cancel' })}

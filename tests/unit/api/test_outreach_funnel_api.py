@@ -56,6 +56,27 @@ class TestCreateTarget:
         from cqc_lem.utilities.db import OutreachStatus
         assert ins.call_args.kwargs["status"] == OutreachStatus.APPROVED
 
+    def test_strips_whitespace_before_dedup_and_insert(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=_U), \
+             patch(f"{_M}.get_outreach_target_by_url", return_value=None) as dup, \
+             patch(f"{_M}.insert_outreach_target", return_value=13) as ins:
+            resp = client.post("/api/outreach/target", json={
+                "session_token": _S, "target_profile_url": "  https://x/in/jane  ",
+                "target_name": "  Jane  ", "context_url": "  https://x/post/1  "})
+        assert resp.status_code == 200
+        assert dup.call_args.args[1] == "https://x/in/jane"
+        assert ins.call_args.args[1] == "https://x/in/jane"
+        assert ins.call_args.kwargs["target_name"] == "Jane"
+        assert ins.call_args.kwargs["context_url"] == "https://x/post/1"
+
+    def test_blank_url_422(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=_U), \
+             patch(f"{_M}.insert_outreach_target") as ins:
+            resp = client.post("/api/outreach/target", json={
+                "session_token": _S, "target_profile_url": "   "})
+        assert resp.status_code == 422
+        ins.assert_not_called()
+
     def test_duplicate_409(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_U), \
              patch(f"{_M}.get_outreach_target_by_url", return_value={"id": 1}), \
