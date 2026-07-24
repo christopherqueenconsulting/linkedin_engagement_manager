@@ -65,6 +65,26 @@ class TestUploadDocument:
             with pytest.raises(ValueError):
                 upload_document("token", "sub-1", str(pdf))
 
+    def test_retired_api_version_is_named_in_the_error(self, tmp_path):
+        """A retired LinkedIn-Version 426s every versioned call — say so instead of
+        letting it look like the app simply isn't provisioned for documents."""
+        import requests
+        from cqc_lem.utilities.linkedin.poster import upload_document
+
+        pdf = tmp_path / "deck.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+
+        retired = MagicMock(status_code=426)
+        retired.raise_for_status.side_effect = requests.HTTPError("426")
+
+        with patch("requests.post", return_value=retired), \
+             patch("cqc_lem.utilities.linkedin.poster.log_error") as mock_log:
+            with pytest.raises(requests.HTTPError):
+                upload_document("token", "sub-1", str(pdf))
+
+        assert "retired" in mock_log.call_args[0][0]
+        assert mock_log.call_args.kwargs["http_status"] == 426
+
     def test_raises_when_upload_put_fails(self, tmp_path):
         from cqc_lem.utilities.linkedin.poster import upload_document
 

@@ -334,6 +334,13 @@ def upload_document(access_token: str, owner_sub_id: str, document_path: str) ->
         json={"initializeUploadRequest": {"owner": f"urn:li:person:{owner_sub_id}"}},
         timeout=30,
     )
+    # A retired LinkedIn-Version answers 426 NONEXISTENT_VERSION on every versioned call, which
+    # would otherwise look like "app not provisioned" and silently demote every document post to
+    # the legacy path. Name the real cause so it's a config fix, not a debugging session.
+    if init_response.status_code == 426:
+        log_error(f"LinkedIn API version {LI_API_VERSION} is retired — set LI_API_VERSION to a "
+                  f"current version to publish native documents",
+                  api_provider="linkedin", http_status=426)
     init_response.raise_for_status()
 
     value = init_response.json().get("value", {})
