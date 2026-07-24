@@ -197,27 +197,70 @@ HOOK_STYLES: dict = {
     },
 }
 
+# ---------------------------------------------------------------------------
+# 2026 CTA + hashtag policy (issue #393 / C4). Two things flipped under the 2026 algorithm:
+# engagement-bait closes ("comment YES", "tag 3 people", "follow for more") are demoted instead of
+# rewarded, and hashtags no longer expand reach — hashtag-free posts run roughly +5-10%. Both
+# policies live HERE, once, so newsletters, posts, comments, and carousels can never drift apart
+# on them.
+# ---------------------------------------------------------------------------
+
+# The cap for a user who explicitly opts back INTO hashtags: minimal, never decorative.
+HASHTAG_MAX = 3
+
+# Named in the writer directive so the model knows exactly what is banned. Detection of these in
+# generated text is `linkedin_formatter.contains_engagement_bait` — the ONE bait detector.
+ENGAGEMENT_BAIT_EXAMPLES: tuple = (
+    "comment YES", "type INFO below", "tag 3 people", "like if you agree",
+    "follow for more", "smash the like button", "repost if you agree",
+)
+
+
+def cta_policy_directive() -> str:
+    """The invariant CTA rule injected wherever a CTA style is assigned: earn a real reply, never
+    farm a reflex."""
+    bait = ", ".join(f"'{e}'" for e in ENGAGEMENT_BAIT_EXAMPLES[:4])
+    return ("CTA RULE: the close must invite a genuine, specific response the reader has to think "
+            f"about. NEVER engagement bait — no {bait}, and never ask for likes, follows, reposts, "
+            "tags, or one-word replies. LinkedIn demotes bait in 2026; only a question worth "
+            "answering earns the comment.")
+
+
+def hashtag_directive(prefs: Optional[dict] = None) -> str:
+    """The hashtag instruction for any prompt. The default is NONE — in 2026 hashtags no longer
+    expand reach and hashtag-free posts measurably out-perform tagged ones — so tags appear only
+    when the user explicitly turned `use_hashtags` on, and even then they stay minimal."""
+    if prefs and prefs.get("use_hashtags"):
+        return (f"Use at most {HASHTAG_MAX} highly relevant hashtags, together on the final line — "
+                "hashtags no longer expand reach, so include only ones a human would actually follow.")
+    return ("Do NOT include any hashtags — hashtag-free posts reach more people in 2026; remove any "
+            "present in the draft.")
+
+
 CTA_STYLES: dict = {
     "reply_question": {
         "label": "Reply-Driving Question",
         "guidance": ("Close with ONE open, specific question about the reader's own situation and "
                      "explicitly invite them to answer in the comments — specific questions get "
-                     "replies; 'thoughts?' gets silence."),
+                     "replies; 'thoughts?' gets silence. Never a yes/no or one-word ask."),
     },
     "challenge": {
         "label": "This-Week Challenge",
         "guidance": ("Close by assigning one small, concrete action to take this week, and invite the "
-                     "reader to report back in the comments with what happened."),
+                     "reader to report back in the comments with what actually happened — the result, "
+                     "not a checkmark."),
     },
     "debate": {
         "label": "Invite Disagreement",
         "guidance": ("Close by inviting pushback — name the most likely objection and ask readers to "
-                     "tell you where you're wrong in the comments. Disagreement is engagement."),
+                     "tell you where you're wrong, and why, in the comments. Reasoned disagreement is "
+                     "the highest-value reply there is."),
     },
     "share_forward": {
-        "label": "Share With Someone",
-        "guidance": ("Close by asking the reader to share this edition with ONE specific kind of "
-                     "person who needs it right now, and invite new readers to subscribe."),
+        "label": "Pass It To One Person",
+        "guidance": ("Close by naming the ONE specific kind of person this edition would genuinely "
+                     "help right now and suggesting the reader forward it to them, and invite new "
+                     "readers to subscribe. Never a blanket share-or-repost request."),
     },
     "teaser_next": {
         "label": "Next-Edition Teaser",
@@ -225,9 +268,10 @@ CTA_STYLES: dict = {
                      "subscribing for — and invite readers to subscribe so they don't miss it."),
     },
     "poll_prompt": {
-        "label": "Either/Or Poll",
-        "guidance": ("Close with a crisp either/or question (option A vs option B) readers can answer "
-                     "in one comment — a low-effort on-ramp that starts real conversations."),
+        "label": "Either/Or With Reasons",
+        "guidance": ("Close with a crisp either/or question (option A vs option B) and ask which the "
+                     "reader would pick AND why in one line — the reason is the point; a bare vote "
+                     "is bait and teaches the feed nothing."),
     },
 }
 
@@ -353,7 +397,7 @@ POST_CTA_STYLES: dict = {
         "label": "Worth Saving",
         "guidance": ("Close with ONE short, soft 'worth saving for later' style line (saves are the "
                      "strongest 2026 engagement signal) plus a specific question so commenters still "
-                     "have an easy way in. Never beg — no 'smash that save button'."),
+                     "have a real way in. Never beg for the save."),
     },
 }
 
@@ -710,6 +754,7 @@ def blueprint_directive(content_type: str, blueprint: dict) -> str:
     if cta:
         c_meta = menu["ctas"][cta]
         lines.append(f"CTA STYLE: {c_meta['label']}. {c_meta['guidance']}")
+        lines.append(cta_policy_directive())
     if content_type in _PROOF_SLOT_TYPES:
         lines.append(PERSONAL_PROOF_SLOT)
     return "\n".join(lines) + "\n"
@@ -1150,10 +1195,11 @@ def post_writing_directive() -> str:
         "- Plain, conversational language; no jargon, no hype words, no markdown syntax of any kind.\n"
         "- Every claim needs a specific: a number, a named example, or a concrete step — from the "
         "provided source material or genuinely well-established knowledge; NEVER invent statistics.\n"
-        "- No engagement-bait ('comment YES', 'tag someone', 'smash like') and no external links in "
-        "the body.\n"
-        "- If hashtags are allowed by the style requirements, at most 3-5 relevant ones on the final "
-        "line; otherwise none.\n"
+        "- " + cta_policy_directive() + "\n"
+        "- No external links in the body.\n"
+        "- Hashtags are OFF unless the style requirements above explicitly allow them — posts "
+        f"without hashtags reach more people in 2026. When allowed, at most {HASHTAG_MAX} highly "
+        "relevant ones on the final line.\n"
         "- " + PLAIN_PUNCTUATION_DIRECTIVE + "\n"
         + dwell_directive()
         + "\n- Output ONLY the final post text — no quotes, no labels, no explanation.\n"

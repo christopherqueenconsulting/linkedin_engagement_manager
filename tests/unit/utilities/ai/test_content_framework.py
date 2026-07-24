@@ -261,7 +261,7 @@ class TestDirectivesAndCompact:
         text = fw.post_writing_directive()
         assert "210 characters" in text          # hook before the '...more' fold
         assert "1300-2000" in text               # optimal short-form length
-        assert "engagement-bait" in text
+        assert "NEVER engagement bait" in text
         assert "NEVER invent statistics" in text
         # The old one-size-fits-all viral template is gone for good.
         assert "10 relevant hashtags" not in text

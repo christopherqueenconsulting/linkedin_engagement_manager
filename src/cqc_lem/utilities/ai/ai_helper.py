@@ -932,16 +932,14 @@ def get_ai_linked_post_refinement(original_message: str, character_limit: int = 
 
     # Pref-aware formatting rules. The old hardcoded lines instructed emoji bullets and a trailing
     # hashtag block on EVERY refinement — directly fighting a user's use_emojis / use_hashtags
-    # settings (and the style directive the generator already honored). When no prefs are supplied
-    # the original wording is used verbatim, so unconfigured callers see a byte-identical prompt.
+    # settings (and the style directive the generator already honored). Hashtags now come from the
+    # shared 2026 policy (issue #393), which is hashtag-free unless the user opted in.
     emoji_line = "Use emojis (✅, 👉, 🔑, 💡) for visual emphasis and as bullet replacements."
-    hashtag_line = "Place all hashtags together on the final line of the post."
+    hashtag_line = _framework.hashtag_directive(prefs)
     tone_line = ""
     if prefs:
         if not prefs.get("use_emojis"):
             emoji_line = "Do NOT use any emojis; remove any emojis present in the draft."
-        if not prefs.get("use_hashtags"):
-            hashtag_line = "Do NOT add hashtags; remove any hashtags present in the draft."
         if prefs.get("tone"):
             tone_line = (f"\n        6. **Preserve the author's configured tone**\n"
                          f"           - The author writes in a {prefs['tone']} tone — preserve it; "
@@ -2010,14 +2008,12 @@ def get_blog_summary_post_from_ai(blog_post_url: str, blog_post_content: str, li
 
     # Pref-aware emoji/hashtag instructions — the hardcoded versions told the model to use emojis
     # and add hashtags even when the user's settings (already in the style directive above) said
-    # not to, and a system-prompt instruction usually wins that fight. Unset prefs keep the
-    # original wording so unconfigured behavior is unchanged.
+    # not to, and a system-prompt instruction usually wins that fight. Hashtags follow the shared
+    # 2026 policy (issue #393): none unless the user opted in.
     _emoji_instr = ("You can use emojis (such as 📊, 🌟, or ❓) to add personality, but only if it aligns with the user’s tone and industry norms."
                     if (not prefs or prefs.get("use_emojis"))
                     else "Do NOT use any emojis in the post.")
-    _hashtag_instr = ("Use up to 5 relevant hashtags, based on the article’s subject and the user’s industry. Suggested tags may include broader industry terms (#Innovation, #AI, #Leadership) and niche terms directly related to the content."
-                      if (not prefs or prefs.get("use_hashtags"))
-                      else "Do NOT include any hashtags in the post.")
+    _hashtag_instr = _framework.hashtag_directive(prefs)
 
     # System prompt to be included in every request
     system_prompt = {
@@ -2128,14 +2124,12 @@ def get_website_content_post_from_ai(content: str, url: str, linked_user_profile
     content = [{"type": "text", "text": prompt}]
 
     # Pref-aware emoji/hashtag instructions (same fix as get_blog_summary_post_from_ai): honor the
-    # user's use_emojis/use_hashtags settings instead of hardcoding both ON. Unset prefs keep the
-    # original wording.
+    # user's use_emojis/use_hashtags settings instead of hardcoding both ON. Hashtags follow the
+    # shared 2026 policy (issue #393): none unless the user opted in.
     _emoji_instr = ("You can use emojis (such as 📊, 🌟, or ❓) to add personality, but only if it aligns with the user’s tone and industry norms."
                     if (not prefs or prefs.get("use_emojis"))
                     else "Do NOT use any emojis in the post.")
-    _hashtag_instr = ("Use up to 5 relevant hashtags, based on the website content’s subject and the user’s industry. Suggested tags may include broader industry terms (#Innovation, #AI, #Leadership) and niche terms directly related to the content."
-                      if (not prefs or prefs.get("use_hashtags"))
-                      else "Do NOT include any hashtags in the post.")
+    _hashtag_instr = _framework.hashtag_directive(prefs)
 
     # System prompt to be included in every request
     system_prompt = {
@@ -2749,10 +2743,9 @@ def generate_carousel_content(user_id: int, stage: str, prefs: dict = None,
     job_title = getattr(profile, "job_title", "Professional") or "Professional"
 
     # Honor the user's hashtag setting — the old prompt hardcoded "End with 5-10 hashtags" for
-    # every carousel regardless of use_hashtags. Unset prefs keep the original instruction.
-    _hashtag_rule = ("End with 5-10 relevant hashtags on the final line."
-                     if (not prefs or prefs.get("use_hashtags"))
-                     else "Do NOT include any hashtags.")
+    # every carousel regardless of use_hashtags. Hashtags now follow the shared 2026 policy
+    # (issue #393): none unless the user opted in.
+    _hashtag_rule = _framework.hashtag_directive(prefs)
 
     # Shared LinkedIn formatting/QA best practices + a hard length cap for the caption (carousels
     # previously had NO length or formatting enforcement — one post came back as a 3400-char wall).

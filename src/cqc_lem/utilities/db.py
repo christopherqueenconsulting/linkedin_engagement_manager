@@ -2611,6 +2611,8 @@ def update_user_preferences(
 
 _ENGAGEMENT_DEFAULTS: dict = {
     "tone": None, "comment_length": "short", "comment_style": None,
+    # use_hashtags stays OFF by default (issue #393): hashtags no longer expand reach in 2026 and
+    # hashtag-free posts out-perform tagged ones. See content_framework.hashtag_directive.
     "use_emojis": True, "use_hashtags": False,
     "include_topics": [], "exclude_topics": [], "include_keywords": [], "exclude_keywords": [],
     "include_authors": [], "exclude_authors": [], "post_types": [],

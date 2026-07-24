@@ -56,7 +56,7 @@ class TestStyleDirectivePerType:
     def test_long_form_types_drop_comment_length_cap(self, content_type):
         d = ca.style_directive(self._PREFS, content_type)
         assert "550" not in d and "brevity beats length" not in d
-        assert "warm" in d and "Do not use any hashtags" in d
+        assert "warm" in d and "Do NOT include any hashtags" in d
 
     def test_empty_prefs_yield_empty_directive(self):
         assert ca.style_directive(None) == ""
