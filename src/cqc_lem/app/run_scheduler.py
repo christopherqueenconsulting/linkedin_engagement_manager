@@ -8,7 +8,7 @@ from cqc_lem import assets_dir
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.app.run_automation import automate_commenting, automate_profile_viewer_engagement, \
     automate_appreciation_dms_for_user, clean_stale_invites, update_stale_profile, post_to_linkedin, \
-    automate_invites_to_company_page_for_user, send_scheduled_dm, \
+    automate_invites_to_company_page_for_user, send_scheduled_dm, send_connection_request, \
     sweep_reply_comments
 from cqc_lem.utilities.db import (
     get_ready_to_post_posts, get_orphaned_scheduled_posts, update_db_post_status,
@@ -16,6 +16,8 @@ from cqc_lem.utilities.db import (
     get_company_linked_in_url_for_user,
     get_users_with_stripe_subscriptions, update_subscription_from_stripe,
     get_due_scheduled_dms, get_orphaned_scheduled_dms, update_scheduled_dm_status, ScheduledDmStatus,
+    get_approved_connection_requests, get_orphaned_connection_requests,
+    update_connection_request_status, ConnectionRequestStatus, count_invites_sent_today,
     get_users_with_reply_mode, get_engagement_preferences,
 )
 from cqc_lem.utilities.env_constants import SELENIUM_KEEP_VIDEOS_X_DAYS, CQC_LEM_POST_TIME_DELTA_MINUTES
@@ -149,6 +151,54 @@ def auto_check_scheduled_dms(self):
     if dispatched == 0 and len(orphaned) == 0:
         return "No DMs to Schedule"
     return f"Scheduled {dispatched} DM(s); re-queued {len(orphaned)} orphaned DM(s)"
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, }, reject_on_worker_lost=True)
+def auto_check_connection_requests(self):
+    """Scan for approved proactive connection requests and dispatch the send task, enforcing the
+    per-user daily invite cap AT DISPATCH (issue #398). Approval is required upstream (rows only reach
+    'approved' via the API), and the whole scan short-circuits while the automation kill-switch / 429
+    breaker is open, so a throttled account is never probed. The send task re-checks the cap and the
+    throttle, deferring back to 'approved' if either trips between scan and send."""
+    if _skip_if_throttled("auto_check_connection_requests"):
+        return "Automation throttled"
+
+    approved = get_approved_connection_requests()
+    active_user_ids = set(get_active_user_ids()) if approved else set()
+
+    dispatched = 0
+    budgets: dict = {}  # user_id -> remaining invites allowed today
+    for request_id, user_id in approved:
+        if user_id not in active_user_ids:
+            log_warning("Skipping connection request — user not active/connected",
+                        user_id=user_id, task_name="auto_check_connection_requests")
+            continue
+        if user_id not in budgets:
+            prefs = get_engagement_preferences(user_id)
+            cap = int(prefs.get("max_invites_per_day") or 0)
+            budgets[user_id] = max(0, cap - count_invites_sent_today(user_id))
+        if budgets[user_id] <= 0:
+            continue  # daily cap already met for this user — leave the rest 'approved' for tomorrow
+        budgets[user_id] -= 1
+        # Mark 'sending' so it isn't re-dispatched on the next scan, then send.
+        update_connection_request_status(request_id, ConnectionRequestStatus.SENDING)
+        send_connection_request.apply_async(kwargs={'request_id': request_id})
+        log_info(f"Connection request {request_id} dispatched",
+                 user_id=user_id, task_name="auto_check_connection_requests")
+        dispatched += 1
+
+    # Re-queue requests stuck in 'sending' whose send task was lost (e.g. on container restart) —
+    # mirrors the orphaned-DM recovery. The 2-hour gap avoids racing an in-flight task.
+    orphaned = get_orphaned_connection_requests(lookback_hours=2)
+    for request_id, user_id in orphaned:
+        log_warning(f"Re-queueing orphaned connection request {request_id}",
+                    user_id=user_id, task_name="auto_check_connection_requests")
+        update_connection_request_status(request_id, ConnectionRequestStatus.SENDING)
+        send_connection_request.apply_async(kwargs={'request_id': request_id})
+
+    if dispatched == 0 and len(orphaned) == 0:
+        return "No Connection Requests to Send"
+    return f"Dispatched {dispatched} connection request(s); re-queued {len(orphaned)} orphaned"
 
 
 @shared_task.task

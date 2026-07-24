@@ -23,6 +23,7 @@ from cqc_lem.utilities.ai.content_alignment import humanize_text, split_link_for
     append_link_to_comment
 from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, insert_new_log, LogActionType, \
+    CONNECTION_REQUEST_SENT_MESSAGE, \
     get_engagement_preferences, count_comments_today, get_recent_engagers, upsert_engager, \
     get_newsletter_settings, mark_newsletter_published, \
     get_newsletter_edition, mark_edition_published, mark_edition_failed, \
@@ -2707,14 +2708,18 @@ def send_scheduled_dm(self, dm_id: int):
     return f"Scheduled DM {dm_id} -> {'sent' if dm_sent else 'failed'}"
 
 
-@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['user_id', 'profile_url']},
-                  reject_on_worker_lost=True, rate_limit='1/m', queue='se_outreach')
-def invite_to_connect(self, user_id: int, profile_url: str, message: str = None):
+def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -> bool:
+    """Core connect-invite send: open the profile, click Connect (+ optional note), log the result.
+    Returns True on success. Shared by invite_to_connect (reactive profile-viewer flow) and
+    send_connection_request (issue #398 approval-gated proactive flow) so both use the same send +
+    log path (mirrors send_dm_now). Re-raises LinkedInRateLimited when the kill-switch / 429 breaker
+    is open so callers can defer rather than record a false failure."""
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
     driver, wait = get_driver_wait_pair(session_name='Invite to Connect', user_id=user_id)
 
     result = "Invitation to Connect Started"
+    invite_sent = False
 
     try:
 
@@ -2800,7 +2805,7 @@ def invite_to_connect(self, user_id: int, profile_url: str, message: str = None)
                                          "Finding Send Connection Button", use_action_chain=True)
 
                 myprint("Found Send Connection Button and clicked it")
-                result = "Connection Request Sent Successfully"
+                result = CONNECTION_REQUEST_SENT_MESSAGE
             except Exception as e:
                 log_error("Failed to add a note to connection request", exc=e, user_id=user_id, action_type="invite_connect")
                 result = f"Failed to Add a note. Error: {str(e)}"
@@ -2812,22 +2817,71 @@ def invite_to_connect(self, user_id: int, profile_url: str, message: str = None)
                                          "Finding Send Without Note Button", use_action_chain=True)
 
                 myprint("Found Send Without a Note Button and clicked it")
-                result = "Connection Request Sent Successfully"
+                result = CONNECTION_REQUEST_SENT_MESSAGE
             except Exception as e:
                 log_error("Failed to find send-without-note connection button", exc=e, user_id=user_id, action_type="invite_connect")
                 result = f"Failed to find send without a note connection button. Error: {str(e)}"
+    except LinkedInRateLimited:
+        # Kill-switch / 429 breaker is open — let the caller defer instead of logging a false failure.
+        raise
     except Exception as e:
         log_error("Error while inviting to connect", exc=e, user_id=user_id, action_type="invite_connect")
         result = f"Error while inviting to connect: {e}"
         insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
                        result=LogResultType.FAILURE, post_url=profile_url, message=str(e))
     else:
+        invite_sent = result == CONNECTION_REQUEST_SENT_MESSAGE
         insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
-                       result=LogResultType.SUCCESS, post_url=profile_url, message=result)
+                       result=LogResultType.SUCCESS if invite_sent else LogResultType.FAILURE,
+                       post_url=profile_url, message=result)
     finally:
         quit_gracefully(driver)  # Close the driver
 
-    return result
+    return invite_sent
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['user_id', 'profile_url']},
+                  reject_on_worker_lost=True, rate_limit='1/m', queue='se_outreach')
+def invite_to_connect(self, user_id: int, profile_url: str, message: str = None):
+    """Send a LinkedIn connection request (reactive profile-viewer flow). Thin wrapper over
+    invite_to_connect_now; a throttle / kill-switch defers silently."""
+    try:
+        sent = invite_to_connect_now(user_id, profile_url, message)
+    except LinkedInRateLimited as e:
+        myprint(f"invite_to_connect deferred (throttled): {e}")
+        return "Invitation deferred (LinkedIn throttled)"
+    return CONNECTION_REQUEST_SENT_MESSAGE if sent else "Connection Request Failed"
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['request_id']},
+                  reject_on_worker_lost=True, rate_limit='1/m', queue='se_outreach')
+def send_connection_request(self, request_id: int):
+    """Send an approved proactive connection request (issue #398). Enforces the per-day invite cap at
+    send time (defers back to 'approved' for the next scan when the cap is hit or LinkedIn is
+    throttled) and updates the connection_requests status. Reuses invite_to_connect_now, so it
+    honors the rate-limit / kill-switch."""
+    from cqc_lem.utilities.db import (get_connection_request, update_connection_request_status,
+                                      count_invites_sent_today, ConnectionRequestStatus)
+    req = get_connection_request(request_id)
+    if not req or req["status"] not in (ConnectionRequestStatus.APPROVED, ConnectionRequestStatus.SENDING):
+        return f"Connection request {request_id} not sendable (status={req['status'] if req else 'missing'})"
+
+    user_id = req["user_id"]
+    prefs = get_engagement_preferences(user_id)
+    if count_invites_sent_today(user_id) >= int(prefs.get("max_invites_per_day") or 0):
+        myprint(f"send_connection_request: daily invite cap reached for user {user_id}; deferring {request_id}")
+        update_connection_request_status(request_id, ConnectionRequestStatus.APPROVED)  # retry on next scan
+        return f"Connection request {request_id} deferred (daily invite cap reached)"
+
+    try:
+        sent = invite_to_connect_now(user_id, req["recipient_profile_url"], req["message"])
+    except LinkedInRateLimited as e:
+        myprint(f"send_connection_request: throttled, deferring {request_id}: {e}")
+        update_connection_request_status(request_id, ConnectionRequestStatus.APPROVED)  # retry on next scan
+        return f"Connection request {request_id} deferred (LinkedIn throttled)"
+    update_connection_request_status(
+        request_id, ConnectionRequestStatus.SENT if sent else ConnectionRequestStatus.FAILED)
+    return f"Connection request {request_id} -> {'sent' if sent else 'failed'}"
 
 
 def final_method(drivers: List[WebDriver]):
