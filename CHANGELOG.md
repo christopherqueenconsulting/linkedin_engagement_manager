@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.68.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.67.0...v0.68.0) (2026-07-24)
+
+
+### Features
+
+* **automation:** auto-follow-up on replies to our automated comments + harden reply sweep (closes [#478](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/478)) ([8680076](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/86800762581a0d4a4b5e2f296afc4fd07bc57934))
+* **automation:** follow up on replies to our automated comments ([#478](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/478)) + harden reply sweep ([89eade3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/89eade3ae6a2614409d6949165a27926c9f27bfe))
+
+
+### Bug Fixes
+
+* **#478:** associate a reply to our comment via [@mention](https://github.com/mention), not just DOM nesting ([7936969](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/793696962bf079b68eaec83c18ce852be149d394))
+* **#478:** comment react control is 'Open reactions menu'; add flyout Like fallback ([7e4ec6e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7e4ec6eaf4c2f5b6a4b59be6a3703255e84c9ffe))
+* **#478:** hover the comment before reacting (action bar is hover-hidden/zero-size) ([56e8dd8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/56e8dd875281a5a8522bbf383591caf1d262d3ae))
+* **#478:** real SDUI selectors for third-party comment threads (live-validated) ([10cbfd3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/10cbfd386582f8d3a3f63f806a93d0f76d78ef6e))
+* **#478:** thread replies UNDER the comment (nearest composer), not a top-level comment ([5377b5e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5377b5e4bde5918787a7aa1b4961c59f51681a1e))
+* **#478:** worker sets a tall viewport so a long post's comments lazy-render ([53b6e26](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/53b6e26347dec394e2efb7bb09ccec96af926194))
+
 ## [0.67.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.66.1...v0.67.0) (2026-07-24)
 
 
