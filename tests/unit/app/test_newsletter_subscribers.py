@@ -11,7 +11,7 @@ _RS = "cqc_lem.app.run_scheduler"
 
 @pytest.fixture(autouse=True)
 def _no_sleep():
-    with patch(f"{_RA}.time.sleep"), patch(f"{_RA}.random.uniform", return_value=0):
+    with patch("time.sleep"), patch("random.uniform", return_value=0):
         yield
 
 

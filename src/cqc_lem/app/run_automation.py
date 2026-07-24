@@ -1254,7 +1254,7 @@ def auto_publish_edition(self, edition_id: int):
         quit_gracefully(driver)
 
 
-def _parse_subscriber_count(text: str) -> "int | None":
+def _parse_subscriber_count(text: "str | None") -> "int | None":
     """Pull a subscriber count out of LinkedIn's label text, e.g. '1,234 subscribers' -> 1234,
     '3.2K subscribers' -> 3200. Returns None when no count is present."""
     if not text:

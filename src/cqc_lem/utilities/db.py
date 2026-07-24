@@ -3577,7 +3577,8 @@ def get_newsletter_settings(user_id: int) -> dict:
 
 
 def update_newsletter_settings(user_id: int, settings: dict) -> bool:
-    """Upsert the user's newsletter config (title/topic/cadence/enabled/align_with_blog)."""
+    """Upsert the user's newsletter config (title/topic/cadence/enabled/align_with_blog,
+    plus the opt-in invite flow: invite_connections_enabled/max_invites_per_run)."""
     merged = {**_NEWSLETTER_DEFAULTS, **{k: v for k, v in settings.items() if k in _NEWSLETTER_COLS}}
     values = [user_id] + [
         (1 if merged[c] else 0) if c in ("enabled", "align_with_blog", "invite_connections_enabled")
