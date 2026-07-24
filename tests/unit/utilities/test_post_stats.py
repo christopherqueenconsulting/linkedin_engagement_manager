@@ -266,6 +266,15 @@ class TestBuildPerformanceTable:
         assert table[0]["engagement_rate"] is None
         assert table[0]["impressions"] is None
 
+    def test_zero_impressions_normalized_to_none(self):
+        # 0 impressions is unknown/invalid to engagement_rate — the table must not show
+        # `impressions: 0` beside a null rate.
+        from cqc_lem.utilities.post_stats import build_performance_table
+        table = build_performance_table([_perf_row(1, dt.datetime(2026, 7, 20, 9, 0),
+                                                    reactions=5, comments=1, impressions=0)])
+        assert table[0]["impressions"] is None
+        assert table[0]["engagement_rate"] is None
+
     def test_ignores_empty_rows(self):
         from cqc_lem.utilities.post_stats import build_performance_table
         assert build_performance_table([None, {}]) == build_performance_table([])
@@ -298,6 +307,17 @@ class TestBuildEngagementTrend:
         trend = build_engagement_trend(rows)
         assert trend[0]["engagement_rate"] is None
         assert trend[0]["impressions"] is None                            # incomplete → hidden
+
+    def test_rate_none_when_a_post_that_day_has_zero_impressions(self):
+        # A 0-impression post makes the day's impression total unknown, same as a missing one.
+        from cqc_lem.utilities.post_stats import build_engagement_trend
+        rows = [
+            _perf_row(1, dt.datetime(2026, 7, 20, 9, 0), reactions=10, impressions=500),
+            _perf_row(2, dt.datetime(2026, 7, 20, 18, 0), reactions=6, impressions=0),
+        ]
+        trend = build_engagement_trend(rows)
+        assert trend[0]["engagement_rate"] is None
+        assert trend[0]["impressions"] is None
 
     def test_skips_rows_without_a_timestamp(self):
         from cqc_lem.utilities.post_stats import build_engagement_trend

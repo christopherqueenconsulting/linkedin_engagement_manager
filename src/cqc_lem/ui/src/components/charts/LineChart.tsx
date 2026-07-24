@@ -70,6 +70,17 @@ export default function LineChart({ title, subtitle, points, format, valueLabel,
 
   const lastDrawn = [...positions].reverse().find((p) => p.y != null)
 
+  // The area fill closes `path` into one polygon, so it only reads correctly for a single
+  // continuous run. If a null gap sits between the first and last drawn point, the multi-subpath
+  // `path` would fill across the missing span — suppress it and keep just the broken line.
+  const areaFillable = useMemo(() => {
+    const drawn = positions.filter((p) => p.y != null)
+    if (drawn.length < 2) return false
+    const first = drawn[0].i
+    const last = drawn[drawn.length - 1].i
+    return !positions.slice(first, last + 1).some((p) => p.y == null)
+  }, [positions])
+
   // Show at most ~6 x-axis labels so they never collide.
   const labelEvery = Math.max(1, Math.ceil(points.length / 6))
 
@@ -134,7 +145,7 @@ export default function LineChart({ title, subtitle, points, format, valueLabel,
             <line className="viz-baseline" x1={M.left} y1={M.top + PLOT_H} x2={M.left + PLOT_W} y2={M.top + PLOT_H} />
 
             {/* Area wash under the line (single continuous run only, for a calm fill) */}
-            {lastDrawn && path && (
+            {lastDrawn && path && areaFillable && (
               <path
                 className="viz-area"
                 d={`${path} L${lastDrawn.x.toFixed(1)} ${(M.top + PLOT_H).toFixed(1)} L${positions.find((p) => p.y != null)!.x.toFixed(1)} ${(M.top + PLOT_H).toFixed(1)} Z`}

@@ -179,6 +179,13 @@ def _int(value: Any) -> int:
         return 0
 
 
+def _impressions(value: Any) -> Optional[int]:
+    """Impressions normalized to a positive count or None — mirrors `engagement_rate`'s treatment
+    of 0/missing impressions as unknown, so a row never shows `impressions: 0` beside a null rate."""
+    views = _int(value)
+    return views if views > 0 else None
+
+
 def _iso(value: Any) -> Optional[str]:
     return value.isoformat() if hasattr(value, "isoformat") else (value or None)
 
@@ -208,7 +215,7 @@ def build_performance_table(rows: Iterable[Mapping]) -> list:
             "comments": _int(comments),
             "reposts": _int(reposts),
             "saves": _int(r.get("saves")),
-            "impressions": _int(r.get("impressions")) if r.get("impressions") is not None else None,
+            "impressions": _impressions(r.get("impressions")),
             "engagement": engagement_score(reactions, comments, reposts),
             "engagement_rate": round(rate, 5) if rate is not None else None,
         })
@@ -237,10 +244,11 @@ def build_engagement_trend(rows: Iterable[Mapping]) -> list:
         bucket["comments"] += _int(r.get("comments"))
         bucket["reposts"] += _int(r.get("reposts"))
         bucket["saves"] += _int(r.get("saves"))
-        if r.get("impressions") is None:
+        views = _impressions(r.get("impressions"))
+        if views is None:  # missing OR non-positive → day's impression total is unknown
             bucket["impressions_complete"] = False
         else:
-            bucket["impressions"] += _int(r.get("impressions"))
+            bucket["impressions"] += views
         bucket["posts"] += 1
     trend = []
     for day in sorted(buckets):
