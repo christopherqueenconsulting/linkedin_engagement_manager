@@ -115,6 +115,11 @@ app.conf.update(
             'task': 'cqc_lem.app.run_scheduler.auto_publish_scheduled_editions',
             'schedule': crontab(minute='5')  # Hourly: publish any edition whose scheduled slot has arrived
         },
+        'track-newsletter-subscribers': {
+            'task': 'cqc_lem.app.run_scheduler.auto_track_newsletter_subscribers',
+            # Weekly (Mon 11:00 UTC): snapshot subscriber counts + run opted-in invites within caps
+            'schedule': crontab(hour='11', minute='0', day_of_week='1')
+        },
         'dispatch-scheduled-reply-sweeps': {
             'task': 'cqc_lem.app.run_scheduler.dispatch_scheduled_reply_sweeps',
             # Every 30 min; a per-user Redis interval key gates it to reply_sweeps_per_day (2–12) sweeps.

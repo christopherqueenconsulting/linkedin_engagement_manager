@@ -109,6 +109,104 @@ class TestNewsletterDraftConfigFields:
         assert "generate_lead_days" in sql and "max_queued_drafts" in sql
 
 
+class TestNewsletterInviteFields:
+    def test_settings_coerce_invite_fields(self):
+        row = {"enabled": 1, "title": "T", "topic": None, "cadence": "weekly",
+               "align_with_blog": 1, "newsletter_url": None, "last_published_at": None,
+               "publish_day": "1", "publish_hour": "9", "generate_lead_days": "3",
+               "max_queued_drafts": "1", "invite_connections_enabled": 1, "max_invites_per_run": "80"}
+        conn, _ = _mock_conn(fetch_row=row)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_newsletter_settings
+            s = get_newsletter_settings(1)
+        assert s["invite_connections_enabled"] is True and s["max_invites_per_run"] == 80
+
+    def test_defaults_invite_fields(self):
+        conn, _ = _mock_conn(fetch_row=None)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_newsletter_settings
+            s = get_newsletter_settings(1)
+        assert s["invite_connections_enabled"] is False and s["max_invites_per_run"] == 50
+
+    def test_selects_invite_columns(self):
+        conn, cur = _mock_conn(fetch_row=None)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_newsletter_settings
+            get_newsletter_settings(1)
+        sql = cur.execute.call_args[0][0]
+        assert "invite_connections_enabled" in sql and "max_invites_per_run" in sql
+
+    def test_upsert_includes_invite_columns(self):
+        conn, cur = _mock_conn()
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_newsletter_settings
+            update_newsletter_settings(1, {"invite_connections_enabled": True, "max_invites_per_run": 30})
+        sql, params = cur.execute.call_args[0]
+        assert "invite_connections_enabled" in sql and "max_invites_per_run" in sql
+        assert 1 in params and 30 in params  # bool coerced to 1
+
+
+class TestSubscriberStats:
+    def test_record_stat_inserts(self):
+        conn, cur = _mock_conn(rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import record_newsletter_subscriber_stat
+            assert record_newsletter_subscriber_stat(1, subscriber_count=123, invites_sent=5) is True
+        sql, params = cur.execute.call_args[0]
+        assert "INSERT INTO newsletter_subscriber_stats" in sql
+        assert params == (1, 123, 5)
+
+    def test_record_stat_defaults(self):
+        conn, cur = _mock_conn(rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import record_newsletter_subscriber_stat
+            assert record_newsletter_subscriber_stat(1) is True
+        _, params = cur.execute.call_args[0]
+        assert params == (1, None, 0)
+
+    def test_record_stat_false_on_error(self):
+        import mysql.connector
+        conn, cur = _mock_conn()
+        cur.execute.side_effect = mysql.connector.Error("boom")
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import record_newsletter_subscriber_stat
+            assert record_newsletter_subscriber_stat(1, 5) is False
+
+    def test_get_stats_orders_desc(self):
+        import datetime
+        rows = [{"subscriber_count": 130, "invites_sent": 0, "captured_at": datetime.datetime(2026, 7, 20)},
+                {"subscriber_count": 120, "invites_sent": 5, "captured_at": datetime.datetime(2026, 7, 13)}]
+        conn, cur = _mock_conn(fetch_all=rows)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_newsletter_subscriber_stats
+            out = get_newsletter_subscriber_stats(1, limit=10)
+        assert [r["subscriber_count"] for r in out] == [130, 120]
+        sql, params = cur.execute.call_args[0]
+        assert "ORDER BY captured_at DESC" in sql and params == (1, 10)
+
+    def test_get_stats_empty_on_error(self):
+        import mysql.connector
+        conn, cur = _mock_conn()
+        cur.execute.side_effect = mysql.connector.Error("boom")
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_newsletter_subscriber_stats
+            assert get_newsletter_subscriber_stats(1) == []
+
+    def test_latest_count_returns_int(self):
+        conn, cur = _mock_conn(fetch_row=(142,))
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_latest_newsletter_subscriber_count
+            assert get_latest_newsletter_subscriber_count(1) == 142
+        sql = cur.execute.call_args[0][0]
+        assert "subscriber_count IS NOT NULL" in sql
+
+    def test_latest_count_none_when_absent(self):
+        conn, _ = _mock_conn(fetch_row=None)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_latest_newsletter_subscriber_count
+            assert get_latest_newsletter_subscriber_count(1) is None
+
+
 class TestEnabledNewsletterUsers:
     def test_returns_ids(self):
         conn, cur = _mock_conn(fetch_all=[(2,), (9,)])

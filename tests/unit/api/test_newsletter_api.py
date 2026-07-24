@@ -96,9 +96,44 @@ class TestNewsletterSettings:
         assert resp.status_code == 200
         task.apply_async.assert_not_called()
 
+    def test_put_clamps_max_invites_high(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_newsletter_settings", return_value=True) as upd:
+            resp = client.put("/api/user/newsletter-settings", json={
+                "session_token": _SESSION, "enabled": True,
+                "invite_connections_enabled": True, "max_invites_per_run": 9999})
+        assert resp.status_code == 200
+        args = upd.call_args[0][1]
+        assert args["invite_connections_enabled"] is True and args["max_invites_per_run"] == 500
+
+    def test_put_clamps_max_invites_low(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_newsletter_settings", return_value=True) as upd:
+            resp = client.put("/api/user/newsletter-settings", json={
+                "session_token": _SESSION, "enabled": True, "max_invites_per_run": -10})
+        assert resp.status_code == 200
+        assert upd.call_args[0][1]["max_invites_per_run"] == 0
+
     def test_401(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=None):
             resp = client.get("/api/user/newsletter-settings?session_token=bad")
+        assert resp.status_code == 401
+
+
+class TestNewsletterSubscribers:
+    def test_get_returns_history_and_latest(self, client):
+        history = [{"subscriber_count": 130, "invites_sent": 0, "captured_at": "2026-07-20T00:00:00"}]
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.utilities.db.get_latest_newsletter_subscriber_count", return_value=130), \
+             patch("cqc_lem.utilities.db.get_newsletter_subscriber_stats", return_value=history):
+            resp = client.get(f"/api/user/newsletter-subscribers?session_token={_SESSION}")
+        assert resp.status_code == 200
+        detail = resp.json()["detail"]
+        assert detail["latest"] == 130 and detail["history"][0]["subscriber_count"] == 130
+
+    def test_401(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=None):
+            resp = client.get("/api/user/newsletter-subscribers?session_token=bad")
         assert resp.status_code == 401
 
 

@@ -325,6 +325,8 @@ class NewsletterSettingsRequest(BaseModel):
     publish_hour: int = 9
     generate_lead_days: int = 3
     max_queued_drafts: int = 1
+    invite_connections_enabled: bool = False
+    max_invites_per_run: int = 50
 
     @field_validator("max_queued_drafts")
     @classmethod
@@ -335,6 +337,11 @@ class NewsletterSettingsRequest(BaseModel):
     @classmethod
     def _clamp_lead_days(cls, v: int) -> int:
         return max(0, min(60, v))
+
+    @field_validator("max_invites_per_run")
+    @classmethod
+    def _clamp_max_invites(cls, v: int) -> int:
+        return max(0, min(500, v))
 
 
 class NewsletterDraftRequest(BaseModel):
@@ -1479,6 +1486,20 @@ def get_newsletter_settings_endpoint(session_token: str) -> ResponseModel:
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     return ResponseModel(status_code=200, detail=get_newsletter_settings(user_id))
+
+
+@router.get("/user/newsletter-subscribers")
+def get_newsletter_subscribers_endpoint(session_token: str) -> ResponseModel:
+    """Subscriber-growth time-series for the current user (issue #400): the recorded snapshots plus
+    the latest known subscriber count, for charting growth over time."""
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    from cqc_lem.utilities.db import get_newsletter_subscriber_stats, get_latest_newsletter_subscriber_count
+    return ResponseModel(status_code=200, detail={
+        "latest": get_latest_newsletter_subscriber_count(user_id),
+        "history": get_newsletter_subscriber_stats(user_id),
+    })
 
 
 @router.put("/user/newsletter-settings")
