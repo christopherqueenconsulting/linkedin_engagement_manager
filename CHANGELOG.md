@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.61.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.60.0...v0.61.0) (2026-07-24)
+
+
+### Features
+
+* **analytics:** outcome-tracked A/B variant harness (closes [#396](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/396)) ([5fdbc32](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5fdbc32d6037b41a464891ea5e56e1032a6f9bb5))
+* **analytics:** outcome-tracked A/B variant harness (closes [#396](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/396)) ([f20ce66](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f20ce66f6a1b2b3773525fcf070a4459785355ce))
+
+
+### Bug Fixes
+
+* **analytics:** address Copilot/CodeQL review on [#396](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/396) A/B harness ([3d55cb2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3d55cb2152f99b5c6be5e1d9cdbcd414bea95740))
+
 ## [0.60.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.59.1...v0.60.0) (2026-07-24)
 
 
