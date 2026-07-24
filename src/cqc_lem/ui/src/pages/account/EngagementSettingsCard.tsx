@@ -113,9 +113,9 @@ export default function EngagementSettingsCard() {
             <Toggle on={engPrefs.use_hashtags} onClick={() => setEng({ use_hashtags: !engPrefs.use_hashtags })} />
           </div>
           <p className="text-xs text-gray-500 mt-1">
-            Off by default. In 2026 hashtags no longer expand reach — hashtag-free posts see roughly
-            5–10% more — so LEM writes without them. Turn this on only if you want a minimal set
-            (at most 3) on the final line.
+            Off by default. In 2026 hashtags no longer expand reach: posts without them reach
+            roughly 5–10% more people, so LEM writes without them. Turn this on only if you want a
+            minimal set (at most 3) on the final line.
           </p>
         </div>
         {saveBtn('Save Voice & Tone')}
