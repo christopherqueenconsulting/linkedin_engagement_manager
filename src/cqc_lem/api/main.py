@@ -405,6 +405,7 @@ class EngagementPreferencesRequest(BaseModel):
     reply_sweeps_per_day: int = 2
     reply_max_post_age_days: int = 2
     feed_fallback_when_empty: bool = True
+    link_in_first_comment: bool = True
 
     @field_validator("default_video_quality")
     @classmethod

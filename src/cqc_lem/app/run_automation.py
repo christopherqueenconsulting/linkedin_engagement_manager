@@ -19,7 +19,8 @@ from cqc_lem.utilities.ai.ai_helper import generate_ai_response, get_ai_message_
     ai_check_message_history, post_is_relevant, generate_newsletter_edition, generate_group_post, \
     generate_thread_reply, generate_seed_comment, choose_post_reaction, get_or_create_profile_synthesis, \
     synthesize_profile
-from cqc_lem.utilities.ai.content_alignment import humanize_text
+from cqc_lem.utilities.ai.content_alignment import humanize_text, split_link_for_first_comment, \
+    append_link_to_comment
 from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, insert_new_log, LogActionType, \
     get_engagement_preferences, count_comments_today, get_recent_engagers, upsert_engager, \
@@ -30,6 +31,7 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     LogResultType, has_user_commented_on_post_url, get_post_url_from_log_for_user, get_post_message_from_log_for_user, \
     claim_post_for_comment, mark_post_commented, mark_post_reacted, release_post_claim, has_commented_post, \
     has_engaged_url_with_x_days, get_post_content, get_post_video_url, update_db_post_status, PostStatus, PostType, \
+    update_db_post_content, update_db_post_first_comment_link, get_post_first_comment_link, \
     get_dm_history_for_profile, get_post_status, get_user_blog_url, get_post_type, get_carousel_slides, \
     get_dm_template, enqueue_followup, get_due_followups, mark_followup, stop_followups_for_profile, \
     set_profile_synthesis, get_duplicate_comment_posts
@@ -1411,13 +1413,20 @@ def auto_seed_comment_on_post(self, user_id: int, post_id: int):
     NOT Selenium: commenting on the user's OWN post needs no browser and no login, so it is immune
     to the feed-navigation 429 rate limit. Everything it needs (post body, voice synthesis, profile,
     prefs) is read from the DB. Pinning is skipped here — LinkedIn exposes no pin API and the seed
-    comment's thread-starting value stands without it."""
+    comment's thread-starting value stands without it.
+
+    When the publish step held an external link back (issue #392 — C3), that link is appended to the
+    comment: this is the delivery half of the link-in-first-comment mechanic."""
     post_url = get_post_url_from_log_for_user(user_id, post_id)
     if not post_url:
         return "No post URL yet for seed comment"
     object_urn = object_urn_from_post_url(post_url)
     if not object_urn:
         return f"Could not derive object URN from {post_url}"
+    # Idempotency: a retried/re-dispatched task must not leave a SECOND comment on the same post
+    # (duplicate own-comments are what consolidate_duplicate_comments_for_user exists to clean up).
+    if has_user_commented_on_post_url(user_id, post_url):
+        return "Seed comment already exists for this post"
     # Ground the AI in the canonical post body (posts table). Fall back to the log message only if
     # the post row is gone. Historical POST logs stored a status string, so grounding on the log
     # made seed comments read like they were about the /posts API instead of the post's subject.
@@ -1428,6 +1437,11 @@ def auto_seed_comment_on_post(self, user_id: int, post_id: int):
         my_profile = load_profile_for_user(user_id)  # cached DB read — no scrape/login
         seed = generate_seed_comment(post_message, my_profile, get_engagement_preferences(user_id),
                                      profile_synthesis=get_or_create_profile_synthesis(user_id, my_profile))
+        # The generated comment never contains links (the prompt forbids them); the link held back at
+        # publish time is appended deterministically here. A link on its own still ships when the
+        # generator came back empty — losing the link entirely would be the worse failure.
+        held_links = [l for l in (get_post_first_comment_link(post_id) or "").split("\n") if l.strip()]
+        seed = append_link_to_comment(seed, held_links, post_id=post_id)
         if not seed:
             return "No seed comment generated"
         comment_urn = comment_on_linkedin_post(user_id, object_urn, seed)
@@ -2898,6 +2912,23 @@ def post_to_linkedin(self, user_id: int, post_id: int):
 
     # Get the post content
     content = get_post_content(post_id)
+
+    prefs = get_engagement_preferences(user_id)
+
+    # Link-in-first-comment (issue #392 - C3): an external link in the BODY costs ~60-68% reach, so
+    # hold the link back here - the single choke point every post (generated OR hand-written) passes
+    # through - and stash it for the seed comment dispatched below. Only links that will actually be
+    # carried are removed, so nothing is ever silently lost.
+    content, first_comment_links = split_link_for_first_comment(
+        content, enabled=bool(prefs.get("link_in_first_comment", True)))
+    if first_comment_links:
+        # Keep the stored post in sync with what actually publishes (the preview, the seed comment's
+        # grounding, and the post history all read this back).
+        update_db_post_content(post_id, content)
+        update_db_post_first_comment_link(post_id, "\n".join(first_comment_links))
+        log_info(f"Held {len(first_comment_links)} link(s) back for the first comment",
+                 user_id=user_id, post_id=post_id, action_type="post", task_name="post_to_linkedin")
+
     myprint(f"Posting to LinkedIn: {content}")
 
     post_type = get_post_type(post_id)
@@ -2948,10 +2979,18 @@ def post_to_linkedin(self, user_id: int, post_id: int):
                        post_url=post_url,
                        message=content)
 
+        # Seed the author's own FIRST comment ~3 min in (the post's golden hour). Dispatched HERE,
+        # not from the scheduler: the seed needs the published post's URL, which only exists once
+        # this task succeeds, and it is API-driven like posting itself (no Selenium, so the
+        # active-user/throttle gates the scheduler applies to browser work don't belong on it).
+        # This is also what guarantees a link held back above is actually delivered.
+        auto_seed_comment_on_post.apply_async(kwargs={'user_id': user_id, 'post_id': post_id},
+                                              countdown=3 * 60)
+
         # Reply/comment follow-up per the user's reply_check_mode (replaces the old 24h polling loop
         # that drove LinkedIn 429s). event → ONE golden-hour safety sweep as a backstop for a missed
         # forwarded notification; scheduled → the beat dispatcher handles it; off → nothing.
-        reply_mode = get_engagement_preferences(user_id).get("reply_check_mode", "event")
+        reply_mode = prefs.get("reply_check_mode", "event")
         if reply_mode == "event":
             sweep_reply_comments.apply_async(kwargs={'user_id': user_id}, countdown=35 * 60)
 

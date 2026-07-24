@@ -15,6 +15,15 @@ def _no_sleep():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _no_db_reads():
+    """Neutral defaults for the seed task's DB lookups (dupe guard + held-back link) so tests that
+    aren't about them don't need a live MySQL. Individual tests patch over these."""
+    with patch(f"{_RA}.has_user_commented_on_post_url", return_value=False), \
+         patch(f"{_RA}.get_post_first_comment_link", return_value=None):
+        yield
+
+
 class TestGenerateSeedComment:
     def test_returns_stripped_comment(self):
         from cqc_lem.utilities.ai import ai_helper
