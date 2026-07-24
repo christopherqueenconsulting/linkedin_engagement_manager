@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.58.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.58.0...v0.58.1) (2026-07-24)
+
+
+### Bug Fixes
+
+* **deploy:** pass Flyway args as a quoted array; lowercase booleans ([43e606f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/43e606fd715d4135b73b9bbe1bda29563be72f6f))
+* **deploy:** run Flyway with outOfOrder=true so timestamp migrations self-heal ([ae34330](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ae34330e6278cdfd3a800eba70ab9a4566f3cb91))
+* **deploy:** run Flyway with outOfOrder=true so timestamp migrations self-heal ([87d8ba0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/87d8ba0bf3284596867864b3f0df48ce67565a00))
+
 ## [0.58.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.57.0...v0.58.0) (2026-07-24)
 
 
