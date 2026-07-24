@@ -2226,9 +2226,16 @@ def _followup_on_post_comment_replies(driver, wait, user_id: int, post_url: str,
             break
         if not author or f"/in/{our_slug}" in author:
             continue  # skip our own comments/replies
-        # Only replies to OUR comment: the reply's container is nested inside one of ours.
-        if not any(driver.execute_script("return arguments[0].contains(arguments[1]);", oc, cont)
-                   for oc in our_conts):
+        # A reply is "to our comment" if its block is nested in our comment's thread OR its body
+        # @mentions us — LinkedIn auto-prepends the @mention of the person being replied to, so a
+        # reply to us reliably carries our /in/ link inside its text box.
+        nested = any(driver.execute_script("return arguments[0].contains(arguments[1]);", oc, cont)
+                     for oc in our_conts)
+        try:
+            mentions_us = bool(tb.find_elements(By.CSS_SELECTOR, f"a[href*='/in/{our_slug}']"))
+        except Exception:
+            mentions_us = False
+        if not (nested or mentions_us):
             continue
         try:
             reply_text = (tb.text or "").strip()
