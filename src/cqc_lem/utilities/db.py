@@ -3284,9 +3284,11 @@ def get_recent_posted_post_ids(user_id: int, days: int = 21) -> list:
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
+        # Freshest first: the reply sweep prioritizes golden-hour posts, so a rate-limited or
+        # capped session spends its budget on the posts still being distributed (#401).
         cursor.execute(
             "SELECT id FROM posts WHERE user_id=%s AND status='posted' "
-            "AND scheduled_time >= (NOW() - INTERVAL %s DAY)", (user_id, days))
+            "AND scheduled_time >= (NOW() - INTERVAL %s DAY) ORDER BY scheduled_time DESC", (user_id, days))
         return [r[0] for r in cursor.fetchall()]
     except mysql.connector.Error:
         return []
