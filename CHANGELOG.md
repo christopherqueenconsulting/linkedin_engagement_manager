@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.60.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.59.1...v0.60.0) (2026-07-24)
+
+
+### Features
+
+* **dashboard:** engagement-rate analytics — trends, leaderboards, per-post drill-down (closes [#395](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/395)) ([424640e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/424640e8ffc8307a2a64e2e48ad091112467b19b))
+* **dashboard:** engagement-rate analytics — trends, leaderboards, per-post drill-down (closes [#395](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/395)) ([c03f849](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c03f8498a93c1f1db90f1288aa4127cfbab6e00d))
+
+
+### Bug Fixes
+
+* **analytics:** normalize 0/missing impressions to null; gate area fill on gaps ([bba31f4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bba31f41772c9ee0331cd2991d92a9151de614fe))
+
 ## [0.59.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.59.0...v0.59.1) (2026-07-24)
 
 
