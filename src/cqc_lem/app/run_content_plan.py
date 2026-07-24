@@ -48,6 +48,11 @@ from cqc_lem.utilities.utils import get_best_posting_time, get_post_time, create
 from requests.adapters import HTTPAdapter
 from urllib3 import Retry
 
+# Post types the 30-day plan balances across. Native documents (PDF decks) are 2026's
+# highest-reach format, so they get an equal share alongside text/carousel/video.
+PLANNED_POST_TYPES = [PostType.CAROUSEL.value, PostType.TEXT.value,
+                      PostType.VIDEO.value, PostType.DOCUMENT.value]
+
 
 @shared_task.task
 def auto_generate_content():
@@ -118,12 +123,12 @@ def plan_content_for_user(self, user_id: int):
 
     # myprint(f"Target Posts: {target_posts}")
 
-    needed_posts = {post_type: target_posts // 3 for post_type in ['carousel', 'text', 'video']}
+    needed_posts = {post_type: target_posts // len(PLANNED_POST_TYPES) for post_type in PLANNED_POST_TYPES}
 
     # myprint(f"Needed Posts: {needed_posts}")
 
     # Ensure all post types are present in current_counts and percentages
-    for post_type in ['carousel', 'text', 'video']:
+    for post_type in PLANNED_POST_TYPES:
         if post_type not in percentages:
             percentages[post_type] = 0.0
 
@@ -229,9 +234,11 @@ def create_content(user_id: int, post_type: str, stage: str, post_id: int = None
     video_url = None
     content = None
 
-    if post_type == "video":
+    if post_type == PostType.VIDEO.value:
         content, video_url = create_video_content(user_id, stage, post_id=post_id)
-    elif post_type == "carousel":
+    elif post_type in (PostType.CAROUSEL.value, PostType.DOCUMENT.value):
+        # A document post IS a carousel deck — same generated slides, published as a
+        # native PDF instead of a multi-image share (see share_document_on_linkedin).
         content = create_carousel_content(user_id, stage, post_id)
     else:
         content = create_text_post(user_id, stage, post_id=post_id)
@@ -338,7 +345,7 @@ def _post_missing_required_asset(post_id: int, post_type, video_url) -> bool:
     pt = str(post_type).lower()
     if pt == PostType.VIDEO.value:
         return not video_url
-    if pt == PostType.CAROUSEL.value:
+    if pt in (PostType.CAROUSEL.value, PostType.DOCUMENT.value):
         from cqc_lem.utilities.db import get_post_carousel_slides
         slides = get_post_carousel_slides(post_id)
         # Missing if empty OR only text titles (no real slide images generated yet).

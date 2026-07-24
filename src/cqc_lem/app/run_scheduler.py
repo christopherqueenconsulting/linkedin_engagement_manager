@@ -667,7 +667,7 @@ def auto_backfill_missing_assets():
         if pt == 'video':
             regenerate_post_video_task.apply_async(kwargs={'post_id': post_id})
             queued += 1
-        elif pt == 'carousel':
+        elif pt in ('carousel', 'document'):  # documents share the carousel slide pipeline
             regenerate_post_carousel_task.apply_async(kwargs={'post_id': post_id})
             queued += 1
         log_warning("Backfilling missing media asset for unposted post",

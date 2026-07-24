@@ -2343,6 +2343,44 @@ def create_carousel_slide_images(
     return image_paths
 
 
+def create_carousel_pdf(image_paths: list[str], post_id: int,
+                        output_dir: Optional[str] = None) -> Optional[str]:
+    """Bundle already-rendered slide images into ONE multi-page PDF (a native LinkedIn document).
+
+    LinkedIn's document/PDF format is a different feed object than a multi-image post —
+    it renders as a swipeable, downloadable deck. The slides are the same 1080x1080 PNGs
+    ``create_carousel_slide_images`` produces, so a document post is a carousel published
+    through the document path.
+
+    Returns the absolute PDF path, or None when no slide image could be read (never a
+    partial/placeholder deck — the caller flags the post 'error' instead).
+    """
+    from PIL import Image
+    from cqc_lem.utilities.logger import log_warning
+
+    pages = []
+    for path in image_paths or []:
+        try:
+            with Image.open(path) as img:
+                pages.append(img.convert("RGB"))
+        except Exception as e:
+            log_warning("Could not read carousel slide for PDF", exc=e, post_id=post_id)
+            return None
+
+    if not pages:
+        return None
+
+    if output_dir is None:
+        current_dir = os.path.dirname(__file__)
+        assets_root = os.path.join(current_dir, "..", "assets", "images", "carousel", str(post_id))
+        output_dir = os.path.realpath(assets_root)
+    os.makedirs(output_dir, exist_ok=True)
+
+    pdf_path = os.path.join(output_dir, f"document_{post_id}.pdf")
+    pages[0].save(pdf_path, "PDF", save_all=True, append_images=pages[1:], resolution=150.0)
+    return pdf_path
+
+
 if __name__ == "__main__":
     # Debug
     # debug_master_slide_placeholders_and_text()

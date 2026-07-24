@@ -31,13 +31,18 @@ const STATUSES: { label: string; value: Status }[] = [
   { label: 'REJECTED', value: 'rejected' },
 ]
 
-type PostTypeFilter = 'ALL' | 'text' | 'video' | 'carousel'
+type PostTypeFilter = 'ALL' | 'text' | 'video' | 'carousel' | 'document'
 const POST_TYPE_FILTERS: { label: string; value: PostTypeFilter }[] = [
   { label: 'All types', value: 'ALL' },
   { label: 'Text', value: 'text' },
   { label: 'Video', value: 'video' },
   { label: 'Carousel', value: 'carousel' },
+  { label: 'Document', value: 'document' },
 ]
+
+// Carousels and native documents share the same generated slide deck — a document post
+// is published as a single PDF instead of a multi-image share.
+const isDeckType = (postType: string) => postType === 'carousel' || postType === 'document'
 
 type SortBy = 'scheduled_time' | 'status' | 'post_type' | 'id'
 const SORT_BY_OPTIONS: { label: string; value: SortBy }[] = [
@@ -569,7 +574,7 @@ export default function ContentStudio() {
                     </div>
                   </div>
                   <p className="text-sm text-gray-700 line-clamp-2">{post.content}</p>
-                  {post.post_type === 'carousel' && post.carousel_slides && (
+                  {isDeckType(post.post_type) && post.carousel_slides && (
                     <p className="text-xs text-gray-400 mt-1">{post.carousel_slides.length} slides</p>
                   )}
                 </div>
@@ -670,12 +675,12 @@ export default function ContentStudio() {
                         ...editingPost,
                         post_type: newType,
                         video_url: newType === 'video' ? editingPost.video_url : null,
-                        carousel_slides: newType === 'carousel' ? editingPost.carousel_slides : null,
+                        carousel_slides: isDeckType(newType) ? editingPost.carousel_slides : null,
                       })
                     }}
                     className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
-                    {['text', 'video', 'carousel'].map((t) => (
+                    {['text', 'video', 'carousel', 'document'].map((t) => (
                       <option key={t} value={t}>{t.toUpperCase()}</option>
                     ))}
                   </select>
@@ -694,7 +699,7 @@ export default function ContentStudio() {
                   </div>
                 )}
 
-                {editingPost.post_type === 'carousel' && editingPost.carousel_slides && (
+                {isDeckType(editingPost.post_type) && editingPost.carousel_slides && (
                   <div>
                     <label className="block text-xs font-medium text-gray-600 mb-1">
                       Slides ({editingPost.carousel_slides.length})

@@ -39,7 +39,7 @@ from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
     load_profile_for_user
 from cqc_lem.utilities.linkedin.poster import share_on_linkedin, share_carousel_on_linkedin, \
-    comment_on_linkedin_post, object_urn_from_post_url
+    share_document_on_linkedin, comment_on_linkedin_post, object_urn_from_post_url
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited, _redis_client
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
@@ -2929,20 +2929,32 @@ def post_to_linkedin(self, user_id: int, post_id: int):
     post_type = get_post_type(post_id)
     myprint(f"Post type: {post_type}")
 
-    if post_type == PostType.CAROUSEL:
+    if post_type in (PostType.CAROUSEL, PostType.DOCUMENT):
         slides = get_carousel_slides(post_id)
-        myprint(f"Carousel slides ({len(slides)}): {slides}")
-        # No slides, or no real per-slide images → don't post a placeholder carousel.
+        label = "Document" if post_type == PostType.DOCUMENT else "Carousel"
+        myprint(f"{label} slides ({len(slides)}): {slides}")
+        # No slides, or no real per-slide images → don't post a placeholder deck.
         # Flag the post 'error' so it surfaces for manual/dev fix instead of failing silently.
-        urn = share_carousel_on_linkedin(user_id, content, slides) if slides else None
+        if not slides:
+            urn = None
+        elif post_type == PostType.DOCUMENT:
+            # Native document/PDF: the same slides bundled into one swipeable deck.
+            urn = share_document_on_linkedin(user_id, content, slides, post_id=post_id)
+        else:
+            urn = share_carousel_on_linkedin(user_id, content, slides)
         if not urn:
+            # Only a missing/empty slide list is definitively an asset problem; a publish that
+            # returned no URN could equally be missing credentials or an API failure, so don't
+            # tell ops to go fix images when the deck may have been fine.
+            reason = ("no real slide images" if not slides
+                      else "publish returned no URN (check slide images, LinkedIn credentials and API logs)")
             update_db_post_status(post_id, PostStatus.ERROR)
-            log_error("Carousel has no real slide images — flagged 'error' for manual fix",
+            log_error(f"{label} not posted: {reason} — flagged 'error' for manual fix",
                       user_id=user_id, post_id=post_id, action_type="post", api_provider="linkedin")
             insert_new_log(user_id=user_id, action_type=LogActionType.POST, result=LogResultType.FAILURE,
                            post_id=post_id,
-                           message="Carousel not posted: no real slide images. Status set to 'error'.")
-            return f"Post {post_id} flagged 'error' — carousel had no usable images"
+                           message=f"{label} not posted: {reason}. Status set to 'error'.")
+            return f"Post {post_id} flagged 'error' — {label.lower()} not posted: {reason}"
     elif post_type == PostType.VIDEO:
         video_url = get_post_video_url(post_id)
         if video_url:
