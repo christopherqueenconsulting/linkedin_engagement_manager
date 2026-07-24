@@ -115,6 +115,28 @@ class OutreachStatus(StrEnum):
     CANCELED = 'canceled'    # operator canceled the whole funnel for this target
 
 
+class LeadSignalSource(StrEnum):
+    """Which existing read path caught an inbound buying signal (issue #483)."""
+    POST_COMMENT = 'post_comment'    # a comment on the user's OWN post
+    COMMENT_REPLY = 'comment_reply'  # a reply to a comment WE left on someone else's post
+    DM = 'dm'                        # an inbound DM reply in a thread we already open
+
+
+class LeadSignalChannel(StrEnum):
+    """How an approved hot-lead response is delivered (issue #483)."""
+    REPLY = 'reply'  # post the draft under their comment at context_url
+    DM = 'dm'        # send the draft as a private message
+
+
+class LeadSignalStatus(StrEnum):
+    """Lifecycle of a detected hot lead (issue #483), mirroring the approval-gated DM lifecycle."""
+    NEW = 'new'              # draft awaiting human approval
+    APPROVED = 'approved'    # human approved; the responder will deliver it
+    SENT = 'sent'            # response delivered
+    DISMISSED = 'dismissed'  # operator dismissed the signal
+    FAILED = 'failed'        # delivery errored
+
+
 # Enum for log actions types
 class LogActionType(StrEnum):
     COMMENT = 'comment'
@@ -4074,6 +4096,157 @@ def record_lead_magnet_sent(user_id: int, recipient_profile: str, post_id: int =
     except mysql.connector.Error as err:
         myprint(f"Could not record lead magnet sent for user {user_id} | Error: {err}")
         return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+# --- inbound hot-lead signals (issue #483) ----------------------------------------------------
+_LEAD_SIGNAL_COLS = ("id", "user_id", "source", "channel", "person_name", "person_profile_url",
+                     "thread_key", "snippet", "score", "matched_signals", "post_id", "context_url",
+                     "draft_response", "status", "created_at", "updated_at")
+
+
+def insert_lead_signal(user_id: int, source: "LeadSignalSource", thread_key: str,
+                       person_name: str = None, person_profile_url: str = None,
+                       snippet: str = None, score: int = 0, matched_signals: str = None,
+                       post_id: int = None, context_url: str = None, draft_response: str = None,
+                       channel: "LeadSignalChannel" = LeadSignalChannel.REPLY) -> Optional[int]:
+    """Record a detected buying signal. Deduped by UNIQUE(user_id, thread_key) — a second detection
+    on the same conversation returns None instead of re-flagging it (and never overwrites an
+    operator's edited draft or their dismissal)."""
+    if not thread_key:
+        return None
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT IGNORE INTO lead_signals (user_id, source, channel, person_name, "
+            "person_profile_url, thread_key, snippet, score, matched_signals, post_id, context_url, "
+            "draft_response) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (user_id, str(source), str(channel), person_name, person_profile_url,
+             str(thread_key)[:255], snippet, max(0, min(255, int(score or 0))), matched_signals,
+             post_id, context_url, draft_response))
+        connection.commit()
+        return cursor.lastrowid or None
+    except mysql.connector.Error as err:
+        myprint(f"Could not insert lead signal for user {user_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def has_lead_signal(user_id: int, thread_key: str) -> bool:
+    """True if this conversation was already flagged. Checked BEFORE the expensive draft generation
+    so a re-scan of the same thread costs nothing. Fails safe to True (skip) on error."""
+    if not thread_key:
+        return True
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT 1 FROM lead_signals WHERE user_id=%s AND thread_key=%s LIMIT 1",
+                       (user_id, str(thread_key)[:255]))
+        return cursor.fetchone() is not None
+    except mysql.connector.Error:
+        return True
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_lead_signal(signal_id: int) -> Optional[dict]:
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(f"SELECT {', '.join(_LEAD_SIGNAL_COLS)} FROM lead_signals WHERE id=%s", (signal_id,))
+        return cursor.fetchone()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get lead signal {signal_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_lead_signal_user_id(signal_id: int) -> Optional[int]:
+    row = get_lead_signal(signal_id)
+    return row["user_id"] if row else None
+
+
+def get_lead_signals(user_id: int, status_filter: str = None, page: int = 1, page_size: int = 25,
+                     sort_order: str = "desc") -> dict:
+    """Paginated leads inbox for a user (mirrors the scheduled-DM/outreach list response). Hottest
+    first within a timestamp: newest signals matter most — a slow response kills an inbound lead."""
+    order = "ASC" if str(sort_order).lower() == "asc" else "DESC"
+    where = "WHERE user_id = %s"
+    params: list = [user_id]
+    if status_filter:
+        where += " AND status = %s"
+        params.append(status_filter)
+    offset = max(0, (max(1, page) - 1) * page_size)
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(f"SELECT COUNT(*) AS c FROM lead_signals {where}", tuple(params))
+        total = int(cursor.fetchone()["c"])
+        cursor.execute(
+            f"SELECT {', '.join(_LEAD_SIGNAL_COLS)} FROM lead_signals {where} "
+            f"ORDER BY created_at {order}, score DESC LIMIT %s OFFSET %s",
+            tuple(params + [page_size, offset]))
+        rows = cursor.fetchall()
+        for r in rows:
+            for k in ("created_at", "updated_at"):
+                if isinstance(r.get(k), datetime):
+                    r[k] = r[k].isoformat()
+        return {"signals": rows, "total": total, "page": page, "page_size": page_size}
+    except mysql.connector.Error as err:
+        myprint(f"Could not list lead signals for user {user_id} | Error: {err}")
+        return {"signals": [], "total": 0, "page": page, "page_size": page_size}
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_lead_signal(signal_id: int, draft_response: str = None,
+                       status: "LeadSignalStatus" = None,
+                       channel: "LeadSignalChannel" = None) -> bool:
+    """Edit a lead's draft and/or move its status. Only the supplied fields change."""
+    fields, params = [], []
+    if draft_response is not None:
+        fields.append("draft_response = %s")
+        params.append(draft_response)
+    for col, val in (("status", status), ("channel", channel)):
+        if val is not None:
+            fields.append(f"{col} = %s")
+            params.append(str(val))
+    if not fields:
+        return False
+    params.append(signal_id)
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(f"UPDATE lead_signals SET {', '.join(fields)} WHERE id = %s", tuple(params))
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not update lead signal {signal_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def count_new_lead_signals(user_id: int) -> int:
+    """Unactioned hot leads — the inbox badge count."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT COUNT(*) FROM lead_signals WHERE user_id=%s AND status='new'", (user_id,))
+        row = cursor.fetchone()
+        return int(row[0]) if row and row[0] else 0
+    except mysql.connector.Error:
+        return 0
     finally:
         cursor.close()
         connection.close()

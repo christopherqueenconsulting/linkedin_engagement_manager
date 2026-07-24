@@ -180,6 +180,7 @@ def _worker_env(es, reply_text="Thanks! How do you test drift?", followup_state=
     _p(es, "_react_to_comment_inline", return_value=react)
     _p(es, "_reply_under_comment_inline", return_value=reply)
     _p(es, "generate_comment_reply_followup", return_value="a thoughtful answer")
+    _p(es, "_flag_lead_signal", return_value=None)   # inbound-intent detection rides this path (#483)
     my_profile = MagicMock(); my_profile.profile_url = "https://www.linkedin.com/in/me/"
     return driver, my_profile, rec
 
@@ -192,7 +193,7 @@ class TestFollowupWorker:
             r = _followup_on_post_comment_replies(driver, MagicMock(), 1,
                     "https://www.linkedin.com/feed/update/urn:li:activity:1/",
                     "feedurn://urn:li:activity:1", prof, "voice", {}, replies_remaining=5)
-        assert r == {"reacted": 1, "replied": 1}
+        assert r == {"reacted": 1, "replied": 1, "leads": 0}
 
     def test_reacts_only_when_reply_is_not_a_question(self):
         from cqc_lem.app.run_automation import _followup_on_post_comment_replies
@@ -208,7 +209,7 @@ class TestFollowupWorker:
             driver, prof, rec = _worker_env(es, followup_state={"reacted": 1, "replied": 1})
             r = _followup_on_post_comment_replies(driver, MagicMock(), 1, "u", "feedurn://urn:li:activity:1",
                                                   prof, "voice", {}, replies_remaining=5)
-        assert r == {"reacted": 0, "replied": 0}
+        assert r == {"reacted": 0, "replied": 0, "leads": 0}
 
     def test_reply_cap_blocks_reply_but_not_react(self):
         from cqc_lem.app.run_automation import _followup_on_post_comment_replies
@@ -223,7 +224,7 @@ class TestFollowupWorker:
         prof = MagicMock(); prof.profile_url = "https://www.linkedin.com/"
         with patch(f"{RA}.log_warning"):
             r = _followup_on_post_comment_replies(MagicMock(), MagicMock(), 1, "u", "k", prof, "v", {}, 5)
-        assert r == {"reacted": 0, "replied": 0}
+        assert r == {"reacted": 0, "replied": 0, "leads": 0}
 
 
 class TestOrchestration:

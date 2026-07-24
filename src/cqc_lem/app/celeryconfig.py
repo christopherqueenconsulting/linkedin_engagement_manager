@@ -115,6 +115,7 @@ task_routes = {
     'cqc_lem.app.run_automation.automate_invites_to_company_page_for_user': {'queue': 'se_outreach'},
     'cqc_lem.app.run_automation.clean_stale_invites': {'queue': 'se_outreach'},
     'cqc_lem.app.run_automation.update_stale_profile': {'queue': 'se_outreach'},
+    'cqc_lem.app.run_automation.send_lead_response': {'queue': 'se_outreach'},
     # --- se_content: seeding, stats, group + newsletter publishing --------
     'cqc_lem.app.run_automation.auto_seed_comment_on_post': {'queue': 'se_content'},
     'cqc_lem.app.run_automation.auto_scrape_post_stats': {'queue': 'se_content'},

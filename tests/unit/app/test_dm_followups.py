@@ -65,6 +65,10 @@ class TestProcessUserFollowups:
              patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
              patch(f"{_RA}.quit_gracefully"), patch(f"{_RA}.time.sleep"), patch(f"{_RA}.insert_new_log"), \
              patch(f"{_RA}.check_dm_replied", return_value=True), \
+             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
+             patch(f"{_RA}.get_or_create_profile_synthesis", return_value="synth"), \
+             patch(f"{_RA}._last_inbound_message", return_value="thanks!"), \
+             patch(f"{_RA}._flag_lead_signal", return_value=None), \
              patch(f"{_RA}.stop_followups_for_profile") as stop, \
              patch(f"{_RA}.send_private_dm") as dm, \
              patch(f"{_RA}.mark_followup") as mark:

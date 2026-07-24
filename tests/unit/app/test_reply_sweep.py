@@ -124,6 +124,7 @@ class TestReplyToCommentsOnOpenPost:
              patch(f"{_RA}.upsert_engager"), \
              patch(f"{_RA}.generate_thread_reply", return_value="Thanks! What resonated most?"), \
              patch(f"{_RA}.get_engagement_preferences", return_value={}), \
+             patch(f"{_RA}._flag_lead_signal", return_value=None), \
              patch(f"{_RA}._reply_to_comment_inline", return_value=True) as rep, \
              patch(f"{_RA}.insert_new_log") as log:
             result = _reply_to_comments_on_open_post(driver, MagicMock(), 1, 9, self._profile(), "synth")
@@ -143,6 +144,8 @@ class TestReplyToCommentsOnOpenPost:
              patch(f"{_RA}.get_lead_magnet_settings", return_value={"enabled": False}), \
              patch(f"{_RA}.upsert_engager"), \
              patch(f"{_RA}.generate_thread_reply") as gen, \
+             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
+             patch(f"{_RA}._flag_lead_signal", return_value=None), \
              patch(f"{_RA}._reply_to_comment_inline") as rep, \
              patch(f"{_RA}.insert_new_log"):
             _reply_to_comments_on_open_post(driver, MagicMock(), 1, 9, self._profile(), "synth")
@@ -166,6 +169,7 @@ class TestReplyToCommentsOnOpenPost:
              patch(f"{_RA}.upsert_engager"), \
              patch(f"{_RA}.generate_thread_reply", return_value="reply"), \
              patch(f"{_RA}.get_engagement_preferences", return_value={}), \
+             patch(f"{_RA}._flag_lead_signal", return_value=None), \
              patch(f"{_RA}._reply_to_comment_inline", return_value=True), \
              patch(f"{_RA}.insert_new_log"):
             _reply_to_comments_on_open_post(driver, MagicMock(), 1, 9, self._profile(), "synth")
@@ -203,6 +207,7 @@ class TestReplyToCommentsOnOpenPost:
              patch(f"{_RA}.upsert_engager"), \
              patch(f"{_RA}.generate_thread_reply", return_value="reply"), \
              patch(f"{_RA}.get_engagement_preferences", return_value={}), \
+             patch(f"{_RA}._flag_lead_signal", return_value=None), \
              patch(f"{_RA}._reply_to_comment_inline", return_value=True) as rep, \
              patch(f"{_RA}.insert_new_log"):
             _reply_to_comments_on_open_post(MagicMock(), MagicMock(), 1, 9, self._profile(), "s")
