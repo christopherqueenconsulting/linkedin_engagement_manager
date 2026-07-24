@@ -341,6 +341,39 @@ class TestUserSettingsAndGroups:
         assert detail["recommendations"] == recs and detail["sample_size"] == 1
 
 
+class TestEngagementAnalytics:
+    def test_returns_per_post_table_and_trend(self, client):
+        from datetime import datetime
+        rows = [
+            {"post_id": 9, "scheduled_time": datetime(2026, 7, 20, 14, 0), "reactions": 20,
+             "comments": 10, "reposts": 5, "saves": 3, "impressions": 1000, "archetype": "how_to",
+             "hook_style": "question", "format": "carousel", "topic": "AI", "buyer_stage": "aware"},
+        ]
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.get_post_performance_rows", return_value=rows) as fetch:
+            resp = client.get(f"/api/user/engagement-analytics?session_token={_TOK}&days=30")
+        assert resp.status_code == 200
+        detail = resp.json()["detail"]
+        assert detail["sample_size"] == 1 and detail["days"] == 30
+        assert fetch.call_args[1]["days"] == 30
+        post = detail["per_post"][0]
+        assert post["post_id"] == 9 and post["engagement"] == 50
+        assert post["engagement_rate"] == pytest.approx(0.05)
+        assert detail["trend"][0]["date"] == "2026-07-20"
+
+    def test_days_clamped_to_valid_window(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.get_post_performance_rows", return_value=[]) as fetch:
+            resp = client.get(f"/api/user/engagement-analytics?session_token={_TOK}&days=9999")
+        assert resp.status_code == 200
+        assert fetch.call_args[1]["days"] == 365          # clamped upper bound
+
+    def test_401_without_session(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=None):
+            resp = client.get(f"/api/user/engagement-analytics?session_token=bad")
+        assert resp.status_code == 401
+
+
 class TestLeadMagnetAndPassword:
     def test_get_lead_magnet(self, client):
         settings = {"enabled": True, "keyword": "GUIDE", "message": "here you go"}
