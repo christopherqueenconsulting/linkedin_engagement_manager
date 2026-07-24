@@ -677,8 +677,9 @@ def _score_and_persist_dwell(user_id: int, post_id: int, content: str) -> Option
         score = report["score"]
         update_db_post_dwell_score(post_id, score)
         metrics = report["metrics"]
-        if score < dwell_score_min():
-            log_warning(f"Post dwell-proxy score {score} < {dwell_score_min()}: "
+        min_score = dwell_score_min()
+        if score < min_score:
+            log_warning(f"Post dwell-proxy score {score} < {min_score}: "
                         f"{'; '.join(report['issues']) or 'no specific issues'}",
                         user_id=user_id, post_id=post_id, task_name="create_content")
         else:

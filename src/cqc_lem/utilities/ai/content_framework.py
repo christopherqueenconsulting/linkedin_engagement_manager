@@ -1070,11 +1070,13 @@ def meets_dwell_heuristics(text: Optional[str]) -> bool:
                 and m["paragraphs"] >= DWELL_MIN_PARAGRAPHS)
 
 
-def shape_for_dwell(text: Optional[str]) -> str:
+def shape_for_dwell(text: Optional[str]) -> Optional[str]:
     """Deterministic dwell REPAIR of the one failure a rewrite keeps re-introducing: prose that came
     back as wall-of-text paragraphs. Reflows only over-long paragraphs (reusing the formatter's
-    sentence-boundary reflow — no parallel implementation) and never truncates, so no CTA, hashtag
-    line, or proof detail can be lost. Already-scannable text is returned unchanged."""
+    sentence-boundary reflow — no parallel implementation). The only trim is the formatter's
+    sentence-boundary cap at LINKEDIN_MAX_CHARS — LinkedIn's own hard limit, which such a post
+    already exceeds — so within a postable draft no CTA, hashtag line, or proof detail can be lost.
+    Falsy input and already-scannable text are returned unchanged."""
     from cqc_lem.utilities.linkedin_formatter import enforce_post_readability
     if not text or not dwell_metrics(text)["wall_of_text"]:
         return text
