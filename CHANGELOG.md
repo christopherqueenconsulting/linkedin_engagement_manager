@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.68.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.68.0...v0.68.1) (2026-07-24)
+
+
+### Performance Improvements
+
+* **tests:** make the unit lane hermetic — 49s → 20s CI unit run, same coverage (closes [#480](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/480)) ([73c85e1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/73c85e1a1da32149a8a9ef5579b7854f23313776))
+* **tests:** make the unit lane hermetic and halve CI wall-clock (closes [#480](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/480)) ([b448616](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b4486161587d3e40e5d31d0f83116b840c66003d))
+
 ## [0.68.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.67.0...v0.68.0) (2026-07-24)
 
 
