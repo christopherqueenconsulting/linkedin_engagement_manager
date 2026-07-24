@@ -15,6 +15,7 @@ from cqc_lem.app.run_automation import (
     automate_invites_to_company_page_for_user, automate_reply_commenting,
     automate_commenting, automate_appreciation_dms_for_user,
     send_private_dm, consolidate_duplicate_comments_for_user, sweep_reply_comments,
+    send_lead_response,
 )
 from celery import chain as celery_chain
 from cqc_lem.app.run_content_plan import auto_create_weekly_content, plan_content_for_user
@@ -30,6 +31,8 @@ from cqc_lem.utilities.db import (
     insert_outreach_target, get_outreach_targets, get_outreach_target_user_id,
     get_outreach_target_by_url, update_outreach_target, update_outreach_target_status,
     OutreachStatus,
+    get_lead_signals, get_lead_signal, update_lead_signal,
+    count_new_lead_signals, LeadSignalStatus,
     create_pin_for_email, verify_pin_for_email, delete_pin_for_email,
     create_session, get_session_user_id, delete_session,
     add_user_by_email, get_user_email, get_user_token_info, store_linkedin_li_at,
@@ -1830,6 +1833,59 @@ def delete_outreach_target_endpoint(request: OutreachTargetDeleteRequest) -> Res
     if not update_outreach_target_status(request.target_id, OutreachStatus.CANCELED):
         raise HTTPException(status_code=500, detail="Could not cancel outreach target")
     return ResponseModel(status_code=200, detail="Outreach target canceled")
+
+
+# Inbound hot leads (issue #483) — the leads inbox. Signals are detected on read paths that already
+# run; the operator approves (or edits then approves) the drafted response before anything is sent.
+_LEN_LEAD_DRAFT = 3000  # lead_signals.draft_response (TEXT; app cap)
+
+
+class LeadSignalUpdate(BaseModel):
+    session_token: str
+    signal_id: int
+    draft_response: Optional[str] = Field(default=None, max_length=_LEN_LEAD_DRAFT)
+    action: Optional[str] = None  # 'approve' | 'dismiss' | None (save the draft only)
+
+
+@router.get("/lead_signals")
+def list_lead_signals_endpoint(session_token: str, status_filter: Optional[str] = None,
+                               page: int = 1, page_size: int = 25,
+                               sort_order: str = "desc") -> ResponseModel:
+    """The leads inbox: detected buying signals with their approval-gated draft responses."""
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    result = get_lead_signals(user_id, status_filter=status_filter, page=page,
+                              page_size=page_size, sort_order=sort_order)
+    result["new_count"] = count_new_lead_signals(user_id)
+    return ResponseModel(status_code=200, detail=result)
+
+
+@router.put("/lead_signal")
+def update_lead_signal_endpoint(request: LeadSignalUpdate) -> ResponseModel:
+    """Edit a lead's draft, dismiss the signal, or APPROVE it — approval is the only thing that
+    dispatches a response, and it sends exactly the text the operator sees."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    signal = get_lead_signal(request.signal_id)
+    if not signal or signal.get("user_id") != user_id:
+        raise HTTPException(status_code=404, detail="Lead signal not found")
+    action_map = {"approve": LeadSignalStatus.APPROVED, "dismiss": LeadSignalStatus.DISMISSED}
+    if request.action is not None and request.action not in action_map:
+        raise HTTPException(status_code=422,
+                            detail=f"Unknown action '{request.action}' — expected 'approve' or 'dismiss'")
+    status = action_map.get(request.action)
+    if status is None and request.draft_response is None:
+        raise HTTPException(status_code=422, detail="Nothing to update — provide a draft or an action")
+    draft = request.draft_response if request.draft_response is not None else signal.get("draft_response")
+    if status == LeadSignalStatus.APPROVED and not (draft or "").strip():
+        raise HTTPException(status_code=422, detail="Cannot approve a lead with an empty response")
+    if not update_lead_signal(request.signal_id, draft_response=request.draft_response, status=status):
+        raise HTTPException(status_code=500, detail="Could not update lead signal")
+    if status == LeadSignalStatus.APPROVED:
+        send_lead_response.apply_async(kwargs={"signal_id": request.signal_id})
+    return ResponseModel(status_code=200, detail="Lead signal updated")
 
 
 class GroupTogglesRequest(BaseModel):

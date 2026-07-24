@@ -766,6 +766,42 @@ def generate_comment_reply_followup(their_reply: str, profile: "LinkedInProfile"
                           profile_synthesis=profile_synthesis, prefs=prefs)
 
 
+def generate_lead_response(their_message: str, profile: "LinkedInProfile", channel: str = "reply",
+                           context: str = None, prefs: dict = None,
+                           profile_synthesis: str = None) -> "str | None":
+    """Draft a response to someone showing INBOUND BUYING INTENT (issue #483) — they asked about
+    pricing, availability, or whether we can help. This is the one place the no-self-promo guardrail
+    does NOT apply: they raised their hand, so answering directly is what they want. Never invent
+    prices, timelines, or capabilities — acknowledge the ask, give one genuinely useful line, and
+    move it to a real conversation. The draft is APPROVAL-GATED; a human sends it."""
+    is_dm = str(channel).lower() == "dm"
+    limit = 300 if is_dm else 500
+    system_prompt = {
+        "role": "system",
+        "content": f"""You are responding to someone who just showed BUYING INTENT toward your work —
+        they asked about your services, pricing, availability, or whether you can help them. Answer
+        like a helpful professional, not a salesperson: acknowledge their SPECIFIC ask, give ONE
+        concrete, genuinely useful line, and end with a low-friction next step (a question about
+        their situation, or an offer to take it to messages/a short call).
+        NEVER invent prices, timelines, package names, client names, or capabilities — if the answer
+        depends on details you do not have, say what it depends on and ask for it. No hard sell, no
+        hype, no links, no hashtags, no emoji spam. Warm, human, in the author's voice.
+        {'Write it as a direct message.' if is_dm else 'Write it as a public reply under their comment.'}
+        2-4 sentences, under {limit} characters. Output ONLY the message text.""",
+    }
+    ctx = f"Context (the post/thread this came from):\n{context}\n\n" if context else ""
+    user_prompt = {"role": "user", "content":
+        f"My voice:\n{_voice_reference(profile, profile_synthesis)}\n\n{ctx}"
+        f"What they said:\n{their_message}\n{_style_directive(prefs)}"}
+    response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt],
+                         temperature=round(random.uniform(0.4, 0.6), 2))
+    content = response.choices[0].message.content
+    if content is None:
+        return None
+    return _humanize_text(content.strip(), content_type="dm" if is_dm else "comment",
+                          profile_synthesis=profile_synthesis, prefs=prefs, max_chars=limit)
+
+
 def optimize_post_hook(post_content: str, prefs: dict = None,
                        preserve_cta_keyword: str = None) -> str:
     """Rewrite a generated post so it opens with a scroll-stopping hook within the first ~210

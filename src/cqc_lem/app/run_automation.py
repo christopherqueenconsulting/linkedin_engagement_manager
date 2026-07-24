@@ -18,8 +18,9 @@ from cqc_lem.utilities.ai.content_framework import select_blueprint
 from cqc_lem.utilities.ai.ai_helper import generate_ai_response, get_ai_message_refinement, summarize_recent_activity, \
     ai_check_message_history, post_is_relevant, generate_newsletter_edition, generate_group_post, \
     generate_thread_reply, generate_comment_reply_followup, generate_seed_comment, choose_post_reaction, \
-    get_or_create_profile_synthesis, \
+    get_or_create_profile_synthesis, generate_lead_response, \
     synthesize_profile
+from cqc_lem.utilities.ai.lead_intent import detect_lead_signals
 from cqc_lem.utilities.ai.content_alignment import humanize_text, split_link_for_first_comment, \
     append_link_to_comment
 from cqc_lem.utilities.date import convert_viewed_on_to_date
@@ -40,7 +41,9 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     get_dm_template, enqueue_followup, get_due_followups, mark_followup, stop_followups_for_profile, \
     set_profile_synthesis, get_duplicate_comment_posts, count_dms_sent_today, \
     get_approved_outreach_targets, update_outreach_target, update_outreach_target_status, \
-    OutreachStage, OutreachStatus
+    OutreachStage, OutreachStatus, \
+    insert_lead_signal, has_lead_signal, get_lead_signal, update_lead_signal, \
+    LeadSignalSource, LeadSignalChannel, LeadSignalStatus
 from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
     load_profile_for_user
@@ -1901,6 +1904,68 @@ def _golden_hour_sweep_countdowns(sweeps: int = _GOLDEN_HOUR_REPLY_SWEEPS,
     return [int(round(step * i)) for i in range(1, n + 1)]
 
 
+# --- inbound hot-lead detection (issue #483) ---------------------------------------------------
+# Every read path below already HAS the text — someone asking "how much?" or "can you help with X?"
+# is the warmest lead we get, and we were dropping it. Detection rides those existing reads: no new
+# scraping, no extra navigation. A hit records a lead_signals row with an APPROVAL-GATED draft.
+_MAX_LEAD_FLAGS_PER_SWEEP = 10  # volume backstop: a draft costs an LLM call, so bound them per run
+
+
+def _profile_slug(profile_url: str) -> str:
+    """The /in/<slug> identity from a profile URL — the stable half of a lead's dedup key."""
+    m = re.search(r"/in/([^/?#]+)", profile_url or "")
+    return (m.group(1).lower() if m else "")
+
+
+def _lead_thread_key(source: str, thread_ref: str, person_profile_url: str, person_name: str = "") -> str:
+    """Stable dedup id for ONE conversation with ONE person, so a re-scan (or a second buying-intent
+    line in the same thread) never re-flags a lead the operator has already seen. Keyed on identity
+    + thread — never on the message text (the #474 lesson)."""
+    who = _profile_slug(person_profile_url)
+    if not who:
+        who = hashlib.sha1((person_name or "").strip().lower().encode("utf-8", "ignore")).hexdigest()[:12]
+    return f"lead:{source}:{thread_ref}:{who}"
+
+
+def _flag_lead_signal(user_id: int, text: str, source: "LeadSignalSource", thread_ref: str,
+                      person_name: str = None, person_profile_url: str = None,
+                      channel: "LeadSignalChannel" = LeadSignalChannel.REPLY,
+                      post_id: int = None, context_url: str = None, context_text: str = None,
+                      my_profile=None, prefs: dict = None, profile_synthesis: str = None) -> "int | None":
+    """Classify one piece of inbound text and, on a buying-intent hit, queue it as a hot lead with a
+    drafted response awaiting approval. Returns the new signal id, or None (no intent, already
+    flagged, or an error). Best-effort and NON-FATAL — lead detection must never break a reply sweep."""
+    try:
+        if not text or not str(text).strip():
+            return None
+        key = _lead_thread_key(str(source), thread_ref, person_profile_url or "", person_name or "")
+        if has_lead_signal(user_id, key):
+            return None
+        verdict = detect_lead_signals(text)
+        if not verdict.get("is_lead"):
+            return None
+        draft = None
+        try:
+            draft = generate_lead_response(text, my_profile, channel=str(channel), context=context_text,
+                                           prefs=prefs, profile_synthesis=profile_synthesis)
+        except Exception as e:
+            log_warning("Lead response draft failed; queueing the signal without one", exc=e,
+                        user_id=user_id, action_type="engaged")
+        signal_id = insert_lead_signal(
+            user_id, source, key, person_name=person_name, person_profile_url=person_profile_url,
+            snippet=str(text)[:2000], score=int(verdict.get("score") or 0),
+            matched_signals=",".join(verdict.get("matched") or [])[:512], post_id=post_id,
+            context_url=context_url, draft_response=draft, channel=channel)
+        if signal_id:
+            log_info(f"Hot lead detected ({verdict.get('method')}, score {verdict.get('score')}) "
+                     f"from {person_name or person_profile_url or 'unknown'}",
+                     user_id=user_id, post_id=post_id, action_type="engaged")
+        return signal_id
+    except Exception as e:
+        log_warning("Lead-signal detection failed", exc=e, user_id=user_id, action_type="engaged")
+        return None
+
+
 def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my_profile,
                                     profile_synthesis: str) -> str:
     """Navigate to the user's own post and reply to comments on it (thread-builder replies, plus
@@ -1943,6 +2008,8 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
         return "Skipped — no profile slug for dedup"
 
     comments_replied_count = 0
+    leads_flagged = 0
+    prefs = get_engagement_preferences(user_id)
     lead_magnet = get_lead_magnet_settings(user_id)
     lead_magnet_blog_url = get_user_blog_url(user_id) if lead_magnet.get("enabled") else ""
     for comment in comments:
@@ -1964,6 +2031,14 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
             _eprofile = (_link.get_attribute("href") or "").split("?")[0]
             if _ename and _ename.lower() != (my_profile.full_name or "").lower():
                 upsert_engager(user_id, _ename, _eprofile)
+                # Inbound intent (#483): this commenter may be raising their hand — flag + draft.
+                if leads_flagged < _MAX_LEAD_FLAGS_PER_SWEEP and _flag_lead_signal(
+                        user_id, comment_text, LeadSignalSource.POST_COMMENT, f"post:{post_id}",
+                        person_name=_ename, person_profile_url=_eprofile,
+                        channel=LeadSignalChannel.REPLY, post_id=post_id, context_url=post_url,
+                        context_text=post_message, my_profile=my_profile, prefs=prefs,
+                        profile_synthesis=profile_synthesis):
+                    leads_flagged += 1
                 if (lead_magnet.get("enabled") and lead_magnet.get("keyword") and lead_magnet.get("message")
                         and lead_magnet["keyword"].lower() in comment_text.lower()
                         and _eprofile and not has_received_lead_magnet(user_id, _eprofile)):
@@ -1991,7 +2066,7 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
         # Thread-builder: reply in a way that ends with a follow-up question so the commenter
         # replies again — first-hour thread depth is the top 2026 reach signal.
         response = generate_thread_reply(post_message, comment_text, my_profile,
-                                         prefs=get_engagement_preferences(user_id),
+                                         prefs=prefs,
                                          profile_synthesis=profile_synthesis)
         myprint(f"AI Generated Response to Comment: {response}")
         if response and _reply_to_comment_inline(driver, wait, comment, response, user_id=user_id):
@@ -2240,9 +2315,10 @@ def _reply_under_comment_inline(driver, wait, comment_el, reply_text: str, user_
 def _followup_on_post_comment_replies(driver, wait, user_id: int, post_url: str, post_key: str,
                                       my_profile, profile_synthesis: str, prefs: dict,
                                       replies_remaining: int) -> dict:
-    """Revisit ONE post we commented on: react to replies to our comment, and answer question-replies.
-    Returns {'reacted': n, 'replied': n}. Best-effort/non-fatal (issue #478)."""
-    result = {"reacted": 0, "replied": 0}
+    """Revisit ONE post we commented on: react to replies to our comment, answer question-replies,
+    and flag buying intent. Returns {'reacted': n, 'replied': n, 'leads': n}. Best-effort/non-fatal
+    (issues #478, #483)."""
+    result = {"reacted": 0, "replied": 0, "leads": 0}
     path = urlparse(str(my_profile.profile_url)).path
     our_slug = path.split("/")[2] if len(path.split("/")) > 2 else None
     if not our_slug:
@@ -2310,6 +2386,12 @@ def _followup_on_post_comment_replies(driver, wait, user_id: int, post_url: str,
             continue
         if not reply_text:
             continue
+        # Inbound intent (#483): a reply to our comment is a prime place for "can you help with X?".
+        if result["leads"] < _MAX_LEAD_FLAGS_PER_SWEEP and _flag_lead_signal(
+                user_id, reply_text, LeadSignalSource.COMMENT_REPLY, post_key,
+                person_profile_url=author, channel=LeadSignalChannel.REPLY, context_url=post_url,
+                my_profile=my_profile, prefs=prefs, profile_synthesis=profile_synthesis):
+            result["leads"] += 1
         reply_key = _followup_reply_key(post_key, author, reply_text)
         state = get_comment_followup(user_id, reply_key) or {}
         did_react = bool(state.get("reacted"))
@@ -2369,7 +2451,7 @@ def _run_comment_followups_sweep(user_id: int) -> str:
         return f"Failed to start follow-up sweep: {e}"
     try:
         synthesis = get_or_create_profile_synthesis(user_id, my_profile)
-        reacted = replied = 0
+        reacted = replied = leads = 0
         for row in posts:
             key = row.get("post_key")
             url = _post_url_from_key(key)
@@ -2379,10 +2461,12 @@ def _run_comment_followups_sweep(user_id: int) -> str:
                 r = _followup_on_post_comment_replies(driver, wait, user_id, url, key, my_profile,
                                                       synthesis, prefs, replies_remaining)
                 reacted += r["reacted"]; replied += r["replied"]; replies_remaining -= r["replied"]
+                leads += r.get("leads", 0)
             except Exception as e:
                 log_warning("Follow-up: post failed", exc=e, user_id=user_id,
                             task_name="sweep_comment_followups")
-        return f"Follow-ups: reacted {reacted}, replied {replied} across {len(posts)} post(s)"
+        return (f"Follow-ups: reacted {reacted}, replied {replied}, leads {leads} "
+                f"across {len(posts)} post(s)")
     finally:
         quit_gracefully(driver)
         release_run_lock(lock_name, lock_token)
@@ -2423,7 +2507,8 @@ def _run_single_post_followup(user_id: int, post_url: str) -> str:
         url = _post_url_from_key(key)
         r = _followup_on_post_comment_replies(driver, wait, user_id, url, key, my_profile,
                                               synthesis, prefs, replies_remaining)
-        return f"Follow-up on {url}: reacted {r['reacted']}, replied {r['replied']}"
+        return (f"Follow-up on {url}: reacted {r['reacted']}, replied {r['replied']}, "
+                f"leads {r.get('leads', 0)}")
     finally:
         quit_gracefully(driver)
         release_run_lock(lock_name, lock_token)
@@ -2709,6 +2794,23 @@ _LAST_SENDER_JS = (
     "for(let i=ev.length-1;i>=0;i--){const n=ev[i].querySelector('.msg-s-message-group__name');"
     "if(n&&n.innerText.trim())return n.innerText.trim();}return null;")
 
+# The BODY of the most recent message bubble in the open thread — same DOM the reply-detector above
+# already reads. Inbound-intent detection (#483) rides that read; it never opens a thread of its own.
+_LAST_MESSAGE_JS = (
+    "const ev=[...document.querySelectorAll('li.msg-s-message-list__event, .msg-s-event-listitem')];"
+    "for(let i=ev.length-1;i>=0;i--){const b=ev[i].querySelector('.msg-s-event-listitem__body, "
+    ".msg-s-event__content');if(b&&b.innerText.trim())return b.innerText.trim();}return null;")
+
+
+def _last_inbound_message(driver) -> str:
+    """Text of the newest message in the ALREADY-OPEN thread. Best-effort — returns '' when the DOM
+    doesn't match (detection simply finds nothing rather than breaking the follow-up run)."""
+    try:
+        return (driver.execute_script(_LAST_MESSAGE_JS) or "").strip()
+    except Exception as e:
+        log_warning("Could not read the last DM body", exc=e, action_type="dm")
+        return ""
+
 
 def check_dm_replied(driver, wait, profile_url: str, my_name: str = None) -> bool:
     """Best-effort: has this person replied since our last message? Opens their message thread
@@ -2755,9 +2857,20 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
         log_error("Error getting profile for follow-ups", exc=e, user_id=user_id, task_name="process_user_followups")
         return f"Failed to start follow-ups: {e}"
     sent = 0
+    lead_ctx: dict = {}  # voice context for lead drafts — fetched lazily, only if someone replies
     try:
         for f in due[:max_per_run]:
             if check_dm_replied(driver, wait, f["profile_url"], my_name=getattr(my_profile, "full_name", None)):
+                # Their reply is on screen already — read it once and check for buying intent (#483)
+                # before we walk away from this thread for good.
+                if not lead_ctx:
+                    lead_ctx = {"prefs": get_engagement_preferences(user_id),
+                                "synthesis": get_or_create_profile_synthesis(user_id, my_profile)}
+                _flag_lead_signal(user_id, _last_inbound_message(driver), LeadSignalSource.DM,
+                                  "thread", person_name=f.get("first_name"),
+                                  person_profile_url=f["profile_url"], channel=LeadSignalChannel.DM,
+                                  context_url=f["profile_url"], my_profile=my_profile,
+                                  prefs=lead_ctx["prefs"], profile_synthesis=lead_ctx["synthesis"])
                 stop_followups_for_profile(user_id, f["profile_url"])
                 mark_followup(f["id"], "stopped")
                 continue
@@ -3338,6 +3451,89 @@ def send_scheduled_dm(self, dm_id: int):
     dm_sent = send_dm_now(user_id, dm["recipient_profile_url"], dm["message"])
     update_scheduled_dm_status(dm_id, ScheduledDmStatus.SENT if dm_sent else ScheduledDmStatus.FAILED)
     return f"Scheduled DM {dm_id} -> {'sent' if dm_sent else 'failed'}"
+
+
+def _reply_to_person_on_post(driver, wait, post_url: str, person_profile_url: str, text: str,
+                             user_id: int = None) -> bool:
+    """Post `text` as a reply UNDER a specific person's comment on `post_url` — the delivery half of
+    an approved hot-lead response (issue #483). Reuses the #478 comment-thread helpers: a tall
+    viewport + scrolling is what actually makes comments lazy-render on a long post."""
+    slug = _profile_slug(person_profile_url)
+    if not slug:
+        log_warning("Lead response: no profile slug to target", user_id=user_id, action_type="reply")
+        return False
+    try:
+        driver.set_window_size(1400, 3400)
+    except Exception:
+        pass  # some drivers reject resize; the scrolling below is the fallback
+    driver.get(post_url)
+    time.sleep(random.uniform(2.5, 4))
+    for _ in range(10):
+        driver.execute_script("window.scrollBy(0, 1000);")
+        time.sleep(random.uniform(0.9, 1.4))
+        cl = driver.find_elements(By.CSS_SELECTOR, "[data-testid*='commentList']")
+        if cl:
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", cl[0])
+    for tb in driver.find_elements(By.CSS_SELECTOR, _COMMENTLIST_TEXTBOX):
+        cont = _comment_container(driver, tb)
+        if cont is None:
+            continue
+        if f"/in/{slug}" not in _comment_header_author(driver, cont):
+            continue
+        return _reply_under_comment_inline(driver, wait, cont, text, user_id=user_id)
+    log_warning(f"Lead response: no comment by /in/{slug} found on {post_url}", user_id=user_id,
+                action_type="reply")
+    return False
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['signal_id']},
+                  reject_on_worker_lost=True, rate_limit='2/m', queue='se_outreach')
+def send_lead_response(self, signal_id: int):
+    """Deliver an APPROVED hot-lead response (issue #483) — a reply under their comment, or a DM."""
+    return _send_lead_response(signal_id)
+
+
+def _send_lead_response(signal_id: int) -> str:
+    """Body of send_lead_response, extracted for unit testing (no QueueOnce/Redis). Only ever acts
+    on a signal a human APPROVED — nothing here can auto-respond to a lead on its own."""
+    signal = get_lead_signal(signal_id)
+    if not signal:
+        return f"Lead signal {signal_id} not found"
+    if str(signal.get("status")) != str(LeadSignalStatus.APPROVED):
+        return f"Lead signal {signal_id} not sendable (status={signal.get('status')})"
+    message = (signal.get("draft_response") or "").strip()
+    if not message:
+        update_lead_signal(signal_id, status=LeadSignalStatus.FAILED)
+        return f"Lead signal {signal_id} has no draft to send"
+
+    user_id = signal["user_id"]
+    if str(signal.get("channel")) == str(LeadSignalChannel.DM):
+        sent = send_dm_now(user_id, signal["person_profile_url"], message)
+        update_lead_signal(signal_id, status=LeadSignalStatus.SENT if sent else LeadSignalStatus.FAILED)
+        return f"Lead signal {signal_id} DM -> {'sent' if sent else 'failed'}"
+
+    if not signal.get("context_url"):
+        update_lead_signal(signal_id, status=LeadSignalStatus.FAILED)
+        return f"Lead signal {signal_id} has no post to reply on"
+    try:
+        driver, wait, _email, _my_profile = get_current_profile(user_id=user_id, session_name="Lead Response")
+    except LinkedInRateLimited as e:
+        log_warning("Lead response skipped — LinkedIn rate-limited", exc=e, user_id=user_id,
+                    task_name="send_lead_response")
+        return "Skipped — rate limited"  # left APPROVED so a later run retries it
+    except Exception as e:
+        log_error("Error starting lead response", exc=e, user_id=user_id, task_name="send_lead_response")
+        return f"Failed to start lead response: {e}"
+    try:
+        sent = _reply_to_person_on_post(driver, wait, signal["context_url"],
+                                        signal.get("person_profile_url") or "", message, user_id=user_id)
+        update_lead_signal(signal_id, status=LeadSignalStatus.SENT if sent else LeadSignalStatus.FAILED)
+        insert_new_log(user_id=user_id, post_id=signal.get("post_id"), action_type=LogActionType.REPLY,
+                       result=LogResultType.SUCCESS if sent else LogResultType.FAILURE,
+                       post_url=signal["context_url"], message=message)
+        return f"Lead signal {signal_id} reply -> {'sent' if sent else 'failed'}"
+    finally:
+        quit_gracefully(driver)
 
 
 def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -> bool:
