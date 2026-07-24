@@ -59,24 +59,30 @@ class TestPostToLinkedinDocument:
             mock_document.assert_not_called()
             mock_status.assert_called_once_with(41, PostStatus.ERROR)
             assert "error" in result
+            assert "no real slide images" in result
 
-    def test_document_publish_failure_is_flagged_error(self):
+    def test_document_publish_failure_does_not_blame_the_slide_images(self):
+        """A None URN from a deck that HAD slides may be creds/API — don't send ops after images."""
         from cqc_lem.utilities.db import PostType, PostStatus
         from cqc_lem.app.run_automation import post_to_linkedin
 
         with ExitStack() as stack:
             for target, kwargs in BASE_PATCHES:
-                if target.endswith("update_db_post_status"):
+                if target.endswith(("update_db_post_status", "insert_new_log")):
                     continue
                 stack.enter_context(patch(target, **kwargs))
             mock_status = stack.enter_context(patch("cqc_lem.app.run_automation.update_db_post_status"))
+            mock_log = stack.enter_context(patch("cqc_lem.app.run_automation.insert_new_log"))
             stack.enter_context(patch("cqc_lem.app.run_automation.get_post_type", return_value=PostType.DOCUMENT))
             stack.enter_context(patch("cqc_lem.app.run_automation.get_carousel_slides", return_value=["/s1.png"]))
             stack.enter_context(patch("cqc_lem.app.run_automation.share_document_on_linkedin", return_value=None))
 
-            post_to_linkedin.run(1, 42)
+            result = post_to_linkedin.run(1, 42)
 
             mock_status.assert_called_once_with(42, PostStatus.ERROR)
+            assert "no real slide images" not in result
+            assert "no URN" in result
+            assert "no real slide images" not in mock_log.call_args[1]["message"]
 
 
 @pytest.mark.unit

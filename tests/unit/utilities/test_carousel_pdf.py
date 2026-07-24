@@ -27,16 +27,23 @@ class TestCreateCarouselPdf:
         with open(pdf_path, "rb") as f:
             assert f.read(5) == b"%PDF-"
 
-    def test_defaults_to_post_assets_dir(self, tmp_path):
+    def test_defaults_to_post_assets_dir(self, tmp_path, monkeypatch):
+        """The default path is derived from the module's __file__ — redirect that so the
+        assets tree is created under tmp_path instead of in the repo working copy."""
+        from cqc_lem.utilities import carousel_creator
         from cqc_lem.utilities.carousel_creator import create_carousel_pdf
+
+        fake_pkg = tmp_path / "pkg" / "utilities"
+        fake_pkg.mkdir(parents=True)
+        monkeypatch.setattr(carousel_creator, "__file__", str(fake_pkg / "carousel_creator.py"))
 
         slides = [_write_png(str(tmp_path / "slide_1.png"))]
 
         pdf_path = create_carousel_pdf(slides, post_id=7)
 
         assert pdf_path.endswith(os.path.join("carousel", "7", "document_7.pdf"))
+        assert pdf_path.startswith(os.path.realpath(str(tmp_path)))
         assert os.path.isfile(pdf_path)
-        os.remove(pdf_path)
 
     def test_returns_none_without_slides(self, tmp_path):
         from cqc_lem.utilities.carousel_creator import create_carousel_pdf

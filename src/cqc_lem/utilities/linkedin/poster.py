@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shutil
 import tempfile
 import uuid
 from typing import List, Optional, Annotated, Dict
@@ -455,6 +456,9 @@ def share_document_on_linkedin(user_id: int, content: str, slides: list[str],
 
     local_paths: List[str] = []
     tmp_paths: List[str] = []
+    # Without a post_id there is no per-post assets dir to write the PDF into, so it goes to
+    # a temp dir that we own and delete once the upload is done (or has failed).
+    tmp_pdf_dir: Optional[str] = None
     try:
         for slide in slides or []:
             if _is_image_url(slide):
@@ -472,48 +476,54 @@ def share_document_on_linkedin(user_id: int, content: str, slides: list[str],
             log_warning("Document post has no slides — not posting", user_id=user_id, post_id=post_id)
             return None
 
-        # Without a post_id there is no per-post assets dir to write into — use a temp dir.
+        if post_id is None:
+            tmp_pdf_dir = tempfile.mkdtemp()
         pdf_path = create_carousel_pdf(
             local_paths,
             post_id if post_id is not None else user_id,
-            output_dir=None if post_id is not None else tempfile.mkdtemp(),
+            output_dir=tmp_pdf_dir,
         )
+
+        if not pdf_path:
+            log_warning("Could not build document PDF from slides", user_id=user_id, post_id=post_id)
+            return None
+
+        deck_title = title or _document_title(content)
+
+        try:
+            document_urn = upload_document(access_token, linked_sub_id, pdf_path)
+            urn = _create_document_post_versioned(access_token, f"urn:li:person:{linked_sub_id}",
+                                                  content, document_urn, deck_title)
+        except Exception as e:
+            # Nothing is published until /rest/posts succeeds, so retrying on the legacy path
+            # cannot duplicate the post.
+            log_warning("Versioned Documents API failed — falling back to legacy ugcPost document",
+                        exc=e, user_id=user_id, post_id=post_id, api_provider="linkedin")
+            try:
+                urn = _create_document_post_legacy(access_token, linked_sub_id, content, pdf_path, deck_title)
+            except Exception as legacy_error:
+                log_error("Document post failed on both the versioned and legacy paths",
+                          exc=legacy_error, user_id=user_id, post_id=post_id, api_provider="linkedin")
+                return None
+
+        if not urn:
+            log_error("Document post returned no URN", user_id=user_id, post_id=post_id, api_provider="linkedin")
+            return None
+
+        log_info(f"Document shared on LinkedIn: https://www.linkedin.com/feed/update/{urn}",
+                 user_id=user_id, post_id=post_id, api_provider="linkedin")
+        return urn
     finally:
+        # Best-effort scratch cleanup: the post is already published (or already failed) at this
+        # point, so a leftover temp file must never change the outcome — log it and move on.
         for path in tmp_paths:
             try:
                 os.remove(path)
-            except OSError:
-                pass
-
-    if not pdf_path:
-        log_warning("Could not build document PDF from slides", user_id=user_id, post_id=post_id)
-        return None
-
-    deck_title = title or _document_title(content)
-
-    try:
-        document_urn = upload_document(access_token, linked_sub_id, pdf_path)
-        urn = _create_document_post_versioned(access_token, f"urn:li:person:{linked_sub_id}",
-                                              content, document_urn, deck_title)
-    except Exception as e:
-        # Nothing is published until /rest/posts succeeds, so retrying on the legacy path
-        # cannot duplicate the post.
-        log_warning("Versioned Documents API failed — falling back to legacy ugcPost document",
-                    exc=e, user_id=user_id, post_id=post_id, api_provider="linkedin")
-        try:
-            urn = _create_document_post_legacy(access_token, linked_sub_id, content, pdf_path, deck_title)
-        except Exception as legacy_error:
-            log_error("Document post failed on both the versioned and legacy paths",
-                      exc=legacy_error, user_id=user_id, post_id=post_id, api_provider="linkedin")
-            return None
-
-    if not urn:
-        log_error("Document post returned no URN", user_id=user_id, post_id=post_id, api_provider="linkedin")
-        return None
-
-    log_info(f"Document shared on LinkedIn: https://www.linkedin.com/feed/update/{urn}",
-             user_id=user_id, post_id=post_id, api_provider="linkedin")
-    return urn
+            except OSError as e:
+                log_warning("Could not remove temporary document slide", exc=e,
+                            user_id=user_id, post_id=post_id)
+        if tmp_pdf_dir:
+            shutil.rmtree(tmp_pdf_dir, ignore_errors=True)
 
 
 # --- socialActions comments API -------------------------------------------------

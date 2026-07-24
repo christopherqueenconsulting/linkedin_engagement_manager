@@ -193,6 +193,64 @@ class TestShareDocumentOnLinkedin:
         assert urn == "urn:li:ugcPost:555"
         mock_legacy.assert_called_once()
 
+    def test_removes_the_scratch_pdf_dir_when_there_is_no_post_id(self, tmp_path):
+        """Without a post_id the PDF goes to a temp dir we own — it must not outlive the call."""
+        import os
+        from cqc_lem.utilities.linkedin.poster import share_document_on_linkedin
+
+        scratch = str(tmp_path / "scratch")
+        os.makedirs(scratch)
+
+        with patch("cqc_lem.utilities.linkedin.poster.get_user_linked_sub_id", return_value="sub-1"), \
+             patch("cqc_lem.utilities.linkedin.poster.get_user_access_token", return_value="token"), \
+             patch("cqc_lem.utilities.linkedin.poster.tempfile.mkdtemp", return_value=scratch), \
+             patch("cqc_lem.utilities.carousel_creator.create_carousel_pdf",
+                   return_value=str(tmp_path / "deck.pdf")) as mock_pdf, \
+             patch("cqc_lem.utilities.linkedin.poster.upload_document", return_value="urn:li:document:abc"), \
+             patch("cqc_lem.utilities.linkedin.poster._create_document_post_versioned",
+                   return_value="urn:li:share:999"):
+            urn = share_document_on_linkedin(1, "content", self._slides(tmp_path))
+
+        assert urn == "urn:li:share:999"
+        assert mock_pdf.call_args[1]["output_dir"] == scratch
+        assert not os.path.exists(scratch), "scratch PDF dir should be removed"
+
+    def test_scratch_pdf_dir_is_removed_even_when_publishing_fails(self, tmp_path):
+        import os
+        from cqc_lem.utilities.linkedin.poster import share_document_on_linkedin
+
+        scratch = str(tmp_path / "scratch")
+        os.makedirs(scratch)
+
+        with patch("cqc_lem.utilities.linkedin.poster.get_user_linked_sub_id", return_value="sub-1"), \
+             patch("cqc_lem.utilities.linkedin.poster.get_user_access_token", return_value="token"), \
+             patch("cqc_lem.utilities.linkedin.poster.tempfile.mkdtemp", return_value=scratch), \
+             patch("cqc_lem.utilities.carousel_creator.create_carousel_pdf",
+                   return_value=str(tmp_path / "deck.pdf")), \
+             patch("cqc_lem.utilities.linkedin.poster.upload_document", side_effect=RuntimeError("boom")), \
+             patch("cqc_lem.utilities.linkedin.poster._create_document_post_legacy",
+                   side_effect=RuntimeError("boom too")):
+            assert share_document_on_linkedin(1, "content", self._slides(tmp_path)) is None
+
+        assert not os.path.exists(scratch)
+
+    def test_no_scratch_dir_is_created_when_post_id_is_given(self, tmp_path):
+        from cqc_lem.utilities.linkedin.poster import share_document_on_linkedin
+
+        with patch("cqc_lem.utilities.linkedin.poster.get_user_linked_sub_id", return_value="sub-1"), \
+             patch("cqc_lem.utilities.linkedin.poster.get_user_access_token", return_value="token"), \
+             patch("cqc_lem.utilities.linkedin.poster.tempfile.mkdtemp") as mock_mkdtemp, \
+             patch("cqc_lem.utilities.carousel_creator.create_carousel_pdf",
+                   return_value=str(tmp_path / "deck.pdf")) as mock_pdf, \
+             patch("cqc_lem.utilities.linkedin.poster.upload_document", return_value="urn:li:document:abc"), \
+             patch("cqc_lem.utilities.linkedin.poster._create_document_post_versioned",
+                   return_value="urn:li:share:999"):
+            assert share_document_on_linkedin(1, "content", self._slides(tmp_path), post_id=9) \
+                == "urn:li:share:999"
+
+        mock_mkdtemp.assert_not_called()
+        assert mock_pdf.call_args[1]["output_dir"] is None
+
     def test_returns_none_when_both_paths_fail(self, tmp_path):
         from cqc_lem.utilities.linkedin.poster import share_document_on_linkedin
 
