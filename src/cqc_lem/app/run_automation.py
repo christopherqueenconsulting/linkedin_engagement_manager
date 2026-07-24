@@ -2141,12 +2141,15 @@ def _comment_container(driver, textbox):
 
 
 def _react_to_comment_inline(driver, wait, comment_el, user_id: int = None) -> bool:
-    """Like a comment/reply (best-effort, non-fatal). The like button's aria-label starts 'React '
-    (e.g. 'React Like'); skip if already reacted (aria-pressed)."""
+    """Like a comment/reply (best-effort, non-fatal). On this SDUI the react control's aria-label is
+    'Open reactions menu' (a single click applies the default Like); older markup used 'React Like'.
+    Skips if already reacted (aria-pressed). If a click opens the reaction flyout instead of liking,
+    picks the visible 'Like' option."""
     try:
         btns = comment_el.find_elements(
             By.CSS_SELECTOR,
-            "button[aria-label^='React '], button[aria-label='Like'], button[aria-label*='Like']")
+            "button[aria-label='Open reactions menu'], button[aria-label^='React '], "
+            "button[aria-label='Like'], button[aria-label*='Like']")
         for b in btns:
             if (b.get_attribute("aria-pressed") or "").lower() == "true":
                 return False  # already liked
@@ -2154,8 +2157,16 @@ def _react_to_comment_inline(driver, wait, comment_el, user_id: int = None) -> b
             time.sleep(random.uniform(0.6, 1.4))
             b.click()
             time.sleep(random.uniform(1, 2))
+            # If the reaction flyout opened instead of applying Like, click the visible Like option.
+            if (b.get_attribute("aria-pressed") or "").lower() != "true":
+                for lk in driver.find_elements(
+                        By.CSS_SELECTOR, "button[aria-label='Like'], button[aria-label^='React Like']"):
+                    try:
+                        if lk.is_displayed():
+                            lk.click(); time.sleep(random.uniform(0.8, 1.4)); break
+                    except Exception:
+                        continue
             return True
-        # Log what IS present so a live run surfaces the real label if this misses.
         labels = [b.get_attribute("aria-label") for b in comment_el.find_elements(By.CSS_SELECTOR, "button")]
         log_warning(f"No like button matched on reply; buttons={[l for l in labels if l][:8]}",
                     action_type="engaged", user_id=user_id)
