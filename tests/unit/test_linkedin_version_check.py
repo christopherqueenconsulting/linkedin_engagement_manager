@@ -41,6 +41,61 @@ class TestIsActiveResponse:
         with pytest.raises(lvc.ProbeError):
             lvc.is_active_response(401, '{"code":"EMPTY_ACCESS_TOKEN"}')
 
+    @pytest.mark.parametrize("status", [429, 500, 502, 503, 504, 404, 418])
+    def test_anything_that_proves_neither_raises(self, status):
+        """A throttle or an outage must never read as 'this version is live' — guessing
+        there would forge a live window and drive a bad keep/bump decision."""
+        with pytest.raises(lvc.ProbeError):
+            lvc.is_active_response(status, "boom")
+
+
+@pytest.mark.unit
+class TestProbeVersionRetries:
+    @staticmethod
+    def _http_error(status):
+        import io
+        import urllib.error
+        return urllib.error.HTTPError(lvc.PROBE_URL, status, "err", {}, io.BytesIO(b"{}"))
+
+    def _raiser(self, errors):
+        def urlopen(*_a, **_k):
+            raise errors.pop(0)
+        return urlopen
+
+    def test_retries_a_throttle_then_succeeds(self, monkeypatch):
+        errors = [self._http_error(429), self._http_error(403)]
+        monkeypatch.setattr(lvc.urllib.request, "urlopen", self._raiser(errors))
+        assert lvc.probe_version("tok", "202607", sleep=lambda _s: None) is True
+        assert errors == []
+
+    def test_raises_after_exhausting_retries_on_a_throttle(self, monkeypatch):
+        monkeypatch.setattr(lvc.urllib.request, "urlopen",
+                            lambda *a, **k: self._raise(self._http_error(429)))
+        with pytest.raises(lvc.ProbeError):
+            lvc.probe_version("tok", "202607", attempts=2, sleep=lambda _s: None)
+
+    def test_426_is_not_retried(self, monkeypatch):
+        calls = []
+
+        def urlopen(*_a, **_k):
+            calls.append(1)
+            raise self._http_error(426)
+
+        monkeypatch.setattr(lvc.urllib.request, "urlopen", urlopen)
+        assert lvc.probe_version("tok", "202501", sleep=lambda _s: None) is False
+        assert len(calls) == 1
+
+    def test_connection_failure_raises_probe_error(self, monkeypatch):
+        import urllib.error
+        monkeypatch.setattr(lvc.urllib.request, "urlopen",
+                            lambda *a, **k: self._raise(urllib.error.URLError("down")))
+        with pytest.raises(lvc.ProbeError):
+            lvc.probe_version("tok", "202607", attempts=2, sleep=lambda _s: None)
+
+    @staticmethod
+    def _raise(exc):
+        raise exc
+
 
 @pytest.mark.unit
 class TestFindActiveVersions:

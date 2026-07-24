@@ -22,6 +22,7 @@ import argparse
 import json
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -31,11 +32,20 @@ PROBE_URL = "https://api.linkedin.com/rest/me"
 DEFAULT_MIN_HEADROOM = 2
 DEFAULT_LOOKBACK = 24
 DEFAULT_LOOKAHEAD = 2
+DEFAULT_ATTEMPTS = 3
 ENV_KEY = "LI_API_VERSION"
+
+# Only these prove a version is live: 200 with a read scope, 403 ACCESS_DENIED without one
+# (LEM's token). 426 NONEXISTENT_VERSION is the only "not live" answer. EVERYTHING else —
+# throttling, outages, an unexpected 4xx — is undecidable and must not be guessed at, or a
+# transient blip would forge a live-window and drive a bad keep/bump decision.
+ACTIVE_STATUSES = frozenset({200, 403})
+INACTIVE_STATUSES = frozenset({426})
+RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
 
 
 class ProbeError(RuntimeError):
-    """The probe could not decide whether a version is active (bad/absent token)."""
+    """The probe could not decide whether a version is active."""
 
 
 def candidate_versions(today: datetime, lookback: int = DEFAULT_LOOKBACK,
@@ -47,27 +57,45 @@ def candidate_versions(today: datetime, lookback: int = DEFAULT_LOOKBACK,
 
 
 def is_active_response(status_code: int, body: str) -> bool:
-    """True if the probe response proves the version is active.
+    """True if the probe response PROVES the version is active, False if it proves it is not.
 
-    426 NONEXISTENT_VERSION is the only "not active" signal. A 401 means the token itself is
-    unusable, so nothing can be concluded — that is an error, not a "retired" verdict.
+    Anything that proves neither raises ProbeError, so the planner reports action=error and
+    alerts instead of inferring a window from a throttle or an outage.
     """
+    if status_code in INACTIVE_STATUSES:
+        return False
+    if status_code in ACTIVE_STATUSES:
+        return True
     if status_code == 401:
         raise ProbeError(f"LinkedIn rejected the probe token (401): {body[:200]}")
-    return status_code != 426
+    raise ProbeError(f"undecidable probe response {status_code}: {body[:200]}")
 
 
-def probe_version(token: str, version: str, timeout: int = 20) -> bool:
+def probe_version(token: str, version: str, timeout: int = 20,
+                  attempts: int = DEFAULT_ATTEMPTS, sleep=time.sleep) -> bool:
+    """Probe one version, retrying transient throttles/outages before giving up."""
     request = urllib.request.Request(PROBE_URL, headers={
         "Authorization": f"Bearer {token}",
         "LinkedIn-Version": version,
         "X-Restli-Protocol-Version": "2.0.0",
     })
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return is_active_response(response.status, "")
-    except urllib.error.HTTPError as e:
-        return is_active_response(e.code, e.read().decode("utf-8", "replace"))
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                status, body = response.status, ""
+        except urllib.error.HTTPError as e:
+            status, body = e.code, e.read().decode("utf-8", "replace")
+        except urllib.error.URLError as e:
+            if attempt < attempts:
+                sleep(2 * attempt)
+                continue
+            raise ProbeError(f"probe of {version} failed to connect: {e}") from e
+
+        if status in RETRYABLE_STATUSES and attempt < attempts:
+            sleep(2 * attempt)
+            continue
+        return is_active_response(status, body)
+    raise ProbeError(f"probe of {version} exhausted {attempts} attempts")
 
 
 def find_active_versions(token: str, candidates: list[str], probe=probe_version) -> list[str]:

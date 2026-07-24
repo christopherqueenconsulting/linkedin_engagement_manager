@@ -67,20 +67,35 @@ recreate_apps(){  # `restart` reuses the old env — the containers must be RECR
 }
 
 wait_healthy(){  # 0 once no app container is still starting (bounded wait)
-  local i
+  # A failing `docker ps` must NOT read as healthy: capture it and check its exit status
+  # separately, instead of letting a broken pipeline look identical to "grep found nothing".
+  local i out
   for i in $(seq 1 60); do
-    if ! sudo -n docker ps --format '{{.Status}}' | grep -q 'health: starting'; then return 0; fi
-    sleep 5
+    if ! out="$(sudo -n docker ps --format '{{.Status}}' 2>/dev/null)"; then
+      log "wait_healthy: docker ps failed (attempt $i) — retrying"
+      sleep 5; continue
+    fi
+    case "$out" in
+      *"health: starting"*) sleep 5 ;;
+      *) return 0 ;;
+    esac
   done
+  log "wait_healthy: gave up waiting for containers to settle"
   return 1
 }
 
 smoke(){  # $1=expected version — the DEPLOYED containers must carry it AND LinkedIn must accept it
-  local want="$1" got
-  got="$(sudo -n docker exec web_app printenv LI_API_VERSION 2>/dev/null)"
-  if [ "$got" != "$want" ]; then log "smoke: web_app has LI_API_VERSION=$got, expected $want"; return 1; fi
-  got="$(sudo -n docker exec celery_worker printenv LI_API_VERSION 2>/dev/null)"
-  if [ "$got" != "$want" ]; then log "smoke: celery_worker has LI_API_VERSION=$got, expected $want"; return 1; fi
+  local want="$1" got service
+  # An exec failure is reported as such, but still fails the smoke test — the safe direction,
+  # since the caller rolls back rather than trusting an unverifiable container.
+  for service in web_app celery_worker; do
+    if ! got="$(sudo -n docker exec "$service" printenv LI_API_VERSION 2>/dev/null)"; then
+      log "smoke: could not read LI_API_VERSION from $service (exec failed)"; return 1
+    fi
+    if [ "$got" != "$want" ]; then
+      log "smoke: $service has LI_API_VERSION=$got, expected $want"; return 1
+    fi
+  done
   # A live versioned call with the deployed pin — this is the failure the whole job exists to catch.
   if ! sudo -n docker exec -i web_app python - <<'PY' >>"$LOG" 2>&1
 import sys, requests
@@ -103,7 +118,11 @@ open_pr(){  # mirror the bump into the repo via an EPHEMERAL worktree — never 
       && git worktree add -q -B auto/li-api-version "$wt" origin/main ) || { log "worktree add failed"; return 1; }
   (
     cd "$wt" || exit 1
-    "${PY[@]}" "$REPO/scripts/linkedin_version_check.py" --rewrite-repo-defaults "$wt" \
+    # Rewrite with the worktree's OWN copy of the script so the rewriter always matches the
+    # files it edits; fall back to this checkout only if main doesn't carry it yet.
+    local rewriter="$wt/scripts/linkedin_version_check.py"
+    [ -f "$rewriter" ] || rewriter="$REPO/scripts/linkedin_version_check.py"
+    "${PY[@]}" "$rewriter" --rewrite-repo-defaults "$wt" \
         --version "$version" >>"$LOG" 2>&1
     git add .env.example src/cqc_lem/utilities/env_constants.py
     git commit -q -m "fix(linkedin): bump LI_API_VERSION to $version [weekly version check]" \
