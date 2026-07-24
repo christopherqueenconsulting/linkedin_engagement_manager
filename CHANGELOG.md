@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.69.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.68.1...v0.69.0) (2026-07-24)
+
+
+### Features
+
+* **leads:** inbound-intent detection & hot-lead routing (closes [#483](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/483)) ([e341db9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e341db93731cd60b3c60d0d60e28380ebe44f8f7))
+* **leads:** inbound-intent detection & hot-lead routing from comments/replies/DMs (closes [#483](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/483)) ([3a95af1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3a95af1c651ce43086648cd6504b0723f8478b36))
+
 ## [0.68.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.68.0...v0.68.1) (2026-07-24)
 
 
