@@ -208,6 +208,12 @@ export default function EngagementSettingsCard() {
               className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
           </div>
           <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Max invites/day</label>
+            <input type="number" min={0} value={engPrefs.max_invites_per_day ?? 10}
+              onChange={(e) => setEng({ max_invites_per_day: Number(e.target.value) })}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+          </div>
+          <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Auto-generated video quality</label>
             <select value={engPrefs.default_video_quality ?? 'standard'}
               onChange={(e) => setEng({ default_video_quality: e.target.value })}

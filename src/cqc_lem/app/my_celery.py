@@ -73,6 +73,12 @@ app.conf.update(
             # Same 10-min cadence as scheduled posts (20-min lookahead covers each run).
             'schedule': crontab(minute='*/10')
         },
+        'check-connection-requests': {
+            'task': 'cqc_lem.app.run_scheduler.auto_check_connection_requests',
+            # Approved proactive connect requests (issue #398); daily-capped at dispatch. 15-min
+            # cadence keeps the drip slow and human-paced (no volume prospecting).
+            'schedule': crontab(minute='*/15')
+        },
         'generate-content-plan': {
             'task': 'cqc_lem.app.run_content_plan.auto_generate_content',
             'schedule': crontab(hour='1', minute='0')  # Run every day at 1:00 AM

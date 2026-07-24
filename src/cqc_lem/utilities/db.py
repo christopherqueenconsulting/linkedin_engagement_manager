@@ -87,6 +87,16 @@ class ScheduledDmStatus(StrEnum):
     CANCELED = 'canceled'    # canceled before send
 
 
+class ConnectionRequestStatus(StrEnum):
+    """Status for a proactive, approval-gated connection request (issue #398), mirroring ScheduledDmStatus."""
+    PENDING = 'pending'      # draft awaiting approval
+    APPROVED = 'approved'    # approved, waiting for the scanner
+    SENDING = 'sending'      # scanner dispatched the send task
+    SENT = 'sent'            # invitation sent
+    FAILED = 'failed'        # send failed
+    CANCELED = 'canceled'    # canceled before send
+
+
 # Enum for log actions types
 class LogActionType(StrEnum):
     COMMENT = 'comment'
@@ -2620,7 +2630,8 @@ _ENGAGEMENT_DEFAULTS: dict = {
     "include_authors": [], "exclude_authors": [], "post_types": [],
     "focus_topics": [], "business_goals": None, "personal_goals": None,
     "min_reactions": None, "max_post_age_hours": 24, "reply_to_own_comments": True,
-    "max_comments_per_day": 20, "max_dms_per_day": 20, "default_buyer_stage": None,
+    "max_comments_per_day": 20, "max_dms_per_day": 20, "max_invites_per_day": 10,
+    "default_buyer_stage": None,
     "default_video_quality": "standard",
     "reply_check_mode": "event", "reply_sweeps_per_day": 2, "reply_max_post_age_days": 2,
     "feed_fallback_when_empty": True, "link_in_first_comment": True,
@@ -2635,7 +2646,7 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "include_authors", "exclude_authors", "post_types", "focus_topics",
                     "business_goals", "personal_goals", "min_reactions",
                     "max_post_age_hours", "reply_to_own_comments", "max_comments_per_day",
-                    "max_dms_per_day", "default_buyer_stage", "default_video_quality",
+                    "max_dms_per_day", "max_invites_per_day", "default_buyer_stage", "default_video_quality",
                     "reply_check_mode", "reply_sweeps_per_day", "reply_max_post_age_days",
                     "feed_fallback_when_empty", "link_in_first_comment")
 
@@ -2980,6 +2991,190 @@ def update_scheduled_dm(dm_id: int, recipient_profile_url: str = None, recipient
         return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not update scheduled DM {dm_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def count_invites_sent_today(user_id: int) -> int:
+    """Invitations sent today via the proactive connect flow (issue #398). Counted from
+    connection_requests (status='sent', updated today) rather than the shared LogActionType.ENGAGED
+    logs so the proactive per-day cap isn't diluted by reactive profile-viewer engagement."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM connection_requests WHERE user_id=%s AND status=%s "
+            "AND updated_at >= CURDATE()",
+            (user_id, str(ConnectionRequestStatus.SENT)))
+        r = cursor.fetchone()
+        return int(r[0]) if r else 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not count invites for user_id {user_id} | Error: {err}")
+        return 0
+    finally:
+        cursor.close()
+        connection.close()
+
+
+# --- Proactive connection requests (issue #398) — approval-gated, daily-capped; reuses invite_to_connect ---
+_CONN_REQ_COLS = ("id", "user_id", "recipient_profile_url", "recipient_name", "message",
+                  "status", "created_at", "updated_at")
+
+
+def insert_connection_request(user_id: int, recipient_profile_url: str, message: str = None,
+                              recipient_name: str = None,
+                              status: "ConnectionRequestStatus" = ConnectionRequestStatus.PENDING
+                              ) -> Optional[int]:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO connection_requests (user_id, recipient_profile_url, recipient_name, "
+            "message, status) VALUES (%s,%s,%s,%s,%s)",
+            (user_id, recipient_profile_url, recipient_name, message, str(status)))
+        connection.commit()
+        return cursor.lastrowid
+    except mysql.connector.Error as err:
+        myprint(f"Could not insert connection request for user_id {user_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_connection_request(request_id: int) -> Optional[dict]:
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            f"SELECT {', '.join(_CONN_REQ_COLS)} FROM connection_requests WHERE id = %s", (request_id,))
+        return cursor.fetchone()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get connection request {request_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_connection_request_user_id(request_id: int) -> Optional[int]:
+    row = get_connection_request(request_id)
+    return row["user_id"] if row else None
+
+
+def get_connection_requests(user_id: int, status_filter: str = None, page: int = 1,
+                            page_size: int = 25, sort_order: str = "desc") -> dict:
+    """Paginated list of a user's connection requests (mirrors get_scheduled_dms)."""
+    order = "ASC" if str(sort_order).lower() == "asc" else "DESC"
+    where = "WHERE user_id = %s"
+    params: list = [user_id]
+    if status_filter:
+        where += " AND status = %s"
+        params.append(status_filter)
+    offset = max(0, (max(1, page) - 1) * page_size)
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(f"SELECT COUNT(*) AS c FROM connection_requests {where}", tuple(params))
+        total = int(cursor.fetchone()["c"])
+        cursor.execute(
+            f"SELECT {', '.join(_CONN_REQ_COLS)} FROM connection_requests {where} "
+            f"ORDER BY created_at {order} LIMIT %s OFFSET %s",
+            tuple(params + [page_size, offset]))
+        rows = cursor.fetchall()
+        for r in rows:
+            for k in ("created_at", "updated_at"):
+                if isinstance(r.get(k), datetime):
+                    r[k] = r[k].isoformat()
+        return {"requests": rows, "total": total, "page": page, "page_size": page_size}
+    except mysql.connector.Error as err:
+        myprint(f"Could not list connection requests for user_id {user_id} | Error: {err}")
+        return {"requests": [], "total": 0, "page": page, "page_size": page_size}
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_approved_connection_requests() -> list:
+    """Approved connection requests waiting to be sent, oldest first. Returns (id, user_id) tuples.
+    The daily cap is enforced by the scanner/send task, not here."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT id, user_id FROM connection_requests WHERE status = 'approved' "
+            "ORDER BY created_at ASC")
+        return cursor.fetchall()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get approved connection requests | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_orphaned_connection_requests(lookback_hours: int = 2) -> list:
+    """Requests stuck in 'sending' whose send task was lost (e.g. Celery queue purged on restart).
+    Mirrors get_orphaned_scheduled_dms — the lookback gap avoids racing an in-flight task.
+    Returns (id, user_id) tuples."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT id, user_id FROM connection_requests WHERE status = 'sending' "
+            "AND updated_at <= %s ORDER BY updated_at ASC",
+            (cutoff,))
+        return cursor.fetchall()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get orphaned connection requests | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_connection_request_status(request_id: int, status: "ConnectionRequestStatus") -> bool:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("UPDATE connection_requests SET status = %s WHERE id = %s",
+                       (str(status), request_id))
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not update connection request {request_id} status | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_connection_request(request_id: int, recipient_profile_url: str = None,
+                              recipient_name: str = None, message: str = None,
+                              status: "ConnectionRequestStatus" = None) -> bool:
+    fields, params = [], []
+    for col, val in (("recipient_profile_url", recipient_profile_url),
+                     ("recipient_name", recipient_name), ("message", message)):
+        if val is not None:
+            fields.append(f"{col} = %s")
+            params.append(val)
+    if status is not None:
+        fields.append("status = %s")
+        params.append(str(status))
+    if not fields:
+        return False
+    params.append(request_id)
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(f"UPDATE connection_requests SET {', '.join(fields)} WHERE id = %s", tuple(params))
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not update connection request {request_id} | Error: {err}")
         return False
     finally:
         cursor.close()

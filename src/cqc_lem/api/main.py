@@ -25,6 +25,8 @@ from cqc_lem.utilities.db import (
     get_recent_logs, bulk_update_posts, soft_delete_posts,
     insert_scheduled_dm, get_scheduled_dms, get_scheduled_dm, get_scheduled_dm_user_id,
     update_scheduled_dm, update_scheduled_dm_status, ScheduledDmStatus,
+    insert_connection_request, get_connection_requests, get_connection_request_user_id,
+    update_connection_request, update_connection_request_status, ConnectionRequestStatus,
     create_pin_for_email, verify_pin_for_email, delete_pin_for_email,
     create_session, get_session_user_id, delete_session,
     add_user_by_email, get_user_email, get_user_token_info, store_linkedin_li_at,
@@ -306,6 +308,7 @@ _LEN_NL_TITLE = 255       # newsletter_settings.title VARCHAR(255)
 _LEN_NL_TOPIC = 512       # newsletter_settings.topic VARCHAR(512)
 _LEN_DM_RECIPIENT_URL = 512   # scheduled_dms.recipient_profile_url VARCHAR(512)
 _LEN_DM_RECIPIENT_NAME = 255  # scheduled_dms.recipient_name VARCHAR(255)
+_LEN_CONNECT_NOTE = 300       # LinkedIn caps a connection-request note at 300 chars
 
 
 class NewsletterSettingsRequest(BaseModel):
@@ -377,6 +380,28 @@ class DmDeleteRequest(BaseModel):
     dm_id: int
 
 
+class ConnectionRequestCreate(BaseModel):
+    session_token: str
+    recipient_profile_url: str = Field(max_length=_LEN_DM_RECIPIENT_URL)
+    recipient_name: Optional[str] = Field(default=None, max_length=_LEN_DM_RECIPIENT_NAME)
+    message: Optional[str] = Field(default=None, max_length=_LEN_CONNECT_NOTE)  # optional connect note
+    status: str = "pending"  # 'pending' (draft) or 'approved' (queue for the daily-capped drip)
+
+
+class ConnectionRequestUpdate(BaseModel):
+    session_token: str
+    request_id: int
+    recipient_profile_url: Optional[str] = Field(default=None, max_length=_LEN_DM_RECIPIENT_URL)
+    recipient_name: Optional[str] = Field(default=None, max_length=_LEN_DM_RECIPIENT_NAME)
+    message: Optional[str] = Field(default=None, max_length=_LEN_CONNECT_NOTE)
+    action: Optional[str] = None  # 'approve' | 'cancel' | None (save fields only)
+
+
+class ConnectionRequestDelete(BaseModel):
+    session_token: str
+    request_id: int
+
+
 class EngagementPreferencesRequest(BaseModel):
     session_token: str
     tone: Optional[str] = Field(default=None, max_length=_LEN_TONE)
@@ -399,6 +424,7 @@ class EngagementPreferencesRequest(BaseModel):
     reply_to_own_comments: bool = True
     max_comments_per_day: int = 20
     max_dms_per_day: int = 20
+    max_invites_per_day: int = 10
     default_buyer_stage: Optional[str] = Field(default=None, max_length=_LEN_BUYER_STAGE)
     default_video_quality: str = "standard"
     reply_check_mode: str = "event"
@@ -1591,6 +1617,73 @@ def delete_scheduled_dm_endpoint(request: DmDeleteRequest) -> ResponseModel:
     if not update_scheduled_dm_status(request.dm_id, ScheduledDmStatus.CANCELED):
         raise HTTPException(status_code=500, detail="Could not cancel scheduled DM")
     return ResponseModel(status_code=200, detail="Scheduled DM canceled")
+
+
+@router.post("/connection_request")
+def create_connection_request_endpoint(request: ConnectionRequestCreate) -> ResponseModel:
+    """Add a proactive connection-request target (issue #398). Drafts are 'pending'; approving queues
+    it for the daily-capped drip (auto_check_connection_requests → send_connection_request), which
+    reuses invite_to_connect and honors the rate-limit / kill-switch. NO volume prospecting."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    status = (ConnectionRequestStatus.APPROVED if request.status == "approved"
+              else ConnectionRequestStatus.PENDING)
+    request_id = insert_connection_request(user_id, request.recipient_profile_url,
+                                           message=request.message,
+                                           recipient_name=request.recipient_name, status=status)
+    if not request_id:
+        raise HTTPException(status_code=500, detail="Could not create connection request")
+    return ResponseModel(status_code=200, detail={"request_id": request_id})
+
+
+@router.get("/connection_requests")
+def list_connection_requests_endpoint(session_token: str, status_filter: Optional[str] = None,
+                                      page: int = 1, page_size: int = 25,
+                                      sort_order: str = "desc") -> ResponseModel:
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return ResponseModel(status_code=200,
+                         detail=get_connection_requests(user_id, status_filter=status_filter,
+                                                        page=page, page_size=page_size,
+                                                        sort_order=sort_order))
+
+
+@router.put("/connection_request")
+def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> ResponseModel:
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if get_connection_request_user_id(request.request_id) != user_id:
+        raise HTTPException(status_code=404, detail="Connection request not found")
+    action_map = {"approve": ConnectionRequestStatus.APPROVED, "cancel": ConnectionRequestStatus.CANCELED}
+    if request.action is not None and request.action not in action_map:
+        raise HTTPException(status_code=422,
+                            detail=f"Unknown action '{request.action}' — expected 'approve' or 'cancel'")
+    status = action_map.get(request.action)
+    if status is None and all(v is None for v in (request.recipient_profile_url,
+                                                  request.recipient_name, request.message)):
+        raise HTTPException(status_code=422, detail="Nothing to update — provide at least one field or an action")
+    if not update_connection_request(request.request_id,
+                                     recipient_profile_url=request.recipient_profile_url,
+                                     recipient_name=request.recipient_name, message=request.message,
+                                     status=status):
+        raise HTTPException(status_code=500, detail="Could not update connection request")
+    return ResponseModel(status_code=200, detail="Connection request updated")
+
+
+@router.delete("/connection_request")
+def delete_connection_request_endpoint(request: ConnectionRequestDelete) -> ResponseModel:
+    """Cancel a connection request (soft — sets status 'canceled' so it won't be sent)."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if get_connection_request_user_id(request.request_id) != user_id:
+        raise HTTPException(status_code=404, detail="Connection request not found")
+    if not update_connection_request_status(request.request_id, ConnectionRequestStatus.CANCELED):
+        raise HTTPException(status_code=500, detail="Could not cancel connection request")
+    return ResponseModel(status_code=200, detail="Connection request canceled")
 
 
 class GroupTogglesRequest(BaseModel):

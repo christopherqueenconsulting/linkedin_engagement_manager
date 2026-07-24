@@ -18,6 +18,7 @@ export type EngPrefs = {
   reply_to_own_comments: boolean
   max_comments_per_day: number
   max_dms_per_day: number
+  max_invites_per_day: number
   default_video_quality: string
   reply_check_mode: string
   reply_sweeps_per_day: number
