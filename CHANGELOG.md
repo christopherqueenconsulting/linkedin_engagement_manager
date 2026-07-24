@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.66.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.66.0...v0.66.1) (2026-07-24)
+
+
+### Bug Fixes
+
+* **automation:** stop duplicate feed comments — URN-stable dedup key + concurrency gate ([d91d790](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d91d790dd67cb9a1d0fe5212301c7f7869f70d29)), closes [#474](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/474)
+* **automation:** stop duplicate feed comments — URN-stable dedup key + concurrency gate (closes [#474](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/474)) ([5e897d9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5e897d90748e3319857e98f9bacaa46120f43484))
+
 ## [0.66.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.65.0...v0.66.0) (2026-07-24)
 
 
