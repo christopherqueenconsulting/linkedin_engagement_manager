@@ -44,7 +44,8 @@ from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile,
 from cqc_lem.utilities.linkedin.poster import share_on_linkedin, share_carousel_on_linkedin, \
     share_document_on_linkedin, comment_on_linkedin_post, object_urn_from_post_url
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
-from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited, _redis_client
+from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited, _redis_client, \
+    acquire_run_lock, release_run_lock
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
 from cqc_lem.utilities.logger import myprint, log_error, log_info, log_warning
 from cqc_lem.utilities.observability import track_post_outcome
@@ -468,10 +469,67 @@ def _author_is_me(author: str, my_profile: LinkedInProfile) -> bool:
     return bool(me) and (author or "").strip().lower() == me
 
 
+# Canonical LinkedIn post identity. The activity/ugcPost/share URN is stable across re-renders;
+# it's the only reliable dedup anchor. A content hash is NOT — a "…see more" toggle or our own
+# just-posted comment mutates the card's text and yields a different hash for the SAME post,
+# which is how feed commenting posted two comments on one post (issue #474).
+_URN_RE = re.compile(r"urn:li:(?:activity|ugcPost|share):\d+", re.I)
+
+
+def _normalize_post_text(content: str) -> str:
+    """Collapse the volatile bits of a card's rendered text so the SAME post hashes the same
+    across re-renders: drop the 'see more'/'…more' expander tokens and ellipses, collapse all
+    whitespace, lowercase. Used only for the no-URN fallback key + the per-run fingerprint."""
+    t = (content or "").lower()
+    t = re.sub(r"\s*(?:…|\.\.\.)?\s*see\s+more\b", " ", t)
+    t = re.sub(r"\s*(?:…|\.\.\.)\s*more\b", " ", t)
+    t = t.replace("…", " ")
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
 def _feed_post_key(author: str, content: str) -> str:
-    """Stable-ish dedup key for a feed post (no permalink/urn exists in the SDUI DOM anymore)."""
-    digest = hashlib.sha1(f"{author}|{content[:200]}".encode("utf-8", "ignore")).hexdigest()[:20]
+    """Last-resort dedup key when no stable URN/permalink is available. Hashes the NORMALIZED
+    text (see _normalize_post_text) so it's stable across see-more/whitespace re-renders."""
+    norm = _normalize_post_text(content)[:240]
+    digest = hashlib.sha1(f"{(author or '').strip().lower()}|{norm}".encode("utf-8", "ignore")).hexdigest()[:20]
     return f"feedpost://{digest}"
+
+
+def _feed_post_urn_from_card(card) -> "str | None":
+    """The canonical urn:li:(activity|ugcPost|share):<id> for a feed card, read from any data
+    attribute or anywhere in the card's HTML. Returns the lowercased URN or None."""
+    try:
+        html = card.get_attribute("outerHTML")
+    except Exception:
+        return None
+    if not isinstance(html, str):
+        return None
+    m = _URN_RE.search(html)
+    return m.group(0).lower() if m else None
+
+
+def _stable_feed_post_key(card, author: str, content: str) -> str:
+    """Single canonical dedup key for a feed post, stable across re-renders. Prefers the URN
+    (from the permalink anchor OR anywhere in the card HTML) so permalink-present and
+    permalink-absent renders of the same post map to ONE key; only falls back to the normalized
+    content hash when no URN can be found."""
+    urn = None
+    permalink = _post_permalink_from_card(card)
+    if permalink:
+        m = _URN_RE.search(permalink)
+        urn = m.group(0).lower() if m else None
+    if not urn:
+        urn = _feed_post_urn_from_card(card)
+    if urn:
+        return f"feedurn://{urn}"
+    return _feed_post_key(author, content)
+
+
+def _feed_content_fingerprint(author: str, content: str) -> str:
+    """A render-stable per-run fingerprint of the post's text — a second dedup guard so that even
+    on the URN-less fallback path an unstable render can't sneak a second comment through."""
+    return "fp:" + _feed_post_key(author, content)
 
 
 def _post_permalink_from_card(card):
@@ -962,10 +1020,12 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             if card is None:
                 continue
             author = _post_author_from_card(card)
-            # Prefer the real /feed/update/ permalink so the logged post_url links correctly;
-            # fall back to the synthetic hash for cards that expose no anchor.
-            key = _post_permalink_from_card(card) or _feed_post_key(author, content)
-            if key in seen:
+            # Canonical URN-based key (stable across re-renders); normalized content hash only
+            # when no URN exists. `fp` is a second, render-stable fingerprint so even the URN-less
+            # fallback path can't slip a second comment through on a "…see more"/re-render (#474).
+            key = _stable_feed_post_key(card, author, content)
+            fp = _feed_content_fingerprint(author, content)
+            if key in seen or fp in seen:
                 continue
             examined_keys.add(key)
             # Persistent, cross-run/worker dedup: skip anything already claimed or commented
@@ -973,6 +1033,7 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             if (has_commented_post(user_id, key) or has_user_commented_on_post_url(user_id, key)
                     or not _passes_hard_excludes(content, author, prefs)):
                 seen.add(key)
+                seen.add(fp)
                 continue
             # Recency + min-reactions are soft gates: when the whole feed fails them the empty-feed
             # fallback relaxes them (below), so a reject here goes to soft_seen (reconsiderable),
@@ -991,12 +1052,13 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             meta = {"author": author, "age_minutes": age, "comments": counts["comments"],
                     "reactions": counts["reactions"], "relevant": _literal_relevant(content, author, prefs)}
             hard_keys.add(key)
-            candidates.append((_score_feed_post(meta, prefs, engagers), key, card, content, author, age))
+            candidates.append((_score_feed_post(meta, prefs, engagers), key, card, content, author, age, fp))
 
         if candidates:
             candidates.sort(key=lambda c: c[0], reverse=True)
-            score, key, card, content, author, age = candidates[0]
-            seen.add(key)  # decided on this one either way
+            score, key, card, content, author, age, fp = candidates[0]
+            seen.add(key)   # decided on this one either way
+            seen.add(fp)    # and its render-stable fingerprint (URN-less fallback guard)
             # Include gate (may use the LLM topic classifier) on the chosen post. If the feed keeps
             # producing nothing that matches the user's include filters, RELAX to fallback for the rest
             # of the run — comment on the best feed post regardless of include (LinkedIn already curates
@@ -1742,10 +1804,20 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
 
     myprint("Starting Automate Commenting Thread...")
 
+    # Single-flight per user: the pre-post trigger, the golden-hour beat, and this task's own
+    # self-requeue can otherwise run concurrently and double-walk the feed. Only one commenting
+    # run per user at a time; a loser skips this cycle (its own re-schedule will pick it up).
+    lock_name = f"automate_commenting:{user_id}"
+    lock_token = acquire_run_lock(lock_name, ttl_seconds=1800)
+    if lock_token is None:
+        myprint(f"Another commenting run is in progress for user {user_id} — skipping this cycle.")
+        return "Skipped: another commenting run already in progress for this user."
+
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Auto Commenting")
     except Exception as e:
         log_error("Error while getting profile for auto commenting", exc=e, user_id=user_id, task_name="automate_commenting")
+        release_run_lock(lock_name, lock_token)
         return f"Failed to start auto commenting: {e}"
 
     result = "Automate Commenting Task Started"
@@ -1791,6 +1863,9 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
         result = f"Error while automating commenting: {e}"
     finally:
         quit_gracefully(driver)  # Close the driver
+        # Released here (after this run's feed walk); the self-requeue fires 60s later as a fresh
+        # task and re-acquires. A crash still frees the lock via its TTL.
+        release_run_lock(lock_name, lock_token)
 
     return result
 
