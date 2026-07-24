@@ -686,6 +686,21 @@ def auto_send_due_followups():
 
 
 @shared_task.task
+def auto_process_outreach_funnel():
+    """Dispatch per-user processing of APPROVED comment->connect->DM funnel targets (issue #399).
+    Approval-gated: only targets a human has approved advance, and each advance drops the target
+    back to 'pending' for re-approval — nothing auto-fires at volume."""
+    if _skip_if_throttled("auto_process_outreach_funnel"):
+        return "Automation throttled"
+    from cqc_lem.app.run_automation import process_outreach_funnel
+    from cqc_lem.utilities.db import get_users_with_approved_outreach
+    user_ids = get_users_with_approved_outreach()
+    for uid in user_ids:
+        process_outreach_funnel.apply_async(kwargs={"user_id": uid})
+    return f"Dispatched outreach funnel for {len(user_ids)} user(s)"
+
+
+@shared_task.task
 def auto_notify_missing_linkedin_session():
     """Email active users who have no validated LinkedIn session cookie, prompting them
     to connect — automation can't run without one. Throttled per-user inside

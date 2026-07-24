@@ -99,6 +99,10 @@ app.conf.update(
             'task': 'cqc_lem.app.run_scheduler.auto_send_due_followups',
             'schedule': crontab(minute='*/30')  # Send due multi-touch DM follow-ups every 30 min
         },
+        'process-outreach-funnel': {
+            'task': 'cqc_lem.app.run_scheduler.auto_process_outreach_funnel',
+            'schedule': crontab(minute='*/30')  # Advance approved comment->connect->DM funnel steps
+        },
         'daily-golden-hour-engagement': {
             'task': 'cqc_lem.app.run_scheduler.auto_daily_engagement',
             'schedule': crontab(hour='13', minute='0')  # Daily peak-hour feed commenting (~9am ET), on top of pre-post
