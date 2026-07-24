@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.58.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.57.0...v0.58.0) (2026-07-24)
+
+
+### Features
+
+* **content:** default to no hashtags and bait-free CTAs (closes [#393](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/393)) ([b463ad2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b463ad2da3d3e5cc931dd9068b282d4b87abb0bb))
+* **content:** default to no hashtags and bait-free CTAs (closes [#393](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/393)) ([0e21f62](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0e21f626ee582c845c6b1f9da20d76227acd8853))
+
+
+### Documentation
+
+* **ui:** clarify hashtag help text claim ([55b1351](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/55b1351f7a0ce937c4f13ddd859789158d233599))
+
 ## [0.57.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.56.0...v0.57.0) (2026-07-24)
 
 
