@@ -44,6 +44,7 @@ from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited, _redis_client
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
 from cqc_lem.utilities.logger import myprint, log_error, log_info, log_warning
+from cqc_lem.utilities.observability import track_post_outcome
 from cqc_lem.utilities.selenium_util import click_element_wait_retry, \
     get_element_wait_retry, get_elements_as_list_wait_stale, getText, close_tab, get_driver_wait_pair, quit_gracefully, \
     wait_for_ajax, find_first, click_first, find_all_first
@@ -1515,6 +1516,10 @@ def auto_scrape_post_stats(self, user_id: int):
                               reposts=counts.get("reposts") or 0,
                               impressions=counts.get("impressions") or None,
                               saves=counts.get("saves") or 0)
+            track_post_outcome(post_id=pid, reactions=counts.get("reactions", 0),
+                               comments=counts.get("comments", 0), reposts=counts.get("reposts") or 0,
+                               impressions=counts.get("impressions") or None,
+                               saves=counts.get("saves") or 0, user_id=user_id)
             scraped += 1
         return f"Scraped stats for {scraped} post(s)"
     finally:
