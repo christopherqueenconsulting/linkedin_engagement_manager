@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.55.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.54.0...v0.55.0) (2026-07-24)
+
+
+### Features
+
+* **poster:** publish native document/PDF posts (closes [#390](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/390)) ([8d979df](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8d979dffc814e710f3d92d9e4591a86d6aaa58e0))
+
+
+### Bug Fixes
+
+* **poster:** address Copilot + CodeQL review on document posts ([2748084](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2748084bedab78b01cb63999069ad6398a16fc88))
+
 ## [0.54.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.53.0...v0.54.0) (2026-07-24)
 
 
