@@ -93,7 +93,8 @@ class TestSteering:
              patch(f"{_RCP}.get_ai_linked_post_refinement", side_effect=lambda c, **kw: c), \
              patch(f"{_RCP}.optimize_post_hook", side_effect=lambda c, **kw: c), \
              patch(f"{_RCP}.sanitize_for_linkedin", side_effect=lambda c, **kw: c), \
-             patch(f"{_RCP}.strip_engagement_bait", side_effect=lambda c, **kw: c):
+             patch(f"{_RCP}.strip_engagement_bait", side_effect=lambda c, **kw: c), \
+             patch(f"{_RCP}._score_and_persist_authenticity"):
             out = rcp.create_text_post(1, "awareness", post_type="thought_leadership",
                                        user_profile=MagicMock(), post_id=5)
         assert out == _FRESH

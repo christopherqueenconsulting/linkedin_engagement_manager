@@ -473,6 +473,14 @@ class TestGmailForwardConfirmationStorage:
             from cqc_lem.api.main import get_gmail_forward_confirmation
             assert get_gmail_forward_confirmation(7) is None
 
+    def test_get_none_when_redis_read_raises(self):
+        from unittest.mock import MagicMock
+        redis = MagicMock()
+        redis.get.side_effect = ConnectionError("redis down")
+        with patch(self._RL, return_value=redis):
+            from cqc_lem.api.main import get_gmail_forward_confirmation
+            assert get_gmail_forward_confirmation(7) is None
+
     def test_confirmation_stores_status_in_redis(self, client):
         from unittest.mock import MagicMock
         redis = MagicMock()
@@ -488,6 +496,23 @@ class TestGmailForwardConfirmationStorage:
         assert resp.json()["detail"] == "confirmed"
         redis.set.assert_called_once()
         assert redis.set.call_args.args[0] == "linkedin:gmail_forward_confirm:7"
+
+    def test_redis_write_failure_never_breaks_the_webhook(self, client):
+        from unittest.mock import MagicMock
+        redis = MagicMock()
+        redis.set.side_effect = ConnectionError("redis down")
+        got = type("R", (), {"status_code": 200})()
+        body = ("confirm the request: https://mail.google.com/mail/vf-abc\n"
+                "Confirmation code: 999888777")
+        with patch("cqc_lem.utilities.db.get_user_id_by_reply_token", return_value=7), \
+             patch("cqc_lem.api.main.requests.get", return_value=got), \
+             patch(self._RL, return_value=redis):
+            resp = client.post("/api/linkedin/comment-notification/inbound", data={
+                "to": "reply+tok9@parse.example.com",
+                "from": "forwarding-noreply@google.com",
+                "subject": "Gmail Forwarding Confirmation", "text": body})
+        assert resp.status_code == 200
+        assert resp.json()["detail"] == "confirmed"
 
 
 class TestSharedInboundRouting:

@@ -162,6 +162,7 @@ class TestUpdateStaleProfileLoginError:
         """update_stale_profile calls quit_gracefully when get_current_profile succeeds."""
         mock_driver = MagicMock()
         with patch(_PATCH_GET_PROFILE, return_value=(mock_driver, MagicMock(), "u@e.com", MagicMock())), \
+             patch(f"{_MOD}.synthesize_profile", return_value=""), \
              patch(f"{_MOD}.quit_gracefully") as mock_quit:
             from cqc_lem.app.run_automation import update_stale_profile
 
