@@ -1309,13 +1309,6 @@ def summarize_recent_activity(recent_activity_profile: LinkedInProfile, main_pro
     return result
 
 
-def create_video_from_prompt(prompt: str):
-    raise NotImplementedError(
-        "openai.Video.create() was removed in OpenAI SDK v1.x. "
-        "Use create_runway_video() or create_replicate_video() instead."
-    )
-
-
 def _subject_anchor_line(trends: dict) -> str:
     """SUBJECT anchor injected into trend-based post prompts when the trend analysis was anchored to
     one of the user's focus topics — states the assigned subject explicitly so the writer model
@@ -2478,8 +2471,6 @@ def generate_flux1_image_from_prompt(prompt: str, *, ratio: str = DEFAULT_IMAGE_
     print(f"Video File Dest: {video_file_dest}")
     # Move the video file to the gradio dir
     shutil.move(video_file_path, video_file_dest)
-
-    # TODO: Verify this final path and move
 
     return video_file_dest
     """

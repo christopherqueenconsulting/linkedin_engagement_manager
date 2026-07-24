@@ -7,7 +7,7 @@ LinkedIn Engagement Manager (LEM) automates LinkedIn engagement end to end: Sele
 Two pillars:
 
 - **Content generation & scheduling** — a 30-day content plan of buyer-journey-staged posts (thought leadership, industry-news commentary, personal story, engagement prompts, carousels, native video, blog summaries) auto-scheduled around peak/golden hours, with sentiment checks and a preview/approval workflow.
-- **Engagement automation** — feed commenting, replies on the user's own posts, seed-and-pin first comments, appreciation/outreach DMs with multi-touch follow-ups, and monthly company-page invitations — all driven by per-user targeting, voice/tone, and per-day cap preferences.
+- **Engagement automation** — feed commenting, replies on the user's own posts, seed first comments, appreciation/outreach DMs with multi-touch follow-ups, and monthly company-page invitations — all driven by per-user targeting, voice/tone, and per-day cap preferences.
 
 See **Feature Areas** below for the code paths behind each capability.
 
@@ -137,7 +137,7 @@ Use `click_element_wait_retry()` for all click interactions — it handles trans
 
 ### Engagement automation (`app/run_automation.py`)
 - **Feed commenting** rebuilt for LinkedIn's SDUI: resilient `find_first`/`click_first`/`find_all_first` selectors (`utilities/linkedin/helper.py`); inline compose + submit; **recency-dominant scoring matrix** (`_score_feed_post` = recency + relevance + reciprocity + activity) with post-age (`_post_age_minutes`) and social-count (`_post_social_counts`) extraction, best-effort "Recent" feed sort (`_switch_feed_to_recent`); targeting filters + per-day caps + voice/tone. Runs pre-post (≈15 min before each scheduled post) and daily at a golden hour.
-- **Replies** to comments on the user's own posts (`automate_reply_commenting`); **seed + pin a first comment** on own posts (`auto_seed_comment_on_post` → `_pin_own_comment`).
+- **Replies** to comments on the user's own posts (`automate_reply_commenting`); **seed a first comment** on own posts (`auto_seed_comment_on_post`).
 - **Reciprocity tracking** via the `post_engagers` table — boosts commenting back on people who engaged with us (`get_recent_engagers`).
 - **DMs**: appreciation (connection / recommendation / collaboration), profile-viewer outreach, and **multi-touch follow-up sequences** — all templated and voice-aligned (`build_dm_from_template`, `dm_templates`, `dm_followups`, `process_user_followups`).
 - Monthly **company-page invitations** (`utilities/linkedin/company_page_inviter.py`).

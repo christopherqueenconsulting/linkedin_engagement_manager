@@ -1374,28 +1374,6 @@ def track_newsletter_subscribers(self, user_id: int):
         quit_gracefully(driver)
 
 
-def _pin_own_comment(driver) -> bool:
-    """Best-effort: pin our just-posted comment on our own post. The comment's overflow control
-    (aria-label 'View more options for <name>'s comment.') is hover-hidden, so we JS-click it,
-    then click 'Pin comment' in the menu. Non-fatal — the seed comment's value stands without it."""
-    try:
-        opened = driver.execute_script(
-            "const b=[...document.querySelectorAll('button[aria-label]')].find(x=>{"
-            "const a=(x.getAttribute('aria-label')||'').toLowerCase();"
-            "return a.includes('options for') && a.includes('comment');});"
-            "if(b){b.scrollIntoView({block:'center'}); b.click(); return true;} return false;")
-        if not opened:
-            return False
-        time.sleep(random.uniform(1, 2))
-        return bool(driver.execute_script(
-            "const el=[...document.querySelectorAll(\"[role=menuitem],[role=menuitemradio],button,div,span,li,h5\")]"
-            ".find(e=>/^pin\\b/i.test((e.innerText||'').trim()) && (e.innerText||'').trim().length<20);"
-            "if(el){(el.closest('[role=menuitem]')||el).click(); return true;} return false;"))
-    except Exception as e:
-        log_warning("Pin own comment failed", exc=e, action_type="comment")
-        return False
-
-
 # JS: count the overflow ("…") buttons for OUR OWN comments on the current post. LinkedIn labels each
 # comment's overflow control "View more options for <name>'s comment.", so matching our full name
 # restricts this to comments WE authored — we never touch anyone else's comment.
@@ -2717,16 +2695,7 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True}, reject_on_worker_lost=True,
                   rate_limit='2/m', queue='se_outreach')
 def clean_stale_invites(self, user_id: int):
-    """Cleans up stale invites that the user has sent"""
-
-    # TODO": Implement this method and
-    # user_email, user_password = get_user_password_pair_by_id(user_id)
-
-    # driver, wait = get_driver_wait_pair(session_name='Private DM')
-
-    # login_to_linkedin(driver, wait, user_email, user_password)
-
-    # quit_gracefully(driver)  # Close the driver
+    """Cleans up stale invites that the user has sent. Not yet implemented — no-op stub."""
 
     pass
 

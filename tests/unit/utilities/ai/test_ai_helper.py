@@ -166,15 +166,6 @@ class TestGetThoughtLeadershipPostFromAi:
 
 
 @pytest.mark.unit
-class TestCreateVideoFromPrompt:
-    def test_raises_not_implemented(self):
-        from cqc_lem.utilities.ai.ai_helper import create_video_from_prompt
-
-        with pytest.raises(NotImplementedError, match="create_runway_video"):
-            create_video_from_prompt("A video about AI")
-
-
-@pytest.mark.unit
 class TestModelTierAssignments:
     """Verify all functions use the expected LiteLLM tier aliases."""
 
