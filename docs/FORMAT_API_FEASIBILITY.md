@@ -24,7 +24,8 @@ LinkedIn's **Posts API** (`POST /rest/posts`, the successor to `ugcPosts`) lists
 |---|---|---|
 | Documents | **Yes** | Yes |
 
-The flow is two calls, exactly what `poster.py` implements:
+The flow is a document upload followed by a post create — three HTTP steps, exactly what
+`poster.py` implements:
 
 1. `POST /rest/documents?action=initializeUpload` → returns an `uploadUrl` + a `urn:li:document:{id}`.
 2. `PUT` the PDF bytes to `uploadUrl`.
@@ -94,8 +95,8 @@ which prevents crashes but means silent non-publish.
 | Article editor DOM/selectors change (SDUI churn) | **High** | Edition silently not published (`None` → "did not complete") | *In place:* `find_first`/`click_first` with fallbacks, `required=False`. *Recommended:* selector-liveness check (ties to F2 #403) + failure notification so a silent no-publish is visible. |
 | Multi-step publish dialog varies per account/A-B | Medium | Publish click missed | *In place:* best-effort edition-description fill never blocks Publish. *Recommended:* supervised first real run per account (already documented in the docstring). |
 | 429 / auth-wall during the browser session | Medium | Whole session aborts | *In place:* newsletter publish is gated on the shared rate-limit breaker like other Selenium fan-outs (`run_scheduler.py:517`). |
-| Login/cookie absent for the user | Medium | `get_current_profile` throws → logged, no publish | *In place:* error logged with `user_id`; see [[automation-login-blocker]]. |
-| **`LI_API_VERSION` retired** (affects the *document* path, not newsletters) | **High** | Versioned `/rest/documents` 426s → demotes to legacy path | *In place:* explicit 426 log in `upload_document`; weekly API-version retirement cron + probe (see [[linkedin-api-version-retirement]]). **Flag:** the code default `202606` (`env_constants.py`) sunset **2026-06-15** — prod must set a current `LI_API_VERSION` env override. |
+| Login/cookie absent for the user | Medium | `get_current_profile` throws → logged, no publish | *In place:* error logged with `user_id`. |
+| **`LI_API_VERSION` retired** (affects the *document* path, not newsletters) | **High** | Versioned `/rest/documents` 426s → demotes to legacy path | *In place:* explicit 426 log in `upload_document`; weekly API-version liveness probe (`scripts/linkedin_version_check.py`, run by `scripts/weekly_linkedin_version_check.sh`). **Flag:** the code default `202606` (`env_constants.py`) is a dated version string that LinkedIn retires on its rolling ~7-month window, so it goes stale — prod must keep `LI_API_VERSION` pointed at a current, non-retired version (the weekly probe reports when to bump). |
 
 **Residual risk after mitigations:** newsletter publish remains a **supervised, best-effort** path.
 Because no API can replace it, the de-risking lever is *observability*, not migration:
@@ -116,7 +117,7 @@ Because no API can replace it, the de-risking lever is *observability*, not migr
 
 ## Sources
 
-- [Posts API — Microsoft Learn (`li-lms-2026-07`)](https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/posts-api?view=li-lms-2026-05)
+- [Posts API — Microsoft Learn (`li-lms-2026-07`)](https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/posts-api?view=li-lms-2026-07)
 - [Recent Marketing API Changes — Microsoft Learn](https://learn.microsoft.com/en-us/linkedin/marketing/integrations/recent-changes?view=li-lms-2026-04)
 - [Documents API — Microsoft Learn](https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/documents-api)
 - In-repo: `src/cqc_lem/utilities/linkedin/poster.py` (document API path), `src/cqc_lem/app/run_automation.py` (`auto_publish_newsletter_edition`, `_fill_and_publish_article`).
