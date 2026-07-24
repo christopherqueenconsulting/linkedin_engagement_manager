@@ -2188,6 +2188,54 @@ def _react_to_comment_inline(driver, wait, comment_el, user_id: int = None) -> b
         return False
 
 
+def _reply_under_comment_inline(driver, wait, comment_el, reply_text: str, user_id: int = None) -> bool:
+    """Reply UNDER a specific comment — NOT as a new top-level comment. The bug: clicking a comment's
+    Reply then taking the first page-wide role=textbox grabbed the post's main 'Add a comment' box, so
+    the reply posted as a standalone comment. Fix: after opening the reply box, type into the composer
+    NEAREST the comment (the inline reply box opens right below it), never the far-away main box."""
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", comment_el)
+        try:
+            ActionChains(driver).move_to_element(comment_el).pause(0.5).perform()  # reveal action bar
+        except Exception:
+            pass
+        rbtns = comment_el.find_elements(By.CSS_SELECTOR, "button[aria-label='Reply']")
+        if not rbtns:
+            log_warning("Reply-under-comment: no Reply button found", action_type="reply", user_id=user_id)
+            return False
+        try:
+            ActionChains(driver).move_to_element(rbtns[0]).pause(0.2).click(rbtns[0]).perform()
+        except Exception:
+            driver.execute_script("arguments[0].click();", rbtns[0])
+        time.sleep(random.uniform(1.5, 2.8))
+        # Pick the VISIBLE composer nearest the comment (the reply box that just opened below it);
+        # heavily penalise any composer above the comment (that's the main top comment box).
+        composer = driver.execute_script(
+            "const a=arguments[0].getBoundingClientRect();"
+            "const boxes=[...document.querySelectorAll(\"div[role='textbox']\")].filter(e=>{"
+            "  const r=e.getBoundingClientRect(); return r.width>0 && r.height>0;});"
+            "let best=null,bd=1e12;"
+            "for(const e of boxes){const r=e.getBoundingClientRect();"
+            "  let d=Math.abs(r.top-a.bottom)+(r.top<a.top?1e6:0);"
+            "  if(d<bd){bd=d;best=e;}} return best;", comment_el)
+        if composer is None:
+            log_warning("Reply-under-comment: no composer near the comment", action_type="reply", user_id=user_id)
+            return False
+        reply_text = _strip_non_bmp(reply_text)
+        if not reply_text.strip():
+            return False
+        composer.click()
+        composer.send_keys(reply_text)
+        time.sleep(random.uniform(1, 2))
+        if not driver.execute_script(_SUBMIT_NEAR_COMPOSER_JS, composer):
+            composer.send_keys(Keys.CONTROL, Keys.RETURN)  # fallback
+        time.sleep(random.uniform(3, 5))
+        return _composer_submitted(driver, composer, reply_text)
+    except Exception as e:
+        log_warning("Reply-under-comment failed", exc=e, action_type="reply", user_id=user_id)
+        return False
+
+
 def _followup_on_post_comment_replies(driver, wait, user_id: int, post_url: str, post_key: str,
                                       my_profile, profile_synthesis: str, prefs: dict,
                                       replies_remaining: int) -> dict:
@@ -2269,7 +2317,7 @@ def _followup_on_post_comment_replies(driver, wait, user_id: int, post_url: str,
         if not did_reply and replies_remaining > 0 and _reply_is_question(reply_text):
             response = generate_thread_reply(reply_text, reply_text, my_profile, prefs=prefs,
                                              profile_synthesis=profile_synthesis)
-            if response and _reply_to_comment_inline(driver, wait, cont, response, user_id=user_id):
+            if response and _reply_under_comment_inline(driver, wait, cont, response, user_id=user_id):
                 result["replied"] += 1
                 replies_remaining -= 1
                 record_comment_followup(user_id, post_key, reply_key, reacted=did_react, replied=True)
