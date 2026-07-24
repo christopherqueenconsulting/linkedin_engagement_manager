@@ -179,3 +179,45 @@ def automation_pause_remaining() -> int:
 
 def is_automation_paused() -> bool:
     return automation_pause_remaining() > 0
+
+
+# --- single-flight task locks -------------------------------------------------
+# A per-user run lock so overlapping schedules of the SAME Selenium task (e.g. feed commenting
+# fired by the pre-post trigger, the golden-hour beat, and its own self-requeue) can't run
+# concurrently and double-act on the feed. Fails OPEN: if Redis is unavailable the lock no-ops
+# (returns a sentinel token) so behaviour is unchanged rather than blocking the task entirely.
+_LOCK_PREFIX = "linkedin:runlock:"
+_LOCK_FAILOPEN = ("no-redis", "lock-error")
+
+
+def acquire_run_lock(name: str, ttl_seconds: int = 1800) -> "str | None":
+    """Try to take a named single-flight lock. Returns an opaque token to pass to
+    release_run_lock() if acquired (or a fail-open sentinel if Redis is down), else None when
+    another holder is active. TTL auto-expires the lock if the holder crashes without releasing."""
+    client = _redis_client()
+    if client is None:
+        return "no-redis"  # fail open — don't block the task when Redis is unavailable
+    token = f"{os.getpid()}-{name}"
+    try:
+        if client.set(f"{_LOCK_PREFIX}{name}", token, nx=True, ex=max(1, int(ttl_seconds))):
+            return token
+        return None
+    except Exception as e:
+        log_warning("Run-lock acquire failed — proceeding without lock", exc=e, action_type="rate_limit")
+        return "lock-error"  # fail open
+
+
+def release_run_lock(name: str, token: "str | None") -> None:
+    """Release a lock only if we still hold the same token (never free another holder's lock, e.g.
+    one that TTL-expired and was reacquired). No-ops for the fail-open sentinels."""
+    if not token or token in _LOCK_FAILOPEN:
+        return
+    client = _redis_client()
+    if client is None:
+        return
+    try:
+        current = client.get(f"{_LOCK_PREFIX}{name}")
+        if current is not None and current.decode("utf-8", "ignore") == token:
+            client.delete(f"{_LOCK_PREFIX}{name}")
+    except Exception:
+        pass
