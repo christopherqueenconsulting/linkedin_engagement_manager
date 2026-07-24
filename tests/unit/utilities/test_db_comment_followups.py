@@ -79,3 +79,42 @@ class TestUpdateKey:
         from cqc_lem.utilities.db import update_commented_post_key
         assert update_commented_post_key(1, "x", "x") is False
         assert update_commented_post_key(1, "", "y") is False
+
+
+import mysql.connector
+
+
+class TestRowsWithTextAndErrorBranches:
+    def test_recent_rows_with_text_happy(self):
+        from cqc_lem.utilities.db import get_recent_commented_rows_with_text
+        conn, cur = _conn()
+        cur.fetchall.return_value = [{"post_key": "feedpost://h", "comment_text": "hi"}]
+        with patch(f"{DB}.get_db_connection", return_value=conn):
+            rows = get_recent_commented_rows_with_text(1, days=3)
+        assert rows and rows[0]["comment_text"] == "hi"
+        assert "flyway" not in cur.execute.call_args[0][0].lower()
+
+    @pytest.mark.parametrize("fn,args,default", [
+        ("get_recent_navigable_commented_posts", (1,), []),
+        ("get_recent_commented_rows_with_text", (1,), []),
+        ("get_comment_followup", (1, "rk"), None),
+        ("record_comment_followup", (1, "pk", "rk"), False),
+        ("count_followup_replies_today", (1,), 0),
+        ("update_commented_post_key", (1, "a", "b"), False),
+    ])
+    def test_db_error_returns_safe_default(self, fn, args, default):
+        import cqc_lem.utilities.db as db
+        conn, cur = _conn()
+        cur.execute.side_effect = mysql.connector.Error("boom")
+        with patch(f"{DB}.get_db_connection", return_value=conn):
+            assert getattr(db, fn)(*args) == default
+
+
+class TestGuards:
+    def test_record_followup_empty_key(self):
+        from cqc_lem.utilities.db import record_comment_followup
+        assert record_comment_followup(1, "pk", "") is False
+
+    def test_get_followup_empty_key(self):
+        from cqc_lem.utilities.db import get_comment_followup
+        assert get_comment_followup(1, "") is None

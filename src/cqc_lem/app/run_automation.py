@@ -17,7 +17,8 @@ from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.utilities.ai.content_framework import select_blueprint
 from cqc_lem.utilities.ai.ai_helper import generate_ai_response, get_ai_message_refinement, summarize_recent_activity, \
     ai_check_message_history, post_is_relevant, generate_newsletter_edition, generate_group_post, \
-    generate_thread_reply, generate_seed_comment, choose_post_reaction, get_or_create_profile_synthesis, \
+    generate_thread_reply, generate_comment_reply_followup, generate_seed_comment, choose_post_reaction, \
+    get_or_create_profile_synthesis, \
     synthesize_profile
 from cqc_lem.utilities.ai.content_alignment import humanize_text, split_link_for_first_comment, \
     append_link_to_comment
@@ -2151,7 +2152,7 @@ def _react_to_comment_inline(driver, wait, comment_el, user_id: int = None) -> b
             ActionChains(driver).move_to_element(comment_el).pause(0.7).perform()  # reveal the bar
             time.sleep(random.uniform(0.5, 1.0))
         except Exception:
-            pass
+            pass  # hover is best-effort; a headless/again-stale element still gets the click below
         btns = comment_el.find_elements(
             By.CSS_SELECTOR,
             "button[aria-label^='React '], button[aria-label='Like'], "
@@ -2198,7 +2199,7 @@ def _reply_under_comment_inline(driver, wait, comment_el, reply_text: str, user_
         try:
             ActionChains(driver).move_to_element(comment_el).pause(0.5).perform()  # reveal action bar
         except Exception:
-            pass
+            pass  # hover is best-effort; the Reply button lookup below still runs
         rbtns = comment_el.find_elements(By.CSS_SELECTOR, "button[aria-label='Reply']")
         if not rbtns:
             log_warning("Reply-under-comment: no Reply button found", action_type="reply", user_id=user_id)
@@ -2253,7 +2254,7 @@ def _followup_on_post_comment_replies(driver, wait, user_id: int, post_url: str,
     try:
         driver.set_window_size(1400, 3400)
     except Exception:
-        pass
+        pass  # some drivers reject resize; scrolling below is the fallback
     if driver.current_url.split("?")[0].rstrip("/") != post_url.split("?")[0].rstrip("/"):
         driver.get(post_url)
         time.sleep(random.uniform(2.5, 4))
@@ -2321,8 +2322,9 @@ def _followup_on_post_comment_replies(driver, wait, user_id: int, post_url: str,
                            result=LogResultType.SUCCESS, post_url=post_url,
                            message="Reacted to reply on our comment")
         if not did_reply and replies_remaining > 0 and _reply_is_question(reply_text):
-            response = generate_thread_reply(reply_text, reply_text, my_profile, prefs=prefs,
-                                             profile_synthesis=profile_synthesis)
+            # We are a GUEST replying in someone else's thread — not the post author (issue #478).
+            response = generate_comment_reply_followup(reply_text, my_profile, prefs=prefs,
+                                                       profile_synthesis=profile_synthesis)
             if response and _reply_under_comment_inline(driver, wait, cont, response, user_id=user_id):
                 result["replied"] += 1
                 replies_remaining -= 1
@@ -2339,6 +2341,12 @@ def sweep_comment_followups(self, user_id: int):
     """Revisit posts we automated a comment on in the last few days and follow up on replies to our
     comment: react to each reply, and answer question-replies (issue #478). Only touches OUR
     automated comments (the commented_posts ledger). QueueOnce + single-flight lock + 429-safe."""
+    return _run_comment_followups_sweep(user_id)
+
+
+def _run_comment_followups_sweep(user_id: int) -> str:
+    """Body of sweep_comment_followups, extracted so it is unit-testable without the QueueOnce/Redis
+    task wrapper."""
     posts = get_recent_navigable_commented_posts(user_id, days=_FOLLOWUP_WINDOW_DAYS)
     if not posts:
         return "No recent navigable commented posts to follow up on"
@@ -2386,6 +2394,11 @@ def process_comment_followups_for_url(self, user_id: int, post_url: str):
     """Single-post entrypoint for the follow-up feature — run it against ONE post URL (manual/API/
     verification), independent of the ledger. Reacts to replies on our comment and answers
     questions, same as the sweep (issue #478)."""
+    return _run_single_post_followup(user_id, post_url)
+
+
+def _run_single_post_followup(user_id: int, post_url: str) -> str:
+    """Body of process_comment_followups_for_url, extracted for unit testing (no QueueOnce/Redis)."""
     key = None
     m = re.search(r"urn:li:(?:activity|ugcPost|share):\d+", post_url or "")
     if m:
@@ -2453,6 +2466,11 @@ def reconcile_recent_comment_urns(self, user_id: int, days: int = _FOLLOWUP_WIND
     """Backfill: recover navigable URNs for recent 'feedpost://' ledger rows via the user's own
     recent-activity/comments page, so pre-#474 comments become follow-up-able. Matches each activity
     comment to a ledger row by our comment text, then upgrades the key to feedurn:// (issue #478)."""
+    return _run_reconcile_comment_urns(user_id, days)
+
+
+def _run_reconcile_comment_urns(user_id: int, days: int = _FOLLOWUP_WINDOW_DAYS) -> str:
+    """Body of reconcile_recent_comment_urns, extracted for unit testing (no QueueOnce/Redis)."""
     stale = [r for r in get_recent_commented_rows_with_text(user_id, days=days)
              if str(r.get("post_key", "")).startswith("feedpost://")]
     if not stale:

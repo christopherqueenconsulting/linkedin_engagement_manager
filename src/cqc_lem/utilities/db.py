@@ -3565,7 +3565,7 @@ def has_commented_post(user_id: int, post_key: str) -> bool:
 
 
 def get_recent_navigable_commented_posts(user_id: int, days: int = 3) -> list:
-    """Posts we automated a comment on in the last `days` whose ledger key is a NAVIGABLE URN
+    """Posts we automated a comment on in the last `days` whose ledger key is a navigable URN
     (feedurn://urn:li:...), newest first. These are the posts the follow-up sweep can revisit to
     handle replies to our comment (issue #478). Pre-#474 'feedpost://' hash keys aren't navigable
     and are excluded."""
