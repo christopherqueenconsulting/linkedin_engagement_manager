@@ -86,6 +86,14 @@ model_list:
       model: openai/dall-e-3
       api_key: os.environ/OPENAI_API_KEY
 
+  # ── EMBEDDING: cheap vectors for feedback dedup/clustering (issue #498) ──────
+  # No Ollama Cloud embedding equivalent; text-embedding-3-small is the cheapest useful option.
+  # Callers MUST tolerate this being unavailable — feedback dedup falls back to token overlap.
+  - model_name: lem-embedding
+    litellm_params:
+      model: openai/text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
+
   # ── ROUTER: auto-routes by prompt complexity via LEMComplexityRouter hook ─────
   - model_name: lem-router
     litellm_params:

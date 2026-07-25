@@ -1168,5 +1168,29 @@ def auto_daily_cost_alerts(self, days: int = 7):
             f"(emailed={result['emailed']}, tracked={result['tracked']})")
 
 
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_file_feedback_issues(self, limit: int = 25):
+    """Drain the captured-feedback queue into the work pipeline (issue #498, plan §B.2/B.3): classify
+    each new report, dedup it against the open clusters (+1 the existing issue) and open ONE
+    `MODE=start`-shaped issue per genuinely new problem. QueueOnce so two beat ticks can never file
+    the same report twice."""
+    from cqc_lem.utilities.feedback.issue_service import process_new_feedback
+
+    result = process_new_feedback(limit=limit)
+    return f"Feedback filing: {result['processed']} row(s) — {result['counts'] or 'nothing to do'}"
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_recluster_feedback(self, limit: int = 200):
+    """Nightly reclustering of the feedback backlog (issue #498, plan §B.3): backfill missing
+    embeddings and attach leftover/untriaged reports to the open cluster they now match, bumping that
+    issue's demand. Files nothing — that stays with `auto_file_feedback_issues`."""
+    from cqc_lem.utilities.feedback.issue_service import recluster_feedback
+
+    result = recluster_feedback(limit=limit)
+    return (f"Feedback recluster: {result['scanned']} scanned, {result['attached']} attached to "
+            f"{result['clusters']} open cluster(s), {result['embedded']} embedding(s) backfilled")
+
+
 if __name__ == "__main__":
     print("Process finished")
