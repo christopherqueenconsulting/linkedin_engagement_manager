@@ -823,6 +823,53 @@ def generate_lead_response(their_message: str, profile: "LinkedInProfile", chann
                           profile_synthesis=profile_synthesis, prefs=prefs, max_chars=limit)
 
 
+def generate_nurture_dm(their_message: str, intent: str, profile: "LinkedInProfile",
+                        first_name: str = None, template_hint: str = None,
+                        history: list = None, prefs: dict = None,
+                        profile_synthesis: str = None) -> "str | None":
+    """Draft the NEXT message in a live DM thread after a lead replied (issue #485) — the
+    context-aware step between "they answered" and "we followed up well".
+
+    `intent` branches the brief (interested -> propose a call, objection -> address it, not-now ->
+    light touch, neutral -> stay human); `template_hint` is the operator's own nurture template for
+    this step, used as the intended direction rather than text to copy. Never invent prices,
+    timelines, or capabilities. The draft is APPROVAL-GATED; a human sends it."""
+    from cqc_lem.utilities.ai.dm_nurture import nurture_guidance
+    system_prompt = {
+        "role": "system",
+        "content": f"""You are writing the next direct message in a REAL LinkedIn conversation you
+        already started. They just replied to you. You are a peer and a guest in their inbox, not a
+        salesperson working a lead.
+        {nurture_guidance(intent)}
+        Respond to what they ACTUALLY said — quote nothing, but make it obvious you read it. NEVER
+        invent prices, timelines, package names, client names, or capabilities; if the answer depends
+        on details you do not have, say what it depends on and ask. No hard sell, no hype, no links,
+        no hashtags, no emoji spam, no "just following up" or "circling back". Never repeat a message
+        you have already sent them.
+        2-4 sentences, under 300 characters. Output ONLY the message text.""",
+    }
+    ctx = ""
+    if history:
+        prior = "\n".join(f"- {m}" for m in list(history)[-3:] if m)
+        if prior:
+            ctx += f"What I already sent them (do not repeat it):\n{prior}\n\n"
+    if template_hint:
+        ctx += (f"My own template for this step — use its INTENT and direction, not its wording:\n"
+                f"{template_hint}\n\n")
+    if first_name:
+        ctx += f"Their first name: {first_name}\n\n"
+    user_prompt = {"role": "user", "content":
+        f"My voice:\n{_voice_reference(profile, profile_synthesis)}\n\n{ctx}"
+        f"Their reply to me:\n{their_message}\n{_style_directive(prefs)}"}
+    response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt],
+                         temperature=round(random.uniform(0.4, 0.6), 2))
+    content = response.choices[0].message.content
+    if content is None:
+        return None
+    return _humanize_text(content.strip(), content_type="dm",
+                          profile_synthesis=profile_synthesis, prefs=prefs, max_chars=300)
+
+
 def optimize_post_hook(post_content: str, prefs: dict = None,
                        preserve_cta_keyword: str = None) -> str:
     """Rewrite a generated post so it opens with a scroll-stopping hook within the first ~210

@@ -16,7 +16,13 @@ interface ScheduledDm {
   message: string
   scheduled_time: string
   status: string
+  source?: string | null
 }
+
+// Auto-drafted rows (issue #485: the next message in a thread where the lead replied) land in this
+// same queue as 'pending'. The badge is what tells the operator they are approving a machine's
+// draft rather than something they wrote.
+const SOURCE_LABELS: Record<string, string> = { nurture: 'AUTO-DRAFTED REPLY' }
 
 const STATUS_COLORS: Record<string, string> = {
   pending: 'bg-yellow-100 text-yellow-700',
@@ -145,6 +151,11 @@ export default function ScheduledDMs({ userTimezone }: { userTimezone: string })
                 {dm.recipient_name || dm.recipient_profile_url}
               </a>
               <div className="flex items-center gap-2 shrink-0">
+                {dm.source && SOURCE_LABELS[dm.source] && (
+                  <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700">
+                    {SOURCE_LABELS[dm.source]}
+                  </span>
+                )}
                 <span className="text-xs text-gray-400">{formatInTimezone(dm.scheduled_time, userTimezone)}</span>
                 <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[dm.status] ?? 'bg-gray-100 text-gray-600'}`}>
                   {dm.status.toUpperCase()}

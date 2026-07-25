@@ -18,9 +18,10 @@ from cqc_lem.utilities.ai.content_framework import select_blueprint
 from cqc_lem.utilities.ai.ai_helper import generate_ai_response, get_ai_message_refinement, summarize_recent_activity, \
     ai_check_message_history, post_is_relevant, generate_newsletter_edition, generate_group_post, \
     generate_thread_reply, generate_comment_reply_followup, generate_seed_comment, choose_post_reaction, \
-    get_or_create_profile_synthesis, generate_lead_response, \
+    get_or_create_profile_synthesis, generate_lead_response, generate_nurture_dm, \
     synthesize_profile
 from cqc_lem.utilities.ai.lead_intent import detect_lead_signals
+from cqc_lem.utilities.ai.dm_nurture import classify_reply_intent, is_stop_intent, nurture_delay_hours
 from cqc_lem.utilities.ai.content_alignment import humanize_text, split_link_for_first_comment, \
     append_link_to_comment
 from cqc_lem.utilities.date import convert_viewed_on_to_date
@@ -43,7 +44,9 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     get_approved_outreach_targets, update_outreach_target, update_outreach_target_status, \
     OutreachStage, OutreachStatus, \
     insert_lead_signal, has_lead_signal, get_lead_signal, update_lead_signal, \
-    LeadSignalSource, LeadSignalChannel, LeadSignalStatus
+    LeadSignalSource, LeadSignalChannel, LeadSignalStatus, \
+    insert_scheduled_dm, has_open_scheduled_dm, count_scheduled_dms_created_today, \
+    ScheduledDmStatus, SCHEDULED_DM_SOURCE_NURTURE
 from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
     load_profile_for_user
@@ -2849,12 +2852,124 @@ def check_dm_replied(driver, wait, profile_url: str, my_name: str = None) -> boo
         return False
 
 
+# --- DM conversation auto-nurture (issue #485) --------------------------------------------------
+# A reply used to END a DM sequence: we stopped the follow-ups and the thread went cold. Now the
+# same reply we ALREADY read (for #483 intent detection) branches into a drafted next message that
+# lands APPROVAL-GATED in the scheduled-DM queue the operator already reviews. Nothing here can send
+# anything: the draft is 'pending' until a human approves it in the UI, and delivery then runs
+# through send_scheduled_dm with the existing per-day DM cap.
+NURTURE_EVENT_TYPE = "nurture"  # dm_templates / dm_followups event_type for this sequence
+# Re-check touches per thread. Each one is a Selenium thread-open, so the walk is bounded: after
+# this many rounds a conversation that is going nowhere stops costing us sessions.
+_NURTURE_MAX_STEPS = 3
+_NURTURE_DEFAULT_MAX_PER_DAY = 5
+
+
+def _nurture_enabled() -> bool:
+    raw = os.environ.get("DM_NURTURE_ENABLED")
+    if raw is None or not raw.strip():
+        return True
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
+def _nurture_auto_approve() -> bool:
+    """OFF by default — a drafted reply to a real prospect is exactly the thing a human should see
+    before it sends. Turning this on skips the approval queue (the draft goes straight to 'approved'
+    and the scanner delivers it at its slot).
+
+    Only an explicit affirmative opens the gate: unset, blank/whitespace, and anything unrecognized
+    all keep the human in the loop. This is the one flag where a typo must fail CLOSED."""
+    raw = os.environ.get("DM_NURTURE_AUTO_APPROVE") or ""
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _nurture_max_per_day() -> int:
+    try:
+        return max(0, int(os.environ.get("DM_NURTURE_MAX_PER_DAY") or _NURTURE_DEFAULT_MAX_PER_DAY))
+    except ValueError:
+        return _NURTURE_DEFAULT_MAX_PER_DAY
+
+
+def _nurture_after_reply(user_id: int, followup: dict, their_message: str,
+                         my_profile: LinkedInProfile, prefs: dict = None,
+                         profile_synthesis: str = None) -> "int | None":
+    """Draft the context-aware next message for a thread whose lead just replied, and queue it for
+    approval. Returns the scheduled_dms id, or None when nothing was drafted (disabled, explicit
+    disinterest, already drafted for this thread, daily cap, or no usable draft).
+
+    Best-effort and NON-FATAL — nurturing a conversation must never break the follow-up run."""
+    profile_url = followup.get("profile_url") or ""
+    first_name = followup.get("first_name") or ""
+    try:
+        if not _nurture_enabled() or not str(their_message or "").strip():
+            return None
+
+        verdict = classify_reply_intent(their_message)
+        intent = verdict.get("intent")
+        if is_stop_intent(intent):
+            # An explicit no. The caller has already stopped the sequence; we add nothing and never
+            # re-open this thread — no draft, no re-check.
+            log_info(f"DM nurture: {first_name or profile_url} declined — stopping the thread",
+                     user_id=user_id, action_type="dm")
+            return None
+
+        # One drafted next message per conversation. A thread re-checked before the operator has
+        # acted must not stack a second draft on the same reply.
+        if has_open_scheduled_dm(user_id, profile_url, source=SCHEDULED_DM_SOURCE_NURTURE):
+            log_info(f"DM nurture: {first_name or profile_url} already has a queued draft; skipping",
+                     user_id=user_id, action_type="dm")
+            return None
+
+        cap = _nurture_max_per_day()
+        if count_scheduled_dms_created_today(user_id, source=SCHEDULED_DM_SOURCE_NURTURE) >= cap:
+            log_info(f"DM nurture: daily draft cap ({cap}) reached", user_id=user_id, action_type="dm")
+            return None
+
+        # A 'nurture' follow-up means we are already IN this sequence — continue it at the next step.
+        step = (int(followup.get("next_step") or 0) + 1
+                if str(followup.get("event_type")) == NURTURE_EVENT_TYPE else 0)
+        tmpl = get_dm_template(user_id, NURTURE_EVENT_TYPE, step)
+        message = None
+        try:
+            message = generate_nurture_dm(
+                their_message, intent, my_profile, first_name=first_name,
+                template_hint=(tmpl or {}).get("template_text"),
+                history=get_dm_history_for_profile(user_id, profile_url),
+                prefs=prefs, profile_synthesis=profile_synthesis)
+        except Exception as e:
+            log_warning("Nurture draft failed; falling back to the template", exc=e,
+                        user_id=user_id, action_type="dm")
+        if not message:
+            message = build_dm_from_template(user_id, NURTURE_EVENT_TYPE, first_name, my_profile, step=step)
+        if not message:
+            return None
+
+        due = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=nurture_delay_hours(intent))
+        status = ScheduledDmStatus.APPROVED if _nurture_auto_approve() else ScheduledDmStatus.PENDING
+        dm_id = insert_scheduled_dm(user_id, profile_url, message, due,
+                                    recipient_name=first_name or None, status=status,
+                                    source=SCHEDULED_DM_SOURCE_NURTURE)
+        if not dm_id:
+            return None
+        log_info(f"DM nurture: drafted a '{intent}' next message for {first_name or profile_url} "
+                 f"(step {step}, {status})", user_id=user_id, action_type="dm")
+
+        # Keep the thread on the follow-up sequencer so a further reply gets its own next message.
+        if step + 1 < _NURTURE_MAX_STEPS:
+            enqueue_followup(user_id, profile_url, first_name, NURTURE_EVENT_TYPE, step,
+                             due + timedelta(hours=nurture_delay_hours(intent)))
+        return dm_id
+    except Exception as e:
+        log_warning("DM nurture failed", exc=e, user_id=user_id, action_type="dm")
+        return None
+
+
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
                   queue='se_outreach')
 def process_user_followups(self, user_id: int, max_per_run: int = 20):
-    """Send this user's due DM follow-ups: skip (and stop the sequence) anyone who has replied,
-    otherwise render the next-step template in the user's voice, send it, mark it sent, and
-    schedule the following step."""
+    """Send this user's due DM follow-ups: anyone who has replied gets their sequence stopped and,
+    instead of going cold, an approval-gated context-aware next message (issue #485); everyone else
+    gets the next-step template rendered in the user's voice, sent, marked, and re-scheduled."""
     due = [f for f in get_due_followups(datetime.now(timezone.utc).replace(tzinfo=None))
            if f["user_id"] == user_id]
     if not due:
@@ -2865,21 +2980,33 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
         log_error("Error getting profile for follow-ups", exc=e, user_id=user_id, task_name="process_user_followups")
         return f"Failed to start follow-ups: {e}"
     sent = 0
+    nurtured = 0
     lead_ctx: dict = {}  # voice context for lead drafts — fetched lazily, only if someone replies
     try:
         for f in due[:max_per_run]:
             if check_dm_replied(driver, wait, f["profile_url"], my_name=getattr(my_profile, "full_name", None)):
-                # Their reply is on screen already — read it once and check for buying intent (#483)
-                # before we walk away from this thread for good.
+                # Their reply is on screen already — read it once and use it twice: buying-intent
+                # detection (#483) and the auto-nurture next message (#485).
                 if not lead_ctx:
                     lead_ctx = {"prefs": get_engagement_preferences(user_id),
                                 "synthesis": get_or_create_profile_synthesis(user_id, my_profile)}
-                _flag_lead_signal(user_id, _last_inbound_message(driver), LeadSignalSource.DM,
+                their_message = _last_inbound_message(driver)
+                _flag_lead_signal(user_id, their_message, LeadSignalSource.DM,
                                   "thread", person_name=f.get("first_name"),
                                   person_profile_url=f["profile_url"], channel=LeadSignalChannel.DM,
                                   context_url=f["profile_url"], my_profile=my_profile,
                                   prefs=lead_ctx["prefs"], profile_synthesis=lead_ctx["synthesis"])
+                # Stop the old sequence FIRST — the nurture path enqueues its own re-check, and a
+                # blanket stop afterwards would cancel it.
                 stop_followups_for_profile(user_id, f["profile_url"])
+                mark_followup(f["id"], "stopped")
+                if _nurture_after_reply(user_id, f, their_message, my_profile,
+                                        prefs=lead_ctx["prefs"], profile_synthesis=lead_ctx["synthesis"]):
+                    nurtured += 1
+                continue
+            if str(f["event_type"]) == NURTURE_EVENT_TYPE:
+                # A nurture re-check with no new reply. Nothing to send: the drafted message is the
+                # operator's to approve, and nurture NEVER auto-sends a template.
                 mark_followup(f["id"], "stopped")
                 continue
             msg = build_dm_from_template(user_id, f["event_type"], f["first_name"], my_profile, step=f["next_step"])
@@ -2895,7 +3022,7 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
             time.sleep(random.uniform(5, 12))
     finally:
         quit_gracefully(driver)
-    return f"Sent {sent} follow-up(s)"
+    return f"Sent {sent} follow-up(s); drafted {nurtured} nurture reply(ies)"
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
