@@ -246,3 +246,42 @@ class TestGmailForwardConfirmationInPrefs:
             resp = client.get(f"/api/user/engagement-preferences?session_token={_SESSION}")
         assert resp.status_code == 200
         assert resp.json()["detail"]["gmail_forward_confirmation"] == conf
+
+
+class TestConnectionTargetingPrefs:
+    """Smart connection targeting configuration (issue #486)."""
+
+    def test_targeting_fields_passthrough(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/engagement-preferences",
+                              json={"session_token": _SESSION,
+                                    "connection_targeting_mode": "auto_queue",
+                                    "connection_target_authors": ["https://x/in/guru"],
+                                    "min_connection_icp_score": 70})
+        assert resp.status_code == 200
+        prefs_arg = upd.call_args[0][1]
+        assert prefs_arg["connection_targeting_mode"] == "auto_queue"
+        assert prefs_arg["connection_target_authors"] == ["https://x/in/guru"]
+        assert prefs_arg["min_connection_icp_score"] == 70
+
+    def test_defaults_to_suggest_when_omitted(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/engagement-preferences",
+                              json={"session_token": _SESSION})
+        assert resp.status_code == 200
+        # Default posture never sends on its own: candidates are filed as drafts.
+        assert upd.call_args[0][1]["connection_targeting_mode"] == "suggest"
+        assert upd.call_args[0][1]["min_connection_icp_score"] == 55
+
+    def test_bad_mode_coerced_and_icp_clamped(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/engagement-preferences",
+                              json={"session_token": _SESSION,
+                                    "connection_targeting_mode": "blast_everyone",
+                                    "min_connection_icp_score": 500})
+        assert resp.status_code == 200
+        assert upd.call_args[0][1]["connection_targeting_mode"] == "suggest"
+        assert upd.call_args[0][1]["min_connection_icp_score"] == 100

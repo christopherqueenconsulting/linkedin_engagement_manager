@@ -159,6 +159,12 @@ app.conf.update(
             # reflects everything that happened yesterday.
             'schedule': crontab(hour='3', minute='30')
         },
+        'scan-connection-candidates': {
+            'task': 'cqc_lem.app.run_scheduler.auto_scan_connection_candidates',
+            # Daily at 4:00 AM — after the 3:30 lead re-score, so targeting reads a fresh view of who
+            # is actually engaging. Files a few targets a day; sending stays daily-capped + approved.
+            'schedule': crontab(hour='4', minute='0')
+        },
         'clen-up-stale-profiles': {
             'task': 'cqc_lem.app.run_scheduler.auto_clean_stale_profiles',
             'schedule': crontab(hour='3', minute='0', )  # Run every day at 3:00 AM

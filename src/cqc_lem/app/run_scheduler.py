@@ -751,6 +751,21 @@ def auto_process_outreach_funnel():
     return f"Dispatched outreach funnel for {len(user_ids)} user(s)"
 
 
+@shared_task.task
+def auto_scan_connection_candidates():
+    """Dispatch per-user sourcing of ICP-fit connection targets from content engagers (issue #486).
+    Sourcing may scrape adjacent authors' posts, so it IS gated on the 429 breaker / manual pause.
+    The scan only FILES targets into the #398 connection_requests queue — the approval gate and the
+    combined daily invite cap still decide what actually gets sent."""
+    if _skip_if_throttled("auto_scan_connection_candidates"):
+        return "Automation throttled"
+    from cqc_lem.app.run_automation import scan_connection_candidates
+    user_ids = get_active_user_ids()
+    for uid in user_ids:
+        scan_connection_candidates.apply_async(kwargs={"user_id": uid})
+    return f"Dispatched connection targeting for {len(user_ids)} user(s)"
+
+
 # Lead scoring & CRM-lite pipeline (issue #484). Nothing here touches LinkedIn — it re-reads
 # engagement we already stored — so it is deliberately NOT gated on the 429 breaker / pause: a
 # rate-limited account still deserves an accurate hot-leads list.

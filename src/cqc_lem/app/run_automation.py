@@ -22,6 +22,9 @@ from cqc_lem.utilities.ai.ai_helper import generate_ai_response, get_ai_message_
     synthesize_profile
 from cqc_lem.utilities.ai.lead_intent import detect_lead_signals
 from cqc_lem.utilities.ai.dm_nurture import classify_reply_intent, is_stop_intent, nurture_delay_hours
+from cqc_lem.utilities.connection_targeting import CandidateSignal, ScoredCandidate, \
+    CONNECT_NOTE_LIMIT, SOURCE_ADJACENT_POST, SOURCE_OWN_POST, default_connect_note, \
+    rank_candidates, target_terms_from_prefs
 from cqc_lem.utilities.ai.content_alignment import humanize_text, split_link_for_first_comment, \
     append_link_to_comment
 from cqc_lem.utilities.date import convert_viewed_on_to_date
@@ -46,7 +49,9 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     insert_lead_signal, has_lead_signal, get_lead_signal, update_lead_signal, \
     LeadSignalSource, LeadSignalChannel, LeadSignalStatus, \
     insert_scheduled_dm, has_open_scheduled_dm, count_scheduled_dms_created_today, \
-    ScheduledDmStatus, SCHEDULED_DM_SOURCE_NURTURE
+    ScheduledDmStatus, SCHEDULED_DM_SOURCE_NURTURE, \
+    insert_connection_request, count_open_connection_requests, get_requested_person_keys, \
+    get_engager_candidates, get_profile_facts, count_invites_sent_today, ConnectionRequestStatus
 from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
     load_profile_for_user
@@ -3846,6 +3851,195 @@ def send_connection_request(self, request_id: int):
     update_connection_request_status(
         request_id, ConnectionRequestStatus.SENT if sent else ConnectionRequestStatus.FAILED)
     return f"Connection request {request_id} -> {'sent' if sent else 'failed'}"
+
+
+# --- Smart connection targeting (issue #486) — source warm engagers into #398's send path ---
+# Hard per-scan ceiling, independent of the user's daily invite cap: sourcing should trickle in a
+# handful of high-fit people a day, never file a queue that looks like list-blasting.
+def _connect_env_int(name: str, default: int) -> int:
+    """A typo'd env var must not take the worker down at import time — fail safe to the default."""
+    try:
+        return int(os.getenv(name) or default)
+    except ValueError:
+        log_warning(f"Invalid {name} env value; falling back to {default}",
+                    action_type="connection_targeting")
+        return default
+
+
+_MAX_NEW_CONNECT_TARGETS_PER_SCAN = _connect_env_int("MAX_NEW_CONNECT_TARGETS_PER_SCAN", 5)
+_MAX_ADJACENT_AUTHORS_PER_SCAN = 3
+_MAX_ADJACENT_POSTS_PER_AUTHOR = 2
+_MAX_ENGAGERS_PER_ADJACENT_POST = 15
+_CONNECT_ENGAGER_LOOKBACK_DAYS = 30
+
+
+def _author_display_name(profile_url: str) -> str:
+    """Readable name for an adjacent author from their /in/ slug (we don't scrape their profile just
+    to write a note). 'jane-doe-1a2b3c' -> 'Jane Doe'."""
+    slug = _profile_slug(profile_url)
+    if not slug:
+        return ""
+    words = [w for w in slug.split("-") if w and not any(ch.isdigit() for ch in w)]
+    return " ".join(w.capitalize() for w in words[:3])
+
+
+def _harvest_post_commenters(driver, post_url: str, author_name: str, now: datetime,
+                             limit: int = _MAX_ENGAGERS_PER_ADJACENT_POST) -> list:
+    """Commenters on ONE post as connection-targeting signals. Reuses the SDUI comment-thread walker
+    the reply sweep uses, so it survives the same DOM churn."""
+    driver.get(post_url)
+    time.sleep(random.uniform(3, 5))
+    signals = []
+    for comment in _comment_items_from_thread(driver)[:limit]:
+        try:
+            link = comment.find_element(By.CSS_SELECTOR, "a[href*='/in/']")
+            name = ((link.text or "") or (link.get_attribute("aria-label") or "")).strip().split("\n")[0]
+            url = (link.get_attribute("href") or "").split("?")[0]
+        except Exception:
+            continue
+        if not name or not url:
+            continue
+        signals.append(CandidateSignal(person_name=name, person_profile_url=url,
+                                       source=SOURCE_ADJACENT_POST, context_url=post_url,
+                                       context_author=author_name, occurred_at=now))
+    return signals
+
+
+def _adjacent_author_signals(driver, user_id: int, authors: list, my_name: str,
+                             now: datetime) -> list:
+    """Harvest engagers from the recent posts of the user's configured adjacent authors (thought
+    leaders / competitors). Each author is best-effort: one unreachable profile must not lose the
+    others' candidates."""
+    from cqc_lem.utilities.linkedin.scrapper import get_profile_recent_activity
+
+    signals: list = []
+    for author_url in authors[:_MAX_ADJACENT_AUTHORS_PER_SCAN]:
+        author_name = _author_display_name(author_url)
+        try:
+            activity = get_profile_recent_activity(driver, author_url) or []
+        except Exception as e:
+            log_warning("Could not read adjacent author's recent activity", exc=e, user_id=user_id,
+                        action_type="connection_targeting")
+            continue
+        for post in activity[:_MAX_ADJACENT_POSTS_PER_AUTHOR]:
+            link = (post or {}).get("link")
+            if not link:
+                continue
+            try:
+                signals.extend(_harvest_post_commenters(driver, link, author_name, now))
+            except Exception as e:
+                log_warning("Could not harvest engagers from adjacent post", exc=e, user_id=user_id,
+                            action_type="connection_targeting")
+    me = (my_name or "").strip().lower()
+    return [s for s in signals if (s.person_name or "").strip().lower() != me]
+
+
+def _connect_target_budget(user_id: int, prefs: dict, max_new: int = None) -> int:
+    """How many NEW targets this scan may file. The daily invite cap is shared with the reactive
+    profile-viewer flow AND with targets already waiting, so sourcing can never build a backlog that
+    spends tomorrow's cap the moment it opens."""
+    cap = int(prefs.get("max_invites_per_day") or 0)
+    remaining = cap - count_invites_sent_today(user_id) - count_open_connection_requests(user_id)
+    ceiling = _MAX_NEW_CONNECT_TARGETS_PER_SCAN if max_new is None else int(max_new)
+    return max(0, min(remaining, ceiling))
+
+
+def _draft_connect_note(user_id: int, candidate: ScoredCandidate, topic: str = None) -> str:
+    """Personalized connect note for one candidate: a grounded template (it names the actual shared
+    context) refined into the user's voice. Falls back to the template if the LLM is unavailable —
+    a missing note must never block the target."""
+    base = default_connect_note(candidate, topic=topic)
+    try:
+        refined = (get_ai_message_refinement(base, character_limit=CONNECT_NOTE_LIMIT) or "").strip()
+    except Exception as e:
+        log_warning("Connect-note refinement failed", exc=e, user_id=user_id,
+                    action_type="connection_targeting")
+        return base
+    return (refined or base)[:CONNECT_NOTE_LIMIT]
+
+
+def _target_status_for_mode(mode: str, prefs: dict) -> "ConnectionRequestStatus":
+    """'suggest' (default) ALWAYS files a draft needing human approval; 'auto_queue' defers to the
+    user's #398 connection_request_mode. So enabling targeting alone can never send anything."""
+    if mode != "auto_queue":
+        return ConnectionRequestStatus.PENDING
+    return (ConnectionRequestStatus.APPROVED
+            if prefs.get("connection_request_mode") == "auto_approve"
+            else ConnectionRequestStatus.PENDING)
+
+
+@shared_task.task(bind=True, base=QueueOnce,
+                  once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
+                  reject_on_worker_lost=True, rate_limit='1/m', queue='se_outreach')
+def scan_connection_candidates(self, user_id: int, max_new: int = None):
+    """Source ICP-fit connection targets from people who engage with content (issue #486).
+
+    Candidates come from the engagers on the user's OWN posts (read from post_engagers — no
+    scraping) plus the commenters on the recent posts of the adjacent authors they configured
+    (scraped). They're ICP-scored against the user's focus topics, deduped against every
+    connection_requests row they've ever had, and filed as #398 requests with a personalized note —
+    so the existing approval gate, combined daily invite cap and 429 / kill-switch backoff all still
+    apply. Nothing is sent from here."""
+    prefs = get_engagement_preferences(user_id)
+    mode = str(prefs.get("connection_targeting_mode") or "suggest")
+    if mode == "off":
+        return f"Connection targeting off for user {user_id}"
+
+    budget = _connect_target_budget(user_id, prefs, max_new)
+    if budget <= 0:
+        return f"No invite budget left for user {user_id}"
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    signals = [CandidateSignal(person_name=row.get("person_name"),
+                               person_profile_url=row.get("person_profile_url"),
+                               source=SOURCE_OWN_POST, occurred_at=row.get("occurred_at"))
+               for row in get_engager_candidates(user_id, days=_CONNECT_ENGAGER_LOOKBACK_DAYS)]
+
+    authors = [str(a).strip() for a in (prefs.get("connection_target_authors") or []) if str(a or "").strip()]
+    if authors:
+        driver = None
+        try:
+            driver, _wait, _user_email, my_profile = get_current_profile(
+                user_id=user_id, session_name="Connection Targeting")
+            signals.extend(_adjacent_author_signals(driver, user_id, authors,
+                                                    my_profile.full_name, now))
+        except Exception as e:
+            # Own-post engagers still stand on their own — degrade, don't abort the whole scan.
+            log_warning("Adjacent-author sourcing failed; using own-post engagers only", exc=e,
+                        user_id=user_id, task_name="scan_connection_candidates")
+        finally:
+            if driver is not None:
+                quit_gracefully(driver)
+
+    if not signals:
+        return f"No connection candidates found for user {user_id}"
+
+    terms = target_terms_from_prefs(prefs)
+    urls = sorted({s.person_profile_url for s in signals if s.person_profile_url})
+    candidates = rank_candidates(signals, now, facts_by_url=get_profile_facts(urls),
+                                 target_terms=terms,
+                                 min_icp=int(prefs.get("min_connection_icp_score") or 0),
+                                 exclude_keys=get_requested_person_keys(user_id),
+                                 limit=budget)
+    if not candidates:
+        return f"No new connection candidates for user {user_id} (all deduped or below ICP floor)"
+
+    status = _target_status_for_mode(mode, prefs)
+    topic = terms[0] if terms else None
+    filed = 0
+    for candidate in candidates:
+        note = _draft_connect_note(user_id, candidate, topic=topic)
+        request_id = insert_connection_request(
+            user_id, candidate.person_profile_url, message=note,
+            recipient_name=candidate.person_name, status=status,
+            source=candidate.source, icp_score=candidate.icp_score, reasons=candidate.reasons)
+        if not request_id:
+            continue
+        filed += 1
+        log_info(f"Connection target filed ({candidate.source}, score {candidate.score})",
+                 user_id=user_id, task_name="scan_connection_candidates",
+                 action_type="connection_targeting")
+    return f"Filed {filed} connection target(s) as '{status}' for user {user_id}"
 
 
 # --- Comment-first outreach funnel (issue #399) — approval-gated comment->connect->DM ---
