@@ -63,6 +63,13 @@ ANOMALY_MIN_DAYS = 3
 # Rollup keys that mean "we could not attribute this" on either dimension.
 UNATTRIBUTED_KEYS = frozenset({"unknown", "system", "", "none"})
 
+# Checks fed by `cost_ledger` (through the margin report or the daily rollups). Without the table the
+# margin report derives its cost fields from empty rollups, so these would read a confident $0 "ok" —
+# indistinguishable from a genuinely cheap day. They are reported skipped instead: unknown ≠ zero.
+LEDGER_BACKED_CHECKS = frozenset({CHECK_USER_COST, CHECK_MARGIN_FLOOR, CHECK_SPEND_ANOMALY,
+                                  CHECK_UNATTRIBUTED})
+LEDGER_MISSING_REASON = "cost_ledger not present — spend is unknown, not $0"
+
 
 def default_thresholds() -> dict:
     """Thresholds from the environment (`COST_ALERT_*`). Every caller merges over this, so a test —
@@ -288,6 +295,10 @@ def evaluate_unattributed_spend(system: Optional[Mapping], cost_by_feature: Opti
 
 # ───────────────────────────── pure report builder ─────────────────────────────
 
+def _ledger_missing(check_id: str) -> dict:
+    return _check(check_id, STATUS_SKIPPED, reason=LEDGER_MISSING_REASON)
+
+
 def build_cost_alert_report(day: date, margin_report: Optional[Mapping],
                             cost_by_feature: Optional[Mapping] = None,
                             daily_spend: Optional[Mapping] = None,
@@ -295,24 +306,33 @@ def build_cost_alert_report(day: date, margin_report: Optional[Mapping],
                             thresholds: Optional[Mapping] = None) -> dict:
     """Run all five §E.2 checks and collect them into one report. `margin_report` is a
     `margin.build_margin_report` result (the ledger-backed spend/MRR join); the rest are the raw
-    per-day and per-feature rollups and the PostHog cache stats."""
+    per-day and per-feature rollups and the PostHog cache stats.
+
+    When the margin report says `ledger_available: false` the `LEDGER_BACKED_CHECKS` are not run at
+    all — their inputs would be zeros from empty rollups, not measurements. Only the PostHog-fed
+    cache check still has real data to judge."""
     limits = {**default_thresholds(), **(thresholds or {})}
     report = margin_report or {}
     system = report.get("system") or {}
+    ledger = bool(report.get("ledger_available", False))
     checks = [
-        evaluate_user_cost_ceiling(report.get("users"), limits["user_cost_pct_of_mrr"]),
-        evaluate_gross_margin_floor(system, limits["gross_margin_floor"]),
+        evaluate_user_cost_ceiling(report.get("users"), limits["user_cost_pct_of_mrr"])
+        if ledger else _ledger_missing(CHECK_USER_COST),
+        evaluate_gross_margin_floor(system, limits["gross_margin_floor"])
+        if ledger else _ledger_missing(CHECK_MARGIN_FLOOR),
         evaluate_spend_anomaly(daily_spend, day, limits["spend_sigma"],
-                               limits["daily_budget_usd"], limits["min_spend_usd"]),
+                               limits["daily_budget_usd"], limits["min_spend_usd"])
+        if ledger else _ledger_missing(CHECK_SPEND_ANOMALY),
         evaluate_cache_hit_collapse(cache, limits["cache_drop_pct"], limits["cache_hit_floor"],
                                     limits["cache_min_calls"]),
-        evaluate_unattributed_spend(system, cost_by_feature, limits["unattributed_pct"]),
+        evaluate_unattributed_spend(system, cost_by_feature, limits["unattributed_pct"])
+        if ledger else _ledger_missing(CHECK_UNATTRIBUTED),
     ]
     alerts = [alert for check in checks for alert in check["alerts"]]
     return {
         "date": day.isoformat(),
         "period": report.get("period") or {},
-        "ledger_available": bool(report.get("ledger_available", False)),
+        "ledger_available": ledger,
         "thresholds": limits,
         "checks": checks,
         "alerts": alerts,
@@ -329,8 +349,8 @@ def render_cost_alerts_text(report: Mapping) -> str:
              f"({report.get('alert_count', 0)} alert(s), "
              f"{report.get('critical_count', 0)} critical)", ""]
     if not report.get("ledger_available", True):
-        lines += ["NOTE: cost_ledger is not present yet — spend reads as $0, so cost-based checks "
-                  "are informational until it lands.", ""]
+        lines += ["NOTE: cost_ledger is not present yet — spend is UNKNOWN (not $0), so the " +
+                  "ledger-backed checks below are skipped, not passing.", ""]
     for alert in report.get("alerts") or []:
         lines.append(f"[{str(alert.get('severity', '')).upper()}] {alert.get('title')}")
         lines.append(f"    {alert.get('detail')}")

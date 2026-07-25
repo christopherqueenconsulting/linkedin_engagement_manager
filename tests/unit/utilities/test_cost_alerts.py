@@ -5,7 +5,7 @@ no-breach and not-enough-data paths, so a check can neither go quiet nor cry wol
 """
 
 from datetime import date, timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -276,6 +276,22 @@ class TestBuildReport:
                                                  ca.CHECK_UNATTRIBUTED}
         assert report["ledger_available"] is False
 
+    def test_missing_ledger_skips_the_ledger_backed_checks_instead_of_passing_them(self):
+        """A $0 margin report derived from empty rollups must not read as an all-clear."""
+        report = ca.build_cost_alert_report(
+            DAY,
+            {"ledger_available": False, "users": [_user(variable=0.0)],
+             "system": _system(period_cost_usd=0.0, gross_margin_pct=1.0)},
+            cost_by_feature={}, daily_spend=_series([0.0] * 7),
+            cache={"rate": 0.6, "calls": 500, "baseline_rate": 0.6, "baseline_calls": 900})
+        by_id = {c["check"]: c for c in report["checks"]}
+        for check_id in ca.LEDGER_BACKED_CHECKS:
+            assert by_id[check_id]["status"] == ca.STATUS_SKIPPED
+            assert by_id[check_id]["reason"] == ca.LEDGER_MISSING_REASON
+        # The cache check is PostHog-fed, so it still has real data to judge.
+        assert by_id[ca.CHECK_CACHE_COLLAPSE]["status"] == ca.STATUS_OK
+        assert report["alert_count"] == 0
+
 
 class TestRenderers:
     def _report(self):
@@ -294,7 +310,10 @@ class TestRenderers:
 
     def test_text_warns_when_the_ledger_is_missing(self):
         report = ca.build_cost_alert_report(DAY, {"ledger_available": False, "system": {}})
-        assert "cost_ledger is not present yet" in ca.render_cost_alerts_text(report)
+        text = ca.render_cost_alerts_text(report)
+        assert "cost_ledger is not present yet" in text
+        assert "skipped, not passing" in text
+        assert f"{ca.CHECK_MARGIN_FLOOR}: {ca.STATUS_SKIPPED}" in text
 
     def test_html_escapes_and_wraps_the_text_digest(self):
         report = self._report()
