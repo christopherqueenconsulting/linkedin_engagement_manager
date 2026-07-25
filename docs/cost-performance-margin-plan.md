@@ -318,12 +318,35 @@ margin, and system-minus-per-user spend is reported as `unattributed_cost_usd` �
 
 ### E.1 PostHog dashboards (project `CQC LEM`, id 475262)
 
-1. **Cost Explorer** — `sum(llm_call.cost_usd) + sum(media_cost.usd)` broken down by `user_id`,
-   `feature`, `model_tier`, `provider`, day. Cache-hit rate. (Depends on instrumentation fix (1)/(2).)
-2. **Margin by Cohort** — per-user contribution margin and CM%, grouped by signup-month × tier;
-   system gross-margin trend. (Joins `cost_ledger` ↔ Stripe.)
-3. **Engagement Lift** — cohort engagement_rate over time vs. day-0 baseline (from `post_outcome`).
-4. **Unit-Economics Scorecard** — north-star + KPI tree (below) as scorecard tiles.
+**Shipped (issue #492) — all four are live and pinned.** Every tile is a HogQL query over the events
+LEM emits, so a tile resolves even before the event feeding it starts flowing; it just renders empty
+until then (`media_cost` and `margin_report` arrive with rollout steps 2/3 below).
+
+| # | Dashboard | Tiles | Link |
+|---|---|---|---|
+| 1 | **Cost Explorer** — `sum(llm_call.cost_usd) + sum(media_cost.usd)` by `user_id`, `feature`, `model_tier`, provider and day; LLM cache-hit rate; unattributed-spend share | 7 | [dashboard/1903770](https://us.posthog.com/project/475262/dashboard/1903770) |
+| 2 | **Margin by Cohort** — CM and CM% by signup-month cohort, gross margin $/% vs the 70% target, the variable/semi-variable/fixed cost stack, CM per paying user, unattributed cost | 6 | [dashboard/1903771](https://us.posthog.com/project/475262/dashboard/1903771) |
+| 3 | **Engagement Lift** — cohort `engagement_rate` over time vs each user's day-0 baseline, weekly median rate, engagement earned, per-user lift | 4 | [dashboard/1903773](https://us.posthog.com/project/475262/dashboard/1903773) |
+| 4 | **Unit-Economics Scorecard** — north-star System Gross Margin $ plus the §E.3 KPI-tree tiles (MRR, variable cost/user, LTV:CAC, payback, 30d spend, cache-hit %, quality guardrail) | 9 | [dashboard/1903774](https://us.posthog.com/project/475262/dashboard/1903774) |
+
+The dashboards are **defined as code** in `scripts/posthog_dashboards.py` so they are reviewable and
+re-creatable if a tile is edited or deleted in the UI. It diffs the spec against the live project and
+is idempotent:
+
+```bash
+python scripts/posthog_dashboards.py --print-sql   # every tile's HogQL, no network
+python scripts/posthog_dashboards.py --dry-run     # what would change (exit 2 = drift)
+python scripts/posthog_dashboards.py --apply       # create missing / update drifted
+```
+
+It needs `POSTHOG_PERSONAL_API_KEY` (insight + dashboard write scope); `POSTHOG_PROJECT_ID` and
+`POSTHOG_APP_HOST` default to the CQC LEM project on US cloud.
+
+Two dimensions read differently than the plan first assumed: `llm_call` carries no `provider`
+property, so the provider tile falls back to the model/tier the call routed through (media rows will
+supply a real `provider`); and cohort margin is read from the weekly `margin_report` event rather
+than joining `cost_ledger` ↔ Stripe in PostHog, since `utilities/margin.py` already computes the
+exact §C.1 figures from the durable ledger.
 
 ### E.2 Alerts (thresholds)
 
@@ -375,6 +398,7 @@ Quality guardrail (must hold): cohort engagement_rate · median authenticity_sco
 3. **Cost+margin block** appended to the daily snapshot → `metrics.jsonl`; **weekly margin report**.
    *(Shipped, issue #491 — see the table at the end of §D.2. Exact spend needs step 2's ledger.)*
 4. **PostHog dashboards** (Cost Explorer, Margin by Cohort, Engagement Lift, Scorecard).
+   *(Shipped, issue #492 — links + the `scripts/posthog_dashboards.py` provisioner in §E.1.)*
 5. **Alerts** — per-user ceiling, gross-margin floor, spend anomaly, unattributed-spend.
 6. **Cost-aware optimization loop** extending `complexity_router.py` (`risk:product-decision`).
 
