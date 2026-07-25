@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.77.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.76.0...v0.77.0) (2026-07-25)
+
+
+### Features
+
+* **observability:** budget-threshold alerts + spend anomaly detection (closes [#493](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/493)) ([057fc40](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/057fc406cc52ae507296e0f2c3a4c0c7e260646a))
+* **observability:** budget-threshold alerts + spend anomaly detection (closes [#493](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/493)) ([ef7c363](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ef7c3637909c405dfdf9b69e1e086ff859be739a))
+
+
+### Bug Fixes
+
+* **observability:** skip ledger-backed cost checks when cost_ledger is absent ([3828b82](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3828b82dbc60e619f14ec84f0e725f764b78e965))
+
 ## [0.76.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.75.0...v0.76.0) (2026-07-25)
 
 
