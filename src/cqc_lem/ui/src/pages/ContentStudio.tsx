@@ -9,6 +9,7 @@ import ConnectionRequests from './review/ConnectionRequests'
 import OutreachFunnel from './review/OutreachFunnel'
 import LeadsInbox from './review/LeadsInbox'
 import LeadsPipeline from './review/LeadsPipeline'
+import CatchupTouches from './review/CatchupTouches'
 import ComposePost from './content/ComposePost'
 import { useAuth } from '../contexts/AuthContext'
 import { useUserTimezone } from '../hooks/useUserTimezone'
@@ -16,11 +17,12 @@ import { formatInTimezone } from '../utils/datetime'
 
 // Consolidated content hub: compose posts, schedule DMs, manage newsletters, and review/edit
 // existing content — one page, four tabs, synced to ?tab= for deep-linking.
-type View = 'posts' | 'dms' | 'connections' | 'outreach' | 'leads' | 'pipeline' | 'newsletters' | 'review'
+type View = 'posts' | 'dms' | 'connections' | 'catchup' | 'outreach' | 'leads' | 'pipeline' | 'newsletters' | 'review'
 const VIEWS: { key: View; label: string }[] = [
   { key: 'posts', label: 'Posts' },
   { key: 'dms', label: 'DMs' },
   { key: 'connections', label: 'Connections' },
+  { key: 'catchup', label: 'Catch-up' },
   { key: 'outreach', label: 'Outreach' },
   { key: 'leads', label: 'Leads' },
   { key: 'pipeline', label: 'Pipeline' },
@@ -337,6 +339,8 @@ export default function ContentStudio() {
       {view === 'dms' && <ScheduledDMs userTimezone={userTimezone} />}
 
       {view === 'connections' && <ConnectionRequests userTimezone={userTimezone} />}
+
+      {view === 'catchup' && <CatchupTouches userTimezone={userTimezone} />}
 
       {view === 'outreach' && <OutreachFunnel />}
 

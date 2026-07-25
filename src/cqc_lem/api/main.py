@@ -34,6 +34,11 @@ from cqc_lem.utilities.db import (
     get_lead_signals, get_lead_signal, update_lead_signal,
     count_new_lead_signals, LeadSignalStatus,
     get_leads, get_lead, update_lead, count_hot_leads, LeadStage,
+    get_catchup_touches, get_catchup_touch, get_catchup_touch_user_id, update_catchup_touch,
+    update_catchup_touch_status, CatchupTouchStatus, CatchupEventType,
+    DEFAULT_CATCHUP_EVENT_TYPES, VALID_CATCHUP_TOUCH_MODES, VALID_CATCHUP_MESSAGE_SOURCES,
+    CATCHUP_TOUCHES_MIN, CATCHUP_TOUCHES_MAX, CATCHUP_TOUCHES_MAX_STANDARD,
+    max_catchup_touches_allowed,
     create_pin_for_email, verify_pin_for_email, delete_pin_for_email,
     create_session, get_session_user_id, delete_session,
     add_user_by_email, get_user_email, get_user_token_info, store_linkedin_li_at,
@@ -447,6 +452,24 @@ class OutreachTargetDeleteRequest(BaseModel):
     target_id: int
 
 
+# LinkedIn Catch-up touches (issue #482) — approval-gated milestone congratulations
+_LEN_CATCHUP_NAME = 255     # catchup_touches.person_name VARCHAR(255)
+_LEN_CATCHUP_MESSAGE = 1000  # catchup_touches.message (TEXT; app cap — a DM is refined to ≤300)
+
+
+class UpdateCatchupTouchRequest(BaseModel):
+    session_token: str
+    touch_id: int
+    person_name: Optional[str] = Field(default=None, max_length=_LEN_CATCHUP_NAME)
+    message: Optional[str] = Field(default=None, max_length=_LEN_CATCHUP_MESSAGE)
+    action: Optional[str] = None  # 'approve' | 'cancel' | None (save fields only)
+
+
+class CatchupTouchDeleteRequest(BaseModel):
+    session_token: str
+    touch_id: int
+
+
 class EngagementPreferencesRequest(BaseModel):
     session_token: str
     tone: Optional[str] = Field(default=None, max_length=_LEN_TONE)
@@ -482,6 +505,11 @@ class EngagementPreferencesRequest(BaseModel):
     reply_max_post_age_days: int = 2
     feed_fallback_when_empty: bool = True
     link_in_first_comment: bool = True
+    # Catch-up congratulations (issue #482)
+    max_catchup_touches_per_day: int = CATCHUP_TOUCHES_MAX_STANDARD
+    catchup_touch_mode: str = "pre_review"  # 'pre_review' (default) | 'auto_approve'
+    catchup_event_types: List[str] = list(DEFAULT_CATCHUP_EVENT_TYPES)
+    catchup_message_source: str = "linkedin"  # 'linkedin' (LinkedIn's own draft) | 'ai'
 
     @field_validator("comment_length")
     @classmethod
@@ -531,6 +559,32 @@ class EngagementPreferencesRequest(BaseModel):
             return min(14, max(1, int(v)))
         except (TypeError, ValueError):
             return 2
+
+    @field_validator("catchup_touch_mode")
+    @classmethod
+    def _coerce_catchup_mode(cls, v: str) -> str:
+        return v if v in VALID_CATCHUP_TOUCH_MODES else "pre_review"
+
+    @field_validator("catchup_message_source")
+    @classmethod
+    def _coerce_catchup_message_source(cls, v: str) -> str:
+        return v if v in VALID_CATCHUP_MESSAGE_SOURCES else "linkedin"
+
+    @field_validator("max_catchup_touches_per_day")
+    @classmethod
+    def _clamp_catchup_cap(cls, v: int) -> int:
+        # Absolute ceiling only — the per-plan allowance (10/day premium, 5/day otherwise) is applied
+        # in update_engagement_preferences, which knows the user.
+        try:
+            return min(CATCHUP_TOUCHES_MAX, max(CATCHUP_TOUCHES_MIN, int(v)))
+        except (TypeError, ValueError):
+            return CATCHUP_TOUCHES_MAX_STANDARD
+
+    @field_validator("catchup_event_types")
+    @classmethod
+    def _clean_catchup_event_types(cls, v: List[str]) -> List[str]:
+        # Drop unknown milestone types at the boundary — the ledger column is a MySQL ENUM.
+        return [t for t in (v or []) if t in tuple(CatchupEventType)]
 
 
 class DmTemplateItem(BaseModel):
@@ -1480,6 +1534,9 @@ def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel:
         prefs["reply_inbound_address"] = None
     # Gmail forwarding auto-confirmation status (so the UI can surface the code if auto-confirm failed).
     prefs["gmail_forward_confirmation"] = get_gmail_forward_confirmation(user_id)
+    # Read-only: the highest catch-up cap this plan allows, so the UI can bound the input and show
+    # what upgrading unlocks (10/day is premium-only).
+    prefs["max_catchup_touches_allowed"] = max_catchup_touches_allowed(user_id)
     # Read-only: the last feed scan's reach funnel so the user can see when their targeting is too
     # strict (posts examined -> matched their filters -> commented).
     try:
@@ -1974,6 +2031,62 @@ def refresh_leads_endpoint(request: LeadRefreshRequest) -> ResponseModel:
     from cqc_lem.app.run_scheduler import rebuild_leads_for_user
     rebuild_leads_for_user.apply_async(kwargs={"user_id": user_id})
     return ResponseModel(status_code=200, detail="Re-scoring your leads — refresh in a moment")
+
+
+@router.get("/catchup/touches")
+def list_catchup_touches_endpoint(session_token: str, status_filter: Optional[str] = None,
+                                  event_type_filter: Optional[str] = None, page: int = 1,
+                                  page_size: int = 25, sort_order: str = "desc") -> ResponseModel:
+    """Drafted LinkedIn Catch-up congratulations awaiting review (issue #482), highest-scoring first."""
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return ResponseModel(status_code=200, detail=get_catchup_touches(
+        user_id, status_filter=status_filter, event_type_filter=event_type_filter,
+        page=page, page_size=page_size, sort_order=sort_order))
+
+
+@router.put("/catchup/touch")
+def update_catchup_touch_endpoint(request: UpdateCatchupTouchRequest) -> ResponseModel:
+    """Edit a drafted congratulations, or approve/cancel it. Approving queues it for the daily-capped
+    send drip; nothing is sent until a human approves (unless the account opted into auto-approve)."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    touch = get_catchup_touch(request.touch_id)
+    if not touch or touch.get("user_id") != user_id:
+        raise HTTPException(status_code=404, detail="Catch-up touch not found")
+    action_map = {"approve": CatchupTouchStatus.APPROVED, "cancel": CatchupTouchStatus.CANCELED}
+    if request.action is not None and request.action not in action_map:
+        raise HTTPException(status_code=422,
+                            detail=f"Unknown action '{request.action}' — expected 'approve' or 'cancel'")
+    status = action_map.get(request.action)
+    if status is None and all(v is None for v in (request.message, request.person_name)):
+        raise HTTPException(status_code=422, detail="Nothing to update — provide at least one field or an action")
+    if request.message is not None and not request.message.strip():
+        raise HTTPException(status_code=422, detail="Message cannot be empty")
+    # Approving is what queues the send, and send_catchup_touch turns a blank message into a permanent
+    # SKIPPED — so an approval must always land on a real message, saved now or already stored.
+    if status == CatchupTouchStatus.APPROVED and not (request.message or touch.get("message") or "").strip():
+        raise HTTPException(status_code=422, detail="Add a message before approving this catch-up touch")
+    if not update_catchup_touch(request.touch_id, message=request.message,
+                                person_name=request.person_name, status=status):
+        raise HTTPException(status_code=500, detail="Could not update catch-up touch")
+    return ResponseModel(status_code=200, detail="Catch-up touch updated")
+
+
+@router.delete("/catchup/touch")
+def delete_catchup_touch_endpoint(request: CatchupTouchDeleteRequest) -> ResponseModel:
+    """Cancel a drafted catch-up touch (soft — sets status 'canceled' so it won't be sent, and the
+    row stays as the dedup tombstone for that milestone)."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if get_catchup_touch_user_id(request.touch_id) != user_id:
+        raise HTTPException(status_code=404, detail="Catch-up touch not found")
+    if not update_catchup_touch_status(request.touch_id, CatchupTouchStatus.CANCELED):
+        raise HTTPException(status_code=500, detail="Could not cancel catch-up touch")
+    return ResponseModel(status_code=200, detail="Catch-up touch canceled")
 
 
 class GroupTogglesRequest(BaseModel):

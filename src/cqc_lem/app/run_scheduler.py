@@ -9,7 +9,7 @@ from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.app.run_automation import automate_commenting, automate_profile_viewer_engagement, \
     automate_appreciation_dms_for_user, clean_stale_invites, update_stale_profile, post_to_linkedin, \
     automate_invites_to_company_page_for_user, send_scheduled_dm, send_connection_request, \
-    sweep_reply_comments, sweep_comment_followups
+    sweep_reply_comments, sweep_comment_followups, send_catchup_touch
 from cqc_lem.utilities.db import (
     get_ready_to_post_posts, get_orphaned_scheduled_posts, update_db_post_status,
     get_active_user_ids, PostStatus, has_linkedin_session, has_scheduled_post_today,
@@ -19,6 +19,8 @@ from cqc_lem.utilities.db import (
     get_approved_connection_requests, get_orphaned_connection_requests,
     update_connection_request_status, ConnectionRequestStatus, count_invites_sent_today,
     get_users_with_reply_mode, get_engagement_preferences,
+    get_approved_catchup_touches, get_orphaned_catchup_touches, update_catchup_touch_status,
+    count_catchup_touches_sent_today, CatchupTouchStatus, max_catchup_touches_allowed,
 )
 from cqc_lem.utilities.env_constants import SELENIUM_KEEP_VIDEOS_X_DAYS, CQC_LEM_POST_TIME_DELTA_MINUTES
 from cqc_lem.utilities.logger import myprint, log_info, log_debug, log_warning
@@ -824,6 +826,68 @@ def rebuild_lead_scores():
     for uid in users:
         rebuild_leads_for_user.apply_async(kwargs={"user_id": uid})
     return f"Lead re-scoring dispatched for {len(users)} user(s)"
+
+
+@shared_task.task
+def auto_scan_catchup_moments():
+    """Dispatch the daily per-user LinkedIn Catch-up scan (issue #482). Drafting only — the scan writes
+    approval-gated rows to catchup_touches and sends nothing. Users who disabled every milestone type
+    are skipped so we never open a Chrome session for them."""
+    if _skip_if_throttled("auto_scan_catchup_moments"):
+        return "Automation throttled"
+    from cqc_lem.app.run_automation import automate_catchup_touches
+    dispatched = 0
+    for user_id in get_active_user_ids():
+        if not (get_engagement_preferences(user_id).get("catchup_event_types") or []):
+            continue
+        automate_catchup_touches.apply_async(kwargs={'user_id': user_id})
+        dispatched += 1
+    return f"Dispatched catch-up scan for {dispatched} user(s)"
+
+
+@shared_task.task
+def auto_check_catchup_touches():
+    """Send APPROVED catch-up congratulations on a slow, per-user-capped drip (issue #482). Mirrors
+    auto_check_connection_requests: approval happens upstream (rows only reach 'approved' via the API
+    or the user's auto_approve mode), the whole scan short-circuits while the kill-switch / 429 breaker
+    is open, and the send task re-checks both caps and the throttle."""
+    if _skip_if_throttled("auto_check_catchup_touches"):
+        return "Automation throttled"
+
+    approved = get_approved_catchup_touches()
+    active_user_ids = set(get_active_user_ids()) if approved else set()
+
+    dispatched = 0
+    budgets: dict = {}  # user_id -> remaining catch-up touches allowed today
+    for touch_id, user_id in approved:
+        if user_id not in active_user_ids:
+            log_warning("Skipping catch-up touch — user not active/connected",
+                        user_id=user_id, task_name="auto_check_catchup_touches")
+            continue
+        if user_id not in budgets:
+            # 10/day is a premium-plan allowance; every other plan tops out at 5 (see db.py).
+            cap = min(int(get_engagement_preferences(user_id).get("max_catchup_touches_per_day") or 0),
+                      max_catchup_touches_allowed(user_id))
+            budgets[user_id] = max(0, cap - count_catchup_touches_sent_today(user_id))
+        if budgets[user_id] <= 0:
+            continue  # cap met for today — the rest stay 'approved' for tomorrow
+        budgets[user_id] -= 1
+        update_catchup_touch_status(touch_id, CatchupTouchStatus.SENDING)
+        send_catchup_touch.apply_async(kwargs={'touch_id': touch_id})
+        dispatched += 1
+
+    # Re-queue touches stuck in 'sending' whose send task was lost (container restart) — mirrors the
+    # orphaned connection-request recovery. The 2-hour gap avoids racing an in-flight task.
+    orphaned = get_orphaned_catchup_touches(lookback_hours=2)
+    for touch_id, user_id in orphaned:
+        log_warning(f"Re-queueing orphaned catch-up touch {touch_id}",
+                    user_id=user_id, task_name="auto_check_catchup_touches")
+        update_catchup_touch_status(touch_id, CatchupTouchStatus.SENDING)
+        send_catchup_touch.apply_async(kwargs={'touch_id': touch_id})
+
+    if dispatched == 0 and len(orphaned) == 0:
+        return "No Catch-up Touches to Send"
+    return f"Dispatched {dispatched} catch-up touch(es); re-queued {len(orphaned)} orphaned"
 
 
 @shared_task.task

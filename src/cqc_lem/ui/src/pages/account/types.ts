@@ -31,6 +31,12 @@ export type EngPrefs = {
   gmail_forward_confirmation?: GmailForwardConfirmation | null
   feed_fallback_when_empty: boolean
   link_in_first_comment: boolean
+  max_catchup_touches_per_day: number
+  catchup_touch_mode: string
+  catchup_event_types: string[]
+  catchup_message_source: string
+  // Read-only: the highest catch-up cap this plan allows (10/day is premium-only).
+  max_catchup_touches_allowed?: number
   feed_reach?: FeedReach | null
 }
 
@@ -125,6 +131,23 @@ export const DM_EVENTS: { key: string; label: string }[] = [
   // The direction for the next message after a lead REPLIES (issue #485). The draft is written
   // against what they actually said; this template sets its intent, not its wording.
   { key: 'nurture', label: 'After they reply (nurture)' },
+  // Catch-up milestone congratulations (issue #482) — these templates also accept {event_detail}.
+  { key: 'job_change', label: 'Catch-up · New job' },
+  { key: 'promotion', label: 'Catch-up · Promotion' },
+  { key: 'work_anniversary', label: 'Catch-up · Work anniversary' },
+  { key: 'education', label: 'Catch-up · Education milestone' },
+  { key: 'in_the_news', label: 'Catch-up · In the news' },
+  { key: 'birthday', label: 'Catch-up · Birthday' },
+]
+
+// Milestone types the Catch-up scan can congratulate, ordered by BD value (issue #482).
+export const CATCHUP_EVENTS: { key: string; label: string }[] = [
+  { key: 'job_change', label: 'New job' },
+  { key: 'promotion', label: 'Promotion' },
+  { key: 'work_anniversary', label: 'Work anniversary' },
+  { key: 'education', label: 'Education milestone' },
+  { key: 'in_the_news', label: 'In the news' },
+  { key: 'birthday', label: 'Birthday' },
 ]
 
 export const csv = (arr: string[] | undefined | null) => (arr && arr.length ? arr.join(', ') : '')

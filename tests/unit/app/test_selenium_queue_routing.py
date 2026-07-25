@@ -33,6 +33,8 @@ SELENIUM_TASK_LANES = {
     "process_user_followups": "se_outreach",
     "automate_invites_to_company_page_for_user": "se_outreach",
     "clean_stale_invites": "se_outreach",
+    "automate_catchup_touches": "se_outreach",
+    "send_catchup_touch": "se_outreach",
     "update_stale_profile": "se_outreach",
     # se_content
     "auto_seed_comment_on_post": "se_content",
