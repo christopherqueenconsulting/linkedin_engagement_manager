@@ -473,6 +473,22 @@ def track_post_outcome(
     )
 
 
+def track_pre_post_engagement(post_id: int, user_id: Optional[int], status: str, **extra) -> None:
+    """Emit the per-post pre-post engagement-window marker (issue #547) — dispatched, skipped (with
+    the reason) or ran (with the comment count) — so a report can confirm the warm-up before a post
+    actually fired instead of inferring it from task logs."""
+    posthog.capture(
+        distinct_id=str(user_id or "system"),
+        event="pre_post_engagement",
+        properties={
+            "post_id": post_id,
+            "user_id": user_id,
+            "status": status,
+            **extra,
+        },
+    )
+
+
 def track_margin_report(report: dict) -> None:
     """Emit the weekly unit-economics scorecard (plan §E.1.4) as one `margin_report` event so the
     PostHog tiles read system margin, cohort margin and LTV:CAC without re-deriving them. Per-user

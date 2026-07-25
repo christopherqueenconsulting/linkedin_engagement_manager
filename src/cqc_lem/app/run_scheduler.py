@@ -22,6 +22,11 @@ from cqc_lem.utilities.db import (
     get_approved_catchup_touches, get_orphaned_catchup_touches, update_catchup_touch_status,
     count_catchup_touches_sent_today, CatchupTouchStatus, max_catchup_touches_allowed,
 )
+from cqc_lem.utilities.engagement_window import (
+    plan_pre_post_window, record_pre_post_scheduled, record_pre_post_skipped,
+    PRE_POST_COMMENT_LEAD_MINUTES, PRE_POST_VIEWER_LEAD_MINUTES,
+    PRE_POST_SKIP_PAST_WINDOW, PRE_POST_SKIP_THROTTLED, PRE_POST_SKIP_USER_INACTIVE,
+)
 from cqc_lem.utilities.env_constants import SELENIUM_KEEP_VIDEOS_X_DAYS, CQC_LEM_POST_TIME_DELTA_MINUTES, \
     COST_ROUTING_WINDOW_DAYS
 from cqc_lem.utilities.logger import myprint, log_info, log_debug, log_warning
@@ -31,7 +36,7 @@ from cqc_lem.utilities.notifications import notify_linkedin_session
 from cqc_lem.utilities.observability import attribute_llm_cost, llm_attribution, FEATURE_NEWSLETTER
 
 
-def _skip_if_throttled(name: str) -> bool:
+def _skip_if_throttled(name: str, **context) -> bool:
     """True when Selenium engagement should NOT fan out — either a manual automation pause OR an open
     429 circuit breaker cooldown is active. Beat dispatchers short-circuit on both so a rate-limited
     account isn't hammered: login_to_linkedin gates centrally too, but skipping at dispatch avoids
@@ -39,11 +44,11 @@ def _skip_if_throttled(name: str) -> bool:
     feed the instant the cooldown expires, which is what re-tripped the breaker into a doom loop.
     POSTING is API-driven and deliberately NOT gated."""
     if is_automation_paused():
-        log_info(f"{name} skipped — automation paused (~{automation_pause_remaining()}s left)")
+        log_info(f"{name} skipped — automation paused (~{automation_pause_remaining()}s left)", **context)
         return True
     cooldown = rate_limit_cooldown_remaining()
     if cooldown > 0:
-        log_info(f"{name} skipped — LinkedIn 429 breaker open (~{cooldown}s left)")
+        log_info(f"{name} skipped — LinkedIn 429 breaker open (~{cooldown}s left)", **context)
         return True
     return False
 
@@ -86,19 +91,42 @@ def auto_check_scheduled_posts(self):
                 "Skipping pre-post Selenium tasks — user not active/connected",
                 user_id=user_id, post_id=post_id, task_name="auto_check_scheduled_posts",
             )
-        elif not _skip_if_throttled("pre-post Selenium"):
-            base_kwargs = {'user_id': user_id, 'loop_for_duration': 60 * 15}
-
-            # Start the pre-post commenting task 15 minutes before scheduled post (loop for 15 minutes)
-            automate_commenting.apply_async(kwargs=base_kwargs, eta=scheduled_time - timedelta(minutes=15))
+            record_pre_post_skipped(post_id, user_id, PRE_POST_SKIP_USER_INACTIVE)
+        elif _skip_if_throttled("pre-post Selenium", user_id=user_id, post_id=post_id,
+                                task_name="auto_check_scheduled_posts"):
+            record_pre_post_skipped(post_id, user_id, PRE_POST_SKIP_THROTTLED)
+        else:
+            # Warm up the feed BEFORE the post goes live. A post picked up late (this scan looks back
+            # to yesterday) has less than the full lead left — or none at all — so the window is
+            # clamped rather than dispatched with an eta in the past, which Celery would run
+            # immediately and turn a "pre"-post warm-up into a during/after-post one.
+            comment_window = plan_pre_post_window(scheduled_time, PRE_POST_COMMENT_LEAD_MINUTES)
+            if comment_window is None:
+                record_pre_post_skipped(post_id, user_id, PRE_POST_SKIP_PAST_WINDOW)
+            else:
+                automate_commenting.apply_async(
+                    kwargs={'user_id': user_id, 'loop_for_duration': comment_window.duration_seconds,
+                            'post_id': post_id},
+                    eta=comment_window.eta,
+                )
+                record_pre_post_scheduled(post_id, user_id, comment_window)
 
             # The seed first comment is dispatched by post_to_linkedin itself once the post is live —
             # it needs the published post's URL, and (being API-driven) it must not be gated on the
             # Selenium throttle/active checks that guard the browser tasks here.
 
-            # Schedule the pre-post profile viewer dm task 10 minutes before scheduled post (loop for 10 minutes)
-            base_kwargs['loop_for_duration'] = 60 * 10
-            automate_profile_viewer_engagement.apply_async(kwargs=base_kwargs, eta=scheduled_time - timedelta(minutes=10))
+            # Same clamp for the pre-post profile-viewer DM task (10-minute lead).
+            viewer_window = plan_pre_post_window(scheduled_time, PRE_POST_VIEWER_LEAD_MINUTES)
+            if viewer_window is None:
+                record_pre_post_skipped(post_id, user_id, PRE_POST_SKIP_PAST_WINDOW,
+                                        task_name="automate_profile_viewer_engagement")
+            else:
+                automate_profile_viewer_engagement.apply_async(
+                    kwargs={'user_id': user_id, 'loop_for_duration': viewer_window.duration_seconds},
+                    eta=viewer_window.eta,
+                )
+                record_pre_post_scheduled(post_id, user_id, viewer_window,
+                                          task_name="automate_profile_viewer_engagement")
 
     # Re-queue any posts that got stuck in 'scheduled' (task was lost, e.g. on container restart)
     # but never transitioned to 'posted'. The 2-hour gap ensures we don't race with a task

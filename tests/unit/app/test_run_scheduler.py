@@ -1,7 +1,7 @@
 """Unit tests for cqc_lem.app.run_scheduler Celery tasks."""
 
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
@@ -29,6 +29,8 @@ _PATCH_CLEAN_INVITES = f"{_MOD}.clean_stale_invites"
 _PATCH_UPDATE_STALE = f"{_MOD}.update_stale_profile"
 _PATCH_AUTOMATE_COMMENTING = f"{_MOD}.automate_commenting"
 _PATCH_AUTOMATE_PROFILE_VIEWER = f"{_MOD}.automate_profile_viewer_engagement"
+_PATCH_RECORD_SCHEDULED = f"{_MOD}.record_pre_post_scheduled"
+_PATCH_RECORD_SKIPPED = f"{_MOD}.record_pre_post_skipped"
 
 
 @pytest.fixture(autouse=True)
@@ -49,6 +51,11 @@ def _async_task_mock() -> MagicMock:
     m = MagicMock()
     m.apply_async = MagicMock()
     return m
+
+
+def _future_dt(minutes: int = 60) -> datetime:
+    """A scheduled time far enough ahead that the pre-post engagement window is still open."""
+    return datetime.now(timezone.utc) + timedelta(minutes=minutes)
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +241,8 @@ class TestAutoCheckScheduledPosts:
         assert result == "No Post to Schedule"
 
     def test_one_post_schedules_it_and_calls_apply_async(self):
-        scheduled_dt = datetime(2025, 6, 20, 14, 0, 0, tzinfo=timezone.utc)
+        # Future time: the pre-post warm-up is only dispatched while its window is still open.
+        scheduled_dt = _future_dt()
         posts = [(42, scheduled_dt, 7)]  # (post_id, scheduled_time, user_id)
 
         mock_post_task = _async_task_mock()
@@ -395,7 +403,7 @@ class TestAutoCheckScheduledPosts:
 
     def test_mixed_active_and_inactive_users_filtered_correctly(self):
         """Active users get Selenium tasks; inactive users get only post_to_linkedin."""
-        scheduled_dt = datetime(2025, 6, 20, 14, 0, 0, tzinfo=timezone.utc)
+        scheduled_dt = _future_dt()
         posts = [
             (10, scheduled_dt, 60),   # active user
             (11, scheduled_dt, 70),   # inactive user
@@ -423,6 +431,145 @@ class TestAutoCheckScheduledPosts:
         # Verify the Selenium tasks were for the active user (user_id=60)
         assert mock_commenting_task.apply_async.call_args[1]["kwargs"]["user_id"] == 60
 
+    # -- pre-post engagement window (issue #547) ----------------------------------------------
+
+    def test_full_lead_available_schedules_15_minutes_before_post(self):
+        """With the whole lead left, commenting starts exactly 15 min before and loops 15 min."""
+        scheduled_dt = _future_dt(60)
+        posts = [(42, scheduled_dt, 7)]
+
+        mock_commenting_task = _async_task_mock()
+        mock_profile_task = _async_task_mock()
+
+        with patch(_PATCH_GET_POSTS, return_value=posts), \
+             patch(_PATCH_GET_ACTIVE, return_value=[7]), \
+             patch(_PATCH_GET_ORPHANED, return_value=[]), \
+             patch(_PATCH_UPDATE_POST_STATUS), \
+             patch(_PATCH_POST_TO_LINKEDIN, _async_task_mock()), \
+             patch(_PATCH_AUTOMATE_COMMENTING, mock_commenting_task), \
+             patch(_PATCH_AUTOMATE_PROFILE_VIEWER, mock_profile_task):
+            from cqc_lem.app.run_scheduler import auto_check_scheduled_posts
+            auto_check_scheduled_posts.run()
+
+        call = mock_commenting_task.apply_async.call_args[1]
+        assert call["eta"] == scheduled_dt - timedelta(minutes=15)
+        assert call["kwargs"]["loop_for_duration"] == 15 * 60
+        assert call["kwargs"]["post_id"] == 42  # marker key for per-post observability
+
+        viewer_call = mock_profile_task.apply_async.call_args[1]
+        assert viewer_call["eta"] == scheduled_dt - timedelta(minutes=10)
+        assert viewer_call["kwargs"]["loop_for_duration"] == 10 * 60
+
+    def test_late_pickup_clamps_eta_to_now_and_shortens_loop(self):
+        """A post picked up 5 min before its time gets an eta that is NOT in the past, and a loop
+        that ends at the post time instead of running past it."""
+        scheduled_dt = _future_dt(5)
+        posts = [(43, scheduled_dt, 7)]
+
+        mock_commenting_task = _async_task_mock()
+
+        with patch(_PATCH_GET_POSTS, return_value=posts), \
+             patch(_PATCH_GET_ACTIVE, return_value=[7]), \
+             patch(_PATCH_GET_ORPHANED, return_value=[]), \
+             patch(_PATCH_UPDATE_POST_STATUS), \
+             patch(_PATCH_POST_TO_LINKEDIN, _async_task_mock()), \
+             patch(_PATCH_AUTOMATE_COMMENTING, mock_commenting_task), \
+             patch(_PATCH_AUTOMATE_PROFILE_VIEWER, _async_task_mock()):
+            from cqc_lem.app.run_scheduler import auto_check_scheduled_posts
+            auto_check_scheduled_posts.run()
+
+        call = mock_commenting_task.apply_async.call_args[1]
+        assert call["eta"] <= scheduled_dt
+        assert call["eta"] >= scheduled_dt - timedelta(minutes=15)
+        assert 0 < call["kwargs"]["loop_for_duration"] <= 5 * 60
+
+    def test_post_past_its_time_gets_no_pre_post_tasks(self):
+        """The stale-eta bug: a post already at/past its scheduled time must NOT trigger a
+        'pre'-post warm-up loop that would actually run during/after publication."""
+        scheduled_dt = datetime(2025, 6, 20, 14, 0, 0, tzinfo=timezone.utc)
+        posts = [(44, scheduled_dt, 7)]
+
+        mock_post_task = _async_task_mock()
+        mock_commenting_task = _async_task_mock()
+        mock_profile_task = _async_task_mock()
+
+        with patch(_PATCH_GET_POSTS, return_value=posts), \
+             patch(_PATCH_GET_ACTIVE, return_value=[7]), \
+             patch(_PATCH_GET_ORPHANED, return_value=[]), \
+             patch(_PATCH_UPDATE_POST_STATUS), \
+             patch(_PATCH_POST_TO_LINKEDIN, mock_post_task), \
+             patch(_PATCH_AUTOMATE_COMMENTING, mock_commenting_task), \
+             patch(_PATCH_AUTOMATE_PROFILE_VIEWER, mock_profile_task), \
+             patch(_PATCH_RECORD_SKIPPED) as mock_skipped:
+            from cqc_lem.app.run_scheduler import auto_check_scheduled_posts
+            auto_check_scheduled_posts.run()
+
+        mock_post_task.apply_async.assert_called_once()  # the post itself still publishes
+        mock_commenting_task.apply_async.assert_not_called()
+        mock_profile_task.apply_async.assert_not_called()
+        reasons = {c[0][2] for c in mock_skipped.call_args_list}
+        assert reasons == {"past_window"}
+
+    def test_scheduled_window_is_recorded_per_post(self):
+        """A dispatched window leaves a per-post marker so a report can confirm it fired."""
+        scheduled_dt = _future_dt(60)
+        posts = [(45, scheduled_dt, 7)]
+
+        with patch(_PATCH_GET_POSTS, return_value=posts), \
+             patch(_PATCH_GET_ACTIVE, return_value=[7]), \
+             patch(_PATCH_GET_ORPHANED, return_value=[]), \
+             patch(_PATCH_UPDATE_POST_STATUS), \
+             patch(_PATCH_POST_TO_LINKEDIN, _async_task_mock()), \
+             patch(_PATCH_AUTOMATE_COMMENTING, _async_task_mock()), \
+             patch(_PATCH_AUTOMATE_PROFILE_VIEWER, _async_task_mock()), \
+             patch(_PATCH_RECORD_SCHEDULED) as mock_scheduled:
+            from cqc_lem.app.run_scheduler import auto_check_scheduled_posts
+            auto_check_scheduled_posts.run()
+
+        assert mock_scheduled.call_count == 2  # commenting + profile viewer
+        post_ids = {c[0][0] for c in mock_scheduled.call_args_list}
+        assert post_ids == {45}
+
+    def test_throttled_skip_is_recorded_with_reason(self):
+        """A throttle/pause skip is still gated (correct) but must be visible per post."""
+        scheduled_dt = _future_dt(60)
+        posts = [(46, scheduled_dt, 7)]
+
+        mock_commenting_task = _async_task_mock()
+
+        with patch(_PATCH_GET_POSTS, return_value=posts), \
+             patch(_PATCH_GET_ACTIVE, return_value=[7]), \
+             patch(_PATCH_GET_ORPHANED, return_value=[]), \
+             patch(_PATCH_UPDATE_POST_STATUS), \
+             patch(f"{_MOD}.rate_limit_cooldown_remaining", return_value=900), \
+             patch(_PATCH_POST_TO_LINKEDIN, _async_task_mock()), \
+             patch(_PATCH_AUTOMATE_COMMENTING, mock_commenting_task), \
+             patch(_PATCH_AUTOMATE_PROFILE_VIEWER, _async_task_mock()), \
+             patch(_PATCH_RECORD_SKIPPED) as mock_skipped:
+            from cqc_lem.app.run_scheduler import auto_check_scheduled_posts
+            auto_check_scheduled_posts.run()
+
+        mock_commenting_task.apply_async.assert_not_called()
+        mock_skipped.assert_called_once()
+        assert mock_skipped.call_args[0][2] == "throttled"
+
+    def test_inactive_user_skip_is_recorded_with_reason(self):
+        scheduled_dt = _future_dt(60)
+        posts = [(47, scheduled_dt, 70)]
+
+        with patch(_PATCH_GET_POSTS, return_value=posts), \
+             patch(_PATCH_GET_ACTIVE, return_value=[60]), \
+             patch(_PATCH_GET_ORPHANED, return_value=[]), \
+             patch(_PATCH_UPDATE_POST_STATUS), \
+             patch(_PATCH_POST_TO_LINKEDIN, _async_task_mock()), \
+             patch(_PATCH_AUTOMATE_COMMENTING, _async_task_mock()), \
+             patch(_PATCH_AUTOMATE_PROFILE_VIEWER, _async_task_mock()), \
+             patch(_PATCH_RECORD_SKIPPED) as mock_skipped:
+            from cqc_lem.app.run_scheduler import auto_check_scheduled_posts
+            auto_check_scheduled_posts.run()
+
+        mock_skipped.assert_called_once()
+        assert mock_skipped.call_args[0][2] == "user_inactive"
 
     def test_orphaned_scheduled_post_is_requeued(self):
         """Posts stuck in 'scheduled' status (task lost on restart) must be re-dispatched."""
