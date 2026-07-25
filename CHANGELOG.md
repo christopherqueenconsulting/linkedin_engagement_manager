@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.92.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.92.0...v0.92.1) (2026-07-25)
+
+
+### Bug Fixes
+
+* **scheduling:** one timezone contract from picker to executed instant (closes [#546](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/546)) ([30f34dd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/30f34dd0efc7199bb02332e7b6fc4a273af1a2de))
+* **scheduling:** one timezone contract from picker to executed instant (closes [#546](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/546)) ([8511f20](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8511f20dcb7c735652a5d1b7434a552c0ce79742))
+* **ui:** guard invalid DM schedule time before posting to the API ([b0480f9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b0480f9d8d0d0a7aadf9b1208aa681bb26cbd4c2))
+
 ## [0.92.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.91.3...v0.92.0) (2026-07-25)
 
 
