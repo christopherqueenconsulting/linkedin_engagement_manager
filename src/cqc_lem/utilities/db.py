@@ -60,6 +60,22 @@ def get_db_connection():
     )
 
 
+def to_naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """The one storage-side timezone conversion (see docs/timezone-contract.md).
+
+    Every scheduling column in this schema (posts.scheduled_time, scheduled_dms.scheduled_time,
+    newsletter_editions.scheduled_for, …) holds NAIVE UTC. An aware datetime is converted to UTC;
+    a naive one is assumed to already be UTC. Normalizing here rather than at each call site matters
+    because mysql-connector serializes a datetime from its wall-clock fields and silently DROPS
+    tzinfo — an aware non-UTC value would otherwise be stored as its local wall clock, i.e. off by
+    the sender's UTC offset, and the post/DM would fire hours away from what the user scheduled."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt
+    return dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 class PostType(StrEnum):
     TEXT = 'text'
     CAROUSEL = 'carousel'
@@ -580,10 +596,7 @@ def insert_post(email: str, content: str, scheduled_time: datetime, post_type: P
     cursor = connection.cursor()
 
     try:
-        if scheduled_time.tzinfo is None:
-            scheduled_time = scheduled_time.replace(tzinfo=timezone.utc)
-        else:
-            scheduled_time = scheduled_time.astimezone(timezone.utc)
+        scheduled_time = to_naive_utc(scheduled_time)
 
         slides_json = json.dumps(carousel_slides) if carousel_slides else None
 
@@ -612,11 +625,7 @@ def insert_planned_post(user_id: int, scheduled_time: datetime, post_type: PostT
     success = False
 
     try:
-        # Convert scheduled_time to UTC
-        if scheduled_time.tzinfo is None:
-            scheduled_time = scheduled_time.replace(tzinfo=timezone.utc)
-        else:
-            scheduled_time = scheduled_time.astimezone(timezone.utc)
+        scheduled_time = to_naive_utc(scheduled_time)
 
         cursor.execute("""
             INSERT INTO posts (scheduled_time, post_type, user_id, buyer_stage, status, content)
@@ -643,11 +652,7 @@ def update_db_post(content: str, video_url: str, scheduled_time: datetime, post_
 
     try:
 
-        # Convert scheduled_time to UTC
-        if scheduled_time.tzinfo is None:
-            scheduled_time = scheduled_time.replace(tzinfo=timezone.utc)
-        else:
-            scheduled_time = scheduled_time.astimezone(timezone.utc)
+        scheduled_time = to_naive_utc(scheduled_time)
 
         cursor.execute(
             "UPDATE posts SET content = %s, video_url = %s, scheduled_time =%s, post_type = %s, status = %s WHERE id = %s",
@@ -1215,12 +1220,8 @@ def bulk_update_posts(post_ids: list[int], status: Optional[PostStatus] = None,
             sets.append("status = %s")
             params.append(status.value)
         if scheduled_time is not None:
-            if scheduled_time.tzinfo is None:
-                scheduled_time = scheduled_time.replace(tzinfo=timezone.utc)
-            else:
-                scheduled_time = scheduled_time.astimezone(timezone.utc)
             sets.append("scheduled_time = %s")
-            params.append(scheduled_time)
+            params.append(to_naive_utc(scheduled_time))
 
         if not sets:
             return False
@@ -3136,7 +3137,7 @@ def insert_scheduled_dm(user_id: int, recipient_profile_url: str, message: str,
             "INSERT INTO scheduled_dms (user_id, recipient_profile_url, recipient_name, message, "
             "source, scheduled_time, status) VALUES (%s,%s,%s,%s,%s,%s,%s)",
             (user_id, recipient_profile_url, recipient_name, message,
-             str(source) if source else None, scheduled_time, str(status)))
+             str(source) if source else None, to_naive_utc(scheduled_time), str(status)))
         connection.commit()
         return cursor.lastrowid
     except mysql.connector.Error as err:
@@ -3317,7 +3318,7 @@ def update_scheduled_dm(dm_id: int, recipient_profile_url: str = None, recipient
                         status: "ScheduledDmStatus" = None) -> bool:
     fields, params = [], []
     for col, val in (("recipient_profile_url", recipient_profile_url), ("recipient_name", recipient_name),
-                     ("message", message), ("scheduled_time", scheduled_time)):
+                     ("message", message), ("scheduled_time", to_naive_utc(scheduled_time))):
         if val is not None:
             fields.append(f"{col} = %s")
             params.append(val)
@@ -5330,7 +5331,7 @@ def create_newsletter_edition(user_id: int, title: str, subtitle: str, body: str
             "hook_style, opening_line, blueprint, body, scheduled_for) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (user_id, title, subtitle, subject, edition_format, hook_style, opening_line,
-             json.dumps(blueprint) if blueprint else None, body, scheduled_for))
+             json.dumps(blueprint) if blueprint else None, body, to_naive_utc(scheduled_for)))
         connection.commit()
         return cursor.lastrowid
     except mysql.connector.IntegrityError as err:
@@ -5430,8 +5431,7 @@ def update_newsletter_edition(edition_id: int, user_id: int, title: str = None,
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
-        if scheduled_for is not None and getattr(scheduled_for, "tzinfo", None) is not None:
-            scheduled_for = scheduled_for.astimezone(timezone.utc).replace(tzinfo=None)
+        scheduled_for = to_naive_utc(scheduled_for)
         cursor.execute(
             "UPDATE newsletter_editions SET "
             "title = COALESCE(%s, title), subtitle = COALESCE(%s, subtitle), "

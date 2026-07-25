@@ -1962,16 +1962,15 @@ def get_newsletter_draft_endpoint(session_token: str) -> ResponseModel:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     editions = get_pending_newsletter_editions(user_id)
     for e in editions:
-        sched = e.get("scheduled_for")
-        if sched is not None:
-            e["scheduled_for"] = sched.isoformat() if hasattr(sched, "isoformat") else str(sched)
+        if e.get("scheduled_for") is not None:
+            e["scheduled_for"] = _utc_iso(e["scheduled_for"])
     # next_publish is the slot AFTER the last edition already queued, so the UI can show what's next.
     anchor = get_latest_edition_scheduled_for(user_id)
     next_pub = _compute_next_publish(user_id, anchor=anchor)
     settings = get_newsletter_settings(user_id)
     return ResponseModel(status_code=200, detail={
         "editions": editions,
-        "next_publish": next_pub.isoformat() if next_pub is not None else None,
+        "next_publish": _utc_iso(next_pub),
         "max_queued_drafts": settings.get("max_queued_drafts", 1),
         "generate_lead_days": settings.get("generate_lead_days", 3),
     })
@@ -2059,9 +2058,13 @@ def list_scheduled_dms_endpoint(session_token: str, status_filter: Optional[str]
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
-    return ResponseModel(status_code=200,
-                         detail=get_scheduled_dms(user_id, status_filter=status_filter, page=page,
-                                                  page_size=page_size, sort_order=sort_order))
+    result = get_scheduled_dms(user_id, status_filter=status_filter, page=page,
+                               page_size=page_size, sort_order=sort_order)
+    for dm in result.get("dms", []):
+        for key in ("scheduled_time", "created_at", "updated_at"):
+            if dm.get(key) is not None:
+                dm[key] = _utc_iso(dm[key])
+    return ResponseModel(status_code=200, detail=result)
 
 
 @router.put("/dm")
@@ -2462,10 +2465,14 @@ def get_post_stats_endpoint(session_token: str) -> ResponseModel:
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     rows = get_post_engagement_rows(user_id)
+    # Recommendations are shown as "post on Wednesday at 4pm" — that hour has to be the user's own
+    # wall clock, not the UTC the stats are stored in.
+    user_tz = get_user_timezone(user_id)
     return ResponseModel(status_code=200, detail={
-        "recommendations": recommend_post_times(rows),
+        "recommendations": recommend_post_times(rows, tz=user_tz),
         "rankings": rank_content_attributes(rows, top_n=5),
         "sample_size": len(rows),
+        "timezone": user_tz,
     })
 
 

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
-import { formatInTimezone } from '../../utils/datetime'
+import { formatInTimezone, zonedInputToUtcIso } from '../../utils/datetime'
 
 // Schedule 1:1 DMs to chosen recipients at chosen times (issue #306), mirroring the scheduled-posts
 // preview/approve workflow. Drafts are 'pending'; approving queues them for the scanner to send at
@@ -69,7 +69,7 @@ export default function ScheduledDMs({ userTimezone }: { userTimezone: string })
         recipient_profile_url: url.trim(),
         recipient_name: name.trim() || null,
         message: body,
-        scheduled_datetime: new Date(when).toISOString(),
+        scheduled_datetime: zonedInputToUtcIso(when, userTimezone),
         status,
       }),
     onSuccess: () => {
@@ -110,8 +110,11 @@ export default function ScheduledDMs({ userTimezone }: { userTimezone: string })
           placeholder="Your message…"
           className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
         <div className="flex flex-wrap items-center gap-3">
-          <input type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)}
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+          <label className="flex items-center gap-2 text-xs text-gray-500">
+            <input type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)}
+              className="border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+            {userTimezone}
+          </label>
           <button onClick={() => createMutation.mutate('pending')} disabled={!canSubmit || createMutation.isPending}
             className="px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50">
             Save draft

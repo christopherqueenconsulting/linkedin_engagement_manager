@@ -13,7 +13,7 @@ import CatchupTouches from './review/CatchupTouches'
 import ComposePost from './content/ComposePost'
 import { useAuth } from '../contexts/AuthContext'
 import { useUserTimezone } from '../hooks/useUserTimezone'
-import { formatInTimezone } from '../utils/datetime'
+import { formatInTimezone, toZonedInputValue, zonedInputToUtcIso } from '../utils/datetime'
 
 // Consolidated content hub: compose posts, schedule DMs, manage newsletters, and review/edit
 // existing content — one page, four tabs, synced to ?tab= for deep-linking.
@@ -598,10 +598,11 @@ export default function ContentStudio() {
             />
             <button
               onClick={() => {
-                if (!bulkDate) return
+                const utc = zonedInputToUtcIso(bulkDate, userTimezone)
+                if (!utc) return
                 bulkUpdateMutation.mutate({
                   post_ids: Array.from(selectedIds),
-                  scheduled_datetime: new Date(bulkDate).toISOString(),
+                  scheduled_datetime: utc,
                 })
               }}
               disabled={!bulkDate || bulkUpdateMutation.isPending}
@@ -862,8 +863,14 @@ export default function ContentStudio() {
                     <label className="block text-xs font-medium text-gray-600 mb-1">Scheduled Time</label>
                     <input
                       type="datetime-local"
-                      value={editingPost.scheduled_time?.slice(0, 16) ?? ''}
-                      onChange={(e) => setEditingPost({ ...editingPost, scheduled_time: e.target.value })}
+                      value={toZonedInputValue(editingPost.scheduled_time, userTimezone)}
+                      onChange={(e) =>
+                        setEditingPost({
+                          ...editingPost,
+                          scheduled_time:
+                            zonedInputToUtcIso(e.target.value, userTimezone) ?? editingPost.scheduled_time,
+                        })
+                      }
                       className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                   </div>

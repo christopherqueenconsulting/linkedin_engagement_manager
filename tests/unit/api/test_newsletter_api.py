@@ -153,8 +153,11 @@ class TestNewsletterDraft:
         assert resp.status_code == 200
         detail = resp.json()["detail"]
         assert detail["editions"][0]["id"] == 4
-        assert detail["editions"][0]["scheduled_for"].startswith("2026-07-07")
+        # Explicit-UTC 'Z' (issue #546) — without it the browser parses the string as LOCAL time
+        # and the queue renders every edition off by the viewer's offset.
+        assert detail["editions"][0]["scheduled_for"] == "2026-07-07T13:00:00Z"
         assert detail["next_publish"] is not None
+        assert detail["next_publish"].endswith("Z")
         assert detail["max_queued_drafts"] == 3 and detail["generate_lead_days"] == 14
 
     def test_get_empty_when_no_editions(self, client):
