@@ -33,6 +33,7 @@ from cqc_lem.utilities.db import (
     OutreachStatus,
     get_lead_signals, get_lead_signal, update_lead_signal,
     count_new_lead_signals, LeadSignalStatus,
+    get_leads, get_lead, update_lead, count_hot_leads, LeadStage,
     create_pin_for_email, verify_pin_for_email, delete_pin_for_email,
     create_session, get_session_user_id, delete_session,
     add_user_by_email, get_user_email, get_user_token_info, store_linkedin_li_at,
@@ -1886,6 +1887,76 @@ def update_lead_signal_endpoint(request: LeadSignalUpdate) -> ResponseModel:
     if status == LeadSignalStatus.APPROVED:
         send_lead_response.apply_async(kwargs={"signal_id": request.signal_id})
     return ResponseModel(status_code=200, detail="Lead signal updated")
+
+
+# Lead scoring & CRM-lite pipeline (issue #484) — the scored board over everyone who engages with
+# the user. Scores are rebuilt nightly from existing engagement data; these endpoints read it and
+# let the operator correct a stage, keep a note, or drop someone from the board.
+_LEN_LEAD_NOTES = 512  # leads.notes VARCHAR(512)
+_LEAD_STAGES = tuple(str(s) for s in LeadStage)
+
+
+class LeadUpdate(BaseModel):
+    session_token: str
+    lead_id: int
+    notes: Optional[str] = Field(default=None, max_length=_LEN_LEAD_NOTES)
+    stage: Optional[str] = None   # manual stage override; '' clears it back to the computed stage
+    action: Optional[str] = None  # 'dismiss' | 'restore' | None
+
+
+class LeadRefreshRequest(BaseModel):
+    session_token: str
+
+
+@router.get("/leads")
+def list_leads_endpoint(session_token: str, stage_filter: Optional[str] = None,
+                        include_dismissed: bool = False, page: int = 1,
+                        page_size: int = 100) -> ResponseModel:
+    """The pipeline board: scored leads hottest first, each with why it scored and what to do next."""
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if stage_filter and stage_filter not in _LEAD_STAGES:
+        raise HTTPException(status_code=422, detail=f"Unknown stage '{stage_filter}'")
+    result = get_leads(user_id, stage_filter=stage_filter, include_dismissed=include_dismissed,
+                       page=page, page_size=page_size)
+    result["hot_count"] = count_hot_leads(user_id)
+    return ResponseModel(status_code=200, detail=result)
+
+
+@router.put("/lead")
+def update_lead_endpoint(request: LeadUpdate) -> ResponseModel:
+    """Operator edits: move a lead's stage by hand, keep a note, or dismiss/restore it. The nightly
+    re-score never overwrites any of these."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    lead = get_lead(request.lead_id)
+    if not lead or lead.get("user_id") != user_id:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    if request.action is not None and request.action not in ("dismiss", "restore"):
+        raise HTTPException(status_code=422,
+                            detail=f"Unknown action '{request.action}' — expected 'dismiss' or 'restore'")
+    if request.stage and request.stage not in _LEAD_STAGES:
+        raise HTTPException(status_code=422, detail=f"Unknown stage '{request.stage}'")
+    if request.notes is None and request.stage is None and request.action is None:
+        raise HTTPException(status_code=422, detail="Nothing to update")
+    dismissed = {"dismiss": True, "restore": False}.get(request.action)
+    if not update_lead(request.lead_id, notes=request.notes, manual_stage=request.stage,
+                       dismissed=dismissed):
+        raise HTTPException(status_code=500, detail="Could not update lead")
+    return ResponseModel(status_code=200, detail="Lead updated")
+
+
+@router.post("/leads/refresh")
+def refresh_leads_endpoint(request: LeadRefreshRequest) -> ResponseModel:
+    """Re-score this user's pipeline now instead of waiting for tonight's rebuild."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    from cqc_lem.app.run_scheduler import rebuild_leads_for_user
+    rebuild_leads_for_user.apply_async(kwargs={"user_id": user_id})
+    return ResponseModel(status_code=200, detail="Re-scoring your leads — refresh in a moment")
 
 
 class GroupTogglesRequest(BaseModel):

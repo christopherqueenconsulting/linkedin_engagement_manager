@@ -153,6 +153,12 @@ app.conf.update(
             'task': 'cqc_lem.app.run_scheduler.auto_scrape_stats',
             'schedule': crontab(hour='23', minute='0')  # Nightly: capture post engagement for time recs
         },
+        'rebuild-lead-scores': {
+            'task': 'cqc_lem.app.run_scheduler.rebuild_lead_scores',
+            # Nightly at 3:30 AM — after the 11 PM stats scrape, so the morning hot-leads list
+            # reflects everything that happened yesterday.
+            'schedule': crontab(hour='3', minute='30')
+        },
         'clen-up-stale-profiles': {
             'task': 'cqc_lem.app.run_scheduler.auto_clean_stale_profiles',
             'schedule': crontab(hour='3', minute='0', )  # Run every day at 3:00 AM
