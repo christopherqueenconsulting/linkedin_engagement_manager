@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.78.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.77.0...v0.78.0) (2026-07-25)
+
+
+### Features
+
+* **feedback:** in-app feedback widget + POST /feedback + feedback table (closes [#496](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/496)) ([739cca6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/739cca685edee67240443f55185488222fcf3946))
+* **feedback:** in-app feedback/bug widget + POST /feedback + feedback table (closes [#496](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/496)) ([bf7385c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bf7385caa80404ff2462646f74d824a5a58aa7e6))
+
+
+### Bug Fixes
+
+* **feedback:** structured log_error on insert failure + close migration file handle ([d45a4ce](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d45a4ceaaf14347d423370a0400bf14395d9ac5e))
+
 ## [0.77.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.76.0...v0.77.0) (2026-07-25)
 
 
