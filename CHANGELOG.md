@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.86.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.85.0...v0.86.0) (2026-07-25)
+
+
+### Features
+
+* **routing:** cost-aware model down-routing loop with A/B + auto-rollback (closes [#494](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/494)) ([975e66b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/975e66b1e74938c63eca3cfaaea5ec6e3cdecbfb))
+* **routing:** cost-aware model down-routing loop with A/B + auto-rollback (closes [#494](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/494)) ([899ce4e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/899ce4e887599e456e632eb99c4f273ece36d89a))
+* **routing:** ship the cost-routing loop dormant (owner decision 1A) ([63ca8f2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/63ca8f27abf4ec150306d14fb8eb54e6809666c0))
+
+
+### Bug Fixes
+
+* **routing:** address review — sha256 cohort hash, cohort clamp, quieter logs ([1e82960](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1e829600b8dfb25821016575e01888532b36abc9))
+
+
+### Documentation
+
+* **routing:** warn that the two cost-routing flags must be flipped together ([a1a0a79](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a1a0a79c16021af8cb5d5d1d87918b97bbc7d39b))
+* VPS scaling & concurrency plan ([bf9dcd1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bf9dcd167dc9079ea2b995707fede46b3752e592))
+
 ## [0.85.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.84.0...v0.85.0) (2026-07-25)
 
 
