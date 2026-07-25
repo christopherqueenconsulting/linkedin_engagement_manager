@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.87.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.87.0...v0.87.1) (2026-07-25)
+
+
+### Bug Fixes
+
+* **infra:** graceful worker shutdown + deploy maintenance mode (closes [#549](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/549)) ([7b67ff6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7b67ff67406094892a23ea4d419535a0d79ef3cb))
+* **infra:** graceful worker shutdown + maintenance mode so deploys never lose in-flight Celery tasks (closes [#549](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/549)) ([08ca272](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/08ca272898727b0be4ee63f9712f798cb02abb76))
+* **infra:** scale maintenance snapshot TTL + structured claim logs ([bc0aa52](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bc0aa52443857ad69d2c27a7d11d2344a2041364))
+
 ## [0.87.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.86.0...v0.87.0) (2026-07-25)
 
 
