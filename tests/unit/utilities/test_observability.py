@@ -321,6 +321,13 @@ class TestCostAttributionDimensions:
         assert props["cached"] is False
         assert kwargs["distinct_id"] == "7"
 
+    def test_feature_floors_to_system_when_caller_omits_it(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_llm_call
+            track_llm_call(model="lem-simple", prompt_tokens=1, completion_tokens=1, latency_ms=5)
+
+        assert mock_ph.capture.call_args[1]["properties"]["feature"] == "system"
+
     def test_model_tier_none_for_raw_provider_model(self):
         with patch(f"{_MOD}.posthog") as mock_ph:
             from cqc_lem.utilities.observability import track_llm_call

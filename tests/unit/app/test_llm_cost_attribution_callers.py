@@ -8,7 +8,6 @@ pytestmark = pytest.mark.unit
 
 _AUTO = "cqc_lem.app.run_automation"
 _PLAN = "cqc_lem.app.run_content_plan"
-_SCHED = "cqc_lem.app.run_scheduler"
 
 
 @pytest.fixture

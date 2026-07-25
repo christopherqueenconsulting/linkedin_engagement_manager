@@ -244,7 +244,9 @@ def track_llm_call(
             "latency_ms": latency_ms,
             "success": success,
             "user_id": user_id,
-            "feature": feature,
+            # Floor the bucket here, not just in the callers: a PostHog breakdown on `feature`
+            # needs every llm_call to carry one, including direct calls that omit it.
+            "feature": feature or FEATURE_SYSTEM,
             "model_tier": model_tier or _model_tier(model),
             "cached": bool(cached),
         },
