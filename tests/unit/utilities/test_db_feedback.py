@@ -70,11 +70,14 @@ class TestInsertFeedback:
         import mysql.connector
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch(f"{_DB}.get_db_connection", return_value=conn), \
+                patch(f"{_DB}.log_error") as logged:
             from cqc_lem.utilities.db import insert_feedback
             assert insert_feedback("body", user_id=1) is None
         cur.close.assert_called_once()
         conn.close.assert_called_once()
+        assert logged.call_args.kwargs["user_id"] == 1
+        assert isinstance(logged.call_args.kwargs["exc"], mysql.connector.Error)
 
 
 class TestFeedbackEnums:

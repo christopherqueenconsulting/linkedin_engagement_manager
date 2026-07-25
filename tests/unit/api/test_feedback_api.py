@@ -122,7 +122,8 @@ class TestFeedbackMigration:
         assert len(files) == 1, "expected exactly one add_feedback migration"
         version = os.path.basename(files[0]).split("__")[0][1:]
         assert len(version) == 14 and version.isdigit(), "new migrations must use a timestamp version"
-        sql = open(files[0]).read()
+        with open(files[0]) as f:
+            sql = f.read()
         for col in ("user_id", "source", "type_hint", "body", "context_json", "embedding",
                     "cluster_id", "github_issue_number", "status", "sentiment", "created_at"):
             assert col in sql, f"missing column {col}"

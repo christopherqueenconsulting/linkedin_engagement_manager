@@ -13,7 +13,7 @@ from cqc_lem.utilities.env_constants import (
     SESSION_IDLE_HOURS,
 )
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
-from cqc_lem.utilities.logger import myprint
+from cqc_lem.utilities.logger import myprint, log_error
 from cqc_lem.utilities.utils import get_top_level_domain, get_aws_ssm_secret
 from dotenv import load_dotenv
 from mysql.connector import errorcode
@@ -6365,7 +6365,7 @@ def insert_feedback(body: str, user_id: int = None,
         connection.commit()
         return cursor.lastrowid
     except mysql.connector.Error as err:
-        myprint(f"Could not insert feedback for user_id {user_id} | Error: {err}")
+        log_error("Could not insert feedback", exc=err, user_id=user_id)
         return None
     finally:
         cursor.close()
