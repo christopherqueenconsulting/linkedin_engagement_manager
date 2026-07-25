@@ -7049,6 +7049,177 @@ def get_published_faq_entries(limit: int = 50) -> list:
             connection.close()
 
 
+# --- Auto-FAQ maintenance (issue #507) ----------------------------------------------
+_FAQ_COLUMNS = "id, question, answer, cluster_id, status, sort_order, created_at, updated_at"
+
+
+def get_faq_entries(statuses: tuple = (FaqStatus.PUBLISHED, FaqStatus.DRAFT),
+                    limit: int = 200) -> list:
+    """Every FAQ entry the auto-FAQ pass matches an incoming question against (issue #507) — drafts
+    included, so a question that already has a proposed answer is never answered twice."""
+    wanted = [str(s) for s in (statuses or ()) if str(s) in tuple(FaqStatus)]
+    if not wanted:
+        return []
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            f"SELECT {_FAQ_COLUMNS} FROM faq_entries "
+            f"WHERE status IN ({','.join(['%s'] * len(wanted))}) "
+            "ORDER BY sort_order ASC, id ASC LIMIT %s",
+            (*wanted, int(limit)))
+        return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error("Could not get FAQ entries", exc=err)
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_faq_entry_by_cluster(cluster_id: int) -> Optional[dict]:
+    """The FAQ entry a feedback cluster already produced, or None (issue #507)."""
+    if cluster_id is None:
+        return None
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(f"SELECT {_FAQ_COLUMNS} FROM faq_entries WHERE cluster_id=%s "
+                       "ORDER BY id ASC LIMIT 1", (int(cluster_id),))
+        return cursor.fetchone()
+    except mysql.connector.Error as err:
+        log_error(f"Could not get FAQ entry for cluster {cluster_id}", exc=err)
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def upsert_faq_entry(question: str, answer: str, cluster_id: int = None,
+                     status: "FaqStatus" = FaqStatus.DRAFT,
+                     sort_order: int = None) -> Optional[int]:
+    """Write one FAQ answer, keyed on the question text (issue #507). Returns the entry id — the
+    `id=LAST_INSERT_ID(id)` trick makes that the EXISTING id when the question is already there, so
+    the caller can version the revision instead of creating a duplicate entry.
+
+    `sort_order` is only written on insert: re-answering a question must never re-order the page."""
+    if not question or not str(question).strip() or not answer or not str(answer).strip():
+        return None
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO faq_entries (question, answer, cluster_id, status, sort_order) "
+            "VALUES (%s,%s,%s,%s,%s) "
+            "ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id), answer=VALUES(answer), "
+            "cluster_id=COALESCE(VALUES(cluster_id), cluster_id), status=VALUES(status)",
+            (str(question)[:512], str(answer), int(cluster_id) if cluster_id is not None else None,
+             str(status), int(sort_order) if sort_order is not None else 0))
+        connection.commit()
+        return cursor.lastrowid
+    except mysql.connector.Error as err:
+        log_error("Could not upsert FAQ entry", exc=err)
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def record_faq_entry_version(faq_entry_id: int, question: str, answer: str,
+                             status: "FaqStatus" = FaqStatus.DRAFT,
+                             source: str = 'auto') -> Optional[int]:
+    """Append the state an FAQ entry was just put into (issue #507). History is append-only, so any
+    earlier answer stays revertible after the auto-FAQ pass rewrites it."""
+    if faq_entry_id is None or not answer or not str(answer).strip():
+        return None
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO faq_entry_versions (faq_entry_id, question, answer, status, source) "
+            "VALUES (%s,%s,%s,%s,%s)",
+            (int(faq_entry_id), str(question)[:512], str(answer), str(status), str(source)[:32]))
+        connection.commit()
+        return cursor.lastrowid
+    except mysql.connector.Error as err:
+        log_error(f"Could not record FAQ version for entry {faq_entry_id}", exc=err)
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_faq_entry_versions(faq_entry_id: int, limit: int = 20) -> list:
+    """An FAQ entry's answer history, newest first (issue #507)."""
+    if faq_entry_id is None:
+        return []
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT id, faq_entry_id, question, answer, status, source, created_at "
+            "FROM faq_entry_versions WHERE faq_entry_id=%s ORDER BY id DESC LIMIT %s",
+            (int(faq_entry_id), int(limit)))
+        return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error(f"Could not get FAQ versions for entry {faq_entry_id}", exc=err)
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def apply_faq_entry_version(faq_entry_id: int, version_id: int) -> Optional[dict]:
+    """Re-apply a stored version's copy and status onto its entry (issue #507) — the revert half of
+    versioned answers. Returns the applied version, or None when it doesn't belong to that entry.
+
+    Recording the revert itself as a NEW version is the caller's job, so history stays append-only."""
+    if faq_entry_id is None or version_id is None:
+        return None
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT id, faq_entry_id, question, answer, status, source, created_at "
+            "FROM faq_entry_versions WHERE id=%s AND faq_entry_id=%s",
+            (int(version_id), int(faq_entry_id)))
+        version = cursor.fetchone()
+        if not version:
+            return None
+        cursor.execute("UPDATE faq_entries SET question=%s, answer=%s, status=%s WHERE id=%s",
+                       (version["question"], version["answer"], str(version["status"]),
+                        int(faq_entry_id)))
+        connection.commit()
+        return version
+    except mysql.connector.Error as err:
+        log_error(f"Could not revert FAQ entry {faq_entry_id} to version {version_id}", exc=err)
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_faq_candidate_feedback(limit: int = 50) -> list:
+    """Feedback the auto-FAQ pass may answer (issue #507): rows the auto-filer already looked at
+    (`triaged`) and did NOT turn into work (still unclustered) — the FAQ-routed questions and public
+    review free-text. Rows still in `new` are deliberately excluded: the filer classifies first, so
+    the FAQ pass can never claim a report that was going to become an issue."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            f"SELECT {_FEEDBACK_COLUMNS} FROM feedback "
+            "WHERE status=%s AND cluster_id IS NULL ORDER BY created_at ASC, id ASC LIMIT %s",
+            (str(FeedbackStatus.TRIAGED), int(limit)))
+        return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error("Could not fetch FAQ candidate feedback", exc=err)
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
 # --- Onboarding / activation checklist (issue #500) ---------------------------------
 def ensure_onboarding_state(user_id: int) -> bool:
     """Create the user's onboarding row if it doesn't exist. `started_at` is the trial start when we

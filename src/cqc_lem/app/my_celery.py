@@ -253,6 +253,13 @@ app.conf.update(
             # each reporter is notified once via shipped_notice_recipients (issue #502).
             'schedule': crontab(hour='10', minute='0')
         },
+        'update-faq': {
+            'task': 'cqc_lem.app.run_scheduler.auto_update_faq',
+            # Hourly at :50 — after both `file-feedback-issues` ticks (:00/:30) have triaged the
+            # queue, since the FAQ pass only ever reads what the filer already left behind (#507).
+            # Cheap: an answer is generated only when the same question recurs.
+            'schedule': crontab(minute='50')
+        },
         'daily-cost-alerts': {
             'task': 'cqc_lem.app.run_scheduler.auto_daily_cost_alerts',
             # Daily 13:00 UTC — scores YESTERDAY (the last complete UTC day), after the 6:00 Stripe
