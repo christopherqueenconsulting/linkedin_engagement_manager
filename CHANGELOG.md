@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.93.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.92.2...v0.93.0) (2026-07-25)
+
+
+### Features
+
+* **infra:** dedicated se_prepost lane so pre-post commenting never queues behind the golden-hour loop (closes [#553](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/553)) ([c778c2a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c778c2ad32b1f4aced3afa2a33cae69d6d14c3b9))
+* **infra:** dedicated se_prepost Selenium lane for pre-post commenting (closes [#553](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/553)) ([2bbde2f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2bbde2f16352848aacc5561e6e66bf33983de184))
+
 ## [0.92.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.92.1...v0.92.2) (2026-07-25)
 
 
