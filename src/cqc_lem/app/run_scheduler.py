@@ -1359,7 +1359,8 @@ def auto_weekly_cost_routing(self, days: int = COST_ROUTING_WINDOW_DAYS):
             f"(published={result['published']}, emailed={result['emailed']})")
 
 
-@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True}, queue='se_content')
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True}, queue='se_content',
+                  reject_on_worker_lost=True)
 def auto_produce_feature_tutorial(self, flow_key: str = None):
     """Weekly: produce ONE automated SPA feature tutorial — headless capture, grounded script, TTS
     voice-over, ffmpeg MP4 + vertical clip, YouTube publish (issue #505). Runs on the se_content

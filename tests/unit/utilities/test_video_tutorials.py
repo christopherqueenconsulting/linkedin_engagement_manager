@@ -7,6 +7,7 @@ pipeline publishes to a public channel, so "fails closed" has to be pinned, not 
 
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -299,7 +300,8 @@ class TestVoiceOver:
                    return_value=response) as create, \
              patch(f"{_MOD}.track_media_cost") as track:
             vt.synthesize_segment("hello there", out)
-        assert open(out, "rb").read() == b"mp3-bytes"
+        written = Path(out).read_bytes()
+        assert written == b"mp3-bytes"
         assert create.call_args.kwargs["model"] == "lem-tts"
         kind, provider, usd = track.call_args[0]
         assert (kind, provider) == ("audio", "openai")
@@ -310,7 +312,7 @@ class TestVoiceOver:
         monkeypatch.setattr(vt, "TUTORIAL_TTS_PROVIDER", "openai")
         out = str(tmp_path / "seg.mp3")
         response = MagicMock()
-        response.write_to_file.side_effect = lambda p: open(p, "wb").write(b"x")
+        response.write_to_file.side_effect = lambda p: Path(p).write_bytes(b"x")
         with patch("cqc_lem.utilities.ai.client.client.audio.speech.create",
                    return_value=response), patch(f"{_MOD}.track_media_cost"):
             vt.synthesize_segment("hi", out)
@@ -326,7 +328,8 @@ class TestVoiceOver:
              patch(f"{_MOD}.track_media_cost") as track:
             vt.synthesize_segment("hello", out)
         assert "v1" in post.call_args[0][0]
-        assert open(out, "rb").read() == b"eleven"
+        written = Path(out).read_bytes()
+        assert written == b"eleven"
         assert track.call_args[0][1] == "elevenlabs"
 
     def test_elevenlabs_without_credentials_fails_closed(self, tmp_path, monkeypatch):
@@ -382,7 +385,7 @@ class TestRender:
         segments = [{"narration": "First line.", "duration": 2.5},
                     {"narration": "Second line.", "duration": 1.25}]
         srt = vt.write_captions(segments, str(tmp_path / "c.srt"))
-        body = open(srt, encoding="utf-8").read()
+        body = Path(srt).read_text(encoding="utf-8")
         assert "00:00:00,000 --> 00:00:02,500" in body
         assert "00:00:02,500 --> 00:00:03,750" in body
         assert "Second line." in body
@@ -390,12 +393,12 @@ class TestRender:
     def test_assemble_video_holds_each_frame_for_its_narration(self, tmp_path, monkeypatch):
         monkeypatch.setattr(vt.shutil, "which", lambda name: f"/usr/bin/{name}")
         frame = str(tmp_path / "f.png")
-        open(frame, "wb").write(b"png")
+        Path(frame).write_bytes(b"png")
         segments = [{"frame": frame, "duration": 3.0}, {"frame": frame, "duration": 5.5}]
         out = str(tmp_path / "out.mp4")
         with patch("subprocess.run", side_effect=_fake_ffmpeg()) as run:
             vt.assemble_video(segments, str(tmp_path / "a.mp3"), out)
-        concat = open(f"{out}.frames.txt", encoding="utf-8").read()
+        concat = Path(f"{out}.frames.txt").read_text(encoding="utf-8")
         assert "duration 3.000" in concat and "duration 5.500" in concat
         assert concat.count("file '") == 3  # last frame repeated for the concat demuxer
         cmd = run.call_args[0][0]
@@ -406,7 +409,7 @@ class TestRender:
         monkeypatch.setattr(vt.shutil, "which", lambda name: f"/usr/bin/{name}")
         monkeypatch.setattr(vt, "TUTORIAL_BURN_CAPTIONS", True)
         frame = str(tmp_path / "f.png")
-        open(frame, "wb").write(b"png")
+        Path(frame).write_bytes(b"png")
         with patch("subprocess.run", side_effect=_fake_ffmpeg()) as run:
             vt.assemble_video([{"frame": frame, "duration": 1.0}], str(tmp_path / "a.mp3"),
                               str(tmp_path / "o.mp4"), str(tmp_path / "c.srt"))
@@ -450,7 +453,7 @@ class TestYouTubePublish:
     def test_resumable_upload_returns_the_watch_url(self, tmp_path, monkeypatch):
         self._configure(monkeypatch)
         mp4 = str(tmp_path / "a.mp4")
-        open(mp4, "wb").write(b"\x00")
+        Path(mp4).write_bytes(b"\x00")
         token = MagicMock(headers={}, **{"json.return_value": {"access_token": "at"}})
         session = MagicMock(headers={"Location": "https://upload.test/x"})
         session.json.return_value = {}
