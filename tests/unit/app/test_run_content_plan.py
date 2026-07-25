@@ -1,105 +1,203 @@
-from datetime import datetime as _real_datetime
 from unittest.mock import patch, MagicMock
 
 import pytest
 
 
-class _MondayDatetime(_real_datetime):
-    """datetime subclass that returns a fixed Monday from .now()."""
-    @classmethod
-    def now(cls, tz=None):
-        return _real_datetime(2024, 1, 8, 12, 0)  # Monday, weekday() == 0
+_RCP = "cqc_lem.app.run_content_plan"
+
+
+def _planned(post_id: int = 42, user_id: int = 1, post_type: str = "text", stage: str = "awareness") -> dict:
+    return {"user_id": user_id, "id": post_id, "post_type": post_type, "buyer_stage": stage}
 
 
 class TestAutoCreateWeeklyContent:
-    """Tests for auto_create_weekly_content — verifies None/empty guards and content-None skip."""
+    """auto_create_weekly_content tops up a BOUNDED rolling buffer of ready posts (issue #544)."""
 
     @pytest.fixture(autouse=True)
-    def pin_to_weekday(self, monkeypatch):
-        """Pin datetime.now() to a Monday so tests are day-of-week agnostic.
+    def default_prefs(self):
+        """Buffer knobs come from user prefs — default them so no test hits the DB."""
+        with patch(f"{_RCP}.get_user_preferences",
+                   return_value={"auto_schedule_posts": 0, "content_buffer_days": 5,
+                                 "content_buffer_max_posts": 5}) as prefs:
+            yield prefs
 
-        Without this, tests that only mock get_planned_posts_for_current_week fail on
-        weekends (weekday >= 5) because the production code calls the next-week variant
-        instead, which hits an unmocked DB call in CI.
-        """
-        monkeypatch.setattr('cqc_lem.app.run_content_plan.datetime', _MondayDatetime)
-
-    @patch('cqc_lem.app.run_content_plan.get_planned_posts_for_next_week', return_value=None)
-    @patch('cqc_lem.app.run_content_plan.get_planned_posts_for_current_week', return_value=None)
-    def test_does_not_crash_when_planned_posts_is_none(self, mock_current, mock_next):
+    @patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0)
+    @patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=None)
+    def test_does_not_crash_when_planned_posts_is_none(self, mock_planned, mock_ready):
         from cqc_lem.app.run_content_plan import auto_create_weekly_content
         # Should not raise TypeError: 'NoneType' is not iterable
         auto_create_weekly_content(user_id=1)
 
-    @patch('cqc_lem.app.run_content_plan.get_planned_posts_for_current_week', return_value=[])
-    def test_does_not_crash_when_planned_posts_is_empty(self, mock_current):
+    @patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0)
+    @patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=[])
+    def test_does_not_crash_when_planned_posts_is_empty(self, mock_planned, mock_ready):
         from cqc_lem.app.run_content_plan import auto_create_weekly_content
         auto_create_weekly_content(user_id=1)
 
-    @patch('cqc_lem.app.run_content_plan.update_db_post_status')
-    @patch('cqc_lem.app.run_content_plan.update_db_post_content')
-    @patch('cqc_lem.app.run_content_plan.create_content', return_value=(None, None))
-    @patch('cqc_lem.app.run_content_plan.get_planned_posts_for_current_week')
+    @patch(f"{_RCP}.update_db_post_status")
+    @patch(f"{_RCP}.update_db_post_content")
+    @patch(f"{_RCP}.create_content", return_value=(None, None))
+    @patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0)
+    @patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=[_planned()])
     def test_skips_post_when_content_is_none(
-        self, mock_current, mock_create, mock_update_content, mock_update_status
+        self, mock_planned, mock_ready, mock_create, mock_update_content, mock_update_status
     ):
         from cqc_lem.app.run_content_plan import auto_create_weekly_content
-        mock_current.return_value = [
-            {'user_id': 1, 'id': 42, 'post_type': 'text', 'buyer_stage': 'awareness'}
-        ]
         auto_create_weekly_content(user_id=1)
         mock_update_content.assert_not_called()
         mock_update_status.assert_not_called()
 
-    @patch('cqc_lem.app.run_content_plan.get_user_preferences', return_value={'auto_schedule_posts': 0})
-    @patch('cqc_lem.app.run_content_plan.update_db_post_status')
-    @patch('cqc_lem.app.run_content_plan.update_db_post_content')
-    @patch('cqc_lem.app.run_content_plan.create_content', return_value=('Great post content', None))
-    @patch('cqc_lem.app.run_content_plan.get_planned_posts_for_current_week')
+    @patch(f"{_RCP}.update_db_post_status")
+    @patch(f"{_RCP}.update_db_post_content")
+    @patch(f"{_RCP}.create_content", return_value=('Great post content', None))
+    @patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0)
+    @patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=[_planned()])
     def test_updates_db_when_content_is_valid(
-        self, mock_current, mock_create, mock_update_content, mock_update_status, mock_prefs
+        self, mock_planned, mock_ready, mock_create, mock_update_content, mock_update_status
     ):
         from cqc_lem.app.run_content_plan import auto_create_weekly_content
-        mock_current.return_value = [
-            {'user_id': 1, 'id': 42, 'post_type': 'text', 'buyer_stage': 'awareness'}
-        ]
         auto_create_weekly_content(user_id=1)
         mock_update_content.assert_called_once_with(42, 'Great post content')
         mock_update_status.assert_called_once()
 
-    @patch('cqc_lem.app.run_content_plan.get_user_preferences', return_value={'auto_schedule_posts': 0})
-    @patch('cqc_lem.app.run_content_plan.update_db_post_status')
-    @patch('cqc_lem.app.run_content_plan.update_db_post_content')
-    @patch('cqc_lem.app.run_content_plan.create_content', return_value=('Auto-off content', None))
-    @patch('cqc_lem.app.run_content_plan.get_planned_posts_for_current_week')
+    @patch(f"{_RCP}.update_db_post_status")
+    @patch(f"{_RCP}.update_db_post_content")
+    @patch(f"{_RCP}.create_content", return_value=('Auto-off content', None))
+    @patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0)
+    @patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=[_planned(post_id=55)])
     def test_status_is_pending_when_auto_schedule_off(
-        self, mock_current, mock_create, mock_update_content, mock_update_status, mock_prefs
+        self, mock_planned, mock_ready, mock_create, mock_update_content, mock_update_status
     ):
         from cqc_lem.app.run_content_plan import auto_create_weekly_content
         from cqc_lem.utilities.db import PostStatus
-        mock_current.return_value = [
-            {'user_id': 1, 'id': 55, 'post_type': 'text', 'buyer_stage': 'awareness'}
-        ]
         auto_create_weekly_content(user_id=1)
         mock_update_status.assert_called_once_with(55, PostStatus.PENDING)
 
-    @patch('cqc_lem.app.run_content_plan.get_post_authenticity_score', return_value=None)
-    @patch('cqc_lem.app.run_content_plan.get_user_preferences', return_value={'auto_schedule_posts': 1})
-    @patch('cqc_lem.app.run_content_plan.update_db_post_status')
-    @patch('cqc_lem.app.run_content_plan.update_db_post_content')
-    @patch('cqc_lem.app.run_content_plan.create_content', return_value=('Auto-on content', None))
-    @patch('cqc_lem.app.run_content_plan.get_planned_posts_for_current_week')
+    @patch(f"{_RCP}.get_post_authenticity_score", return_value=None)
+    @patch(f"{_RCP}.update_db_post_status")
+    @patch(f"{_RCP}.update_db_post_content")
+    @patch(f"{_RCP}.create_content", return_value=('Auto-on content', None))
+    @patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0)
+    @patch(f"{_RCP}.get_planned_posts_within_buffer",
+           return_value=[_planned(post_id=77, user_id=2, stage="decision")])
     def test_status_is_approved_when_auto_schedule_on(
-        self, mock_current, mock_create, mock_update_content, mock_update_status, mock_prefs,
-        mock_auth_score
+        self, mock_planned, mock_ready, mock_create, mock_update_content, mock_update_status,
+        mock_auth_score, default_prefs
     ):
         from cqc_lem.app.run_content_plan import auto_create_weekly_content
         from cqc_lem.utilities.db import PostStatus
-        mock_current.return_value = [
-            {'user_id': 2, 'id': 77, 'post_type': 'text', 'buyer_stage': 'decision'}
-        ]
+        default_prefs.return_value = {"auto_schedule_posts": 1}
         auto_create_weekly_content(user_id=2)
         mock_update_status.assert_called_once_with(77, PostStatus.APPROVED)
+
+
+class TestRollingBufferBounds:
+    """The buffer is what closes the mid-week gap AND caps forward LLM spend (issue #544)."""
+
+    @pytest.fixture(autouse=True)
+    def prefs(self):
+        with patch(f"{_RCP}.get_user_preferences",
+                   return_value={"auto_schedule_posts": 0, "content_buffer_days": 5,
+                                 "content_buffer_max_posts": 5}) as p:
+            yield p
+
+    @patch(f"{_RCP}.create_content", return_value=("Text", None))
+    @patch(f"{_RCP}.update_db_post_status")
+    @patch(f"{_RCP}.update_db_post_content")
+    @patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0)
+    @patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=[_planned()])
+    def test_weekday_run_still_generates(self, mock_planned, mock_ready, upd_content, upd_status,
+                                         mock_create):
+        """No weekday branch any more: a mid-week run generates from the forward window."""
+        from cqc_lem.app.run_content_plan import auto_create_weekly_content
+        auto_create_weekly_content(user_id=1)
+        # Window is the next N days from now — never a calendar week
+        assert mock_planned.call_args[0] == (1, 5, 5, 0)
+        upd_content.assert_called_once_with(42, "Text")
+
+    @patch(f"{_RCP}.create_content")
+    @patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=5)
+    @patch(f"{_RCP}.get_planned_posts_within_buffer")
+    def test_full_buffer_generates_nothing(self, mock_planned, mock_ready, mock_create):
+        from cqc_lem.app.run_content_plan import auto_create_weekly_content
+        auto_create_weekly_content(user_id=1)
+        mock_planned.assert_not_called()
+        mock_create.assert_not_called()
+
+    @patch(f"{_RCP}.create_content", return_value=("Text", None))
+    @patch(f"{_RCP}.update_db_post_status")
+    @patch(f"{_RCP}.update_db_post_content")
+    @patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=3)
+    @patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=[_planned(post_id=1),
+                                                                   _planned(post_id=2)])
+    def test_only_the_delta_is_requested(self, mock_planned, mock_ready, upd_content, upd_status,
+                                         mock_create):
+        """3 already ready against a cap of 5 → ask for 2, generate 2 — never overshoot."""
+        from cqc_lem.app.run_content_plan import auto_create_weekly_content
+        auto_create_weekly_content(user_id=1)
+        assert mock_planned.call_args[0] == (1, 5, 5, 3)
+        assert mock_create.call_count == 2
+
+    @patch(f"{_RCP}.create_content", return_value=("Text", None))
+    @patch(f"{_RCP}.update_db_post_status")
+    @patch(f"{_RCP}.update_db_post_content")
+    @patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0)
+    @patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=[_planned()])
+    def test_per_user_prefs_drive_the_window(self, mock_planned, mock_ready, upd_content,
+                                             upd_status, mock_create, prefs):
+        from cqc_lem.app.run_content_plan import auto_create_weekly_content
+        prefs.return_value = {"auto_schedule_posts": 0, "content_buffer_days": 7,
+                              "content_buffer_max_posts": 3}
+        auto_create_weekly_content(user_id=1)
+        assert mock_planned.call_args[0] == (1, 7, 3, 0)
+        mock_ready.assert_called_once_with(1, 7)
+
+    @patch(f"{_RCP}.create_content", return_value=("Text", None))
+    @patch(f"{_RCP}.update_db_post_status")
+    @patch(f"{_RCP}.update_db_post_content")
+    @patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0)
+    @patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=[_planned()])
+    @patch(f"{_RCP}.get_user_ids_with_planned_posts_within_buffer", return_value=[4, 9])
+    def test_beat_run_tops_up_every_user_with_planned_posts(
+        self, mock_users, mock_planned, mock_ready, upd_content, upd_status, mock_create
+    ):
+        from cqc_lem.app.run_content_plan import auto_create_weekly_content
+        auto_create_weekly_content()
+        mock_users.assert_called_once()
+        assert [c[0][0] for c in mock_planned.call_args_list] == [4, 9]
+
+    @patch(f"{_RCP}.get_user_ids_with_planned_posts_within_buffer", return_value=[])
+    @patch(f"{_RCP}.count_ready_posts_within_buffer")
+    def test_beat_run_with_no_planned_posts_is_a_no_op(self, mock_ready, mock_users):
+        from cqc_lem.app.run_content_plan import auto_create_weekly_content
+        auto_create_weekly_content()
+        mock_ready.assert_not_called()
+
+
+class TestContentBufferSettings:
+    def test_defaults_when_prefs_missing(self):
+        from cqc_lem.app.run_content_plan import _content_buffer_settings
+        from cqc_lem.utilities.db import (DEFAULT_CONTENT_BUFFER_DAYS,
+                                          DEFAULT_CONTENT_BUFFER_MAX_POSTS)
+        assert _content_buffer_settings({}) == (DEFAULT_CONTENT_BUFFER_DAYS,
+                                                DEFAULT_CONTENT_BUFFER_MAX_POSTS)
+        assert _content_buffer_settings(None) == (DEFAULT_CONTENT_BUFFER_DAYS,
+                                                  DEFAULT_CONTENT_BUFFER_MAX_POSTS)
+
+    def test_zero_or_null_falls_back_to_defaults(self):
+        from cqc_lem.app.run_content_plan import _content_buffer_settings
+        from cqc_lem.utilities.db import (DEFAULT_CONTENT_BUFFER_DAYS,
+                                          DEFAULT_CONTENT_BUFFER_MAX_POSTS)
+        assert _content_buffer_settings({"content_buffer_days": 0,
+                                         "content_buffer_max_posts": None}) == (
+            DEFAULT_CONTENT_BUFFER_DAYS, DEFAULT_CONTENT_BUFFER_MAX_POSTS)
+
+    def test_oversized_values_are_clamped_to_the_ceiling(self):
+        from cqc_lem.app.run_content_plan import _content_buffer_settings
+        from cqc_lem.utilities.db import MAX_CONTENT_BUFFER_DAYS, MAX_CONTENT_BUFFER_POSTS
+        assert _content_buffer_settings({"content_buffer_days": 999,
+                                         "content_buffer_max_posts": 999}) == (
+            MAX_CONTENT_BUFFER_DAYS, MAX_CONTENT_BUFFER_POSTS)
 
 
 # ---------------------------------------------------------------------------

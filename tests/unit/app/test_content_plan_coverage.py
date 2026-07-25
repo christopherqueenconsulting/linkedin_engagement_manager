@@ -1,5 +1,5 @@
 """Coverage tests for run_content_plan pure logic: asset guards, AI disclosure, premium
-tiers, weekly-window selection, video save pipeline, sitemap/blog scraping helpers."""
+tiers, video save pipeline, sitemap/blog scraping helpers."""
 
 from datetime import datetime as _real_datetime
 from unittest.mock import MagicMock, patch
@@ -10,12 +10,6 @@ import requests
 pytestmark = pytest.mark.unit
 
 _RCP = "cqc_lem.app.run_content_plan"
-
-
-class _SaturdayDatetime(_real_datetime):
-    @classmethod
-    def now(cls, tz=None):
-        return _real_datetime(2024, 1, 6, 12, 0)  # Saturday, weekday() == 5
 
 
 class _MondayDatetime(_real_datetime):
@@ -130,17 +124,6 @@ class TestSaveContentPlan:
         assert ins.call_args_list[1][0] == (3, when, PostType.TEXT, "decision")
 
 
-class TestWeeklyWindowSelection:
-    def test_saturday_uses_next_week_plan(self, monkeypatch):
-        monkeypatch.setattr(f"{_RCP}.datetime", _SaturdayDatetime)
-        from cqc_lem.app.run_content_plan import auto_create_weekly_content
-        with patch(f"{_RCP}.get_planned_posts_for_next_week", return_value=[]) as nxt, \
-             patch(f"{_RCP}.get_planned_posts_for_current_week") as cur:
-            auto_create_weekly_content(user_id=1)
-        nxt.assert_called_once_with(1)
-        cur.assert_not_called()
-
-
 class TestAutoCreateWeeklyContentVideoPath:
     def _post(self):
         return [{"user_id": 1, "id": 42, "post_type": "video", "buyer_stage": "awareness"}]
@@ -150,7 +133,8 @@ class TestAutoCreateWeeklyContentVideoPath:
         import cqc_lem.app.run_content_plan as rcp
         video_file = tmp_path / "clip.mp4"
         video_file.write_bytes(b"v")
-        with patch(f"{_RCP}.get_planned_posts_for_current_week", return_value=self._post()), \
+        with patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=self._post()), \
+             patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0), \
              patch(f"{_RCP}.create_content", return_value=("Post text", "http://runway/clip.mp4")), \
              patch(f"{_RCP}.create_folder_if_not_exists"), \
              patch(f"{_RCP}.save_video_url_to_dir", return_value=str(video_file)) as save, \
@@ -178,7 +162,8 @@ class TestAutoCreateWeeklyContentVideoPath:
         import cqc_lem.app.run_content_plan as rcp
         video_file = tmp_path / "stock.mp4"
         video_file.write_bytes(b"v")
-        with patch(f"{_RCP}.get_planned_posts_for_current_week", return_value=self._post()), \
+        with patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=self._post()), \
+             patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0), \
              patch(f"{_RCP}.create_content", return_value=("Post text", "/local/pexels/stock.mp4")), \
              patch(f"{_RCP}.create_folder_if_not_exists"), \
              patch(f"{_RCP}.save_video_url_to_dir", return_value=str(video_file)), \
@@ -199,7 +184,8 @@ class TestAutoCreateWeeklyContentVideoPath:
         monkeypatch.setattr(f"{_RCP}.datetime", _MondayDatetime)
         import cqc_lem.app.run_content_plan as rcp
         from cqc_lem.utilities.db import PostStatus
-        with patch(f"{_RCP}.get_planned_posts_for_current_week", return_value=self._post()), \
+        with patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=self._post()), \
+             patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0), \
              patch(f"{_RCP}.create_content", return_value=("Post text", None)), \
              patch(f"{_RCP}.update_db_post_content"), \
              patch(f"{_RCP}.update_db_post_status") as upd_status, \
@@ -211,8 +197,10 @@ class TestAutoCreateWeeklyContentVideoPath:
     def test_generation_exception_skips_post(self, monkeypatch):
         monkeypatch.setattr(f"{_RCP}.datetime", _MondayDatetime)
         import cqc_lem.app.run_content_plan as rcp
-        with patch(f"{_RCP}.get_planned_posts_for_current_week", return_value=self._post()), \
+        with patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=self._post()), \
+             patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0), \
              patch(f"{_RCP}.create_content", side_effect=RuntimeError("AI down")), \
+             patch(f"{_RCP}.get_user_preferences", return_value={"auto_schedule_posts": True}), \
              patch(f"{_RCP}.update_db_post_content") as upd_content:
             rcp.auto_create_weekly_content(user_id=1)
         upd_content.assert_not_called()

@@ -1801,27 +1801,68 @@ def get_post_type_counts(user_id: int):
     return post_counts
 
 
-def get_planned_posts_for_current_week(user_id: int = None) -> list[dict]:
-    """Return status=planning posts scheduled in the current ISO week."""
+# Rolling forward buffer of ready posts (issue #544). Generation is bounded on purpose: a user
+# always has a few days of approve-able content ahead, but we never generate a large forward
+# batch, so a cancelling user leaves at most ~content_buffer_max_posts of wasted LLM/video spend.
+DEFAULT_CONTENT_BUFFER_DAYS = 5
+DEFAULT_CONTENT_BUFFER_MAX_POSTS = 5
+# Hard ceilings on the per-user knobs — the planning horizon is 30 days, and the ceiling is what
+# actually caps forward generation spend, so it is not user-raisable past this.
+MAX_CONTENT_BUFFER_DAYS = 30
+MAX_CONTENT_BUFFER_POSTS = 30
+# A post counts against the buffer once its content exists: pending (awaiting approval), approved
+# (queued) and scheduled (dispatched, not yet posted) are all "ready" and must not be re-generated.
+READY_POST_STATUSES = ('pending', 'approved', 'scheduled')
+
+
+def count_ready_posts_within_buffer(user_id: int, days: int = DEFAULT_CONTENT_BUFFER_DAYS) -> int:
+    """Count posts that already have generated content due within the next `days` days."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM posts"
+            " WHERE user_id = %s"
+            f" AND status IN ({', '.join(['%s'] * len(READY_POST_STATUSES))})"
+            " AND scheduled_time BETWEEN NOW() AND NOW() + INTERVAL %s DAY",
+            (user_id, *READY_POST_STATUSES, int(days)),
+        )
+        row = cursor.fetchone()
+        return int(row[0]) if row else 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not count ready posts within buffer for user_id {user_id} | Error: {err}")
+        return 0
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_planned_posts_within_buffer(user_id: int,
+                                    days: int = DEFAULT_CONTENT_BUFFER_DAYS,
+                                    max_posts: int = DEFAULT_CONTENT_BUFFER_MAX_POSTS,
+                                    already_ready_count: int = 0) -> list[dict]:
+    """Return the status=planning posts to generate now to top the buffer back up.
+
+    Posts due within the next `days` days, soonest first, limited to
+    `max_posts - already_ready_count` so we only fill the delta and never overshoot the cap.
+    """
+    limit = int(max_posts) - int(already_ready_count)
+    if limit <= 0:
+        return []
+
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
-        if user_id:
-            cursor.execute(
-                "SELECT user_id, id, post_type, buyer_stage FROM posts"
-                " WHERE status = 'planning' AND user_id = %s"
-                " AND YEARWEEK(scheduled_time, 1) = YEARWEEK(NOW(), 1)",
-                (user_id,),
-            )
-        else:
-            cursor.execute(
-                "SELECT user_id, id, post_type, buyer_stage FROM posts"
-                " WHERE status = 'planning'"
-                " AND YEARWEEK(scheduled_time, 1) = YEARWEEK(NOW(), 1)"
-            )
+        cursor.execute(
+            "SELECT user_id, id, post_type, buyer_stage FROM posts"
+            " WHERE status = 'planning' AND user_id = %s"
+            " AND scheduled_time BETWEEN NOW() AND NOW() + INTERVAL %s DAY"
+            " ORDER BY scheduled_time ASC, id ASC LIMIT %s",
+            (user_id, int(days), limit),
+        )
         planned_content = cursor.fetchall()
     except mysql.connector.Error as err:
-        myprint(f"Could not get planned post for current week | Error: {err}")
+        myprint(f"Could not get planned posts within buffer for user_id {user_id} | Error: {err}")
         planned_content = []
     finally:
         cursor.close()
@@ -1830,40 +1871,29 @@ def get_planned_posts_for_current_week(user_id: int = None) -> list[dict]:
     return planned_content
 
 
-def get_planned_posts_for_next_week(user_id: int = None) -> list[dict]:
-    """Return status=planning posts scheduled in the next ISO week.
+def get_user_ids_with_planned_posts_within_buffer(days: int = MAX_CONTENT_BUFFER_DAYS) -> list[int]:
+    """User IDs that have any status=planning post due within the next `days` days.
 
-    Uses NOW() + INTERVAL (7 - WEEKDAY(NOW())) DAY to always land on the
-    coming Monday regardless of what day today is, avoiding the +7-day
-    same-weekday pitfall.
+    Defaults to the max window so a user with a longer configured buffer is never missed by the
+    beat's user discovery; the per-user window is applied by get_planned_posts_within_buffer.
     """
     connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
+    cursor = connection.cursor()
     try:
-        if user_id:
-            cursor.execute(
-                "SELECT user_id, id, post_type, buyer_stage FROM posts"
-                " WHERE status = 'planning' AND user_id = %s"
-                " AND YEARWEEK(scheduled_time, 1)"
-                "   = YEARWEEK(NOW() + INTERVAL (7 - WEEKDAY(NOW())) DAY, 1)",
-                (user_id,),
-            )
-        else:
-            cursor.execute(
-                "SELECT user_id, id, post_type, buyer_stage FROM posts"
-                " WHERE status = 'planning'"
-                " AND YEARWEEK(scheduled_time, 1)"
-                "   = YEARWEEK(NOW() + INTERVAL (7 - WEEKDAY(NOW())) DAY, 1)"
-            )
-        planned_content = cursor.fetchall()
+        cursor.execute(
+            "SELECT DISTINCT user_id FROM posts"
+            " WHERE status = 'planning'"
+            " AND scheduled_time BETWEEN NOW() AND NOW() + INTERVAL %s DAY"
+            " ORDER BY user_id",
+            (int(days),),
+        )
+        return [row[0] for row in cursor.fetchall()]
     except mysql.connector.Error as err:
-        myprint(f"Could not get planned post for next week | Error: {err}")
-        planned_content = []
+        myprint(f"Could not get user ids with planned posts within buffer | Error: {err}")
+        return []
     finally:
         cursor.close()
         connection.close()
-
-    return planned_content
 
 
 def get_last_planned_post_date_for_user(user_id: int):
@@ -2717,12 +2747,15 @@ def get_user_preferences(user_id: int) -> dict:
     Defaults auto_schedule_posts=True so new users' content is automatically
     queued without requiring manual opt-in.
     """
-    _defaults: dict = {"last_login_inactivate_delay": None, "auto_schedule_posts": True}
+    _defaults: dict = {"last_login_inactivate_delay": None, "auto_schedule_posts": True,
+                       "content_buffer_days": DEFAULT_CONTENT_BUFFER_DAYS,
+                       "content_buffer_max_posts": DEFAULT_CONTENT_BUFFER_MAX_POSTS}
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute(
-            "SELECT last_login_inactivate_delay, auto_schedule_posts FROM users WHERE id = %s",
+            "SELECT last_login_inactivate_delay, auto_schedule_posts,"
+            " content_buffer_days, content_buffer_max_posts FROM users WHERE id = %s",
             (user_id,),
         )
         row = cursor.fetchone()
@@ -2739,17 +2772,30 @@ def update_user_preferences(
     user_id: int,
     inactivate_delay: Optional[int],
     auto_schedule_posts: bool,
+    content_buffer_days: Optional[int] = None,
+    content_buffer_max_posts: Optional[int] = None,
 ) -> bool:
-    """Persist user-configurable inactivity delay (None = never) and auto-schedule flag."""
+    """Persist user-configurable inactivity delay (None = never) and auto-schedule flag.
+
+    The content-buffer knobs are left untouched when None so a client that doesn't send them
+    (the current Account UI) never resets them.
+    """
+    sets = ["last_login_inactivate_delay = %s", "auto_schedule_posts = %s"]
+    params: list = [inactivate_delay, 1 if auto_schedule_posts else 0]
+    if content_buffer_days is not None:
+        sets.append("content_buffer_days = %s")
+        params.append(max(1, min(MAX_CONTENT_BUFFER_DAYS, int(content_buffer_days))))
+    if content_buffer_max_posts is not None:
+        sets.append("content_buffer_max_posts = %s")
+        params.append(max(1, min(MAX_CONTENT_BUFFER_POSTS, int(content_buffer_max_posts))))
+    params.append(user_id)
+
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
         cursor.execute(
-            """UPDATE users
-               SET last_login_inactivate_delay = %s,
-                   auto_schedule_posts = %s
-               WHERE id = %s""",
-            (inactivate_delay, 1 if auto_schedule_posts else 0, user_id),
+            f"UPDATE users SET {', '.join(sets)} WHERE id = %s",
+            tuple(params),
         )
         connection.commit()
         # rowcount==0 means the row existed but values were unchanged — still a success

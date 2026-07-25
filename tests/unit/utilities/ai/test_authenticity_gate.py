@@ -190,8 +190,8 @@ class TestStatusDemotion:
             captured["status"] = status
             return True
 
-        with patch(f"{_RCP}.get_planned_posts_for_current_week", return_value=planned), \
-             patch(f"{_RCP}.get_planned_posts_for_next_week", return_value=planned), \
+        with patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=planned), \
+             patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0), \
              patch(f"{_RCP}.create_content", return_value=("some content", None)), \
              patch(f"{_RCP}.get_user_preferences",
                    return_value={"auto_schedule_posts": auto_schedule}), \
