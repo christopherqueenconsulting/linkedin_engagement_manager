@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.91.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.91.2...v0.91.3) (2026-07-25)
+
+
+### Bug Fixes
+
+* **content:** bounded rolling forward buffer of ready posts (closes [#544](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/544)) ([b9e163e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b9e163eb3ad28ce36583dba7ba3948863a24517a))
+* **content:** single-flight lock around the buffer top-up ([012223e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/012223eabdb4523e69003b59ad896375e0dc037e))
+
 ## [0.91.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.91.1...v0.91.2) (2026-07-25)
 
 
