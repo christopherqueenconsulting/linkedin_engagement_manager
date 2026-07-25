@@ -346,6 +346,30 @@ def posthog_hogql_query(sql: str, timeout: int = 30) -> Optional[list]:
         return None
 
 
+def track_onboarding_step(
+    user_id: int,
+    step: str,
+    hours_since_start: Optional[float] = None,
+    **extra,
+) -> None:
+    """Emit one activation-funnel event per checklist step (issue #500), the first time that step
+    completes — so time-to-aha and per-step drop-off are queryable in PostHog."""
+    posthog.capture(
+        distinct_id=str(user_id),
+        event="onboarding_step",
+        properties={"step": step, "hours_since_start": hours_since_start, **extra},
+    )
+
+
+def track_onboarding_nudge(user_id: int, nudge_key: str, **extra) -> None:
+    """Emit the stalled-user nudge we sent, so nudge → step-completion is measurable."""
+    posthog.capture(
+        distinct_id=str(user_id),
+        event="onboarding_nudge",
+        properties={"nudge": nudge_key, **extra},
+    )
+
+
 def track_task(
     task_name: str,
     duration_ms: int,

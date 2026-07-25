@@ -363,6 +363,26 @@ def send_newsletter_draft_ready_email(to_email: str, edition_title: str,
         to_email, f"📝 Your newsletter draft is ready: {title}", html, high_priority=True)
 
 
+def send_onboarding_nudge_email(to_email: str, subject: str, headline: str, body: str,
+                                cta_label: str, cta_path: str = "/account") -> bool:
+    """Nudge a user who stalled part-way through activation (issue #500). Copy is supplied by the
+    caller (LLM-refreshed, with a static fallback) so this stays a pure send."""
+    import os
+    base = (os.getenv("LEM_APP_URL") or "https://lem.christopherqueenconsulting.com").rstrip("/")
+    url = f"{base}{cta_path if cta_path.startswith('/') else '/' + cta_path}"
+    html = f"""
+    <html><body style="font-family:Arial,Helvetica,sans-serif;color:#222;">
+    <h2>{headline}</h2>
+    <p>{body}</p>
+    <p><a href="{url}" style="background:#0a66c2;color:#fff;padding:10px 16px;border-radius:6px;
+    text-decoration:none;">{cta_label}</a></p>
+    <p style="color:#888;font-size:12px;">If you've already done this, you can ignore this email —
+    we only send each setup reminder once.</p>
+    </body></html>
+    """
+    return _dispatch_email(to_email, subject, html)
+
+
 def send_pin_email(
     to_email: str,
     pin: str,

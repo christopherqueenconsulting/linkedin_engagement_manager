@@ -558,3 +558,24 @@ class TestPostHogHogqlQuery:
              patch("requests.post", side_effect=RuntimeError("posthog down")):
             from cqc_lem.utilities.observability import posthog_hogql_query
             assert posthog_hogql_query("SELECT 1") is None
+
+
+class TestTrackOnboarding:
+    def test_step_event_carries_the_step_and_time_to_here(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_onboarding_step
+            track_onboarding_step(42, "voice_set", hours_since_start=26.5)
+
+        _, kwargs = mock_ph.capture.call_args
+        assert kwargs["distinct_id"] == "42"
+        assert kwargs["event"] == "onboarding_step"
+        assert kwargs["properties"] == {"step": "voice_set", "hours_since_start": 26.5}
+
+    def test_nudge_event_names_the_nudge(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_onboarding_nudge
+            track_onboarding_nudge(7, "connect_linkedin")
+
+        _, kwargs = mock_ph.capture.call_args
+        assert kwargs["event"] == "onboarding_nudge"
+        assert kwargs["properties"]["nudge"] == "connect_linkedin"

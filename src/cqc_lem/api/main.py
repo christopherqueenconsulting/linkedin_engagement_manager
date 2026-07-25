@@ -2490,6 +2490,19 @@ def account_readiness_endpoint(session_token: str) -> ResponseModel:
     return ResponseModel(status_code=200, detail={"ready": ready, "items": items})
 
 
+@router.get("/user/onboarding")
+def onboarding_endpoint(session_token: str) -> ResponseModel:
+    """The activation checklist (issue #500): each step, when it completed, and the next-best nudge
+    to show in-app. Reading it also advances the persisted state, so the PostHog activation funnel
+    records a step the moment the user finishes it — not a day later when the beat task runs."""
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    from cqc_lem.utilities.onboarding import onboarding_snapshot
+    return ResponseModel(status_code=200, detail=onboarding_snapshot(user_id))
+
+
 @router.put("/user/company-page")
 def update_company_page_endpoint(request: LinkedInCompanyPageRequest) -> ResponseModel:
     """Save (or clear) the user's LinkedIn company page URL. The monthly invite

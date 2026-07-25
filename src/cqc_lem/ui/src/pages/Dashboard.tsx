@@ -5,6 +5,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { useUserTimezone } from '../hooks/useUserTimezone'
 import { formatInTimezone } from '../utils/datetime'
 import { isHttpUrl, commentsActivityUrl } from '../utils/links'
+import OnboardingChecklist from '../components/OnboardingChecklist'
 import LineChart, { type LinePoint } from '../components/charts/LineChart'
 import Leaderboard, { type RankEntry } from '../components/charts/Leaderboard'
 import { compactNumber, formatRate } from '../components/charts/palette'
@@ -226,6 +227,9 @@ export default function Dashboard() {
           </Link>
         </div>
       </div>
+
+      {/* Activation checklist — hides itself once the user is activated */}
+      <OnboardingChecklist />
 
       {/* Stats */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">

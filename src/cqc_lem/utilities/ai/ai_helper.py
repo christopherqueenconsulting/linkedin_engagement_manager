@@ -2946,3 +2946,40 @@ def _normalize_carousel_strings(value):
     if isinstance(value, list):
         return [_normalize_carousel_strings(v) for v in value]
     return value
+
+# LEM's OWN brand voice for product emails — plain, direct, useful. Deliberately separate from the
+# user's LinkedIn voice: these emails come from us, not from them.
+_LEM_BRAND_VOICE = (
+    "You write product emails for LinkedIn Engagement Manager (LEM), a tool that runs a busy "
+    "professional's LinkedIn presence for them — posting in their voice and engaging genuinely on "
+    "their behalf. Brand voice: plain, direct, warm, and specific. No hype, no exclamation marks, no "
+    "marketing cliches, no emoji, no greeting or sign-off. Respect the reader's time."
+)
+
+
+def generate_onboarding_nudge_copy(user_id: int, nudge: dict) -> str:
+    """Rewrite a stalled-user activation nudge (issue #500) in LEM's brand voice. Short, one call to
+    `lem-simple`. Returns the default body on any failure — the nudge must never depend on the LLM."""
+    default_body = (nudge or {}).get("body") or ""
+    try:
+        response = _call_llm(
+            model="lem-simple",
+            messages=[
+                {"role": "system", "content": _LEM_BRAND_VOICE + PLAIN_PUNCTUATION_DIRECTIVE},
+                {"role": "user", "content":
+                    f"Rewrite this onboarding reminder as 2 sentences (max 45 words) of email "
+                    f"body copy. Keep the same ask and the same facts — do not invent features, "
+                    f"numbers, or deadlines. Return only the body text.\n\n"
+                    f"Headline: {(nudge or {}).get('headline', '')}\n"
+                    f"Body: {default_body}\n"
+                    f"Button: {(nudge or {}).get('cta_label', '')}"},
+            ],
+            temperature=0.4,
+            max_tokens=120,
+            _track_user_id=user_id,
+        )
+        text = (response.choices[0].message.content or "").strip()
+        return normalize_public_text(text) if text else default_body
+    except Exception as e:
+        log_warning("Could not generate onboarding nudge copy — using default", exc=e)
+        return default_body

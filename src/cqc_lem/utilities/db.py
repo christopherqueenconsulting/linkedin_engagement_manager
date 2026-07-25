@@ -199,6 +199,21 @@ class FeedbackStatus(StrEnum):
     DISMISSED = 'dismissed'          # not actionable
 
 
+class OnboardingStep(StrEnum):
+    """Steps of the activation checklist (issue #500), in the order a user completes them.
+    ACTIVATED is the "aha" moment: first AI post published AND first automated comment/DM sent."""
+    LINKEDIN_CONNECTED = 'linkedin_connected'
+    VOICE_SET = 'voice_set'
+    FIRST_POST_APPROVED = 'first_post_approved'
+    CAPS_ENABLED = 'caps_enabled'
+    ACTIVATED = 'activated'
+
+
+# Ordered checklist + the onboarding_state column that timestamps each step's first completion.
+ONBOARDING_STEPS: tuple = tuple(OnboardingStep)
+_ONBOARDING_COLS: tuple = tuple(f"{step.value}_at" for step in ONBOARDING_STEPS)
+
+
 # Enum for log actions types
 class LogActionType(StrEnum):
     COMMENT = 'comment'
@@ -6505,6 +6520,181 @@ def update_feedback_triage(feedback_id: int, status: "FeedbackStatus" = None,
         return cursor.rowcount > 0
     except mysql.connector.Error as err:
         log_error(f"Could not update feedback triage for {feedback_id}", exc=err)
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+# --- Onboarding / activation checklist (issue #500) ---------------------------------
+def ensure_onboarding_state(user_id: int) -> bool:
+    """Create the user's onboarding row if it doesn't exist. `started_at` is the trial start when we
+    know it, so the nudge clock measures time-since-signup rather than time-since-first-scan."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT IGNORE INTO onboarding_state (user_id, started_at) "
+            "SELECT id, COALESCE(trial_started_at, NOW()) FROM users WHERE id = %s", (user_id,))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        log_error(f"Could not ensure onboarding state for user_id {user_id}", exc=err)
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_onboarding_state(user_id: int) -> dict:
+    """The persisted checklist row (started_at + one completion timestamp per step). Empty dict when
+    the user has no row yet."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            f"SELECT user_id, started_at, {', '.join(_ONBOARDING_COLS)} "
+            f"FROM onboarding_state WHERE user_id = %s", (user_id,))
+        return cursor.fetchone() or {}
+    except mysql.connector.Error as err:
+        log_error(f"Could not get onboarding state for user_id {user_id}", exc=err)
+        return {}
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def mark_onboarding_step(user_id: int, step: "OnboardingStep") -> bool:
+    """Stamp a checklist step as complete. Idempotent: only the FIRST completion writes, and True is
+    returned only then — so the caller emits its PostHog event exactly once."""
+    column = f"{OnboardingStep(step).value}_at"
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            f"UPDATE onboarding_state SET {column} = NOW() "
+            f"WHERE user_id = %s AND {column} IS NULL", (user_id,))
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        log_error(f"Could not mark onboarding step {step} for user_id {user_id}", exc=err)
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_onboarding_nudges_sent(user_id: int) -> dict:
+    """nudge_key -> sent_at for every nudge already delivered to this user."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT nudge_key, sent_at FROM onboarding_nudges WHERE user_id = %s",
+                       (user_id,))
+        return {row[0]: row[1] for row in cursor.fetchall()}
+    except mysql.connector.Error as err:
+        log_error(f"Could not get onboarding nudges for user_id {user_id}", exc=err)
+        return {}
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def record_onboarding_nudge(user_id: int, nudge_key: str) -> bool:
+    """Record that a nudge was sent. Returns False when this nudge was already sent (the PK makes
+    each nudge one-shot per user)."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("INSERT IGNORE INTO onboarding_nudges (user_id, nudge_key) VALUES (%s, %s)",
+                       (user_id, str(nudge_key)[:32]))
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        log_error(f"Could not record onboarding nudge {nudge_key} for user_id {user_id}", exc=err)
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_onboarding_candidate_user_ids() -> list:
+    """Users still working toward activation: paying or on an unexpired trial, and not yet activated.
+    Deliberately NOT get_active_user_ids() — that requires a live LinkedIn connection, which is the
+    very step most stalled users are stuck on."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("""
+            SELECT u.id
+            FROM users u
+            LEFT JOIN onboarding_state o ON o.user_id = u.id
+            WHERE (
+                    u.subscription_status = 'active'
+                    OR (u.subscription_status = 'trial'
+                        AND (u.trial_ends_at IS NULL OR u.trial_ends_at > NOW()))
+                  )
+              AND o.activated_at IS NULL
+        """)
+        return [row[0] for row in cursor.fetchall()]
+    except mysql.connector.Error as err:
+        log_error("Could not get onboarding candidate user ids", exc=err)
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def has_engagement_preferences(user_id: int) -> bool:
+    """True when the user has actually SAVED engagement preferences. get_engagement_preferences()
+    returns code defaults for everyone, so only the row's existence proves they configured it."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT 1 FROM engagement_preferences WHERE user_id = %s LIMIT 1", (user_id,))
+        return cursor.fetchone() is not None
+    except mysql.connector.Error as err:
+        log_error(f"Could not check engagement prefs for user_id {user_id}", exc=err)
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def has_post_with_status(user_id: int, statuses: tuple) -> bool:
+    """True when the user has at least one post in any of the given statuses."""
+    if not statuses:
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        placeholders = ", ".join(["%s"] * len(statuses))
+        cursor.execute(
+            f"SELECT 1 FROM posts WHERE user_id = %s AND status IN ({placeholders}) LIMIT 1",
+            (user_id, *[str(s) for s in statuses]))
+        return cursor.fetchone() is not None
+    except mysql.connector.Error as err:
+        log_error(f"Could not check posts for user_id {user_id}", exc=err)
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def has_automated_engagement(user_id: int) -> bool:
+    """True once automation has successfully commented, replied, or DM'd on the user's behalf —
+    the engagement half of the activation ("aha") moment."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT 1 FROM logs WHERE user_id = %s AND result = %s "
+            "AND action_type IN (%s, %s, %s, %s) LIMIT 1",
+            (user_id, str(LogResultType.SUCCESS), str(LogActionType.COMMENT),
+             str(LogActionType.REPLY), str(LogActionType.DM), str(LogActionType.FOLLOWUP)))
+        return cursor.fetchone() is not None
+    except mysql.connector.Error as err:
+        log_error(f"Could not check automated engagement for user_id {user_id}", exc=err)
         return False
     finally:
         cursor.close()
