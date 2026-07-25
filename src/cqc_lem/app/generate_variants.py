@@ -19,11 +19,13 @@ from cqc_lem.utilities.ai.ai_helper import (
     get_flux_image_prompt_from_ai, generate_flux1_image_from_prompt, generate_post_image,
     get_runway_ml_video_prompt_from_ai, create_runway_video,
 )
-from cqc_lem.utilities.ai.video_models import estimate_video_cost, RATIO_ALIASES
-from cqc_lem.utilities.db import get_post_content, record_shipped_variant as _db_record_shipped_variant
+from cqc_lem.utilities.ai.video_models import estimate_video_cost, supports_audio, RATIO_ALIASES
+from cqc_lem.utilities.db import (get_post_content, get_user_content_language,
+                                  record_shipped_variant as _db_record_shipped_variant)
 from cqc_lem.utilities.env_constants import (
     API_URL_FINAL, DEFAULT_VIDEO_MODEL, DEFAULT_VIDEO_RATIO, DEFAULT_IMAGE_MODEL,
 )
+from cqc_lem.utilities.geocoding import DEFAULT_CONTENT_LANGUAGE
 from cqc_lem.utilities.linkedin.helper import load_profile_for_user
 from cqc_lem.utilities.logger import log_info, log_warning
 from cqc_lem.utilities.utils import create_folder_if_not_exists, save_video_url_to_dir
@@ -138,7 +140,11 @@ def _generate_one_variant(idx: int, combo: dict, source_text: str, profile, user
 
     # 2. Motion prompt + video (from the local base image)
     if include_video:
-        video_prompt = get_runway_ml_video_prompt_from_ai(source_text, image_prompt, model=video_model)[:512]
+        # Only audio-capable models need the user's language (issue #548) — skip the lookup otherwise.
+        language = (get_user_content_language(user_id) if supports_audio(video_model)
+                    else DEFAULT_CONTENT_LANGUAGE)
+        video_prompt = get_runway_ml_video_prompt_from_ai(
+            source_text, image_prompt, model=video_model, language=language)[:512]
         result["video_prompt"] = video_prompt
         video_src_url = create_runway_video(
             dest_img, video_prompt, model=video_model, ratio=ratio, duration=duration, seed=seed,

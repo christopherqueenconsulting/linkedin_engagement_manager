@@ -174,3 +174,58 @@ class TestDefaultVideoQualityPreference:
             src = _generate_video_src(1, "text", None, post_id=9)
         ded.assert_not_called()
         assert crv.call_args[1]["model"] == "gen4_turbo"
+
+
+class TestContentLanguageThreading:
+    """Issue #548: the user's language must reach the motion prompt of audio-capable models —
+    Veo has no language parameter, so a prompt that omits it gets a voiceover of Veo's choosing."""
+
+    def test_premium_render_passes_the_users_language(self):
+        with patch("cqc_lem.utilities.db.get_post_video_quality", return_value="premium"), \
+             patch("cqc_lem.utilities.db.get_video_credit_balance", return_value=5), \
+             patch("cqc_lem.utilities.db.deduct_video_credits", return_value=True), \
+             patch("cqc_lem.utilities.db.get_active_avatar", return_value=None), \
+             patch("cqc_lem.utilities.db.get_user_content_language", return_value="es-ES") as lang, \
+             patch("cqc_lem.app.run_content_plan.get_flux_image_prompt_from_ai", return_value="scene"), \
+             patch("cqc_lem.app.run_content_plan.get_runway_ml_video_prompt_from_ai",
+                   return_value="motion") as motion, \
+             patch("cqc_lem.app.run_content_plan.create_runway_video", return_value="https://x.mp4"):
+            from cqc_lem.app.run_content_plan import _generate_video_src
+            _generate_video_src(7, "text", None, post_id=9)
+        lang.assert_called_once_with(7)
+        assert motion.call_args[1]["language"] == "es-ES"
+
+    def test_standard_render_skips_the_lookup(self):
+        """gen4_turbo has no native audio, so there's nothing to steer — don't pay for the query."""
+        with patch("cqc_lem.utilities.db.get_post_video_quality", return_value="standard"), \
+             patch("cqc_lem.utilities.db.get_default_video_quality", return_value="standard"), \
+             patch("cqc_lem.utilities.db.get_active_avatar", return_value=None), \
+             patch("cqc_lem.utilities.db.get_user_content_language") as lang, \
+             patch("cqc_lem.app.run_content_plan.get_flux_image_prompt_from_ai", return_value="scene"), \
+             patch("cqc_lem.app.run_content_plan.generate_flux1_image_from_prompt", return_value="/tmp/i.png"), \
+             patch("cqc_lem.app.run_content_plan.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
+             patch("cqc_lem.app.run_content_plan.create_runway_video", return_value="https://x.mp4"):
+            from cqc_lem.app.run_content_plan import _generate_video_src
+            _generate_video_src(7, "text", None, post_id=9)
+        lang.assert_not_called()
+
+    def test_text_to_video_prompt_keeps_the_motion_half_intact(self):
+        """The audio direction rides on the motion prompt — truncating the combined prompt must
+        never eat it (that is exactly how posts #34/#36 lost their audio direction)."""
+        long_scene = "s" * 900
+        motion_text = "Slow push-in. " + "m" * 400 + " Audio: ambient only."
+        with patch("cqc_lem.utilities.db.get_post_video_quality", return_value="premium"), \
+             patch("cqc_lem.utilities.db.get_video_credit_balance", return_value=5), \
+             patch("cqc_lem.utilities.db.deduct_video_credits", return_value=True), \
+             patch("cqc_lem.utilities.db.get_active_avatar", return_value=None), \
+             patch("cqc_lem.utilities.db.get_user_content_language", return_value="en-US"), \
+             patch("cqc_lem.app.run_content_plan.get_flux_image_prompt_from_ai", return_value=long_scene), \
+             patch("cqc_lem.app.run_content_plan.get_runway_ml_video_prompt_from_ai",
+                   return_value=motion_text), \
+             patch("cqc_lem.app.run_content_plan.create_runway_video", return_value="https://x.mp4") as crv:
+            from cqc_lem.app.run_content_plan import _generate_video_src
+            _generate_video_src(7, "text", None, post_id=9)
+        combined = crv.call_args[0][1]
+        assert combined.endswith(motion_text[:512])
+        assert "Audio:" in combined
+        assert len(combined) <= 980

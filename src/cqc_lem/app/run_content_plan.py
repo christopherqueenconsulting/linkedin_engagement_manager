@@ -392,11 +392,12 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
     the user has no credits, and to Pexels stock on error.
     Returns the remote Runway URL (http) or a local Pexels path, or None.
     """
-    from cqc_lem.utilities.ai.video_models import is_premium
+    from cqc_lem.utilities.ai.video_models import is_premium, supports_audio
+    from cqc_lem.utilities.geocoding import DEFAULT_CONTENT_LANGUAGE
     from cqc_lem.utilities.ai.ai_helper import generate_post_image
     from cqc_lem.utilities.db import (get_post_video_quality, get_video_credit_balance,
                                       deduct_video_credits, refund_video_credits, get_active_avatar,
-                                      get_default_video_quality)
+                                      get_default_video_quality, get_user_content_language)
 
     quality = get_post_video_quality(post_id) if post_id else "standard"
     # Auto-planned posts default posts.video_quality to 'standard'; honor the user's per-user
@@ -417,7 +418,12 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
 
     try:
         image_prompt = get_flux_image_prompt_from_ai(text_content, profile=profile, ratio=DEFAULT_IMAGE_RATIO)
-        motion = get_runway_ml_video_prompt_from_ai(text_content, image_prompt, model=model)[:512]
+        # Audio-capable (premium/Veo) renders need the user's language in the prompt — Veo has no
+        # language parameter and invents a voiceover otherwise (issue #548). Silent models skip
+        # the lookup entirely.
+        language = get_user_content_language(user_id) if supports_audio(model) else DEFAULT_CONTENT_LANGUAGE
+        motion = get_runway_ml_video_prompt_from_ai(text_content, image_prompt, model=model,
+                                                    language=language)[:512]
         avatar = get_active_avatar(user_id) if user_id else None
         has_avatar = bool(avatar and avatar.get("status") == "succeeded" and avatar.get("model_ref"))
         if is_premium(model):
@@ -426,7 +432,10 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
                 src = create_runway_video(image_path, motion, model=model, ratio="9:16", audio=audio,
                                           user_id=user_id, post_id=post_id)
             else:
-                combined = (image_prompt[:700] + " Motion: " + motion)[:980]
+                # Trim the scene half, never the motion half — the motion prompt carries the audio
+                # direction and a truncated one silently disables audio (issue #548).
+                head = image_prompt[:max(0, 980 - len(motion) - len(" Motion: "))]
+                combined = f"{head} Motion: {motion}"
                 src = create_runway_video(None, combined, model=model, ratio="9:16", audio=audio,
                                           user_id=user_id, post_id=post_id)
         else:

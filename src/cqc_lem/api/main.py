@@ -68,7 +68,7 @@ from cqc_lem.utilities.db import (
     update_avatar_training_status, set_active_avatar,
     get_avatar_trainings, get_active_avatar,
     get_user_timezone, update_user_timezone,
-    get_user_geo, update_user_location,
+    get_user_geo, update_user_location, get_user_content_language,
     replace_video_url_base, get_post_type, get_post_buyer_stage, get_post_status,
     update_db_post_carousel_slides,
     get_post_url_from_log_for_user,
@@ -353,6 +353,10 @@ class UserPreferencesRequest(BaseModel):
     # doesn't know about these knobs can't reset them. Bounded: they cap forward generation spend.
     content_buffer_days: Optional[int] = Field(default=None, ge=1, le=MAX_CONTENT_BUFFER_DAYS)
     content_buffer_max_posts: Optional[int] = Field(default=None, ge=1, le=MAX_CONTENT_BUFFER_POSTS)
+    # BCP-47 tag the user's generated content (incl. premium-video audio) must be in — issue #548.
+    # Omitted → unchanged; "" → cleared back to the Login Location default. Width matches
+    # users.content_language VARCHAR(16).
+    content_language: Optional[str] = Field(default=None, max_length=16)
 
 
 # Input length limits — kept in lockstep with the DB column widths (see migrations) so an
@@ -1835,6 +1839,11 @@ def get_user_settings(session_token: str) -> ResponseModel:
             "content_buffer_days": preferences.get("content_buffer_days") or DEFAULT_CONTENT_BUFFER_DAYS,
             "content_buffer_max_posts": (preferences.get("content_buffer_max_posts")
                                          or DEFAULT_CONTENT_BUFFER_MAX_POSTS),
+            # The explicit setting (None = follow Login Location) plus what generation will
+            # actually use, so the UI can show the inherited default without duplicating the
+            # precedence rules — issue #548.
+            "content_language": preferences.get("content_language"),
+            "effective_content_language": get_user_content_language(user_id),
         } if preferences else None,
         "blog_url": blog_url,
         "sitemap_url": sitemap_url,
@@ -1854,6 +1863,7 @@ def update_user_settings_endpoint(request: UserPreferencesRequest) -> ResponseMo
         auto_schedule_posts=request.auto_schedule_posts,
         content_buffer_days=request.content_buffer_days,
         content_buffer_max_posts=request.content_buffer_max_posts,
+        content_language=request.content_language,
     )
     if not updated:
         raise HTTPException(status_code=500, detail="Could not update preferences")

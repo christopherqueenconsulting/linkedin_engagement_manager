@@ -66,6 +66,67 @@ class TestRunwayMotionPrompt:
             assert "audio" in sys.lower()
 
 
+class TestAudioDirection:
+    """Issue #548: Veo has no language parameter, so an audio-capable render whose prompt carries
+    no audio direction invents a voiceover in a language of its own choosing (posts #34/#36)."""
+
+    def test_only_audio_capable_models_get_a_direction(self):
+        from cqc_lem.utilities.ai.ai_helper import _audio_direction
+        from cqc_lem.utilities.ai.video_models import VIDEO_MODELS
+        for name, spec in VIDEO_MODELS.items():
+            direction = _audio_direction(name, "en-US")
+            assert bool(direction) is spec.supports_audio, name
+
+    def test_unknown_model_gets_no_direction(self):
+        from cqc_lem.utilities.ai.ai_helper import _audio_direction
+        assert _audio_direction("not-a-model") == ""
+
+    def test_bans_speech_and_names_the_language(self):
+        from cqc_lem.utilities.ai.ai_helper import _audio_direction
+        from cqc_lem.utilities.ai.video_models import AUDIO_DIRECTION_MARKER
+        direction = _audio_direction("veo3.1_fast", "es-ES")
+        assert direction.startswith(AUDIO_DIRECTION_MARKER)
+        assert "Spanish (es-ES)" in direction
+        for banned in ("no spoken dialogue", "no voiceover", "no narration"):
+            assert banned in direction.lower()
+
+    def test_defaults_to_english_when_language_unset(self):
+        from cqc_lem.utilities.ai.ai_helper import _audio_direction
+        assert "English" in _audio_direction("veo3.1_fast")
+
+    def test_appended_to_the_returned_motion_prompt(self, mock_openai_client):
+        with patch("cqc_lem.utilities.ai.ai_helper.client", mock_openai_client):
+            from cqc_lem.utilities.ai.ai_helper import (get_runway_ml_video_prompt_from_ai,
+                                                        _audio_direction)
+            out = get_runway_ml_video_prompt_from_ai("post", "scene", model="veo3.1_fast",
+                                                     language="fr-FR")
+            assert out.startswith("Mock AI response")
+            assert out.endswith(_audio_direction("veo3.1_fast", "fr-FR"))
+
+    def test_not_appended_for_silent_models(self, mock_openai_client):
+        with patch("cqc_lem.utilities.ai.ai_helper.client", mock_openai_client):
+            from cqc_lem.utilities.ai.ai_helper import get_runway_ml_video_prompt_from_ai
+            out = get_runway_ml_video_prompt_from_ai("post", "scene", model="gen4_turbo")
+            assert out == "Mock AI response"
+
+    def test_long_motion_is_trimmed_but_the_direction_survives(self, mock_openai_client):
+        mock_openai_client.chat.completions.create.return_value.choices[0].message.content = "x" * 900
+        with patch("cqc_lem.utilities.ai.ai_helper.client", mock_openai_client):
+            from cqc_lem.utilities.ai.ai_helper import (get_runway_ml_video_prompt_from_ai,
+                                                        _audio_direction, MAX_MOTION_PROMPT_CHARS)
+            out = get_runway_ml_video_prompt_from_ai("post", "scene", model="veo3.1")
+            # Callers cap the prompt at MAX_MOTION_PROMPT_CHARS — the direction must survive that.
+            assert len(out) <= MAX_MOTION_PROMPT_CHARS
+            assert out[:MAX_MOTION_PROMPT_CHARS].endswith(_audio_direction("veo3.1"))
+
+    def test_system_prompt_keeps_the_llm_off_audio(self, mock_openai_client):
+        with patch("cqc_lem.utilities.ai.ai_helper.client", mock_openai_client):
+            from cqc_lem.utilities.ai.ai_helper import get_runway_ml_video_prompt_from_ai
+            get_runway_ml_video_prompt_from_ai("post", "scene", model="veo3.1_fast")
+            sys = _system_text(mock_openai_client.chat.completions.create)
+            assert "Say NOTHING about audio" in sys
+
+
 class TestFluxViaReplicate:
     def test_flux_dev_schema_and_aspect_ratio(self):
         with patch("cqc_lem.utilities.ai.ai_helper.replicate.run", return_value=["http://x/folder/img.webp"]) as run, \

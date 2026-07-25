@@ -1,12 +1,16 @@
 # Avatar Fidelity, Preview, Guardrails & Video Language — Phase 1 Research
 
 Issue: [#548](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/548)
-Date: 2026-07-25 · Status: **research complete, awaiting owner sign-off before Phase 2**
+Date: 2026-07-25 · Status: **research complete; owner signed off `1A 2A 3A 4A` — see §5**
 
 This document root-causes the four reported defects against the code as it exists on `main`,
-records what the underlying models can and cannot be conditioned on, and proposes a concrete
-Phase 2 implementation plan. **No behavior changes ship in this PR** — Phase 2 is gated on the
-Decision Comment attached to the PR.
+records what the underlying models can and cannot be conditioned on, and lays out the Phase 2
+implementation plan.
+
+**What ships in this PR:** the research below, plus **Phase 2 item 1 only** — the video-language
+fix (§2.1), which the owner asked for ahead of the rest so the two posts that shipped with a
+foreign-language voiceover (#34, #36) can be regenerated. Items 2–4 (likeness attributes, preview
++ approval gate, guardrails) land in a follow-up PR and close the issue.
 
 ---
 
@@ -29,7 +33,7 @@ Decision Comment attached to the PR.
 
 ## 2. Root causes
 
-### 2.1 Video voiceover is not in the user's language (Post #34) — **confirmed**
+### 2.1 Video voiceover is not in the user's language (Posts #34, #36) — **confirmed, fixed here**
 
 The chain that produces a premium video:
 
@@ -57,12 +61,16 @@ this worse in two ways: it forbids negatives ("NO negatives (\"no X\")"), so not
 speech, and its worked example puts a person making eye contact with the camera in frame, which
 reads to Veo as a speaking subject.
 
-Post #34 is that path exactly: premium tier, `veo3.1_fast`, audio on, prompt with no language and no
-audio direction at all.
+Posts #34 and #36 are that path exactly: premium tier, `veo3.1_fast`, audio on, prompt with no
+language and no audio direction at all.
 
 **Also note:** the same bug means `veo3.1` (the `premium_top` tier) is the *only* model that ever
 receives audio guidance, and the guidance it gets ("ONE short ambient audio cue") is advisory, not
 binding.
+
+**Fixed in this PR** — see §4 item 1 for the shipped shape. Both posts still need one
+`regenerate_post_video_task(<post_id>)` run after the release deploys; the code change alone does not
+re-render already-published media.
 
 ### 2.2 Generated images render the wrong gender — **confirmed root cause**
 
@@ -102,7 +110,7 @@ Two compounding defects found while tracing this:
   ratio="9:16")` ignores `ratio` when an avatar is active: `generate_image_with_avatar()` calls
   `get_flux_image_via_replicate(prompt, ref=model_ref)` with no `aspect_ratio`, which defaults to
   `"1:1"` (`ai_helper.py:2564`). So the **9:16 source frame for premium avatar video is generated
-  square** (`run_content_plan.py:427`) and then handed to a 9:16 Veo render — cropping/letterboxing
+  square** (`_generate_video_src`, `run_content_plan.py`) and then handed to a 9:16 Veo render — cropping/letterboxing
   the user's face. Base-Flux (no avatar) renders honor the ratio correctly, so this only degrades
   avatar users.
 - **The trigger word is injected into scenes with no person in them.** `_generate_avatar_slide_image()`
@@ -124,7 +132,7 @@ wrong-gender avatar can be caught before publication.
 |---|---|
 | **The compose-time "use avatar" toggle is dead.** | `PostRequest.use_avatar` (`api/main.py:258`) is populated by `ComposePost.tsx:186` and **never read anywhere in the backend** (no `.use_avatar` reference exists). Avatar use is decided solely by "does the user have an active avatar". |
 | **No per-content-type opt-in.** | Carousel avatar use is gated only by the **global** env flags `CAROUSEL_REPLICATE_ENABLED` / `CAROUSEL_REPLICATE_RATE` plus `CAROUSEL_AVATAR_RELEVANT_TYPES` — none of it per user, none of it user-visible. Post images and video frames have no gate at all beyond avatar existence. |
-| **Avatar images carry no disclosure.** | `_apply_ai_disclosure()` is called on exactly one branch — `if ai_video:` (`run_content_plan.py:1559`). `add_ai_content_credentials()` (C2PA) is likewise applied only to video files and media variants. A **synthetic likeness of a real person** in a text-post image or a carousel slide ships with neither a caption disclosure nor C2PA provenance. |
+| **Avatar images carry no disclosure.** | `_apply_ai_disclosure()` is called on exactly one branch — `if ai_video:` in `_create_content_for_planned_post` (`run_content_plan.py`). `add_ai_content_credentials()` (C2PA) is likewise applied only to video files and media variants. A **synthetic likeness of a real person** in a text-post image or a carousel slide ships with neither a caption disclosure nor C2PA provenance. |
 | **No approval gate, no regeneration cap beyond credits.** | `set_active_avatar()` is reachable straight from `succeeded`; the only limit on re-training is the credit balance. |
 | **The "don't use avatar" fallback is failure-driven only.** | `generate_image_with_avatar()` falls back to base Flux only when inference *raises*. A successful-but-wrong render (the §2.2 case) has no fallback path — it is published. |
 
@@ -154,21 +162,32 @@ add an explicit setting defaulted from that locale.
 
 Ordered by risk-reduction per unit of work. Items 1–2 are the reported production defects.
 
-**1. Video language (fixes Post #34).**
-- Add `_audio_direction(model, language)` in `ai_helper.py`, gated on
-  `VIDEO_MODELS[model].supports_audio` (**not** an `== "veo3.1"` string match), and thread a
-  `language` argument through `get_runway_ml_video_prompt_from_ai()` ←
-  `_generate_video_src()` ← `create_video_content()` / `regenerate_video_for_post()`.
-- The clause states the language explicitly and either bans speech outright or constrains it to that
-  language (per Decision 1).
-- Belt-and-braces: `create_runway_video()` refuses `audio=True` when the resolved prompt carries no
-  audio direction, so this cannot silently regress again.
-- Validation: regenerate Post #34 via `regenerate_video_for_post()` on the owner's account and confirm
-  the audio.
+**1. Video language (fixes Posts #34 / #36).** ✅ **shipped in this PR** (Decisions 1A + 2A)
+- `ai_helper._audio_direction(model, language)` gates on `video_models.supports_audio(model)`
+  (**not** an `== "veo3.1"` string match) and returns an **ambience-only** clause: natural ambient
+  sound, *no spoken dialogue / voiceover / narration / singing*, plus the user's language stated
+  explicitly for any incidental speech.
+- The clause is **appended deterministically** to the LLM's motion prompt rather than requested from
+  it — the system prompt forbids negatives, and the clause is made of them. The LLM is instead told
+  to say nothing about audio. The motion half is trimmed so a caller's `[:512]` cap can never eat
+  the clause, and `_generate_video_src()`'s text→video path now trims the scene half, not the motion
+  half, for the same reason.
+- `language` threads through `get_runway_ml_video_prompt_from_ai()` ← `_generate_video_src()`
+  (and `generate_variants._generate_one_variant()`), resolved by
+  `db.get_user_content_language(user_id)`: explicit `users.content_language` → the Login Location
+  locale (`users.locale`) → `en-US`. Silent models skip the lookup entirely.
+- The setting is editable in the SPA (Account → Preferences → "Content language", `""` = auto) via
+  `PUT /api/user/settings`; `GET` returns both the explicit value and the effective one.
+- Belt-and-braces: `create_runway_video()` **refuses `audio=True` when the prompt carries no
+  `AUDIO_DIRECTION_MARKER`** and renders silent instead, so the defect cannot silently regress.
+- Migration: `V20260725221220__add_user_content_language.sql` (`users.content_language VARCHAR(16) NULL`).
+- Validation: after deploy, `regenerate_post_video_task(34)` / `(36)` on the owner's account and
+  confirm the audio.
 
-**2. Likeness / gender fidelity.**
+**2. Likeness / gender fidelity.** (Decision 3A — user self-declares, never inferred)
 - Migration (timestamp version): add nullable `gender_presentation VARCHAR(32)`, `age_band VARCHAR(16)`,
-  `attributes_confirmed_at DATETIME` to `avatar_trainings`; add `users.content_language VARCHAR(16) NULL`.
+  `attributes_confirmed_at DATETIME` to `avatar_trainings`. (`users.content_language` already landed
+  with item 1.)
 - New `utilities/avatar/attributes.py`: `subject_clause(avatar) -> str` producing one canonical phrase
   (e.g. `"a man in his 40s"`) from **stored, user-declared** values. Empty string when unset — never
   guessed.
@@ -178,7 +197,7 @@ Ordered by risk-reduction per unit of work. Items 1–2 are the reported product
 - Only prepend the trigger word when the scene actually depicts the author (person-bearing prompts);
   `_generate_avatar_slide_image()` routes object/concept queries to base Flux or Pexels instead.
 
-**3. Preview + approval gate.**
+**3. Preview + approval gate.** (Decision 4A)
 - On transition to `succeeded`, render N=3 sample images through the avatar LoRA (fixed prompt set:
   headshot, at-desk, speaking-to-camera) and persist their asset paths (new `avatar_samples` table or a
   JSON column — one row per avatar).
@@ -188,7 +207,7 @@ Ordered by risk-reduction per unit of work. Items 1–2 are the reported product
 - `Avatars.tsx`: sample gallery, Approve / Reject + Regenerate, attribute & language settings,
   guardrail toggles, credit/usage visibility.
 
-**4. Guardrails.**
+**4. Guardrails.** (Decision 4A — full set)
 - Honor `PostRequest.use_avatar` (currently dead) in the compose path.
 - Per-user, per-content-type opt-in (`avatar_use_*` columns or an engagement-preference section),
   default **off** until the avatar is approved.
@@ -196,21 +215,30 @@ Ordered by risk-reduction per unit of work. Items 1–2 are the reported product
 - Regeneration cap on top of the credit ledger; an explicit "don't use my avatar" switch that forces
   the base-Flux / Pexels path.
 
-**Testing.** `tests/unit/` for `_audio_direction` (every model in `VIDEO_MODELS`, language threading,
-unset-language default), `subject_clause` (unset → empty, never inferred), ratio threading, trigger-word
-gating, and the approval gate on `set_active_avatar`. `tests/integration/` for the new avatar endpoints.
-Target ≥90% patch coverage per the issue. Post #34 regeneration + one supervised avatar render on the
-owner's account are the live validation cases.
+**Testing.** Item 1's coverage ships here: `_audio_direction` across every model in `VIDEO_MODELS`,
+the language/marker content, prompt-trimming, the `create_runway_video` audio gate, language
+resolution precedence + fail-soft paths, pipeline threading, and the settings endpoint
+(`tests/unit/utilities/test_content_language.py`, `tests/unit/utilities/ai/test_ai_helper_media.py`,
+`tests/unit/utilities/ai/test_video_models_premium.py`, `tests/unit/app/test_video_tier_pipeline.py`,
+`tests/integration/test_content_language_settings.py`).
+Items 2–4 still owe: `subject_clause` (unset → empty, never inferred), ratio threading, trigger-word
+gating, the approval gate on `set_active_avatar`, and integration coverage for the new avatar
+endpoints. Target ≥90% patch coverage per the issue. Regenerating posts #34/#36 plus one supervised
+avatar render on the owner's account are the live validation cases.
 
 ---
 
-## 5. Open product decisions (see the PR's Decision Comment)
+## 5. Product decisions — **signed off 2026-07-25 (`1A 2A 3A 4A`)**
 
-1. **Audio policy for audio-capable video models** — ambience-only (no speech) vs. language-tagged
-   spoken voiceover vs. audio off entirely.
-2. **Source of the user's language** — explicit setting defaulted from Login Location locale, vs.
-   locale-derived only, vs. hardcoded `en-US` for now.
-3. **How avatar attributes are captured** — user self-declares (never inferred), vs. vision-model
-   inference with user confirmation, vs. no attributes stored (gender-neutral prompts only).
-4. **Guardrail strictness** — approval-gated with per-content-type opt-in and disclosure on all avatar
-   media, vs. approval gate only, vs. status quo.
+1. **Audio policy for audio-capable video models** → **A. Ambience only, speech explicitly banned.**
+   The prompt states the user's language *and* forbids spoken dialogue/voiceover. Native audio is
+   kept; the failure class is removed rather than made less likely. *(Shipped — §4 item 1.)*
+2. **Source of the user's language** → **A. New `users.content_language`, defaulted from the Login
+   Location locale, falling back to `en-US`.** Explicit and overridable, because location is not
+   language. *(Shipped — §4 item 1.)*
+3. **How avatar attributes are captured** → **A. The user self-declares** gender presentation and an
+   optional age band in the Avatars SPA; stored on the avatar row and **never inferred** — no model
+   ever classifies the user's face. *(Phase 2 — §4 item 2.)*
+4. **Guardrail strictness** → **A. Full set:** approval gate before activation, per-content-type
+   opt-in (default off), disclosure + C2PA on *all* avatar media, and an explicit "don't use my
+   avatar" switch. *(Phase 2 — §4 items 3–4.)*
