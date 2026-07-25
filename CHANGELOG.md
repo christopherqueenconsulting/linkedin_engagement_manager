@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.91.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.91.0...v0.91.1) (2026-07-25)
+
+
+### Bug Fixes
+
+* **automation:** key feed comments on the activity URN from the card's ancestors (closes [#580](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/580)) ([a999f91](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a999f9122c9fa273bca0ac2b6d7ac4070873a36a))
+* **automation:** key feed comments on the activity URN from the card's ancestors (closes [#580](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/580)) ([4d037e1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4d037e16f6e1434b11bc0ec76780d0b0eb0d87a8))
+
 ## [0.91.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.90.1...v0.91.0) (2026-07-25)
 
 
