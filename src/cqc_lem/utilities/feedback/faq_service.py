@@ -62,8 +62,8 @@ from cqc_lem.utilities.feedback.classifier import (
     NEEDS_HUMAN_LABEL, RISK_LABELS, FeedbackRisk, _json_object_candidates,
 )
 from cqc_lem.utilities.feedback.issue_service import (
-    FEEDBACK_LABEL, PLAN_DOC, _env_float, _env_int, as_vector, comment_on_issue,
-    create_github_issue, embed_text, issue_assignee, similarity,
+    FEEDBACK_LABEL, PLAN_DOC, _env_float, _env_int, comment_on_issue, create_github_issue,
+    embed_text, issue_assignee, similarity,
 )
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 
@@ -308,30 +308,31 @@ def cluster_questions(rows: Optional[list]) -> list:
 
     A cluster is keyed by its SEED row id — the same convention the filer uses for work clusters
     (`feedback.cluster_id` = the seed's id), so an FAQ cluster and an issue cluster can never be
-    confused for one another. Missing embeddings are backfilled once per row and stamped back, so a
-    row is embedded at most once in its lifetime; when embedding is unavailable the comparison
-    degrades to token overlap rather than to "everything is new"."""
+    confused for one another. When embedding is unavailable the comparison degrades to token overlap
+    rather than to "everything is new".
+
+    Only the PII-redacted, normalized QUESTION is embedded and compared — never the raw body, which
+    can still carry the email, phone number or API key the asker pasted in. That also means
+    `feedback.embedding` is neither read nor written here: that column holds the filer's
+    body-derived vector, and cosine between a question vector and a body vector is not a
+    like-for-like score. The cost of re-embedding a still-pending question each pass is a bounded
+    handful of `lem-embedding` calls."""
     threshold = cluster_similarity_min()
     clusters: list = []
     for row in rows or []:
-        body = str(row.get("body") or "")
-        question = normalize_question(body)
+        question = normalize_question(row.get("body"))
         if not question:
             continue
-        vector = as_vector(row.get("embedding"))
-        if vector is None:
-            vector = embed_text(body)
-            if vector:
-                update_feedback_triage(row.get("id"), embedding=vector)
+        vector = embed_text(question)
         match = None
         for cluster in clusters:
-            if similarity(body, cluster["body"], vector, cluster["vector"]) >= threshold:
+            if similarity(question, cluster["question"], vector, cluster["vector"]) >= threshold:
                 match = cluster
                 break
         if match:
             match["rows"].append(row)
             continue
-        clusters.append({"cluster_id": row.get("id"), "question": question, "body": body,
+        clusters.append({"cluster_id": row.get("id"), "question": question,
                          "vector": vector, "rows": [row]})
     return clusters
 
@@ -435,15 +436,17 @@ def build_hold_body(question: str, answer: Optional[str], reason: str, asks: int
     if answer:
         lines += ["**Proposed answer (NOT published):**", "", f"> {answer}", ""]
     else:
-        lines += ["No answer could be grounded in the product docs — the docs may need the fact "
-                  "first.", ""]
-    lines += ["## Scope",
-              "Publish (or reject) an `faq_entries` row for this question. Editing the answer here "
-              "is enough — the auto-FAQ pass versions every later revision.", "",
+        no_answer = ("No answer could be grounded in the product docs — the docs may need the "
+                     "fact first.")
+        lines += [no_answer, ""]
+    scope = ("Publish (or reject) an `faq_entries` row for this question. Editing the answer here "
+             "is enough — the auto-FAQ pass versions every later revision.")
+    provenance = (f"_Auto-raised by the auto-FAQ service (`{PLAN_DOC}` §C.7). Only the redacted "
+                  "question reaches GitHub — never the raw feedback or who asked it._")
+    lines += ["## Scope", scope, "",
               "## Acceptance",
               "- The question is either answered on the public FAQ or explicitly rejected.", "",
-              f"_Auto-raised by the auto-FAQ service (`{PLAN_DOC}` §C.7). Only the redacted "
-              "question reaches GitHub — never the raw feedback or who asked it._"]
+              provenance]
     return "\n".join(lines)
 
 

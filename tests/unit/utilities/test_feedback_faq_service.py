@@ -226,38 +226,42 @@ class TestMatchEntry:
 class TestClusterQuestions:
     def test_rewordings_of_the_same_question_form_one_cluster(self):
         svc = _mod()
-        rows = [_row(1, "How do I pause the automation?", embedding=[1.0, 0.0]),
-                _row(2, "How do I pause the automation for a week?", embedding=[1.0, 0.0]),
-                _row(3, "Which browsers are supported?", embedding=[0.0, 1.0])]
-        with patch(f"{_SVC}.embed_text") as embed:
+        rows = [_row(1, "How do I pause the automation?"),
+                _row(2, "How do I pause the automation for a week?"),
+                _row(3, "Which browsers are supported?")]
+        with patch(f"{_SVC}.embed_text", side_effect=[[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]]):
             clusters = svc.cluster_questions(rows)
-        embed.assert_not_called()
         assert [len(c["rows"]) for c in clusters] == [2, 1]
         # The cluster is keyed by its SEED row — the same convention the filer uses.
         assert clusters[0]["cluster_id"] == 1
 
-    def test_missing_embeddings_are_backfilled_once_and_stamped_back(self):
+    def test_only_the_redacted_question_is_embedded_never_the_raw_body(self):
         svc = _mod()
-        rows = [_row(1, "How do I pause the automation?")]
+        row = _row(1, "Hi, I am bob@example.com and my key is sk-abcd1234efgh. "
+                      "How do I pause the automation?", embedding=[0.0, 1.0])
         with patch(f"{_SVC}.embed_text", return_value=[1.0, 0.0]) as embed, \
              patch(f"{_SVC}.update_feedback_triage") as stamp:
-            clusters = svc.cluster_questions(rows)
+            clusters = svc.cluster_questions([row])
+        embedded = embed.call_args.args[0]
+        assert embedded == "How do I pause the automation?"
+        assert "bob@example.com" not in embedded and "sk-abcd1234efgh" not in embedded
+        # `feedback.embedding` holds the filer's BODY vector — not read here, not overwritten here.
         embed.assert_called_once()
-        stamp.assert_called_once_with(1, embedding=[1.0, 0.0])
+        stamp.assert_not_called()
         assert clusters[0]["vector"] == [1.0, 0.0]
 
     def test_clustering_degrades_to_token_overlap_when_embedding_is_down(self):
         svc = _mod()
         rows = [_row(1, "How do I pause the automation?"),
                 _row(2, "How do I pause the automation?")]
-        with patch(f"{_SVC}.embed_text", return_value=None), \
-             patch(f"{_SVC}.update_feedback_triage"):
+        with patch(f"{_SVC}.embed_text", return_value=None):
             clusters = svc.cluster_questions(rows)
         assert len(clusters) == 1 and len(clusters[0]["rows"]) == 2
 
     def test_rows_with_no_usable_question_are_skipped(self):
-        with patch(f"{_SVC}.embed_text", return_value=None), patch(f"{_SVC}.update_feedback_triage"):
+        with patch(f"{_SVC}.embed_text", return_value=None) as embed:
             assert _mod().cluster_questions([_row(1, "   ")]) == []
+        embed.assert_not_called()
 
 
 class TestGrounding:
@@ -437,8 +441,7 @@ class TestReplyToAskers:
 
 def _cluster(size=3, question="How do I pause the automation?", cluster_id=1):
     rows = [_row(i + 1, question, user_id=i + 1) for i in range(size)]
-    return {"cluster_id": cluster_id, "question": question, "body": question,
-            "vector": [1.0, 0.0], "rows": rows}
+    return {"cluster_id": cluster_id, "question": question, "vector": [1.0, 0.0], "rows": rows}
 
 
 class TestAnswerQuestionCluster:
