@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.80.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.79.0...v0.80.0) (2026-07-25)
+
+
+### Features
+
+* **feedback:** auto-file GitHub issues from classified feedback with dedup/clustering (closes [#498](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/498)) ([2d2e4b2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2d2e4b2bcfd7767df42a7b0b8cb4064d8610ca00))
+* **feedback:** auto-file GitHub issues from classified feedback with dedup/clustering (closes [#498](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/498)) ([4668e83](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4668e83a12b506154c0f2fc5413d7841b24d64bb))
+
+
+### Bug Fixes
+
+* **feedback:** stop inflating the distinct-reporter demand signal ([54ec2dd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/54ec2dd9a1879831fb5ae2e8156a15fcecd412d1))
+
 ## [0.79.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.78.0...v0.79.0) (2026-07-25)
 
 
