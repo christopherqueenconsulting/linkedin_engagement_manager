@@ -1,27 +1,6 @@
-import { useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import TutorialVideos from '../components/TutorialVideos'
-
-function FaqItem({ question, answer }: { question: string; answer: string }) {
-  const [open, setOpen] = useState(false)
-  return (
-    <div className="border border-gray-200 rounded-lg overflow-hidden">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className="w-full flex justify-between items-center px-5 py-4 text-left font-medium text-gray-800 hover:bg-gray-50 transition-colors"
-      >
-        <span>{question}</span>
-        <span className="text-gray-400 text-lg leading-none">{open ? '−' : '+'}</span>
-      </button>
-      {open && (
-        <div className="px-5 pb-4 text-sm text-gray-600 leading-relaxed">
-          {answer}
-        </div>
-      )}
-    </div>
-  )
-}
+import FAQ from './FAQ'
 
 export default function Landing() {
   const { openLoginModal } = useAuth()
@@ -250,30 +229,8 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* FAQ */}
-      <section className="py-20 px-4 bg-white">
-        <div className="max-w-3xl mx-auto">
-          <h2 className="text-3xl font-bold text-center text-gray-800 mb-12">Frequently Asked Questions</h2>
-          <div className="space-y-3">
-            <FaqItem
-              question="How does the AI content generation work?"
-              answer="Our AI analyzes your industry, writing style, and audience engagement patterns to create personalized content that matches your brand voice. It uses advanced language models to generate compelling posts, carousels, and video scripts while ensuring appropriate tone and sentiment."
-            />
-            <FaqItem
-              question="Is my LinkedIn account safe?"
-              answer="Absolutely. We use LinkedIn's official API and follow all platform guidelines. Your credentials are encrypted and stored securely. We never perform actions without your explicit approval (unless you enable auto-approval features)."
-            />
-            <FaqItem
-              question="Can I cancel anytime?"
-              answer="Yes, you can cancel your subscription at any time. No long-term contracts or cancellation fees. Your account will remain active until the end of your current billing period."
-            />
-            <FaqItem
-              question="What's included in the free trial?"
-              answer="The 14-day free trial includes access to all Professional plan features with no limitations. You can generate content, schedule posts, and use automation features to fully evaluate the platform."
-            />
-          </div>
-        </div>
-      </section>
+      {/* FAQ — served from `faq_entries` and kept current by the auto-FAQ pass (issue #506) */}
+      <FAQ />
 
       {/* CTA */}
       <section className="py-20 px-4 bg-gradient-to-br from-blue-600 to-purple-700 text-white text-center">
