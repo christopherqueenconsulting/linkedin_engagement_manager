@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.71.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.70.0...v0.71.0) (2026-07-25)
+
+
+### Features
+
+* **observability:** per-user/per-feature LLM cost attribution (closes [#489](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/489)) ([22f5cbb](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/22f5cbb77a4aaa7cad1b058565140305534d9904))
+* **observability:** per-user/per-feature LLM cost attribution (closes [#489](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/489)) ([c514383](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c514383ef7cdeeff40b905700963e650c4484484))
+
+
+### Bug Fixes
+
+* **observability:** floor llm_call feature to system in track_llm_call ([8db3baa](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8db3baa53e38fa019666c868ba88c65004b7b3d3))
+
 ## [0.70.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.69.0...v0.70.0) (2026-07-25)
 
 
