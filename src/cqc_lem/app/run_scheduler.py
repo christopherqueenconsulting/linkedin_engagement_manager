@@ -5,6 +5,7 @@ from datetime import timedelta, datetime, timezone
 from celery_once import QueueOnce
 
 from cqc_lem import assets_dir
+from cqc_lem.app.celeryconfig import SE_PREPOST_QUEUE
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.app.run_automation import automate_commenting, automate_profile_viewer_engagement, \
     automate_appreciation_dms_for_user, clean_stale_invites, update_stale_profile, post_to_linkedin, \
@@ -105,10 +106,15 @@ def auto_check_scheduled_posts(self):
             if comment_window is None:
                 record_pre_post_skipped(post_id, user_id, PRE_POST_SKIP_PAST_WINDOW)
             else:
+                # Own lane (issue #553): on se_engage this eta-bound warm-up waits behind whatever
+                # 15-minute golden-hour loop is already running, so with 3+ users posting in the
+                # same window it starts after its own window closed. se_prepost has no long loops
+                # on it, so the eta is honored. Golden-hour dispatch below stays on se_engage.
                 automate_commenting.apply_async(
                     kwargs={'user_id': user_id, 'loop_for_duration': comment_window.duration_seconds,
                             'post_id': post_id},
                     eta=comment_window.eta,
+                    queue=SE_PREPOST_QUEUE,
                 )
                 record_pre_post_scheduled(post_id, user_id, comment_window)
 

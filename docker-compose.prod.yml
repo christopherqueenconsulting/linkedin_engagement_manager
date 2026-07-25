@@ -85,6 +85,22 @@ services:
 
   # Lane workers are light celery clients (Chrome runs in selenium-chrome), so
   # 1cpu/2g each is plenty.
+  celery_worker_selenium_prepost:
+    image: "${DOCKER_IMAGE_NAME}:${IMAGE_TAG:-latest}"
+    restart: unless-stopped
+    volumes: !override
+      - ./logs:/app/logs
+      - ~/.aws:/home/celeryworker/.aws:ro
+      # Shared, persistent store so generated assets are visible to web_app.
+      - assets:/app/src/cqc_lem/assets
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2g
+        reservations:
+          cpus: '0.5'
+
   celery_worker_selenium_outreach:
     image: "${DOCKER_IMAGE_NAME}:${IMAGE_TAG:-latest}"
     restart: unless-stopped

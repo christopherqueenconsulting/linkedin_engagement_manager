@@ -106,15 +106,25 @@ task_create_missing_queues = True
 # ---------------------------------------------------------------------------
 # 'celery'      — default queue consumed by the main worker (scheduler tasks,
 #                  API calls, content plan, Stripe sync, post_to_linkedin, etc.).
-# Selenium lanes — every task that opens a Chrome session routes to one of three
+# Selenium lanes — every task that opens a Chrome session routes to one of four
 #                  reserved lanes so a long-running loop can't starve the others.
 #   'se_engage'   (2 sessions) — long commenting/reply loops.
+#   'se_prepost'  (2 sessions) — ONLY the ETA-based pre-post commenting warm-up
+#                                dispatched by auto_check_scheduled_posts (issue #553).
 #   'se_outreach' (1 session)  — DMs, invites, profile-viewer engagement, followups.
 #   'se_content'  (1 session)  — seed comments, stats scrape, group sync/post,
 #                                newsletter publishing.
+
+# The pre-post warm-up is the only deadline-bound commenting run in the stack: its eta is
+# post_time − 15 min and a late start means the warm-up lands during/after publication.
+# On 'se_engage' it queues behind 15-minute golden-hour loops (issue #547), so it gets its
+# own lane. Same task, different queue — the dispatch site passes queue= explicitly.
+SE_PREPOST_QUEUE = 'se_prepost'
+
 task_queues = (
     Queue('celery'),
     Queue('se_engage'),
+    Queue(SE_PREPOST_QUEUE),
     Queue('se_outreach'),
     Queue('se_content'),
 )
@@ -123,6 +133,9 @@ task_default_queue = 'celery'
 # Explicit routing for every Selenium-backed task.  The queue= parameter on each
 # task decorator already handles routing at dispatch time; this mapping is a
 # belt-and-suspenders safety net for any send() call that doesn't pass queue=.
+# A queue= passed to apply_async still wins over both (that's how the pre-post
+# dispatch in run_scheduler.py lands on se_prepost while the golden-hour fan-out
+# of the SAME task stays on se_engage).
 task_routes = {
     # --- se_engage: long commenting loops --------------------------------
     'cqc_lem.app.run_automation.automate_commenting': {'queue': 'se_engage'},
