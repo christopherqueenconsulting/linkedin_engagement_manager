@@ -4030,13 +4030,16 @@ def claim_post_for_comment(user_id: int, post_key: str, stale_after_minutes: int
                 (user_id, str(post_key)[:255], max(1, int(stale_after_minutes))))
             connection.commit()
             if cursor.rowcount == 1:
-                myprint(f"Took over a stale comment claim for user {user_id} | {post_key}")
+                log_info(f"Took over a stale comment claim | {post_key}",
+                         user_id=user_id, action_type="comment")
                 return True
         except mysql.connector.Error as err:
-            myprint(f"Could not take over stale comment claim for user {user_id} | Error: {err}")
+            log_error("Could not take over stale comment claim", exc=err,
+                      user_id=user_id, action_type="comment")
         return False
     except mysql.connector.Error as err:
-        myprint(f"Could not claim post for comment for user {user_id} | Error: {err}")
+        log_error("Could not claim post for comment", exc=err,
+                  user_id=user_id, action_type="comment")
         return False
     finally:
         cursor.close()

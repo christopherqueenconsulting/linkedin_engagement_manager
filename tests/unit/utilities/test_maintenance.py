@@ -126,6 +126,27 @@ class TestBeginMaintenance:
         assert snapshot == {"main-worker@a": ["celery"],
                             "selenium-se_engage-worker@b": ["se_engage"]}
 
+    def test_snapshot_outlives_a_long_pause_window(self, fake_redis, fake_control):
+        # A manual `begin --pause-seconds` longer than the default must not leave the snapshot
+        # expiring mid-window, or end_maintenance() has no consumers to restore.
+        _inspect_of(fake_control).active_queues.return_value = {"w": [{"name": "celery"}]}
+        from cqc_lem.utilities import maintenance
+        long_pause = maintenance.DEFAULT_PAUSE_SECONDS * 3
+        with patch(f"{_MOD}.pause_automation", return_value=True):
+            maintenance.begin_maintenance(pause_seconds=long_pause)
+        snapshot_call = [c for c in fake_redis.set.call_args_list
+                         if c.args[0] == "lem:maintenance:consumers"][0]
+        assert snapshot_call.kwargs["ex"] == long_pause * 2
+
+    def test_snapshot_ttl_floors_at_the_default_window(self, fake_redis, fake_control):
+        _inspect_of(fake_control).active_queues.return_value = {"w": [{"name": "celery"}]}
+        from cqc_lem.utilities import maintenance
+        with patch(f"{_MOD}.pause_automation", return_value=True):
+            maintenance.begin_maintenance(pause_seconds=60)
+        snapshot_call = [c for c in fake_redis.set.call_args_list
+                         if c.args[0] == "lem:maintenance:consumers"][0]
+        assert snapshot_call.kwargs["ex"] == maintenance.DEFAULT_PAUSE_SECONDS * 2
+
     def test_filters_to_requested_queues(self, fake_redis, fake_control):
         _inspect_of(fake_control).active_queues.return_value = {
             "main-worker@a": [{"name": "celery"}, {"name": "se_engage"}],

@@ -115,12 +115,20 @@ def active_task_count() -> int:
     return sum(len(tasks or []) for tasks in replies.values())
 
 
-def _store_consumer_snapshot(mapping: Dict[str, List[str]]) -> None:
+def _snapshot_ttl_seconds(pause_seconds: int) -> int:
+    """The snapshot must outlive the window it describes, or end_maintenance() would have nothing
+    to restore consumers from. Scale with the caller's pause (a long manual window included) and
+    never go below the default deploy window."""
+    return max(int(pause_seconds), DEFAULT_PAUSE_SECONDS) * 2
+
+
+def _store_consumer_snapshot(mapping: Dict[str, List[str]],
+                             pause_seconds: int = DEFAULT_PAUSE_SECONDS) -> None:
     client = _redis_client()
     if client is None or not mapping:
         return
     try:
-        client.set(_CONSUMERS_KEY, json.dumps(mapping), ex=DEFAULT_PAUSE_SECONDS * 2)
+        client.set(_CONSUMERS_KEY, json.dumps(mapping), ex=_snapshot_ttl_seconds(pause_seconds))
     except Exception as e:
         log_warning("Could not persist the maintenance consumer snapshot", exc=e)
 
@@ -169,7 +177,7 @@ def begin_maintenance(pause_seconds: int = DEFAULT_PAUSE_SECONDS,
     if queues is not None:
         wanted = set(queues)
         mapping = {w: [q for q in qs if q in wanted] for w, qs in mapping.items()}
-    _store_consumer_snapshot(mapping)
+    _store_consumer_snapshot(mapping, seconds)
 
     cancelled = 0
     for worker, worker_queues in mapping.items():
