@@ -43,6 +43,7 @@ from cqc_lem.utilities.linkedin.helper import get_my_profile, load_profile_for_u
 from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin, strip_engagement_bait
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.logger import myprint, log_info, log_warning
+from cqc_lem.utilities.observability import attribute_llm_cost, llm_attribution, FEATURE_CONTENT
 from cqc_lem.utilities.selenium_util import get_driver_wait_pair, quit_gracefully
 from cqc_lem.utilities.utils import get_best_posting_time, get_post_time, create_folder_if_not_exists, save_video_url_to_dir
 from requests.adapters import HTTPAdapter
@@ -245,6 +246,7 @@ def create_content(user_id: int, post_type: str, stage: str, post_id: int = None
     return content, video_url
 
 
+@attribute_llm_cost(FEATURE_CONTENT)
 def create_carousel_content(user_id: int, stage: str, post_id: int = None,
                             template: Optional[str] = None) -> str:
     """Generate AI carousel content, render slide images, update DB, and return the post text."""
@@ -369,6 +371,7 @@ def _premium_tier_for_quality(quality: str):
     return None
 
 
+@attribute_llm_cost(FEATURE_CONTENT)
 def _generate_video_src(user_id: int, text_content: str, profile, post_id: int = None):
     """Generate a video source URL honoring the post's quality tier + video credits.
 
@@ -443,6 +446,7 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
             return None
 
 
+@attribute_llm_cost(FEATURE_CONTENT)
 def create_video_content(user_id: int, stage: str, post_id: int = None) -> tuple[str, str | None]:
     # Get Text Content
     text_content = create_text_post(user_id, stage, post_id=post_id)
@@ -579,7 +583,8 @@ def regenerate_post(post_id: int, guidance: str = None) -> Optional[str]:
         try:
             prefs = get_engagement_preferences(user_id)
             synthesis = get_or_create_profile_synthesis(user_id, user_profile)
-            revised = apply_post_guidance(content, guidance, prefs=prefs, profile_synthesis=synthesis)
+            with llm_attribution(user_id=user_id, feature=FEATURE_CONTENT):
+                revised = apply_post_guidance(content, guidance, prefs=prefs, profile_synthesis=synthesis)
             if revised:
                 content = sanitize_for_linkedin(revised).strip()
                 # The guidance rewrite is another LLM pass that can drop the comment-keyword
@@ -758,6 +763,7 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
     return second
 
 
+@attribute_llm_cost(FEATURE_CONTENT)
 def create_text_post(user_id: int, stage: str, post_type: str = None, user_profile: LinkedInProfile=None,
                      refine_final_post: bool = True, blueprint: dict = None, post_id: int = None,
                      lead_magnet_cta: str = None, history_directive: str = None,

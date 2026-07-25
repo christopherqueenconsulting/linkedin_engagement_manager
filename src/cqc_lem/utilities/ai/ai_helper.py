@@ -45,10 +45,25 @@ load_dotenv()
 
 
 def _call_llm(**kwargs):
-    """Thin wrapper around client.chat.completions.create that logs model, latency, and token usage."""
+    """Thin wrapper around client.chat.completions.create that logs model, latency, and token usage.
+
+    Cost attribution: pass `_track_user_id` / `_track_feature` to say who and what this call is for —
+    both are popped before the LiteLLM call. Omitted values fall back to the ambient
+    `llm_attribution()` scope, then to the running Celery task's name."""
+    track_user_id = kwargs.pop("_track_user_id", None)
+    track_feature = kwargs.pop("_track_feature", None)
     model = kwargs.get("model", "unknown")
     start = time.time()
     log_debug(f"LLM call starting", ai_model=model)
+
+    def _attribution():
+        from cqc_lem.utilities.observability import current_llm_attribution, FEATURE_SYSTEM
+        ambient_user_id, ambient_feature = current_llm_attribution()
+        return (
+            track_user_id if track_user_id is not None else ambient_user_id,
+            track_feature or ambient_feature or FEATURE_SYSTEM,
+        )
+
     try:
         response = client.chat.completions.create(**kwargs)
         duration_ms = int((time.time() - start) * 1000)
@@ -61,13 +76,17 @@ def _call_llm(**kwargs):
             duration_ms=duration_ms,
         )
         try:
-            from cqc_lem.utilities.observability import track_llm_call
+            from cqc_lem.utilities.observability import track_llm_call, llm_cache_hit
+            user_id, feature = _attribution()
             track_llm_call(
                 model=model,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 latency_ms=duration_ms,
                 success=True,
+                user_id=user_id,
+                feature=feature,
+                cached=llm_cache_hit(response),
             )
         except Exception:
             pass
@@ -77,7 +96,9 @@ def _call_llm(**kwargs):
         log_error(f"LLM call failed after {duration_ms}ms", exc=exc, ai_model=model, duration_ms=duration_ms)
         try:
             from cqc_lem.utilities.observability import track_llm_call
-            track_llm_call(model=model, prompt_tokens=0, completion_tokens=0, latency_ms=duration_ms, success=False)
+            user_id, feature = _attribution()
+            track_llm_call(model=model, prompt_tokens=0, completion_tokens=0, latency_ms=duration_ms,
+                           success=False, user_id=user_id, feature=feature)
         except Exception:
             pass
         raise

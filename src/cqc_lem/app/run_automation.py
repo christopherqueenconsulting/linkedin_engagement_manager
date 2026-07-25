@@ -54,7 +54,8 @@ from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited, _redis_cl
     acquire_run_lock, release_run_lock
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
 from cqc_lem.utilities.logger import myprint, log_error, log_info, log_warning
-from cqc_lem.utilities.observability import track_post_outcome
+from cqc_lem.utilities.observability import track_post_outcome, attribute_llm_cost, llm_attribution, \
+    FEATURE_COMMENT, FEATURE_CONTENT, FEATURE_DM
 from cqc_lem.utilities.selenium_util import click_element_wait_retry, \
     get_element_wait_retry, get_elements_as_list_wait_stale, getText, close_tab, get_driver_wait_pair, quit_gracefully, \
     wait_for_ajax, find_first, click_first, find_all_first
@@ -1085,9 +1086,10 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             if not claim_post_for_comment(user_id, key):
                 continue
             comment_blueprint = select_blueprint("comment", recent_formats=used_comment_shapes)
-            comment_text = generate_ai_response(content, my_profile, None, prefs=prefs,
-                                                profile_synthesis=profile_synthesis,
-                                                blueprint=comment_blueprint)
+            with llm_attribution(user_id=user_id, feature=FEATURE_COMMENT):
+                comment_text = generate_ai_response(content, my_profile, None, prefs=prefs,
+                                                    profile_synthesis=profile_synthesis,
+                                                    blueprint=comment_blueprint)
             if comment_text and comment_blueprint.get("format"):
                 used_comment_shapes.insert(0, comment_blueprint["format"])
             if comment_text:
@@ -1602,8 +1604,9 @@ def auto_seed_comment_on_post(self, user_id: int, post_id: int):
         return "No post content to seed a comment from"
     try:
         my_profile = load_profile_for_user(user_id)  # cached DB read — no scrape/login
-        seed = generate_seed_comment(post_message, my_profile, get_engagement_preferences(user_id),
-                                     profile_synthesis=get_or_create_profile_synthesis(user_id, my_profile))
+        with llm_attribution(user_id=user_id, feature=FEATURE_COMMENT):
+            seed = generate_seed_comment(post_message, my_profile, get_engagement_preferences(user_id),
+                                         profile_synthesis=get_or_create_profile_synthesis(user_id, my_profile))
         # The generated comment never contains links (the prompt forbids them); the link held back at
         # publish time is appended deterministically here. A link on its own still ships when the
         # generator came back empty — losing the link entirely would be the worse failure.
@@ -1771,9 +1774,10 @@ def auto_post_to_group(self, user_id: int, group_id: str):
     try:
         driver.get(f"https://www.linkedin.com/groups/{group_id}/")
         time.sleep(random.uniform(4, 7))
-        text = _strip_non_bmp(generate_group_post(
-            my_profile, prefs=get_engagement_preferences(user_id),
-            profile_synthesis=get_or_create_profile_synthesis(user_id, my_profile)) or "")
+        with llm_attribution(user_id=user_id, feature=FEATURE_CONTENT):
+            text = _strip_non_bmp(generate_group_post(
+                my_profile, prefs=get_engagement_preferences(user_id),
+                profile_synthesis=get_or_create_profile_synthesis(user_id, my_profile)) or "")
         if not text.strip():
             return "No group post generated"
         # Open the group share box, type, and post (best-effort SDUI selectors).
@@ -1946,8 +1950,9 @@ def _flag_lead_signal(user_id: int, text: str, source: "LeadSignalSource", threa
             return None
         draft = None
         try:
-            draft = generate_lead_response(text, my_profile, channel=str(channel), context=context_text,
-                                           prefs=prefs, profile_synthesis=profile_synthesis)
+            with llm_attribution(user_id=user_id, feature=FEATURE_DM):
+                draft = generate_lead_response(text, my_profile, channel=str(channel), context=context_text,
+                                               prefs=prefs, profile_synthesis=profile_synthesis)
         except Exception as e:
             log_warning("Lead response draft failed; queueing the signal without one", exc=e,
                         user_id=user_id, action_type="engaged")
@@ -2065,9 +2070,10 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
         myprint(f"Responding to this comment: {short_comment_text}...")
         # Thread-builder: reply in a way that ends with a follow-up question so the commenter
         # replies again — first-hour thread depth is the top 2026 reach signal.
-        response = generate_thread_reply(post_message, comment_text, my_profile,
-                                         prefs=prefs,
-                                         profile_synthesis=profile_synthesis)
+        with llm_attribution(user_id=user_id, feature=FEATURE_COMMENT):
+            response = generate_thread_reply(post_message, comment_text, my_profile,
+                                             prefs=prefs,
+                                             profile_synthesis=profile_synthesis)
         myprint(f"AI Generated Response to Comment: {response}")
         if response and _reply_to_comment_inline(driver, wait, comment, response, user_id=user_id):
             insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.REPLY,
@@ -2405,8 +2411,9 @@ def _followup_on_post_comment_replies(driver, wait, user_id: int, post_url: str,
                            message="Reacted to reply on our comment")
         if not did_reply and replies_remaining > 0 and _reply_is_question(reply_text):
             # We are a GUEST replying in someone else's thread — not the post author (issue #478).
-            response = generate_comment_reply_followup(reply_text, my_profile, prefs=prefs,
-                                                       profile_synthesis=profile_synthesis)
+            with llm_attribution(user_id=user_id, feature=FEATURE_COMMENT):
+                response = generate_comment_reply_followup(reply_text, my_profile, prefs=prefs,
+                                                           profile_synthesis=profile_synthesis)
             if response and _reply_under_comment_inline(driver, wait, cont, response, user_id=user_id):
                 result["replied"] += 1
                 replies_remaining -= 1
@@ -2751,6 +2758,7 @@ def render_dm_placeholders(text: str, *, first_name: str = "", headline: str = "
         return out
 
 
+@attribute_llm_cost(FEATURE_DM)
 def build_dm_from_template(user_id: int, event_type: str, first_name: str,
                            my_profile: LinkedInProfile, step: int = 0, blog_url: str = "") -> "str | None":
     """Render the user's DM template for an event (filling {first_name}/{headline}/{blog_url})
@@ -3024,8 +3032,9 @@ def generate_and_post_comment(driver, wait, post_link, my_profile: LinkedInProfi
         log_warning("Could not load engagement preferences for comment; generating with defaults",
                     exc=e, user_id=user_id, action_type="comment")
         prefs = None
-    comment_text = generate_ai_response(content, my_profile, img_url, prefs=prefs,
-                                        profile_synthesis=profile_synthesis)
+    with llm_attribution(user_id=user_id, feature=FEATURE_COMMENT):
+        comment_text = generate_ai_response(content, my_profile, img_url, prefs=prefs,
+                                            profile_synthesis=profile_synthesis)
 
     myprint(f"AI Generated Comment: {comment_text}")
     # Simulate typing the AI-generated comment

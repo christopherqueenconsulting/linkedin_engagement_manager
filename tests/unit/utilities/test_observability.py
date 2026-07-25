@@ -304,3 +304,162 @@ class TestTrackPostOutcome:
 
         _, kwargs = mock_ph.capture.call_args
         assert kwargs["properties"]["archetype"] == "how-to"
+
+
+class TestCostAttributionDimensions:
+    def test_llm_call_carries_attribution_dims(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_llm_call
+            track_llm_call(model="lem-complex", prompt_tokens=100, completion_tokens=50, latency_ms=900,
+                           user_id=7, feature="newsletter")
+
+        _, kwargs = mock_ph.capture.call_args
+        props = kwargs["properties"]
+        assert props["user_id"] == 7
+        assert props["feature"] == "newsletter"
+        assert props["model_tier"] == "lem-complex"
+        assert props["cached"] is False
+        assert kwargs["distinct_id"] == "7"
+
+    def test_model_tier_none_for_raw_provider_model(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_llm_call
+            track_llm_call(model="gpt-4o-mini", prompt_tokens=10, completion_tokens=10, latency_ms=20)
+
+        assert mock_ph.capture.call_args[1]["properties"]["model_tier"] is None
+
+    def test_explicit_model_tier_wins(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_llm_call
+            track_llm_call(model="gpt-4o-mini", prompt_tokens=10, completion_tokens=10, latency_ms=20,
+                           model_tier="lem-router")
+
+        assert mock_ph.capture.call_args[1]["properties"]["model_tier"] == "lem-router"
+
+    def test_cache_hit_costs_nothing(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_llm_call
+            track_llm_call(model="lem-complex", prompt_tokens=5000, completion_tokens=800,
+                           latency_ms=12, cached=True)
+
+        props = mock_ph.capture.call_args[1]["properties"]
+        assert props["cached"] is True
+        assert props["cost_usd"] == 0.0
+        # Tokens are still reported — only the spend is zero.
+        assert props["total_tokens"] == 5800
+
+    def test_llm_cache_hit_reads_litellm_hidden_params(self):
+        from cqc_lem.utilities.observability import llm_cache_hit
+        assert llm_cache_hit(SimpleNamespace(_hidden_params={"cache_hit": True})) is True
+        assert llm_cache_hit(SimpleNamespace(_hidden_params={"cache_hit": False})) is False
+        assert llm_cache_hit(SimpleNamespace()) is False
+
+
+class TestFeatureFromTaskName:
+    @pytest.mark.parametrize("task_name,expected", [
+        ("cqc_lem.app.run_scheduler.auto_generate_newsletter_drafts", "newsletter"),
+        ("cqc_lem.app.run_automation.auto_publish_edition", "newsletter"),
+        ("cqc_lem.app.run_automation.automate_commenting", "comment"),
+        ("cqc_lem.app.run_scheduler.dispatch_comment_followups", "comment"),
+        ("cqc_lem.app.run_automation.auto_seed_comment_on_post", "comment"),
+        ("cqc_lem.app.run_automation.automate_profile_viewer_engagement", "dm"),
+        ("cqc_lem.app.run_automation.automate_appreciation_dms_for_user", "dm"),
+        ("cqc_lem.app.run_automation.send_lead_response", "dm"),
+        ("cqc_lem.app.run_content_plan.plan_content_for_user", "content"),
+        ("cqc_lem.app.run_content_plan.regenerate_post_carousel_task", "content"),
+        ("cqc_lem.app.run_scheduler.sync_stripe_subscriptions", None),
+        (None, None),
+    ])
+    def test_maps_task_name_to_feature(self, task_name, expected):
+        from cqc_lem.utilities.observability import feature_from_task_name
+        assert feature_from_task_name(task_name) == expected
+
+
+class TestLlmAttributionScope:
+    def test_scope_is_visible_to_current_attribution(self):
+        from cqc_lem.utilities.observability import llm_attribution, current_llm_attribution
+        with llm_attribution(user_id=3, feature="content"):
+            assert current_llm_attribution() == (3, "content")
+        assert current_llm_attribution() == (None, None)
+
+    def test_nested_scope_inherits_and_overrides(self):
+        from cqc_lem.utilities.observability import llm_attribution, current_llm_attribution
+        with llm_attribution(user_id=3, feature="content"):
+            with llm_attribution(feature="comment"):
+                # user_id inherited from the outer scope, feature narrowed by the inner one
+                assert current_llm_attribution() == (3, "comment")
+            assert current_llm_attribution() == (3, "content")
+
+    def test_falls_back_to_celery_task_name_and_kwargs(self):
+        from cqc_lem.utilities.observability import current_llm_attribution
+        with patch(f"{_MOD}._current_task_context",
+                   return_value=("cqc_lem.app.run_automation.automate_commenting", 11)):
+            assert current_llm_attribution() == (11, "comment")
+
+    def test_explicit_scope_beats_celery_fallback(self):
+        from cqc_lem.utilities.observability import llm_attribution, current_llm_attribution
+        with patch(f"{_MOD}._current_task_context",
+                   return_value=("cqc_lem.app.run_automation.automate_commenting", 11)):
+            with llm_attribution(user_id=4, feature="dm"):
+                assert current_llm_attribution() == (4, "dm")
+
+    def test_decorator_reads_user_id_positionally_and_by_keyword(self):
+        from cqc_lem.utilities.observability import attribute_llm_cost, current_llm_attribution
+
+        @attribute_llm_cost("content")
+        def generate(user_id: int, stage: str):
+            return current_llm_attribution()
+
+        assert generate(8, "awareness") == (8, "content")
+        assert generate(user_id=9, stage="decision") == (9, "content")
+        assert generate.__name__ == "generate"
+
+    def test_decorator_still_sets_feature_without_a_user(self):
+        from cqc_lem.utilities.observability import attribute_llm_cost, current_llm_attribution
+
+        @attribute_llm_cost("newsletter")
+        def generate(edition_id: int):
+            return current_llm_attribution()
+
+        assert generate(5) == (None, "newsletter")
+
+    def test_scope_is_restored_when_the_wrapped_call_raises(self):
+        from cqc_lem.utilities.observability import attribute_llm_cost, current_llm_attribution
+
+        @attribute_llm_cost("content")
+        def boom(user_id: int):
+            raise ValueError("nope")
+
+        with pytest.raises(ValueError):
+            boom(1)
+        assert current_llm_attribution() == (None, None)
+
+
+class TestLlmTrackedAttribution:
+    def test_decorator_emits_ambient_attribution(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import llm_tracked, llm_attribution
+
+            @llm_tracked("lem-medium")
+            def call():
+                return _usage(10, 10)
+
+            with llm_attribution(user_id=6, feature="comment"):
+                call()
+
+        props = mock_ph.capture.call_args[1]["properties"]
+        assert props["user_id"] == 6
+        assert props["feature"] == "comment"
+        assert props["model_tier"] == "lem-medium"
+
+    def test_unattributed_call_falls_back_to_system_feature(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import llm_tracked
+
+            @llm_tracked("lem-simple")
+            def call():
+                return _usage(1, 1)
+
+            call()
+
+        assert mock_ph.capture.call_args[1]["properties"]["feature"] == "system"
