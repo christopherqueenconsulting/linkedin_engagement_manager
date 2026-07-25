@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.72.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.71.0...v0.72.0) (2026-07-25)
+
+
+### Features
+
+* **outreach:** DM conversation auto-nurture (closes [#485](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/485)) ([5c7e944](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5c7e944e6d82dcca22302735d6f57fd41fc4089c))
+
 ## [0.71.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.70.0...v0.71.0) (2026-07-25)
 
 
