@@ -364,6 +364,32 @@ def send_newsletter_draft_ready_email(to_email: str, edition_title: str,
         to_email, f"📝 Your newsletter draft is ready: {title}", html, high_priority=True)
 
 
+def send_content_generation_ready_email(to_email: str, ready_count: int,
+                                        failed_count: int = 0) -> bool:
+    """Email a user that their weekly content finished generating (issue #545). Generation runs
+    for minutes in the background, so this is the "come back and review" signal."""
+    import os
+    base = (os.getenv("LEM_APP_URL") or "https://lem.christopherqueenconsulting.com").rstrip("/")
+    url = f"{base}/content?tab=review"
+    plural = "post" if ready_count == 1 else "posts"
+    failed_note = (f"<p>{failed_count} {'post' if failed_count == 1 else 'posts'} couldn't be "
+                   f"generated (usually a media generation failure) — they stay in your plan and "
+                   f"we'll retry them on the next run.</p>") if failed_count else ""
+    html = f"""
+    <html><body style="font-family:Arial,Helvetica,sans-serif;color:#222;">
+    <h2>Your {ready_count} {plural} {'is' if ready_count == 1 else 'are'} ready to review</h2>
+    <p>We finished generating this week's content. Review, edit, or approve it before it
+    goes out.</p>
+    {failed_note}
+    <p><a href="{url}" style="background:#0a66c2;color:#fff;padding:10px 16px;border-radius:6px;
+    text-decoration:none;">Review your content</a></p>
+    </body></html>
+    """
+    return _dispatch_email(
+        to_email, f"✅ Your {ready_count} LinkedIn {plural} {'is' if ready_count == 1 else 'are'} "
+                  f"ready to review", html)
+
+
 def send_onboarding_nudge_email(to_email: str, subject: str, headline: str, body: str,
                                 cta_label: str, cta_path: str = "/account") -> bool:
     """Nudge a user who stalled part-way through activation (issue #500). Copy is supplied by the

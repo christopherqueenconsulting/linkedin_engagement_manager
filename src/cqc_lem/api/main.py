@@ -75,6 +75,7 @@ from cqc_lem.utilities.db import (
     insert_feedback, FeedbackSource,
     get_latest_review_feedback_id, get_early_adopter_grant, extend_trial_for_user,
 )
+from cqc_lem.utilities.content_generation_status import mark_queued, get_generation_status
 from cqc_lem.utilities.email import generate_pin, hash_pin, send_pin_email
 from cqc_lem.utilities.linkedin.verification_pin import (
     extract_pin_from_text, extract_token_from_address, submit_pin_by_token)
@@ -1315,6 +1316,10 @@ def create_weekly_content(user_id: int) -> ResponseModel:
     if not user_id:
         raise HTTPException(status_code=400, detail="User ID is required")
 
+    # Generation runs for minutes in the background, so publish a 'queued' progress record now —
+    # the SPA polls /content_generation_status/ and would otherwise show nothing (issue #545).
+    mark_queued(user_id)
+
     # Chain: plan posts for the rest of the month first, then fill content for this week.
     # This ensures the user always has PLANNING rows before content generation runs.
     celery_chain(
@@ -1322,6 +1327,20 @@ def create_weekly_content(user_id: int) -> ResponseModel:
         auto_create_weekly_content.si(user_id=user_id),
     ).apply_async()
     return ResponseModel(status_code=200, detail="Weekly content created successfully")
+
+
+@router.get("/content_generation_status/", responses={
+    200: {"description": "Content generation progress"},
+    **{k: v for k, v in error_responses.items() if k in [401]}
+})
+def get_content_generation_status_endpoint(session_token: str) -> ResponseModel:
+    """Progress of the caller's weekly content-generation run — queued → in_progress (X of N) →
+    done/failed. `detail` is None when no run is being tracked (nothing started, or it aged out).
+    Scoped by session rather than a user_id query param so one user can't poll another's run."""
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return ResponseModel(status_code=200, detail=get_generation_status(user_id))
 
 
 @router.post("/invite_to_li_company_page/", responses={
