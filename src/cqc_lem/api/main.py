@@ -2764,6 +2764,10 @@ def _early_adopter_checkout_extras(user_id: int) -> tuple[Optional[int], Optiona
         remaining = math.ceil((ends_at - datetime.now(timezone.utc)).total_seconds() / 86400)
         if remaining >= 1:
             trial_period_days = int(remaining)
+    # The coupon rides with the unfinished trial, so an expired/exhausted grant carries neither —
+    # otherwise a long-lapsed grant would keep discounting every future checkout.
+    if trial_period_days is None:
+        return None, None
     discounts = [{"coupon": EARLY_ADOPTER_COUPON_ID}] if EARLY_ADOPTER_COUPON_ID else None
     return trial_period_days, discounts
 

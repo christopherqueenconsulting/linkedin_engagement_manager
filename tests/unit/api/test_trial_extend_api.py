@@ -110,6 +110,20 @@ class TestEarlyAdopterCheckoutExtras:
              patch(f"{_ENV}.EARLY_ADOPTER_COUPON_ID", ""):
             assert _early_adopter_checkout_extras(7) == (None, None)
 
+    def test_expired_grant_does_not_apply_the_coupon_either(self):
+        """The coupon is part of the unfinished trial — a lapsed grant must not discount forever."""
+        from cqc_lem.api.main import _early_adopter_checkout_extras
+        grant = {"trial_ends_at": datetime.now(timezone.utc) - timedelta(days=90)}
+        with patch(f"{_MAIN}.get_early_adopter_grant", return_value=grant), \
+             patch(f"{_ENV}.EARLY_ADOPTER_COUPON_ID", "EARLYBIRD"):
+            assert _early_adopter_checkout_extras(7) == (None, None)
+
+    def test_grant_with_no_end_date_carries_nothing(self):
+        from cqc_lem.api.main import _early_adopter_checkout_extras
+        with patch(f"{_MAIN}.get_early_adopter_grant", return_value={"trial_ends_at": None}), \
+             patch(f"{_ENV}.EARLY_ADOPTER_COUPON_ID", "EARLYBIRD"):
+            assert _early_adopter_checkout_extras(7) == (None, None)
+
 
 class TestCheckoutSessionMirrorsGrant:
     BASE = "/api/billing/create-checkout-session"
