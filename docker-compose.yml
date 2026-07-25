@@ -75,6 +75,10 @@ services:
     container_name: celery_worker
     hostname: ${CELERY_WORKER_HOST}
     command: /start-celeryworker
+    # Docker's default is 10s — far shorter than a video generation (~6 min) or a commenting
+    # loop, so a deploy SIGKILLed running tasks. Give Celery's warm shutdown room to finish
+    # what is running (it exits as soon as it drains, so this is a ceiling, not a delay). #549
+    stop_grace_period: ${CELERY_STOP_GRACE_PERIOD:-8m}
     deploy:
       resources:
         limits:
@@ -107,6 +111,9 @@ services:
     image: ${DOCKER_IMAGE_NAME}
     container_name: celery_worker_selenium
     command: /start-celeryworker-selenium
+    # Selenium lanes run the longest tasks in the stack — let warm shutdown finish them
+    # instead of Docker's 10s default SIGKILL (issue #549).
+    stop_grace_period: ${CELERY_STOP_GRACE_PERIOD:-8m}
     deploy:
       resources:
         limits:
@@ -143,6 +150,9 @@ services:
     image: ${DOCKER_IMAGE_NAME}
     container_name: celery_worker_selenium_outreach
     command: /start-celeryworker-selenium
+    # Selenium lanes run the longest tasks in the stack — let warm shutdown finish them
+    # instead of Docker's 10s default SIGKILL (issue #549).
+    stop_grace_period: ${CELERY_STOP_GRACE_PERIOD:-8m}
     deploy:
       resources:
         limits:
@@ -179,6 +189,9 @@ services:
     image: ${DOCKER_IMAGE_NAME}
     container_name: celery_worker_selenium_content
     command: /start-celeryworker-selenium
+    # Selenium lanes run the longest tasks in the stack — let warm shutdown finish them
+    # instead of Docker's 10s default SIGKILL (issue #549).
+    stop_grace_period: ${CELERY_STOP_GRACE_PERIOD:-8m}
     deploy:
       resources:
         limits:
@@ -215,6 +228,8 @@ services:
     image: ${DOCKER_IMAGE_NAME}
     container_name: celery_beat
     command: /start-celerybeat
+    # Beat holds no task work — a short grace is enough to flush its schedule state.
+    stop_grace_period: 30s
     volumes_from:
       - web_app
     env_file:

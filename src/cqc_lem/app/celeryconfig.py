@@ -39,8 +39,24 @@ redis_backend_health_check_interval = 300
 timezone = os.getenv('CELERY_TIMEZONE') or 'UTC'
 enable_utc = True
 
-# Prevent task messages from being lost
-task_acks_late = True,
+# Prevent task messages from being lost. acks_late defers the broker ACK until AFTER the task
+# returns, so a worker killed mid-task (deploy recreate, OOM, SIGKILL) leaves the message
+# un-acked and the broker re-delivers it instead of dropping it. Was `True,` — a one-tuple; it
+# happened to be truthy, but a stray comma is not a config value.
+task_acks_late = True
+
+# Re-queue a task whose worker process died mid-execution (the pool child was killed) rather
+# than marking it failed and losing the work. Several tasks already set this per-decorator;
+# making it global means every task — including new ones — survives a deploy the same way.
+# Safe here because the re-runnable tasks are idempotent: posting short-circuits on
+# PostStatus.POSTED, comments/DMs dedup on the commented_posts / dm ledgers, and the
+# high-volume dispatchers are QueueOnce-locked.
+task_reject_on_worker_lost = True
+
+# Celery 5 deprecation: leaving this unset warns on every boot. False keeps a task RUNNING
+# through a transient broker disconnect (it re-acks on reconnect) instead of cancelling it —
+# which is the whole point of not losing in-flight work.
+worker_cancel_long_running_tasks_on_connection_loss = False
 
 # Set the maximum time in seconds that the ETA scheduler can sleep between rechecking the schedule.
 # Default: 1.0 seconds.
@@ -60,8 +76,16 @@ worker_max_tasks_per_child = 10
 
 # Gets the max between all the parameters of timeout in the tasks
 max_timeout = 60 * 60  # This value must be bigger than the maximum soft timeout set for a task to prevent an infinity loop
-broker_transport_options = {'visibility_timeout': max_timeout + 60,# 60 seconds of margin
-                            'max_retries':5}
+
+# Redis visibility timeout — how long the broker waits for an ACK before handing the message to
+# ANOTHER worker. With task_acks_late this must stay comfortably ABOVE the longest task plus the
+# deploy drain window (stop_grace_period 8m), or a long task still running past the timeout gets
+# re-delivered and runs twice concurrently — the classic acks_late + Redis double-run trap.
+# 60s of margin was not enough once workers may take a full grace period to shut down.
+longest_task_seconds = int(os.getenv('CELERY_LONGEST_TASK_SECONDS', str(max_timeout)))
+visibility_timeout = int(os.getenv('CELERY_VISIBILITY_TIMEOUT', str(longest_task_seconds + (15 * 60))))
+broker_transport_options = {'visibility_timeout': visibility_timeout,
+                            'max_retries': 5}
 
 
 def get_aws_sqs(queue_name: str,

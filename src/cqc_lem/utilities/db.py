@@ -3994,11 +3994,21 @@ def get_recent_engagers(user_id: int, days: int = 14) -> set:
         connection.close()
 
 
-def claim_post_for_comment(user_id: int, post_key: str) -> bool:
+CLAIM_STALE_MINUTES = 60
+
+
+def claim_post_for_comment(user_id: int, post_key: str, stale_after_minutes: int = CLAIM_STALE_MINUTES) -> bool:
     """Atomically claim a feed post for commenting. Returns True only for the caller that WON the
     claim (safe to comment); False if the post was already claimed/commented by any prior or
     concurrent run — the loser must back off. The UNIQUE (user_id, post_key) constraint resolves
-    the race at the DB, so this is safe across sequential re-scans, retries, and parallel workers."""
+    the race at the DB, so this is safe across sequential re-scans, retries, and parallel workers.
+
+    A claim left in 'claimed' state for longer than `stale_after_minutes` is taken over: the run
+    that made it died before it could comment OR release (a worker SIGKILLed by a deploy has no
+    chance to run its except-branch release). Without the takeover, a task re-queued by
+    task_acks_late would keep short-circuiting on its own abandoned claim and the comment would be
+    lost for good — see issue #549. The window is far longer than a comment run, so a takeover
+    can't race a task that is genuinely still working."""
     if not post_key or not str(post_key).strip():
         return False
     connection = get_db_connection()
@@ -4010,7 +4020,20 @@ def claim_post_for_comment(user_id: int, post_key: str) -> bool:
         connection.commit()
         return cursor.rowcount == 1
     except mysql.connector.IntegrityError:
-        # Duplicate key — another run/worker already holds this post.
+        # Duplicate key — someone holds this post. Only a STALE, never-posted claim is takeable;
+        # a 'commented' row is never reclaimed, so this can't cause a double comment.
+        try:
+            cursor.execute(
+                "UPDATE commented_posts SET status='claimed', updated_at=CURRENT_TIMESTAMP "
+                "WHERE user_id=%s AND post_key=%s AND status='claimed' "
+                "AND updated_at < NOW() - INTERVAL %s MINUTE",
+                (user_id, str(post_key)[:255], max(1, int(stale_after_minutes))))
+            connection.commit()
+            if cursor.rowcount == 1:
+                myprint(f"Took over a stale comment claim for user {user_id} | {post_key}")
+                return True
+        except mysql.connector.Error as err:
+            myprint(f"Could not take over stale comment claim for user {user_id} | Error: {err}")
         return False
     except mysql.connector.Error as err:
         myprint(f"Could not claim post for comment for user {user_id} | Error: {err}")

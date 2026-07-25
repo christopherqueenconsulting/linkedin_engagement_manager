@@ -177,6 +177,24 @@ def automation_pause_remaining() -> int:
     return ttl if ttl and ttl > 0 else 0
 
 
+def automation_pause_reason() -> "str | None":
+    """The reason string stored with the current pause, or None when nothing is paused.
+
+    Lets a caller tell ITS OWN pause apart from someone else's — the deploy maintenance mode
+    (utilities/maintenance.py) only lifts a pause it set, so a 429/manual pause survives a deploy.
+    """
+    client = _redis_client()
+    if client is None:
+        return None
+    try:
+        value = client.get(_PAUSE_KEY)
+    except Exception:
+        return None
+    if value is None:
+        return None
+    return value.decode("utf-8", "ignore") if isinstance(value, bytes) else str(value)
+
+
 def is_automation_paused() -> bool:
     return automation_pause_remaining() > 0
 

@@ -4,10 +4,7 @@ set -o errexit
 set -o nounset
 
 CELERY_USER=celeryworker
-
-# Explicitly pass VIRTUAL_ENV and PATH: 'su' on Debian Bookworm resets PATH to
-# the system default, stripping /app/.venv/bin even when Docker ENV is set.
-VENV_ACTIVATE="VIRTUAL_ENV=/app/.venv PATH=/app/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+export CELERY_USER
 
 # One script serves all three Selenium lane workers. Each container sets
 # SELENIUM_QUEUES / SELENIUM_CONCURRENCY to claim its lane(s). Defaults consume
@@ -18,13 +15,15 @@ SELENIUM_CONCURRENCY="${SELENIUM_CONCURRENCY:-4}"
 
 printf "Starting Celery Selenium Worker as: %s (queues=%s concurrency=%s)\n" \
   "$CELERY_USER" "$SELENIUM_QUEUES" "$SELENIUM_CONCURRENCY"
+# exec through /run-as-celery so celery REPLACES this shell and gets Docker's SIGTERM directly —
+# Selenium tasks are the longest-running ones, so warm shutdown matters most here (issue #549).
 # concurrency — number of Chrome sessions this lane may open (SE_NODE_MAX_SESSIONS gates the pool)
 # prefetch-multiplier=1 — never pre-fetch another Selenium task while one is running
 # queues — consume only this container's reserved lane(s); main worker keeps the default queue
-su $CELERY_USER -c "$VENV_ACTIVATE celery --app cqc_lem.app.my_celery worker \
+exec /run-as-celery celery --app cqc_lem.app.my_celery worker \
   --loglevel=INFO \
-  --concurrency=$SELENIUM_CONCURRENCY \
+  --concurrency="$SELENIUM_CONCURRENCY" \
   --prefetch-multiplier=1 \
-  --queues=$SELENIUM_QUEUES \
-  --hostname=selenium-${SELENIUM_QUEUES//,/-}-worker@%h \
-  -E"
+  --queues="$SELENIUM_QUEUES" \
+  --hostname="selenium-${SELENIUM_QUEUES//,/-}-worker@%h" \
+  -E

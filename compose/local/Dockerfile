@@ -98,6 +98,8 @@ COPY ./compose/local/entrypoint /entrypoint
 COPY ./compose/local/wait-for-it /wait-for-it
 COPY ./compose/local/fastapi/start /start-fastapi
 COPY ./compose/local/fastapi/start-cloud /start-fastapi-cloud
+# Shared privilege-dropping exec-er — keeps celery as the signal-receiving process (issue #549)
+COPY ./compose/local/celery/run-as-celery /run-as-celery
 COPY ./compose/local/celery/worker/start /start-celeryworker
 COPY ./compose/local/celery/worker/start-solo-pool /start-celeryworker-solo
 COPY ./compose/local/celery/worker/start-selenium /start-celeryworker-selenium
@@ -105,7 +107,7 @@ COPY ./compose/local/celery/beat/start /start-celerybeat
 COPY ./compose/local/celery/flower/start /start-flower
 COPY ./compose/local/celery/flower/start-no-wait /start-flower-no-wait
 
-RUN chmod +x /entrypoint /wait-for-it /start-fastapi \
+RUN chmod +x /entrypoint /wait-for-it /start-fastapi /run-as-celery \
     /start-fastapi-cloud /start-celeryworker /start-celeryworker-solo \
     /start-celeryworker-selenium /start-celerybeat /start-flower /start-flower-no-wait
 
