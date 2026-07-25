@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.79.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.78.0...v0.79.0) (2026-07-25)
+
+
+### Features
+
+* **feedback:** LLM auto-classifier for captured feedback (closes [#497](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/497)) ([abeb9ce](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/abeb9cea20a94919a698c18000b329eece62beb7))
+* **feedback:** LLM auto-classifier for feedback — category/severity/risk → real repo labels (closes [#497](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/497)) ([04e640d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/04e640dff866de2d9396310d630dc7eadc3183c1))
+
 ## [0.78.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.77.0...v0.78.0) (2026-07-25)
 
 
