@@ -303,11 +303,18 @@ def track_media_cost(kind: str, provider: str, usd: float, user_id: Optional[int
 
     `kind` is video|image, `qty` the billed units (seconds rendered, images generated). When the
     caller can't supply `user_id`/`feature`, the active llm_attribution scope fills them in.
+
+    A non-positive cost writes nothing — an unpriced model or a rate deliberately zeroed out
+    (IMAGE_COST_PER_IMAGE=0) should stay silent rather than fill the ledger with $0 rows, matching
+    the LLM accrual and the monthly fixed-cost accrual.
     """
+    usd = float(usd or 0.0)
+    if usd <= 0:
+        return
+
     scope_user_id, scope_feature = current_llm_attribution()
     user_id = user_id if user_id is not None else scope_user_id
     feature = feature or scope_feature or FEATURE_CONTENT
-    usd = float(usd or 0.0)
 
     posthog.capture(
         distinct_id=str(user_id or "system"),

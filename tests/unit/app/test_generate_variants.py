@@ -82,6 +82,23 @@ class TestGenerateMediaVariants:
         assert payload["variants"][1]["image_url"] is not None
 
 
+    def test_render_cost_is_attributed_to_user_and_post(self, tmp_path):
+        """Issue #490: the ledger row must join back to the post the render was for."""
+        img = _make_image(tmp_path)
+        with patch("cqc_lem.app.generate_variants.assets_dir", str(tmp_path)), \
+             patch("cqc_lem.app.generate_variants.get_post_content", return_value="source text"), \
+             patch("cqc_lem.app.generate_variants.load_profile_for_user", return_value=None), \
+             patch("cqc_lem.app.generate_variants.get_flux_image_prompt_from_ai", return_value="p"), \
+             patch("cqc_lem.app.generate_variants.generate_post_image", return_value=img), \
+             patch("cqc_lem.app.generate_variants.get_runway_ml_video_prompt_from_ai", return_value="m"), \
+             patch("cqc_lem.app.generate_variants.create_runway_video", return_value=None) as runway:
+            from cqc_lem.app.generate_variants import generate_media_variants
+            generate_media_variants(post_id=77, user_id=5, combos=[{}], timestamp=1)
+
+        assert runway.call_args[1]["user_id"] == 5
+        assert runway.call_args[1]["post_id"] == 77
+
+
 class TestComboKey:
     def test_stable_key_encodes_models_and_ratio(self):
         from cqc_lem.app.generate_variants import combo_key

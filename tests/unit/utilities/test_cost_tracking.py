@@ -55,6 +55,15 @@ class TestTrackMediaCost:
         row = ledger.call_args[1]
         assert row["user_id"] == 12 and row["feature"] == "newsletter"
 
+    def test_zero_cost_writes_nothing(self):
+        """An unpriced model / a zeroed rate must not produce $0 ledger rows or events."""
+        with patch(f"{_MOD}.posthog") as mock_ph, patch(f"{_MOD}._write_cost_ledger") as ledger:
+            from cqc_lem.utilities.observability import track_media_cost
+            track_media_cost("video", "runway", 0.0, user_id=3, qty=5, model="unpriced-model")
+
+        mock_ph.capture.assert_not_called()
+        ledger.assert_not_called()
+
     def test_ledger_failure_never_propagates(self):
         with patch(f"{_MOD}.posthog"), \
              patch("cqc_lem.utilities.db.insert_cost_ledger_entry", side_effect=RuntimeError("db down")):
@@ -74,6 +83,17 @@ class TestDallEImageCost:
         args, kwargs = track.call_args
         assert args[0] == "image" and args[1] == "openai" and args[2] == pytest.approx(0.08)
         assert kwargs["qty"] == 1 and kwargs["model"] == "dall-e-3"
+
+    @pytest.mark.parametrize("data", [[], None])
+    def test_no_image_returns_empty_list_and_bills_nothing(self, data):
+        from types import SimpleNamespace
+        response = SimpleNamespace(data=data)
+        with patch("cqc_lem.utilities.ai.client.client.images.generate", return_value=response), \
+             patch(f"{_MOD}.track_media_cost") as track:
+            from cqc_lem.utilities.ai.ai_helper import generate_dall_e_image_from_prompt
+            assert generate_dall_e_image_from_prompt("a robot") == []
+
+        track.assert_not_called()
 
 
 class TestLlmRollupAccrual:
