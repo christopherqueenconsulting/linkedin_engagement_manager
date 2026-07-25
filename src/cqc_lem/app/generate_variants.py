@@ -100,7 +100,7 @@ def _sign_best_effort(file_path: str) -> None:
 
 
 def _generate_one_variant(idx: int, combo: dict, source_text: str, profile, user_id: Optional[int],
-                          batch_dir: str, batch_id: str) -> dict:
+                          batch_dir: str, batch_id: str, post_id: Optional[int] = None) -> dict:
     image_model = combo.get("image_model", DEFAULT_IMAGE_MODEL)
     video_model = combo.get("video_model", DEFAULT_VIDEO_MODEL)
     ratio = combo.get("ratio", DEFAULT_VIDEO_RATIO)
@@ -141,7 +141,8 @@ def _generate_one_variant(idx: int, combo: dict, source_text: str, profile, user
         video_prompt = get_runway_ml_video_prompt_from_ai(source_text, image_prompt, model=video_model)[:512]
         result["video_prompt"] = video_prompt
         video_src_url = create_runway_video(
-            dest_img, video_prompt, model=video_model, ratio=ratio, duration=duration, seed=seed)
+            dest_img, video_prompt, model=video_model, ratio=ratio, duration=duration, seed=seed,
+            user_id=user_id, post_id=post_id)
         if video_src_url:
             saved = save_video_url_to_dir(video_src_url, batch_dir)
             vid_name = f"variant_{idx}_video.mp4"
@@ -181,7 +182,8 @@ def generate_media_variants(*, post_id: Optional[int] = None, text: Optional[str
     variants = []
     for idx, combo in enumerate(use_combos):
         try:
-            variants.append(_generate_one_variant(idx, combo, source_text, profile, user_id, batch_dir, batch_id))
+            variants.append(_generate_one_variant(idx, combo, source_text, profile, user_id, batch_dir,
+                                                  batch_id, post_id=post_id))
         except Exception as e:
             log_warning(f"Variant {idx} failed", exc=e)
             variants.append({

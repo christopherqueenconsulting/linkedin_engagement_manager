@@ -4,10 +4,13 @@ import json
 import os
 import time
 from contextlib import contextmanager
+from datetime import date, datetime, timezone
 from functools import wraps
 from typing import Iterator, Optional, Tuple
 
 import posthog
+
+from cqc_lem.utilities.logger import log_warning
 
 posthog.api_key = os.getenv("POSTHOG_API_KEY", "")
 posthog.host = os.getenv("POSTHOG_HOST", "https://us.i.posthog.com")
@@ -230,6 +233,8 @@ def track_llm_call(
     model_tier: Optional[str] = None,
     cached: bool = False,
 ) -> None:
+    cost_usd = 0.0 if cached else estimate_llm_cost_usd(model, prompt_tokens, completion_tokens)
+    tier = model_tier or _model_tier(model)
     posthog.capture(
         distinct_id=str(user_id or "system"),
         event="llm_call",
@@ -240,17 +245,195 @@ def track_llm_call(
             "total_tokens": prompt_tokens + completion_tokens,
             # A cache hit never reached the provider, so it cost nothing — keeping it at the
             # estimated rate would inflate summed spend on every repeated prompt.
-            "cost_usd": 0.0 if cached else estimate_llm_cost_usd(model, prompt_tokens, completion_tokens),
+            "cost_usd": cost_usd,
             "latency_ms": latency_ms,
             "success": success,
             "user_id": user_id,
             # Floor the bucket here, not just in the callers: a PostHog breakdown on `feature`
             # needs every llm_call to carry one, including direct calls that omit it.
             "feature": feature or FEATURE_SYSTEM,
-            "model_tier": model_tier or _model_tier(model),
+            "model_tier": tier,
             "cached": bool(cached),
         },
     )
+    # One ledger row per call would grow unbounded at LEM's call volume, so spend accumulates in a
+    # per-day Redis bucket that the daily rollup task collapses into cost_ledger rows.
+    _accrue_llm_cost(cost_usd, (prompt_tokens or 0) + (completion_tokens or 0),
+                     user_id, feature, tier or model)
+
+
+# --- Durable cost ledger (issue #490) ------------------------------------------------------
+# PostHog answers "what is spend doing?" fast; the cost_ledger table is the exact, Stripe-joinable
+# record the margin report needs. Media lands there per render (spiky, needs per-post accounting);
+# LLM spend is accumulated in Redis and flushed once a day (one row per user x feature x tier x day)
+# so a high-volume table stays small.
+
+# Public list price for one DALL-E 3 1024x1024 "hd" image; override with IMAGE_COST_PER_IMAGE.
+_DEFAULT_IMAGE_COST_USD = 0.08
+
+_LLM_ROLLUP_PREFIX = "lem:cost:llm:"
+_LLM_ROLLUP_QTY_SUFFIX = ":qty"
+# Long enough that a few failed flushes can still be recovered by a later run.
+_LLM_ROLLUP_TTL_SECONDS = 14 * 24 * 60 * 60
+
+
+def image_cost_usd(count: int = 1) -> float:
+    """USD for `count` generated images at the configured per-image rate (IMAGE_COST_PER_IMAGE)."""
+    try:
+        rate = float(os.getenv("IMAGE_COST_PER_IMAGE") or _DEFAULT_IMAGE_COST_USD)
+    except (TypeError, ValueError):
+        rate = _DEFAULT_IMAGE_COST_USD
+    return rate * max(0, int(count or 0))
+
+
+def _write_cost_ledger(**kwargs) -> None:
+    """Best-effort durable write — cost tracking must never break the work that incurred the cost."""
+    try:
+        from cqc_lem.utilities.db import insert_cost_ledger_entry
+        insert_cost_ledger_entry(**kwargs)
+    except Exception as e:
+        log_warning("Could not write cost_ledger entry", exc=e)
+
+
+def track_media_cost(kind: str, provider: str, usd: float, user_id: Optional[int] = None,
+                     post_id: Optional[int] = None, feature: str = FEATURE_CONTENT,
+                     qty: Optional[float] = None, model: Optional[str] = None,
+                     meta: Optional[dict] = None) -> None:
+    """Record one media render's cost: a PostHog `media_cost` event AND a durable cost_ledger row.
+
+    `kind` is video|image, `qty` the billed units (seconds rendered, images generated). When the
+    caller can't supply `user_id`/`feature`, the active llm_attribution scope fills them in.
+
+    A non-positive cost writes nothing — an unpriced model or a rate deliberately zeroed out
+    (IMAGE_COST_PER_IMAGE=0) should stay silent rather than fill the ledger with $0 rows, matching
+    the LLM accrual and the monthly fixed-cost accrual.
+    """
+    usd = float(usd or 0.0)
+    if usd <= 0:
+        return
+
+    scope_user_id, scope_feature = current_llm_attribution()
+    user_id = user_id if user_id is not None else scope_user_id
+    feature = feature or scope_feature or FEATURE_CONTENT
+
+    posthog.capture(
+        distinct_id=str(user_id or "system"),
+        event="media_cost",
+        properties={
+            "kind": kind,
+            "provider": provider,
+            "model": model,
+            "cost_usd": usd,
+            "qty": qty,
+            "user_id": user_id,
+            "post_id": post_id,
+            "feature": feature,
+            **(meta or {}),
+        },
+    )
+    _write_cost_ledger(feature=feature, category="media", usd=usd, user_id=user_id,
+                       provider=provider, model_tier=model, qty=qty, post_id=post_id,
+                       task_name=_current_task_context()[0])
+
+
+def _rollup_field(user_id: Optional[int], feature: Optional[str], model_tier: Optional[str]) -> str:
+    return f"{user_id if user_id is not None else ''}|{feature or FEATURE_SYSTEM}|{model_tier or ''}"
+
+
+def _accrue_llm_cost(usd: float, tokens: int, user_id: Optional[int], feature: Optional[str],
+                     model_tier: Optional[str]) -> None:
+    """Add one call's spend to today's Redis rollup bucket (flushed to cost_ledger daily).
+
+    Silent no-op without Redis — PostHog still has the per-call event, and the ledger keeps only
+    the durable daily aggregate, so a missing bucket costs precision, never correctness elsewhere.
+    """
+    if usd <= 0:
+        return
+    # Same handle the 429 breaker and reply-sweep cadence keys use (Redis is where LEM's runtime
+    # state lives, so a rollup bucket survives deploys).
+    from cqc_lem.utilities.linkedin.rate_limit import _redis_client
+    client = _redis_client()
+    if client is None:
+        return
+    day = datetime.now(timezone.utc).date().isoformat()
+    key = f"{_LLM_ROLLUP_PREFIX}{day}"
+    field = _rollup_field(user_id, feature, model_tier)
+    try:
+        client.hincrbyfloat(key, field, usd)
+        client.expire(key, _LLM_ROLLUP_TTL_SECONDS)
+        if tokens:
+            client.hincrbyfloat(f"{key}{_LLM_ROLLUP_QTY_SUFFIX}", field, tokens)
+            client.expire(f"{key}{_LLM_ROLLUP_QTY_SUFFIX}", _LLM_ROLLUP_TTL_SECONDS)
+    except Exception as e:
+        log_warning("Could not accrue LLM cost rollup", exc=e)
+
+
+def _as_text(value) -> str:
+    return value.decode() if isinstance(value, bytes) else str(value)
+
+
+def flush_llm_cost_rollup(today: Optional[str] = None) -> int:
+    """Write every FINISHED day's accumulated LLM spend into cost_ledger, one row per
+    user x feature x tier x day, then drop that day's Redis bucket. Returns rows written.
+
+    `today` is an ISO date string (default: today UTC); its bucket — and any later one — is left
+    alone because it is still filling. Every OLDER bucket is flushed, so a day missed by a failed
+    run is picked up by the next one rather than lost.
+    """
+    from cqc_lem.utilities.linkedin.rate_limit import _redis_client
+    client = _redis_client()
+    if client is None:
+        return 0
+
+    today = today or datetime.now(timezone.utc).date().isoformat()
+    written = 0
+    try:
+        keys = [_as_text(k) for k in client.scan_iter(match=f"{_LLM_ROLLUP_PREFIX}*")]
+    except Exception as e:
+        log_warning("Could not scan LLM cost rollup buckets", exc=e)
+        return 0
+
+    for key in sorted(k for k in keys if not k.endswith(_LLM_ROLLUP_QTY_SUFFIX)):
+        day = key[len(_LLM_ROLLUP_PREFIX):]
+        try:
+            incurred_on = date.fromisoformat(day)
+        except ValueError:
+            continue
+        if day >= today:
+            continue
+        try:
+            costs = client.hgetall(key) or {}
+            quantities = client.hgetall(f"{key}{_LLM_ROLLUP_QTY_SUFFIX}") or {}
+        except Exception as e:
+            log_warning(f"Could not read LLM cost rollup bucket {key}", exc=e)
+            continue
+
+        for raw_field, raw_usd in costs.items():
+            field = _as_text(raw_field)
+            try:
+                usd = float(_as_text(raw_usd))
+            except ValueError:
+                continue
+            user_part, _, rest = field.partition("|")
+            feature, _, model_tier = rest.partition("|")
+            tokens = quantities.get(raw_field)
+            _write_cost_ledger(
+                feature=feature or FEATURE_SYSTEM,
+                category="llm",
+                usd=usd,
+                user_id=int(user_part) if user_part else None,
+                provider="litellm",
+                model_tier=model_tier or None,
+                qty=float(_as_text(tokens)) if tokens is not None else None,
+                incurred_on=incurred_on,
+            )
+            written += 1
+        try:
+            client.delete(key, f"{key}{_LLM_ROLLUP_QTY_SUFFIX}")
+        except Exception as e:
+            log_warning(f"Could not clear LLM cost rollup bucket {key}", exc=e)
+
+    return written
 
 
 def track_post_outcome(

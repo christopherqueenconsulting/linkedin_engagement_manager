@@ -1,7 +1,7 @@
 import json
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Optional
 
@@ -157,6 +157,17 @@ class LeadSignalStatus(StrEnum):
     SENT = 'sent'            # response delivered
     DISMISSED = 'dismissed'  # operator dismissed the signal
     FAILED = 'failed'        # delivery errored
+
+
+class CostCategory(StrEnum):
+    """Kind of spend a `cost_ledger` row records (issue #490, docs/cost-performance-margin-plan.md §A.1)."""
+    LLM = 'llm'              # inference through LiteLLM (rolled up daily per user x feature x tier)
+    MEDIA = 'media'          # video renders (Runway) and generated images (DALL-E)
+    PROXY = 'proxy'          # per-user residential / amortized regional egress proxy
+    INFRA = 'infra'          # VPS + containers, amortized across active users
+    EMAIL = 'email'          # transactional sends
+    GEOCODING = 'geocoding'  # location lookups
+    POSTHOG = 'posthog'      # our own analytics ingestion
 
 
 class LeadStage(StrEnum):
@@ -6249,9 +6260,116 @@ def get_active_avatar(user_id: int) -> Optional[dict]:
         connection.close()
 
 
+# --- Cost ledger writers (issue #490) ------------------------------------------------------
+# Durable, Stripe-joinable spend. PostHog is the fast analytics plane; these rows are the exact
+# source of truth the margin report joins against MRR. High-volume LLM spend arrives here already
+# rolled up (one row per user x feature x tier x day) — see observability.flush_llm_cost_rollup.
+
+
+def insert_cost_ledger_entry(feature: str, category: str, usd: float,
+                             user_id: Optional[int] = None,
+                             provider: Optional[str] = None,
+                             model_tier: Optional[str] = None,
+                             qty: Optional[float] = None,
+                             post_id: Optional[int] = None,
+                             task_name: Optional[str] = None,
+                             incurred_on: Optional[date] = None) -> bool:
+    """Append one spend row. `user_id` None means system/shared cost; `incurred_on` defaults to today (UTC)."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """INSERT INTO cost_ledger
+                   (user_id, feature, category, provider, model_tier, usd, qty, post_id, task_name, incurred_on)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (user_id, str(feature), str(category), provider, model_tier, round(float(usd), 6),
+             round(float(qty), 4) if qty is not None else None,
+             post_id, task_name, incurred_on or datetime.now(timezone.utc).date()),
+        )
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not insert cost_ledger entry ({category}/{feature}) | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def accrue_monthly_fixed_costs(period: date, accruals: list) -> int:
+    """Write this month's fixed-cost accruals (proxy per user, infra amortization) idempotently.
+
+    `period` is the first day of the accrued month and is stored as `incurred_on`; an accrual is a
+    dict of {user_id, category, usd, provider?, feature?, qty?}. A (user_id, category, period)
+    already present is skipped, so re-running the monthly task never double-charges. Returns the
+    number of rows written.
+    """
+    if not accruals:
+        return 0
+
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    written = 0
+    try:
+        for accrual in accruals:
+            user_id = accrual.get("user_id")
+            category = str(accrual.get("category"))
+            # NULL-safe compare: system rows (user_id NULL) must still dedupe against each other.
+            cursor.execute(
+                "SELECT id FROM cost_ledger WHERE user_id <=> %s AND category = %s AND incurred_on = %s LIMIT 1",
+                (user_id, category, period),
+            )
+            if cursor.fetchone():
+                continue
+            cursor.execute(
+                """INSERT INTO cost_ledger
+                       (user_id, feature, category, provider, usd, qty, incurred_on)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                (user_id, str(accrual.get("feature", "system")), category, accrual.get("provider"),
+                 round(float(accrual.get("usd", 0)), 6),
+                 round(float(accrual["qty"]), 4) if accrual.get("qty") is not None else None,
+                 period),
+            )
+            written += 1
+        connection.commit()
+        return written
+    except mysql.connector.Error as err:
+        myprint(f"Could not accrue monthly fixed costs for {period} | Error: {err}")
+        return written
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_users_proxy_config(user_ids: list) -> list:
+    """(user_id, proxy_url, country) for the given users — the inputs proxy.resolve_proxy() needs
+    to decide which egress proxy (and therefore which monthly cost) applies to each user."""
+    if not user_ids:
+        return []
+
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        placeholders = ", ".join(["%s"] * len(user_ids))
+        cursor.execute(
+            f"SELECT id, proxy_url, country FROM users WHERE id IN ({placeholders})",
+            tuple(int(uid) for uid in user_ids),
+        )
+        return [
+            {"user_id": row["id"], "proxy_url": row.get("proxy_url"), "country": row.get("country")}
+            for row in (cursor.fetchall() or [])
+        ]
+    except mysql.connector.Error as err:
+        myprint(f"Could not fetch proxy config for users | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
 # Cost/margin reporting (docs/cost-performance-margin-plan.md §A.3/§C.1). These are READ-ONLY over
-# the `cost_ledger` table; writes/accruals belong to the ledger capture work. Every one degrades to
-# an empty result when the table isn't present yet, so the margin report ships ahead of it.
+# the `cost_ledger` table the writers above fill. Every one degrades to an empty result when the
+# table isn't present yet, so the margin report ships ahead of it.
 
 # Whitelisted rollup dimensions → the cost_ledger column each groups by. Interpolating anything
 # outside this map into the SQL would be an injection vector.

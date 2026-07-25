@@ -1256,5 +1256,90 @@ def auto_changelog_notify(self, hours: int = None):
             f"{result['counts'] or 'nothing to do'}")
 
 
+def _env_rate(name: str) -> float:
+    """A monthly cost rate from the environment. Prices are deployment-specific, so they are never
+    hardcoded — an unset (or malformed) rate is 0 and simply accrues nothing."""
+    try:
+        return float(os.getenv(name, "0") or 0)
+    except ValueError:
+        log_warning(f"Invalid {name} — treating as 0", task_name="auto_accrue_monthly_costs")
+        return 0.0
+
+
+def _monthly_cost_accruals(user_rows: list, proxy_rate: float, region_rate: float,
+                           infra_monthly: float) -> list:
+    """Per-user proxy + infra accruals for one month (issue #490, plan §A.2).
+
+    A user with their own `users.proxy_url` is on the paid per-user path and carries the full
+    PROXY_COST_PER_USER_MONTH; users sharing a regional proxy split REGION_PROXY_COST across
+    everyone routed through that same proxy. Infra is total fixed / active users.
+    """
+    from cqc_lem.utilities.db import CostCategory
+    from cqc_lem.utilities.proxy import resolve_proxy
+
+    accruals = []
+    shared: dict = {}
+    for row in user_rows:
+        if row.get("proxy_url"):
+            if proxy_rate:
+                accruals.append({"user_id": row["user_id"], "category": CostCategory.PROXY,
+                                 "usd": proxy_rate, "provider": "per_user_proxy", "qty": 1})
+            continue
+        resolved = resolve_proxy(None, row.get("country"))
+        if resolved:
+            shared.setdefault(resolved, []).append(row["user_id"])
+
+    if region_rate:
+        for user_ids in shared.values():
+            share = region_rate / len(user_ids)
+            accruals.extend({"user_id": uid, "category": CostCategory.PROXY, "usd": share,
+                             "provider": "region_proxy", "qty": 1} for uid in user_ids)
+
+    if infra_monthly and user_rows:
+        share = infra_monthly / len(user_rows)
+        accruals.extend({"user_id": row["user_id"], "category": CostCategory.INFRA, "usd": share,
+                         "provider": "hosting", "qty": 1} for row in user_rows)
+
+    return [a for a in accruals if a["usd"] > 0]
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_accrue_monthly_costs(self):
+    """Monthly: accrue the fixed costs no per-call event can capture — each active user's egress
+    proxy and their share of the amortized infra bill — into cost_ledger (issue #490).
+
+    Idempotent per (user, category, month), so a re-run (or a manual catch-up) never double-charges.
+    """
+    from cqc_lem.utilities.db import accrue_monthly_fixed_costs, get_users_proxy_config
+
+    user_ids = get_active_user_ids()
+    if not user_ids:
+        log_info("Monthly cost accrual: no active users", task_name="auto_accrue_monthly_costs")
+        return 0
+
+    period = datetime.now(timezone.utc).date().replace(day=1)
+    accruals = _monthly_cost_accruals(
+        get_users_proxy_config(user_ids),
+        _env_rate("PROXY_COST_PER_USER_MONTH"),
+        _env_rate("REGION_PROXY_COST"),
+        _env_rate("INFRA_FIXED_MONTHLY"),
+    )
+    written = accrue_monthly_fixed_costs(period, accruals)
+    log_info(f"Monthly cost accrual {period}: {written} row(s) for {len(user_ids)} active user(s)",
+             task_name="auto_accrue_monthly_costs")
+    return written
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_rollup_llm_costs(self):
+    """Daily: collapse yesterday's per-call LLM spend (accumulated in Redis) into cost_ledger —
+    one row per user x feature x tier x day, so the durable table stays small (issue #490)."""
+    from cqc_lem.utilities.observability import flush_llm_cost_rollup
+
+    written = flush_llm_cost_rollup()
+    log_info(f"LLM cost rollup: wrote {written} ledger row(s)", task_name="auto_rollup_llm_costs")
+    return written
+
+
 if __name__ == "__main__":
     print("Process finished")

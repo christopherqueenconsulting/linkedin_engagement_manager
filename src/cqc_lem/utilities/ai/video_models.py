@@ -18,6 +18,7 @@ from runwayml import RunwayML
 
 from cqc_lem.utilities.env_constants import DEFAULT_VIDEO_MODEL, DEFAULT_VIDEO_RATIO
 from cqc_lem.utilities.logger import log_debug, log_warning
+from cqc_lem.utilities.observability import track_media_cost
 
 
 @dataclass(frozen=True)
@@ -111,11 +112,15 @@ def create_runway_video(
     duration: Optional[int] = None,
     seed: Optional[int] = None,
     audio: bool = False,
+    user_id: Optional[int] = None,
+    post_id: Optional[int] = None,
 ) -> Optional[str]:
     """Create a video via the RunwayML API and return its URL.
 
     If ``image_path_or_url`` is provided -> image->video; if it's None -> text->video
     (the model must support it). ``audio`` is honored only for audio-capable models.
+    ``user_id``/``post_id`` only attribute the render's cost (issue #490); when omitted the
+    active llm_attribution scope supplies the user.
     Backwards compatible with the old positional ``(image_path, prompt)`` call.
     Raises on creation failure (so callers' fallback can trigger); returns None only
     when the task itself reports FAILED / produces no output.
@@ -163,6 +168,10 @@ def create_runway_video(
         task = runway_client.tasks.retrieve(task_id)
 
     if task.status == "SUCCEEDED" and getattr(task, "output", None):
+        # Only a SUCCEEDED render is billed, so the ledger row goes here and not at creation time.
+        track_media_cost("video", "runway", estimate_video_cost(model, dur), user_id=user_id,
+                         post_id=post_id, qty=dur, model=spec.sdk_model,
+                         meta={"ratio": resolved_ratio, "audio": bool(audio and spec.supports_audio)})
         return task.output[0]
     log_warning(f"Runway task {task_id} ended status={task.status}", ai_model=spec.sdk_model)
     return None

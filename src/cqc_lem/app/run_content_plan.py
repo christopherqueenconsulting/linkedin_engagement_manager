@@ -415,10 +415,12 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
         if is_premium(model):
             if has_avatar:
                 image_path = generate_post_image(image_prompt, user_id, ratio="9:16")
-                src = create_runway_video(image_path, motion, model=model, ratio="9:16", audio=audio)
+                src = create_runway_video(image_path, motion, model=model, ratio="9:16", audio=audio,
+                                          user_id=user_id, post_id=post_id)
             else:
                 combined = (image_prompt[:700] + " Motion: " + motion)[:980]
-                src = create_runway_video(None, combined, model=model, ratio="9:16", audio=audio)
+                src = create_runway_video(None, combined, model=model, ratio="9:16", audio=audio,
+                                          user_id=user_id, post_id=post_id)
         else:
             # Standard tier still uses the account avatar for the source frame when the user has one
             # (avatar likeness regardless of tier; premium only adds the higher-quality Veo motion +
@@ -427,7 +429,8 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
                 image_path = generate_post_image(image_prompt, user_id, ratio=DEFAULT_IMAGE_RATIO)
             else:
                 image_path = generate_flux1_image_from_prompt(image_prompt, ratio=DEFAULT_IMAGE_RATIO)
-            src = create_runway_video(image_path, motion, model=model, ratio=DEFAULT_VIDEO_RATIO)
+            src = create_runway_video(image_path, motion, model=model, ratio=DEFAULT_VIDEO_RATIO,
+                                      user_id=user_id, post_id=post_id)
         if not src:
             raise RuntimeError("no video output")
         myprint(f"_generate_video_src: model={model} audio={audio} -> {str(src)[:60]}")

@@ -2414,7 +2414,7 @@ def get_dall_e_image_prompt_from_ai(post_content: str):
     return content
 
 
-def generate_dall_e_image_from_prompt(prompt: str, size: str = "1024x1024"):
+def generate_dall_e_image_from_prompt(prompt: str, size: str = "1024x1024") -> list:
     """
     Generate an image from the provided prompt using the DALL-E-3 model.
     """
@@ -2429,10 +2429,15 @@ def generate_dall_e_image_from_prompt(prompt: str, size: str = "1024x1024"):
         response_format='url'
     )
 
-    if len(response.data) > 0:
-        return response.data
-    else:
-        return response.data[0].url
+    generated = len(response.data or [])
+    if generated:
+        from cqc_lem.utilities.observability import track_media_cost, image_cost_usd
+        track_media_cost("image", "openai", image_cost_usd(generated), qty=generated,
+                         model="dall-e-3", meta={"size": size})
+
+    # Always the image list: the old empty-data branch indexed data[0] and raised IndexError,
+    # and returning a URL string there made the return type depend on the failure mode.
+    return response.data or []
 
 
 def _profile_visual_context(profile: "LinkedInProfile | None") -> str:

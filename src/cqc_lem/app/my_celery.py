@@ -208,6 +208,16 @@ app.conf.update(
             'task': 'cqc_lem.app.run_scheduler.auto_appreciate_dms',
             'schedule': crontab(hour='8', minute='0')  # Run every day at 8:00 AM
         },
+        'rollup-llm-costs': {
+            'task': 'cqc_lem.app.run_scheduler.auto_rollup_llm_costs',
+            # Daily at 00:20 UTC — collapses the finished day's Redis cost buckets into cost_ledger.
+            'schedule': crontab(hour='0', minute='20')
+        },
+        'accrue-monthly-costs': {
+            'task': 'cqc_lem.app.run_scheduler.auto_accrue_monthly_costs',
+            # 1st of the month at 5:15 AM — proxy + infra accruals for the month just started.
+            'schedule': crontab(hour='5', minute='15', day_of_month='1')
+        },
         'sync-stripe-subscriptions': {
             'task': 'cqc_lem.app.run_scheduler.sync_stripe_subscriptions',
             'schedule': crontab(hour='6', minute='0')  # Daily at 6:00 AM — safety-net for missed webhooks
