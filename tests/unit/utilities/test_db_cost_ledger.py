@@ -98,6 +98,31 @@ class TestGetCostRollup:
         assert "CAST(category AS CHAR)" in sql and params[-1] == 9
 
 
+class TestGetDailyCostTotals:
+    def test_returns_one_total_per_day_keyed_by_iso_date(self):
+        conn, cur = _mock_conn(fetch_all=[(date(2026, 7, 24), 4.0), (date(2026, 7, 25), 9.5)])
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_daily_cost_totals
+            assert get_daily_cost_totals(date(2026, 7, 18), date(2026, 7, 25)) == {
+                "2026-07-24": 4.0, "2026-07-25": 9.5}
+        sql, params = cur.execute.call_args[0]
+        assert "GROUP BY incurred_on" in sql and "SUM(usd)" in sql
+        assert params == (date(2026, 7, 18), date(2026, 7, 25))
+
+    def test_days_without_rows_are_absent_not_zero(self):
+        # A ledger that started capturing mid-window must not report a fabricated $0 baseline.
+        conn, _ = _mock_conn(fetch_all=[(date(2026, 7, 25), 9.5)])
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_daily_cost_totals
+            assert get_daily_cost_totals(date(2026, 7, 18), date(2026, 7, 25)) == {"2026-07-25": 9.5}
+
+    def test_empty_when_table_missing(self):
+        conn, _ = _mock_conn(error="Table 'cost_ledger' doesn't exist")
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_daily_cost_totals
+            assert get_daily_cost_totals(date(2026, 7, 18), date(2026, 7, 25)) == {}
+
+
 class TestGetMarginUsers:
     def test_returns_tier_status_and_signup_cohort(self):
         rows = [{"id": 1, "subscription_tier": "professional", "subscription_status": "active",

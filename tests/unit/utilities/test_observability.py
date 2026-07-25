@@ -2,7 +2,7 @@
 
 import pytest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -509,3 +509,52 @@ class TestTrackMarginReport:
             from cqc_lem.utilities.observability import track_margin_report
             track_margin_report({})
         assert mock_ph.capture.call_args[1]["properties"]["cohorts"] == []
+
+
+class TestTrackCostAlert:
+    def test_per_user_alert_is_keyed_to_that_user(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_cost_alert
+            track_cost_alert({"check": "user_cost_ceiling", "severity": "warning", "user_id": 7,
+                              "value": 0.42}, day="2026-07-24")
+
+        kwargs = mock_ph.capture.call_args[1]
+        assert kwargs["event"] == "cost_alert" and kwargs["distinct_id"] == "7"
+        assert kwargs["properties"]["date"] == "2026-07-24"
+        assert kwargs["properties"]["check"] == "user_cost_ceiling"
+
+    def test_system_alert_falls_back_to_the_system_distinct_id(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_cost_alert
+            track_cost_alert({"check": "gross_margin_floor", "severity": "critical"})
+        assert mock_ph.capture.call_args[1]["distinct_id"] == "system"
+
+
+class TestPostHogHogqlQuery:
+    def test_returns_none_when_the_read_path_is_not_configured(self):
+        with patch.dict("os.environ", {"POSTHOG_PERSONAL_API_KEY": "", "POSTHOG_PROJECT_ID": ""},
+                        clear=False):
+            from cqc_lem.utilities.observability import posthog_hogql_query
+            assert posthog_hogql_query("SELECT 1") is None
+
+    def test_posts_the_query_and_returns_result_rows(self):
+        response = MagicMock()
+        response.json.return_value = {"results": [["2026-07-24", 3, 10]]}
+        with patch.dict("os.environ", {"POSTHOG_PERSONAL_API_KEY": "phx_key",
+                                       "POSTHOG_PROJECT_ID": "475262",
+                                       "POSTHOG_APP_HOST": "https://us.posthog.com/"}), \
+             patch("requests.post", return_value=response) as post:
+            from cqc_lem.utilities.observability import posthog_hogql_query
+            assert posthog_hogql_query("SELECT 1") == [["2026-07-24", 3, 10]]
+
+        url, kwargs = post.call_args[0][0], post.call_args[1]
+        assert url == "https://us.posthog.com/api/projects/475262/query/"
+        assert kwargs["headers"]["Authorization"] == "Bearer phx_key"
+        assert kwargs["json"]["query"] == {"kind": "HogQLQuery", "query": "SELECT 1"}
+
+    def test_none_on_failure_so_a_caller_never_reads_it_as_zero(self):
+        with patch.dict("os.environ", {"POSTHOG_PERSONAL_API_KEY": "phx_key",
+                                       "POSTHOG_PROJECT_ID": "475262"}), \
+             patch("requests.post", side_effect=RuntimeError("posthog down")):
+            from cqc_lem.utilities.observability import posthog_hogql_query
+            assert posthog_hogql_query("SELECT 1") is None

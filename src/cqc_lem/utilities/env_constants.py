@@ -194,6 +194,27 @@ EXPECTED_LIFETIME_MONTHS  = float(get_constant_from_env('EXPECTED_LIFETIME_MONTH
 # Where the weekly margin report is emailed. Empty = generate + track only, no email.
 MARGIN_REPORT_EMAIL       = get_constant_from_env('MARGIN_REPORT_EMAIL', default_value='')
 
+# Budget/anomaly alert thresholds (docs/cost-performance-margin-plan.md §E.2). Every one is a
+# threshold, never a hardcoded price — tune per environment without a deploy.
+# Per-user variable+semi-variable cost as a share of that user's tier MRR (0.25 = the §C.3 ceiling).
+COST_ALERT_USER_COST_PCT  = float(get_constant_from_env('COST_ALERT_USER_COST_PCT', default_value='0.25'))
+# System gross-margin floor (§C.3 target 70%).
+COST_ALERT_MARGIN_FLOOR   = float(get_constant_from_env('COST_ALERT_MARGIN_FLOOR', default_value='0.70'))
+# Spend anomaly: daily spend above μ + N×σ of the trailing window, and/or above a hard daily budget
+# (0 = no absolute budget). The noise floor keeps a few cents from tripping σ on a quiet ledger.
+COST_ALERT_SPEND_SIGMA    = float(get_constant_from_env('COST_ALERT_SPEND_SIGMA', default_value='3'))
+COST_ALERT_DAILY_BUDGET   = float(get_constant_from_env('COST_ALERT_DAILY_BUDGET_USD', default_value='0'))
+COST_ALERT_MIN_SPEND      = float(get_constant_from_env('COST_ALERT_MIN_SPEND_USD', default_value='1'))
+# Cache-hit collapse: relative drop vs the trailing baseline, plus an optional absolute floor
+# (0 = floor disabled). `MIN_CALLS` gates both so a handful of calls can't fake a collapse.
+COST_ALERT_CACHE_DROP     = float(get_constant_from_env('COST_ALERT_CACHE_DROP_PCT', default_value='0.5'))
+COST_ALERT_CACHE_FLOOR    = float(get_constant_from_env('COST_ALERT_CACHE_HIT_FLOOR', default_value='0'))
+COST_ALERT_CACHE_MIN_CALLS = int(get_constant_from_env('COST_ALERT_CACHE_MIN_CALLS', default_value='50'))
+# Share of spend that carries no user (system rows) or no feature — an instrumentation regression.
+COST_ALERT_UNATTRIBUTED   = float(get_constant_from_env('COST_ALERT_UNATTRIBUTED_PCT', default_value='0.10'))
+# Where budget alerts are emailed. Empty falls back to MARGIN_REPORT_EMAIL.
+COST_ALERT_EMAIL          = get_constant_from_env('COST_ALERT_EMAIL', default_value='')
+
 NGROK_LIPREVIEW_PREFIX=get_constant_from_env('NGROK_LIPREVIEW_PREFIX')
 if NGROK_FREE_DOMAIN and NGROK_LIPREVIEW_PREFIX:
     LINKEDIN_PREVIEW_URL = f"https://{NGROK_LIPREVIEW_PREFIX}.{NGROK_FREE_DOMAIN}"

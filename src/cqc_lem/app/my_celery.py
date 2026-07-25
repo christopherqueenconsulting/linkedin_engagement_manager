@@ -206,6 +206,12 @@ app.conf.update(
             # Sunday night's stats scrape, so cohort engagement lift covers the full week.
             'schedule': crontab(hour='12', minute='0', day_of_week='monday')
         },
+        'daily-cost-alerts': {
+            'task': 'cqc_lem.app.run_scheduler.auto_daily_cost_alerts',
+            # Daily 13:00 UTC — scores YESTERDAY (the last complete UTC day), after the 6:00 Stripe
+            # sync so tier MRR is current, and after the weekly margin report so they never overlap.
+            'schedule': crontab(hour='13', minute='0')
+        },
 
     }
 )
