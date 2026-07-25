@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.91.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.91.1...v0.91.2) (2026-07-25)
+
+
+### Documentation
+
+* **security:** auth/identity + at-rest encryption research & design (Phase 1 of [#568](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/568)) ([3924801](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3924801b675498982eb96289d29bbc21ddf3ee9d))
+* **security:** record owner sign-off (1A 2A 3A) + correct citations/licenses ([35b9150](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/35b915030554d526140b670fe019c0541b069bd2))
+
 ## [0.91.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.91.0...v0.91.1) (2026-07-25)
 
 
