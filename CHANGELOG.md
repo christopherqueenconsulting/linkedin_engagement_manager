@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.90.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.90.0...v0.90.1) (2026-07-25)
+
+
+### Bug Fixes
+
+* **logging:** set OTLP service.name so PostHog logs aren't 'unknown_service' ([10f3301](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/10f33014f9c9c57dd24040a3d11553077c0253e4))
+* **logging:** set OTLP service.name so PostHog logs aren't 'unknown_service' ([158675d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/158675d89a8c0c04fc4a39f3ff55092eed86aa89))
+
 ## [0.90.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.89.0...v0.90.0) (2026-07-25)
 
 
