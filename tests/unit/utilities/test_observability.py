@@ -470,3 +470,42 @@ class TestLlmTrackedAttribution:
             call()
 
         assert mock_ph.capture.call_args[1]["properties"]["feature"] == "system"
+
+
+class TestTrackMarginReport:
+    def _report(self):
+        return {
+            "period": {"start": "2026-07-19", "end": "2026-07-25", "days": 7,
+                       "basis": "monthly_run_rate"},
+            "ledger_available": True,
+            "users": [{"user_id": 1, "mrr_usd": 79.0, "cm_pct": 0.8}],
+            "system": {"mrr_usd": 79.0, "gross_margin_pct": 0.62},
+            "cohorts": [{"cohort": "2026-06", "users": 1, "avg_cm_usd": 63.0}],
+            "unit_economics": {"ltv_usd": 600.0, "ltv_cac_ratio": 4.0, "payback_months": 3.0},
+        }
+
+    def test_captures_scorecard_properties(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_margin_report
+            track_margin_report(self._report())
+
+        assert mock_ph.capture.call_args[1]["event"] == "margin_report"
+        props = mock_ph.capture.call_args[1]["properties"]
+        assert props["period_start"] == "2026-07-19" and props["period_days"] == 7
+        assert props["system_gross_margin_pct"] == 0.62
+        assert props["ltv_cac_ratio"] == 4.0
+        assert props["cohorts"][0]["cohort"] == "2026-06"
+
+    def test_omits_per_user_financials(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_margin_report
+            track_margin_report(self._report())
+
+        # Per-user cost/revenue is internal-only (plan §E.5) — it must not leave in the event.
+        assert "users" not in mock_ph.capture.call_args[1]["properties"]
+
+    def test_empty_report_does_not_raise(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_margin_report
+            track_margin_report({})
+        assert mock_ph.capture.call_args[1]["properties"]["cohorts"] == []

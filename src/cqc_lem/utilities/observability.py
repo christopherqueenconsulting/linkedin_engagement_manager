@@ -284,6 +284,30 @@ def track_post_outcome(
     )
 
 
+def track_margin_report(report: dict) -> None:
+    """Emit the weekly unit-economics scorecard (plan §E.1.4) as one `margin_report` event so the
+    PostHog tiles read system margin, cohort margin and LTV:CAC without re-deriving them. Per-user
+    financials stay out of the event body — internal-only by policy (plan §E.5) — but the cohort
+    aggregates the Margin-by-Cohort dashboard needs ride along."""
+    system = dict((report or {}).get("system") or {})
+    unit = dict((report or {}).get("unit_economics") or {})
+    period = dict((report or {}).get("period") or {})
+    posthog.capture(
+        distinct_id="system",
+        event="margin_report",
+        properties={
+            "period_start": period.get("start"),
+            "period_end": period.get("end"),
+            "period_days": period.get("days"),
+            "basis": period.get("basis"),
+            "ledger_available": (report or {}).get("ledger_available"),
+            "cohorts": (report or {}).get("cohorts") or [],
+            **{f"system_{key}": value for key, value in system.items()},
+            **unit,
+        },
+    )
+
+
 def track_task(
     task_name: str,
     duration_ms: int,

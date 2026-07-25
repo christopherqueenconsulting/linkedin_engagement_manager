@@ -179,6 +179,21 @@ STRIPE_PRICE_ID_PROFESSIONAL  = get_constant_from_env('STRIPE_PRICE_ID_PROFESSIO
 STRIPE_PRICE_ID_ENTERPRISE    = get_constant_from_env('STRIPE_PRICE_ID_ENTERPRISE')
 FREE_TRIAL_DAYS           = int(get_constant_from_env('FREE_TRIAL_DAYS', default_value='14'))
 
+# Unit-economics inputs for the margin report (docs/cost-performance-margin-plan.md §C.1). Monthly
+# tier prices mirror the SPA pricing table — override per environment instead of editing code so a
+# price change never needs a deploy.
+TIER_MRR_STARTER          = float(get_constant_from_env('TIER_MRR_STARTER', default_value='29'))
+TIER_MRR_PROFESSIONAL     = float(get_constant_from_env('TIER_MRR_PROFESSIONAL', default_value='79'))
+TIER_MRR_ENTERPRISE       = float(get_constant_from_env('TIER_MRR_ENTERPRISE', default_value='199'))
+# Total monthly fixed infra spend (VPS + containers), amortized across active users. 0 = unknown,
+# which reports contribution margin only rather than guessing a fixed cost.
+INFRA_FIXED_MONTHLY       = float(get_constant_from_env('INFRA_FIXED_MONTHLY', default_value='0'))
+# CAC and expected lifetime are OWNED by the marketing plan; imported here only for LTV:CAC/payback.
+CAC_USD                   = float(get_constant_from_env('CAC_USD', default_value='0'))
+EXPECTED_LIFETIME_MONTHS  = float(get_constant_from_env('EXPECTED_LIFETIME_MONTHS', default_value='12'))
+# Where the weekly margin report is emailed. Empty = generate + track only, no email.
+MARGIN_REPORT_EMAIL       = get_constant_from_env('MARGIN_REPORT_EMAIL', default_value='')
+
 NGROK_LIPREVIEW_PREFIX=get_constant_from_env('NGROK_LIPREVIEW_PREFIX')
 if NGROK_FREE_DOMAIN and NGROK_LIPREVIEW_PREFIX:
     LINKEDIN_PREVIEW_URL = f"https://{NGROK_LIPREVIEW_PREFIX}.{NGROK_FREE_DOMAIN}"
