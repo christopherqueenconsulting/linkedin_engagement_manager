@@ -43,6 +43,13 @@ VIDEO_MODELS: dict[str, VideoModelSpec] = {
 
 DEFAULT_VIDEO_DURATION = 5
 
+# Veo has no language/voice API parameter — audio is steered ONLY by prompt text, so an
+# audio-enabled render whose prompt says nothing about audio invents a voiceover and picks its
+# own language (issue #548, posts #34/#36). ai_helper._audio_direction() writes a clause starting
+# with this marker into every audio-capable motion prompt; create_runway_video refuses to enable
+# audio without it, so the defect cannot silently return.
+AUDIO_DIRECTION_MARKER = "Audio:"
+
 # Friendly aspect-ratio aliases -> Runway resolution strings.
 RATIO_ALIASES = {
     "1:1": "960:960",
@@ -68,6 +75,13 @@ def model_credits(model: str) -> int:
 
 def is_premium(model: str) -> bool:
     return model_credits(model) > 0
+
+
+def supports_audio(model: str) -> bool:
+    """True when the model generates native audio — i.e. when the prompt MUST carry an audio
+    direction (issue #548). Unknown models are treated as silent."""
+    spec = VIDEO_MODELS.get(model)
+    return bool(spec and spec.supports_audio)
 
 
 def resolve_duration(model: str, duration: Optional[int]) -> int:
@@ -143,7 +157,13 @@ def create_runway_video(
     }
     if not use_text:
         create_kwargs["prompt_image"] = _to_prompt_image(image_path_or_url)
-    if audio and spec.supports_audio:
+    enable_audio = bool(audio and spec.supports_audio)
+    if enable_audio and AUDIO_DIRECTION_MARKER not in prompt:
+        # Silent audio beats a hallucinated foreign-language voiceover (issue #548).
+        log_warning("Audio requested without an audio direction in the prompt — rendering silent",
+                    ai_model=spec.sdk_model)
+        enable_audio = False
+    if enable_audio:
         create_kwargs["audio"] = True
     if seed is not None:
         create_kwargs["seed"] = seed
@@ -151,7 +171,7 @@ def create_runway_video(
     endpoint = getattr(runway_client, endpoint_name)
     log_debug(
         f"Runway {endpoint_name} model={spec.sdk_model} ratio={resolved_ratio} "
-        f"duration={dur}s audio={audio and spec.supports_audio}",
+        f"duration={dur}s audio={enable_audio}",
         ai_model=spec.sdk_model,
     )
     try:
@@ -171,7 +191,7 @@ def create_runway_video(
         # Only a SUCCEEDED render is billed, so the ledger row goes here and not at creation time.
         track_media_cost("video", "runway", estimate_video_cost(model, dur), user_id=user_id,
                          post_id=post_id, qty=dur, model=spec.sdk_model,
-                         meta={"ratio": resolved_ratio, "audio": bool(audio and spec.supports_audio)})
+                         meta={"ratio": resolved_ratio, "audio": enable_audio})
         return task.output[0]
     log_warning(f"Runway task {task_id} ended status={task.status}", ai_model=spec.sdk_model)
     return None

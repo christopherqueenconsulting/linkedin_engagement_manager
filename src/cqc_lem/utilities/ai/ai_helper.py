@@ -38,6 +38,8 @@ from cqc_lem.utilities.env_constants import DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_M
 # so existing `from ai_helper import create_runway_video` imports keep working.
 # The redundant `as create_runway_video` alias marks it an intentional re-export.
 from cqc_lem.utilities.ai.video_models import create_runway_video as create_runway_video  # noqa: F401
+from cqc_lem.utilities.ai.video_models import AUDIO_DIRECTION_MARKER, supports_audio
+from cqc_lem.utilities.geocoding import DEFAULT_CONTENT_LANGUAGE, language_name
 from dotenv import load_dotenv
 
 # Load .env file
@@ -2653,19 +2655,42 @@ def generate_post_image(prompt: str, user_id: int, *, ratio: str = DEFAULT_IMAGE
     return generate_flux1_image_from_prompt(prompt, ratio=ratio, image_model=image_model)
 
 
+MAX_MOTION_PROMPT_CHARS = 512
+
+
+def _audio_direction(model: str, language: str = DEFAULT_CONTENT_LANGUAGE) -> str:
+    """The audio clause appended to the motion prompt of every audio-capable video model.
+
+    Veo exposes no language/voice API parameter, so audio is prompt-controlled only: with native
+    audio ON and no audio direction, it invents a voiceover and picks its language freely (issue
+    #548, posts #34/#36). Ambience-only removes the failure class outright, and the language is
+    still stated so any incidental speech lands in the user's language. Empty for models without
+    native audio (gen4_turbo/gen4.5/seedance) — they ignore audio cues.
+    """
+    if not supports_audio(model):
+        return ""
+    return (f"{AUDIO_DIRECTION_MARKER} natural ambient sound only, at low volume. No spoken "
+            f"dialogue, no voiceover, no narration, no singing, no lyrics. Any incidental "
+            f"speech must be in {language_name(language)}.")
+
+
 def get_runway_ml_video_prompt_from_ai(post_content: str, image_prompt: str, *,
-                                       model: str = DEFAULT_VIDEO_MODEL) -> str:
+                                       model: str = DEFAULT_VIDEO_MODEL,
+                                       language: str = DEFAULT_CONTENT_LANGUAGE) -> str:
     """Generate a motion-first Runway Gen-4 video prompt.
 
     Gen-4 image-to-video uses the IMAGE to define the scene; the text prompt should
     describe ONLY camera and subject motion, in plain concrete terms. Keyword-stuffed
     cinematic prompts (the old Gen-3 style) degrade Gen-4 output.
+
+    For audio-capable models the deterministic `_audio_direction()` clause is appended to the
+    model's output — the LLM is told to stay off audio entirely, because the clause it would
+    have to write is made of negatives this system prompt otherwise forbids.
     """
 
-    # veo3.1 supports native audio; other models ignore audio cues.
-    audio_note = ("\n        - You MAY add ONE short ambient audio cue (e.g. \"soft "
-                  "office ambience\") since this model supports native audio."
-                  if model == "veo3.1" else "")
+    audio_direction = _audio_direction(model, language)
+    audio_note = ("\n        - Say NOTHING about audio, speech, dialogue or narration — an audio "
+                  "direction is appended automatically." if audio_direction else "")
 
     prompt = f"""Describe the motion for a short video built from this still image.
 
@@ -2724,6 +2749,11 @@ def get_runway_ml_video_prompt_from_ai(post_content: str, image_prompt: str, *,
 
     # Extract and return the model's response
     content = response.choices[0].message.content.strip()
+    if audio_direction:
+        # Trim the motion half, never the audio direction — callers cap the prompt at
+        # MAX_MOTION_PROMPT_CHARS and a truncated clause would re-open issue #548.
+        motion = content[:MAX_MOTION_PROMPT_CHARS - len(audio_direction) - 1].rstrip()
+        content = f"{motion} {audio_direction}"
     return content
 
 

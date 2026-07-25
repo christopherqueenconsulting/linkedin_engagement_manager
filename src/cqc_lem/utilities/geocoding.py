@@ -31,6 +31,20 @@ _last_call = 0.0
 # Country ISO-2 → default locale (browser locale override). US default matches selenium_util.
 _LOCALE_BY_COUNTRY = {"US": "en-US", "GB": "en-GB", "CA": "en-CA", "AU": "en-AU"}
 
+DEFAULT_CONTENT_LANGUAGE = "en-US"
+
+# Language subtag → the name a generative model actually understands in a prompt. Veo has no
+# language parameter, so the language reaches it only as prompt text (issue #548) — "Spanish"
+# steers it, "es-ES" is far less reliable.
+_LANGUAGE_NAMES = {
+    "en": "English", "es": "Spanish", "fr": "French", "de": "German", "pt": "Portuguese",
+    "it": "Italian", "nl": "Dutch", "sv": "Swedish", "da": "Danish", "no": "Norwegian",
+    "fi": "Finnish", "pl": "Polish", "ru": "Russian", "tr": "Turkish", "ar": "Arabic",
+    "he": "Hebrew", "hi": "Hindi", "ja": "Japanese", "ko": "Korean", "zh": "Chinese",
+    "vi": "Vietnamese", "th": "Thai", "id": "Indonesian", "uk": "Ukrainian", "cs": "Czech",
+    "el": "Greek", "ro": "Romanian", "hu": "Hungarian",
+}
+
 
 class GeocodeError(Exception):
     """Raised when a place can't be resolved to coordinates."""
@@ -38,8 +52,24 @@ class GeocodeError(Exception):
 
 def _locale_for(country_code: Optional[str]) -> str:
     if not country_code:
-        return "en-US"
+        return DEFAULT_CONTENT_LANGUAGE
     return _LOCALE_BY_COUNTRY.get(country_code.upper(), f"en-{country_code.upper()}")
+
+
+def language_name(locale: Optional[str]) -> str:
+    """Human-readable language name for a BCP-47 tag, for use inside model prompts.
+
+    Regional variants stay visible ("Portuguese (pt-BR)") because they change the audio a
+    model produces; an unknown tag is returned as-is rather than guessed at.
+    """
+    tag = (locale or DEFAULT_CONTENT_LANGUAGE).strip()
+    if not tag:
+        tag = DEFAULT_CONTENT_LANGUAGE
+    subtag = tag.replace("_", "-").split("-")[0].lower()
+    name = _LANGUAGE_NAMES.get(subtag)
+    if not name:
+        return tag
+    return f"{name} ({tag})" if "-" in tag.replace("_", "-") else name
 
 
 def _timezone_for(lat: float, lng: float) -> Optional[str]:

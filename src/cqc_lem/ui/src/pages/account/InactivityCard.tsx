@@ -12,10 +12,30 @@ const INACTIVATE_OPTIONS = [
   { label: 'Never', value: null },
 ]
 
+// BCP-47 tags kept in lockstep with users.content_language VARCHAR(16). Empty = inherit the
+// Login Location locale. Drives the language of premium (Veo) video audio — issue #548.
+const CONTENT_LANGUAGE_OPTIONS = [
+  { label: 'English (US)', value: 'en-US' },
+  { label: 'English (UK)', value: 'en-GB' },
+  { label: 'Spanish', value: 'es-ES' },
+  { label: 'Spanish (Latin America)', value: 'es-419' },
+  { label: 'French', value: 'fr-FR' },
+  { label: 'German', value: 'de-DE' },
+  { label: 'Portuguese (Brazil)', value: 'pt-BR' },
+  { label: 'Italian', value: 'it-IT' },
+  { label: 'Dutch', value: 'nl-NL' },
+  { label: 'Japanese', value: 'ja-JP' },
+  { label: 'Korean', value: 'ko-KR' },
+  { label: 'Chinese (Simplified)', value: 'zh-CN' },
+  { label: 'Hindi', value: 'hi-IN' },
+  { label: 'Arabic', value: 'ar-SA' },
+]
+
 export default function InactivityCard() {
   const { sessionToken } = useAuth()
   const [inactivateDelay, setInactivateDelay] = useState<number | null>(90)
   const [autoSchedule, setAutoSchedule] = useState(false)
+  const [contentLanguage, setContentLanguage] = useState('')
   const [prefsInitialised, setPrefsInitialised] = useState(false)
   const [prefsSavedMsg, setPrefsSavedMsg] = useState<string | null>(null)
 
@@ -35,6 +55,8 @@ export default function InactivityCard() {
           preferences: {
             last_login_inactivate_delay: number | null
             auto_schedule_posts: boolean
+            content_language: string | null
+            effective_content_language: string | null
           } | null
           blog_url: string | null
           sitemap_url: string | null
@@ -48,6 +70,7 @@ export default function InactivityCard() {
     if (settingsData?.preferences && !prefsInitialised) {
       setInactivateDelay(settingsData.preferences.last_login_inactivate_delay)
       setAutoSchedule(settingsData.preferences.auto_schedule_posts)
+      setContentLanguage(settingsData.preferences.content_language ?? '')
       setPrefsInitialised(true)
     }
   }, [settingsData, prefsInitialised])
@@ -58,6 +81,7 @@ export default function InactivityCard() {
         session_token: sessionToken,
         last_login_inactivate_delay: inactivateDelay,
         auto_schedule_posts: autoSchedule,
+        content_language: contentLanguage,
       }),
     onSuccess: () => {
       setPrefsSavedMsg('Preferences saved!')
@@ -126,6 +150,34 @@ export default function InactivityCard() {
             />
           </button>
         </div>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          Content language
+        </label>
+        <select
+          value={contentLanguage}
+          onChange={(e) => setContentLanguage(e.target.value)}
+          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="">
+            Auto — from my Login Location
+            {settingsData?.preferences?.effective_content_language
+              ? ` (${settingsData.preferences.effective_content_language})`
+              : ''}
+          </option>
+          {CONTENT_LANGUAGE_OPTIONS.map(({ label, value }) => (
+            <option key={value} value={value}>
+              {label}
+            </option>
+          ))}
+        </select>
+        <p className="text-xs text-gray-400 mt-1">
+          The language your generated content is produced in — including the audio on premium
+          (Veo) videos, which otherwise picks its own language. Leave on "Auto" to follow the
+          country in your Login Location.
+        </p>
       </div>
 
       {prefsSavedMsg && (

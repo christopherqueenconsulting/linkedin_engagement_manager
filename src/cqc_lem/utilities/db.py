@@ -2750,13 +2750,14 @@ def get_user_preferences(user_id: int) -> dict:
     """
     _defaults: dict = {"last_login_inactivate_delay": None, "auto_schedule_posts": True,
                        "content_buffer_days": DEFAULT_CONTENT_BUFFER_DAYS,
-                       "content_buffer_max_posts": DEFAULT_CONTENT_BUFFER_MAX_POSTS}
+                       "content_buffer_max_posts": DEFAULT_CONTENT_BUFFER_MAX_POSTS,
+                       "content_language": None}
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute(
             "SELECT last_login_inactivate_delay, auto_schedule_posts,"
-            " content_buffer_days, content_buffer_max_posts FROM users WHERE id = %s",
+            " content_buffer_days, content_buffer_max_posts, content_language FROM users WHERE id = %s",
             (user_id,),
         )
         row = cursor.fetchone()
@@ -2775,11 +2776,13 @@ def update_user_preferences(
     auto_schedule_posts: bool,
     content_buffer_days: Optional[int] = None,
     content_buffer_max_posts: Optional[int] = None,
+    content_language: Optional[str] = None,
 ) -> bool:
     """Persist user-configurable inactivity delay (None = never) and auto-schedule flag.
 
-    The content-buffer knobs are left untouched when None so a client that doesn't send them
-    (the current Account UI) never resets them.
+    The content-buffer knobs and the content language are left untouched when None so a client
+    that doesn't send them (the current Account UI) never resets them. An empty-string
+    content_language DOES clear it, returning the user to the Login Location default.
     """
     sets = ["last_login_inactivate_delay = %s", "auto_schedule_posts = %s"]
     params: list = [inactivate_delay, 1 if auto_schedule_posts else 0]
@@ -2789,6 +2792,9 @@ def update_user_preferences(
     if content_buffer_max_posts is not None:
         sets.append("content_buffer_max_posts = %s")
         params.append(max(1, min(MAX_CONTENT_BUFFER_POSTS, int(content_buffer_max_posts))))
+    if content_language is not None:
+        sets.append("content_language = %s")
+        params.append(content_language.strip()[:16] or None)
     params.append(user_id)
 
     connection = get_db_connection()
@@ -5771,6 +5777,38 @@ def get_user_geo(user_id: int) -> Optional[dict]:
         "city": row[4],
         "country": row[5],
     }
+
+
+def get_user_content_language(user_id: Optional[int]) -> str:
+    """The BCP-47 language generated content must be produced in (issue #548).
+
+    Precedence: the explicit users.content_language setting → the Login Location locale
+    (users.locale) → 'en-US'. The explicit setting wins because location is not language:
+    a US-based user may publish in Spanish.
+    """
+    from cqc_lem.utilities.geocoding import DEFAULT_CONTENT_LANGUAGE
+    if not user_id:
+        return DEFAULT_CONTENT_LANGUAGE
+    # Fail-soft on the connection too: callers sit inside media-generation try/except blocks that
+    # degrade to stock footage, so a DB blip here must not cost the user their generated video.
+    try:
+        connection = get_db_connection()
+    except Exception as err:
+        myprint(f"Could not get content language for user_id {user_id} | Error: {err}")
+        return DEFAULT_CONTENT_LANGUAGE
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT content_language, locale FROM users WHERE id = %s", (user_id,))
+        row = cursor.fetchone()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get content language for user_id {user_id} | Error: {err}")
+        row = None
+    finally:
+        cursor.close()
+        connection.close()
+    if not row:
+        return DEFAULT_CONTENT_LANGUAGE
+    return (row[0] or "").strip() or (row[1] or "").strip() or DEFAULT_CONTENT_LANGUAGE
 
 
 def update_user_location(user_id: int, latitude: float, longitude: float,

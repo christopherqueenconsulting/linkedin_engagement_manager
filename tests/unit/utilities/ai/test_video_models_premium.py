@@ -24,10 +24,16 @@ class TestTiers:
         assert estimate_video_cost("gen4_turbo", 5) == 0.25
 
 
+# Every audio-capable prompt now carries ai_helper._audio_direction()'s clause (issue #548);
+# create_runway_video refuses to enable audio without it.
+_WITH_AUDIO_DIRECTION = ("a scene with motion. Audio: natural ambient sound only, at low volume. "
+                         "No spoken dialogue, no voiceover, no narration.")
+
+
 class TestEndpointSelection:
     def test_text_to_video_when_no_image(self, mock_runwayml):
         from cqc_lem.utilities.ai.video_models import create_runway_video
-        url = create_runway_video(None, "a scene with motion", model="veo3.1_fast", audio=True)
+        url = create_runway_video(None, _WITH_AUDIO_DIRECTION, model="veo3.1_fast", audio=True)
         assert url == "https://runway.example/video.mp4"
         # used the text_to_video endpoint, not image_to_video
         assert mock_runwayml["client"].text_to_video.create.called
@@ -38,7 +44,7 @@ class TestEndpointSelection:
 
     def test_image_to_video_when_image_given(self, mock_runwayml):
         from cqc_lem.utilities.ai.video_models import create_runway_video
-        create_runway_video("https://img/x.png", "move", model="veo3.1", audio=True)
+        create_runway_video("https://img/x.png", _WITH_AUDIO_DIRECTION, model="veo3.1", audio=True)
         assert mock_runwayml["client"].image_to_video.create.called
         kw = mock_runwayml["client"].image_to_video.create.call_args[1]
         assert kw["prompt_image"] == "https://img/x.png" and kw["audio"] is True
@@ -48,3 +54,20 @@ class TestEndpointSelection:
         create_runway_video("https://img/x.png", "move", model="gen4_turbo", audio=True)
         kw = mock_runwayml["client"].image_to_video.create.call_args[1]
         assert "audio" not in kw  # gen4_turbo doesn't support audio
+
+
+class TestAudioDirectionGate:
+    """Issue #548: rendering silent beats rendering a hallucinated foreign-language voiceover."""
+
+    def test_audio_dropped_when_prompt_has_no_audio_direction(self, mock_runwayml):
+        from cqc_lem.utilities.ai.video_models import create_runway_video
+        create_runway_video("https://img/x.png", "slow push-in", model="veo3.1_fast", audio=True)
+        kw = mock_runwayml["client"].image_to_video.create.call_args[1]
+        assert "audio" not in kw
+
+    def test_cost_meta_records_the_downgrade(self, mock_runwayml):
+        from unittest.mock import patch
+        from cqc_lem.utilities.ai.video_models import create_runway_video
+        with patch("cqc_lem.utilities.ai.video_models.track_media_cost") as track:
+            create_runway_video("https://img/x.png", "slow push-in", model="veo3.1_fast", audio=True)
+        assert track.call_args[1]["meta"]["audio"] is False
