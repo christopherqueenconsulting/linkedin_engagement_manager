@@ -142,11 +142,20 @@ def sync_onboarding_state(user_id: int) -> dict:
 def _track_step(user_id: int, step: "OnboardingStep", started_at: Optional[datetime]) -> None:
     """Emit the activation-funnel event. Never fatal — analytics must not break onboarding."""
     try:
-        from cqc_lem.utilities.observability import track_onboarding_step
+        from cqc_lem.utilities.observability import (
+            track_onboarding_step, track_funnel_event,
+            FUNNEL_ONBOARDING_STEP_COMPLETED, FUNNEL_ACTIVATED,
+        )
         hours = None
         if started_at:
             hours = round(max(0.0, (datetime.now() - started_at).total_seconds() / 3600.0), 2)
         track_onboarding_step(user_id, str(step), hours_since_start=hours)
+        # Same completion, second event: the checklist funnel (issue #503) is queried across signup
+        # → activation, so it needs one stable event name for every step rather than per-step names.
+        track_funnel_event(FUNNEL_ONBOARDING_STEP_COMPLETED, user_id=user_id, step=str(step),
+                           hours_since_start=hours)
+        if step == OnboardingStep.ACTIVATED:
+            track_funnel_event(FUNNEL_ACTIVATED, user_id=user_id, hours_since_start=hours)
         log_info(f"Onboarding step completed: {step}", user_id=user_id)
     except Exception as e:
         log_warning("Could not track onboarding step", exc=e, user_id=user_id)
