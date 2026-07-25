@@ -179,6 +179,17 @@ STRIPE_PRICE_ID_PROFESSIONAL  = get_constant_from_env('STRIPE_PRICE_ID_PROFESSIO
 STRIPE_PRICE_ID_ENTERPRISE    = get_constant_from_env('STRIPE_PRICE_ID_ENTERPRISE')
 FREE_TRIAL_DAYS           = int(get_constant_from_env('FREE_TRIAL_DAYS', default_value='14'))
 
+# Early-adopter extended trial (issue #499). OFF by default: it changes billing terms, so every
+# environment has to opt in explicitly rather than inheriting a longer trial from a deploy.
+# Cohort caps live here (not in the DB) so P0/P1 can be retuned without a migration; setting a cap
+# to 0 closes that cohort. When both are exhausted the user simply keeps the standard trial.
+EARLY_ADOPTER_TRIAL_ENABLED = isTrue(get_constant_from_env('EARLY_ADOPTER_TRIAL_ENABLED', default_value='False'))
+EARLY_ADOPTER_TRIAL_DAYS  = int(get_constant_from_env('EARLY_ADOPTER_TRIAL_DAYS', default_value='60'))
+EARLY_ADOPTER_P0_SLOTS    = int(get_constant_from_env('EARLY_ADOPTER_P0_SLOTS', default_value='25'))
+EARLY_ADOPTER_P1_SLOTS    = int(get_constant_from_env('EARLY_ADOPTER_P1_SLOTS', default_value='100'))
+# Optional Stripe coupon applied at conversion for grant holders. Empty = no discount, trial only.
+EARLY_ADOPTER_COUPON_ID   = get_constant_from_env('EARLY_ADOPTER_COUPON_ID', default_value='')
+
 # Unit-economics inputs for the margin report (docs/cost-performance-margin-plan.md §C.1). Monthly
 # tier prices mirror the SPA pricing table — override per environment instead of editing code so a
 # price change never needs a deploy.

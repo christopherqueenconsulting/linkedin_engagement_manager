@@ -278,6 +278,8 @@ class TestBillingCreateCheckoutSession:
             "cus_new", "starter",
             "https://example.com/success",
             "https://example.com/cancel",
+            trial_period_days=None,   # no early-adopter grant (issue #499)
+            discounts=None,
         )
 
     def test_create_checkout_session_returns_none_raises_500(self, client):

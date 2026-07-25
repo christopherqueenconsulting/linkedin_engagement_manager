@@ -94,6 +94,25 @@ FREE_TRIAL_DAYS=14
 
 New users created via the email PIN flow are automatically assigned a trial subscription when their account is created.
 
+### Early-adopter extended trial (issue #499)
+
+Early adopters can trade a public review for a longer trial. `POST /api/trial/extend` grants it only
+when the user has a `feedback` row with `source='review'`, and only while a cohort slot is free —
+slots are claimed atomically, so the caps are hard caps. When both cohorts are full the user simply
+keeps the standard `FREE_TRIAL_DAYS` trial.
+
+```env
+EARLY_ADOPTER_TRIAL_ENABLED=False   # off until you open the program
+EARLY_ADOPTER_TRIAL_DAYS=60
+EARLY_ADOPTER_P0_SLOTS=25           # first cohort; 0 closes it
+EARLY_ADOPTER_P1_SLOTS=100          # fills after P0
+EARLY_ADOPTER_COUPON_ID=            # optional Stripe coupon ID applied on conversion
+```
+
+When a grant holder converts, the days still left on the extension are carried into Checkout as
+`trial_period_days` (plus the coupon, if set), so upgrading early doesn't forfeit the remaining
+trial. Users without a grant convert exactly as before.
+
 ---
 
 ## Complete `.env` Stripe block
@@ -105,6 +124,11 @@ STRIPE_PRICE_ID_STARTER=price_1Abc...
 STRIPE_PRICE_ID_PROFESSIONAL=price_1Def...
 STRIPE_PRICE_ID_ENTERPRISE=price_1Ghi...
 FREE_TRIAL_DAYS=14
+EARLY_ADOPTER_TRIAL_ENABLED=False
+EARLY_ADOPTER_TRIAL_DAYS=60
+EARLY_ADOPTER_P0_SLOTS=25
+EARLY_ADOPTER_P1_SLOTS=100
+EARLY_ADOPTER_COUPON_ID=
 ```
 
 ---

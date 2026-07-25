@@ -1,5 +1,6 @@
 import io
 import json
+import math
 import os
 import time
 import zipfile
@@ -70,6 +71,7 @@ from cqc_lem.utilities.db import (
     update_db_post_carousel_slides,
     get_post_url_from_log_for_user,
     insert_feedback, FeedbackSource,
+    get_latest_review_feedback_id, get_early_adopter_grant, extend_trial_for_user,
 )
 from cqc_lem.utilities.email import generate_pin, hash_pin, send_pin_email
 from cqc_lem.utilities.linkedin.verification_pin import (
@@ -298,6 +300,11 @@ class CheckoutSessionRequest(BaseModel):
 class PortalSessionRequest(BaseModel):
     session_token: str
     return_url: str
+
+
+class TrialExtendRequest(BaseModel):
+    """Claim the early-adopter extended trial (issue #499)."""
+    session_token: str
 
 
 class UserPreferencesRequest(BaseModel):
@@ -2692,6 +2699,75 @@ def update_company_page_endpoint(request: LinkedInCompanyPageRequest) -> Respons
     return ResponseModel(status_code=200, detail="Company page saved" if url else "Company page cleared")
 
 
+@router.post("/trial/extend", responses={
+    200: {"description": "Extension result (granted or the reason it wasn't)"},
+    **{k: v for k, v in error_responses.items() if k in [401, 404]},
+})
+def trial_extend_endpoint(request: TrialExtendRequest) -> ResponseModel:
+    """Claim the early-adopter extended trial (issue #499): EARLY_ADOPTER_TRIAL_DAYS instead of the
+    standard FREE_TRIAL_DAYS, in exchange for a public review.
+
+    Not-granted outcomes are 200s with a `reason`, not errors — the SPA renders them as a prompt
+    ("submit a quick review to unlock N days"), and an exhausted cohort is a normal state, not a
+    failure: the user simply keeps their standard trial.
+    """
+    from cqc_lem.utilities.env_constants import (
+        EARLY_ADOPTER_TRIAL_ENABLED, EARLY_ADOPTER_TRIAL_DAYS, FREE_TRIAL_DAYS,
+    )
+    if not EARLY_ADOPTER_TRIAL_ENABLED:
+        raise HTTPException(status_code=404, detail="Early-adopter extended trial is not available")
+
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    review_id = get_latest_review_feedback_id(user_id)
+    if not review_id:
+        return ResponseModel(status_code=200, detail={
+            "granted": False,
+            "reason": "review_required",
+            "trial_days": FREE_TRIAL_DAYS,
+            "message": f"Submit a quick review to unlock {EARLY_ADOPTER_TRIAL_DAYS} days.",
+        })
+
+    result = extend_trial_for_user(user_id, feedback_id=review_id)
+    trial_ends_at = result.get("trial_ends_at")
+    return ResponseModel(status_code=200, detail={
+        "granted": result.get("granted", False),
+        "reason": result.get("reason"),
+        "cohort": result.get("cohort"),
+        "trial_days": result.get("trial_days", FREE_TRIAL_DAYS),
+        "trial_ends_at": trial_ends_at.isoformat() if trial_ends_at else None,
+    })
+
+
+def _early_adopter_checkout_extras(user_id: int) -> tuple[Optional[int], Optional[List[dict]]]:
+    """Mirror an unfinished early-adopter trial into Stripe on conversion (issue #499): the days
+    still left on the grant become the Checkout trial, and the optional launch coupon rides along.
+    Only grant holders are affected — a standard trial converts exactly as it does today.
+
+    Best-effort by design: this is a perk lookup, so any failure degrades to a normal checkout
+    rather than blocking the user from paying us."""
+    from cqc_lem.utilities.env_constants import EARLY_ADOPTER_COUPON_ID
+    try:
+        grant = get_early_adopter_grant(user_id)
+    except Exception as e:
+        log_warning("Could not read early-adopter grant for checkout", exc=e, user_id=user_id)
+        return None, None
+    if not grant:
+        return None, None
+    ends_at = grant.get("trial_ends_at")
+    trial_period_days = None
+    if ends_at:
+        if ends_at.tzinfo is None:
+            ends_at = ends_at.replace(tzinfo=timezone.utc)
+        remaining = math.ceil((ends_at - datetime.now(timezone.utc)).total_seconds() / 86400)
+        if remaining >= 1:
+            trial_period_days = int(remaining)
+    discounts = [{"coupon": EARLY_ADOPTER_COUPON_ID}] if EARLY_ADOPTER_COUPON_ID else None
+    return trial_period_days, discounts
+
+
 @router.post("/billing/create-checkout-session")
 def billing_create_checkout_session(request: CheckoutSessionRequest) -> ResponseModel:
     user_id = get_session_user_id(request.session_token)
@@ -2718,11 +2794,14 @@ def billing_create_checkout_session(request: CheckoutSessionRequest) -> Response
             f"In-place upgrade failed for sub={existing_sub_id}; falling back to checkout session"
         )
 
+    trial_period_days, discounts = _early_adopter_checkout_extras(user_id)
     url = create_checkout_session(
         stripe_customer_id,
         request.tier,
         request.success_url,
         request.cancel_url,
+        trial_period_days=trial_period_days,
+        discounts=discounts,
     )
     if not url:
         raise HTTPException(status_code=500, detail="Could not create Stripe checkout session")
