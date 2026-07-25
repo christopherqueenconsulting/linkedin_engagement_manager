@@ -934,6 +934,30 @@ def auto_onboarding_nudges():
 
 
 @shared_task.task
+def auto_survey_prompts():
+    """Daily: email the ONE survey worth asking each subscriber — the day-3 NPS after activation, the
+    trial T-3d NPS, or the review that unlocks the extended trial (issue #501). Each survey is
+    one-shot per user and capped at one ask per SURVEY_COOLDOWN_HOURS, so this is safe to run daily;
+    a user who already answered (or dismissed the in-app modal) is never emailed about it."""
+    from cqc_lem.utilities.db import get_survey_candidate_user_ids
+    from cqc_lem.utilities.surveys import next_survey_for_user, send_survey_prompt
+
+    users = get_survey_candidate_user_ids()
+    asked = 0
+    for user_id in users:
+        try:
+            survey = next_survey_for_user(user_id)
+            if survey and send_survey_prompt(user_id, survey):
+                asked += 1
+        except Exception as e:
+            log_warning("Failed to process survey prompt", exc=e, user_id=user_id,
+                        task_name="auto_survey_prompts")
+    log_info(f"Surveys: asked {asked} of {len(users)} subscriber(s)",
+             task_name="auto_survey_prompts")
+    return f"Asked {asked} of {len(users)} subscriber(s)"
+
+
+@shared_task.task
 def auto_backfill_missing_assets():
     """Safety net: regenerate missing media for unposted video/carousel posts before they
     publish, so a post never reaches its scheduled time without its asset (e.g. when the

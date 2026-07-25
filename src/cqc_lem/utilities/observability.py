@@ -370,6 +370,25 @@ def track_onboarding_nudge(user_id: int, nudge_key: str, **extra) -> None:
     )
 
 
+def track_survey_prompt(user_id: int, survey_key: str, **extra) -> None:
+    """Emit the survey we asked for (issue #501), so ask → response rate is measurable."""
+    posthog.capture(
+        distinct_id=str(user_id),
+        event="survey_prompt",
+        properties={"survey": survey_key, **extra},
+    )
+
+
+def track_survey_response(user_id: int, source: str, **extra) -> None:
+    """Emit an NPS/review answer (issue #501) with its score/rating, so NPS and CSAT can be trended
+    in PostHog next to the activation funnel."""
+    posthog.capture(
+        distinct_id=str(user_id),
+        event="survey_response",
+        properties={"source": source, **extra},
+    )
+
+
 def track_task(
     task_name: str,
     duration_ms: int,

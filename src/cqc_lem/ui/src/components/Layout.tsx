@@ -3,6 +3,7 @@ import { useAuth } from '../contexts/AuthContext'
 import AccountReadinessBanner from './AccountReadinessBanner'
 import FeedbackWidget from './FeedbackWidget'
 import Footer from './Footer'
+import SurveyModal from './SurveyModal'
 
 // Pages whose features depend on a fully set-up account — show the readiness banner here.
 const AUTOMATION_PATHS = ['/content', '/schedule', '/review', '/avatars']
@@ -76,6 +77,8 @@ export default function Layout() {
       </main>
       <Footer />
       <FeedbackWidget />
+      {/* Survey modal — renders only when the server says a survey is due (issue #501) */}
+      {user && <SurveyModal />}
     </div>
   )
 }

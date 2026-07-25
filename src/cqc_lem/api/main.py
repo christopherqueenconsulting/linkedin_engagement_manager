@@ -728,6 +728,34 @@ class FeedbackRequest(BaseModel):
         return v
 
 
+class NpsSurveyRequest(BaseModel):
+    """An NPS answer (issue #501): the 0-10 score plus the free-text 'why'. Bounds mirror
+    `utilities.surveys.NPS_MIN/NPS_MAX`."""
+    session_token: str
+    score: int = Field(ge=0, le=10)
+    why: Optional[str] = Field(default=None, max_length=_LEN_FEEDBACK_BODY)
+    survey_key: Optional[str] = Field(default=None, max_length=_LEN_FEEDBACK_TYPE_HINT)
+    context: Optional[Dict[str, Any]] = None
+
+
+class ReviewSurveyRequest(BaseModel):
+    """A review (issue #501): a 1-5 rating, 'what would make this a 10?', an optional public
+    testimonial and the consent flag that says we may quote it. Submitting one satisfies the
+    extended-trial gate (issue #499)."""
+    session_token: str
+    rating: int = Field(ge=1, le=5)
+    improvement: Optional[str] = Field(default=None, max_length=_LEN_FEEDBACK_BODY)
+    testimonial: Optional[str] = Field(default=None, max_length=_LEN_FEEDBACK_BODY)
+    consent_testimonial: bool = False
+    survey_key: Optional[str] = Field(default=None, max_length=_LEN_FEEDBACK_TYPE_HINT)
+    context: Optional[Dict[str, Any]] = None
+
+
+class SurveyDismissRequest(BaseModel):
+    session_token: str
+    survey_key: str = Field(min_length=1, max_length=_LEN_FEEDBACK_TYPE_HINT)
+
+
 class FutureForwardValues(IntEnum):
     Zero = 0
     ONE = 1
@@ -752,16 +780,22 @@ def get_app_info() -> ResponseModel:
     })
 
 
+def _bounded_context(context: Optional[Dict[str, Any]]) -> Optional[dict]:
+    """Client-supplied context for a feedback/survey row, dropped when a caller tries to write an
+    unbounded JSON blob — the widget and the survey modal only send a handful of fields."""
+    payload: Dict[str, Any] = dict(context or {})
+    if len(json.dumps(payload, default=str)) > _LEN_FEEDBACK_CONTEXT:
+        payload = {"truncated": True}
+    return payload or None
+
+
 @router.post("/feedback")
 def submit_feedback_endpoint(request: FeedbackRequest) -> ResponseModel:
     """Capture in-app feedback / a bug report (issue #496) — the first capture point of the
     feedback->auto-work loop. A valid session_token attributes the row to that user; without one
     (logged-out visitor) the row is kept anonymously with a NULL user_id."""
     user_id = get_session_user_id(request.session_token) if request.session_token else None
-    context: Dict[str, Any] = dict(request.context or {})
-    # Don't let a caller write an unbounded JSON blob — the widget only sends a handful of fields.
-    if len(json.dumps(context, default=str)) > _LEN_FEEDBACK_CONTEXT:
-        context = {"truncated": True}
+    context: Dict[str, Any] = _bounded_context(request.context) or {}
     if request.screenshot:
         context["screenshot"] = request.screenshot
     feedback_id = insert_feedback(request.body, user_id=user_id,
@@ -771,6 +805,76 @@ def submit_feedback_endpoint(request: FeedbackRequest) -> ResponseModel:
         raise HTTPException(status_code=500, detail="Could not save feedback")
     log_info("Feedback captured", user_id=user_id)
     return ResponseModel(status_code=200, detail={"feedback_id": feedback_id})
+
+
+@router.post("/survey/nps")
+def submit_nps_endpoint(request: NpsSurveyRequest) -> ResponseModel:
+    """Capture an NPS response (issue #501) as a `feedback` row with source='nps'. Promoters get
+    invited to turn that score into a review, which is what unlocks the extended trial (#499)."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    from cqc_lem.utilities.db import has_review_feedback
+    from cqc_lem.utilities.surveys import PROMOTER_SCORE, nps_bucket, record_nps_response
+    feedback_id = record_nps_response(user_id, request.score, why=request.why,
+                                      context=_bounded_context(request.context),
+                                      survey_key=request.survey_key)
+    if not feedback_id:
+        raise HTTPException(status_code=500, detail="Could not save your score")
+    log_info("NPS response captured", user_id=user_id)
+    return ResponseModel(status_code=200, detail={
+        "feedback_id": feedback_id,
+        "bucket": nps_bucket(request.score),
+        "review_invite": request.score >= PROMOTER_SCORE and not has_review_feedback(user_id),
+    })
+
+
+@router.post("/survey/review")
+def submit_review_endpoint(request: ReviewSurveyRequest) -> ResponseModel:
+    """Capture a review (issue #501) as a `feedback` row with source='review'. That row IS the gate
+    the extended trial checks (issue #499), so the response reports the unlock."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    from cqc_lem.utilities.surveys import record_review_response
+    feedback_id = record_review_response(
+        user_id, request.rating, improvement=request.improvement,
+        testimonial=request.testimonial, consent_testimonial=request.consent_testimonial,
+        context=_bounded_context(request.context), survey_key=request.survey_key)
+    if not feedback_id:
+        raise HTTPException(status_code=500, detail="Could not save your review")
+    log_info("Review captured", user_id=user_id)
+    return ResponseModel(status_code=200, detail={
+        "feedback_id": feedback_id,
+        "trial_extension_unlocked": True,
+    })
+
+
+@router.post("/survey/dismiss")
+def dismiss_survey_endpoint(request: SurveyDismissRequest) -> ResponseModel:
+    """User closed the survey modal without answering — record the ask so neither the modal nor the
+    email brings it back (issue #501)."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    from cqc_lem.utilities.surveys import dismiss_survey
+    return ResponseModel(status_code=200,
+                         detail={"dismissed": dismiss_survey(user_id, request.survey_key)})
+
+
+@router.get("/user/survey")
+def survey_endpoint(session_token: str) -> ResponseModel:
+    """The survey to show in-app right now (day-3 NPS, trial T-3d NPS, or the review that unlocks
+    the extended trial), or none (issue #501)."""
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    from cqc_lem.utilities.surveys import survey_snapshot
+    return ResponseModel(status_code=200, detail=survey_snapshot(user_id))
 
 
 @router.get("/dashboard/stats/", responses={

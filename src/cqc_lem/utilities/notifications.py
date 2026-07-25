@@ -76,6 +76,34 @@ def notify_onboarding_nudge(user_id: int, nudge: dict) -> bool:
         return False
 
 
+def notify_survey_prompt(user_id: int, survey: dict) -> bool:
+    """Email an NPS/review invite (issue #501). One-shot per survey is the caller's job (the
+    survey_prompts ledger). Returns True only if an email was actually sent."""
+    try:
+        email = get_user_email(user_id)
+        if not email:
+            return False
+        from cqc_lem.utilities.email import send_survey_prompt_email
+        sent = send_survey_prompt_email(
+            email,
+            subject=survey.get("subject") or "How are we doing?",
+            headline=survey.get("headline") or "How are we doing?",
+            body=survey.get("body") or "",
+            cta_label=survey.get("cta_label") or "Answer",
+            cta_path=survey.get("cta_path") or "/",
+        )
+        if sent:
+            from cqc_lem.utilities.observability import track_survey_prompt
+            track_survey_prompt(user_id, str(survey.get("key")))
+            log_info(f"Sent survey prompt '{survey.get('key')}'", user_id=user_id,
+                     action_type="survey_prompt")
+        return sent
+    except Exception as e:
+        log_warning("Could not send survey prompt", exc=e, user_id=user_id,
+                    action_type="survey_prompt")
+        return False
+
+
 def notify_newsletter_draft_ready(user_id: int, edition_title: str, scheduled_for) -> bool:
     """Email the user that their newsletter draft is ready to review and when it auto-publishes.
     Non-fatal — returns True only if an email was actually sent."""
