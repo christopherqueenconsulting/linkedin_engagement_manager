@@ -318,9 +318,12 @@ the comparison carries impressions, and raw weighted engagement otherwise (never
 **Blast radius.** Two independent flags, and BOTH must be on for any call to move:
 `COST_ROUTING_ENABLED` (app side — also written into the policy document, so flipping it off parks
 every bucket without losing experiment state) and `COST_AWARE_ROUTING_ENABLED` (proxy side). Both
-default OFF. At most `COST_ROUTING_MAX_EXPERIMENTS` buckets run at once. Every failure mode — no
-policy, unreachable Redis, malformed document, a broken decision core, a call with no user id — fails
-open to the tier the call would have used before this feature existed.
+default OFF, and they must be flipped **together**: app-on/proxy-off is not a dry run — experiments
+would open and ramp while both arms actually ran on the same tier, so the gate would pass on a
+comparison of nothing, and enabling the proxy later would start at whatever cohort that sham ramp had
+reached. At most `COST_ROUTING_MAX_EXPERIMENTS` buckets run at once. Every failure mode — no policy,
+unreachable Redis, malformed document, a broken decision core, a call with no user id — fails open to
+the tier the call would have used before this feature existed.
 
 **What is NOT auto-routed.** Only features with a per-artifact quality signal (`MEASURABLE_FEATURES`,
 today just `content`) can be auto-experimented. Comments, DMs and newsletters have nothing that could
