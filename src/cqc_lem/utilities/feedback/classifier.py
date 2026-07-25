@@ -23,7 +23,6 @@ Env:
 
 import json
 import os
-import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Optional
@@ -403,22 +402,67 @@ def _normalize(data: dict, candidate_ids: set[int]) -> dict:
     return out
 
 
-def parse_classification(raw_text: str, candidate_ids: Optional[set[int]] = None
+def _balanced_end(text: str, start: int) -> Optional[int]:
+    """Index just past the `}` that closes the `{` at `start`, or None if it never closes. Brace
+    counting is string-aware so braces inside JSON string values don't shift the depth."""
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    return None
+
+
+def _json_object_candidates(text: str):
+    """Yield each top-level balanced `{...}` span in order. A greedy `\\{.*\\}` would swallow prose
+    braces and a second object into one unparseable blob; this hands out real objects one at a time."""
+    index = 0
+    while True:
+        start = text.find("{", index)
+        if start == -1:
+            return
+        end = _balanced_end(text, start)
+        if end is None:
+            index = start + 1
+            continue
+        yield text[start:end]
+        index = end
+
+
+def parse_classification(raw_text: Optional[str], candidate_ids: Optional[set[int]] = None
                          ) -> tuple[Optional[dict], list[str]]:
     """Parse the model's reply into a schema-valid dict. Returns (data, errors) — data is None when
-    the reply is not usable. Tolerates ```json fences and prose around the object."""
-    match = re.search(r"\{.*\}", raw_text or "", re.DOTALL)
-    if not match:
-        return None, ["no JSON object in the response"]
-    try:
-        data = json.loads(match.group(0))
-    except ValueError as e:
-        return None, [f"invalid JSON: {e}"]
-    normalized = _normalize(data, candidate_ids or set())
-    errors = validate_classification(normalized)
-    if errors:
-        return None, errors
-    return normalized, []
+    the reply is not usable. Tolerates ```json fences, prose (even prose with braces) around the
+    object, and a trailing second object; the first span that is valid JSON decides the result."""
+    errors: list[str] = []
+    for candidate in _json_object_candidates(raw_text or ""):
+        try:
+            data = json.loads(candidate)
+        except ValueError as e:
+            errors = [f"invalid JSON: {e}"]
+            continue
+        normalized = _normalize(data, candidate_ids or set())
+        validation_errors = validate_classification(normalized)
+        if validation_errors:
+            return None, validation_errors
+        return normalized, []
+    return None, errors or ["no JSON object in the response"]
 
 
 def _from_dict(data: dict) -> FeedbackClassification:
@@ -434,7 +478,8 @@ def _from_dict(data: dict) -> FeedbackClassification:
     )
 
 
-def _unclassified(body: str, type_hint: Optional[str], errors: list[str]) -> FeedbackClassification:
+def _unclassified(body: Optional[str], type_hint: Optional[str],
+                  errors: list[str]) -> FeedbackClassification:
     """The fail-SAFE result: confidence 0.0, which always routes to NEEDS_HUMAN. The type hint is
     the only thing we trust here, purely so the triage queue is sortable."""
     hint = str(type_hint or "").strip().lower()
@@ -457,7 +502,8 @@ def _unclassified(body: str, type_hint: Optional[str], errors: list[str]) -> Fee
     )
 
 
-def classify_feedback(body: str, type_hint: Optional[str] = None, context: Optional[dict] = None,
+def classify_feedback(body: Optional[str], type_hint: Optional[str] = None,
+                      context: Optional[dict] = None,
                       duplicate_candidates: Optional[list[dict]] = None,
                       user_id: Optional[int] = None) -> FeedbackClassification:
     """Classify ONE feedback item with a single `lem-medium` call.
