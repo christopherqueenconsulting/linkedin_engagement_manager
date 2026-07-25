@@ -10,7 +10,7 @@ even before the event it reads starts flowing — it just renders empty until th
 Split the same way as scripts/model_health_check.py: PURE spec/plan logic (unit-tested) and a thin
 I/O layer (the PostHog REST client, mocked in tests).
 
-CLI:
+CLI (--dry-run and --apply are mutually exclusive):
   --dry-run          Show what would be created/updated against the live project. No writes. (default)
   --apply            Create missing dashboards/insights and update drifted ones.
   --print-sql        Print every tile's HogQL (no network).
@@ -177,7 +177,8 @@ ORDER BY spend_usd DESC
             "Provider mix. Media rows carry `provider`; LLM rows fall back to the model/tier they routed through.",
             _hogql(f"""
 SELECT coalesce(nullIf(toString(properties.provider), ''),
-                nullIf(toString(properties.model), ''), 'unknown') AS provider,
+                nullIf(toString(properties.model), ''),
+                nullIf(toString(properties.model_tier), ''), 'unknown') AS provider,
        count() AS events,
        round({_SPEND}, 6) AS spend_usd
 FROM events
@@ -496,9 +497,11 @@ def plan_actions(specs: list, existing_dashboards: dict, existing_insights: dict
     """Diff the spec against what PostHog already has.
 
     `existing_dashboards` maps dashboard name -> id; `existing_insights` maps insight name ->
-    {"id", "query", "dashboards"}. Returns ordered actions:
+    {"id", "query", "description", "dashboards"}. Returns ordered actions:
     `create_dashboard`, `create_insight`, `update_insight`, `unchanged`. A dashboard that doesn't
     exist yet has id None — the caller fills it in after creating it, which is why creates come first.
+    `description` is optional: when a caller omits it the spec value is assumed, so only a caller
+    that actually reports the stored description can trigger a description-drift update.
     """
     actions: list = []
     for spec in specs:
@@ -513,7 +516,8 @@ def plan_actions(specs: list, existing_dashboards: dict, existing_insights: dict
                                 "insight": tile["name"], "tile": tile})
                 continue
             attached = dashboard_id is not None and dashboard_id in (found.get("dashboards") or [])
-            if found.get("query") == tile["query"] and attached:
+            described = found.get("description", tile["description"]) == tile["description"]
+            if found.get("query") == tile["query"] and attached and described:
                 actions.append({"action": "unchanged", "dashboard": spec["name"],
                                 "insight": tile["name"], "insight_id": found["id"]})
             else:
@@ -577,6 +581,7 @@ class PostHogClient:
             insights[item.get("name")] = {
                 "id": item["id"],
                 "query": item.get("query"),
+                "description": item.get("description") or "",
                 "dashboards": [t.get("dashboard_id") for t in (item.get("dashboard_tiles") or [])
                                ] or list(item.get("dashboards") or []),
             }
@@ -630,8 +635,9 @@ def apply_actions(client: PostHogClient, actions: list, dry_run: bool = True) ->
 
 def main(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(description="Provision the LEM cost/margin PostHog dashboards.")
-    parser.add_argument("--apply", action="store_true", help="Write changes to PostHog.")
-    parser.add_argument("--dry-run", action="store_true", help="Report changes only (default).")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--apply", action="store_true", help="Write changes to PostHog.")
+    mode.add_argument("--dry-run", action="store_true", help="Report changes only (default).")
     parser.add_argument("--print-sql", action="store_true", help="Print every tile's HogQL and exit.")
     args = parser.parse_args(argv)
 
@@ -657,7 +663,7 @@ def main(argv: Optional[list] = None) -> int:
         return 1
 
     actions = plan_actions(specs, dashboards, insights)
-    dry_run = not args.apply
+    dry_run = args.dry_run or not args.apply
     for line in apply_actions(client, actions, dry_run=dry_run):
         print(line)
     print(summarize(actions))

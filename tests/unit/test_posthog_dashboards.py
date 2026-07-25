@@ -121,6 +121,28 @@ class TestPlanActions:
         assert [a["action"] for a in actions] == ["update_insight"]
         assert actions[0]["tile"] == tile
 
+    def test_drifted_description_is_updated(self):
+        spec = phd.build_specs()[0]
+        tile = spec["tiles"][0]
+        actions = phd.plan_actions(
+            [{"name": spec["name"], "description": spec["description"], "tiles": [tile]}],
+            {spec["name"]: 7},
+            {tile["name"]: {"id": 42, "query": tile["query"], "description": "edited in the UI",
+                            "dashboards": [7]}},
+        )
+        assert [a["action"] for a in actions] == ["update_insight"]
+
+    def test_matching_description_stays_unchanged(self):
+        spec = phd.build_specs()[0]
+        tile = spec["tiles"][0]
+        actions = phd.plan_actions(
+            [{"name": spec["name"], "description": spec["description"], "tiles": [tile]}],
+            {spec["name"]: 7},
+            {tile["name"]: {"id": 42, "query": tile["query"],
+                            "description": tile["description"], "dashboards": [7]}},
+        )
+        assert [a["action"] for a in actions] == ["unchanged"]
+
     def test_detached_insight_is_reattached(self):
         spec = phd.build_specs()[0]
         tile = spec["tiles"][0]
@@ -206,3 +228,8 @@ class TestMain:
     def test_missing_api_key_fails_fast(self, monkeypatch):
         monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "")
         assert phd.main([]) == 1
+
+    def test_apply_and_dry_run_are_mutually_exclusive(self):
+        # Otherwise `--apply --dry-run` would still write, the opposite of what the user asked for.
+        with pytest.raises(SystemExit):
+            phd.main(["--apply", "--dry-run"])
