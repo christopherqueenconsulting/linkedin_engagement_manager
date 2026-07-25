@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.87.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.86.0...v0.87.0) (2026-07-25)
+
+
+### Features
+
+* **observability:** funnel event instrumentation for launch/marketing analytics (closes [#503](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/503)) ([4ff86ec](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4ff86ecdd225c4fe79f0fd4f0aeb6043ce1eb558))
+
+
+### Bug Fixes
+
+* **observability:** constrain explicit channels and handle user_id=0 ([1ded99a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1ded99a40e2606b71c57344b653c06c8312adf9c))
+
 ## [0.86.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.85.0...v0.86.0) (2026-07-25)
 
 
