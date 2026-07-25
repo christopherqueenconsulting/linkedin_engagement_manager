@@ -75,6 +75,16 @@ def get_available_session_driver_id(wait_for_available=True, wait_time=60, retry
     return session_id
 
 
+def _record_session_wait(seconds: float) -> None:
+    """Feed one session-acquisition duration to the capacity monitor. Imported lazily and swallowed
+    whole: instrumentation must never cost a browser session."""
+    try:
+        from cqc_lem.utilities.capacity_alerts import record_session_wait
+        record_session_wait(seconds)
+    except Exception:
+        pass
+
+
 def _wait_for_selenium_ready(host: str, port: str, timeout: int = 60) -> None:
     """Poll standalone-chrome readiness endpoint until ready or timeout."""
     status_url = f"http://{host}:{port}/wd/hub/status"
@@ -153,7 +163,17 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
     options.set_capability("se:screenResolution", "1920x1080")
     options.set_capability("se:name", f"CQC_LEM ({session_name})")
 
-    driver = webdriver.Remote(command_executor=remote_url, options=options)
+    # A free slot answers in seconds; a full pool blocks HERE until one frees up, which is the only
+    # direct measurement of the session cap being the binding constraint (capacity_alerts §552).
+    _session_started = time.time()
+    try:
+        driver = webdriver.Remote(command_executor=remote_url, options=options)
+    except Exception:
+        # A session request that gave up waiting for a free slot is the LOUDEST capacity signal —
+        # record it before the exception unwinds, or the worst case is the one we never measure.
+        _record_session_wait(time.time() - _session_started)
+        raise
+    _record_session_wait(time.time() - _session_started)
     driver.set_window_size(1920, 1080)
 
     # Stealth: scrub the most-checked automation tells before any page script runs.

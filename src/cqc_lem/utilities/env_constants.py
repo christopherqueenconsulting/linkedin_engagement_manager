@@ -266,6 +266,25 @@ COST_ROUTING_INITIAL_COHORT = float(get_constant_from_env('COST_ROUTING_INITIAL_
 COST_ROUTING_MAX_EXPERIMENTS = int(get_constant_from_env('COST_ROUTING_MAX_EXPERIMENTS',
                                                          default_value='1'))
 
+# Capacity monitor (docs/scaling-plan.md §5e, issue #552). Watches whether the Chrome session cap and
+# the Selenium lane concurrencies are actually being HIT, so the lanes get reviewed on evidence
+# instead of on a user complaint about late tasks.
+# Share of the session cap that counts as "claimed", and the share of samples that must breach it
+# before it reads as a ceiling rather than healthy utilisation of a pool we paid for.
+CAPACITY_SATURATION_PCT   = float(get_constant_from_env('CAPACITY_SATURATION_PCT', default_value='0.85'))
+CAPACITY_SUSTAINED_PCT    = float(get_constant_from_env('CAPACITY_SUSTAINED_PCT', default_value='0.25'))
+# Messages waiting on one Selenium lane before that lane is judged backed up.
+CAPACITY_BACKLOG_TASKS    = int(get_constant_from_env('CAPACITY_BACKLOG_TASKS', default_value='3'))
+# Seconds a task may wait for a Chrome session (p95) before the cap is the binding constraint.
+CAPACITY_WAIT_SECONDS     = float(get_constant_from_env('CAPACITY_WAIT_SECONDS', default_value='60'))
+# Rolling window: samples kept, and the minimum needed before any check is judged at all.
+CAPACITY_WINDOW_SAMPLES   = int(get_constant_from_env('CAPACITY_WINDOW_SAMPLES', default_value='672'))
+CAPACITY_MIN_SAMPLES      = int(get_constant_from_env('CAPACITY_MIN_SAMPLES', default_value='24'))
+# File a GitHub issue on a sustained breach, and how long a re-breach waits before commenting again.
+CAPACITY_ISSUE_ENABLED    = isTrue(get_constant_from_env('CAPACITY_ISSUE_ENABLED', default_value='true'))
+CAPACITY_ISSUE_COOLDOWN_DAYS = int(get_constant_from_env('CAPACITY_ISSUE_COOLDOWN_DAYS',
+                                                         default_value='7'))
+
 NGROK_LIPREVIEW_PREFIX=get_constant_from_env('NGROK_LIPREVIEW_PREFIX')
 if NGROK_FREE_DOMAIN and NGROK_LIPREVIEW_PREFIX:
     LINKEDIN_PREVIEW_URL = f"https://{NGROK_LIPREVIEW_PREFIX}.{NGROK_FREE_DOMAIN}"

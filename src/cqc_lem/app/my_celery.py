@@ -260,6 +260,13 @@ app.conf.update(
             # Cheap: an answer is generated only when the same question recurs.
             'schedule': crontab(minute='50')
         },
+        'capacity-watch': {
+            'task': 'cqc_lem.app.run_scheduler.auto_capacity_watch',
+            # Every 15 min — one sample per tick builds the rolling window (672 samples ≈ 7 days),
+            # and only a SUSTAINED breach files the lane/cap review issue (#552). Cheap: one
+            # /status GET + one LLEN per lane.
+            'schedule': crontab(minute='*/15')
+        },
         'daily-cost-alerts': {
             'task': 'cqc_lem.app.run_scheduler.auto_daily_cost_alerts',
             # Daily 13:00 UTC — scores YESTERDAY (the last complete UTC day), after the 6:00 Stripe

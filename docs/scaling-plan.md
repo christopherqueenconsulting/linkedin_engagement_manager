@@ -336,6 +336,35 @@ concurrency rises:
 - **Human pacing per session** (already present via loop durations + jitter) must not
   be shortened to gain throughput — add sessions, not speed.
 
+### 5e. Knowing when to move — the capacity monitor **APPLIED (issue #552)**
+
+Every number in §5a is a point-in-time fit for ~10 users. The failure mode of an outgrown
+cap is not a crash — it is **tasks quietly firing late**, which used to reach us only as a
+user complaint. `utilities/capacity_alerts.py` + the `capacity-watch` beat entry
+(`auto_capacity_watch`, every 15 min) is the signal that says when this section's numbers
+have stopped holding:
+
+| Check | Source | Fires when |
+|---|---|---|
+| `session_saturation` | `selenium-chrome` `/status` slots | busy slots ≥ `CAPACITY_SATURATION_PCT` of the cap on ≥ `CAPACITY_SUSTAINED_PCT` of window samples |
+| `lane_backlog` | broker queue depth per `se_*` lane | a lane holds ≥ `CAPACITY_BACKLOG_TASKS` waiting messages on a sustained share of samples |
+| `session_wait` | `get_docker_driver()` acquisition timings | p95 time to obtain a Chrome session ≥ `CAPACITY_WAIT_SECONDS` |
+
+- **Sampled, not instantaneous.** Each tick appends one sample to a Redis rolling window
+  (`CAPACITY_WINDOW_SAMPLES`, 672 ≈ 7 days at 15 min) and nothing is judged until
+  `CAPACITY_MIN_SAMPLES` exist. A single saturated sample is *healthy* use of a pool we paid
+  for; a quarter of a week is a ceiling.
+- **Unknown ≠ OK.** An unreachable Grid or Redis produces *no* sample, and the check reports
+  itself `skipped` with a reason rather than a confident all-clear.
+- **Delivery is a GitHub issue** (labels `infrastructure`, `observability`, `needs-human`)
+  carrying the measured numbers, the cap==Σ-lanes invariant, and lettered options: raise the
+  breaching lane + cap in lockstep (§5a), move to a Grid (§5b), or retune thresholds. Exactly
+  one issue is open at a time — re-breaches comment on it after
+  `CAPACITY_ISSUE_COOLDOWN_DAYS`. Requires `FEEDBACK_GITHUB_TOKEN`/`GITHUB_TOKEN`; without one
+  the breach still logs + emits a PostHog `capacity_alert` event, it just isn't filed.
+- **It never changes a limit by itself.** Raising the cap spends real RAM/CPU on a shared box
+  (§5c), so the monitor's whole job is to put that decision in front of a human with evidence.
+
 ---
 
 ## 6. Phased rollout tied to the launch
