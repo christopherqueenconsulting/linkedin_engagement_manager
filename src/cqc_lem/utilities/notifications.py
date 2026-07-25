@@ -104,6 +104,28 @@ def notify_survey_prompt(user_id: int, survey: dict) -> bool:
         return False
 
 
+def notify_shipped_fix(user_id: int, changelog_line: str, issue_number: int) -> bool:
+    """Email a reporter that their fix shipped (issue #502). "Notified once" is the caller's job —
+    the shipped_notice_recipients PK — so this stays a pure send. Returns True only if an email
+    actually went out; a False keeps the reporter in the queue for the next pass."""
+    try:
+        email = get_user_email(user_id)
+        if not email:
+            return False
+        from cqc_lem.utilities.email import send_shipped_fix_email
+        sent = send_shipped_fix_email(email, changelog_line, issue_number)
+        if sent:
+            from cqc_lem.utilities.observability import track_shipped_notice
+            track_shipped_notice(user_id, int(issue_number))
+            log_info(f"Sent shipped-fix notice for issue #{issue_number}", user_id=user_id,
+                     action_type="shipped_notice")
+        return sent
+    except Exception as e:
+        log_warning("Could not send shipped-fix notice", exc=e, user_id=user_id,
+                    action_type="shipped_notice")
+        return False
+
+
 def notify_newsletter_draft_ready(user_id: int, edition_title: str, scheduled_for) -> bool:
     """Email the user that their newsletter draft is ready to review and when it auto-publishes.
     Non-fatal — returns True only if an email was actually sent."""

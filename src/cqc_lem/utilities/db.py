@@ -187,6 +187,7 @@ class FeedbackSource(StrEnum):
     NPS = 'nps'          # an NPS survey response
     REVIEW = 'review'    # a public review (marketplace/G2/etc.)
     PASSIVE = 'passive'  # inferred from behavior, not typed by the user
+    CSAT = 'csat'        # a "did this fix it?" answer after a shipped fix (issue #502)
 
 
 class FeedbackStatus(StrEnum):
@@ -6613,6 +6614,216 @@ def get_survey_candidate_user_ids() -> list:
         return [row[0] for row in cursor.fetchall()]
     except mysql.connector.Error as err:
         log_error("Could not get survey candidate user ids", exc=err)
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+# --- Shipped-fix changelog + reporter notification (issue #502) ---------------------
+def get_feedback_reporters_for_issue(github_issue_number: int) -> list:
+    """Every identified user who reported the problem a GitHub issue was filed for — the
+    feedback→issue→cluster mapping the "you asked, we shipped" notice is addressed to.
+
+    Matches BOTH the rows stamped with the issue directly (the seed and every deduped report) and
+    any row that only carries the seed's `cluster_id`, so a report attached by the nightly recluster
+    pass before the issue number propagated is still counted. Anonymous rows have no one to tell."""
+    if not github_issue_number:
+        return []
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT DISTINCT f.user_id FROM feedback f "
+            "LEFT JOIN feedback s ON s.id = f.cluster_id "
+            "WHERE f.user_id IS NOT NULL "
+            "  AND (f.github_issue_number = %s OR s.github_issue_number = %s)",
+            (int(github_issue_number), int(github_issue_number)))
+        return [row[0] for row in cursor.fetchall()]
+    except mysql.connector.Error as err:
+        log_error(f"Could not get feedback reporters for issue {github_issue_number}", exc=err)
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def mark_feedback_resolved_for_issue(github_issue_number: int) -> int:
+    """Close the loop on a shipped cluster: every still-open report behind this issue becomes
+    `resolved`. Dismissed rows are left alone (they were never part of the fix). Returns how many
+    rows moved.
+
+    Uses the SAME self-join as `get_feedback_reporters_for_issue`, so a report attached to the seed
+    by `cluster_id` before the issue number propagated is resolved too — otherwise the users we
+    notify and the rows we close would drift apart."""
+    if not github_issue_number:
+        return 0
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE feedback f "
+            "LEFT JOIN feedback s ON s.id = f.cluster_id "
+            "SET f.status = %s "
+            "WHERE (f.github_issue_number = %s OR s.github_issue_number = %s) "
+            "  AND f.status NOT IN (%s, %s)",
+            (str(FeedbackStatus.RESOLVED), int(github_issue_number), int(github_issue_number),
+             str(FeedbackStatus.RESOLVED), str(FeedbackStatus.DISMISSED)))
+        connection.commit()
+        return cursor.rowcount or 0
+    except mysql.connector.Error as err:
+        log_error(f"Could not resolve feedback for issue {github_issue_number}", exc=err)
+        return 0
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_shipped_notice_by_issue(github_issue_number: int) -> Optional[dict]:
+    """The changelog notice already recorded for this issue, or None."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT id, github_issue_number, pr_number, title, changelog_line, shipped_at "
+            "FROM shipped_notices WHERE github_issue_number = %s", (int(github_issue_number),))
+        return cursor.fetchone()
+    except mysql.connector.Error as err:
+        log_error(f"Could not get shipped notice for issue {github_issue_number}", exc=err)
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def record_shipped_notice(github_issue_number: int, changelog_line: str, pr_number: int = None,
+                          title: str = None) -> Optional[int]:
+    """Record the changelog line for a shipped issue and return its notice id. One notice per issue
+    (the UNIQUE key), so a re-run of the notify pass re-uses the existing row instead of writing a
+    second changelog entry for the same fix."""
+    if not github_issue_number or not (changelog_line or "").strip():
+        return None
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT IGNORE INTO shipped_notices "
+            "(github_issue_number, pr_number, title, changelog_line) VALUES (%s,%s,%s,%s)",
+            (int(github_issue_number), int(pr_number) if pr_number else None,
+             str(title)[:255] if title else None, str(changelog_line)[:512]))
+        connection.commit()
+        if cursor.lastrowid:
+            return int(cursor.lastrowid)
+        cursor.execute("SELECT id FROM shipped_notices WHERE github_issue_number = %s",
+                       (int(github_issue_number),))
+        row = cursor.fetchone()
+        return int(row[0]) if row else None
+    except mysql.connector.Error as err:
+        log_error(f"Could not record shipped notice for issue {github_issue_number}", exc=err)
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def record_shipped_notice_recipient(notice_id: int, user_id: int) -> bool:
+    """Attach a reporter to a shipped notice. Returns True ONLY the first time — that is what makes
+    "notified once" true no matter how often the notify pass runs."""
+    if not notice_id or not user_id:
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT IGNORE INTO shipped_notice_recipients (notice_id, user_id) VALUES (%s,%s)",
+            (int(notice_id), int(user_id)))
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        log_error(f"Could not record shipped notice recipient for notice {notice_id}", exc=err,
+                  user_id=user_id)
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_shipped_notice_recipient_ids(notice_id: int) -> list:
+    """Who has already been told about this shipped fix. Read BEFORE sending, so a re-run of the
+    notify pass never re-emails a reporter — the recipient PK only stops the duplicate ROW."""
+    if not notice_id:
+        return []
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT user_id FROM shipped_notice_recipients WHERE notice_id = %s",
+                       (int(notice_id),))
+        return [row[0] for row in cursor.fetchall()]
+    except mysql.connector.Error as err:
+        log_error(f"Could not get shipped notice recipients for notice {notice_id}", exc=err)
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_unseen_shipped_notices(user_id: int, delay_hours: int = 0, limit: int = 5) -> list:
+    """Shipped fixes this user asked for and hasn't acknowledged in-app yet, oldest first.
+
+    `delay_hours` is what SCHEDULES the micro-CSAT: a notice is only surfaced once the user has had
+    that long with the fix, so "did this fix it?" is asked after they could have used it rather than
+    in the same minute the email went out."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT n.id, n.github_issue_number, n.pr_number, n.title, n.changelog_line, "
+            "       n.shipped_at, r.notified_at "
+            "FROM shipped_notice_recipients r JOIN shipped_notices n ON n.id = r.notice_id "
+            "WHERE r.user_id = %s AND r.seen_at IS NULL "
+            "  AND r.notified_at <= (NOW() - INTERVAL %s HOUR) "
+            "ORDER BY r.notified_at ASC LIMIT %s",
+            (int(user_id), max(0, int(delay_hours)), int(limit)))
+        return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error("Could not get unseen shipped notices", exc=err, user_id=user_id)
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def mark_shipped_notice_seen(notice_id: int, user_id: int) -> bool:
+    """The user answered or dismissed the notice — stop surfacing it. Idempotent: only the first
+    acknowledgement writes a timestamp."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE shipped_notice_recipients SET seen_at = NOW() "
+            "WHERE notice_id = %s AND user_id = %s AND seen_at IS NULL",
+            (int(notice_id), int(user_id)))
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        log_error(f"Could not mark shipped notice {notice_id} seen", exc=err, user_id=user_id)
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_recent_shipped_notices(limit: int = 10) -> list:
+    """The user-facing changelog: what shipped, newest first."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT id, github_issue_number, pr_number, title, changelog_line, shipped_at "
+            "FROM shipped_notices ORDER BY shipped_at DESC, id DESC LIMIT %s", (int(limit),))
+        return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error("Could not get recent shipped notices", exc=err)
         return []
     finally:
         cursor.close()

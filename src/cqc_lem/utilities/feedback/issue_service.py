@@ -487,9 +487,11 @@ def build_duplicate_comment(classification: FeedbackClassification,
 
 # --- GitHub I/O ---------------------------------------------------------------------------------
 
-def _github_request(method: str, path: str, payload: dict = None) -> Optional[dict]:
-    """One GitHub REST call. Returns the parsed body, or None when unconfigured/failed — filing is
-    best-effort by design: a GitHub outage must never lose the feedback row."""
+def github_request(method: str, path: str, payload: dict = None) -> Optional[object]:
+    """One GitHub REST call, shared with the shipped-fix notifier (issue #502). Returns the parsed
+    body (a dict, or a list for collection endpoints), or None when unconfigured/failed — filing is
+    best-effort by design: a GitHub outage must never lose the feedback row. `path` may carry its
+    own query string."""
     token = github_token()
     if not token:
         log_warning("Feedback issue filing skipped — no FEEDBACK_GITHUB_TOKEN/GITHUB_TOKEN set",
@@ -523,8 +525,8 @@ def create_github_issue(title: str, body: str, labels: list,
     payload = {"title": title, "body": body, "labels": list(labels or [])}
     if assignees:
         payload["assignees"] = list(assignees)
-    data = _github_request("POST", "issues", payload)
-    number = (data or {}).get("number")
+    data = github_request("POST", "issues", payload)
+    number = data.get("number") if isinstance(data, dict) else None
     if number is None:
         return None
     log_info(f"Auto-filed feedback issue #{number}: {title}", api_provider="github")
@@ -535,7 +537,7 @@ def comment_on_issue(issue_number: int, body: str) -> bool:
     """Comment on an existing issue; True when GitHub accepted it."""
     if not issue_number:
         return False
-    return _github_request("POST", f"issues/{int(issue_number)}/comments",
+    return github_request("POST", f"issues/{int(issue_number)}/comments",
                            {"body": body}) is not None
 
 

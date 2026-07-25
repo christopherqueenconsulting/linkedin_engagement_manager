@@ -230,6 +230,13 @@ app.conf.update(
             # the 2:00 stale-invite clean-up and the 3:00 stale-profile pass. Files nothing.
             'schedule': crontab(hour='2', minute='45')
         },
+        'changelog-notify': {
+            'task': 'cqc_lem.app.run_scheduler.auto_changelog_notify',
+            # Daily 10:00 AM — after the 9:45 survey pass, so a reporter never gets a survey invite
+            # and a "we shipped it" email in the same minute. The 48h lookback overlaps deliberately;
+            # each reporter is notified once via shipped_notice_recipients (issue #502).
+            'schedule': crontab(hour='10', minute='0')
+        },
         'daily-cost-alerts': {
             'task': 'cqc_lem.app.run_scheduler.auto_daily_cost_alerts',
             # Daily 13:00 UTC — scores YESTERDAY (the last complete UTC day), after the 6:00 Stripe

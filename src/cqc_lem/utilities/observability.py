@@ -379,6 +379,16 @@ def track_survey_prompt(user_id: int, survey_key: str, **extra) -> None:
     )
 
 
+def track_shipped_notice(user_id: int, issue_number: int, **extra) -> None:
+    """Emit the "you asked, we shipped" notice we sent (issue #502), so notice → micro-CSAT response
+    is measurable against the GA satisfaction gate."""
+    posthog.capture(
+        distinct_id=str(user_id),
+        event="shipped_notice",
+        properties={"issue_number": issue_number, **extra},
+    )
+
+
 def track_survey_response(user_id: int, source: str, **extra) -> None:
     """Emit an NPS/review answer (issue #501) with its score/rating, so NPS and CSAT can be trended
     in PostHog next to the activation funnel."""
