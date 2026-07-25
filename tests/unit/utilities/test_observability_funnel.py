@@ -13,6 +13,12 @@ class TestResolveChannel:
         from cqc_lem.utilities.observability import resolve_channel
         assert resolve_channel({"channel": "Affiliate", "utm_source": "linkedin"}) == "affiliate"
 
+    def test_unknown_explicit_channel_falls_back_to_other(self):
+        from cqc_lem.utilities.observability import resolve_channel, CHANNEL_OTHER
+        # A typo or an invented value must not open a new bucket the CAC breakdown can't group.
+        assert resolve_channel({"channel": "linkdin"}) == CHANNEL_OTHER
+        assert resolve_channel({"channel": "tiktok", "utm_source": "google"}) == CHANNEL_OTHER
+
     def test_paid_medium_beats_a_search_engine_source(self):
         from cqc_lem.utilities.observability import resolve_channel, CHANNEL_PAID
         assert resolve_channel({"utm_source": "google", "utm_medium": "cpc"}) == CHANNEL_PAID
@@ -140,6 +146,13 @@ class TestTrackFunnelEvent:
             track_funnel_event(FUNNEL_SIGNUP_STARTED)
 
         assert mock_ph.capture.call_args.kwargs["distinct_id"] == "anonymous"
+
+    def test_user_id_zero_still_keys_to_the_user(self):
+        from cqc_lem.utilities.observability import track_funnel_event, FUNNEL_ACTIVATED
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            track_funnel_event(FUNNEL_ACTIVATED, user_id=0, distinct_id="anon_abc")
+
+        assert mock_ph.capture.call_args.kwargs["distinct_id"] == "0"
 
     def test_alias_merges_the_pre_signup_person(self):
         from cqc_lem.utilities.observability import track_funnel_event, FUNNEL_SIGNUP_COMPLETED

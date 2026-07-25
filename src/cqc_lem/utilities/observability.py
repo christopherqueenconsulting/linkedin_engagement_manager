@@ -434,6 +434,18 @@ CHANNEL_PAID = "paid"
 CHANNEL_DIRECT = "direct"
 CHANNEL_OTHER = "other"
 
+CHANNELS = (
+    CHANNEL_LINKEDIN,
+    CHANNEL_NEWSLETTER,
+    CHANNEL_SEO,
+    CHANNEL_EMAIL,
+    CHANNEL_REFERRAL,
+    CHANNEL_AFFILIATE,
+    CHANNEL_PAID,
+    CHANNEL_DIRECT,
+    CHANNEL_OTHER,
+)
+
 # Client-supplied attribution is allow-listed: a funnel event's schema is ours, not the caller's.
 _ATTRIBUTION_KEYS = (
     "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
@@ -489,13 +501,16 @@ def _referrer_host(referrer) -> Optional[str]:
 
 def resolve_channel(attribution: Optional[dict]) -> str:
     """The acquisition channel a visit came from, derived from UTMs then the referrer. An explicit
-    `channel` always wins (a link we built already knows); paid mediums are checked before source so
-    `utm_source=google&utm_medium=cpc` is paid spend, not SEO. Anything with UTMs we don't recognise
-    is `other` rather than `direct` — a tagged visit was never direct."""
+    `channel` always wins (a link we built already knows) but only when it names one of `CHANNELS` —
+    a typo or an unknown value becomes `other` rather than a new bucket the CAC rollup can't group.
+    Paid mediums are checked before source so `utm_source=google&utm_medium=cpc` is paid spend, not
+    SEO. Anything with UTMs we don't recognise is `other` rather than `direct` — a tagged visit was
+    never direct."""
     data = attribution if isinstance(attribution, dict) else {}
     explicit = _clean_property(data.get("channel"))
     if explicit:
-        return explicit.lower()
+        normalized = explicit.lower()
+        return normalized if normalized in CHANNELS else CHANNEL_OTHER
 
     source = (_clean_property(data.get("utm_source")) or "").lower()
     medium = (_clean_property(data.get("utm_medium")) or "").lower()
@@ -566,7 +581,7 @@ def track_funnel_event(
             # Emit anyway — losing the event is worse than an extra name — but make the typo visible.
             log_warning(f"Unknown funnel event '{event}' — emitting anyway")
         attribution_props = normalize_attribution(attribution)
-        resolved_id = str(user_id) if user_id else (distinct_id or "anonymous")
+        resolved_id = str(user_id) if user_id is not None else (distinct_id or "anonymous")
         if alias_from and alias_from != resolved_id:
             posthog.alias(previous_id=alias_from, distinct_id=resolved_id)
         posthog.capture(
