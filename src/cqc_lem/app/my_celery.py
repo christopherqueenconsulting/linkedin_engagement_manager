@@ -200,6 +200,12 @@ app.conf.update(
             'task': 'cqc_lem.app.run_scheduler.sync_stripe_subscriptions',
             'schedule': crontab(hour='6', minute='0')  # Daily at 6:00 AM — safety-net for missed webhooks
         },
+        'weekly-margin-report': {
+            'task': 'cqc_lem.app.run_scheduler.auto_weekly_margin_report',
+            # Mondays 12:00 UTC — after the 6:00 Stripe sync, so MRR reflects current tiers, and after
+            # Sunday night's stats scrape, so cohort engagement lift covers the full week.
+            'schedule': crontab(hour='12', minute='0', day_of_week='monday')
+        },
 
     }
 )

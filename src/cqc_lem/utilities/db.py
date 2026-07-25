@@ -6211,3 +6211,90 @@ def get_active_avatar(user_id: int) -> Optional[dict]:
     finally:
         cursor.close()
         connection.close()
+
+
+# Cost/margin reporting (docs/cost-performance-margin-plan.md §A.3/§C.1). These are READ-ONLY over
+# the `cost_ledger` table; writes/accruals belong to the ledger capture work. Every one degrades to
+# an empty result when the table isn't present yet, so the margin report ships ahead of it.
+
+# Whitelisted rollup dimensions → the cost_ledger column each groups by. Interpolating anything
+# outside this map into the SQL would be an injection vector.
+COST_ROLLUP_COLUMNS = {
+    "feature": "feature",
+    "category": "category",
+    "provider": "provider",
+    "model_tier": "model_tier",
+    "user": "user_id",
+    "task": "task_name",
+}
+
+
+def cost_ledger_available() -> bool:
+    """True when the durable cost_ledger table exists. The margin report uses this to say whether a
+    $0 spend figure means "nothing spent" or "not capturing yet"."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SHOW TABLES LIKE 'cost_ledger'")
+        return cursor.fetchone() is not None
+    except mysql.connector.Error:
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_cost_rollup(start_date, end_date, group_by: str = "feature",
+                    user_id: Optional[int] = None) -> dict:
+    """Summed `cost_ledger.usd` over [start_date, end_date] grouped by one dimension from
+    COST_ROLLUP_COLUMNS → `{key: usd}`. Omitting `user_id` includes EVERY row, shared/system spend
+    (NULL user_id) included, which is what the system-wide margin totals need. Rows with a NULL
+    group value collapse into the "unknown" key so their spend is never dropped."""
+    column = COST_ROLLUP_COLUMNS.get(group_by)
+    if not column:
+        myprint(f"Unsupported cost rollup dimension '{group_by}'")
+        return {}
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        sql = (f"SELECT COALESCE({column}, 'unknown'), COALESCE(SUM(usd), 0) FROM cost_ledger "
+               "WHERE incurred_on BETWEEN %s AND %s")
+        params = [start_date, end_date]
+        if user_id is not None:
+            sql += " AND user_id = %s"
+            params.append(user_id)
+        cursor.execute(sql + f" GROUP BY {column}", tuple(params))
+        return {str(key): float(usd or 0) for key, usd in cursor.fetchall()}
+    except mysql.connector.Error:
+        return {}  # table not created yet (or unreadable) — caller reports it as unavailable
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_user_cost(user_id: int, start_date, end_date) -> dict:
+    """One user's spend over a window, grouped by cost category (llm/media/proxy/infra/...)."""
+    return get_cost_rollup(start_date, end_date, group_by="category", user_id=user_id)
+
+
+def get_margin_users() -> list:
+    """Users the margin report covers: everyone on an active/past-due subscription or an open trial.
+    Trials are included (tier `free_trial`, $0 MRR) so the cost they incur still lands in system
+    margin instead of vanishing. `cohort` is the signup month — `users` has no created_at, so
+    trial_started_at is the signup timestamp, falling back to updated_at for pre-trial rows."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """SELECT id, subscription_tier, subscription_status,
+                      DATE_FORMAT(COALESCE(trial_started_at, updated_at), '%Y-%m') AS cohort
+               FROM users
+               WHERE subscription_status IN ('active', 'past_due', 'trial')"""
+        )
+        return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        myprint(f"Could not fetch margin users | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()

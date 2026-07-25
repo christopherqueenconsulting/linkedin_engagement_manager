@@ -1136,5 +1136,21 @@ def sync_stripe_subscriptions(self):
             log_debug(f"Subscription up-to-date ({db_status}/{tier})", user_id=row["id"])
 
 
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_weekly_margin_report(self, days: int = 7):
+    """Weekly unit-economics report (issue #491, plan §D.2): joins `cost_ledger` spend to Stripe MRR
+    for per-user contribution margin, system gross margin, cohort engagement lift and LTV:CAC, then
+    delivers it to the owner (email + a PostHog `margin_report` scorecard event)."""
+    from cqc_lem.utilities.margin import collect_margin_report, send_weekly_margin_report
+
+    report = collect_margin_report(days=days)
+    result = send_weekly_margin_report(report)
+    system = report.get("system", {})
+    return (f"Margin report {report.get('period', {}).get('start')}→"
+            f"{report.get('period', {}).get('end')}: {system.get('active_users')} user(s), "
+            f"gross margin {system.get('gross_margin_usd')} USD "
+            f"(emailed={result['emailed']}, tracked={result['tracked']})")
+
+
 if __name__ == "__main__":
     print("Process finished")

@@ -30,7 +30,7 @@ Related docs: `docs/CostTracking.md` (superseded by this plan — was a static c
 | Per-user proxy | `src/cqc_lem/utilities/proxy.py` | Regional/per-user egress resolution; per `EGRESS_AT_SCALE.md` cost scales with *regions*, not users (today) — but paid per-user residential is an override path | No recurring proxy cost captured or amortized per active user |
 | Revenue | `src/cqc_lem/utilities/stripe_util.py`, `db.py` → `get_user_subscription_info`, `get_users_with_stripe_subscriptions` | Tiers `starter`/`professional`/`enterprise` → Stripe price IDs; per-user subscription status/tier | MRR not joined to cost → **no margin anywhere today** |
 | Credit ledgers | `avatar_credit_ledger` (V27), `video_credit_ledger` (V30) | Proven `delta`-sum ledger pattern with `user_id`, `reason`, `stripe_session_id`, `post_id` | The template for a generalized `cost_ledger` |
-| Engagement snapshot | `/home/lem/perf-tracking/snapshot.sh` → `metrics.jsonl` (baseline 2026-07-24) | Daily engagement KPIs for user 1 (comments/replies/dms/reactions/posts + cumulative post_stats/engagers/followups) | Engagement-only; **no cost, no revenue, no margin** |
+| Engagement snapshot | `scripts/perf_snapshot.sh` (host cron; supersedes the on-box `/home/lem/perf-tracking/snapshot.sh`) → `metrics.jsonl` (baseline 2026-07-24) | Daily engagement KPIs for user 1 (comments/replies/dms/reactions/posts + cumulative post_stats/engagers/followups) | ~~Engagement-only~~ — now carries the `margin` cost/unit-economics block too (§D.2, issue #491) |
 
 **Design principle:** one instrumentation choke point (`_call_llm` / `track_llm_call`), one durable
 store (a `cost_ledger` table mirroring the credit-ledger pattern), one analytics plane (PostHog),
@@ -289,6 +289,21 @@ could degrade output quality is gated by the quality signals (engagement_rate,
 | **Weekly** | Margin report (per-user CM, system gross margin, cohort engagement lift, LTV:CAC) | posted to owner (email/PostHog dashboard) |
 | **Weekly** | Auto-optimization recommender: scans cost×quality by feature×tier, emits ranked recommendations; for **safe** changes (config toggle, cache extension) the agent pipeline can open an `agent:ready` PR; anything touching routing/quality is filed **`risk:product-decision`** for a human call | recommendations + optional auto-PRs |
 
+**Shipped (issue #491) — the daily block + weekly report.** `src/cqc_lem/utilities/margin.py` holds
+the §C.1 formulas (pure, unit-tested) plus the DB-fed collectors and delivery:
+
+| Piece | How it runs |
+|---|---|
+| Daily cost/margin block | `scripts/perf_snapshot.sh` (host cron; the repo-versioned successor to the on-box `snapshot.sh`) calls `python -m cqc_lem.utilities.margin --daily-json` inside `web_app` and appends it to `metrics.jsonl` as `margin` |
+| Weekly owner report | Celery beat `weekly-margin-report` → `run_scheduler.auto_weekly_margin_report` (Mon 12:00 UTC) → email + PostHog `margin_report` event; also `python -m cqc_lem.utilities.margin --weekly-report [--email]` |
+| Spend source | `cost_ledger` via read-only `db.get_cost_rollup` / `get_user_cost`; `db.cost_ledger_available()` drives the `ledger_available` flag, so a $0 spend reads as "not capturing yet" rather than "nothing spent" |
+| Inputs | `TIER_MRR_*`, `INFRA_FIXED_MONTHLY`, `CAC_USD`, `EXPECTED_LIFETIME_MONTHS`, `MARGIN_REPORT_EMAIL` (env, see `.env.example`) |
+
+Weekly figures are put on a **monthly run-rate** basis (`window spend × 30.4375 / window days`) so
+they are comparable with monthly MRR and the §C.1 formulas apply unchanged; the raw window spend
+rides along as `period_cost_usd`. Trials are included at $0 MRR so their cost still lands in system
+margin, and system-minus-per-user spend is reported as `unattributed_cost_usd` — the §E.2 signal.
+
 ### D.3 Guardrails
 
 - **Quality gate:** no auto-change ships if it moves cohort engagement_rate or median
@@ -357,7 +372,8 @@ Quality guardrail (must hold): cohort engagement_rate · median authenticity_sco
 1. **Attribution first** — add `user_id`/`feature`/`model_tier`/`cached` to `track_llm_call` and
    thread through `_call_llm`. *(No margin is possible without this.)*
 2. **`cost_ledger` table + DB helpers** (TIMESTAMP-versioned migration) + media/proxy/infra capture.
-3. **Cost+margin block** appended to the daily `snapshot.sh` → `metrics.jsonl`; **weekly margin report**.
+3. **Cost+margin block** appended to the daily snapshot → `metrics.jsonl`; **weekly margin report**.
+   *(Shipped, issue #491 — see the table at the end of §D.2. Exact spend needs step 2's ledger.)*
 4. **PostHog dashboards** (Cost Explorer, Margin by Cohort, Engagement Lift, Scorecard).
 5. **Alerts** — per-user ceiling, gross-margin floor, spend anomaly, unattributed-spend.
 6. **Cost-aware optimization loop** extending `complexity_router.py` (`risk:product-decision`).

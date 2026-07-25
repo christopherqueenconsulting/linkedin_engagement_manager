@@ -140,6 +140,21 @@ gunzip -c backups/db-<stamp>.sql.gz | docker exec -i mysql_db \
   mysql -u root -p"$MYSQL_ROOT_PASSWORD" linkedin_manager
 ```
 
+## Performance / margin snapshot
+
+Daily engagement + cost/margin snapshot (issue #491) — runs as `lem`, appends one JSON line per day
+to `/home/lem/perf-tracking/metrics.jsonl`:
+
+```cron
+30 23 * * * /home/lem/<repo-clone>/scripts/perf_snapshot.sh
+```
+
+The script reads MySQL directly and shells into `web_app` for the `margin` block
+(`python -m cqc_lem.utilities.margin --daily-json`), so it needs `sudo -n docker` and a deployed
+image that contains `cqc_lem.utilities.margin`. Overridable: `PERF_DIR`, `LEM_ENV_FILE`,
+`MARGIN_CONTAINER`. `"margin": {"ledger_available": false}` means `cost_ledger` isn't capturing yet.
+The weekly margin report needs no cron — Celery beat runs it (`weekly-margin-report`, Mon 12:00 UTC).
+
 ## Persistent state
 
 Named volumes survive deploys: `db_data` (MySQL), `redis_data`, `flower_db`,
