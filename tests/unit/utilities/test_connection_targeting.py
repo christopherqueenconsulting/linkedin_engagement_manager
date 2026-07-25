@@ -157,6 +157,14 @@ class TestRankCandidates:
         signals = [_sig(name=f"P{i}", slug=f"p{i}") for i in range(5)]
         assert len(rank_candidates(signals, NOW, limit=2)) == 2
 
+    def test_zero_limit_returns_nothing(self):
+        signals = [_sig(name=f"P{i}", slug=f"p{i}") for i in range(5)]
+        assert rank_candidates(signals, NOW, limit=0) == []
+
+    def test_no_limit_returns_everything(self):
+        signals = [_sig(name=f"P{i}", slug=f"p{i}") for i in range(5)]
+        assert len(rank_candidates(signals, NOW, limit=None)) == 5
+
     def test_no_signals(self):
         assert rank_candidates([], NOW) == []
 

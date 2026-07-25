@@ -3856,7 +3856,17 @@ def send_connection_request(self, request_id: int):
 # --- Smart connection targeting (issue #486) — source warm engagers into #398's send path ---
 # Hard per-scan ceiling, independent of the user's daily invite cap: sourcing should trickle in a
 # handful of high-fit people a day, never file a queue that looks like list-blasting.
-_MAX_NEW_CONNECT_TARGETS_PER_SCAN = int(os.getenv("MAX_NEW_CONNECT_TARGETS_PER_SCAN", "5"))
+def _connect_env_int(name: str, default: int) -> int:
+    """A typo'd env var must not take the worker down at import time — fail safe to the default."""
+    try:
+        return int(os.getenv(name) or default)
+    except ValueError:
+        log_warning(f"Invalid {name} env value; falling back to {default}",
+                    action_type="connection_targeting")
+        return default
+
+
+_MAX_NEW_CONNECT_TARGETS_PER_SCAN = _connect_env_int("MAX_NEW_CONNECT_TARGETS_PER_SCAN", 5)
 _MAX_ADJACENT_AUTHORS_PER_SCAN = 3
 _MAX_ADJACENT_POSTS_PER_AUTHOR = 2
 _MAX_ENGAGERS_PER_ADJACENT_POST = 15

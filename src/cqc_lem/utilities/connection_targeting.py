@@ -209,7 +209,7 @@ def rank_candidates(signals: Iterable[CandidateSignal], now: datetime, facts_by_
             continue
         out.append(candidate)
     out.sort(key=lambda c: (c.score, c.warmth_score, c.signal_count), reverse=True)
-    return out[:limit] if limit else out
+    return out if limit is None else out[:max(0, int(limit))]
 
 
 def first_name(name: str = None) -> str:

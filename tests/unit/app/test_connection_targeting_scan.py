@@ -113,6 +113,15 @@ class TestScanFiling:
         _out, insert = _scan(engagers=engagers, max_new=1)
         assert insert.call_count == 1
 
+    def test_per_scan_ceiling_env_falls_back_when_unparseable(self, monkeypatch):
+        from cqc_lem.app import run_automation as ra
+        monkeypatch.setenv("MAX_NEW_CONNECT_TARGETS_PER_SCAN", "five")
+        assert ra._connect_env_int("MAX_NEW_CONNECT_TARGETS_PER_SCAN", 5) == 5
+        monkeypatch.setenv("MAX_NEW_CONNECT_TARGETS_PER_SCAN", "3")
+        assert ra._connect_env_int("MAX_NEW_CONNECT_TARGETS_PER_SCAN", 5) == 3
+        monkeypatch.delenv("MAX_NEW_CONNECT_TARGETS_PER_SCAN")
+        assert ra._connect_env_int("MAX_NEW_CONNECT_TARGETS_PER_SCAN", 5) == 5
+
     def test_failed_insert_is_not_counted(self):
         out, insert = _scan(insert_id=None)
         assert insert.call_count == 1 and "Filed 0" in out
