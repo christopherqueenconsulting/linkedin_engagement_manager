@@ -14,8 +14,28 @@ COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
 LAST_GOOD_FILE="${ROOT_DIR}/.last_good_tag"
 ENV_FILE="${ROOT_DIR}/.env"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-180}"
+# Maintenance window (issue #549): how long dispatch stays paused (TTL — it self-clears if this
+# script dies) and how long we wait for in-flight tasks to finish before recreating the workers.
+MAINT_PAUSE_SECONDS="${MAINT_PAUSE_SECONDS:-1800}"
+DRAIN_TIMEOUT="${DRAIN_TIMEOUT:-480}"
 
 log() { echo "[deploy $(date -u +%H:%M:%S)] $*"; }
+
+# Run a maintenance-mode subcommand inside whichever app container is up. Best-effort by design:
+# a stack that can't answer must not block the deploy (warm shutdown + acks_late still protect
+# in-flight work), so every call site tolerates a non-zero exit.
+maint() {
+  local sub="$1"; shift
+  local svc
+  for svc in celery_worker web_app; do
+    if docker ps --format '{{.Names}}' | grep -qx "${svc}"; then
+      ${COMPOSE} exec -T "${svc}" python -m cqc_lem.utilities.maintenance "${sub}" "$@"
+      return $?
+    fi
+  done
+  log "WARN: no running app container — skipping maintenance ${sub}"
+  return 0
+}
 
 # Persist IMAGE_TAG into .env so a reboot or a manual `compose up` (run without
 # this script) stays on the deployed tag. We only `export` IMAGE_TAG for our own
@@ -65,6 +85,17 @@ export IMAGE_TAG="${TAG}"
 log "Pulling images for IMAGE_TAG=${TAG}"
 ${COMPOSE} pull
 
+# 4b. Enter maintenance mode BEFORE anything touches the workers: stop beat so no new schedule
+#     fires, pause dispatch, cancel each worker's queue consumers, then wait for what is already
+#     running (video generation, commenting loops, DM sweeps) to finish. Without this the
+#     recreate below killed live tasks mid-flight (issue #549).
+log "Entering maintenance mode (pause ${MAINT_PAUSE_SECONDS}s); stopping celery_beat"
+${COMPOSE} stop celery_beat || log "WARN: could not stop celery_beat (continuing)"
+maint begin --pause-seconds "${MAINT_PAUSE_SECONDS}" || log "WARN: maintenance begin failed (continuing)"
+log "Draining in-flight Celery tasks (up to ${DRAIN_TIMEOUT}s)"
+maint drain --timeout "${DRAIN_TIMEOUT}" \
+  || log "WARN: drain timed out — remaining tasks get re-queued on shutdown (task_acks_late)"
+
 # 5. Migrations first — Flyway is idempotent (repair + migrate, baselineOnMigrate).
 log "Running database migrations"
 ${COMPOSE} up -d mysql
@@ -102,8 +133,14 @@ if [[ "${healthy}" != true ]]; then
     persist_image_tag "${prev}"
     ${COMPOSE} up -d --remove-orphans
   fi
+  # Never leave the rolled-back stack paused — the pause has a TTL, but automation should
+  # resume the moment the old release is back up.
+  maint end || log "WARN: could not clear maintenance mode (pause TTL will expire it)"
   exit 1
 fi
+
+# 7b. Healthy on the new tag — lift the pause and restore consumers.
+maint end || log "WARN: could not clear maintenance mode (pause TTL will expire it)"
 
 # 8. Record the new good tag and prune old artifacts.
 echo "${TAG}" > "${LAST_GOOD_FILE}"

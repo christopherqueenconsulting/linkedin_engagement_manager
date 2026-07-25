@@ -109,9 +109,43 @@ approval) SSHes in and runs `scripts/deploy.sh vX.Y.Z`, which:
 1. checks out the tag (syncs compose + Flyway migrations),
 2. validates the server `.env` (`check_env.sh`),
 3. pulls the GHCR image,
-4. runs Flyway migrations (idempotent),
-5. `docker compose up -d`,
-6. waits for `/health`, **auto-rolls-back** to `.last_good_tag` on failure.
+4. **enters maintenance mode** — stops `celery_beat`, pauses dispatch, cancels each worker's
+   queue consumers, then drains in-flight tasks (see below),
+5. runs Flyway migrations (idempotent),
+6. `docker compose up -d`,
+7. waits for `/health`, **auto-rolls-back** to `.last_good_tag` on failure,
+8. **leaves maintenance mode** — restores consumers and resumes dispatch (on the rollback path too).
+
+## Deploys and in-flight Celery tasks (issue #549)
+
+A deploy recreates the app containers, which SIGTERMs the workers. Three layers keep long tasks
+(6-min video generation, commenting loops, DM sweeps) from being killed and lost:
+
+1. **Warm shutdown reaches Celery.** `compose/local/celery/run-as-celery` `exec`s the worker
+   (dropping to `celeryworker` via `setpriv`, falling back to `su`) so the celery process — not a
+   wrapper shell — receives SIGTERM. It then stops consuming and finishes what is running.
+   `stop_grace_period` (`CELERY_STOP_GRACE_PERIOD`, default **8m**) gives it room before SIGKILL.
+2. **Nothing new is picked up during the window.** Maintenance mode pauses dispatch through the
+   existing Redis kill-switch (`pause_automation`, reason `deploy`) and cancels each worker's own
+   queue consumers, then polls `inspect active` until idle. Tune with `MAINT_PAUSE_SECONDS`
+   (default 1800 — a TTL, so a crashed deploy can't leave automation off) and `DRAIN_TIMEOUT`
+   (default 480s). A pre-existing 429/manual pause is **not** lifted at the end.
+3. **Anything still interrupted is re-run.** `task_acks_late` + `task_reject_on_worker_lost` are
+   global, so an un-finished task is re-delivered instead of dropped. Re-runs are safe:
+   `post_to_linkedin` short-circuits on `PostStatus.POSTED`, comments go through the
+   `commented_posts` claim ledger (a claim abandoned by a killed worker is taken over after
+   `CLAIM_STALE_MINUTES`), and the dispatchers are `QueueOnce`-locked. `CELERY_VISIBILITY_TIMEOUT`
+   (default: longest task + 15m) must stay above the longest task so acks_late can't hand a
+   still-running task to a second worker.
+
+Inspect or drive it by hand from the box:
+
+```bash
+docker compose exec -T celery_worker python -m cqc_lem.utilities.maintenance status
+docker compose exec -T celery_worker python -m cqc_lem.utilities.maintenance begin --pause-seconds 900
+docker compose exec -T celery_worker python -m cqc_lem.utilities.maintenance drain --timeout 300
+docker compose exec -T celery_worker python -m cqc_lem.utilities.maintenance end
+```
 
 ## Manual redeploy / rollback
 

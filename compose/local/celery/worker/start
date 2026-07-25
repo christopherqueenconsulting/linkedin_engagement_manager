@@ -23,17 +23,18 @@ CELERY_USER=celeryworker
 #printf "Changing ownership of the application directory to: %s\n" "$CELERY_USER"
 #chown -R $CELERY_USER:$CELERY_USER /app
 
-# Explicitly pass VIRTUAL_ENV and PATH: 'su' on Debian Bookworm resets PATH to
-# the system default, stripping /app/.venv/bin even when Docker ENV is set.
-VENV_ACTIVATE="VIRTUAL_ENV=/app/.venv PATH=/app/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+export CELERY_USER
 
 printf "Starting Celery Worker as: %s\n" "$CELERY_USER"
+# exec through /run-as-celery so celery REPLACES this shell and receives Docker's SIGTERM
+# directly — that signal is what triggers Celery's warm shutdown (stop consuming, finish the
+# running tasks, then exit). See compose/local/celery/run-as-celery and issue #549.
 # concurrency=2: handles only non-Selenium tasks (scheduler, content plan, Stripe, etc.)
 # Selenium tasks are routed to the se_engage/se_outreach/se_content lane queues and
 # consumed by the celery_worker_selenium* lane workers.
-su $CELERY_USER -c "$VENV_ACTIVATE celery --app cqc_lem.app.my_celery worker \
+exec /run-as-celery celery --app cqc_lem.app.my_celery worker \
   --loglevel=INFO \
   --concurrency=2 \
   --queues=celery \
   --hostname=main-worker@%h \
-  -E"
+  -E

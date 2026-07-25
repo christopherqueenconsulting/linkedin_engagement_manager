@@ -39,5 +39,7 @@ fi
 
 # Start Celery Beat
 echo "Starting Celery Beat"
-celery --app cqc_lem.app.my_celery beat -l info
+# exec so beat REPLACES this shell and receives Docker's SIGTERM directly — otherwise the signal
+# stops at this script and beat is SIGKILLed without flushing its schedule state (issue #549).
+exec celery --app cqc_lem.app.my_celery beat -l info
 

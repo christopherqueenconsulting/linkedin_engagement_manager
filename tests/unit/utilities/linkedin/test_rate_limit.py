@@ -226,3 +226,32 @@ class TestAutomationPause:
         with patch(f"{_MOD}._redis_client", return_value=None):
             from cqc_lem.utilities.linkedin.rate_limit import is_automation_paused
             assert is_automation_paused() is False
+
+
+class TestAutomationPauseReason:
+    """The reason lets maintenance mode lift only ITS OWN pause (issue #549)."""
+
+    def test_returns_decoded_reason(self, fake_redis):
+        fake_redis.get.return_value = b"deploy"
+        from cqc_lem.utilities.linkedin.rate_limit import automation_pause_reason
+        assert automation_pause_reason() == "deploy"
+
+    def test_returns_str_value_unchanged(self, fake_redis):
+        fake_redis.get.return_value = "429"
+        from cqc_lem.utilities.linkedin.rate_limit import automation_pause_reason
+        assert automation_pause_reason() == "429"
+
+    def test_none_when_not_paused(self, fake_redis):
+        fake_redis.get.return_value = None
+        from cqc_lem.utilities.linkedin.rate_limit import automation_pause_reason
+        assert automation_pause_reason() is None
+
+    def test_none_when_no_redis(self):
+        with patch(f"{_MOD}._redis_client", return_value=None):
+            from cqc_lem.utilities.linkedin.rate_limit import automation_pause_reason
+            assert automation_pause_reason() is None
+
+    def test_none_on_redis_error(self, fake_redis):
+        fake_redis.get.side_effect = RuntimeError("boom")
+        from cqc_lem.utilities.linkedin.rate_limit import automation_pause_reason
+        assert automation_pause_reason() is None

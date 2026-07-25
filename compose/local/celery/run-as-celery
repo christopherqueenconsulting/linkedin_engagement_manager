@@ -1,0 +1,37 @@
+#!/bin/bash
+# Run the given command as the non-root celery user, REPLACING this shell (exec) so the
+# celery process — not a wrapper shell — is what Docker signals on stop.
+#
+# The workers used to launch as `su $CELERY_USER -c "… celery … worker …"` without exec: the
+# start script stayed PID 1, Docker's SIGTERM went to that shell, and Celery never received the
+# warm-shutdown signal. In-flight tasks (6-min video generation, commenting loops, DM sweeps)
+# were SIGKILLed by the stop grace period instead of finishing. See issue #549.
+set -o errexit
+set -o nounset
+
+CELERY_USER="${CELERY_USER:-celeryworker}"
+# `su` sets HOME for the target user; setpriv does NOT — it would leave HOME=/root, and boto3
+# would stop finding the ~/.aws credentials mounted at /home/celeryworker/.aws. Set it ourselves.
+CELERY_HOME="$(getent passwd "$CELERY_USER" | cut -d: -f6)"
+CELERY_HOME="${CELERY_HOME:-/home/$CELERY_USER}"
+
+# 'su' on Debian resets PATH to the system default, stripping /app/.venv/bin even when the
+# Docker ENV sets it — pass the venv explicitly to whichever exec-er we use below.
+VENV_ENV="VIRTUAL_ENV=/app/.venv PATH=/app/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+
+if [ "$(id -u)" -ne 0 ]; then
+  # Already unprivileged (e.g. a container run with `user:`) — nothing to drop.
+  exec env $VENV_ENV "$@"
+fi
+
+# setpriv drops privileges IN PLACE: no extra process sits between PID 1 and celery, so the
+# signal needs no forwarding at all. Preferred whenever util-linux is present.
+if command -v setpriv >/dev/null 2>&1; then
+  exec setpriv --reuid="$CELERY_USER" --regid="$CELERY_USER" --init-groups \
+    env HOME="$CELERY_HOME" USER="$CELERY_USER" LOGNAME="$CELERY_USER" $VENV_ENV "$@"
+fi
+
+# Fallback: util-linux `su` does forward SIGTERM to its child, and the inner `exec` makes that
+# child celery itself rather than another shell. %q-quote so arguments survive the -c string.
+printf -v QUOTED_CMD '%q ' "$@"
+exec su "$CELERY_USER" -c "exec env $VENV_ENV $QUOTED_CMD"

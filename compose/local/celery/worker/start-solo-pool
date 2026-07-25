@@ -26,9 +26,13 @@ CELERY_USER=celeryworker
 #    chmod 755 /app/logs
 
 
-# Explicitly pass VIRTUAL_ENV and PATH: 'su' on Debian Bookworm resets PATH to
-# the system default, stripping /app/.venv/bin even when Docker ENV is set.
-VENV_ACTIVATE="VIRTUAL_ENV=/app/.venv PATH=/app/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+export CELERY_USER
 
 printf "Starting Celery Worker as: %s\n" "$CELERY_USER"
-su $CELERY_USER -c "$VENV_ACTIVATE celery --app cqc_lem.app.my_celery worker --pool=solo --concurrency=1 --queues=$CELERY_QUEUE --loglevel=INFO -E"
+# exec through /run-as-celery so Docker's SIGTERM reaches celery and warm-shuts it down (#549).
+exec /run-as-celery celery --app cqc_lem.app.my_celery worker \
+  --pool=solo \
+  --concurrency=1 \
+  --queues="$CELERY_QUEUE" \
+  --loglevel=INFO \
+  -E
