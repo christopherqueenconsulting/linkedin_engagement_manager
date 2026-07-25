@@ -471,6 +471,10 @@ class EngagementPreferencesRequest(BaseModel):
     max_dms_per_day: int = 20
     max_invites_per_day: int = 10
     connection_request_mode: str = "auto_approve"  # 'auto_approve' (default) | 'pre_review'
+    # Smart connection targeting (issue #486): 'off' | 'suggest' (default) | 'auto_queue'
+    connection_targeting_mode: str = "suggest"
+    connection_target_authors: List[str] = []
+    min_connection_icp_score: int = 55
     default_buyer_stage: Optional[str] = Field(default=None, max_length=_LEN_BUYER_STAGE)
     default_video_quality: str = "standard"
     reply_check_mode: str = "event"
@@ -498,6 +502,19 @@ class EngagementPreferencesRequest(BaseModel):
     @classmethod
     def _coerce_connection_mode(cls, v: str) -> str:
         return v if v in ("auto_approve", "pre_review") else "auto_approve"
+
+    @field_validator("connection_targeting_mode")
+    @classmethod
+    def _coerce_targeting_mode(cls, v: str) -> str:
+        return v if v in ("off", "suggest", "auto_queue") else "suggest"
+
+    @field_validator("min_connection_icp_score")
+    @classmethod
+    def _clamp_min_icp(cls, v: int) -> int:
+        try:
+            return min(100, max(0, int(v)))
+        except (TypeError, ValueError):
+            return 55
 
     @field_validator("reply_sweeps_per_day")
     @classmethod

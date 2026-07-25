@@ -225,6 +225,32 @@ export default function EngagementSettingsCard() {
             <p className="text-xs text-gray-400 mt-1">Pre-review holds new connection targets in the Connections tab for your approval before LEM sends them.</p>
           </div>
           <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Connection targeting</label>
+            <select value={engPrefs.connection_targeting_mode ?? 'suggest'}
+              onChange={(e) => setEng({ connection_targeting_mode: e.target.value })}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+              <option value="off">Off (no targets sourced)</option>
+              <option value="suggest">Suggest (drafts for your approval)</option>
+              <option value="auto_queue">Auto-queue (use the approval setting above)</option>
+            </select>
+            <p className="text-xs text-gray-400 mt-1">Finds ICP-fit people who engage with your content (and with the adjacent authors below) and drafts a personalized connect note. Suggest never sends without your approval.</p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Min. ICP fit score</label>
+            <input type="number" min={0} max={100} value={engPrefs.min_connection_icp_score ?? 55}
+              onChange={(e) => setEng({ min_connection_icp_score: Number(e.target.value) })}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+            <p className="text-xs text-gray-400 mt-1">0-100 fit of their title/company/industry against your focus topics. Only applied to people whose profile LEM has scraped.</p>
+          </div>
+          <div className="sm:col-span-3">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Adjacent authors to source engagers from</label>
+            <input type="text" value={csv(engPrefs.connection_target_authors)}
+              onChange={(e) => setEng({ connection_target_authors: parseCsv(e.target.value) })}
+              placeholder="https://www.linkedin.com/in/their-slug, https://www.linkedin.com/in/another"
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+            <p className="text-xs text-gray-400 mt-1">Profile URLs of thought leaders or competitors in your space. LEM harvests the people commenting on their recent posts as warm 2nd-degree candidates. Leave blank to only target people who engage with your own posts.</p>
+          </div>
+          <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Auto-generated video quality</label>
             <select value={engPrefs.default_video_quality ?? 'standard'}
               onChange={(e) => setEng({ default_video_quality: e.target.value })}

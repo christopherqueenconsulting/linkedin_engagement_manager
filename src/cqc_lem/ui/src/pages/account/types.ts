@@ -20,6 +20,9 @@ export type EngPrefs = {
   max_dms_per_day: number
   max_invites_per_day: number
   connection_request_mode: string
+  connection_targeting_mode: string
+  connection_target_authors: string[]
+  min_connection_icp_score: number
   default_video_quality: string
   reply_check_mode: string
   reply_sweeps_per_day: number

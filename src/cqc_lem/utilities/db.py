@@ -2698,6 +2698,10 @@ _ENGAGEMENT_DEFAULTS: dict = {
     "min_reactions": None, "max_post_age_hours": 24, "reply_to_own_comments": True,
     "max_comments_per_day": 20, "max_dms_per_day": 20, "max_invites_per_day": 10,
     "connection_request_mode": "auto_approve",
+    # Smart connection targeting (issue #486). 'suggest' sources candidates but always files them as
+    # drafts, so enabling targeting can never send outbound on its own.
+    "connection_targeting_mode": "suggest", "connection_target_authors": [],
+    "min_connection_icp_score": 55,
     "default_buyer_stage": None,
     "default_video_quality": "standard",
     "reply_check_mode": "event", "reply_sweeps_per_day": 2, "reply_max_post_age_days": 2,
@@ -2705,7 +2709,7 @@ _ENGAGEMENT_DEFAULTS: dict = {
 }
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
                            "exclude_keywords", "include_authors", "exclude_authors", "post_types",
-                           "focus_topics")
+                           "focus_topics", "connection_target_authors")
 _ENGAGEMENT_BOOL_FIELDS = ("use_emojis", "use_hashtags", "reply_to_own_comments",
                            "feed_fallback_when_empty", "link_in_first_comment")
 _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "use_hashtags",
@@ -2714,6 +2718,8 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "business_goals", "personal_goals", "min_reactions",
                     "max_post_age_hours", "reply_to_own_comments", "max_comments_per_day",
                     "max_dms_per_day", "max_invites_per_day", "connection_request_mode",
+                    "connection_targeting_mode", "connection_target_authors",
+                    "min_connection_icp_score",
                     "default_buyer_stage", "default_video_quality",
                     "reply_check_mode", "reply_sweeps_per_day", "reply_max_post_age_days",
                     "feed_fallback_when_empty", "link_in_first_comment")
@@ -2722,6 +2728,10 @@ VALID_VIDEO_QUALITIES = ("standard", "premium", "premium_top")
 VALID_REPLY_MODES = ("event", "scheduled", "off")
 # Approval posture for the proactive connect flow (issue #398 owner review).
 VALID_CONNECTION_REQUEST_MODES = ("auto_approve", "pre_review")
+# Sourcing posture for smart connection targeting (issue #486): 'off' = no sourcing, 'suggest' =
+# source but always file as drafts, 'auto_queue' = defer to connection_request_mode.
+VALID_CONNECTION_TARGETING_MODES = ("off", "suggest", "auto_queue")
+ICP_SCORE_MIN, ICP_SCORE_MAX = 0, 100
 # Scheduled reply-sweep cadence bounds: floor 2×/day (as requested), cap 12×/day (every ~2h).
 REPLY_SWEEPS_MIN, REPLY_SWEEPS_MAX = 2, 12
 REPLY_MAX_AGE_DAYS_MIN, REPLY_MAX_AGE_DAYS_MAX = 1, 14
@@ -2775,6 +2785,14 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
         merged["reply_check_mode"] = "event"
     if merged.get("connection_request_mode") not in VALID_CONNECTION_REQUEST_MODES:
         merged["connection_request_mode"] = "auto_approve"
+    if merged.get("connection_targeting_mode") not in VALID_CONNECTION_TARGETING_MODES:
+        merged["connection_targeting_mode"] = "suggest"
+    _icp = merged.get("min_connection_icp_score")
+    try:
+        merged["min_connection_icp_score"] = (min(ICP_SCORE_MAX, max(ICP_SCORE_MIN, int(_icp)))
+                                              if _icp is not None else 55)
+    except (TypeError, ValueError):
+        merged["min_connection_icp_score"] = 55
     # Clamp numerics WITHOUT `or` fallbacks — 0 is falsy but is a real (out-of-range) value that must
     # clamp to the floor, not silently become the default (matches the API-layer validators).
     _sw = merged.get("reply_sweeps_per_day")
@@ -3154,21 +3172,25 @@ def count_invites_sent_today(user_id: int) -> int:
 
 
 # --- Proactive connection requests (issue #398) — approval-gated, daily-capped; reuses invite_to_connect ---
+# source/icp_score/reasons carry issue #486's targeting provenance (which engagement surfaced this
+# person, how well they fit) so the operator approving a request can see why it exists.
 _CONN_REQ_COLS = ("id", "user_id", "recipient_profile_url", "recipient_name", "message",
-                  "status", "created_at", "updated_at")
+                  "source", "icp_score", "reasons", "status", "created_at", "updated_at")
 
 
 def insert_connection_request(user_id: int, recipient_profile_url: str, message: str = None,
                               recipient_name: str = None,
-                              status: "ConnectionRequestStatus" = ConnectionRequestStatus.PENDING
+                              status: "ConnectionRequestStatus" = ConnectionRequestStatus.PENDING,
+                              source: str = None, icp_score: int = None, reasons: str = None
                               ) -> Optional[int]:
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
         cursor.execute(
             "INSERT INTO connection_requests (user_id, recipient_profile_url, recipient_name, "
-            "message, status) VALUES (%s,%s,%s,%s,%s)",
-            (user_id, recipient_profile_url, recipient_name, message, str(status)))
+            "message, status, source, icp_score, reasons) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+            (user_id, recipient_profile_url, recipient_name, message, str(status),
+             source, icp_score, (reasons or None)))
         connection.commit()
         return cursor.lastrowid
     except mysql.connector.Error as err:
@@ -3311,6 +3333,75 @@ def update_connection_request(request_id: int, recipient_profile_url: str = None
     except mysql.connector.Error as err:
         myprint(f"Could not update connection request {request_id} | Error: {err}")
         return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+# --- Smart connection targeting (issue #486) — sourcing + dedup for the #398 send path ---
+
+def count_open_connection_requests(user_id: int) -> int:
+    """Targets already queued but not yet sent (pending / approved / sending). The sourcing scan
+    subtracts these from the daily invite budget so it can't pile up a backlog that would spend
+    tomorrow's cap the moment it opens."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM connection_requests WHERE user_id=%s "
+            "AND status IN ('pending','approved','sending')", (user_id,))
+        r = cursor.fetchone()
+        return int(r[0]) if r else 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not count open connection requests for user {user_id} | Error: {err}")
+        return 0
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_requested_person_keys(user_id: int) -> set:
+    """person_key()s for everyone this user has EVER had a connection request row for, any status.
+    The dedup set for the nightly sourcing scan: a canceled/failed target must not come back every
+    night, and someone already invited must never be invited twice."""
+    from cqc_lem.utilities.lead_scoring import person_key
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT recipient_name, recipient_profile_url FROM connection_requests WHERE user_id=%s",
+            (user_id,))
+        keys = set()
+        for name, url in cursor.fetchall():
+            key = person_key(name, url)
+            if key:
+                keys.add(key)
+        return keys
+    except mysql.connector.Error as err:
+        myprint(f"Could not read requested person keys for user {user_id} | Error: {err}")
+        return set()
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_engager_candidates(user_id: int, days: int = 30) -> list:
+    """People who recently engaged with the user's OWN posts, as connection-targeting candidates:
+    [{'person_name', 'person_profile_url', 'occurred_at'}]. Only rows with a profile URL — without
+    one there is nobody to invite. Read from post_engagers, so this costs no scraping."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT engager_name AS person_name, engager_profile_url AS person_profile_url, "
+            "last_engaged_at AS occurred_at FROM post_engagers "
+            "WHERE user_id=%s AND engager_profile_url IS NOT NULL "
+            "AND last_engaged_at >= (NOW() - INTERVAL %s DAY) ORDER BY last_engaged_at DESC",
+            (user_id, days))
+        return cursor.fetchall()
+    except mysql.connector.Error as err:
+        myprint(f"Could not read engager candidates for user {user_id} | Error: {err}")
+        return []
     finally:
         cursor.close()
         connection.close()
