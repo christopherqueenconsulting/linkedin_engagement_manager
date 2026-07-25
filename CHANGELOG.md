@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.73.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.72.0...v0.73.0) (2026-07-25)
+
+
+### Features
+
+* **outreach:** smart connection targeting from content engagers (closes [#486](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/486)) ([5c8b47b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5c8b47b3c9e4463748f1a5203b98a5e89d443fe4))
+* **outreach:** smart connection targeting from content engagers (closes [#486](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/486)) ([7366dca](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7366dca1e69a6e42906855c678c504bf1e985cc9))
+
+
+### Bug Fixes
+
+* **outreach:** guard connect-target limit=0 and env parsing ([a42d5d7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a42d5d7b59e8fd4218f953b3f8b9aa9b2ec66623))
+
 ## [0.72.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.71.0...v0.72.0) (2026-07-25)
 
 
