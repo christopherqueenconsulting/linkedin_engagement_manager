@@ -5,17 +5,16 @@ name: Dependabot Auto-Merge
 # change in the group, and our dependabot.yml groups are minor/patch-only, so grouped PRs
 # match the condition below while any major arrives as its own ungrouped PR.
 #
-# Token: uses GHCR_PAT (a PAT with contents:write + pull-requests:write) when present,
-# falling back to GITHUB_TOKEN. A PAT is needed because auto-merge enabled via the built-in
-# GITHUB_TOKEN does not reliably enter this repo's merge queue (bot-token actions don't kick
-# the queue) — the PAT behaves like a human enqueue, which is what actually drains it.
+# Token: uses RELEASE_DISPATCH_TOKEN (a fine-grained PAT with Contents:R/W + Pull requests:R/W)
+# when present, falling back to GITHUB_TOKEN. A PAT is needed because auto-merge enabled via the
+# built-in GITHUB_TOKEN does not reliably enter this repo's merge queue (bot-token actions don't
+# kick the queue) — the PAT behaves like a human enqueue, which is what actually drains it.
 #
 # NOTE: this job runs in the DEPENDABOT event context, which can ONLY read secrets from the
-# *Dependabot* secret store — not Actions secrets. GHCR_PAT currently lives only in the
-# Actions store, so here it resolves empty and this job falls back to GITHUB_TOKEN. To make
-# the event-driven auto-merge use the PAT too, also add GHCR_PAT under Settings → Secrets →
-# Dependabot. Not required for correctness: the scheduled reconciler (Actions context, which
-# CAN read GHCR_PAT) sweeps up ready PRs every 6h regardless.
+# *Dependabot* secret store — not Actions secrets. RELEASE_DISPATCH_TOKEN is set in BOTH the
+# Dependabot and the Actions stores, so the event-driven path uses the PAT here (and the
+# scheduled reconciler reads the Actions copy). GHCR_PAT is intentionally NOT used for merging
+# anymore — it is now scoped to read:packages only, for VPS image pulls.
 
 on:
   pull_request:
@@ -54,4 +53,4 @@ jobs:
         run: gh pr merge --auto "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN || secrets.GITHUB_TOKEN }}
