@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.89.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.88.0...v0.89.0) (2026-07-25)
+
+
+### Features
+
+* **marketing:** automated video-tutorial production pipeline (closes [#505](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/505)) ([c19c9cc](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c19c9cc2797ac409ce4fed5c2e92fdd1c20ec5e0))
+
 ## [0.88.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.87.1...v0.88.0) (2026-07-25)
 
 
