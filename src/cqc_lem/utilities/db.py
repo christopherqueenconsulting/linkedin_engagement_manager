@@ -7027,9 +7027,13 @@ def get_recent_shipped_notices(limit: int = 10) -> list:
 def get_published_faq_entries(limit: int = 50) -> list:
     """The published FAQ shown on the landing page, in display order. Only PUBLISHED rows leave the
     database — drafts written by the auto-FAQ pass stay unpublished until reviewed."""
-    connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
+    # Connect inside the try: an unreachable database must degrade to an empty FAQ, never bubble an
+    # exception up into the logged-out landing page.
+    connection = None
+    cursor = None
     try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
         cursor.execute(
             "SELECT id, question, answer, cluster_id, updated_at FROM faq_entries "
             "WHERE status = %s ORDER BY sort_order ASC, id ASC LIMIT %s",
@@ -7039,8 +7043,10 @@ def get_published_faq_entries(limit: int = 50) -> list:
         log_error("Could not get published FAQ entries", exc=err)
         return []
     finally:
-        cursor.close()
-        connection.close()
+        if cursor is not None:
+            cursor.close()
+        if connection is not None:
+            connection.close()
 
 
 # --- Onboarding / activation checklist (issue #500) ---------------------------------

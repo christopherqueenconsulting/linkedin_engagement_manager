@@ -153,10 +153,23 @@ _PUBLIC_API_PREFIXES = ("/api/auth/", "/api/billing/webhook", "/api/assets",
                         "/api/extension/", "/api/user/linkedin-cookie")
 
 
+def _is_public_api_path(path: str) -> bool:
+    # An entry ending in "/" opens that whole subtree; every other entry matches only itself or a
+    # path segment beneath it. Without the boundary, "/api/faq" would also unlock a future
+    # "/api/faq-admin".
+    for prefix in _PUBLIC_API_PREFIXES:
+        if prefix.endswith("/"):
+            if path.startswith(prefix):
+                return True
+        elif path == prefix or path.startswith(prefix + "/"):
+            return True
+    return False
+
+
 def _api_token_required(path: str) -> bool:
     if not _API_ACCESS_TOKEN_SET or not path.startswith("/api/"):
         return False
-    return not any(path.startswith(p) for p in _PUBLIC_API_PREFIXES)
+    return not _is_public_api_path(path)
 
 
 def _bearer_token(authorization: Optional[str]) -> Optional[str]:

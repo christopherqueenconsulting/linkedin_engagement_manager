@@ -61,3 +61,21 @@ class TestGetPublishedFaqEntries:
             assert get_published_faq_entries() == []
         log.assert_called_once()
         conn.close.assert_called_once()
+
+    def test_an_unreachable_database_still_returns_an_empty_list(self):
+        """MySQL down means get_db_connection() itself raises — the landing page must not 500."""
+        with patch(f"{_DB}.get_db_connection", side_effect=mysql.connector.Error("no route")), \
+             patch(f"{_DB}.log_error") as log:
+            from cqc_lem.utilities.db import get_published_faq_entries
+            assert get_published_faq_entries() == []
+        log.assert_called_once()
+
+    def test_a_failing_cursor_still_returns_an_empty_list(self):
+        conn = MagicMock()
+        conn.cursor.side_effect = mysql.connector.Error("cursor boom")
+        with patch(f"{_DB}.get_db_connection", return_value=conn), \
+             patch(f"{_DB}.log_error") as log:
+            from cqc_lem.utilities.db import get_published_faq_entries
+            assert get_published_faq_entries() == []
+        log.assert_called_once()
+        conn.close.assert_called_once()
