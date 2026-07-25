@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.90.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.89.0...v0.90.0) (2026-07-25)
+
+
+### Features
+
+* **ui:** auto-updating front-page FAQ backed by faq_entries (closes [#506](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/506)) ([3be3b5b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3be3b5b4f26751c7c000c75e997bd2fdc82652af))
+* **ui:** auto-updating front-page FAQ backed by faq_entries (closes [#506](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/506)) ([8037d1a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8037d1a947648c74808491c4ad6bf642c22e6568))
+
+
+### Bug Fixes
+
+* **api,db:** fail-closed FAQ read and segment-boundary public-route matching ([11dce62](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/11dce628e0dfb72f32e7669fb21191f817d8e472))
+
 ## [0.89.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.88.0...v0.89.0) (2026-07-25)
 
 
