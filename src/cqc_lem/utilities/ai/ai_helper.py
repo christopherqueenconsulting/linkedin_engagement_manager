@@ -2429,7 +2429,13 @@ def generate_dall_e_image_from_prompt(prompt: str, size: str = "1024x1024"):
         response_format='url'
     )
 
-    if len(response.data) > 0:
+    generated = len(response.data or [])
+    if generated:
+        from cqc_lem.utilities.observability import track_media_cost, image_cost_usd
+        track_media_cost("image", "openai", image_cost_usd(generated), qty=generated,
+                         model="dall-e-3", meta={"size": size})
+
+    if generated > 0:
         return response.data
     else:
         return response.data[0].url

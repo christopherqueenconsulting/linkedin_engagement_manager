@@ -1,8 +1,11 @@
 """Unit tests for the RunwayML video-model abstraction."""
 
 import pytest
+from unittest.mock import patch
 
 pytestmark = pytest.mark.unit
+
+_VM = "cqc_lem.utilities.ai.video_models"
 
 
 class TestEstimateAndResolve:
@@ -57,6 +60,25 @@ class TestCreateRunwayVideo:
         from cqc_lem.utilities.ai.video_models import create_runway_video
         with pytest.raises(ValueError):
             create_runway_video("https://img/base.png", "x", model="does-not-exist")
+
+    def test_successful_render_records_its_cost(self, mock_runwayml):
+        """Issue #490: a render is the spikiest variable cost — it must land in the ledger."""
+        from cqc_lem.utilities.ai.video_models import create_runway_video
+        with patch(f"{_VM}.track_media_cost") as track:
+            create_runway_video("https://img/base.png", "pan", model="gen4.5", duration=10,
+                                user_id=3, post_id=17)
+
+        args, kwargs = track.call_args
+        assert args == ("video", "runway", 1.2)  # 10s x $0.12/s
+        assert kwargs["user_id"] == 3 and kwargs["post_id"] == 17
+        assert kwargs["qty"] == 10 and kwargs["model"] == "gen4.5"
+
+    def test_failed_render_records_no_cost(self, mock_runwayml):
+        from cqc_lem.utilities.ai.video_models import create_runway_video
+        mock_runwayml["task"].status = "FAILED"
+        with patch(f"{_VM}.track_media_cost") as track:
+            create_runway_video("https://img/base.png", "x", model="gen4_turbo")
+        track.assert_not_called()
 
     def test_typeerror_retry_drops_optional_kwargs(self, mock_runwayml):
         from cqc_lem.utilities.ai.video_models import create_runway_video

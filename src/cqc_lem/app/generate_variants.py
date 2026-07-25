@@ -141,7 +141,8 @@ def _generate_one_variant(idx: int, combo: dict, source_text: str, profile, user
         video_prompt = get_runway_ml_video_prompt_from_ai(source_text, image_prompt, model=video_model)[:512]
         result["video_prompt"] = video_prompt
         video_src_url = create_runway_video(
-            dest_img, video_prompt, model=video_model, ratio=ratio, duration=duration, seed=seed)
+            dest_img, video_prompt, model=video_model, ratio=ratio, duration=duration, seed=seed,
+            user_id=user_id)
         if video_src_url:
             saved = save_video_url_to_dir(video_src_url, batch_dir)
             vid_name = f"variant_{idx}_video.mp4"
