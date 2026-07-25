@@ -24,7 +24,7 @@ foreign-language voiceover (#34, #36) can be regenerated. Items 2–4 (likeness 
 | Avatar-aware image generation | `ai_helper.generate_post_image()` → `generate_image_with_avatar()` → `get_flux_image_via_replicate()` |
 | Image prompt authoring | `ai_helper.get_flux_image_prompt_from_ai()` + `_profile_visual_context()` |
 | Carousel slide images | `carousel_creator.select_slide_image()` → `_should_generate_with_replicate()` → `_generate_avatar_slide_image()` |
-| Video generation | `run_content_plan._generate_video_src()` → `ai_helper.get_runway_ml_video_prompt_from_ai()` → `ai/video_models.create_runway_video()` |
+| Video generation | `run_content_plan._generate_video_src()` → `ai_helper.get_runway_ml_video_prompt_from_ai()` → `utilities/ai/video_models.py` → `create_runway_video()` |
 | Video models | `video_models.VIDEO_MODELS` — standard `gen4_turbo`/`gen4.5` (no audio), premium `veo3.1_fast` (1 credit) / `veo3.1` (3 credits), both `supports_audio=True` |
 | SPA | `ui/src/pages/Avatars.tsx` (buy credits → upload ZIP → poll status → "Set Active") |
 | AI disclosure | `run_content_plan._apply_ai_disclosure()` + `c2pa_helper.add_ai_content_credentials()` |
