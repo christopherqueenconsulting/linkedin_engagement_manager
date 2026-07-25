@@ -69,6 +69,7 @@ from cqc_lem.utilities.db import (
     replace_video_url_base, get_post_type, get_post_buyer_stage, get_post_status,
     update_db_post_carousel_slides,
     get_post_url_from_log_for_user,
+    insert_feedback, FeedbackSource,
 )
 from cqc_lem.utilities.email import generate_pin, hash_pin, send_pin_email
 from cqc_lem.utilities.linkedin.verification_pin import (
@@ -321,6 +322,12 @@ _LEN_NL_TOPIC = 512       # newsletter_settings.topic VARCHAR(512)
 _LEN_DM_RECIPIENT_URL = 512   # scheduled_dms.recipient_profile_url VARCHAR(512)
 _LEN_DM_RECIPIENT_NAME = 255  # scheduled_dms.recipient_name VARCHAR(255)
 _LEN_CONNECT_NOTE = 300       # LinkedIn caps a connection-request note at 300 chars
+_LEN_FEEDBACK_BODY = 5000     # feedback.body (TEXT; app cap)
+_LEN_FEEDBACK_TYPE_HINT = 32  # feedback.type_hint VARCHAR(32)
+# Screenshots ride along inside feedback.context_json as a data URL. Capped so one report can't
+# blow past max_allowed_packet; the widget downsizes/rejects before it gets here.
+_LEN_FEEDBACK_SCREENSHOT = 2_000_000
+_LEN_FEEDBACK_CONTEXT = 8000  # serialized auto-attached context, screenshot excluded
 
 
 class NewsletterSettingsRequest(BaseModel):
@@ -695,6 +702,32 @@ class GenerateCarouselPreviewRequest(BaseModel):
     template: Optional[str] = None  # None = auto-pick by stage
 
 
+class FeedbackRequest(BaseModel):
+    """In-app feedback / bug report (issue #496). session_token is optional: the widget is offered
+    to logged-out visitors too, and those land with a NULL user_id."""
+    body: str = Field(min_length=1, max_length=_LEN_FEEDBACK_BODY)
+    session_token: Optional[str] = None
+    source: str = str(FeedbackSource.WIDGET)
+    type_hint: Optional[str] = Field(default=None, max_length=_LEN_FEEDBACK_TYPE_HINT)
+    context: Optional[Dict[str, Any]] = None
+    screenshot: Optional[str] = Field(default=None, max_length=_LEN_FEEDBACK_SCREENSHOT)
+
+    @field_validator("body")
+    @classmethod
+    def body_not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("Feedback body cannot be empty")
+        return v.strip()
+
+    @field_validator("source")
+    @classmethod
+    def known_source(cls, v: str) -> str:
+        valid = {str(s) for s in FeedbackSource}
+        if v not in valid:
+            raise ValueError(f"Unknown source '{v}' — expected one of {sorted(valid)}")
+        return v
+
+
 class FutureForwardValues(IntEnum):
     Zero = 0
     ONE = 1
@@ -717,6 +750,27 @@ def get_app_info() -> ResponseModel:
         "version": get_app_version(),
         "show_version": SHOW_VERSION_FOOTER,
     })
+
+
+@router.post("/feedback")
+def submit_feedback_endpoint(request: FeedbackRequest) -> ResponseModel:
+    """Capture in-app feedback / a bug report (issue #496) — the first capture point of the
+    feedback->auto-work loop. A valid session_token attributes the row to that user; without one
+    (logged-out visitor) the row is kept anonymously with a NULL user_id."""
+    user_id = get_session_user_id(request.session_token) if request.session_token else None
+    context: Dict[str, Any] = dict(request.context or {})
+    # Don't let a caller write an unbounded JSON blob — the widget only sends a handful of fields.
+    if len(json.dumps(context, default=str)) > _LEN_FEEDBACK_CONTEXT:
+        context = {"truncated": True}
+    if request.screenshot:
+        context["screenshot"] = request.screenshot
+    feedback_id = insert_feedback(request.body, user_id=user_id,
+                                  source=FeedbackSource(request.source),
+                                  type_hint=request.type_hint, context=context or None)
+    if not feedback_id:
+        raise HTTPException(status_code=500, detail="Could not save feedback")
+    log_info("Feedback captured", user_id=user_id)
+    return ResponseModel(status_code=200, detail={"feedback_id": feedback_id})
 
 
 @router.get("/dashboard/stats/", responses={
