@@ -24,7 +24,7 @@ def _box(text):
 
 def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=10,
               author="Jane Author", is_me=False, react_returns=True, post_returns=True,
-              prefs=None, matches=True):
+              prefs=None, matches=True, real_key=False, urn_scan=None):
     """Drive comment_on_feed_inline with all the SDUI/DB collaborators mocked. Returns a dict of
     the key mocks so assertions can inspect calls."""
     from cqc_lem.app import run_automation as ra
@@ -32,6 +32,8 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
     driver = MagicMock()
     driver.find_elements.return_value = boxes
     wait = MagicMock()
+    # The ancestor/attribute URN scan runs through the driver; a non-str return means "no URN".
+    driver.execute_script.return_value = urn_scan
 
     # A stable content->key map (simulates _feed_post_key: same content => same key).
     def _key(a, content):
@@ -55,7 +57,8 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
         p("_card_for_textbox", side_effect=lambda d, b: MagicMock())
         p("_post_author_from_card", return_value=author)
         p("_post_permalink_from_card", return_value=None)
-        p("_feed_post_key", side_effect=_key)
+        if not real_key:
+            p("_feed_post_key", side_effect=_key)
         p("_author_is_me", return_value=is_me)
         p("has_commented_post", return_value=has_commented)
         p("has_user_commented_on_post_url", return_value=False)
@@ -101,6 +104,33 @@ class TestFeedDedup:
         r = _run_feed([_box(same), _box(same)])
         assert r["posted"] == 1
         assert r["post_inline"].call_count == 1
+
+    def test_rerendered_truncation_does_not_earn_a_second_comment(self):
+        # #580: the collapsed card truncates a long post, the expanded render carries the whole
+        # body. Hashing everything made those two renders two keys -> two comments on one post.
+        full = ("Most teams do not have a data problem, they have a definitions problem: three "
+                "dashboards, three revenue numbers, and nobody willing to own the discrepancy in "
+                "the weekly review where the very same question gets asked all over again.")
+        truncated = full[:160].rsplit(" ", 1)[0] + "…see more"
+        r = _run_feed([_box(truncated), _box(full)], real_key=True)
+        assert r["posted"] == 1
+        assert r["post_inline"].call_count == 1
+
+    def test_urn_from_ancestor_scan_is_the_dedup_key(self):
+        # With no permalink on the card, the ancestor data-* scan must still produce a feedurn://
+        # key — the whole point of #580 (a hash key is the duplicate-prone fallback).
+        r = _run_feed([_box("A feed post whose activity urn lives on an ancestor node.")],
+                      real_key=True, urn_scan="urn:li:activity:7486221543367397377")
+        assert r["posted"] == 1
+        assert r["claim"].call_args[0][1] == "feedurn://urn:li:activity:7486221543367397377"
+        assert r["funnel"]["commented_key_sources"] == {"card": 1}
+
+    def test_funnel_records_hash_key_source_when_no_urn(self):
+        r = _run_feed([_box("A feed post with no activity urn anywhere on the card.")],
+                      real_key=True)
+        assert r["posted"] == 1
+        assert r["funnel"]["commented_key_sources"] == {"hash": 1}
+        assert r["funnel"]["key_sources"] == {"hash": 1}
 
     def test_lost_claim_race_is_noop(self):
         # claim returns False (another run/worker already holds it) => no LLM, no comment.

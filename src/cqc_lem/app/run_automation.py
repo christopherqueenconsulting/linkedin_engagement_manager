@@ -506,17 +506,90 @@ def _normalize_post_text(content: str) -> str:
     return t
 
 
+# The URN-less fallback hashes a PREFIX of the body, not all of it: LinkedIn's collapsed card
+# truncates a long post (~3 lines) while the expanded render carries the whole thing, so hashing
+# everything mints TWO keys for one post across a re-render — which is how #474 recurred as #580.
+# Truncation happens well past 120 characters, so a 120-char prefix is byte-identical in both.
+_FEED_KEY_PREFIX_CHARS = 120
+# Extra shorter prefix for the per-run fingerprint set: it still matches when a render truncates
+# even earlier than the canonical prefix (narrow window, aggressive "…more" collapse).
+_FEED_FP_PREFIX_CHARS = (60, _FEED_KEY_PREFIX_CHARS)
+
+
+def _norm_prefix(content: str, limit: int) -> str:
+    """Normalized post text cut to `limit` chars on a word boundary — the same prefix for the
+    collapsed and the expanded render of one post."""
+    norm = _normalize_post_text(content)
+    if len(norm) <= limit:
+        return norm
+    head, sep, _tail = norm[:limit].rpartition(" ")
+    return head if sep else norm[:limit]
+
+
+def _content_digest(author: str, content: str, limit: int) -> str:
+    """Short sha1 over the author + a truncation-proof normalized body prefix."""
+    payload = f"{(author or '').strip().lower()}|{_norm_prefix(content, limit)}"
+    return hashlib.sha1(payload.encode("utf-8", "ignore")).hexdigest()[:20]
+
+
 def _feed_post_key(author: str, content: str) -> str:
-    """Last-resort dedup key when no stable URN/permalink is available. Hashes the NORMALIZED
-    text (see _normalize_post_text) so it's stable across see-more/whitespace re-renders."""
-    norm = _normalize_post_text(content)[:240]
-    digest = hashlib.sha1(f"{(author or '').strip().lower()}|{norm}".encode("utf-8", "ignore")).hexdigest()[:20]
-    return f"feedpost://{digest}"
+    """Last-resort dedup key when no stable URN/permalink is available. Hashes the author plus a
+    NORMALIZED, truncation-proof body prefix (see _norm_prefix) so the collapsed and the expanded
+    render of one post produce ONE key."""
+    return f"feedpost://{_content_digest(author, content, _FEED_KEY_PREFIX_CHARS)}"
 
 
-def _feed_post_urn_from_card(card) -> "str | None":
-    """The canonical urn:li:(activity|ugcPost|share):<id> for a feed card, read from any data
-    attribute or anywhere in the card's HTML. Returns the lowercased URN or None."""
+def _feed_content_fingerprints(author: str, content: str) -> "set[str]":
+    """Render-stable per-run fingerprints of a post's text at several prefix lengths — a second
+    dedup guard so that even on the URN-less fallback path (or when a URN is found on one pass and
+    not the next) a re-render can't re-key the post and earn it a second comment."""
+    return {f"fp{n}:{_content_digest(author, content, n)}" for n in _FEED_FP_PREFIX_CHARS}
+
+
+# The activity URN lives in a data-* attribute on the feed-update CONTAINER, which sits ABOVE the
+# comment-button ancestor `_card_for_textbox` returns — so scanning only that card's outerHTML found
+# nothing on the live 2026 feed and every comment fell back to the content hash (issue #580). Walk
+# UP instead, reading each element's OWN attribute values, and stop at the first ancestor spanning
+# more than one post card so we can never pick up a SIBLING post's URN. Descendant attributes are
+# checked last (a reshare embeds the original post's URN, so containers outrank children).
+_URN_SCAN_JS = r"""
+const RE = /urn:li:(?:activity|ugcPost|share):\d+/i;
+const attrHit = (el) => {
+  if (!el || !el.attributes) return null;
+  for (const a of el.attributes) { const m = RE.exec(a.value || ''); if (m) return m[0]; }
+  return null;
+};
+const el = arguments[0];
+let hit = attrHit(el);
+if (hit) return hit;
+let p = el.parentElement, depth = 0;
+while (p && depth < 12) {
+  if (p.querySelectorAll && p.querySelectorAll("button[aria-label='Comment']").length > 1) break;
+  hit = attrHit(p);
+  if (hit) return hit;
+  p = p.parentElement; depth++;
+}
+if (el.querySelectorAll) {
+  for (const d of el.querySelectorAll('*')) { hit = attrHit(d); if (hit) return hit; }
+}
+return null;
+"""
+
+
+def _feed_post_urn_from_card(card, driver=None) -> "str | None":
+    """The canonical urn:li:(activity|ugcPost|share):<id> for a feed card. Reads data-* attributes
+    on the card, on its ancestors (never past an element that spans more than one post) and on its
+    descendants, then falls back to a regex over the card's own HTML. Lowercased URN or None."""
+    runner = driver if driver is not None else getattr(card, "parent", None)
+    if runner is not None:
+        try:
+            found = runner.execute_script(_URN_SCAN_JS, card)
+        except Exception:
+            found = None
+        if isinstance(found, str):
+            m = _URN_RE.search(found)
+            if m:
+                return m.group(0).lower()
     try:
         html = card.get_attribute("outerHTML")
     except Exception:
@@ -527,27 +600,27 @@ def _feed_post_urn_from_card(card) -> "str | None":
     return m.group(0).lower() if m else None
 
 
-def _stable_feed_post_key(card, author: str, content: str) -> str:
-    """Single canonical dedup key for a feed post, stable across re-renders. Prefers the URN
-    (from the permalink anchor OR anywhere in the card HTML) so permalink-present and
-    permalink-absent renders of the same post map to ONE key; only falls back to the normalized
-    content hash when no URN can be found."""
-    urn = None
+def _feed_post_identity(card, author: str, content: str, driver=None) -> "tuple[str, str]":
+    """(dedup key, key SOURCE) for a feed post. Source is 'permalink' | 'card' | 'hash' — recorded
+    on the run so we can confirm live that feed comments key on the stable activity URN and not on
+    the volatile content hash (issue #580)."""
     permalink = _post_permalink_from_card(card)
     if permalink:
         m = _URN_RE.search(permalink)
-        urn = m.group(0).lower() if m else None
-    if not urn:
-        urn = _feed_post_urn_from_card(card)
+        if m:
+            return f"feedurn://{m.group(0).lower()}", "permalink"
+    urn = _feed_post_urn_from_card(card, driver=driver)
     if urn:
-        return f"feedurn://{urn}"
-    return _feed_post_key(author, content)
+        return f"feedurn://{urn}", "card"
+    return _feed_post_key(author, content), "hash"
 
 
-def _feed_content_fingerprint(author: str, content: str) -> str:
-    """A render-stable per-run fingerprint of the post's text — a second dedup guard so that even
-    on the URN-less fallback path an unstable render can't sneak a second comment through."""
-    return "fp:" + _feed_post_key(author, content)
+def _stable_feed_post_key(card, author: str, content: str, driver=None) -> str:
+    """Single canonical dedup key for a feed post, stable across re-renders. Prefers the URN
+    (from the permalink anchor OR the card/ancestor data attributes) so permalink-present and
+    permalink-absent renders of the same post map to ONE key; only falls back to the normalized
+    content hash when no URN can be found."""
+    return _feed_post_identity(card, author, content, driver=driver)[0]
 
 
 def _post_permalink_from_card(card):
@@ -1011,6 +1084,11 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     # empty-filter fallback. examined = posts we looked at; hard = passed excludes/recency/min-reactions;
     # include = also matched the user's include topics/keywords/authors.
     examined_keys, hard_keys, include_keys = set(), set(), set()
+    # Which SOURCE produced each post's dedup key (permalink / card URN / content hash). Surfaced on
+    # the funnel + logs so a live run proves feed comments key on the stable URN — a hash-keyed
+    # comment is the duplicate-prone path that caused #474/#580.
+    key_source_by_key: dict = {}
+    posted_key_sources: dict = {}
     strict_misses, fallback_active, fallback_used = 0, False, False
     # Posts that cleared excludes + dedup but failed ONLY the recency/min-reactions gates. Tracked
     # apart from the permanent `seen` set so the empty-feed fallback can RECONSIDER them (relaxing
@@ -1039,19 +1117,21 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
                 continue
             author = _post_author_from_card(card)
             # Canonical URN-based key (stable across re-renders); normalized content hash only
-            # when no URN exists. `fp` is a second, render-stable fingerprint so even the URN-less
-            # fallback path can't slip a second comment through on a "…see more"/re-render (#474).
-            key = _stable_feed_post_key(card, author, content)
-            fp = _feed_content_fingerprint(author, content)
-            if key in seen or fp in seen:
+            # when no URN exists. `fps` are render-stable fingerprints at several prefix lengths, so
+            # even the URN-less fallback path can't slip a second comment through when a re-render
+            # truncates the body differently (#474, recurred as #580).
+            key, key_source = _feed_post_identity(card, author, content, driver=driver)
+            fps = _feed_content_fingerprints(author, content)
+            if key in seen or (fps & seen):
                 continue
+            key_source_by_key[key] = key_source
             examined_keys.add(key)
             # Persistent, cross-run/worker dedup: skip anything already claimed or commented
             # (commented_posts ledger), plus historical SUCCESS comment logs, plus hard excludes.
             if (has_commented_post(user_id, key) or has_user_commented_on_post_url(user_id, key)
                     or not _passes_hard_excludes(content, author, prefs)):
                 seen.add(key)
-                seen.add(fp)
+                seen.update(fps)
                 continue
             # Recency + min-reactions are soft gates: when the whole feed fails them the empty-feed
             # fallback relaxes them (below), so a reject here goes to soft_seen (reconsiderable),
@@ -1070,13 +1150,14 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             meta = {"author": author, "age_minutes": age, "comments": counts["comments"],
                     "reactions": counts["reactions"], "relevant": _literal_relevant(content, author, prefs)}
             hard_keys.add(key)
-            candidates.append((_score_feed_post(meta, prefs, engagers), key, card, content, author, age, fp))
+            candidates.append((_score_feed_post(meta, prefs, engagers), key, card, content, author, age,
+                               fps, key_source))
 
         if candidates:
             candidates.sort(key=lambda c: c[0], reverse=True)
-            score, key, card, content, author, age, fp = candidates[0]
-            seen.add(key)   # decided on this one either way
-            seen.add(fp)    # and its render-stable fingerprint (URN-less fallback guard)
+            score, key, card, content, author, age, fps, key_source = candidates[0]
+            seen.add(key)        # decided on this one either way
+            seen.update(fps)     # and its render-stable fingerprints (URN-less fallback guard)
             # Include gate (may use the LLM topic classifier) on the chosen post. If the feed keeps
             # producing nothing that matches the user's include filters, RELAX to fallback for the rest
             # of the run — comment on the best feed post regardless of include (LinkedIn already curates
@@ -1120,6 +1201,9 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
                     mark_post_commented(user_id, key)
                     insert_new_log(user_id=user_id, action_type=LogActionType.COMMENT,
                                    result=LogResultType.SUCCESS, post_url=key, message=comment_text)
+                    posted_key_sources[key_source] = posted_key_sources.get(key_source, 0) + 1
+                    log_info(f"Feed comment keyed by {key_source} ({key})", user_id=user_id,
+                             action_type="comment", task_name="comment_on_feed_inline")
                     posted += 1
                     myprint(f"Commented on {author or 'a'}'s post "
                             f"(score {score:.2f}, age {'?' if age is None else str(age) + 'm'}) ({posted}/{max_posts})")
@@ -1148,18 +1232,29 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
         scrolls += 1
         time.sleep(random.uniform(2.5, 4))
 
+    examined_key_sources: dict = {}
+    for source in key_source_by_key.values():
+        examined_key_sources[source] = examined_key_sources.get(source, 0) + 1
     set_feed_funnel(user_id, {
         "examined": len(examined_keys),
         "passed_filters": len(hard_keys),      # cleared excludes + recency + min-reactions
         "matched_topics": len(include_keys),   # also matched include topics/keywords/authors
         "commented": posted,
         "fallback_used": fallback_used,
+        "key_sources": examined_key_sources,           # every post we looked at
+        "commented_key_sources": posted_key_sources,   # only the ones we commented on
         "max_post_age_hours": prefs.get("max_post_age_hours") or 24,
         "min_reactions": min_reactions,
         "at": datetime.now().isoformat(),
     })
-    myprint(f"Feed scan: examined {len(examined_keys)}, passed filters {len(hard_keys)}, "
-            f"matched topics {len(include_keys)}, commented {posted}, fallback={fallback_used}")
+    log_info(f"Feed scan: examined {len(examined_keys)}, passed filters {len(hard_keys)}, "
+             f"matched topics {len(include_keys)}, commented {posted}, fallback={fallback_used}, "
+             f"key sources {examined_key_sources}", user_id=user_id, action_type="comment",
+             task_name="comment_on_feed_inline")
+    if posted_key_sources.get("hash"):
+        log_warning(f"{posted_key_sources['hash']} of {posted} feed comments used an unstable "
+                    f"content-hash key — no activity URN on those cards (duplicate risk, #580)",
+                    user_id=user_id, action_type="comment", task_name="comment_on_feed_inline")
     return posted
 
 
@@ -2554,7 +2649,7 @@ def _scrape_activity_comment_urns(driver, wait, my_profile) -> dict:
             card = _card_for_textbox(driver, box) or box
             url = _post_permalink_from_card(card)
             if not url:
-                urn = _feed_post_urn_from_card(card)
+                urn = _feed_post_urn_from_card(card, driver=driver)
                 url = f"https://www.linkedin.com/feed/update/{urn}/" if urn else None
             if url:
                 mapping[_normalize_post_text(text)[:200]] = url
