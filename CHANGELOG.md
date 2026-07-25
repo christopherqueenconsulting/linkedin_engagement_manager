@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.85.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.84.0...v0.85.0) (2026-07-25)
+
+
+### Features
+
+* **cost:** cost_ledger table + DB helpers + media/proxy/infra cost capture (closes [#490](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/490)) ([95c3c17](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/95c3c17b4a6c55fb1cdd498150c381edf48e9d97))
+
 ## [0.84.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.83.0...v0.84.0) (2026-07-25)
 
 
