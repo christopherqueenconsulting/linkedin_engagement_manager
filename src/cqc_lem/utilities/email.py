@@ -440,6 +440,30 @@ def send_shipped_fix_email(to_email: str, changelog_line: str, issue_number: int
     return _dispatch_email(to_email, f"✅ You asked, we shipped (#{int(issue_number)})", html)
 
 
+def send_faq_answer_email(to_email: str, question: str, answer: str,
+                          cta_path: str = "/#faq") -> bool:
+    """Answer someone who asked a support question (issue #507). Both halves are generated/derived
+    from user text, so both are escaped before templating."""
+    import os
+    base = (os.getenv("LEM_APP_URL") or "https://lem.christopherqueenconsulting.com").rstrip("/")
+    url = f"{base}{cta_path if cta_path.startswith('/') else '/' + cta_path}"
+    safe_question = html_escape(question or "")
+    safe_answer = html_escape(answer or "").replace("\n", "<br/>")
+    safe_url = html_escape(url)
+    html = f"""
+    <html><body style="font-family:Arial,Helvetica,sans-serif;color:#222;">
+    <h2>Here's the answer to your question</h2>
+    <p style="border-left:3px solid #0a66c2;padding-left:12px;color:#333;">{safe_question}</p>
+    <p>{safe_answer}</p>
+    <p><a href="{safe_url}" style="background:#0a66c2;color:#fff;padding:10px 16px;border-radius:6px;
+    text-decoration:none;">See the full FAQ</a></p>
+    <p style="color:#888;font-size:12px;">You're getting this because you asked us this question.
+    Reply to this email if it didn't answer it — a person will pick it up.</p>
+    </body></html>
+    """
+    return _dispatch_email(to_email, "💡 Your question, answered", html)
+
+
 def send_pin_email(
     to_email: str,
     pin: str,

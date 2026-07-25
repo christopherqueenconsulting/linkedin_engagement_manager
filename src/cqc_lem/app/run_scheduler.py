@@ -1294,6 +1294,20 @@ def auto_changelog_notify(self, hours: int = None):
             f"{result['counts'] or 'nothing to do'}")
 
 
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_update_faq(self, limit: int = 50):
+    """Keep the public FAQ answering what people actually ask (issue #507, plan §C.7): cluster the
+    support questions the auto-filer left behind, and once the same question recurs, write or revise
+    a grounded answer, version it, and reply to everyone who asked. Anything implying a
+    product/policy/ToS claim is held for a human instead of published. QueueOnce so two beat ticks
+    can never answer the same cluster twice."""
+    from cqc_lem.utilities.feedback.faq_service import process_faq_feedback
+
+    result = process_faq_feedback(limit=limit)
+    return (f"Auto-FAQ: {result['questions']} question(s) in {result['clusters']} cluster(s) — "
+            f"{result['counts'] or 'nothing to do'}")
+
+
 def _env_rate(name: str) -> float:
     """A monthly cost rate from the environment. Prices are deployment-specific, so they are never
     hardcoded — an unset (or malformed) rate is 0 and simply accrues nothing."""

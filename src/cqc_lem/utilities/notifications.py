@@ -126,6 +126,25 @@ def notify_shipped_fix(user_id: int, changelog_line: str, issue_number: int) -> 
         return False
 
 
+def notify_faq_answer(user_id: int, question: str, answer: str) -> bool:
+    """Send an asker the answer the auto-FAQ pass wrote for their question (issue #507). "Answered
+    once" is the caller's job (the feedback row moves to `resolved`), so this stays a pure send.
+    Returns True only if an email actually went out."""
+    try:
+        email = get_user_email(user_id)
+        if not email:
+            return False
+        from cqc_lem.utilities.email import send_faq_answer_email
+        sent = send_faq_answer_email(email, question, answer)
+        if sent:
+            log_info("Sent auto-FAQ answer", user_id=user_id, action_type="faq_answer")
+        return sent
+    except Exception as e:
+        log_warning("Could not send auto-FAQ answer", exc=e, user_id=user_id,
+                    action_type="faq_answer")
+        return False
+
+
 def notify_newsletter_draft_ready(user_id: int, edition_title: str, scheduled_for) -> bool:
     """Email the user that their newsletter draft is ready to review and when it auto-publishes.
     Non-fatal — returns True only if an email was actually sent."""
