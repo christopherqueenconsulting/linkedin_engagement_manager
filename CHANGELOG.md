@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.94.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.93.1...v0.94.0) (2026-07-25)
+
+
+### Features
+
+* **infra:** raise Selenium session cap + lane concurrency for launch headroom (closes [#552](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/552)) ([0cb9489](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0cb948900a869bf17285c5b4e9a16a49b5d72dbb))
+
+
+### Bug Fixes
+
+* **capacity:** scope the prod-overlay guard to selenium-chrome + clear CodeQL alerts ([faacb3e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/faacb3e4c3483f5a3433037263d6bbb99cce29c8))
+
 ## [0.93.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.93.0...v0.93.1) (2026-07-25)
 
 
