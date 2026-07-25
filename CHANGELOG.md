@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.83.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.82.0...v0.83.0) (2026-07-25)
+
+
+### Features
+
+* **feedback:** auto-changelog + notify reporters on shipped fixes (closes [#502](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/502)) ([e55e603](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e55e603fbb2d74f77c17dab4bf76f038881b23b0))
+* **feedback:** auto-changelog + notify reporters on shipped fixes (closes [#502](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/502)) ([dd999d7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/dd999d7f2651f297f033b50abc619392ca651684))
+
+
+### Bug Fixes
+
+* **feedback:** resolve cluster-attached reports and gate early shipped acks ([db09ff0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/db09ff0a8f5778cd714fbf524d96c40eef171823))
+
 ## [0.82.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.81.0...v0.82.0) (2026-07-25)
 
 
