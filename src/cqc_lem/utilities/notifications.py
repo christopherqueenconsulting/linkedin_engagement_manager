@@ -18,7 +18,7 @@ from cqc_lem.utilities.email import (
     send_session_revalidation_email,
     send_newsletter_draft_ready_email,
 )
-from cqc_lem.utilities.logger import myprint
+from cqc_lem.utilities.logger import log_info, log_warning, myprint
 
 
 def notify_linkedin_session(user_id: int, revalidation: bool = False) -> bool:
@@ -45,6 +45,35 @@ def notify_linkedin_session(user_id: int, revalidation: bool = False) -> bool:
         myprint(f"Sent LinkedIn session {'re-validation' if revalidation else 'connect'} "
                 f"email to user_id {user_id}")
     return sent
+
+
+def notify_onboarding_nudge(user_id: int, nudge: dict) -> bool:
+    """Email a stalled user their next-best activation nudge (issue #500). Throttling is the caller's
+    job — each nudge is one-shot per user via the onboarding_nudges ledger. Returns True only if an
+    email was actually sent."""
+    try:
+        email = get_user_email(user_id)
+        if not email:
+            return False
+        from cqc_lem.utilities.email import send_onboarding_nudge_email
+        sent = send_onboarding_nudge_email(
+            email,
+            subject=nudge.get("subject") or "Finish setting up LinkedIn Engagement Manager",
+            headline=nudge.get("headline") or "One step left",
+            body=nudge.get("body") or "",
+            cta_label=nudge.get("cta_label") or "Finish setup",
+            cta_path=nudge.get("cta_path") or "/account",
+        )
+        if sent:
+            from cqc_lem.utilities.observability import track_onboarding_nudge
+            track_onboarding_nudge(user_id, str(nudge.get("key")))
+            log_info(f"Sent onboarding nudge '{nudge.get('key')}'", user_id=user_id,
+                     action_type="onboarding_nudge")
+        return sent
+    except Exception as e:
+        log_warning("Could not send onboarding nudge", exc=e, user_id=user_id,
+                    action_type="onboarding_nudge")
+        return False
 
 
 def notify_newsletter_draft_ready(user_id: int, edition_title: str, scheduled_for) -> bool:

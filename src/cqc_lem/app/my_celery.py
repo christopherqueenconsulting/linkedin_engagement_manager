@@ -192,6 +192,12 @@ app.conf.update(
             'task': 'cqc_lem.app.run_scheduler.auto_notify_missing_linkedin_session',
             'schedule': crontab(hour='9', minute='0')  # Daily 9:00 AM — throttled per-user to 1/week
         },
+        'onboarding-nudges': {
+            'task': 'cqc_lem.app.run_scheduler.auto_onboarding_nudges',
+            # Daily 9:30 AM — right after the missing-session email, so a user who just got that one
+            # isn't emailed twice in the same minute. Each nudge is one-shot per user (issue #500).
+            'schedule': crontab(hour='9', minute='30')
+        },
         'send-appreciation-dms': {
             'task': 'cqc_lem.app.run_scheduler.auto_appreciate_dms',
             'schedule': crontab(hour='8', minute='0')  # Run every day at 8:00 AM

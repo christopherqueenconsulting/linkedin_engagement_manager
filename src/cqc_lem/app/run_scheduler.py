@@ -908,6 +908,32 @@ def auto_notify_missing_linkedin_session():
 
 
 @shared_task.task
+def auto_onboarding_nudges():
+    """Daily: advance every not-yet-activated user's checklist (persisting steps + emitting the
+    activation funnel to PostHog) and email the ONE next-best nudge to those who stalled (issue
+    #500). Each nudge is one-shot per user and capped at one per NUDGE_COOLDOWN_HOURS, so this can
+    run daily without spamming — same posture as auto_notify_missing_linkedin_session."""
+    from cqc_lem.utilities.db import get_onboarding_candidate_user_ids
+    from cqc_lem.utilities.onboarding import (sync_onboarding_state, next_nudge_for_user,
+                                              send_onboarding_nudge)
+
+    users = get_onboarding_candidate_user_ids()
+    nudged = 0
+    for user_id in users:
+        try:
+            state = sync_onboarding_state(user_id)
+            nudge = next_nudge_for_user(user_id, state)
+            if nudge and send_onboarding_nudge(user_id, nudge):
+                nudged += 1
+        except Exception as e:
+            log_warning("Failed to process onboarding nudge", exc=e, user_id=user_id,
+                        task_name="auto_onboarding_nudges")
+    log_info(f"Onboarding: nudged {nudged} of {len(users)} un-activated user(s)",
+             task_name="auto_onboarding_nudges")
+    return f"Nudged {nudged} of {len(users)} un-activated user(s)"
+
+
+@shared_task.task
 def auto_backfill_missing_assets():
     """Safety net: regenerate missing media for unposted video/carousel posts before they
     publish, so a post never reaches its scheduled time without its asset (e.g. when the
