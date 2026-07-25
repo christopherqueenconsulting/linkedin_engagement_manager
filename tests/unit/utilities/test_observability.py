@@ -268,6 +268,31 @@ class TestEstimateLlmCost:
         assert cost == pytest.approx(3 / 1000.0 * 0.00015)
 
 
+class TestTrackPrePostEngagement:
+    def test_captures_pre_post_engagement_event(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_pre_post_engagement
+            track_pre_post_engagement(42, 7, "ran", comments=3)
+
+        mock_ph.capture.assert_called_once()
+        _, kwargs = mock_ph.capture.call_args
+        assert kwargs["event"] == "pre_post_engagement"
+        assert kwargs["distinct_id"] == "7"
+        props = kwargs["properties"]
+        assert props["post_id"] == 42
+        assert props["status"] == "ran"
+        assert props["comments"] == 3
+
+    def test_falls_back_to_system_distinct_id(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_pre_post_engagement
+            track_pre_post_engagement(42, None, "skipped", skip_reason="throttled")
+
+        _, kwargs = mock_ph.capture.call_args
+        assert kwargs["distinct_id"] == "system"
+        assert kwargs["properties"]["skip_reason"] == "throttled"
+
+
 class TestTrackPostOutcome:
     def test_captures_post_outcome_event(self):
         with patch(f"{_MOD}.posthog") as mock_ph:

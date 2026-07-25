@@ -77,6 +77,12 @@ def _redis_client():
         return None
 
 
+def shared_redis_client():
+    """Public handle to the same Redis this breaker uses (None when unavailable), so other
+    runtime-state helpers reuse one URL-resolution rule instead of re-deriving it."""
+    return _redis_client()
+
+
 def mark_rate_limited(reason: str = "") -> None:
     client = _redis_client()
     if client is None:

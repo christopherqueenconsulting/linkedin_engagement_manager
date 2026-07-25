@@ -189,6 +189,11 @@ class TestRedisClientSelection:
             mod = importlib.import_module(_MOD)
             assert mod._redis_client() is None
 
+    def test_shared_client_exposes_the_same_handle(self, fake_redis):
+        """Other runtime-state helpers (e.g. the pre-post engagement marker) reuse this handle."""
+        from cqc_lem.utilities.linkedin.rate_limit import shared_redis_client
+        assert shared_redis_client() is fake_redis
+
 
 class TestAutomationPause:
     def test_pause_sets_key_with_ttl(self, fake_redis):

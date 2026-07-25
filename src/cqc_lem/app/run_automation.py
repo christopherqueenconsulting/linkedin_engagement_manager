@@ -54,6 +54,7 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     get_engager_candidates, get_profile_facts, count_invites_sent_today, ConnectionRequestStatus, \
     CatchupTouchStatus, insert_catchup_touch, has_catchup_touch, get_catchup_touch, \
     update_catchup_touch_status, count_catchup_touches_sent_today, max_catchup_touches_allowed
+from cqc_lem.utilities.engagement_window import record_pre_post_run
 from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
     load_profile_for_user
@@ -1915,7 +1916,12 @@ def auto_post_to_group(self, user_id: int, group_id: str):
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
                   queue='se_engage')
-def automate_commenting(self, user_id: int, loop_for_duration: int = None, future_forward: int = 60):
+def automate_commenting(self, user_id: int, loop_for_duration: int = None, future_forward: int = 60,
+                        post_id: int = None):
+    """Walk the feed and comment. `post_id` is set only by the pre-post warm-up dispatch
+    (auto_check_scheduled_posts) — it makes each pass record a per-post engagement-window marker so
+    a report can confirm the warm-up before that post actually happened (issue #547). It rides the
+    self-requeue kwargs, so every pass in the window accumulates onto the same marker."""
     global stop_all_thread
 
     myprint("Starting Automate Commenting Thread...")
@@ -1928,6 +1934,10 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
     if lock_token is None:
         myprint(f"Another commenting run is in progress for user {user_id} — skipping this cycle.")
         return "Skipped: another commenting run already in progress for this user."
+
+    if post_id:
+        log_info("Pre-post engagement window opened", post_id=post_id, user_id=user_id,
+                 task_name="automate_commenting")
 
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Auto Commenting")
@@ -1950,6 +1960,9 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
                                                       max_posts=10, deadline_ts=deadline_ts)
 
         result = f"Automate Commenting Task Completed. Commented on {post_commented_count} posts."
+
+        if post_id:
+            record_pre_post_run(post_id, user_id, post_commented_count)
 
         # Re-schedule the task in the queue for the future
         if loop_for_duration:
