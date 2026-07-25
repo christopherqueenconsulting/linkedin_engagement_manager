@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.73.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.73.0...v0.73.1) (2026-07-25)
+
+
+### Documentation
+
+* cost, performance & margin observability plan ([c9cced7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c9cced7cc2c04e86cfc2b872800ecd99e629815b))
+
 ## [0.73.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.72.0...v0.73.0) (2026-07-25)
 
 
