@@ -75,6 +75,8 @@ from cqc_lem.utilities.db import (
     insert_feedback, FeedbackSource,
     get_latest_review_feedback_id, get_early_adopter_grant, extend_trial_for_user,
 )
+from cqc_lem.utilities.content_generation_status import mark_queued, get_generation_status, \
+    clear_generation_status
 from cqc_lem.utilities.email import generate_pin, hash_pin, send_pin_email
 from cqc_lem.utilities.linkedin.verification_pin import (
     extract_pin_from_text, extract_token_from_address, submit_pin_by_token)
@@ -85,7 +87,7 @@ from cqc_lem.utilities.linkedin.token_refresh import (
 from cqc_lem.utilities.env_constants import LI_CLIENT_ID, LI_CLIENT_SECRET, LI_REDIRECT_URL, LI_STATE_SALT, ADMIN_SECRET, API_ACCESS_TOKENS, \
     DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_VIDEO_RATIO
 import requests
-from cqc_lem.utilities.logger import myprint, log_warning, log_info
+from cqc_lem.utilities.logger import myprint, log_warning, log_info, log_error
 from cqc_lem.utilities.mime_type_helper import get_file_mime_type
 from cqc_lem.utilities.observability import (
     track_api_call, track_funnel_event, anonymous_distinct_id,
@@ -1309,19 +1311,46 @@ def schedule_post(post: PostRequest) -> ResponseModel:
 
 @router.post("/create_weekly_content/", responses={
     200: {"description": "Weekly content created successfully"},
+    500: {"description": "Could not queue content generation"},
     **{k: v for k, v in error_responses.items() if k in [400]}
 })
 def create_weekly_content(user_id: int) -> ResponseModel:
     if not user_id:
         raise HTTPException(status_code=400, detail="User ID is required")
 
+    # Generation runs for minutes in the background, so publish a 'queued' progress record now —
+    # the SPA polls /content_generation_status/ and would otherwise show nothing (issue #545).
+    mark_queued(user_id)
+
     # Chain: plan posts for the rest of the month first, then fill content for this week.
     # This ensures the user always has PLANNING rows before content generation runs.
-    celery_chain(
-        plan_content_for_user.si(user_id=user_id),
-        auto_create_weekly_content.si(user_id=user_id),
-    ).apply_async()
+    try:
+        celery_chain(
+            plan_content_for_user.si(user_id=user_id),
+            auto_create_weekly_content.si(user_id=user_id),
+        ).apply_async()
+    except Exception as e:
+        # Nothing will ever run, so drop the 'queued' record rather than leaving the SPA polling
+        # a run that never starts (it would otherwise sit there until the TTL expires).
+        clear_generation_status(user_id)
+        log_error("Could not dispatch weekly content generation", exc=e, user_id=user_id)
+        raise HTTPException(status_code=500, detail="Could not queue content generation")
+
     return ResponseModel(status_code=200, detail="Weekly content created successfully")
+
+
+@router.get("/content_generation_status/", responses={
+    200: {"description": "Content generation progress"},
+    **{k: v for k, v in error_responses.items() if k in [401]}
+})
+def get_content_generation_status_endpoint(session_token: str) -> ResponseModel:
+    """Progress of the caller's weekly content-generation run — queued → in_progress (X of N) →
+    done/failed. `detail` is None when no run is being tracked (nothing started, or it aged out).
+    Scoped by session rather than a user_id query param so one user can't poll another's run."""
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return ResponseModel(status_code=200, detail=get_generation_status(user_id))
 
 
 @router.post("/invite_to_li_company_page/", responses={

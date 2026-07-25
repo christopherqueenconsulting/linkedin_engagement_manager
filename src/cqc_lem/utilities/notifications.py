@@ -145,6 +145,28 @@ def notify_faq_answer(user_id: int, question: str, answer: str) -> bool:
         return False
 
 
+def notify_content_generation_ready(user_id: int, ready_count: int, failed_count: int = 0) -> bool:
+    """Email the user that their weekly content finished generating (issue #545). Sent once per
+    run by the generation task — no throttling ledger, the run itself is the trigger. Non-fatal:
+    returns True only if an email was actually sent."""
+    try:
+        if ready_count <= 0:
+            return False
+        email = get_user_email(user_id)
+        if not email:
+            return False
+        from cqc_lem.utilities.email import send_content_generation_ready_email
+        sent = send_content_generation_ready_email(email, ready_count, failed_count)
+        if sent:
+            log_info(f"Sent content-generation-ready email for {ready_count} post(s)",
+                     user_id=user_id, action_type="content_generation")
+        return sent
+    except Exception as e:
+        log_warning("Could not send content-generation-ready email", exc=e, user_id=user_id,
+                    action_type="content_generation")
+        return False
+
+
 def notify_newsletter_draft_ready(user_id: int, edition_title: str, scheduled_for) -> bool:
     """Email the user that their newsletter draft is ready to review and when it auto-publishes.
     Non-fatal — returns True only if an email was actually sent."""

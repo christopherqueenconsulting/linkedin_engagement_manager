@@ -38,6 +38,9 @@ from cqc_lem.utilities.ai.content_alignment import (
     personal_proof_directive, topic_authority_score, topic_authority_min, profile_topic_dna,
     content_matches_focus, score_authenticity, authenticity_gate_enabled, authenticity_score_min,
     humanize_text)
+from cqc_lem.utilities.content_generation_status import mark_in_progress, mark_finished, \
+    record_post_generated, record_post_failed
+from cqc_lem.utilities.notifications import notify_content_generation_ready
 from cqc_lem.utilities.env_constants import API_URL_FINAL, DEFAULT_VIDEO_RATIO, \
     DEFAULT_IMAGE_RATIO, AI_DISCLOSURE_ENABLED, AI_DISCLOSURE_TEXT, \
     STANDARD_VIDEO_MODEL, PREMIUM_VIDEO_MODEL, PREMIUM_TOP_VIDEO_MODEL, \
@@ -46,7 +49,7 @@ from cqc_lem.utilities.linkedin.helper import get_my_profile, load_profile_for_u
 from cqc_lem.utilities.linkedin.rate_limit import acquire_run_lock, release_run_lock
 from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin, strip_engagement_bait
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
-from cqc_lem.utilities.logger import myprint, log_info, log_warning
+from cqc_lem.utilities.logger import myprint, log_info, log_warning, log_error
 from cqc_lem.utilities.observability import attribute_llm_cost, llm_attribution, FEATURE_CONTENT
 from cqc_lem.utilities.selenium_util import get_driver_wait_pair, quit_gracefully
 from cqc_lem.utilities.utils import get_best_posting_time, get_post_time, create_folder_if_not_exists, save_video_url_to_dir
@@ -1423,10 +1426,25 @@ def auto_create_weekly_content(user_id: int = None):
         user_ids = get_user_ids_with_planned_posts_within_buffer() or []
 
     for uid in user_ids:
-        _top_up_buffer_for_user(uid)
+        # Only a run the API queued for one user has a 'queued' progress record waiting on it.
+        _top_up_buffer_for_user(uid, requested=user_id is not None)
 
 
-def _top_up_buffer_for_user(user_id: int) -> None:
+def _close_out_empty_run(user_id: int, requested: bool) -> None:
+    """Finish a requested run that generated nothing (issue #545).
+
+    `/create_weekly_content/` publishes 'queued' at dispatch, so a top-up that returns early
+    (lock lost, buffer already full, nothing planned) must still close the record out or the SPA
+    polls a queued run that never reports anything. The beat run publishes nothing up front, so
+    it has nothing to close.
+    """
+    if not requested:
+        return
+    mark_in_progress(user_id, [])
+    mark_finished(user_id)
+
+
+def _top_up_buffer_for_user(user_id: int, requested: bool = False) -> None:
     """Generate this user's buffer delta under a single-flight lock.
 
     The count → select → generate sequence is read-then-write: overlapping runs for the same user
@@ -1439,6 +1457,7 @@ def _top_up_buffer_for_user(user_id: int) -> None:
     lock_token = acquire_run_lock(lock_name, ttl_seconds=_BUFFER_LOCK_TTL_SECONDS)
     if lock_token is None:
         myprint(f"user_id {user_id}: another buffer top-up is in progress — skipping this cycle.")
+        _close_out_empty_run(user_id, requested)
         return
 
     try:
@@ -1448,24 +1467,46 @@ def _top_up_buffer_for_user(user_id: int) -> None:
         if already_ready >= buffer_max:
             myprint(f"user_id {user_id}: buffer already full ({already_ready}/{buffer_max} ready "
                     f"within {buffer_days} days). Skipping content creation.")
+            _close_out_empty_run(user_id, requested)
             return
 
         planned_posts = get_planned_posts_within_buffer(user_id, buffer_days, buffer_max, already_ready)
         if not planned_posts:
             myprint(f"user_id {user_id}: no planned posts within {buffer_days} days. "
                     f"Skipping content creation.")
+            _close_out_empty_run(user_id, requested)
             return
 
         myprint(f"user_id {user_id}: generating {len(planned_posts)} post(s) to top buffer up to "
                 f"{buffer_max} ready within {buffer_days} days ({already_ready} already ready)")
-        for post in planned_posts:
-            _create_content_for_planned_post(post, prefs)
+        # Progress for the SPA (issue #545) — published for the beat run too, so a user who never
+        # clicked Generate still sees why fresh drafts appeared.
+        mark_in_progress(user_id, [int(post['id']) for post in planned_posts])
+        # Counted locally rather than read back from Redis so the completion email still goes out
+        # when the (fail-open) progress store is unavailable.
+        generated = 0
+        failed = 0
+        try:
+            for post in planned_posts:
+                if _create_content_for_planned_post(post, prefs):
+                    generated += 1
+                else:
+                    failed += 1
+        finally:
+            # Always close the run out: an unexpected raise here would otherwise strand the SPA
+            # on 'in_progress' until the key's TTL expires.
+            mark_finished(user_id)
+        if generated:
+            notify_content_generation_ready(user_id, generated, failed)
     finally:
         release_run_lock(lock_name, lock_token)
 
 
-def _create_content_for_planned_post(post: dict, prefs: dict) -> None:
-    """Generate, store and status one planning post. Never raises — a bad post is skipped."""
+def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
+    """Generate, store and status one planning post. Never raises — a bad post is skipped.
+
+    Returns True when the post now has content, False when it could not be generated.
+    """
     user_id = post['user_id']
     post_id = post['id']
     post_type = post['post_type']
@@ -1475,78 +1516,92 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> None:
         content, video_url = create_content(user_id, post_type, stage, post_id=post_id)
     except Exception as e:
         myprint(f"Skipping post_id {post_id}: content generation raised {type(e).__name__}: {e}")
-        return
+        record_post_failed(user_id, post_id)
+        return False
 
     if content is None:
         myprint(f"Skipping post_id {post_id}: content generation returned None")
-        return
+        record_post_failed(user_id, post_id)
+        return False
 
-    # Copy the video from url to our assets/video folder and store it to the database for later retrieval via api call
-    ai_video = False
-    if video_url:
-        # AI (Runway) output is a remote http URL; Pexels fallback is a local path.
-        ai_video = str(video_url).startswith("http")
-        # Define and create assets_dir / videos
-        videos_dir = os.path.join(assets_dir, 'videos', 'runwayml')
-        create_folder_if_not_exists(videos_dir)
-        video_file_path = save_video_url_to_dir(video_url, videos_dir)
-        myprint(f"Video from url: {video_url} | Saved to: {video_file_path}")
-        # Attach AI Content Credentials to AI-generated video only (not stock).
+    # Everything past generation (video download, dwell scoring, the DB writes) can raise too.
+    # Contain it here so one bad post is counted as failed and skipped instead of aborting the
+    # whole run — which would leave the remaining posts ungenerated and the progress record stuck.
+    try:
+        # Copy the video from url to our assets/video folder and store it to the database for later retrieval via api call
+        ai_video = False
+        if video_url:
+            # AI (Runway) output is a remote http URL; Pexels fallback is a local path.
+            ai_video = str(video_url).startswith("http")
+            # Define and create assets_dir / videos
+            videos_dir = os.path.join(assets_dir, 'videos', 'runwayml')
+            create_folder_if_not_exists(videos_dir)
+            video_file_path = save_video_url_to_dir(video_url, videos_dir)
+            myprint(f"Video from url: {video_url} | Saved to: {video_file_path}")
+            # Attach AI Content Credentials to AI-generated video only (not stock).
+            if ai_video:
+                try:
+                    from cqc_lem.utilities.c2pa_helper import add_ai_content_credentials
+                    add_ai_content_credentials(video_file_path)
+                except Exception as e:
+                    myprint(f"C2PA signing skipped for post_id={post_id}: {e}")
+            # Get the file name from the video file path
+            video_file_name = os.path.basename(video_file_path)
+
+            # The video url is our api prefix + 'assets?file=videos/runwayml' +  video_file_name
+            api_video_url = f"{API_URL_FINAL}/api/assets?file_name=videos/runwayml/{video_file_name}"
+            myprint(f"Video URL: {api_video_url}")
+
+            # Update the database with the video url
+            update_db_post_video_url(post_id, api_video_url)
+
+        # Disclose AI-generated visuals in the caption (caption-line fallback for C2PA)
         if ai_video:
-            try:
-                from cqc_lem.utilities.c2pa_helper import add_ai_content_credentials
-                add_ai_content_credentials(video_file_path)
-            except Exception as e:
-                myprint(f"C2PA signing skipped for post_id={post_id}: {e}")
-        # Get the file name from the video file path
-        video_file_name = os.path.basename(video_file_path)
+            content = _apply_ai_disclosure(content)
 
-        # The video url is our api prefix + 'assets?file=videos/runwayml' +  video_file_name
-        api_video_url = f"{API_URL_FINAL}/api/assets?file_name=videos/runwayml/{video_file_name}"
-        myprint(f"Video URL: {api_video_url}")
+        # Dwell-proxy score (issue #391 — C2) for EVERY post type: the text post, the carousel
+        # caption, and the video caption all live or die on holding the reader past the fold.
+        # Deterministic and advisory — recorded next to the authenticity score, never a gate.
+        _score_and_persist_dwell(user_id, post_id, content)
 
-        # Update the database with the video url
-        update_db_post_video_url(post_id, api_video_url)
+        # Update the database with the created content
+        myprint(f"Updating content for post_id: {post_id}")
+        update_db_post_content(post_id, content)
 
-    # Disclose AI-generated visuals in the caption (caption-line fallback for C2PA)
-    if ai_video:
-        content = _apply_ai_disclosure(content)
+        # Respect the user's auto_schedule_posts preference (fetched once per user by the caller):
+        # True → APPROVED (Celery will pick it up); False → PENDING (manual review required)
+        auto_schedule = bool((prefs or {}).get("auto_schedule_posts", True))
+        new_status = PostStatus.APPROVED if auto_schedule else PostStatus.PENDING
 
-    # Dwell-proxy score (issue #391 — C2) for EVERY post type: the text post, the carousel
-    # caption, and the video caption all live or die on holding the reader past the fold.
-    # Deterministic and advisory — recorded next to the authenticity score, never a gate.
-    _score_and_persist_dwell(user_id, post_id, content)
-
-    # Update the database with the created content
-    myprint(f"Updating content for post_id: {post_id}")
-    update_db_post_content(post_id, content)
-
-    # Respect the user's auto_schedule_posts preference (fetched once per user by the caller):
-    # True → APPROVED (Celery will pick it up); False → PENDING (manual review required)
-    auto_schedule = bool((prefs or {}).get("auto_schedule_posts", True))
-    new_status = PostStatus.APPROVED if auto_schedule else PostStatus.PENDING
-
-    # Never auto-approve a video/carousel post whose media failed to generate — hold it
-    # PENDING so the backfill task (or manual review) can complete the asset before it
-    # can be scheduled/posted. Prevents assetless posts going out.
-    if _post_missing_required_asset(post_id, post_type, video_url):
-        new_status = PostStatus.PENDING
-        myprint(f"post_id {post_id}: required media asset missing — holding PENDING")
-
-    # Authenticity gate (issue #382): demote an auto-approve to PENDING when the persisted
-    # LLM-judged authenticity score (set by create_text_post's scoring step) is below threshold,
-    # so a generic-AI-flagged draft gets human review before it can post. Only downgrades an
-    # APPROVED — never upgrades a PENDING, and never blocks when unscored (score None).
-    if new_status == PostStatus.APPROVED and authenticity_gate_enabled():
-        score = get_post_authenticity_score(post_id)
-        if score is not None and score < authenticity_score_min():
+        # Never auto-approve a video/carousel post whose media failed to generate — hold it
+        # PENDING so the backfill task (or manual review) can complete the asset before it
+        # can be scheduled/posted. Prevents assetless posts going out.
+        if _post_missing_required_asset(post_id, post_type, video_url):
             new_status = PostStatus.PENDING
-            log_warning(f"post_id {post_id}: authenticity score {score} < "
-                        f"{authenticity_score_min()} — holding PENDING for review",
-                        user_id=user_id, post_id=post_id, task_name="create_content")
+            myprint(f"post_id {post_id}: required media asset missing — holding PENDING")
 
-    myprint(f"Updating post_id: {post_id} Status={new_status}")
-    update_db_post_status(post_id, new_status)
+        # Authenticity gate (issue #382): demote an auto-approve to PENDING when the persisted
+        # LLM-judged authenticity score (set by create_text_post's scoring step) is below threshold,
+        # so a generic-AI-flagged draft gets human review before it can post. Only downgrades an
+        # APPROVED — never upgrades a PENDING, and never blocks when unscored (score None).
+        if new_status == PostStatus.APPROVED and authenticity_gate_enabled():
+            score = get_post_authenticity_score(post_id)
+            if score is not None and score < authenticity_score_min():
+                new_status = PostStatus.PENDING
+                log_warning(f"post_id {post_id}: authenticity score {score} < "
+                            f"{authenticity_score_min()} — holding PENDING for review",
+                            user_id=user_id, post_id=post_id, task_name="create_content")
+
+        myprint(f"Updating post_id: {post_id} Status={new_status}")
+        update_db_post_status(post_id, new_status)
+    except Exception as e:
+        log_error(f"Skipping post_id {post_id}: storing generated content failed", exc=e,
+                  user_id=user_id, post_id=post_id, task_name="auto_create_weekly_content")
+        record_post_failed(user_id, post_id)
+        return False
+
+    record_post_generated(user_id, post_id)
+    return True
 
 
 def is_blog_post(url):

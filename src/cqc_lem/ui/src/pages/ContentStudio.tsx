@@ -31,7 +31,7 @@ const VIEWS: { key: View; label: string }[] = [
 ]
 const VIEW_KEYS = VIEWS.map((v) => v.key) as string[]
 
-type Status = 'ALL' | 'pending' | 'approved' | 'scheduled' | 'posted' | 'rejected'
+type Status = 'ALL' | 'pending' | 'approved' | 'scheduled' | 'posted' | 'rejected' | 'error'
 const STATUSES: { label: string; value: Status }[] = [
   { label: 'ALL', value: 'ALL' },
   { label: 'PENDING', value: 'pending' },
@@ -39,6 +39,9 @@ const STATUSES: { label: string; value: Status }[] = [
   { label: 'SCHEDULED', value: 'scheduled' },
   { label: 'POSTED', value: 'posted' },
   { label: 'REJECTED', value: 'rejected' },
+  // Generation/posting failed (e.g. media never rendered) — needs a manual fix, so it gets
+  // its own filter instead of hiding inside ALL.
+  { label: 'ERROR', value: 'error' },
 ]
 
 type PostTypeFilter = 'ALL' | 'text' | 'video' | 'carousel' | 'document'
@@ -88,7 +91,25 @@ const STATUS_COLORS: Record<string, string> = {
   posted: 'bg-blue-100 text-blue-700',
   rejected: 'bg-red-100 text-red-700',
   scheduled: 'bg-purple-100 text-purple-700',
+  error: 'bg-red-100 text-red-700',
 }
+
+// Progress of a weekly content-generation run, polled while it is running (issue #545).
+type GenerationState = 'queued' | 'in_progress' | 'done' | 'failed'
+interface GenerationStatus {
+  state: GenerationState
+  total: number
+  completed: number
+  failed: number
+  post_ids: number[]
+  ready_post_ids: number[]
+  failed_post_ids: number[]
+  started_at: string | null
+  finished_at: string | null
+  updated_at?: string | null
+}
+const isGenerationRunning = (s?: GenerationStatus | null) =>
+  !!s && (s.state === 'queued' || s.state === 'in_progress')
 
 export default function ContentStudio() {
   const { user, sessionToken } = useAuth()
@@ -226,12 +247,44 @@ export default function ContentStudio() {
     onError: () => setRegenNotice('Could not start regeneration — please try again.'),
   })
 
+  // Generation takes minutes (each video post is a ~6-min render), so poll progress while a run
+  // is queued/in-progress and stop as soon as it finishes.
+  const { data: genStatus } = useQuery<GenerationStatus | null>({
+    queryKey: ['content-generation-status', sessionToken],
+    queryFn: async () => {
+      const r = await api.get('/content_generation_status/', { params: { session_token: sessionToken } })
+      return (r.data.detail ?? null) as GenerationStatus | null
+    },
+    enabled: !!sessionToken,
+    refetchInterval: (query) => (isGenerationRunning(query.state.data) ? 5_000 : false),
+  })
+
+  // When a run finishes, pull in the posts it just created (finished_at is only set once the
+  // run reaches done/failed, so this fires exactly once per run).
+  const finishedAt = genStatus?.finished_at ?? null
+  useEffect(() => {
+    if (finishedAt) qc.invalidateQueries({ queryKey: ['posts', email] })
+  }, [finishedAt, email, qc])
+
   const weeklyMutation = useMutation({
     mutationFn: () =>
       api.get(`/user_id/?email=${encodeURIComponent(email)}`).then((r) =>
         api.post(`/create_weekly_content/?user_id=${r.data.detail}`)
       ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['content-generation-status', sessionToken] }),
   })
+
+  // A finished run expires server-side within the hour, so there's no staleness to reason about
+  // here — the user can also dismiss the result early.
+  const [dismissedRunStartedAt, setDismissedRunStartedAt] = useState<string | null>(null)
+  const showGenBanner = !!genStatus && genStatus.started_at !== dismissedRunStartedAt
+
+  const generating = weeklyMutation.isPending || isGenerationRunning(genStatus)
+  const generateLabel = !generating
+    ? 'Generate Weekly Content'
+    : genStatus?.state === 'in_progress' && genStatus.total > 0
+      ? `Generating ${genStatus.completed + genStatus.failed} of ${genStatus.total}…`
+      : 'Generating content…'
 
   const { data: postUrlData, isLoading: postUrlLoading } = useQuery<{ detail: { post_url: string | null } }>({
     queryKey: ['post_url', editingPost?.post_id, email],
@@ -295,10 +348,10 @@ export default function ContentStudio() {
         {view === 'review' && (
           <button
             onClick={() => weeklyMutation.mutate()}
-            disabled={weeklyMutation.isPending}
+            disabled={generating}
             className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-green-700 disabled:opacity-50 transition-colors"
           >
-            {weeklyMutation.isPending ? 'Generating content…' : 'Generate Weekly Content'}
+            {generateLabel}
           </button>
         )}
         {view === 'review' && (
@@ -310,6 +363,64 @@ export default function ContentStudio() {
           </button>
         )}
       </div>
+
+      {/* Generation progress — generation runs for minutes in the background, so show what
+          it is doing instead of leaving the page looking unchanged (issue #545). */}
+      {showGenBanner && genStatus && (
+        <div
+          className={`rounded-lg border p-3 text-sm ${
+            isGenerationRunning(genStatus)
+              ? 'bg-blue-50 border-blue-200 text-blue-800'
+              : genStatus.state === 'failed'
+                ? 'bg-red-50 border-red-200 text-red-800'
+                : 'bg-green-50 border-green-200 text-green-800'
+          }`}
+        >
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <span className="font-semibold">
+              {genStatus.state === 'queued' && 'Queued — starting content generation…'}
+              {genStatus.state === 'in_progress' &&
+                (genStatus.total > 0
+                  ? `Generating your posts — ${genStatus.completed + genStatus.failed} of ${genStatus.total} done`
+                  : 'Generating your posts…')}
+              {genStatus.state === 'done' &&
+                `${genStatus.completed} ${genStatus.completed === 1 ? 'post is' : 'posts are'} ready to review`}
+              {genStatus.state === 'failed' && 'Content generation failed — no posts were created'}
+            </span>
+            {isGenerationRunning(genStatus) ? (
+              <span className="text-xs">
+                This takes a few minutes — video posts render last. You can leave this page; we'll
+                email you when it's done.
+              </span>
+            ) : (
+              <button
+                onClick={() => setDismissedRunStartedAt(genStatus.started_at)}
+                aria-label="Dismiss generation status"
+                className="text-xs font-semibold underline"
+              >
+                Dismiss
+              </button>
+            )}
+          </div>
+          {genStatus.total > 0 && (
+            <div className="mt-2 h-2 w-full rounded-full bg-white/70 overflow-hidden">
+              <div
+                className="h-full bg-blue-600 transition-all"
+                style={{
+                  width: `${Math.min(100, Math.round(
+                    ((genStatus.completed + genStatus.failed) / genStatus.total) * 100))}%`,
+                }}
+              />
+            </div>
+          )}
+          {genStatus.failed > 0 && (
+            <p className="mt-2 text-xs">
+              {genStatus.failed} {genStatus.failed === 1 ? 'post' : 'posts'} couldn't be generated
+              (usually a media failure) — they stay in your plan and are retried on the next run.
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Content tabs */}
       <div className="flex flex-wrap gap-1 border-b border-gray-200">
@@ -545,10 +656,10 @@ export default function ContentStudio() {
               ) : (
                 <button
                   onClick={() => weeklyMutation.mutate()}
-                  disabled={weeklyMutation.isPending}
+                  disabled={generating}
                   className="bg-green-600 text-white px-6 py-2.5 rounded-lg text-sm font-semibold hover:bg-green-700 disabled:opacity-50 transition-colors"
                 >
-                  {weeklyMutation.isPending ? 'Generating content…' : 'Generate Weekly Content'}
+                  {generateLabel}
                 </button>
               )}
             </div>
