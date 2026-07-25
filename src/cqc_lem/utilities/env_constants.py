@@ -226,6 +226,35 @@ COST_ALERT_UNATTRIBUTED   = float(get_constant_from_env('COST_ALERT_UNATTRIBUTED
 # Where budget alerts are emailed. Empty falls back to MARGIN_REPORT_EMAIL.
 COST_ALERT_EMAIL          = get_constant_from_env('COST_ALERT_EMAIL', default_value='')
 
+# Cost-aware down-routing (docs/cost-performance-margin-plan.md §D.1(1)). OFF by default: this can
+# change which model writes a user's content, so it ships flag-gated and cohort-scoped. The LiteLLM
+# proxy has its own switch (COST_AWARE_ROUTING_ENABLED) — BOTH must be on for a call to down-route.
+COST_ROUTING_ENABLED      = (get_constant_from_env('COST_ROUTING_ENABLED', default_value='false')
+                             or '').strip().lower() in ('1', 'true', 'yes', 'on')
+# Days of post outcomes each weekly evaluation reads.
+COST_ROUTING_WINDOW_DAYS  = int(get_constant_from_env('COST_ROUTING_WINDOW_DAYS', default_value='28'))
+# Posts required PER ARM before a bucket is judged at all — below this the experiment just runs on.
+COST_ROUTING_MIN_SAMPLES  = int(get_constant_from_env('COST_ROUTING_MIN_SAMPLES', default_value='20'))
+# Equivalence margin: the largest RELATIVE engagement drop still counted as "indistinguishable".
+COST_ROUTING_MAX_QUALITY_DROP = float(get_constant_from_env('COST_ROUTING_MAX_QUALITY_DROP',
+                                                            default_value='0.05'))
+# Authenticity gate (§D.3), in score points: a bigger median drop — or a median under the floor —
+# rolls the bucket back regardless of engagement.
+COST_ROUTING_AUTH_MAX_DROP = float(get_constant_from_env('COST_ROUTING_AUTH_MAX_DROP',
+                                                         default_value='5'))
+COST_ROUTING_AUTH_FLOOR   = float(get_constant_from_env('COST_ROUTING_AUTH_FLOOR', default_value='60'))
+# z for the non-inferiority confidence interval (1.96 = 95%).
+COST_ROUTING_CONFIDENCE_Z = float(get_constant_from_env('COST_ROUTING_CONFIDENCE_Z',
+                                                        default_value='1.96'))
+# Days a rolled-back bucket is left alone before it may be re-proposed.
+COST_ROUTING_COOLDOWN_DAYS = int(get_constant_from_env('COST_ROUTING_COOLDOWN_DAYS',
+                                                       default_value='28'))
+# Share of users a new experiment starts on, and how many buckets may run at once (blast radius).
+COST_ROUTING_INITIAL_COHORT = float(get_constant_from_env('COST_ROUTING_INITIAL_COHORT_PCT',
+                                                          default_value='0.1'))
+COST_ROUTING_MAX_EXPERIMENTS = int(get_constant_from_env('COST_ROUTING_MAX_EXPERIMENTS',
+                                                         default_value='1'))
+
 NGROK_LIPREVIEW_PREFIX=get_constant_from_env('NGROK_LIPREVIEW_PREFIX')
 if NGROK_FREE_DOMAIN and NGROK_LIPREVIEW_PREFIX:
     LINKEDIN_PREVIEW_URL = f"https://{NGROK_LIPREVIEW_PREFIX}.{NGROK_FREE_DOMAIN}"

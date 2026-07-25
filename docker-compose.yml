@@ -300,6 +300,10 @@ services:
       - "4000:4000"
     volumes:
       - ./.litellm:/app/.litellm
+      # The complexity router's decision core, shared with the app so the weekly optimizer and the
+      # router can never disagree about a bucket (issue #494). Mounted, not copied: this image has
+      # no LEM package, and the module is deliberately stdlib-only for exactly that reason.
+      - ./src/cqc_lem/utilities/routing_policy.py:/app/.litellm/routing_policy.py:ro
     command: ["--config", "/app/.litellm/config.yaml", "--port", "4000"]
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
@@ -310,6 +314,11 @@ services:
       - OLLAMA_CLOUD_API_KEY=${OLLAMA_CLOUD_API_KEY}
       # lem-research (newsletter research grounding) routes to Perplexity Sonar
       - PERPLEXITY_API_KEY=${PERPLEXITY_API_KEY}
+      # Cost-aware down-routing (issue #494). OFF unless BOTH this and COST_ROUTING_ENABLED (app
+      # side) are on. The Redis URL must point at the same instance the app publishes the policy to.
+      - COST_AWARE_ROUTING_ENABLED=${COST_AWARE_ROUTING_ENABLED:-false}
+      - COST_ROUTING_REDIS_URL=${COST_ROUTING_REDIS_URL:-redis://redis:6379/0}
+      - COST_ROUTING_POLICY_TTL_SECONDS=${COST_ROUTING_POLICY_TTL_SECONDS:-60}
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')\" 2>/dev/null || exit 1"]

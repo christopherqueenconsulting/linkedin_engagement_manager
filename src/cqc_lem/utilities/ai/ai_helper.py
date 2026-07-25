@@ -44,6 +44,20 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _attach_routing_metadata(kwargs: dict, user_id, feature) -> None:
+    """Send this call's (user, feature) to the LiteLLM proxy as request `metadata`, so the
+    complexity router can look the call's cost-aware routing bucket up (issue #494). Same two
+    dimensions cost is attributed by — the experiment bucket and the spend bucket must mean the
+    same thing. Only tier aliases are routable, so nothing is attached to raw provider models.
+    Best-effort: an existing `extra_body` from the caller wins over ours."""
+    if not str(kwargs.get("model") or "").startswith("lem-"):
+        return
+    extra_body = kwargs.setdefault("extra_body", {})
+    if not isinstance(extra_body, dict) or "metadata" in extra_body:
+        return
+    extra_body["metadata"] = {"feature": feature, "user_id": user_id}
+
+
 def _call_llm(**kwargs):
     """Thin wrapper around client.chat.completions.create that logs model, latency, and token usage.
 
@@ -65,6 +79,10 @@ def _call_llm(**kwargs):
         )
 
     try:
+        try:
+            _attach_routing_metadata(kwargs, *_attribution())
+        except Exception:
+            pass  # attribution is observability, never a reason to lose the generation
         response = client.chat.completions.create(**kwargs)
         duration_ms = int((time.time() - start) * 1000)
         usage = getattr(response, "usage", None)

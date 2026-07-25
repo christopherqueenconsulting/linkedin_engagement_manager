@@ -269,6 +269,7 @@ could degrade output quality is gated by the quality signals (engagement_rate,
    not just latency. For feature×context buckets where the cheaper tier's historical
    engagement/authenticity is statistically indistinguishable, route down. Ship behind a flag; auto
    A/B on a cohort; auto-rollback if quality drops. **`risk:product-decision`.**
+   *(Shipped, issue #494 — see §D.1.1 below.)*
 2. **Feature cost toggles** — the proven pattern (`COMMENT_RESEARCH_ENABLED` OFF by default because
    comments are high-volume). Generalize: any feature whose cost/engagement ratio degrades gets an
    auto-recommended toggle.
@@ -280,6 +281,69 @@ could degrade output quality is gated by the quality signals (engagement_rate,
    trust allows (biggest linear-cost lever).
 6. **Media reuse** — reuse/branch existing assets before paying for a new render.
 
+### D.1.1 Cost-aware down-routing — how it actually works (shipped, issue #494)
+
+One decision core, `src/cqc_lem/utilities/routing_policy.py`, is used by BOTH sides: the app imports
+it as `cqc_lem.utilities.routing_policy`, and docker-compose mounts that same file into the LiteLLM
+container next to `.litellm/complexity_router.py`, which imports it as a bare `routing_policy`. It is
+stdlib-only for exactly that reason (the LiteLLM image has no LEM package). Router and optimizer can
+therefore never disagree about which bucket a call belongs to.
+
+| Piece | How it runs |
+|---|---|
+| Routing hook | `.litellm/complexity_router.py` — stage 1 complexity (unchanged), stage 2 cost-aware down-routing of the resulting tier **or** of an explicitly requested `lem-*` tier |
+| Decision core | `utilities/routing_policy.py` — `complexity_tier`, `assign_arm`, `resolve_tier`; down-route only, never up, never off-tier |
+| Optimizer | Celery beat `weekly-cost-routing` → `run_scheduler.auto_weekly_cost_routing` (Mon 14:00 UTC); also `python -m cqc_lem.utilities.cost_routing [--json] [--apply] [--days N]` (exit 2 = a bucket rolled back) |
+| Policy transport | one JSON document at Redis `lem:routing:policy`; the hook caches it for `COST_ROUTING_POLICY_TTL_SECONDS`, so a rollback lands within one TTL |
+| Quality source | `db.get_post_quality_rows` — every posted post's latest `post_stats` row + `posts.authenticity_score` (V57) |
+| Attribution | `_call_llm` sends `metadata={feature, user_id}` to the proxy — the same two dimensions cost is attributed by, so the experiment bucket and the spend bucket mean the same thing |
+
+**The bucket lifecycle.** A bucket is one `feature:tier` pair (`content:lem-complex`). It starts as an
+`experiment` on `COST_ROUTING_INITIAL_COHORT_PCT` of users, climbs the ramp (10% → 50% → **90%,
+`adopted`**) each week it passes, and snaps back to `rolled_back` — cohort 0, with a cooldown — the
+week it fails. The top of the ramp is deliberately NOT 100%: **a bucket with no control arm can never
+be measured again**, so the permanent holdout is what keeps auto-rollback alive after full rollout.
+Re-proposing a rolled-back bucket bumps its generation, which re-salts the cohort hash so the retry
+isn't run on the same users.
+
+**The gate is non-inferiority, not "looks fine" (§D.3).** Each week the window's posts are split into
+the arms their authors were assigned to, and the cheaper tier is promoted only when the 95% CI lower
+bound on (treatment − control) engagement sits inside the equivalence margin
+(`COST_ROUTING_MAX_QUALITY_DROP`). An underpowered, noisy comparison reads `inconclusive` and the
+experiment keeps running — it never passes by default. Authenticity is an absolute veto on top: a
+median below `COST_ROUTING_AUTH_FLOOR`, or a drop of more than `COST_ROUTING_AUTH_MAX_DROP` points,
+rolls the bucket back whatever engagement did. Engagement is impression-normalized when every post in
+the comparison carries impressions, and raw weighted engagement otherwise (never a mix).
+
+**Blast radius.** Two independent flags, and BOTH must be on for any call to move:
+`COST_ROUTING_ENABLED` (app side — also written into the policy document, so flipping it off parks
+every bucket without losing experiment state) and `COST_AWARE_ROUTING_ENABLED` (proxy side). Both
+default OFF, and they must be flipped **together**: app-on/proxy-off is not a dry run — experiments
+would open and ramp while both arms actually ran on the same tier, so the gate would pass on a
+comparison of nothing, and enabling the proxy later would start at whatever cohort that sham ramp had
+reached. At most `COST_ROUTING_MAX_EXPERIMENTS` buckets run at once. Every failure mode — no policy,
+unreachable Redis, malformed document, a broken decision core, a call with no user id — fails open to
+the tier the call would have used before this feature existed.
+
+**Shipped state (owner decision on PR #529, 2026-07-25).** Merged **dormant**: both flags stay
+`false` in production, so no experiment opens and no call is down-routed until someone turns them on.
+The weekly beat task still runs, but while `COST_ROUTING_ENABLED` is off it skips the observation
+window entirely and only republishes the parked policy. The gate ships at its documented defaults
+(5% equivalence margin, authenticity floor 60, max median drop 5 points, 95% CI, 20 posts per arm),
+and the first bucket is left to the ranker rather than named by hand — it will take the most
+expensive tier first, i.e. `content:lem-complex → lem-medium`.
+
+**Turning it on later.** Set `COST_ROUTING_ENABLED=true` **and** `COST_AWARE_ROUTING_ENABLED=true`
+together in `/opt/lem/.env`, recreate the app services and `litellm`, then either wait for Monday
+14:00 UTC or run `python -m cqc_lem.utilities.cost_routing --json` in a worker to see what the next
+run would do before it does it. Turning either flag back off parks every bucket without losing the
+experiment state the next run needs.
+
+**What is NOT auto-routed.** Only features with a per-artifact quality signal (`MEASURABLE_FEATURES`,
+today just `content`) can be auto-experimented. Comments, DMs and newsletters have nothing that could
+clear an automated gate, so their spend is surfaced as a ranked human-gated recommendation in the
+weekly report instead — the §D.3 `risk:product-decision` posture, enforced in code.
+
 ### D.2 Automated cadence
 
 | Cadence | Job | Output |
@@ -287,7 +351,7 @@ could degrade output quality is gated by the quality signals (engagement_rate,
 | **Daily** | Extend `snapshot.sh` with a cost+margin block (`cost_by_feature`, `spend_usd`, est. `mrr`, `contribution_margin`) appended to `metrics.jsonl` | trend line for cost & margin next to engagement |
 | **Daily** | Spend anomaly detection (spend vs. trailing-7-day mean/σ) — *shipped, issue #493: Celery beat `daily-cost-alerts` → `run_scheduler.auto_daily_cost_alerts`, see §E.2* | alert if the last complete day's spend > μ+3σ or a per-user ceiling is breached |
 | **Weekly** | Margin report (per-user CM, system gross margin, cohort engagement lift, LTV:CAC) | posted to owner (email/PostHog dashboard) |
-| **Weekly** | Auto-optimization recommender: scans cost×quality by feature×tier, emits ranked recommendations; for **safe** changes (config toggle, cache extension) the agent pipeline can open an `agent:ready` PR; anything touching routing/quality is filed **`risk:product-decision`** for a human call | recommendations + optional auto-PRs |
+| **Weekly** | Auto-optimization recommender: scans cost×quality by feature×tier, emits ranked recommendations; for **safe** changes (config toggle, cache extension) the agent pipeline can open an `agent:ready` PR; anything touching routing/quality is filed **`risk:product-decision`** for a human call — *routing half shipped, issue #494: Celery beat `weekly-cost-routing` → `run_scheduler.auto_weekly_cost_routing`, see §D.1.1; the auto-PR path for config/cache toggles is not built* | recommendations + optional auto-PRs |
 
 **Shipped (issue #491) — the daily block + weekly report.** `src/cqc_lem/utilities/margin.py` holds
 the §C.1 formulas (pure, unit-tested) plus the DB-fed collectors and delivery:
@@ -420,6 +484,7 @@ Quality guardrail (must hold): cohort engagement_rate · median authenticity_sco
 5. **Alerts** — per-user ceiling, gross-margin floor, spend anomaly, cache-hit collapse,
    unattributed-spend. *(Shipped, issue #493 — the table + thresholds in §E.2.)*
 6. **Cost-aware optimization loop** extending `complexity_router.py` (`risk:product-decision`).
+   *(Shipped, issue #494 — §D.1.1. Flag-gated OFF on both sides; turning it on is the product call.)*
 
 Each is filed as an `agent:ready` GitHub issue referencing this doc. Anything that can auto-degrade
 output quality or auto-modify routing/billing carries `risk:product-decision`.

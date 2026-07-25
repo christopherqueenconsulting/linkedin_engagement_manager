@@ -22,7 +22,8 @@ from cqc_lem.utilities.db import (
     get_approved_catchup_touches, get_orphaned_catchup_touches, update_catchup_touch_status,
     count_catchup_touches_sent_today, CatchupTouchStatus, max_catchup_touches_allowed,
 )
-from cqc_lem.utilities.env_constants import SELENIUM_KEEP_VIDEOS_X_DAYS, CQC_LEM_POST_TIME_DELTA_MINUTES
+from cqc_lem.utilities.env_constants import SELENIUM_KEEP_VIDEOS_X_DAYS, CQC_LEM_POST_TIME_DELTA_MINUTES, \
+    COST_ROUTING_WINDOW_DAYS
 from cqc_lem.utilities.logger import myprint, log_info, log_debug, log_warning
 from cqc_lem.utilities.linkedin.rate_limit import is_automation_paused, automation_pause_remaining, \
     rate_limit_cooldown_remaining
@@ -1339,6 +1340,23 @@ def auto_rollup_llm_costs(self):
     written = flush_llm_cost_rollup()
     log_info(f"LLM cost rollup: wrote {written} ledger row(s)", task_name="auto_rollup_llm_costs")
     return written
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_weekly_cost_routing(self, days: int = COST_ROUTING_WINDOW_DAYS):
+    """Weekly cost-aware routing optimization (issue #494, plan §D.1(1)): scores every running
+    down-route experiment against the §D.3 quality gate (engagement non-inferiority +
+    `posts.authenticity_score`), promotes the ones that hold, **auto-rolls-back** the ones that
+    don't, opens at most `COST_ROUTING_MAX_EXPERIMENTS` new ones, and publishes the policy the
+    LiteLLM complexity router reads. While COST_ROUTING_ENABLED is off it observes nothing and only
+    republishes the parked policy, so the loop is dormant until the flag is turned on."""
+    from cqc_lem.utilities.cost_routing import apply_routing_report, collect_routing_report
+
+    report = collect_routing_report(days=days)
+    result = apply_routing_report(report)
+    return (f"Cost routing {report.get('date')}: {result['changes']} change(s), "
+            f"{result['rollbacks']} rollback(s) over {report.get('observations')} post(s) "
+            f"(published={result['published']}, emailed={result['emailed']})")
 
 
 if __name__ == "__main__":

@@ -6455,6 +6455,47 @@ def get_daily_cost_totals(start_date, end_date) -> dict:
         connection.close()
 
 
+def get_post_quality_rows(start_date, end_date) -> list:
+    """Per-post QUALITY observations across all users over [start_date, end_date] — the outcome side
+    of the cost-aware routing experiment (docs/cost-performance-margin-plan.md §D.1(1), issue #494):
+    `{user_id, post_id, day, reactions, comments, reposts, impressions, authenticity_score}` for
+    every POSTED post with captured stats, using the LATEST `post_stats` row per post.
+
+    Read-only and cross-user by design — the A/B arms are cohorts of users, so the comparison has to
+    see every user's posts, unlike the per-user `get_post_engagement_rows`."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT p.user_id, p.id AS post_id, DATE(p.scheduled_time) AS day, "
+            "p.authenticity_score, s.reactions, s.comments, s.reposts, s.impressions "
+            "FROM posts p JOIN post_stats s ON s.post_id=p.id AND s.user_id=p.user_id "
+            "WHERE p.status='posted' AND p.scheduled_time BETWEEN %s AND %s "
+            "AND s.id IN (SELECT MAX(id) FROM post_stats GROUP BY post_id)",
+            (start_date, end_date))
+        rows = cursor.fetchall() or []
+        return [
+            {
+                "user_id": r["user_id"],
+                "post_id": r["post_id"],
+                "day": r["day"].isoformat() if hasattr(r.get("day"), "isoformat") else r.get("day"),
+                "reactions": int(r["reactions"] or 0),
+                "comments": int(r["comments"] or 0),
+                "reposts": int(r["reposts"] or 0),
+                "impressions": int(r["impressions"]) if r.get("impressions") else None,
+                "authenticity_score": (int(r["authenticity_score"])
+                                       if r.get("authenticity_score") is not None else None),
+            }
+            for r in rows
+        ]
+    except mysql.connector.Error as err:
+        myprint(f"Could not get post quality rows | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_margin_users() -> list:
     """Users the margin report covers: everyone on an active/past-due subscription or an open trial.
     Trials are included (tier `free_trial`, $0 MRR) so the cost they incur still lands in system

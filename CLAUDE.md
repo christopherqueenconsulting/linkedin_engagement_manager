@@ -120,6 +120,13 @@ response = client.chat.completions.create(model="lem-simple", messages=[...])
 | `lem-embedding` | Embeddings for feedback dedup/clustering (`client.embeddings.create`) |
 | `lem-router` | Auto-routes by prompt complexity via `LEMComplexityRouter` |
 
+**Cost-aware down-routing** (`utilities/routing_policy.py`, `utilities/cost_routing.py`): the router
+can additionally route a tier ONE step down for the treatment cohort of an active cost/quality
+experiment. `routing_policy.py` is the shared decision core — the app imports it, and docker-compose
+mounts that same file into the LiteLLM container — so it must stay **stdlib-only** (no `cqc_lem.*`
+imports). Off unless BOTH `COST_ROUTING_ENABLED` and `COST_AWARE_ROUTING_ENABLED` are set. See
+`docs/cost-performance-margin-plan.md` §D.1.1.
+
 See `ai_helper.py` for the per-function model assignment.
 
 ## Selenium Pattern
