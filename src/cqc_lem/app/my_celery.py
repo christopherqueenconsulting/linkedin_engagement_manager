@@ -198,6 +198,12 @@ app.conf.update(
             # isn't emailed twice in the same minute. Each nudge is one-shot per user (issue #500).
             'schedule': crontab(hour='9', minute='30')
         },
+        'survey-prompts': {
+            'task': 'cqc_lem.app.run_scheduler.auto_survey_prompts',
+            # Daily 9:45 AM — after the onboarding nudge, so a stalled user gets the setup reminder
+            # rather than a survey in the same pass. Each survey is one-shot per user (issue #501).
+            'schedule': crontab(hour='9', minute='45')
+        },
         'send-appreciation-dms': {
             'task': 'cqc_lem.app.run_scheduler.auto_appreciate_dms',
             'schedule': crontab(hour='8', minute='0')  # Run every day at 8:00 AM

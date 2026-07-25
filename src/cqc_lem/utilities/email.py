@@ -390,6 +390,30 @@ def send_onboarding_nudge_email(to_email: str, subject: str, headline: str, body
     return _dispatch_email(to_email, subject, html)
 
 
+def send_survey_prompt_email(to_email: str, subject: str, headline: str, body: str,
+                             cta_label: str, cta_path: str = "/") -> bool:
+    """Invite a user to answer an NPS survey or leave a review (issue #501). The CTA deep-links to
+    the in-app modal, so both channels write the same `feedback` row."""
+    import os
+    base = (os.getenv("LEM_APP_URL") or "https://lem.christopherqueenconsulting.com").rstrip("/")
+    url = f"{base}{cta_path if cta_path.startswith('/') else '/' + cta_path}"
+    safe_headline = html_escape(headline or "")
+    safe_body = html_escape(body or "").replace("\n", "<br/>")
+    safe_cta_label = html_escape(cta_label or "")
+    safe_url = html_escape(url)
+    html = f"""
+    <html><body style="font-family:Arial,Helvetica,sans-serif;color:#222;">
+    <h2>{safe_headline}</h2>
+    <p>{safe_body}</p>
+    <p><a href="{safe_url}" style="background:#0a66c2;color:#fff;padding:10px 16px;border-radius:6px;
+    text-decoration:none;">{safe_cta_label}</a></p>
+    <p style="color:#888;font-size:12px;">We ask each of these once — answer it or ignore it and you
+    won't hear about it again.</p>
+    </body></html>
+    """
+    return _dispatch_email(to_email, subject, html)
+
+
 def send_pin_email(
     to_email: str,
     pin: str,

@@ -6526,6 +6526,99 @@ def update_feedback_triage(feedback_id: int, status: "FeedbackStatus" = None,
         connection.close()
 
 
+# --- NPS/CSAT + review surveys (issue #501) -----------------------------------------
+def get_latest_feedback_at(user_id: int, source: "FeedbackSource") -> Optional[datetime]:
+    """When this user last answered a survey of the given source, or None if they never have.
+    Drives both "don't ask again" suppression and the review gate on the extended trial."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT MAX(created_at) FROM feedback WHERE user_id = %s AND source = %s",
+            (user_id, str(source)))
+        row = cursor.fetchone()
+        return row[0] if row else None
+    except mysql.connector.Error as err:
+        log_error(f"Could not get latest {source} feedback for user_id {user_id}", exc=err)
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def has_review_feedback(user_id: int) -> bool:
+    """The extended-trial gate (issue #499 consumes this): True once the user has submitted a
+    review. Fails CLOSED — a DB error never hands out a trial extension."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT 1 FROM feedback WHERE user_id = %s AND source = %s LIMIT 1",
+                       (user_id, str(FeedbackSource.REVIEW)))
+        return cursor.fetchone() is not None
+    except mysql.connector.Error as err:
+        log_error(f"Could not check review feedback for user_id {user_id}", exc=err)
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_survey_prompts_sent(user_id: int) -> dict:
+    """survey_key -> sent_at for every survey prompt already shown/emailed to this user."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT survey_key, sent_at FROM survey_prompts WHERE user_id = %s",
+                       (user_id,))
+        return {row[0]: row[1] for row in cursor.fetchall()}
+    except mysql.connector.Error as err:
+        log_error(f"Could not get survey prompts for user_id {user_id}", exc=err)
+        return {}
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def record_survey_prompt(user_id: int, survey_key: str) -> bool:
+    """Record that a survey was asked. Returns False when it was already asked (the PK makes each
+    survey one-shot per user, whether it went out in-app or by email)."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("INSERT IGNORE INTO survey_prompts (user_id, survey_key) VALUES (%s, %s)",
+                       (user_id, str(survey_key)[:32]))
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        log_error(f"Could not record survey prompt {survey_key} for user_id {user_id}", exc=err)
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_survey_candidate_user_ids() -> list:
+    """Users worth surveying: on an active plan or an unexpired trial. Unlike the onboarding
+    candidates this does NOT exclude activated users — activation is exactly what makes someone
+    worth asking (the day-3 NPS fires off their activation timestamp)."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("""
+            SELECT id FROM users
+            WHERE subscription_status = 'active'
+               OR (subscription_status = 'trial'
+                   AND (trial_ends_at IS NULL OR trial_ends_at > NOW()))
+        """)
+        return [row[0] for row in cursor.fetchall()]
+    except mysql.connector.Error as err:
+        log_error("Could not get survey candidate user ids", exc=err)
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
 # --- Onboarding / activation checklist (issue #500) ---------------------------------
 def ensure_onboarding_state(user_id: int) -> bool:
     """Create the user's onboarding row if it doesn't exist. `started_at` is the trial start when we

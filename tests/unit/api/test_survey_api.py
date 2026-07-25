@@ -1,0 +1,154 @@
+"""Unit tests for the NPS / review survey endpoints (issue #501)."""
+
+import pytest
+from unittest.mock import patch
+
+pytestmark = pytest.mark.unit
+
+_M = "cqc_lem.api.main"
+_S = "cqc_lem.utilities.surveys"
+
+
+@pytest.fixture(scope="module")
+def client():
+    patches = [
+        patch("cqc_lem.utilities.observability.track_api_call"),
+        patch("cqc_lem.app.run_automation.automate_invites_to_company_page_for_user"),
+        patch("cqc_lem.app.run_automation.automate_reply_commenting"),
+        patch("cqc_lem.app.run_content_plan.auto_create_weekly_content"),
+        patch("cqc_lem.app.aws_test_celery_task.test_get_my_profile"),
+    ]
+    for p in patches:
+        p.start()
+    try:
+        from fastapi.testclient import TestClient
+        from cqc_lem.api.main import app
+        with TestClient(app, raise_server_exceptions=False) as tc:
+            yield tc
+    finally:
+        for p in patches:
+            p.stop()
+
+
+class TestNpsEndpoint:
+    def test_persists_the_score_and_the_why(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=42), \
+             patch(f"{_S}.record_nps_response", return_value=101) as record, \
+             patch("cqc_lem.utilities.db.has_review_feedback", return_value=False):
+            resp = client.post("/api/survey/nps", json={
+                "session_token": "tok", "score": 9, "why": "It sounds like me",
+                "survey_key": "nps_day3", "context": {"route": "/"}})
+        assert resp.status_code == 200
+        detail = resp.json()["detail"]
+        assert detail == {"feedback_id": 101, "bucket": "promoter", "review_invite": True}
+        assert record.call_args.args == (42, 9)
+        assert record.call_args.kwargs["survey_key"] == "nps_day3"
+        assert record.call_args.kwargs["context"] == {"route": "/"}
+
+    def test_promoter_who_already_reviewed_is_not_re_invited(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=42), \
+             patch(f"{_S}.record_nps_response", return_value=102), \
+             patch("cqc_lem.utilities.db.has_review_feedback", return_value=True):
+            resp = client.post("/api/survey/nps",
+                               json={"session_token": "tok", "score": 10})
+        assert resp.json()["detail"]["review_invite"] is False
+
+    def test_detractor_is_not_invited_to_review(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=42), \
+             patch(f"{_S}.record_nps_response", return_value=103), \
+             patch("cqc_lem.utilities.db.has_review_feedback", return_value=False):
+            resp = client.post("/api/survey/nps", json={"session_token": "tok", "score": 4})
+        detail = resp.json()["detail"]
+        assert detail["bucket"] == "detractor"
+        assert detail["review_invite"] is False
+
+    def test_oversized_context_is_dropped(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=42), \
+             patch(f"{_S}.record_nps_response", return_value=104) as record, \
+             patch("cqc_lem.utilities.db.has_review_feedback", return_value=False):
+            client.post("/api/survey/nps", json={"session_token": "tok", "score": 7,
+                                                 "context": {"blob": "x" * 9000}})
+        assert record.call_args.kwargs["context"] == {"truncated": True}
+
+    @pytest.mark.parametrize("score", [-1, 11])
+    def test_out_of_range_scores_are_rejected(self, client, score):
+        with patch(f"{_M}.get_session_user_id", return_value=42):
+            resp = client.post("/api/survey/nps", json={"session_token": "tok", "score": score})
+        assert resp.status_code == 422
+
+    def test_401_without_a_session(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=None):
+            resp = client.post("/api/survey/nps", json={"session_token": "bad", "score": 9})
+        assert resp.status_code == 401
+
+    def test_500_when_the_row_cannot_be_saved(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=42), \
+             patch(f"{_S}.record_nps_response", return_value=None):
+            resp = client.post("/api/survey/nps", json={"session_token": "tok", "score": 9})
+        assert resp.status_code == 500
+
+
+class TestReviewEndpoint:
+    def test_persists_the_review_and_reports_the_unlock(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=42), \
+             patch(f"{_S}.record_review_response", return_value=201) as record:
+            resp = client.post("/api/survey/review", json={
+                "session_token": "tok", "rating": 5, "improvement": "Faster carousels",
+                "testimonial": "Saves me an hour a day", "consent_testimonial": True,
+                "survey_key": "review_trial_end"})
+        assert resp.status_code == 200
+        assert resp.json()["detail"] == {"feedback_id": 201, "trial_extension_unlocked": True}
+        assert record.call_args.args == (42, 5)
+        assert record.call_args.kwargs["consent_testimonial"] is True
+        assert record.call_args.kwargs["testimonial"] == "Saves me an hour a day"
+
+    @pytest.mark.parametrize("rating", [0, 6])
+    def test_out_of_range_ratings_are_rejected(self, client, rating):
+        with patch(f"{_M}.get_session_user_id", return_value=42):
+            resp = client.post("/api/survey/review",
+                               json={"session_token": "tok", "rating": rating})
+        assert resp.status_code == 422
+
+    def test_401_without_a_session(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=None):
+            resp = client.post("/api/survey/review", json={"session_token": "bad", "rating": 5})
+        assert resp.status_code == 401
+
+    def test_500_when_the_row_cannot_be_saved(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=42), \
+             patch(f"{_S}.record_review_response", return_value=None):
+            resp = client.post("/api/survey/review", json={"session_token": "tok", "rating": 5})
+        assert resp.status_code == 500
+
+
+class TestDismissAndSnapshot:
+    def test_dismiss_records_the_ask(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=42), \
+             patch(f"{_S}.dismiss_survey", return_value=True) as dismiss:
+            resp = client.post("/api/survey/dismiss",
+                               json={"session_token": "tok", "survey_key": "nps_day3"})
+        assert resp.json()["detail"] == {"dismissed": True}
+        dismiss.assert_called_once_with(42, "nps_day3")
+
+    def test_dismiss_401_without_a_session(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=None):
+            resp = client.post("/api/survey/dismiss",
+                               json={"session_token": "bad", "survey_key": "nps_day3"})
+        assert resp.status_code == 401
+
+    def test_snapshot_returns_the_due_survey(self, client):
+        snapshot = {"survey": {"key": "nps_day3", "source": "nps", "headline": "h", "body": "b",
+                               "cta_label": "Give a score"},
+                    "review_submitted": False, "nps_min": 0, "nps_max": 10,
+                    "review_min_rating": 1, "review_max_rating": 5}
+        with patch(f"{_M}.get_session_user_id", return_value=42), \
+             patch(f"{_S}.survey_snapshot", return_value=snapshot) as snap:
+            resp = client.get("/api/user/survey?session_token=tok")
+        assert resp.status_code == 200
+        assert resp.json()["detail"]["survey"]["key"] == "nps_day3"
+        snap.assert_called_once_with(42)
+
+    def test_snapshot_401_without_a_session(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=None):
+            resp = client.get("/api/user/survey?session_token=bad")
+        assert resp.status_code == 401
