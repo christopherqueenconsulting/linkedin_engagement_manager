@@ -320,6 +320,7 @@ class TestGitHubDelivery:
     def test_files_one_issue_when_none_is_open(self):
         with patch(f"{_MOD}.find_open_capacity_issue", return_value=None), \
              patch("cqc_lem.utilities.feedback.issue_service.github_token", return_value="t"), \
+             patch(f"{_MOD}._apply_issue_labels") as label, \
              patch("cqc_lem.utilities.feedback.issue_service.create_github_issue",
                    return_value=777) as create:
             result = ca.file_capacity_issue(self._report(), now=NOW)
@@ -327,6 +328,15 @@ class TestGitHubDelivery:
         title, body, labels = create.call_args[0]
         assert title.startswith(ca.ISSUE_TITLE_PREFIX) and "2026-07-25" in title
         assert labels == list(ca.ISSUE_LABELS) and "se_engage" in body
+        label.assert_called_once_with(777)
+
+    def test_labels_are_re_applied_after_creation(self):
+        # A fine-grained PAT drops labels from the create payload (#598); unlabelled, the issue
+        # never reaches the needs-human queue.
+        with patch("cqc_lem.utilities.feedback.issue_service.github_request") as request:
+            ca._apply_issue_labels(42)
+        assert request.call_args[0][:2] == ("POST", "issues/42/labels")
+        assert request.call_args[0][2] == {"labels": list(ca.ISSUE_LABELS)}
 
     def test_re_breach_comments_on_the_open_issue_after_the_cooldown(self):
         stale = {"number": 42, "title": ca.ISSUE_TITLE_PREFIX + " (2026-07-01)",
@@ -390,7 +400,25 @@ class TestGitHubDelivery:
         with patch("cqc_lem.utilities.feedback.issue_service.github_request",
                    return_value=listing) as request:
             assert ca.find_open_capacity_issue()["number"] == 2
-        assert "state=open" in request.call_args[0][1]
+        path = request.call_args[0][1]
+        assert "state=open" in path
+        # NOT label-filtered: a fine-grained PAT drops labels at creation (#598), and a lookup that
+        # can't see its own issue would file a new one every tick.
+        assert "labels=" not in path
+
+    def test_open_issue_lookup_pages_past_a_full_first_page(self):
+        full_page = [{"number": n, "title": f"unrelated {n}"} for n in range(100)]
+        second = [{"number": 601, "title": ca.ISSUE_TITLE_PREFIX}]
+        with patch("cqc_lem.utilities.feedback.issue_service.github_request",
+                   side_effect=[full_page, second]) as request:
+            assert ca.find_open_capacity_issue()["number"] == 601
+        assert "page=2" in request.call_args_list[1][0][1]
+
+    def test_open_issue_lookup_stops_on_a_short_page(self):
+        with patch("cqc_lem.utilities.feedback.issue_service.github_request",
+                   return_value=[{"number": 1, "title": "unrelated"}]) as request:
+            assert ca.find_open_capacity_issue() is None
+        assert request.call_count == 1
 
     def test_open_issue_lookup_survives_an_unreadable_api(self):
         with patch("cqc_lem.utilities.feedback.issue_service.github_request", return_value=None):

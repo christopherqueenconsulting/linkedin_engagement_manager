@@ -509,19 +509,37 @@ def _cooldown_cutoff(now: Optional[datetime] = None) -> datetime:
     return (now or datetime.now(timezone.utc)) - timedelta(days=max(CAPACITY_ISSUE_COOLDOWN_DAYS, 0))
 
 
-def find_open_capacity_issue() -> Optional[dict]:
-    """The already-open auto-filed capacity issue, if any. Matching is on the title marker, so an
-    issue a human renamed is treated as new — better a second issue than a silent alert."""
+ISSUE_LOOKUP_PAGES = 3
+
+
+def find_open_capacity_issue(max_pages: int = ISSUE_LOOKUP_PAGES) -> Optional[dict]:
+    """The already-open auto-filed capacity issue, if any.
+
+    Matched on the TITLE marker and deliberately NOT filtered by label: a fine-grained PAT silently
+    drops labels from the create payload (issue #598), and a lookup that can't find the issue it just
+    filed would open a fresh one every 15 minutes. An issue a human renamed is treated as new —
+    better a second issue than a silent alert."""
     from cqc_lem.utilities.feedback.issue_service import github_request
 
-    data = github_request("GET", "issues?state=open&per_page=100&labels=" +
-                          ",".join(ISSUE_LABELS[:2]))
-    if not isinstance(data, list):
-        return None
-    for issue in data:
-        if isinstance(issue, dict) and str(issue.get("title", "")).startswith(ISSUE_TITLE_PREFIX):
-            return issue
+    for page in range(1, max(max_pages, 1) + 1):
+        data = github_request("GET", f"issues?state=open&per_page=100&page={page}")
+        if not isinstance(data, list) or not data:
+            return None
+        for issue in data:
+            if isinstance(issue, dict) and str(issue.get("title", "")).startswith(ISSUE_TITLE_PREFIX):
+                return issue
+        if len(data) < 100:
+            return None
     return None
+
+
+def _apply_issue_labels(number: int) -> None:
+    """Re-apply the labels after creation. A fine-grained PAT drops `labels` in the CREATE payload
+    (issue #598) — and an unlabelled capacity issue never reaches the `needs-human` queue. Idempotent,
+    so it stays harmless once #598 fixes this at the source."""
+    from cqc_lem.utilities.feedback.issue_service import github_request
+
+    github_request("POST", f"issues/{int(number)}/labels", {"labels": list(ISSUE_LABELS)})
 
 
 def _updated_within_cooldown(issue: Mapping, now: Optional[datetime] = None) -> bool:
@@ -567,6 +585,7 @@ def file_capacity_issue(report: Mapping, now: Optional[datetime] = None) -> dict
     number = create_github_issue(title, render_capacity_issue_body(report), list(ISSUE_LABELS))
     if number is None:
         return {"action": "failed", "reason": "GitHub issue creation failed"}
+    _apply_issue_labels(number)
     log_info(f"Filed capacity review issue #{number}", api_provider="github",
              task_name="auto_capacity_watch")
     return {"action": "filed", "issue": number}
