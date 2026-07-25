@@ -25,6 +25,7 @@ from cqc_lem.utilities.logger import myprint, log_info, log_debug, log_warning
 from cqc_lem.utilities.linkedin.rate_limit import is_automation_paused, automation_pause_remaining, \
     rate_limit_cooldown_remaining
 from cqc_lem.utilities.notifications import notify_linkedin_session
+from cqc_lem.utilities.observability import attribute_llm_cost, llm_attribution, FEATURE_NEWSLETTER
 
 
 def _skip_if_throttled(name: str) -> bool:
@@ -317,6 +318,7 @@ def _max_dt(*dts):
     return max(present) if present else None
 
 
+@attribute_llm_cost(FEATURE_NEWSLETTER)
 def _topup_newsletter_drafts_for_user(user_id: int, now: datetime,
                                       allow_bootstrap: bool = True) -> int:
     """Top a single user's review queue up to their max_queued_drafts and return how many drafts were
@@ -536,11 +538,12 @@ def regenerate_newsletter_edition(edition_id: int, guidance: str = None):
                               blueprint=blueprint,
                               context_description=settings.get("topic"), prefs=prefs)
     try:
-        new_ed = generate_newsletter_edition(profile, topic=settings.get("topic"), prefs=prefs,
-                                             subject=subject, avoid_subjects=avoid,
-                                             profile_synthesis=synthesis, guidance=guidance,
-                                             blueprint=blueprint, avoid_openers=recent_openers,
-                                             research=research)
+        with llm_attribution(user_id=user_id, feature=FEATURE_NEWSLETTER):
+            new_ed = generate_newsletter_edition(profile, topic=settings.get("topic"), prefs=prefs,
+                                                 subject=subject, avoid_subjects=avoid,
+                                                 profile_synthesis=synthesis, guidance=guidance,
+                                                 blueprint=blueprint, avoid_openers=recent_openers,
+                                                 research=research)
     except Exception as e:
         log_warning("Newsletter regeneration failed", exc=e, user_id=user_id,
                     task_name="regenerate_newsletter_edition")

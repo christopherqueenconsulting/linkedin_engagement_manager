@@ -1,8 +1,11 @@
+import contextvars
+import inspect
 import json
 import os
 import time
+from contextlib import contextmanager
 from functools import wraps
-from typing import Optional, Tuple
+from typing import Iterator, Optional, Tuple
 
 import posthog
 
@@ -90,6 +93,132 @@ def _extract_token_usage(result) -> Tuple[int, int]:
     return prompt, completion
 
 
+def llm_cache_hit(result) -> bool:
+    """True when LiteLLM served this completion from its cache — the provider was never called, so
+    the tokens carry no spend. Only a real cache hit counts; prompt-cache discounts are still billed."""
+    hidden = getattr(result, "_hidden_params", None)
+    return bool(hidden.get("cache_hit")) if isinstance(hidden, dict) else False
+
+
+# Feature buckets used for per-feature cost/margin attribution. Keep this vocabulary stable —
+# PostHog breakdowns and the cost plan (docs/cost-performance-margin-plan.md) key off these values.
+FEATURE_CONTENT = "content"
+FEATURE_COMMENT = "comment"
+FEATURE_DM = "dm"
+FEATURE_NEWSLETTER = "newsletter"
+FEATURE_SYSTEM = "system"
+
+# First match wins, so the order encodes precedence: `dispatch_comment_followups` is comment work,
+# and `automate_profile_viewer_engagement` is outreach DM work despite ending in "engagement".
+_TASK_FEATURE_RULES = (
+    ("newsletter", FEATURE_NEWSLETTER),
+    ("edition", FEATURE_NEWSLETTER),
+    ("profile_viewer", FEATURE_DM),
+    ("comment", FEATURE_COMMENT),
+    ("reply", FEATURE_COMMENT),
+    ("seed", FEATURE_COMMENT),
+    ("engagement", FEATURE_COMMENT),
+    ("dm", FEATURE_DM),
+    ("appreciat", FEATURE_DM),
+    ("followup", FEATURE_DM),
+    ("outreach", FEATURE_DM),
+    ("connection_request", FEATURE_DM),
+    ("lead", FEATURE_DM),
+    ("content", FEATURE_CONTENT),
+    ("post", FEATURE_CONTENT),
+    ("carousel", FEATURE_CONTENT),
+    ("video", FEATURE_CONTENT),
+)
+
+
+def feature_from_task_name(task_name: Optional[str]) -> Optional[str]:
+    """Map a Celery task name (fully qualified or bare) onto a feature bucket, for LLM calls whose
+    caller can't supply one. Returns None when nothing matches, so the caller can decide the default."""
+    if not task_name:
+        return None
+    name = task_name.rsplit(".", 1)[-1].lower()
+    for needle, feature in _TASK_FEATURE_RULES:
+        if needle in name:
+            return feature
+    return None
+
+
+def _current_task_context() -> Tuple[Optional[str], Optional[int]]:
+    """(task_name, user_id) of the Celery task executing on this worker, or (None, None) off-worker
+    (API/CLI path). Every per-user task in LEM is dispatched with `kwargs={'user_id': ...}`, so the
+    request kwargs are a reliable last-resort attribution source for calls no scope covered."""
+    try:
+        from celery import current_task
+        name = getattr(current_task, "name", None)
+        if not name:
+            return None, None
+        kwargs = getattr(getattr(current_task, "request", None), "kwargs", None)
+        user_id = kwargs.get("user_id") if isinstance(kwargs, dict) else None
+        return name, user_id
+    except Exception:
+        return None, None
+
+
+_llm_attribution: contextvars.ContextVar[dict] = contextvars.ContextVar("llm_attribution", default={})
+
+
+@contextmanager
+def llm_attribution(user_id: Optional[int] = None, feature: Optional[str] = None) -> Iterator[None]:
+    """Attribute every LLM call made inside this block to a user and/or feature. Task entry points
+    wrap their body in it so cost lands on the right user without threading kwargs through the ~40
+    ai_helper signatures. Nested scopes inherit the outer values; None never clears an outer value."""
+    scope = dict(_llm_attribution.get())
+    if user_id is not None:
+        scope["user_id"] = user_id
+    if feature is not None:
+        scope["feature"] = feature
+    token = _llm_attribution.set(scope)
+    try:
+        yield
+    finally:
+        _llm_attribution.reset(token)
+
+
+def attribute_llm_cost(feature: str, user_id_arg: str = "user_id"):
+    """Decorator form of llm_attribution() for a function that OWNS a feature's LLM work (a Celery
+    task, a generator entry point). It reads the user id from the call's own `user_id_arg` argument,
+    so cost is attributed the same way no matter which caller — beat, API, or healer — invoked it."""
+    def decorator(fn):
+        try:
+            params = list(inspect.signature(fn).parameters)
+        except (TypeError, ValueError):
+            params = []
+        position = params.index(user_id_arg) if user_id_arg in params else None
+
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            user_id = kwargs.get(user_id_arg)
+            if user_id is None and position is not None and len(args) > position:
+                user_id = args[position]
+            with llm_attribution(user_id=user_id, feature=feature):
+                return fn(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
+def current_llm_attribution() -> Tuple[Optional[int], Optional[str]]:
+    """(user_id, feature) for an LLM call happening right now: the innermost llm_attribution() scope
+    first, then the running Celery task (its name for the feature, its kwargs for the user)."""
+    scope = _llm_attribution.get()
+    user_id, feature = scope.get("user_id"), scope.get("feature")
+    if user_id is None or feature is None:
+        task_name, task_user_id = _current_task_context()
+        user_id = user_id if user_id is not None else task_user_id
+        feature = feature or feature_from_task_name(task_name)
+    return user_id, feature
+
+
+def _model_tier(model: Optional[str]) -> Optional[str]:
+    """The tier alias a call was routed through (lem-simple/medium/complex/...), or None for a call
+    that named a raw provider model instead of a tier."""
+    return model if model and model.startswith("lem-") else None
+
+
 def track_llm_call(
     model: str,
     prompt_tokens: int,
@@ -97,6 +226,9 @@ def track_llm_call(
     latency_ms: int,
     success: bool = True,
     user_id: Optional[int] = None,
+    feature: Optional[str] = None,
+    model_tier: Optional[str] = None,
+    cached: bool = False,
 ) -> None:
     posthog.capture(
         distinct_id=str(user_id or "system"),
@@ -106,9 +238,17 @@ def track_llm_call(
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": prompt_tokens + completion_tokens,
-            "cost_usd": estimate_llm_cost_usd(model, prompt_tokens, completion_tokens),
+            # A cache hit never reached the provider, so it cost nothing — keeping it at the
+            # estimated rate would inflate summed spend on every repeated prompt.
+            "cost_usd": 0.0 if cached else estimate_llm_cost_usd(model, prompt_tokens, completion_tokens),
             "latency_ms": latency_ms,
             "success": success,
+            "user_id": user_id,
+            # Floor the bucket here, not just in the callers: a PostHog breakdown on `feature`
+            # needs every llm_call to carry one, including direct calls that omit it.
+            "feature": feature or FEATURE_SYSTEM,
+            "model_tier": model_tier or _model_tier(model),
+            "cached": bool(cached),
         },
     )
 
@@ -183,6 +323,7 @@ def llm_tracked(model_alias: str):
         @wraps(fn)
         def wrapper(*args, **kwargs):
             start = time.time()
+            user_id, feature = current_llm_attribution()
             try:
                 result = fn(*args, **kwargs)
                 prompt_tokens, completion_tokens = _extract_token_usage(result)
@@ -192,6 +333,9 @@ def llm_tracked(model_alias: str):
                     completion_tokens=completion_tokens,
                     latency_ms=int((time.time() - start) * 1000),
                     success=True,
+                    user_id=user_id,
+                    feature=feature or FEATURE_SYSTEM,
+                    cached=llm_cache_hit(result),
                 )
                 return result
             except Exception:
@@ -201,6 +345,8 @@ def llm_tracked(model_alias: str):
                     completion_tokens=0,
                     latency_ms=int((time.time() - start) * 1000),
                     success=False,
+                    user_id=user_id,
+                    feature=feature or FEATURE_SYSTEM,
                 )
                 raise
         return wrapper
