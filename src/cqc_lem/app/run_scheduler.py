@@ -1359,5 +1359,28 @@ def auto_weekly_cost_routing(self, days: int = COST_ROUTING_WINDOW_DAYS):
             f"(published={result['published']}, emailed={result['emailed']})")
 
 
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True}, queue='se_content')
+def auto_produce_feature_tutorial(self, flow_key: str = None):
+    """Weekly: produce ONE automated SPA feature tutorial — headless capture, grounded script, TTS
+    voice-over, ffmpeg MP4 + vertical clip, YouTube publish (issue #505). Runs on the se_content
+    Selenium lane because it drives a real browser; it never touches LinkedIn, so the 429 breaker
+    does not gate it. Uncovered features come first, then anything whose UI has changed."""
+    from cqc_lem.utilities.marketing.video_tutorials import (TutorialCaptureError,
+                                                            TutorialGuardrailError,
+                                                            TutorialRenderError, produce_tutorial)
+
+    try:
+        record = produce_tutorial(flow_key=flow_key)
+    except (TutorialCaptureError, TutorialGuardrailError, TutorialRenderError) as e:
+        # Fail-closed and loudly: a stale flow / bad script must be fixed, not published.
+        log_warning("Feature tutorial production aborted", exc=e,
+                    task_name="auto_produce_feature_tutorial")
+        return f"Aborted: {e}"
+    if not record:
+        return "No tutorial produced"
+    return (f"Produced tutorial '{record['flow']}' ({record['duration_seconds']}s, "
+            f"${record['total_usd']}, youtube={'yes' if record.get('youtube_url') else 'no'})")
+
+
 if __name__ == "__main__":
     print("Process finished")

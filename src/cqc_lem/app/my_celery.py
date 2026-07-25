@@ -253,6 +253,13 @@ app.conf.update(
             # sync so tier MRR is current, and after the weekly margin report so they never overlap.
             'schedule': crontab(hour='13', minute='0')
         },
+        'produce-feature-tutorial': {
+            'task': 'cqc_lem.app.run_scheduler.auto_produce_feature_tutorial',
+            # Wednesdays 20:00 UTC — one tutorial a week (issue #505), off-peak and clear of the
+            # Selenium engagement lanes' busy hours. Runs until every top-level feature is covered,
+            # then only re-films a flow whose UI actually changed.
+            'schedule': crontab(hour='20', minute='0', day_of_week='wednesday')
+        },
         'weekly-cost-routing': {
             'task': 'cqc_lem.app.run_scheduler.auto_weekly_cost_routing',
             # Mondays 14:00 UTC — after the margin report (12:00) and the alert sweep (13:00), so a

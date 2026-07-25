@@ -267,6 +267,44 @@ ADMIN_SECRET = get_constant_from_env('ADMIN_SECRET')
 # (local/dev) so only deployments that set it enforce token auth.
 API_ACCESS_TOKENS = get_constant_from_env('API_ACCESS_TOKENS', default_value='')
 
+# --- Marketing video tutorials (issue #505) ---
+# Fully-automated SPA how-to videos: headless capture -> grounded script -> TTS -> ffmpeg MP4 ->
+# YouTube. OFF by default: it renders + uploads public marketing assets, so it only runs where
+# someone deliberately turned it on.
+TUTORIAL_VIDEOS_ENABLED = isTrue(get_constant_from_env('TUTORIAL_VIDEOS_ENABLED', default_value='False'))
+# Where the capture browser points. Defaults to this deployment's own public URL.
+TUTORIAL_SPA_BASE_URL = get_constant_from_env('TUTORIAL_SPA_BASE_URL', default_value='')
+# A real LEM session token (+ its email) for the demo account whose screens the authenticated
+# flows capture. Without it, auth-only flows are skipped rather than filmed at a login modal.
+TUTORIAL_DEMO_SESSION_TOKEN = get_constant_from_env('TUTORIAL_DEMO_SESSION_TOKEN', default_value='')
+TUTORIAL_DEMO_EMAIL = get_constant_from_env('TUTORIAL_DEMO_EMAIL', default_value='')
+# Voice-over provider: 'openai' (default, cheapest — routed through LiteLLM like every other model)
+# or 'elevenlabs' (premium, needs ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID).
+TUTORIAL_TTS_PROVIDER = get_constant_from_env('TUTORIAL_TTS_PROVIDER', default_value='openai')
+TUTORIAL_TTS_MODEL = get_constant_from_env('TUTORIAL_TTS_MODEL', default_value='lem-tts')
+TUTORIAL_TTS_VOICE = get_constant_from_env('TUTORIAL_TTS_VOICE', default_value='alloy')
+# OpenAI tts-1 list price is $15.00 / 1M characters.
+TUTORIAL_TTS_COST_PER_1K_CHARS = float(get_constant_from_env('TUTORIAL_TTS_COST_PER_1K_CHARS', default_value='0.015'))
+ELEVENLABS_API_KEY = get_constant_from_env('ELEVENLABS_API_KEY')
+ELEVENLABS_VOICE_ID = get_constant_from_env('ELEVENLABS_VOICE_ID', default_value='')
+ELEVENLABS_MODEL = get_constant_from_env('ELEVENLABS_MODEL', default_value='eleven_turbo_v2_5')
+ELEVENLABS_COST_PER_1K_CHARS = float(get_constant_from_env('ELEVENLABS_COST_PER_1K_CHARS', default_value='0.15'))
+# Hard cap on narration length — a runaway script is the one thing that makes TTS expensive.
+TUTORIAL_MAX_NARRATION_CHARS = int(get_constant_from_env('TUTORIAL_MAX_NARRATION_CHARS', default_value='1400'))
+# Local ffmpeg render compute, attributed per video so a tutorial's true cost is visible.
+TUTORIAL_RENDER_COST_PER_MINUTE = float(get_constant_from_env('TUTORIAL_RENDER_COST_PER_MINUTE', default_value='0.01'))
+# Burn captions into the frame (needs an ffmpeg with libass). The .srt sidecar is always written.
+TUTORIAL_BURN_CAPTIONS = isTrue(get_constant_from_env('TUTORIAL_BURN_CAPTIONS', default_value='False'))
+TUTORIAL_THUMBNAIL_ENABLED = isTrue(get_constant_from_env('TUTORIAL_THUMBNAIL_ENABLED', default_value='False'))
+# Re-film a flow at most this often even when nothing in the UI changed.
+TUTORIAL_REFRESH_DAYS = int(get_constant_from_env('TUTORIAL_REFRESH_DAYS', default_value='90'))
+# YouTube Data API v3 upload. Publishing no-ops (the MP4 still lands in assets) unless all three
+# OAuth values are present. 'unlisted' by default so nothing goes public unreviewed.
+YOUTUBE_CLIENT_ID = get_constant_from_env('YOUTUBE_CLIENT_ID', default_value='')
+YOUTUBE_CLIENT_SECRET = get_constant_from_env('YOUTUBE_CLIENT_SECRET')
+YOUTUBE_REFRESH_TOKEN = get_constant_from_env('YOUTUBE_REFRESH_TOKEN')
+YOUTUBE_PRIVACY_STATUS = get_constant_from_env('YOUTUBE_PRIVACY_STATUS', default_value='unlisted')
+
 # Set other constants here
 USE_DOCKER_BROWSER = isTrue(get_constant_from_env('USE_DOCKER_BROWSER', default_value='True'))
 

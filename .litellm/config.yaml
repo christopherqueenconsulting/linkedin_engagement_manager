@@ -86,6 +86,13 @@ model_list:
       model: openai/dall-e-3
       api_key: os.environ/OPENAI_API_KEY
 
+  # ── TTS: tutorial voice-over (issue #505). tts-1 is the cheapest useful option
+  # ($15 / 1M characters) and streams straight back as mp3 bytes.
+  - model_name: lem-tts
+    litellm_params:
+      model: openai/tts-1
+      api_key: os.environ/OPENAI_API_KEY
+
   # ── EMBEDDING: cheap vectors for feedback dedup/clustering (issue #498) ──────
   # No Ollama Cloud embedding equivalent; text-embedding-3-small is the cheapest useful option.
   # Callers MUST tolerate this being unavailable — feedback dedup falls back to token overlap.

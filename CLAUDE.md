@@ -49,6 +49,8 @@ src/cqc_lem/
 │   │   ├── verification_pin.py    email-PIN LinkedIn verification flow
 │   │   ├── rate_limit.py          429/auth-wall backoff
 │   │   └── helper.py, profile.py, token_refresh.py
+│   ├── marketing/ Outbound production
+│   │   └── video_tutorials.py  automated SPA tutorial videos (capture→script→TTS→ffmpeg→YouTube)
 │   ├── db.py      All database access (no raw SQL outside this file)
 │   ├── proxy.py   Per-user static residential proxy resolution
 │   ├── geocoding.py  Login Location city/state geocoding
@@ -155,6 +157,11 @@ Use `click_element_wait_retry()` for all click interactions — it handles trans
 - Targeting: include/exclude topics/keywords/authors, `min_reactions`, `max_post_age_hours`, plus LLM topic-relevance scoring.
 - Voice: tone, `comment_length` (short/medium/long; default short), style, emoji/hashtag toggles.
 - Caps: `max_comments_per_day`, `max_dms_per_day`; DM template editor with follow-up steps; Login Location (city/state geocoding via `utilities/geocoding.py`, with admin override).
+
+### Marketing video tutorials (`utilities/marketing/video_tutorials.py`, beat `produce-feature-tutorial`)
+- One declarative `TutorialFlow` per feature (routes + the CSS anchors that prove the screen rendered) → headless SPA capture via `get_docker_driver()` → grounded script (`lem-medium`) → TTS voice-over (OpenAI `lem-tts` by default, ElevenLabs behind `TUTORIAL_TTS_PROVIDER`) → ffmpeg MP4 with branded intro/outro + `.srt` → 9:16 clip → YouTube Data API v3 upload.
+- **Fail-closed**: a missing UI anchor, an unparseable script, profanity, an over-cap narration or a fabricated number aborts BEFORE any TTS/publish spend. Cost is attributed per part (script tokens, TTS characters, render minutes) and totalled on the manifest record.
+- State lives in `assets/videos/tutorials/manifest.json` (no schema change); the SPA embeds it via `TutorialVideos.tsx`. Weekly cadence, and a flow is re-filmed only when its captured UI fingerprint changes. OFF unless `TUTORIAL_VIDEOS_ENABLED`.
 
 ### Anti-bot / session infra
 - Per-user static residential proxy (`utilities/proxy.py`) + an in-memory **MV3 proxy-auth extension** (`selenium_util.py`, MV2 background pages are disabled in current Chrome).
