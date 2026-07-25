@@ -13,6 +13,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 ROUTER_PATH = Path(__file__).resolve().parents[2] / ".litellm" / "complexity_router.py"
 
 

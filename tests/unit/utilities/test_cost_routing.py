@@ -7,6 +7,8 @@ import pytest
 from cqc_lem.utilities import cost_routing as cr
 from cqc_lem.utilities import routing_policy as rp
 
+pytestmark = pytest.mark.unit
+
 TODAY = date(2026, 8, 1)
 
 
@@ -107,6 +109,14 @@ def test_cohort_ramp_skips_steps_below_the_configured_start():
     assert cr.next_cohort_pct(0.1, 0.1) == 0.5
     assert cr.next_cohort_pct(0.5, 0.1) == cr.ADOPTED_COHORT_PCT
     assert cr.next_cohort_pct(cr.ADOPTED_COHORT_PCT, 0.1) is None
+
+
+def test_configured_initial_cohort_cannot_exceed_the_adopted_ceiling():
+    """An over-configured start would open an experiment with no measurable control arm."""
+    with patch.object(cr, "COST_ROUTING_INITIAL_COHORT", 0.99):
+        assert cr.default_thresholds()["initial_cohort_pct"] == cr.ADOPTED_COHORT_PCT
+    with patch.object(cr, "COST_ROUTING_INITIAL_COHORT", -0.5):
+        assert cr.default_thresholds()["initial_cohort_pct"] == 0.0
 
 
 def test_the_ramp_never_reaches_full_traffic():

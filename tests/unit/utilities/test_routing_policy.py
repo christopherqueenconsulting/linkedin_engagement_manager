@@ -3,6 +3,8 @@ import pytest
 
 from cqc_lem.utilities import routing_policy as rp
 
+pytestmark = pytest.mark.unit
+
 
 def _bucket(**overrides):
     bucket = {

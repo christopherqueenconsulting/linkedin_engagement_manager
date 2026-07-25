@@ -97,7 +97,11 @@ COHORT_RAMP_TAIL = (0.5, ADOPTED_COHORT_PCT)
 
 def default_thresholds() -> dict:
     """Thresholds from the environment (`COST_ROUTING_*`). Every caller merges over this, so a test —
-    or a CLI run — can override one threshold without restating the rest."""
+    or a CLI run — can override one threshold without restating the rest.
+
+    The initial cohort is clamped to `ADOPTED_COHORT_PCT`: a configured start above the adopted
+    ceiling would open an experiment with (almost) no control arm, and the permanent holdout is what
+    keeps the §D.3 quality gate measurable — including after a bucket is adopted."""
     return {
         "min_samples": COST_ROUTING_MIN_SAMPLES,
         "max_quality_drop": COST_ROUTING_MAX_QUALITY_DROP,
@@ -105,7 +109,7 @@ def default_thresholds() -> dict:
         "authenticity_floor": COST_ROUTING_AUTH_FLOOR,
         "confidence_z": COST_ROUTING_CONFIDENCE_Z,
         "cooldown_days": COST_ROUTING_COOLDOWN_DAYS,
-        "initial_cohort_pct": COST_ROUTING_INITIAL_COHORT,
+        "initial_cohort_pct": min(max(COST_ROUTING_INITIAL_COHORT, 0.0), ADOPTED_COHORT_PCT),
         "max_experiments": COST_ROUTING_MAX_EXPERIMENTS,
     }
 

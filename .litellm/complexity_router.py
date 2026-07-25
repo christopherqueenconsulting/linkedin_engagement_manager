@@ -143,8 +143,11 @@ class LEMComplexityRouter(CustomLogger):
                 log.warning("cost-aware routing failed, using %s: %s", tier, exc)
             else:
                 if decision["applied"]:
-                    log.info("cost-aware down-route %s→%s (bucket=%s, feature=%s)",
-                             tier, decision["tier"], decision["bucket"], feature)
+                    # DEBUG, not INFO: this fires on every down-routed call (10%+ of ALL LLM traffic
+                    # once enabled). INFO here is reserved for state transitions, which the weekly
+                    # optimizer logs on the app side.
+                    log.debug("cost-aware down-route %s→%s (bucket=%s, feature=%s)",
+                              tier, decision["tier"], decision["bucket"], feature)
                     tier = decision["tier"]
 
         data["model"] = tier

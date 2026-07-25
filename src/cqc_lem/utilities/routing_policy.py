@@ -144,6 +144,9 @@ def assign_arm(user_id: Optional[Any], bucket: Optional[Mapping]) -> str:
 
     Traffic with no user id (system/housekeeping calls) always lands in control: it cannot be
     attributed to a cohort, so it must not silently join the treatment.
+
+    SHA-256 is used purely as a uniform, stable hash of (bucket, user) — nothing here is a secret —
+    but a weak digest has no upside for that and trips security scanners, so don't "optimize" it back.
     """
     if not isinstance(bucket, Mapping):
         return ARM_CONTROL
@@ -158,7 +161,7 @@ def assign_arm(user_id: Optional[Any], bucket: Optional[Mapping]) -> str:
     if pct >= 1:
         return ARM_TREATMENT
     salt = f"{bucket.get('id') or bucket_key(bucket.get('feature'), bucket.get('from_tier'))}|{user_id}"
-    digest = hashlib.md5(salt.encode("utf-8")).hexdigest()  # noqa: S324 - cohort split, not a secret
+    digest = hashlib.sha256(salt.encode("utf-8")).hexdigest()
     return ARM_TREATMENT if (int(digest[:8], 16) % 10_000) / 10_000.0 < pct else ARM_CONTROL
 
 
