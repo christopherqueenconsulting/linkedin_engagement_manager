@@ -190,6 +190,17 @@ EARLY_ADOPTER_P1_SLOTS    = int(get_constant_from_env('EARLY_ADOPTER_P1_SLOTS', 
 # Optional Stripe coupon applied at conversion for grant holders. Empty = no discount, trial only.
 EARLY_ADOPTER_COUPON_ID   = get_constant_from_env('EARLY_ADOPTER_COUPON_ID', default_value='')
 
+# Rollout phase (docs/launch-and-marketing-plan.md §A.1): P0 private early-adopter / P1 open beta /
+# P2 GA. It is the single knob that sets the brand account's outbound volume (see brand_account.py);
+# anything unrecognized falls back to P0 so a typo can never widen outbound.
+LAUNCH_PHASE              = get_constant_from_env('LAUNCH_PHASE', default_value='P0')
+# Dogfooding self-marketing (issue #504): the LEM brand LinkedIn account onboarded as a first-class
+# user. OFF by default — it sends real outbound, so each environment opts in explicitly.
+BRAND_ACCOUNT_ENABLED     = isTrue(get_constant_from_env('BRAND_ACCOUNT_ENABLED', default_value='False'))
+BRAND_ACCOUNT_EMAIL       = get_constant_from_env('BRAND_ACCOUNT_EMAIL', default_value='')
+# Trial signup URL the brand's content/DMs steer toward. Empty = no CTA seeded.
+BRAND_SIGNUP_URL          = get_constant_from_env('BRAND_SIGNUP_URL', default_value='')
+
 # Unit-economics inputs for the margin report (docs/cost-performance-margin-plan.md §C.1). Monthly
 # tier prices mirror the SPA pricing table — override per environment instead of editing code so a
 # price change never needs a deploy.

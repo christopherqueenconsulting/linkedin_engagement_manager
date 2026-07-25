@@ -79,6 +79,12 @@ app.conf.update(
             # cadence keeps the drip human-paced while staying responsive (no volume prospecting).
             'schedule': crontab(minute='*/5')
         },
+        'sync-brand-account': {
+            'task': 'cqc_lem.app.run_scheduler.auto_sync_brand_account',
+            # Just before the content plan runs, so the brand's phase caps/posture are already in
+            # place for the day's dogfooding run (issue #504). No-ops unless BRAND_ACCOUNT_ENABLED.
+            'schedule': crontab(hour='0', minute='45')
+        },
         'generate-content-plan': {
             'task': 'cqc_lem.app.run_content_plan.auto_generate_content',
             'schedule': crontab(hour='1', minute='0')  # Run every day at 1:00 AM

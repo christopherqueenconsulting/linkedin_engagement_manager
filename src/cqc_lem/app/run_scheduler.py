@@ -892,6 +892,43 @@ def auto_check_catchup_touches():
 
 
 @shared_task.task
+def auto_sync_brand_account():
+    """Daily: hold the LEM brand (dogfooding) account's outbound volume at whatever the current
+    LAUNCH_PHASE allows (issue #504).
+
+    Everything the brand actually DOES — the 30-day content plan, feed commenting, connect targeting,
+    appreciation/outreach DMs + follow-ups, the newsletter, company-page invites — already reaches it
+    through the same per-active-user beats as any paying customer, under the same caps, 429 backoff
+    and per-user proxy. So this task adds no outreach of its own: it only re-asserts the phase's caps
+    and connect posture onto the brand's engagement preferences, so advancing a phase (or a manual
+    cap edit) can never leave brand outbound running hotter than was signed off on.
+    """
+    from cqc_lem.utilities.brand_account import current_launch_phase, get_brand_user_id, \
+        sync_brand_preferences
+
+    user_id = get_brand_user_id()
+    if user_id is None:
+        return "Brand account not configured"
+
+    phase = current_launch_phase()
+    applied = sync_brand_preferences(phase)
+    if applied is None:
+        return f"Brand account sync failed (phase {phase})"
+
+    # The brand only engages while it counts as an active user — surface the gap rather than letting
+    # a disconnected/lapsed brand account look like it is quietly marketing.
+    if user_id not in set(get_active_user_ids()):
+        log_warning("Brand account is not active/connected — its automation will not run",
+                    user_id=user_id, task_name="auto_sync_brand_account")
+
+    log_info(f"Brand account synced to launch phase {phase}",
+             user_id=user_id, task_name="auto_sync_brand_account")
+    return (f"Brand account {user_id} synced to phase {phase} "
+            f"(comments/day {applied['max_comments_per_day']}, DMs/day {applied['max_dms_per_day']}, "
+            f"invites/day {applied['max_invites_per_day']})")
+
+
+@shared_task.task
 def auto_notify_missing_linkedin_session():
     """Email active users who have no validated LinkedIn session cookie, prompting them
     to connect — automation can't run without one. Throttled per-user inside
