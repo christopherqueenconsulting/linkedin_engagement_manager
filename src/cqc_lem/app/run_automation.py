@@ -2867,9 +2867,12 @@ def _nurture_enabled() -> bool:
 def _nurture_auto_approve() -> bool:
     """OFF by default — a drafted reply to a real prospect is exactly the thing a human should see
     before it sends. Turning this on skips the approval queue (the draft goes straight to 'approved'
-    and the scanner delivers it at its slot)."""
-    raw = os.environ.get("DM_NURTURE_AUTO_APPROVE")
-    return bool(raw) and raw.strip().lower() not in ("0", "false", "no", "off")
+    and the scanner delivers it at its slot).
+
+    Only an explicit affirmative opens the gate: unset, blank/whitespace, and anything unrecognized
+    all keep the human in the loop. This is the one flag where a typo must fail CLOSED."""
+    raw = os.environ.get("DM_NURTURE_AUTO_APPROVE") or ""
+    return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
 def _nurture_max_per_day() -> int:

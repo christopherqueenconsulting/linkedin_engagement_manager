@@ -98,10 +98,19 @@ class TestNurtureAfterReply:
             assert _nurture_after_reply(1, _followup(), "   ", MagicMock()) is None
         cls.assert_not_called()
 
-    def test_auto_approve_env_skips_the_queue(self, monkeypatch):
-        monkeypatch.setenv("DM_NURTURE_AUTO_APPROVE", "true")
+    @pytest.mark.parametrize("value", ["true", "TRUE", " yes ", "1", "on"])
+    def test_auto_approve_env_skips_the_queue(self, monkeypatch, value):
+        monkeypatch.setenv("DM_NURTURE_AUTO_APPROVE", value)
         _got, mocks, _enq = _run_nurture()
         assert mocks["insert_scheduled_dm"].call_args.kwargs["status"] == "approved"
+
+    @pytest.mark.parametrize("value", ["", "   ", "false", "no", "off", "0", "maybe"])
+    def test_only_an_explicit_yes_opens_the_approval_gate(self, monkeypatch, value):
+        # Blank/whitespace and anything unrecognized must fail CLOSED — a typo in this flag would
+        # otherwise send a machine-written message to a prospect without a human ever seeing it.
+        monkeypatch.setenv("DM_NURTURE_AUTO_APPROVE", value)
+        _got, mocks, _enq = _run_nurture()
+        assert mocks["insert_scheduled_dm"].call_args.kwargs["status"] == "pending"
 
     def test_falls_back_to_the_template_when_the_llm_fails(self):
         from cqc_lem.app.run_automation import _nurture_after_reply
