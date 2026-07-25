@@ -34,6 +34,9 @@ export default function SurveyModal() {
     setError(typeof msg === 'string' ? msg : fallback)
   }
 
+  // Always the key of the survey the SERVER asked for — never the promoter chain-on review, which
+  // has no ledger key of its own. Closing that opportunistic upsell must not burn the scheduled
+  // review_trial_end ask, or the user loses their shot at the extended trial (#499).
   async function dismiss() {
     setClosed(true)
     try {
@@ -79,6 +82,8 @@ export default function SurveyModal() {
         improvement: improvement.trim() || null,
         testimonial: testimonial.trim() || null,
         consent_testimonial: consent,
+        // Only the standalone review survey closes a ledger ask; the promoter chain-on already
+        // closed its NPS key when the score was submitted.
         survey_key: survey!.source === 'review' ? survey!.key : null,
       })
       setDone('Thanks — your review is in, and it unlocks the extended trial.')
