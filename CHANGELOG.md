@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.70.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.69.0...v0.70.0) (2026-07-25)
+
+
+### Features
+
+* **leads:** lead scoring & CRM-lite pipeline (closes [#484](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/484)) ([94f9547](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/94f9547c16b8cf3df681a2d557ca3260bf80a13f))
+* **leads:** lead scoring & CRM-lite pipeline (closes [#484](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/484)) ([0c32717](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0c327173af1cdd094826cd9abbae1239d574e143))
+
+
+### Bug Fixes
+
+* **leads:** address Copilot review on the lead pipeline ([ecd8d30](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ecd8d30877654951ad6b7c056b91a3656298b5f4))
+
 ## [0.69.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.68.1...v0.69.0) (2026-07-24)
 
 
