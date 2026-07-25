@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.75.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.74.0...v0.75.0) (2026-07-25)
+
+
+### Features
+
+* **observability:** margin/unit-economics report + cost block on the daily snapshot (closes [#491](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/491)) ([957662c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/957662cc08ba2e9cc2503ba324cef1c5bbddf0bd))
+* **observability:** weekly margin report + cost/margin block on the daily snapshot (closes [#491](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/491)) ([d36080d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d36080d7d21626fe4e653ae76fe381abc160d87a))
+
+
+### Bug Fixes
+
+* **observability:** address review threads on the margin report ([4781a23](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4781a23f7eb005768fd590caa587fd968b771937))
+
 ## [0.74.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.73.1...v0.74.0) (2026-07-25)
 
 
