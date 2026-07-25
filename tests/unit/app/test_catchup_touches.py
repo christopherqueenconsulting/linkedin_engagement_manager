@@ -700,6 +700,52 @@ class TestRouteRepliedCatchupToFunnel:
         warn.assert_called_once()
 
 
+class TestCatchupHandoffToNurture:
+    """The reply path is shared with DM auto-nurture (issue #485): the nurture draft wins when there
+    is one, the funnel hand-off is the fallback, and an explicit 'no' gets neither."""
+
+    def _followup(self):
+        return {"id": 3, "user_id": 1, "profile_url": "https://www.linkedin.com/in/jane",
+                "first_name": "Jane", "event_type": "job_change", "next_step": 1}
+
+    def _run(self, reply: str, nurture_id):
+        from cqc_lem.app.run_automation import process_user_followups
+        patches = {
+            "get_due_followups": patch(f"{_RA}.get_due_followups", return_value=[self._followup()]),
+            "get_current_profile": patch(f"{_RA}.get_current_profile",
+                                         return_value=(MagicMock(), MagicMock(), "e", MagicMock())),
+            "quit_gracefully": patch(f"{_RA}.quit_gracefully"),
+            "check_dm_replied": patch(f"{_RA}.check_dm_replied", return_value=True),
+            "_last_inbound_message": patch(f"{_RA}._last_inbound_message", return_value=reply),
+            "get_engagement_preferences": patch(f"{_RA}.get_engagement_preferences", return_value={}),
+            "get_or_create_profile_synthesis": patch(f"{_RA}.get_or_create_profile_synthesis",
+                                                     return_value="voice"),
+            "_flag_lead_signal": patch(f"{_RA}._flag_lead_signal"),
+            "stop_followups_for_profile": patch(f"{_RA}.stop_followups_for_profile"),
+            "mark_followup": patch(f"{_RA}.mark_followup"),
+            "_nurture_after_reply": patch(f"{_RA}._nurture_after_reply", return_value=nurture_id),
+            "_route_replied_catchup_to_funnel": patch(f"{_RA}._route_replied_catchup_to_funnel"),
+        }
+        mocks = {name: p.start() for name, p in patches.items()}
+        try:
+            process_user_followups.run(user_id=1)
+            return mocks
+        finally:
+            patch.stopall()
+
+    def test_a_nurture_draft_wins_over_the_funnel_handoff(self):
+        mocks = self._run("Sounds good, let's talk", nurture_id=7)
+        mocks["_route_replied_catchup_to_funnel"].assert_not_called()
+
+    def test_no_nurture_draft_falls_back_to_the_funnel_handoff(self):
+        mocks = self._run("Sounds good, let's talk", nurture_id=None)
+        mocks["_route_replied_catchup_to_funnel"].assert_called_once_with(1, self._followup())
+
+    def test_an_explicit_no_gets_neither_a_draft_nor_the_funnel(self):
+        mocks = self._run("Not interested, please stop contacting me", nurture_id=None)
+        mocks["_route_replied_catchup_to_funnel"].assert_not_called()
+
+
 class TestCatchupDispatchers:
     def test_scan_dispatcher_skips_users_with_no_enabled_types(self):
         from cqc_lem.app.run_scheduler import auto_scan_catchup_moments
