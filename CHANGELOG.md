@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.74.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.73.1...v0.74.0) (2026-07-25)
+
+
+### Features
+
+* **outreach:** automate LinkedIn Catch-up trigger-event congratulations (closes [#482](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/482)) ([c51f4d3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c51f4d3f666266d9da1993b8d76def5893b100dd))
+
 ## [0.73.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.73.0...v0.73.1) (2026-07-25)
 
 
