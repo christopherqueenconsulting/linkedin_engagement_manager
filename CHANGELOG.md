@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.84.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.83.0...v0.84.0) (2026-07-25)
+
+
+### Features
+
+* **billing:** early-adopter extended trial gated on a review (closes [#499](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/499)) ([4462cb3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4462cb3448cc9570e8f8c0d215cce5fbd406c48a))
+* **billing:** early-adopter extended-trial (60d) auto-grant, gated on review submission (closes [#499](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/499)) ([e883de7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e883de79aa17c87b819b1245572ea770d5d27952))
+
+
+### Bug Fixes
+
+* **billing:** tie the early-adopter coupon to a still-live grant ([8c6b22c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8c6b22c1544056abba49ebd837fa969bc1ac0932))
+
 ## [0.83.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.82.0...v0.83.0) (2026-07-25)
 
 
