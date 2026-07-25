@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.91.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.90.1...v0.91.0) (2026-07-25)
+
+
+### Features
+
+* **feedback:** auto-FAQ service — cluster recurring questions into FAQ entries (closes [#507](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/507)) ([e6ba911](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e6ba911d6a56c80d59692e262ccbc3c003ab012b))
+* **feedback:** auto-FAQ service — cluster recurring questions/reviews into FAQ entries (closes [#507](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/507)) ([18550f7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/18550f75fd0cfc40912b49137f885d8f527a0007))
+
+
+### Bug Fixes
+
+* **feedback:** embed the redacted FAQ question, not the raw feedback body ([14f100b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/14f100b946575e539aea05558d681c0405fae630))
+
 ## [0.90.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.90.0...v0.90.1) (2026-07-25)
 
 
