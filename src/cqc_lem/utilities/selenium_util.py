@@ -82,6 +82,8 @@ def _record_session_wait(seconds: float) -> None:
         from cqc_lem.utilities.capacity_alerts import record_session_wait
         record_session_wait(seconds)
     except Exception:
+        # Intentionally silent: a dead Redis or an import error in the monitor must not fail
+        # (or slow, via a log round-trip) the caller that just acquired a browser session.
         pass
 
 

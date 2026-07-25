@@ -23,6 +23,16 @@ def _service_block(compose: str, name: str) -> str:
     return re.split(r"\n  (?=\w)", compose.split(f"\n  {name}:\n")[1])[0]
 
 
+def _overlay_chrome() -> str:
+    # An overlay that drops selenium-chrome entirely can't redefine anything.
+    return _service_block(PROD_OVERLAY, "selenium-chrome") if "\n  selenium-chrome:\n" in PROD_OVERLAY else ""
+
+
+def _config_only(block: str) -> str:
+    # Knob names are matched as substrings, so prose in comments must not count as a redefinition.
+    return "\n".join(line for line in block.splitlines() if not line.strip().startswith("#"))
+
+
 def _max_sessions(compose: str) -> int:
     return int(re.search(r"SE_NODE_MAX_SESSIONS=(\d+)", _service_block(compose, "selenium-chrome")).group(1))
 
@@ -58,8 +68,12 @@ class TestSessionCapMatchesLaneConcurrency:
 
     def test_prod_overlay_does_not_redefine_the_capacity_knobs(self):
         # The invariant is only enforceable in one place; prod inherits the base numbers.
-        for knob in ("SE_NODE_MAX_SESSIONS", "SELENIUM_CONCURRENCY", "shm_size"):
-            assert knob not in PROD_OVERLAY
+        # The browser-pool knobs are checked inside the overlay's selenium-chrome block only —
+        # deploy/cpus/memory legitimately appear on the other services there.
+        for knob in ("SE_NODE_MAX_SESSIONS", "shm_size", "deploy", "cpus", "memory"):
+            assert knob not in _config_only(_overlay_chrome()), knob
+        # Lane concurrency lives on the worker services, so that one spans the whole overlay.
+        assert "SELENIUM_CONCURRENCY" not in PROD_OVERLAY
 
 
 class TestChromeResourceBudget:

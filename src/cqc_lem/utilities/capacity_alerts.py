@@ -306,7 +306,7 @@ def render_capacity_issue_body(report: Mapping) -> str:
     cap_line = f"{cap}" if cap else "the configured cap"
     return "\n".join([
         f"Auto-filed by the capacity monitor (`auto_capacity_watch`, issue #552). "
-        f"Measured over {report.get('sample_count', 0)} sample(s)"
+        + f"Measured over {report.get('sample_count', 0)} sample(s)"
         + (f" (~{report['window_hours']:g}h)" if report.get("window_hours") else "") + ".",
         "",
         "## What tripped",
@@ -318,32 +318,32 @@ def render_capacity_issue_body(report: Mapping) -> str:
         "## Why this needs you",
         "",
         f"The browser pool is a fixed {cap_line} Chrome slot(s) shared by every Selenium lane. When "
-        "it stays claimed, nothing fails — time-sensitive work (pre-post commenting, golden-hour "
-        f"loops) just fires **late**. Raising it spends real RAM/CPU on a shared VPS, so it is a "
-        f"resource call, not a code fix ({PLAN_DOC} §5a/§5c).",
+        + "it stays claimed, nothing fails — time-sensitive work (pre-post commenting, golden-hour "
+        + "loops) just fires **late**. Raising it spends real RAM/CPU on a shared VPS, so it is a "
+        + f"resource call, not a code fix ({PLAN_DOC} §5a/§5c).",
         "",
         "**Invariant any change must preserve:** `SE_NODE_MAX_SESSIONS` == the sum of every lane's "
-        f"`SELENIUM_CONCURRENCY`, with `shm_size` ≥ cap, `cpus` ≥ cap and `memory` ≤ 8g. "
-        f"`{GUARD_TEST}` fails the build if they drift.",
+        + "`SELENIUM_CONCURRENCY`, with `shm_size` ≥ cap, `cpus` ≥ cap and `memory` ≤ 8g. "
+        + f"`{GUARD_TEST}` fails the build if they drift.",
         "",
         "## Decision — reply with option letters",
         "",
         "### 1. How do we add capacity?",
         f"- **A. Raise {lane_hint} by 1 and `SE_NODE_MAX_SESSIONS` in lockstep** — ~1–1.5 GB more "
-        "Chrome per slot; stays inside the 8g budget up to ~6–8 sessions"
+        + "Chrome per slot; stays inside the 8g budget up to ~6–8 sessions"
         + (f" (host had {report['host'].get('mem_available_gb')} GB available at the time)"
            if report.get("host") else "") + ".  ✅ *recommended*",
         f"- **B. Move Chrome to a Selenium Grid (hub + N nodes)** — {PLAN_DOC} §5b Phase 2; "
-        "sessions scale horizontally (a 2nd box), but it is new infra to run.",
+        + "sessions scale horizontally (a 2nd box), but it is new infra to run.",
         "- **C. Do nothing / retune the thresholds** — accept the lateness, or raise the "
-        "`CAPACITY_*` thresholds if this reads as normal utilisation.",
+        + "`CAPACITY_*` thresholds if this reads as normal utilisation.",
         "",
         "**My recommendation: `1A`** while the cap is still under the ~6–8 session Chrome budget; "
-        "`1B` once it isn't.",
+        + "`1B` once it isn't.",
         "",
-        f"_Auto-filed by `utilities/capacity_alerts.py`; one issue at a time, re-breaches comment "
-        f"here after a {CAPACITY_ISSUE_COOLDOWN_DAYS}-day cooldown. Close it once the lanes are "
-        f"reviewed._",
+        "_Auto-filed by `utilities/capacity_alerts.py`; one issue at a time, re-breaches comment "
+        + f"here after a {CAPACITY_ISSUE_COOLDOWN_DAYS}-day cooldown. Close it once the lanes are "
+        + "reviewed._",
     ])
 
 
