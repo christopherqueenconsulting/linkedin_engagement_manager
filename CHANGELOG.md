@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.93.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.93.0...v0.93.1) (2026-07-25)
+
+
+### Bug Fixes
+
+* **video:** ambience-only, language-tagged audio for Veo renders ([#548](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/548)) ([8d8d114](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8d8d114fcea4f3e03a7ab5357238f12fc62f06ca))
+
+
+### Documentation
+
+* **avatar:** correct video_models module path in architecture table ([#548](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/548)) ([44bcf40](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/44bcf4095aa59078383bb755d827f50d59b18c6e))
+* **avatar:** Phase 1 research — likeness/gender drift, video language, preview + guardrails ([#548](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/548)) ([7d64355](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7d643557926ba3f39be6087189eb2b77f21a3e57))
+
 ## [0.93.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.92.2...v0.93.0) (2026-07-25)
 
 
