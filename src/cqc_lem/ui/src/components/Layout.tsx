@@ -3,6 +3,7 @@ import { useAuth } from '../contexts/AuthContext'
 import AccountReadinessBanner from './AccountReadinessBanner'
 import FeedbackWidget from './FeedbackWidget'
 import Footer from './Footer'
+import ShippedNotice from './ShippedNotice'
 import SurveyModal from './SurveyModal'
 
 // Pages whose features depend on a fully set-up account — show the readiness banner here.
@@ -73,6 +74,9 @@ export default function Layout() {
       </nav>
       <main className="flex-1 w-full max-w-5xl mx-auto px-4 py-6">
         {showReadiness && <AccountReadinessBanner />}
+        {/* "You asked, we shipped" + its micro-CSAT — renders only when a fix this user
+            reported has shipped and they haven't acknowledged it yet (issue #502) */}
+        {user && <ShippedNotice />}
         <Outlet />
       </main>
       <Footer />

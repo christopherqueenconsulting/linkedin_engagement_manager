@@ -756,6 +756,15 @@ class SurveyDismissRequest(BaseModel):
     survey_key: str = Field(min_length=1, max_length=_LEN_FEEDBACK_TYPE_HINT)
 
 
+class ShippedNoticeAckRequest(BaseModel):
+    """Acknowledging a "you asked, we shipped" notice (issue #502). `resolved` is the micro-CSAT:
+    True/False answers "did this fix it?", None means the user just dismissed the notice."""
+    session_token: str
+    notice_id: int = Field(gt=0)
+    resolved: Optional[bool] = None
+    comment: Optional[str] = Field(default=None, max_length=_LEN_FEEDBACK_BODY)
+
+
 class FutureForwardValues(IntEnum):
     Zero = 0
     ONE = 1
@@ -875,6 +884,56 @@ def survey_endpoint(session_token: str) -> ResponseModel:
 
     from cqc_lem.utilities.surveys import survey_snapshot
     return ResponseModel(status_code=200, detail=survey_snapshot(user_id))
+
+
+@router.get("/user/shipped")
+def shipped_notices_endpoint(session_token: str) -> ResponseModel:
+    """The "you asked, we shipped" notices waiting for this user, plus the recent changelog (issue
+    #502). A notice only appears once the reporter has had the fix for FEEDBACK_FIX_CSAT_DELAY_HOURS
+    — that delay is what schedules the micro-CSAT it carries."""
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    from cqc_lem.utilities.db import get_recent_shipped_notices, get_unseen_shipped_notices
+    from cqc_lem.utilities.feedback.shipped import fix_csat_delay_hours
+    notices = get_unseen_shipped_notices(user_id, delay_hours=fix_csat_delay_hours())
+    return ResponseModel(status_code=200, detail={
+        "notices": [{"id": n.get("id"), "issue_number": n.get("github_issue_number"),
+                     "changelog_line": n.get("changelog_line"),
+                     "shipped_at": n.get("shipped_at")} for n in notices],
+        "changelog": [{"issue_number": n.get("github_issue_number"),
+                       "changelog_line": n.get("changelog_line"),
+                       "shipped_at": n.get("shipped_at")} for n in get_recent_shipped_notices()],
+    })
+
+
+@router.post("/shipped/ack")
+def ack_shipped_notice_endpoint(request: ShippedNoticeAckRequest) -> ResponseModel:
+    """Acknowledge a shipped-fix notice and, when the user answered "did this fix it?", record the
+    micro-CSAT (issue #502). A "not fixed" answer lands as a `feedback` row at status `new`, so it
+    re-enters the auto-work loop instead of stopping at a metric."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    from cqc_lem.utilities.db import get_unseen_shipped_notices, mark_shipped_notice_seen
+    from cqc_lem.utilities.surveys import record_fix_csat_response
+    # Ownership check: a notice is only ackable by a reporter it was actually addressed to.
+    notice = next((n for n in get_unseen_shipped_notices(user_id, limit=50)
+                   if n.get("id") == request.notice_id), None)
+    if not notice:
+        raise HTTPException(status_code=404, detail="Notice not found or already acknowledged")
+
+    mark_shipped_notice_seen(request.notice_id, user_id)
+    feedback_id = None
+    if request.resolved is not None:
+        feedback_id = record_fix_csat_response(
+            user_id, notice.get("github_issue_number"), bool(request.resolved),
+            comment=request.comment)
+        log_info("Fix CSAT captured", user_id=user_id)
+    return ResponseModel(status_code=200, detail={"acknowledged": True,
+                                                  "feedback_id": feedback_id})
 
 
 @router.get("/dashboard/stats/", responses={

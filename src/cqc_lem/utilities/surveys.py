@@ -10,14 +10,19 @@ so the "who gets asked what, when" policy is unit-testable without a DB, an emai
 posture as `onboarding.select_nudge`.
 
 A review row is also the gate on the extended trial (issue #499): `db.has_review_feedback`.
+
+Issue #502 adds a fourth, per-issue survey: the micro-CSAT asked after a fix the user reported
+ships ("did this fix it?"). Its key is BUILT (`fix_csat_<issue>`) rather than listed in `_SURVEYS`,
+and it is scheduled by the shipped-notice queue rather than by `select_survey`.
 """
 
 from datetime import datetime, timedelta
 from typing import Optional
 
 from cqc_lem.utilities.db import (
-    FeedbackSource, get_latest_feedback_at, get_onboarding_state, get_survey_prompts_sent,
-    get_user_subscription_info, has_review_feedback, insert_feedback, record_survey_prompt,
+    FeedbackSource, FeedbackStatus, get_latest_feedback_at, get_onboarding_state,
+    get_survey_prompts_sent, get_user_subscription_info, has_review_feedback, insert_feedback,
+    record_survey_prompt, update_feedback_triage,
 )
 from cqc_lem.utilities.logger import log_warning
 
@@ -25,6 +30,10 @@ from cqc_lem.utilities.logger import log_warning
 SURVEY_NPS_DAY3 = "nps_day3"
 SURVEY_NPS_TRIAL_END = "nps_trial_end"
 SURVEY_REVIEW_TRIAL_END = "review_trial_end"
+
+# The micro-CSAT that follows a shipped fix (issue #502) is per-ISSUE, so its key is built rather
+# than listed: `fix_csat_<issue>` (well inside survey_prompts.survey_key's VARCHAR(32)).
+FIX_CSAT_PREFIX = "fix_csat_"
 
 # Ask for NPS this long after the user activated — early enough that the "aha" is fresh, late enough
 # that they've seen automation run for a few days.
@@ -194,9 +203,52 @@ def record_review_response(user_id: Optional[int], rating: int, improvement: Opt
     return feedback_id
 
 
+def fix_csat_key(issue_number: int) -> str:
+    """The survey_prompts key for the "did this fix it?" ask on one shipped issue (issue #502)."""
+    return f"{FIX_CSAT_PREFIX}{int(issue_number)}"
+
+
+def is_fix_csat_key(survey_key: Optional[str]) -> bool:
+    """True for a per-issue micro-CSAT key. These are generated, not listed in `_SURVEYS`, so every
+    key check has to accept them too."""
+    key = (survey_key or "")
+    return key.startswith(FIX_CSAT_PREFIX) and key[len(FIX_CSAT_PREFIX):].isdigit()
+
+
+def _known_key(survey_key: Optional[str]) -> bool:
+    return survey_key in _SURVEYS or is_fix_csat_key(survey_key)
+
+
+def record_fix_csat_response(user_id: Optional[int], issue_number: int, resolved: bool,
+                             comment: Optional[str] = None,
+                             context: Optional[dict] = None) -> Optional[int]:
+    """Persist a "did this fix it?" answer (issue #502) as a `feedback` row (source='csat').
+
+    A "no, still broken" is left at status `new` ON PURPOSE: it re-enters the auto-work loop like any
+    other report, so the cluster gets re-opened rather than the dissatisfaction being buried in an
+    analytics event. A "yes" is stamped `resolved` immediately — there is nothing to classify, and
+    it must not burn an LLM call on every happy answer."""
+    key = fix_csat_key(issue_number)
+    text = (comment or "").strip()
+    body = text or (f"Confirmed fixed (issue #{int(issue_number)})" if resolved
+                    else f"Still not fixed (issue #{int(issue_number)})")
+    payload = {**(context or {}), "issue_number": int(issue_number), "resolved": bool(resolved),
+               "survey_key": key}
+    feedback_id = insert_feedback(body, user_id=user_id, source=FeedbackSource.CSAT,
+                                  type_hint="fix_csat", context=payload,
+                                  sentiment="positive" if resolved else "negative")
+    if feedback_id and resolved:
+        update_feedback_triage(feedback_id, status=FeedbackStatus.RESOLVED)
+    if feedback_id and user_id:
+        _record_answer(user_id, key)
+        _track_response(user_id, str(FeedbackSource.CSAT), issue_number=int(issue_number),
+                        resolved=bool(resolved))
+    return feedback_id
+
+
 def _record_answer(user_id: int, survey_key: Optional[str]) -> None:
     """Close the loop on the ask that produced this answer so nothing re-asks it."""
-    if survey_key in _SURVEYS:
+    if _known_key(survey_key):
         record_survey_prompt(user_id, survey_key)
 
 
@@ -211,7 +263,7 @@ def _track_response(user_id: int, source: str, **properties) -> None:
 
 def dismiss_survey(user_id: int, survey_key: str) -> bool:
     """User closed the modal without answering — record the ask so it isn't shown or emailed again."""
-    if survey_key not in _SURVEYS:
+    if not _known_key(survey_key):
         return False
     return record_survey_prompt(user_id, survey_key)
 

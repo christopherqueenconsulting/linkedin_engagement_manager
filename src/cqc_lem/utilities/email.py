@@ -414,6 +414,32 @@ def send_survey_prompt_email(to_email: str, subject: str, headline: str, body: s
     return _dispatch_email(to_email, subject, html)
 
 
+def send_shipped_fix_email(to_email: str, changelog_line: str, issue_number: int,
+                           cta_path: str = "/") -> bool:
+    """Tell a reporter the thing they asked for shipped (issue #502). The CTA opens the app, where
+    the in-app notice asks the micro-CSAT ("did this fix it?") that re-enters the feedback loop."""
+    import os
+    base = (os.getenv("LEM_APP_URL") or "https://lem.christopherqueenconsulting.com").rstrip("/")
+    url = f"{base}{cta_path if cta_path.startswith('/') else '/' + cta_path}"
+    # changelog_line is derived from a PR title — escape before templating so it can't inject markup.
+    safe_line = html_escape(changelog_line or "").replace("**", "")
+    safe_url = html_escape(url)
+    html = f"""
+    <html><body style="font-family:Arial,Helvetica,sans-serif;color:#222;">
+    <h2>You asked, we shipped 🎉</h2>
+    <p>You reported this, and it's now live in LinkedIn Engagement Manager:</p>
+    <p style="border-left:3px solid #0a66c2;padding-left:12px;color:#333;">{safe_line}</p>
+    <p>Give it a try — then tell us whether it actually fixed things for you. One tap, and it goes
+    straight back to the team.</p>
+    <p><a href="{safe_url}" style="background:#0a66c2;color:#fff;padding:10px 16px;border-radius:6px;
+    text-decoration:none;">See what changed</a></p>
+    <p style="color:#888;font-size:12px;">You're getting this because you sent us feedback about
+    it — we only send one of these per fix.</p>
+    </body></html>
+    """
+    return _dispatch_email(to_email, f"✅ You asked, we shipped (#{int(issue_number)})", html)
+
+
 def send_pin_email(
     to_email: str,
     pin: str,

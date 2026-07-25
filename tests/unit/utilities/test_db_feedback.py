@@ -83,7 +83,9 @@ class TestInsertFeedback:
 class TestFeedbackEnums:
     def test_source_values_match_the_migration_enum(self):
         from cqc_lem.utilities.db import FeedbackSource
-        assert {str(s) for s in FeedbackSource} == {"widget", "bug", "nps", "review", "passive"}
+        # 'csat' was appended by V20260725104900 for the post-fix micro-CSAT (issue #502).
+        assert {str(s) for s in FeedbackSource} == {"widget", "bug", "nps", "review", "passive",
+                                                    "csat"}
 
     def test_status_values_match_the_migration_enum(self):
         from cqc_lem.utilities.db import FeedbackStatus

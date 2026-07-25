@@ -1242,5 +1242,19 @@ def auto_recluster_feedback(self, limit: int = 200):
             f"{result['clusters']} open cluster(s), {result['embedded']} embedding(s) backfilled")
 
 
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_changelog_notify(self, hours: int = None):
+    """Close the feedback loop on shipped work (issue #502, plan §B.4): scan recently merged PRs for
+    `Closes #<issue>`, generate the changelog line for each issue that came from user feedback, and
+    tell every reporter behind that cluster — once — by email + an in-app "you asked, we shipped"
+    notice carrying the micro-CSAT ("did this fix it?"). QueueOnce + the recipient ledger mean an
+    overlapping window can never notify the same reporter twice."""
+    from cqc_lem.utilities.feedback.shipped import process_shipped_fixes
+
+    result = process_shipped_fixes(hours=hours)
+    return (f"Shipped-fix notify: {result['pull_requests']} merged PR(s) — "
+            f"{result['counts'] or 'nothing to do'}")
+
+
 if __name__ == "__main__":
     print("Process finished")
