@@ -5,6 +5,7 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
+from html import escape as html_escape
 from typing import Optional, Tuple
 
 from cqc_lem.utilities.env_constants import (
@@ -370,12 +371,18 @@ def send_onboarding_nudge_email(to_email: str, subject: str, headline: str, body
     import os
     base = (os.getenv("LEM_APP_URL") or "https://lem.christopherqueenconsulting.com").rstrip("/")
     url = f"{base}{cta_path if cta_path.startswith('/') else '/' + cta_path}"
+    # body is LLM-generated and the rest is caller-supplied — escape before templating so copy
+    # can't inject markup or break the layout
+    safe_headline = html_escape(headline or "")
+    safe_body = html_escape(body or "").replace("\n", "<br/>")
+    safe_cta_label = html_escape(cta_label or "")
+    safe_url = html_escape(url)
     html = f"""
     <html><body style="font-family:Arial,Helvetica,sans-serif;color:#222;">
-    <h2>{headline}</h2>
-    <p>{body}</p>
-    <p><a href="{url}" style="background:#0a66c2;color:#fff;padding:10px 16px;border-radius:6px;
-    text-decoration:none;">{cta_label}</a></p>
+    <h2>{safe_headline}</h2>
+    <p>{safe_body}</p>
+    <p><a href="{safe_url}" style="background:#0a66c2;color:#fff;padding:10px 16px;border-radius:6px;
+    text-decoration:none;">{safe_cta_label}</a></p>
     <p style="color:#888;font-size:12px;">If you've already done this, you can ignore this email —
     we only send each setup reminder once.</p>
     </body></html>

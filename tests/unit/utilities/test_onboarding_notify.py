@@ -33,6 +33,17 @@ class TestSendOnboardingNudgeEmail:
         html = dispatch.call_args[0][2]
         assert "https://app.example.com/account" in html
 
+    def test_escapes_caller_supplied_copy(self):
+        with patch("cqc_lem.utilities.email._dispatch_email", return_value=True) as dispatch:
+            from cqc_lem.utilities.email import send_onboarding_nudge_email
+            send_onboarding_nudge_email(
+                "u@example.com", "s", "<script>x</script>", "Line one\nAT&T & <b>bold</b>",
+                "Go </a><script>", "/account")
+        html = dispatch.call_args[0][2]
+        assert "<script>" not in html
+        assert "&lt;script&gt;x&lt;/script&gt;" in html
+        assert "Line one<br/>AT&amp;T &amp; &lt;b&gt;bold&lt;/b&gt;" in html
+
 
 class TestNotifyOnboardingNudge:
     def test_sends_and_tracks(self):

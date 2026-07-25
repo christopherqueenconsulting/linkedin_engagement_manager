@@ -5,7 +5,6 @@ from unittest.mock import patch
 
 pytestmark = pytest.mark.unit
 
-_RS = "cqc_lem.app.run_scheduler"
 _ON = "cqc_lem.utilities.onboarding"
 _DB = "cqc_lem.utilities.db"
 

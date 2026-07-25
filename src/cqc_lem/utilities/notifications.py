@@ -18,7 +18,7 @@ from cqc_lem.utilities.email import (
     send_session_revalidation_email,
     send_newsletter_draft_ready_email,
 )
-from cqc_lem.utilities.logger import myprint
+from cqc_lem.utilities.logger import log_info, log_warning, myprint
 
 
 def notify_linkedin_session(user_id: int, revalidation: bool = False) -> bool:
@@ -67,10 +67,12 @@ def notify_onboarding_nudge(user_id: int, nudge: dict) -> bool:
         if sent:
             from cqc_lem.utilities.observability import track_onboarding_nudge
             track_onboarding_nudge(user_id, str(nudge.get("key")))
-            myprint(f"Sent onboarding nudge '{nudge.get('key')}' to user_id {user_id}")
+            log_info(f"Sent onboarding nudge '{nudge.get('key')}'", user_id=user_id,
+                     action_type="onboarding_nudge")
         return sent
     except Exception as e:
-        myprint(f"Could not send onboarding nudge to user_id {user_id} | Error: {e}")
+        log_warning("Could not send onboarding nudge", exc=e, user_id=user_id,
+                    action_type="onboarding_nudge")
         return False
 
 
