@@ -151,6 +151,7 @@ class TestCatchupPreferenceValidation:
         assert prefs["catchup_event_types"] == ["job_change", "promotion"]
         assert prefs["catchup_touch_mode"] == "pre_review"
         assert prefs["max_catchup_touches_per_day"] == 5
+        assert prefs["catchup_message_source"] == "linkedin"
 
     def test_unknown_event_types_are_dropped(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_U), \
@@ -160,14 +161,35 @@ class TestCatchupPreferenceValidation:
         assert resp.status_code == 200
         assert upd.call_args[0][1]["catchup_event_types"] == ["promotion"]
 
-    @pytest.mark.parametrize("given,expected", [(999, 25), (-1, 0), (3, 3)])
-    def test_cap_is_clamped(self, client, given, expected):
+    @pytest.mark.parametrize("given,expected", [(999, 10), (-1, 0), (3, 3)])
+    def test_cap_is_clamped_to_the_absolute_ceiling(self, client, given, expected):
+        """The boundary caps at the premium ceiling; the per-plan allowance is applied in db.py."""
         with patch(f"{_M}.get_session_user_id", return_value=_U), \
              patch(f"{_M}.update_engagement_preferences", return_value=True) as upd:
             resp = client.put("/api/user/engagement-preferences", json={
                 "session_token": _S, "max_catchup_touches_per_day": given})
         assert resp.status_code == 200
         assert upd.call_args[0][1]["max_catchup_touches_per_day"] == expected
+
+    @pytest.mark.parametrize("given,expected", [("ai", "ai"), ("gpt", "linkedin")])
+    def test_message_source_is_validated(self, client, given, expected):
+        with patch(f"{_M}.get_session_user_id", return_value=_U), \
+             patch(f"{_M}.update_engagement_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/engagement-preferences", json={
+                "session_token": _S, "catchup_message_source": given})
+        assert resp.status_code == 200
+        assert upd.call_args[0][1]["catchup_message_source"] == expected
+
+    @pytest.mark.parametrize("allowance", [5, 10])
+    def test_get_exposes_the_plan_allowance(self, client, allowance):
+        with patch(f"{_M}.get_session_user_id", return_value=_U), \
+             patch(f"{_M}.get_engagement_preferences", return_value={"tone": None}), \
+             patch(f"{_M}.get_or_create_reply_inbound_token", return_value=None), \
+             patch(f"{_M}.get_gmail_forward_confirmation", return_value=None), \
+             patch(f"{_M}.max_catchup_touches_allowed", return_value=allowance):
+            resp = client.get("/api/user/engagement-preferences", params={"session_token": _S})
+        assert resp.status_code == 200
+        assert resp.json()["detail"]["max_catchup_touches_allowed"] == allowance
 
     def test_bad_mode_falls_back_to_pre_review(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_U), \

@@ -53,7 +53,7 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     insert_connection_request, count_open_connection_requests, get_requested_person_keys, \
     get_engager_candidates, get_profile_facts, count_invites_sent_today, ConnectionRequestStatus, \
     CatchupTouchStatus, insert_catchup_touch, has_catchup_touch, get_catchup_touch, \
-    update_catchup_touch_status, count_catchup_touches_sent_today
+    update_catchup_touch_status, count_catchup_touches_sent_today, max_catchup_touches_allowed
 from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
     load_profile_for_user
@@ -70,7 +70,8 @@ from cqc_lem.utilities.selenium_util import click_element_wait_retry, \
     get_element_wait_retry, get_elements_as_list_wait_stale, getText, close_tab, get_driver_wait_pair, quit_gracefully, \
     wait_for_ajax, find_first, click_first, find_all_first
 from dotenv import load_dotenv
-from selenium.common import NoSuchElementException, JavascriptException, StaleElementReferenceException
+from selenium.common import NoSuchElementException, JavascriptException, StaleElementReferenceException, \
+    ElementNotInteractableException, WebDriverException
 from selenium.webdriver import ActionChains, Keys
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
@@ -4181,6 +4182,50 @@ _CATCHUP_PROFILE_LINK_LOCATORS = [
     (By.CSS_SELECTOR, "a[href*='/in/']"),
 ]
 
+# LinkedIn writes the congratulations for us — the catch-up card ships a pre-drafted response (a
+# suggestion chip on the card, or the pre-filled compose box behind "Say congrats"). That draft is the
+# BASELINE we send (owner review on PR #509): it is what the recipient expects from this surface, and
+# it costs no LLM call. Our own AI is opt-in (catchup_message_source='ai').
+_CATCHUP_SUGGESTED_TEXT_LOCATORS = [
+    (By.CSS_SELECTOR, "button[data-view-name*='suggested-reply']"),
+    (By.CSS_SELECTOR, "button[data-view-name*='message-suggestion']"),
+    (By.CSS_SELECTOR, "[data-view-name*='catch-up-card-suggestion']"),
+    (By.CSS_SELECTOR, "button[aria-label*='Congrats'], button[aria-label*='congrats']"),
+]
+# The card affordance that opens LinkedIn's pre-filled compose overlay. We only ever OPEN it to read
+# the draft — never type, never submit (see _harvest_linkedin_draft).
+_CATCHUP_MESSAGE_TRIGGER_LOCATORS = [
+    (By.CSS_SELECTOR, "button[data-view-name*='catch-up-card-message']"),
+    (By.CSS_SELECTOR, "button[aria-label*='Say congrats'], button[aria-label*='Send message']"),
+    (By.CSS_SELECTOR, "button[aria-label*='Message']"),
+]
+# Only these read as "open the congratulations composer" — anything else on the card is left alone so
+# a selector drift can't make us click Follow/Connect/Send.
+_CATCHUP_TRIGGER_TEXT_RE = re.compile(r"say congrats|congrat|message", re.IGNORECASE)
+_CATCHUP_COMPOSE_LOCATORS = [
+    (By.CSS_SELECTOR, "div[role='dialog'] div[contenteditable='true']"),
+    (By.CSS_SELECTOR, "div[role='dialog'] textarea"),
+    (By.CSS_SELECTOR, "div[contenteditable='true'][aria-label*='message']"),
+]
+_CATCHUP_DISMISS_LOCATORS = [
+    (By.CSS_SELECTOR, "div[role='dialog'] button[aria-label*='Dismiss']"),
+    (By.CSS_SELECTOR, "div[role='dialog'] button[aria-label*='Close']"),
+]
+# Opening LinkedIn's composer to read its draft is one extra interaction per QUALIFYING moment (never
+# per card). Set to false to stay read-only on the card and use the per-milestone fallbacks below.
+CATCHUP_HARVEST_LINKEDIN_DRAFT = os.getenv("CATCHUP_HARVEST_LINKEDIN_DRAFT", "true").lower() == "true"
+# What LinkedIn's own suggestion sounds like, for when the feed doesn't surface one. Deliberately the
+# same short, plain congratulations — NOT an AI rewrite, and never a pitch.
+_CATCHUP_DEFAULT_CONGRATS = {
+    "job_change": "Congrats on the new role, {first_name}!",
+    "promotion": "Congrats on the promotion, {first_name}!",
+    "work_anniversary": "Happy work anniversary, {first_name}!",
+    "birthday": "Happy birthday, {first_name}!",
+    "education": "Congrats on the milestone, {first_name}!",
+    "in_the_news": "Great to see you in the news, {first_name}!",
+}
+CATCHUP_MESSAGE_MAX_CHARS = 300  # same budget as every other DM we send
+
 # Base value of each milestone type. New job / promotion are the BD goldmine; a birthday is not.
 # Read together with CATCHUP_MIN_SCORE (30): job change, promotion, in-the-news and work anniversary
 # clear the bar on their own, while education and birthday only clear it for people who also match the
@@ -4275,11 +4320,11 @@ def _score_catchup_moment(moment: dict, prefs: dict) -> int:
     return score
 
 
-def _card_profile_link(card: WebElement) -> "WebElement | None":
-    """First profile link inside a catch-up card, trying the ordered locator chain. Searched directly
+def _first_in_card(card: WebElement, locators: list) -> "WebElement | None":
+    """First element inside a catch-up card matching the ordered locator chain. Searched directly
     (no WebDriverWait) because the card is already in the DOM — a per-card wait would cost the full
     timeout on every non-person card LinkedIn mixes into the feed."""
-    for find_by, value in _CATCHUP_PROFILE_LINK_LOCATORS:
+    for find_by, value in locators:
         try:
             els = card.find_elements(find_by, value)
         except (StaleElementReferenceException, NoSuchElementException):
@@ -4289,11 +4334,87 @@ def _card_profile_link(card: WebElement) -> "WebElement | None":
     return None
 
 
-def _scrape_catchup_moments(driver: WebDriver, max_moments: int = 40,
-                            user_id: int = None) -> List[dict]:
-    """Scrape the catch-up feed into [{name, profile_url, text}] — one entry per card, deduped by
-    profile+text. Best-effort by design: a selector miss returns fewer moments (logged) rather than
-    failing the run."""
+def _card_profile_link(card: WebElement) -> "WebElement | None":
+    return _first_in_card(card, _CATCHUP_PROFILE_LINK_LOCATORS)
+
+
+def _clean_suggested_message(text: str) -> str:
+    """Normalize a draft LinkedIn handed us: collapse whitespace, drop the button chrome, cap at the
+    DM budget. Anything that doesn't look like a message (empty / a bare label) becomes ''."""
+    cleaned = " ".join((text or "").replace("\n", " ").split()).strip()
+    if len(cleaned) < 4:
+        return ""
+    return cleaned[:CATCHUP_MESSAGE_MAX_CHARS]
+
+
+def _card_suggested_message(card: WebElement) -> str:
+    """LinkedIn's suggested congratulations as rendered ON the card (a quick-reply chip), if any.
+    Read-only — no clicking."""
+    el = _first_in_card(card, _CATCHUP_SUGGESTED_TEXT_LOCATORS)
+    if el is None:
+        return ""
+    try:
+        return _clean_suggested_message(getText(el) or el.get_attribute("aria-label") or "")
+    except (StaleElementReferenceException, NoSuchElementException):
+        return ""
+
+
+def _harvest_linkedin_draft(driver: WebDriver, card: WebElement, user_id: int = None) -> str:
+    """Open LinkedIn's "Say congrats" composer for this card, read the message it pre-drafted, and
+    close it WITHOUT sending. We never type into the box and never click a send/submit control, so the
+    worst case is an opened-and-dismissed overlay. Best-effort: any miss returns '' and the caller
+    falls back to the per-milestone default."""
+    if not CATCHUP_HARVEST_LINKEDIN_DRAFT:
+        return ""
+    trigger = _first_in_card(card, _CATCHUP_MESSAGE_TRIGGER_LOCATORS)
+    if trigger is None:
+        return ""
+    try:
+        label = f"{getText(trigger) or ''} {trigger.get_attribute('aria-label') or ''}"
+        if not _CATCHUP_TRIGGER_TEXT_RE.search(label):
+            return ""  # a drifted selector matched something that isn't the congrats composer
+        trigger.click()
+        time.sleep(random.uniform(1, 2))
+        compose = None
+        for find_by, value in _CATCHUP_COMPOSE_LOCATORS:
+            els = driver.find_elements(find_by, value)
+            if els:
+                compose = els[0]
+                break
+        draft = ""
+        if compose is not None:
+            draft = _clean_suggested_message(getText(compose) or compose.get_attribute("value") or "")
+        return draft
+    except (StaleElementReferenceException, NoSuchElementException, ElementNotInteractableException,
+            WebDriverException) as e:
+        log_warning("Could not read LinkedIn's pre-drafted catch-up message", exc=e, user_id=user_id,
+                    action_type="catchup")
+        return ""
+    finally:
+        _dismiss_catchup_composer(driver)
+
+
+def _dismiss_catchup_composer(driver: WebDriver) -> None:
+    """Close the composer overlay without sending — the dismiss control, else Escape."""
+    try:
+        for find_by, value in _CATCHUP_DISMISS_LOCATORS:
+            els = driver.find_elements(find_by, value)
+            if els:
+                els[0].click()
+                return
+        ActionChains(driver).send_keys(Keys.ESCAPE).perform()
+    except (StaleElementReferenceException, NoSuchElementException, ElementNotInteractableException,
+            WebDriverException):
+        pass
+
+
+def _scrape_catchup_moments(driver: WebDriver, max_moments: int = 40, user_id: int = None,
+                            enabled_event_types: "set | None" = None) -> List[dict]:
+    """Scrape the catch-up feed into [{name, profile_url, text, event_type, suggested_message}] — one
+    entry per card, deduped by profile+text. Classification happens here so LinkedIn's pre-drafted
+    message is only harvested for moments the user actually congratulates (`enabled_event_types`);
+    pass None to skip harvesting entirely. Best-effort by design: a selector miss returns fewer moments
+    (logged) rather than failing the run."""
     driver.get(CATCHUP_URL)
     time.sleep(random.uniform(3, 5))
 
@@ -4318,8 +4439,13 @@ def _scrape_catchup_moments(driver: WebDriver, max_moments: int = 40,
             if key in seen:
                 continue
             seen.add(key)
+            event_type = _classify_catchup_moment(text)
+            suggested = ""
+            if event_type and enabled_event_types and event_type in enabled_event_types:
+                suggested = _card_suggested_message(card) or _harvest_linkedin_draft(
+                    driver, card, user_id=user_id)
             moments.append({"name": _catchup_name_from_card(text, link), "profile_url": profile_url,
-                            "text": text})
+                            "text": text, "event_type": event_type, "suggested_message": suggested})
         if len(moments) >= max_moments:
             break
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
@@ -4342,10 +4468,21 @@ def _catchup_name_from_card(text: str, link) -> str:
     return name[:255]
 
 
-def _draft_catchup_message(user_id: int, moment: dict, my_profile: LinkedInProfile) -> "str | None":
-    """Render the user's DM template for this milestone type, in their voice, referencing the actual
-    event. Returns None when the user has deactivated the template for that event type."""
+def _draft_catchup_message(user_id: int, moment: dict, my_profile: LinkedInProfile,
+                           source: str = "linkedin") -> "str | None":
+    """The congratulations to send for this moment.
+
+    'linkedin' (default): LinkedIn's OWN pre-drafted response — the suggestion it renders on the card
+    or pre-fills in its composer — falling back to the matching plain one-liner when the feed gave us
+    none. No LLM call. 'ai': the user's DM template refined to their voice (returns None when they
+    deactivated the template for that event type)."""
     first_name = (moment.get("name") or "").strip().split(" ")[0] or "there"
+    if source != "ai":
+        suggested = _clean_suggested_message(moment.get("suggested_message") or "")
+        if suggested:
+            return suggested
+        default = _CATCHUP_DEFAULT_CONGRATS.get(moment["event_type"])
+        return default.format(first_name=first_name) if default else None
     return build_dm_from_template(user_id, moment["event_type"], first_name, my_profile,
                                   event_detail=moment.get("event_detail") or moment.get("text", ""))
 
@@ -4359,7 +4496,8 @@ def automate_catchup_touches(self, user_id: int, max_moments: int = 40, max_draf
     approval (or 'approved' when the user opted into catchup_touch_mode='auto_approve'), and the
     capped scanner sends them later. Only milestone types the user enabled are drafted, each
     milestone is deduped on (person, event_type, period), and moments scoring below CATCHUP_MIN_SCORE
-    are tombstoned as 'skipped' so we neither draft nor re-score them."""
+    are tombstoned as 'skipped' so we neither draft nor re-score them. The message itself is
+    LinkedIn's own pre-drafted response unless the user opted into catchup_message_source='ai'."""
     prefs = get_engagement_preferences(user_id)
     enabled = {str(t) for t in (prefs.get("catchup_event_types") or [])}
     if not enabled:
@@ -4378,7 +4516,8 @@ def automate_catchup_touches(self, user_id: int, max_moments: int = 40, max_draf
 
     drafted = skipped = 0
     try:
-        moments = _scrape_catchup_moments(driver, max_moments=max_moments, user_id=user_id)
+        moments = _scrape_catchup_moments(driver, max_moments=max_moments, user_id=user_id,
+                                          enabled_event_types=enabled)
     except LinkedInRateLimited as e:
         myprint(f"automate_catchup_touches deferred mid-scrape (throttled): {e}")
         return "Catch-up scan deferred (LinkedIn throttled)"
@@ -4389,10 +4528,11 @@ def automate_catchup_touches(self, user_id: int, max_moments: int = 40, max_draf
         quit_gracefully(driver)
 
     auto_approve = str(prefs.get("catchup_touch_mode") or "pre_review") == "auto_approve"
+    source = str(prefs.get("catchup_message_source") or "linkedin")
     for moment in moments:
         if drafted >= max_drafts:
             break
-        event_type = _classify_catchup_moment(moment.get("text", ""))
+        event_type = moment.get("event_type") or _classify_catchup_moment(moment.get("text", ""))
         if event_type is None or event_type not in enabled:
             continue
         if _catchup_excluded(moment, prefs):
@@ -4409,7 +4549,7 @@ def automate_catchup_touches(self, user_id: int, max_moments: int = 40, max_draf
             skipped += 1
             continue
         try:
-            message = _draft_catchup_message(user_id, moment, my_profile)
+            message = _draft_catchup_message(user_id, moment, my_profile, source=source)
         except Exception as e:
             log_warning("Could not draft catch-up message", exc=e, user_id=user_id, action_type="catchup")
             continue
@@ -4446,7 +4586,11 @@ def send_catchup_touch(self, touch_id: int):
 
     user_id = touch["user_id"]
     prefs = get_engagement_preferences(user_id)
-    if count_catchup_touches_sent_today(user_id) >= int(prefs.get("max_catchup_touches_per_day") or 0):
+    # The saved cap can only go as high as the user's plan allows (10/day premium, 5/day otherwise) —
+    # re-checked here so a downgrade takes effect immediately, not at the next settings save.
+    daily_cap = min(int(prefs.get("max_catchup_touches_per_day") or 0),
+                    max_catchup_touches_allowed(user_id))
+    if count_catchup_touches_sent_today(user_id) >= daily_cap:
         update_catchup_touch_status(touch_id, CatchupTouchStatus.APPROVED)  # retry on the next scan
         return f"Catch-up touch {touch_id} deferred (daily catch-up cap reached)"
     if count_dms_sent_today(user_id) >= int(prefs.get("max_dms_per_day") or 0):

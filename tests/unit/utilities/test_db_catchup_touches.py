@@ -204,6 +204,8 @@ class TestCatchupEngagementPrefs:
         assert _ENGAGEMENT_DEFAULTS["catchup_event_types"] == ["job_change", "promotion"]
         assert _ENGAGEMENT_DEFAULTS["catchup_touch_mode"] == "pre_review"
         assert _ENGAGEMENT_DEFAULTS["max_catchup_touches_per_day"] == 5
+        # LinkedIn's own pre-drafted response is the baseline — our AI is opt-in (PR #509 owner review).
+        assert _ENGAGEMENT_DEFAULTS["catchup_message_source"] == "linkedin"
 
     def test_null_event_types_column_falls_back_to_the_default(self):
         """Rows predating the migration have NULL — that means 'never configured', not 'all off'."""
@@ -232,15 +234,51 @@ class TestCatchupEngagementPrefs:
         assert prefs["catchup_event_types"] == []
 
     @pytest.mark.parametrize("given,expected", [
-        (100, 25), (-3, 0), ("nope", 5), (None, 5), (4, 4),
+        (100, 5), (10, 5), (-3, 0), ("nope", 5), (None, 5), (4, 4),
     ])
-    def test_cap_is_clamped_on_upsert(self, given, expected):
+    def test_cap_is_clamped_to_the_standard_allowance_on_upsert(self, given, expected):
+        """Without a premium plan the cap tops out at 5/day, whatever the client sent."""
         conn, cur = _conn()
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
+        with patch(f"{_DB}.get_db_connection", return_value=conn), \
+             patch(f"{_DB}.get_user_subscription_info", return_value=None):
             from cqc_lem.utilities.db import update_engagement_preferences, _ENGAGEMENT_COLS
             update_engagement_preferences(1, {"max_catchup_touches_per_day": given})
         values = cur.execute.call_args[0][1]
         assert values[1 + _ENGAGEMENT_COLS.index("max_catchup_touches_per_day")] == expected
+
+    @pytest.mark.parametrize("given,expected", [(100, 10), (10, 10), (7, 7)])
+    def test_premium_plan_unlocks_the_higher_cap_on_upsert(self, given, expected):
+        conn, cur = _conn()
+        with patch(f"{_DB}.get_db_connection", return_value=conn), \
+             patch(f"{_DB}.get_user_subscription_info",
+                   return_value={"subscription_tier": "professional", "subscription_status": "active"}):
+            from cqc_lem.utilities.db import update_engagement_preferences, _ENGAGEMENT_COLS
+            update_engagement_preferences(1, {"max_catchup_touches_per_day": given})
+        values = cur.execute.call_args[0][1]
+        assert values[1 + _ENGAGEMENT_COLS.index("max_catchup_touches_per_day")] == expected
+
+    @pytest.mark.parametrize("given,expected", [("ai", "ai"), ("linkedin", "linkedin"),
+                                                ("yolo", "linkedin"), (None, "linkedin")])
+    def test_message_source_is_validated_on_upsert(self, given, expected):
+        conn, cur = _conn()
+        with patch(f"{_DB}.get_db_connection", return_value=conn), \
+             patch(f"{_DB}.get_user_subscription_info", return_value=None):
+            from cqc_lem.utilities.db import update_engagement_preferences, _ENGAGEMENT_COLS
+            update_engagement_preferences(1, {"catchup_message_source": given})
+        values = cur.execute.call_args[0][1]
+        assert values[1 + _ENGAGEMENT_COLS.index("catchup_message_source")] == expected
+
+    def test_bad_stored_message_source_reads_back_as_linkedin(self):
+        conn, _ = _conn(fetch_row={"catchup_message_source": "gpt", "catchup_event_types": None,
+                                   "include_topics": None, "exclude_topics": None,
+                                   "include_keywords": None, "exclude_keywords": None,
+                                   "include_authors": None, "exclude_authors": None,
+                                   "post_types": None, "focus_topics": None,
+                                   "use_emojis": 1, "use_hashtags": 0, "reply_to_own_comments": 1,
+                                   "feed_fallback_when_empty": 1, "link_in_first_comment": 1})
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_engagement_preferences
+            assert get_engagement_preferences(1)["catchup_message_source"] == "linkedin"
 
     def test_bad_mode_falls_back_to_pre_review(self):
         conn, cur = _conn()
@@ -257,6 +295,30 @@ class TestCatchupEngagementPrefs:
             update_engagement_preferences(1, {"catchup_event_types": ["job_change", "nonsense"]})
         values = cur.execute.call_args[0][1]
         assert values[1 + _ENGAGEMENT_COLS.index("catchup_event_types")] == '["job_change"]'
+
+
+class TestPremiumCatchupAllowance:
+    """10 catch-up touches/day is a premium-plan feature; everyone else tops out at 5 (PR #509)."""
+
+    @pytest.mark.parametrize("info,premium", [
+        ({"subscription_tier": "professional", "subscription_status": "active"}, True),
+        ({"subscription_tier": "enterprise", "subscription_status": "trial"}, True),
+        ({"subscription_tier": "starter", "subscription_status": "active"}, False),
+        ({"subscription_tier": "professional", "subscription_status": "cancelled"}, False),
+        ({"subscription_tier": None, "subscription_status": None}, False),
+        (None, False),
+    ])
+    def test_premium_detection(self, info, premium):
+        with patch(f"{_DB}.get_user_subscription_info", return_value=info):
+            from cqc_lem.utilities.db import is_premium_subscriber, max_catchup_touches_allowed
+            assert is_premium_subscriber(1) is premium
+            assert max_catchup_touches_allowed(1) == (10 if premium else 5)
+
+    def test_lookup_failure_is_never_premium(self):
+        with patch(f"{_DB}.get_user_subscription_info", side_effect=RuntimeError("db down")):
+            from cqc_lem.utilities.db import is_premium_subscriber, max_catchup_touches_allowed
+            assert is_premium_subscriber(1) is False
+            assert max_catchup_touches_allowed(1) == 5
 
 
 class TestCatchupDmTemplates:

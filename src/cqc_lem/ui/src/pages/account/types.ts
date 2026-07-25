@@ -34,6 +34,9 @@ export type EngPrefs = {
   max_catchup_touches_per_day: number
   catchup_touch_mode: string
   catchup_event_types: string[]
+  catchup_message_source: string
+  // Read-only: the highest catch-up cap this plan allows (10/day is premium-only).
+  max_catchup_touches_allowed?: number
   feed_reach?: FeedReach | null
 }
 

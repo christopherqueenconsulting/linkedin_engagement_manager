@@ -12,7 +12,7 @@ _RS = "cqc_lem.app.run_scheduler"
 
 def _prefs(**kw):
     base = {"max_comments_per_day": 50, "max_dms_per_day": 20, "max_catchup_touches_per_day": 5,
-            "catchup_touch_mode": "pre_review",
+            "catchup_touch_mode": "pre_review", "catchup_message_source": "linkedin",
             "catchup_event_types": ["job_change", "promotion"],
             "focus_topics": [], "include_topics": [], "include_keywords": [],
             "exclude_topics": [], "exclude_keywords": [], "exclude_authors": []}
@@ -184,6 +184,176 @@ class TestScrapeCatchupMoments:
             moments = _scrape_catchup_moments(driver, max_moments=2, user_id=1)
         assert len(moments) == 2
 
+    def test_classifies_each_card_and_skips_harvesting_when_no_types_are_enabled(self):
+        from cqc_lem.app.run_automation import _scrape_catchup_moments
+        card = self._card("Jane Doe started a new position at Acme")
+        driver = MagicMock()
+        with patch(f"{_RA}.find_all_first", return_value=[card]), \
+             patch(f"{_RA}._harvest_linkedin_draft") as harvest:
+            moments = _scrape_catchup_moments(driver, max_moments=10, user_id=1)
+        assert moments[0]["event_type"] == "job_change"
+        assert moments[0]["suggested_message"] == ""
+        harvest.assert_not_called()
+
+    def test_harvests_linkedins_draft_only_for_enabled_milestone_types(self):
+        from cqc_lem.app.run_automation import _scrape_catchup_moments
+        job = self._card("Jane Doe started a new position at Acme")
+        birthday = self._card("Wish Pat a happy birthday", href="https://www.linkedin.com/in/pat",
+                              link_text="Pat Roe")
+        driver = MagicMock()
+        with patch(f"{_RA}.find_all_first", return_value=[job, birthday]), \
+             patch(f"{_RA}._card_suggested_message", return_value=""), \
+             patch(f"{_RA}._harvest_linkedin_draft", return_value="Congrats on the new role!") as harvest:
+            moments = _scrape_catchup_moments(driver, max_moments=10, user_id=1,
+                                              enabled_event_types={"job_change"})
+        assert harvest.call_count == 1
+        assert moments[0]["suggested_message"] == "Congrats on the new role!"
+        assert moments[1]["suggested_message"] == ""
+
+    def test_card_chip_wins_over_opening_the_composer(self):
+        from cqc_lem.app.run_automation import _scrape_catchup_moments
+        card = self._card("Jane Doe started a new position at Acme")
+        driver = MagicMock()
+        with patch(f"{_RA}.find_all_first", return_value=[card]), \
+             patch(f"{_RA}._card_suggested_message", return_value="Congrats Jane!"), \
+             patch(f"{_RA}._harvest_linkedin_draft") as harvest:
+            moments = _scrape_catchup_moments(driver, max_moments=10, user_id=1,
+                                              enabled_event_types={"job_change"})
+        assert moments[0]["suggested_message"] == "Congrats Jane!"
+        harvest.assert_not_called()
+
+
+class TestLinkedInDraftHarvest:
+    """LinkedIn writes the congratulations; we only read it (PR #509 owner review)."""
+
+    @pytest.fixture(autouse=True)
+    def _no_sleeps(self):
+        with patch("time.sleep"):
+            yield
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("  Congrats on the\n new role, Jane! ", "Congrats on the new role, Jane!"),
+        ("", ""),
+        ("Hi", ""),          # a bare label is not a message
+        ("x" * 400, "x" * 300),
+    ])
+    def test_clean_suggested_message(self, raw, expected):
+        from cqc_lem.app.run_automation import _clean_suggested_message
+        assert _clean_suggested_message(raw) == expected
+
+    def test_card_suggestion_is_read_without_clicking(self):
+        from cqc_lem.app.run_automation import _card_suggested_message
+        chip = MagicMock()
+        chip.text = "Congrats on the promotion!"
+        card = MagicMock()
+        card.find_elements.return_value = [chip]
+        assert _card_suggested_message(card) == "Congrats on the promotion!"
+        chip.click.assert_not_called()
+
+    def test_card_without_a_suggestion_returns_empty(self):
+        from cqc_lem.app.run_automation import _card_suggested_message
+        card = MagicMock()
+        card.find_elements.return_value = []
+        assert _card_suggested_message(card) == ""
+
+    def _trigger(self, label="Say congrats"):
+        trigger = MagicMock()
+        trigger.text = label
+        trigger.get_attribute.return_value = label
+        return trigger
+
+    def test_opens_the_composer_reads_the_draft_and_dismisses_without_sending(self):
+        from cqc_lem.app.run_automation import _harvest_linkedin_draft
+        trigger = self._trigger()
+        card = MagicMock()
+        card.find_elements.return_value = [trigger]
+        compose = MagicMock()
+        compose.text = "Congrats on the new role, Jane!"
+        dismiss = MagicMock()
+        driver = MagicMock()
+        driver.find_elements.side_effect = [[compose], [dismiss]]
+        assert _harvest_linkedin_draft(driver, card, user_id=1) == "Congrats on the new role, Jane!"
+        trigger.click.assert_called_once()
+        dismiss.click.assert_called_once()
+
+    def test_never_clicks_a_control_that_isnt_the_congrats_composer(self):
+        """A drifted selector must not let us click Connect/Follow/Send."""
+        from cqc_lem.app.run_automation import _harvest_linkedin_draft
+        trigger = self._trigger(label="Follow")
+        card = MagicMock()
+        card.find_elements.return_value = [trigger]
+        driver = MagicMock()
+        assert _harvest_linkedin_draft(driver, card, user_id=1) == ""
+        trigger.click.assert_not_called()
+
+    def test_no_trigger_on_the_card_returns_empty(self):
+        from cqc_lem.app.run_automation import _harvest_linkedin_draft
+        card = MagicMock()
+        card.find_elements.return_value = []
+        assert _harvest_linkedin_draft(MagicMock(), card, user_id=1) == ""
+
+    def test_missing_composer_still_dismisses_and_returns_empty(self):
+        from cqc_lem.app.run_automation import _harvest_linkedin_draft
+        trigger = self._trigger()
+        card = MagicMock()
+        card.find_elements.return_value = [trigger]
+        driver = MagicMock()
+        driver.find_elements.return_value = []
+        with patch(f"{_RA}.ActionChains") as chains:
+            assert _harvest_linkedin_draft(driver, card, user_id=1) == ""
+        chains.assert_called_once()  # fell back to Escape
+
+    def test_a_selenium_error_is_swallowed(self):
+        from cqc_lem.app.run_automation import _harvest_linkedin_draft
+        from selenium.common import ElementNotInteractableException
+        trigger = self._trigger()
+        trigger.click.side_effect = ElementNotInteractableException("nope")
+        card = MagicMock()
+        card.find_elements.return_value = [trigger]
+        with patch(f"{_RA}.log_warning") as warn:
+            assert _harvest_linkedin_draft(MagicMock(), card, user_id=1) == ""
+        warn.assert_called_once()
+
+    def test_harvesting_can_be_switched_off(self):
+        from cqc_lem.app import run_automation
+        card = MagicMock()
+        with patch.object(run_automation, "CATCHUP_HARVEST_LINKEDIN_DRAFT", False):
+            assert run_automation._harvest_linkedin_draft(MagicMock(), card, user_id=1) == ""
+        card.find_elements.assert_not_called()
+
+
+class TestDraftCatchupMessage:
+    @pytest.mark.parametrize("event_type,expected", [
+        ("job_change", "Congrats on the new role, Jane!"),
+        ("promotion", "Congrats on the promotion, Jane!"),
+        ("work_anniversary", "Happy work anniversary, Jane!"),
+        ("birthday", "Happy birthday, Jane!"),
+        ("education", "Congrats on the milestone, Jane!"),
+        ("in_the_news", "Great to see you in the news, Jane!"),
+    ])
+    def test_every_milestone_has_a_linkedin_style_fallback(self, event_type, expected):
+        from cqc_lem.app.run_automation import _draft_catchup_message
+        moment = _moment(event_type=event_type)
+        with patch(f"{_RA}.build_dm_from_template") as ai:
+            assert _draft_catchup_message(1, moment, MagicMock()) == expected
+        ai.assert_not_called()
+
+    def test_linkedins_own_draft_wins_over_the_fallback(self):
+        from cqc_lem.app.run_automation import _draft_catchup_message
+        moment = _moment(event_type="job_change", suggested_message="Congrats Jane — huge news!")
+        assert _draft_catchup_message(1, moment, MagicMock()) == "Congrats Jane — huge news!"
+
+    def test_unknown_event_type_without_a_suggestion_drafts_nothing(self):
+        from cqc_lem.app.run_automation import _draft_catchup_message
+        assert _draft_catchup_message(1, _moment(event_type="mystery"), MagicMock()) is None
+
+    def test_ai_source_delegates_to_the_dm_template(self):
+        from cqc_lem.app.run_automation import _draft_catchup_message
+        moment = _moment(event_type="job_change", suggested_message="ignored")
+        with patch(f"{_RA}.build_dm_from_template", return_value="In my voice") as ai:
+            assert _draft_catchup_message(1, moment, MagicMock(), source="ai") == "In my voice"
+        assert ai.call_args.kwargs["event_detail"] == moment["text"]
+
 
 class TestAutomateCatchupTouches:
     def _patches(self, moments, prefs=None):
@@ -199,18 +369,29 @@ class TestAutomateCatchupTouches:
             "insert": patch(f"{_RA}.insert_catchup_touch", return_value=7),
         }
 
-    def test_drafts_pending_touch_for_enabled_event_type(self):
+    def test_drafts_pending_touch_from_linkedins_own_suggestion(self):
         from cqc_lem.app.run_automation import automate_catchup_touches
         from cqc_lem.utilities.db import CatchupTouchStatus
-        p = self._patches([_moment()])
-        with p["prefs"], p["profile"], p["scrape"], p["quit"], p["has"], p["draft"], \
-             p["insert"] as ins:
+        p = self._patches([_moment(suggested_message="Congrats on the new role, Jane!")])
+        with p["prefs"], p["profile"], p["scrape"], p["quit"], p["has"], \
+             p["draft"] as ai_draft, p["insert"] as ins:
             out = automate_catchup_touches.run(user_id=1)
         assert "1 drafted" in out
         kwargs = ins.call_args.kwargs
         assert kwargs["status"] == CatchupTouchStatus.PENDING
-        assert kwargs["message"] == "Congrats Jane!"
+        assert kwargs["message"] == "Congrats on the new role, Jane!"
         assert ins.call_args.args[2] == "job_change"
+        ai_draft.assert_not_called()  # the default path costs no LLM call
+
+    def test_ai_source_uses_the_dm_template_path(self):
+        from cqc_lem.app.run_automation import automate_catchup_touches
+        p = self._patches([_moment(suggested_message="Congrats on the new role, Jane!")],
+                          prefs=_prefs(catchup_message_source="ai"))
+        with p["prefs"], p["profile"], p["scrape"], p["quit"], p["has"], \
+             p["draft"] as ai_draft, p["insert"] as ins:
+            automate_catchup_touches.run(user_id=1)
+        ai_draft.assert_called_once()
+        assert ins.call_args.kwargs["message"] == "Congrats Jane!"
 
     def test_auto_approve_mode_queues_the_draft(self):
         from cqc_lem.app.run_automation import automate_catchup_touches
@@ -283,13 +464,30 @@ class TestAutomateCatchupTouches:
         scrape.assert_not_called()
         assert "deferred" in out
 
-    def test_missing_template_skips_the_moment(self):
+    def test_missing_template_skips_the_moment_in_ai_mode(self):
         from cqc_lem.app.run_automation import automate_catchup_touches
-        p = self._patches([_moment()])
+        p = self._patches([_moment()], prefs=_prefs(catchup_message_source="ai"))
         with p["prefs"], p["profile"], p["scrape"], p["quit"], p["has"], \
              patch(f"{_RA}.build_dm_from_template", return_value=None), p["insert"] as ins:
             automate_catchup_touches.run(user_id=1)
         ins.assert_not_called()
+
+    def test_no_linkedin_suggestion_falls_back_to_the_plain_congratulations(self):
+        """LinkedIn didn't surface a draft — we still send its kind of one-liner, not an AI rewrite."""
+        from cqc_lem.app.run_automation import automate_catchup_touches
+        p = self._patches([_moment()])
+        with p["prefs"], p["profile"], p["scrape"], p["quit"], p["has"], \
+             p["draft"] as ai_draft, p["insert"] as ins:
+            automate_catchup_touches.run(user_id=1)
+        assert ins.call_args.kwargs["message"] == "Congrats on the new role, Jane!"
+        ai_draft.assert_not_called()
+
+    def test_enabled_types_are_passed_to_the_scrape_so_only_those_are_harvested(self):
+        from cqc_lem.app.run_automation import automate_catchup_touches
+        p = self._patches([_moment()])
+        with p["prefs"], p["profile"], p["scrape"] as scrape, p["quit"], p["has"], p["draft"], p["insert"]:
+            automate_catchup_touches.run(user_id=1)
+        assert scrape.call_args.kwargs["enabled_event_types"] == {"job_change", "promotion"}
 
     def test_scrape_failure_still_quits_the_driver(self):
         from cqc_lem.app.run_automation import automate_catchup_touches
@@ -309,10 +507,11 @@ class TestSendCatchupTouch:
         base.update(kw)
         return base
 
-    def _patches(self, touch, sent=True, catchup_today=0, dms_today=0):
+    def _patches(self, touch, sent=True, catchup_today=0, dms_today=0, prefs=None, allowance=5):
         return {
             "get": patch(f"{_RA}.get_catchup_touch", return_value=touch),
-            "prefs": patch(f"{_RA}.get_engagement_preferences", return_value=_prefs()),
+            "prefs": patch(f"{_RA}.get_engagement_preferences", return_value=prefs or _prefs()),
+            "allow": patch(f"{_RA}.max_catchup_touches_allowed", return_value=allowance),
             "cnt": patch(f"{_RA}.count_catchup_touches_sent_today", return_value=catchup_today),
             "dms": patch(f"{_RA}.count_dms_sent_today", return_value=dms_today),
             "send": patch(f"{_RA}.send_dm_now", return_value=sent),
@@ -324,7 +523,7 @@ class TestSendCatchupTouch:
         from cqc_lem.app.run_automation import send_catchup_touch
         from cqc_lem.utilities.db import CatchupTouchStatus
         p = self._patches(self._touch())
-        with p["get"], p["prefs"], p["cnt"], p["dms"], p["send"] as send, p["upd"] as upd, p["enq"] as enq:
+        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["send"] as send, p["upd"] as upd, p["enq"] as enq:
             out = send_catchup_touch.run(touch_id=3)
         send.assert_called_once_with(1, "https://www.linkedin.com/in/jane", "Congrats Jane!")
         upd.assert_called_once_with(3, CatchupTouchStatus.SENT)
@@ -335,7 +534,7 @@ class TestSendCatchupTouch:
         from cqc_lem.app.run_automation import send_catchup_touch
         from cqc_lem.utilities.db import CatchupTouchStatus
         p = self._patches(self._touch(), sent=False)
-        with p["get"], p["prefs"], p["cnt"], p["dms"], p["send"], p["upd"] as upd, p["enq"] as enq:
+        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["send"], p["upd"] as upd, p["enq"] as enq:
             out = send_catchup_touch.run(touch_id=3)
         upd.assert_called_once_with(3, CatchupTouchStatus.FAILED)
         enq.assert_not_called()
@@ -345,7 +544,7 @@ class TestSendCatchupTouch:
         from cqc_lem.app.run_automation import send_catchup_touch
         from cqc_lem.utilities.db import CatchupTouchStatus
         p = self._patches(self._touch(), catchup_today=5)
-        with p["get"], p["prefs"], p["cnt"], p["dms"], p["send"] as send, p["upd"] as upd, p["enq"]:
+        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["send"] as send, p["upd"] as upd, p["enq"]:
             out = send_catchup_touch.run(touch_id=3)
         send.assert_not_called()
         upd.assert_called_once_with(3, CatchupTouchStatus.APPROVED)
@@ -355,7 +554,7 @@ class TestSendCatchupTouch:
         from cqc_lem.app.run_automation import send_catchup_touch
         from cqc_lem.utilities.db import CatchupTouchStatus
         p = self._patches(self._touch(), dms_today=20)
-        with p["get"], p["prefs"], p["cnt"], p["dms"], p["send"] as send, p["upd"] as upd, p["enq"]:
+        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["send"] as send, p["upd"] as upd, p["enq"]:
             out = send_catchup_touch.run(touch_id=3)
         send.assert_not_called()
         upd.assert_called_once_with(3, CatchupTouchStatus.APPROVED)
@@ -366,7 +565,7 @@ class TestSendCatchupTouch:
         from cqc_lem.utilities.db import CatchupTouchStatus
         from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
         p = self._patches(self._touch())
-        with p["get"], p["prefs"], p["cnt"], p["dms"], \
+        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], \
              patch(f"{_RA}.send_dm_now", side_effect=LinkedInRateLimited("429")), \
              p["upd"] as upd, p["enq"]:
             out = send_catchup_touch.run(touch_id=3)
@@ -376,7 +575,7 @@ class TestSendCatchupTouch:
     def test_unapproved_touch_is_never_sent(self):
         from cqc_lem.app.run_automation import send_catchup_touch
         p = self._patches(self._touch(status="pending"))
-        with p["get"], p["prefs"], p["cnt"], p["dms"], p["send"] as send, p["upd"], p["enq"]:
+        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["send"] as send, p["upd"], p["enq"]:
             out = send_catchup_touch.run(touch_id=3)
         send.assert_not_called()
         assert "not sendable" in out
@@ -384,16 +583,37 @@ class TestSendCatchupTouch:
     def test_missing_touch_is_handled(self):
         from cqc_lem.app.run_automation import send_catchup_touch
         p = self._patches(None)
-        with p["get"], p["prefs"], p["cnt"], p["dms"], p["send"] as send, p["upd"], p["enq"]:
+        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["send"] as send, p["upd"], p["enq"]:
             out = send_catchup_touch.run(touch_id=3)
         send.assert_not_called()
         assert "missing" in out
+
+    def test_saved_cap_above_the_plan_allowance_is_pulled_back_down(self):
+        """A downgrade must bite immediately: a saved 10/day on a standard plan still stops at 5."""
+        from cqc_lem.app.run_automation import send_catchup_touch
+        from cqc_lem.utilities.db import CatchupTouchStatus
+        p = self._patches(self._touch(), catchup_today=5, allowance=5,
+                          prefs=_prefs(max_catchup_touches_per_day=10))
+        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["send"] as send, p["upd"] as upd, p["enq"]:
+            out = send_catchup_touch.run(touch_id=3)
+        send.assert_not_called()
+        upd.assert_called_once_with(3, CatchupTouchStatus.APPROVED)
+        assert "catch-up cap" in out
+
+    def test_premium_allowance_lets_the_higher_cap_through(self):
+        from cqc_lem.app.run_automation import send_catchup_touch
+        p = self._patches(self._touch(), catchup_today=5, allowance=10,
+                          prefs=_prefs(max_catchup_touches_per_day=10))
+        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["send"] as send, p["upd"], p["enq"]:
+            out = send_catchup_touch.run(touch_id=3)
+        send.assert_called_once()
+        assert "sent" in out
 
     def test_empty_message_is_skipped(self):
         from cqc_lem.app.run_automation import send_catchup_touch
         from cqc_lem.utilities.db import CatchupTouchStatus
         p = self._patches(self._touch(message="   "))
-        with p["get"], p["prefs"], p["cnt"], p["dms"], p["send"] as send, p["upd"] as upd, p["enq"]:
+        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["send"] as send, p["upd"] as upd, p["enq"]:
             out = send_catchup_touch.run(touch_id=3)
         send.assert_not_called()
         upd.assert_called_once_with(3, CatchupTouchStatus.SKIPPED)
@@ -463,6 +683,7 @@ class TestCatchupDispatchers:
              patch(f"{_RS}.get_active_user_ids", return_value=[7]), \
              patch(f"{_RS}.get_engagement_preferences",
                    return_value=_prefs(max_catchup_touches_per_day=2)), \
+             patch(f"{_RS}.max_catchup_touches_allowed", return_value=5), \
              patch(f"{_RS}.count_catchup_touches_sent_today", return_value=0), \
              patch(f"{_RS}.get_orphaned_catchup_touches", return_value=[]), \
              patch(f"{_RS}.update_catchup_touch_status"), \
@@ -470,6 +691,23 @@ class TestCatchupDispatchers:
             out = auto_check_catchup_touches()
         assert task.apply_async.call_count == 2
         assert "Dispatched 2" in out
+
+    def test_send_scanner_budget_is_bounded_by_the_plan_allowance(self):
+        """Saved cap 10 but a standard plan — the drip still dispatches at most 5 that day."""
+        from cqc_lem.app.run_scheduler import auto_check_catchup_touches
+        approved = [(i, 7) for i in range(1, 9)]
+        with patch(f"{_RS}._skip_if_throttled", return_value=False), \
+             patch(f"{_RS}.get_approved_catchup_touches", return_value=approved), \
+             patch(f"{_RS}.get_active_user_ids", return_value=[7]), \
+             patch(f"{_RS}.get_engagement_preferences",
+                   return_value=_prefs(max_catchup_touches_per_day=10)), \
+             patch(f"{_RS}.max_catchup_touches_allowed", return_value=5), \
+             patch(f"{_RS}.count_catchup_touches_sent_today", return_value=0), \
+             patch(f"{_RS}.get_orphaned_catchup_touches", return_value=[]), \
+             patch(f"{_RS}.update_catchup_touch_status"), \
+             patch(f"{_RS}.send_catchup_touch") as task:
+            auto_check_catchup_touches()
+        assert task.apply_async.call_count == 5
 
     def test_send_scanner_skips_inactive_users(self):
         from cqc_lem.app.run_scheduler import auto_check_catchup_touches

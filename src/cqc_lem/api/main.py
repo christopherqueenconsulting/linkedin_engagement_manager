@@ -36,8 +36,9 @@ from cqc_lem.utilities.db import (
     get_leads, get_lead, update_lead, count_hot_leads, LeadStage,
     get_catchup_touches, get_catchup_touch_user_id, update_catchup_touch,
     update_catchup_touch_status, CatchupTouchStatus, CatchupEventType,
-    DEFAULT_CATCHUP_EVENT_TYPES, VALID_CATCHUP_TOUCH_MODES,
-    CATCHUP_TOUCHES_MIN, CATCHUP_TOUCHES_MAX,
+    DEFAULT_CATCHUP_EVENT_TYPES, VALID_CATCHUP_TOUCH_MODES, VALID_CATCHUP_MESSAGE_SOURCES,
+    CATCHUP_TOUCHES_MIN, CATCHUP_TOUCHES_MAX, CATCHUP_TOUCHES_MAX_STANDARD,
+    max_catchup_touches_allowed,
     create_pin_for_email, verify_pin_for_email, delete_pin_for_email,
     create_session, get_session_user_id, delete_session,
     add_user_by_email, get_user_email, get_user_token_info, store_linkedin_li_at,
@@ -505,9 +506,10 @@ class EngagementPreferencesRequest(BaseModel):
     feed_fallback_when_empty: bool = True
     link_in_first_comment: bool = True
     # Catch-up congratulations (issue #482)
-    max_catchup_touches_per_day: int = 5
+    max_catchup_touches_per_day: int = CATCHUP_TOUCHES_MAX_STANDARD
     catchup_touch_mode: str = "pre_review"  # 'pre_review' (default) | 'auto_approve'
     catchup_event_types: List[str] = list(DEFAULT_CATCHUP_EVENT_TYPES)
+    catchup_message_source: str = "linkedin"  # 'linkedin' (LinkedIn's own draft) | 'ai'
 
     @field_validator("comment_length")
     @classmethod
@@ -563,13 +565,20 @@ class EngagementPreferencesRequest(BaseModel):
     def _coerce_catchup_mode(cls, v: str) -> str:
         return v if v in VALID_CATCHUP_TOUCH_MODES else "pre_review"
 
+    @field_validator("catchup_message_source")
+    @classmethod
+    def _coerce_catchup_message_source(cls, v: str) -> str:
+        return v if v in VALID_CATCHUP_MESSAGE_SOURCES else "linkedin"
+
     @field_validator("max_catchup_touches_per_day")
     @classmethod
     def _clamp_catchup_cap(cls, v: int) -> int:
+        # Absolute ceiling only — the per-plan allowance (10/day premium, 5/day otherwise) is applied
+        # in update_engagement_preferences, which knows the user.
         try:
             return min(CATCHUP_TOUCHES_MAX, max(CATCHUP_TOUCHES_MIN, int(v)))
         except (TypeError, ValueError):
-            return 5
+            return CATCHUP_TOUCHES_MAX_STANDARD
 
     @field_validator("catchup_event_types")
     @classmethod
@@ -1525,6 +1534,9 @@ def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel:
         prefs["reply_inbound_address"] = None
     # Gmail forwarding auto-confirmation status (so the UI can surface the code if auto-confirm failed).
     prefs["gmail_forward_confirmation"] = get_gmail_forward_confirmation(user_id)
+    # Read-only: the highest catch-up cap this plan allows, so the UI can bound the input and show
+    # what upgrading unlocks (10/day is premium-only).
+    prefs["max_catchup_touches_allowed"] = max_catchup_touches_allowed(user_id)
     # Read-only: the last feed scan's reach funnel so the user can see when their targeting is too
     # strict (posts examined -> matched their filters -> commented).
     try:

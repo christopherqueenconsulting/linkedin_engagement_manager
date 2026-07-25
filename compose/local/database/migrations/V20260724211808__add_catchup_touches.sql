@@ -46,7 +46,9 @@ ALTER TABLE dm_followups
                            'work_anniversary','birthday','education','in_the_news') NOT NULL;
 
 -- Per-day cap for catch-up touches. Deliberately small (5) — these are personal congratulations, not a
--- campaign; they also count against max_dms_per_day at send time.
+-- campaign; they also count against max_dms_per_day at send time. 5/day is the ceiling on every plan;
+-- raising it to 10/day is a premium (professional/enterprise) feature, enforced in db.py at save AND
+-- send time (see max_catchup_touches_allowed).
 ALTER TABLE engagement_preferences
     ADD COLUMN max_catchup_touches_per_day INT NOT NULL DEFAULT 5;
 
@@ -55,7 +57,15 @@ ALTER TABLE engagement_preferences
 ALTER TABLE engagement_preferences
     ADD COLUMN catchup_touch_mode ENUM('pre_review','auto_approve') NOT NULL DEFAULT 'pre_review';
 
--- Which milestone types are eligible. Defaults to the BD-relevant subset (new job + promotion) so the
--- feature does not spray "Congrats!" at birthdays out of the box. JSON list of event_type values.
+-- Which milestone types are eligible. All six are user-configurable; the default is the BD-relevant
+-- subset (new job + promotion) so the feature does not spray "Congrats!" at birthdays out of the box.
+-- JSON list of event_type values.
 ALTER TABLE engagement_preferences
     ADD COLUMN catchup_event_types JSON NULL;
+
+-- Where the congratulations text comes from. 'linkedin' (default) uses LinkedIn's OWN pre-drafted
+-- response for the moment — the text LinkedIn already suggests in the catch-up card — with a
+-- deterministic per-milestone one-liner when the feed doesn't surface one. No LLM call at all.
+-- 'ai' opts into the DM-template + voice-refinement path for users who want more customization.
+ALTER TABLE engagement_preferences
+    ADD COLUMN catchup_message_source ENUM('linkedin','ai') NOT NULL DEFAULT 'linkedin';

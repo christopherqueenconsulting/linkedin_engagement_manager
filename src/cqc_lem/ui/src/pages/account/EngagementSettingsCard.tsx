@@ -54,6 +54,9 @@ export default function EngagementSettingsCard() {
 
   if (!engPrefs) return null
 
+  // Server-provided ceiling for the catch-up cap — 10/day on Professional/Enterprise, 5/day otherwise.
+  const catchupCapMax = engPrefs.max_catchup_touches_allowed ?? 5
+
   // Every engagement section edits ONE shared object saved by ONE mutation, so a failure in any
   // field (e.g. an over-long value) fails the whole save. Show the result under whichever button
   // the user clicked — previously the message only rendered in the Targeting card, hiding errors
@@ -252,20 +255,35 @@ export default function EngagementSettingsCard() {
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Max catch-up touches/day</label>
-            <input type="number" min={0} max={25} value={engPrefs.max_catchup_touches_per_day ?? 5}
-              onChange={(e) => setEng({ max_catchup_touches_per_day: Number(e.target.value) })}
+            <input type="number" min={0} max={catchupCapMax} value={engPrefs.max_catchup_touches_per_day ?? 5}
+              onChange={(e) => setEng({ max_catchup_touches_per_day: Math.min(catchupCapMax, Number(e.target.value)) })}
               className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
-            <p className="text-xs text-gray-400 mt-1">Congratulations DMs sent per day from your LinkedIn Catch-up feed. They also count against Max DMs/day.</p>
+            <p className="text-xs text-gray-400 mt-1">
+              Congratulations DMs sent per day from your LinkedIn Catch-up feed. They also count against Max DMs/day.
+              {catchupCapMax > 5
+                ? ' Your plan allows up to 10/day.'
+                : ' Up to 5/day on your plan — 10/day is included with Professional and Enterprise.'}
+            </p>
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Catch-up approval</label>
             <select value={engPrefs.catchup_touch_mode ?? 'pre_review'}
               onChange={(e) => setEng({ catchup_touch_mode: e.target.value })}
               className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
-              <option value="pre_review">Pre-review (approve each message first)</option>
-              <option value="auto_approve">Auto-approve (queue drafts immediately)</option>
+              <option value="pre_review">Pre-review (edit + approve each message first)</option>
+              <option value="auto_approve">Auto-use (send LinkedIn's draft as-is)</option>
             </select>
-            <p className="text-xs text-gray-400 mt-1">Pre-review holds each drafted congratulations in the Catch-up tab until you approve it.</p>
+            <p className="text-xs text-gray-400 mt-1">Pre-review holds each congratulations in the Catch-up tab so you can edit it before it goes out; auto-use queues it straight into the capped drip.</p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Catch-up message</label>
+            <select value={engPrefs.catchup_message_source ?? 'linkedin'}
+              onChange={(e) => setEng({ catchup_message_source: e.target.value })}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+              <option value="linkedin">LinkedIn's suggested response (default)</option>
+              <option value="ai">Customize with AI (your DM template + voice)</option>
+            </select>
+            <p className="text-xs text-gray-400 mt-1">LinkedIn already drafts a congratulations for each moment — we use that as the baseline, no AI required. Switch to AI only if you want the message rewritten in your voice from your DM template.</p>
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Auto-generated video quality</label>
@@ -313,8 +331,9 @@ export default function EngagementSettingsCard() {
         <div className="border-t border-gray-100 pt-4">
           <p className="text-sm font-medium text-gray-700">Catch-up milestones to congratulate</p>
           <p className="text-xs text-gray-400 mb-2">
-            Which network moments LEM drafts a congratulations for. New job and promotion are real
-            reasons to reconnect; the rest are optional. Unchecking every type turns Catch-up off.
+            Which network moments LEM drafts a congratulations for — all six are yours to turn on.
+            New job and promotion are on by default because they're real reasons to reconnect; the
+            rest are opt-in. Unchecking every type turns Catch-up off.
           </p>
           <div className="flex flex-wrap gap-3">
             {CATCHUP_EVENTS.map((ev) => {

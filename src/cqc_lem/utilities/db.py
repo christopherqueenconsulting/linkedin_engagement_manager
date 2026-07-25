@@ -2708,10 +2708,42 @@ def update_user_preferences(
 
 
 # Catch-up milestone types eligible for a congratulations touch out of the box (issue #482): the two
-# real trigger events. Birthdays/anniversaries are opt-in — congratulating those at volume reads as spam.
+# real trigger events. All six types are user-configurable; birthdays/anniversaries are opt-in because
+# congratulating those at volume reads as spam.
 DEFAULT_CATCHUP_EVENT_TYPES = ("job_change", "promotion")
 VALID_CATCHUP_TOUCH_MODES = ("pre_review", "auto_approve")
-CATCHUP_TOUCHES_MIN, CATCHUP_TOUCHES_MAX = 0, 25
+# Where the congratulations text comes from. 'linkedin' = LinkedIn's own pre-drafted response for the
+# moment (no LLM); 'ai' = the DM-template + voice-refinement path, for users who want more customization.
+VALID_CATCHUP_MESSAGE_SOURCES = ("linkedin", "ai")
+# Per-day cap bounds. 5/day is the ceiling on every plan; raising it to 10/day is a premium feature
+# (owner review on PR #509: "3A, but use 3B as a premium subscribed user feature").
+CATCHUP_TOUCHES_MIN = 0
+CATCHUP_TOUCHES_MAX_STANDARD = 5
+CATCHUP_TOUCHES_MAX_PREMIUM = 10
+# Absolute ceiling accepted at the API boundary — the per-user allowance is applied on top of it.
+CATCHUP_TOUCHES_MAX = CATCHUP_TOUCHES_MAX_PREMIUM
+# Paid plans that unlock the premium catch-up allowance (see stripe_util.TIER_PRICE_MAP).
+PREMIUM_SUBSCRIPTION_TIERS = ("professional", "enterprise")
+ACTIVE_SUBSCRIPTION_STATUSES = ("active", "trial")
+
+
+def is_premium_subscriber(user_id: int) -> bool:
+    """True when the user is on a currently-active professional/enterprise plan. Anything else —
+    free trial, starter, lapsed, unknown, or a DB error — is treated as NOT premium, so a premium-only
+    allowance can never be granted by accident."""
+    try:
+        info = get_user_subscription_info(user_id)
+    except Exception:
+        return False
+    if not info:
+        return False
+    return (str(info.get("subscription_tier") or "") in PREMIUM_SUBSCRIPTION_TIERS
+            and str(info.get("subscription_status") or "") in ACTIVE_SUBSCRIPTION_STATUSES)
+
+
+def max_catchup_touches_allowed(user_id: int) -> int:
+    """The highest catch-up cap this user may set — 10/day on premium plans, 5/day otherwise."""
+    return CATCHUP_TOUCHES_MAX_PREMIUM if is_premium_subscriber(user_id) else CATCHUP_TOUCHES_MAX_STANDARD
 
 _ENGAGEMENT_DEFAULTS: dict = {
     # Default to MEDIUM (issue #394): 2026 LinkedIn weights substantive ≥15-word comments ~2.5× short
@@ -2736,8 +2768,10 @@ _ENGAGEMENT_DEFAULTS: dict = {
     "feed_fallback_when_empty": True, "link_in_first_comment": True,
     # Catch-up congratulations (issue #482): small cap, human approval, and only the BD-relevant
     # milestone types out of the box — a generic "Congrats!" at volume is worse than nothing.
-    "max_catchup_touches_per_day": 5, "catchup_touch_mode": "pre_review",
+    # The message itself defaults to LinkedIn's own pre-drafted response (no LLM).
+    "max_catchup_touches_per_day": CATCHUP_TOUCHES_MAX_STANDARD, "catchup_touch_mode": "pre_review",
     "catchup_event_types": list(DEFAULT_CATCHUP_EVENT_TYPES),
+    "catchup_message_source": "linkedin",
 }
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
                            "exclude_keywords", "include_authors", "exclude_authors", "post_types",
@@ -2755,7 +2789,8 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "default_buyer_stage", "default_video_quality",
                     "reply_check_mode", "reply_sweeps_per_day", "reply_max_post_age_days",
                     "feed_fallback_when_empty", "link_in_first_comment",
-                    "max_catchup_touches_per_day", "catchup_touch_mode", "catchup_event_types")
+                    "max_catchup_touches_per_day", "catchup_touch_mode", "catchup_event_types",
+                    "catchup_message_source")
 
 VALID_VIDEO_QUALITIES = ("standard", "premium", "premium_top")
 VALID_REPLY_MODES = ("event", "scheduled", "off")
@@ -2799,6 +2834,8 @@ def get_engagement_preferences(user_id: int) -> dict:
         # catch-up touches off, so only coerce the NULL case.
         if row.get("catchup_event_types") is None:
             row["catchup_event_types"] = list(DEFAULT_CATCHUP_EVENT_TYPES)
+        if row.get("catchup_message_source") not in VALID_CATCHUP_MESSAGE_SOURCES:
+            row["catchup_message_source"] = _ENGAGEMENT_DEFAULTS["catchup_message_source"]
         for f in _ENGAGEMENT_JSON_FIELDS:
             row[f] = _coerce_json_list(row.get(f))
         for f in _ENGAGEMENT_BOOL_FIELDS:
@@ -2847,13 +2884,19 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
         merged["reply_max_post_age_days"] = 2
     if merged.get("catchup_touch_mode") not in VALID_CATCHUP_TOUCH_MODES:
         merged["catchup_touch_mode"] = "pre_review"
+    if merged.get("catchup_message_source") not in VALID_CATCHUP_MESSAGE_SOURCES:
+        merged["catchup_message_source"] = "linkedin"
+    # The cap ceiling is per-plan: 10/day only on an active premium plan, 5/day otherwise. Clamped
+    # here (not just at the API boundary) so a downgrade silently pulls the saved cap back down.
+    _cap_max = max_catchup_touches_allowed(user_id)
     _ct = merged.get("max_catchup_touches_per_day")
     try:
         merged["max_catchup_touches_per_day"] = (
-            min(CATCHUP_TOUCHES_MAX, max(CATCHUP_TOUCHES_MIN, int(_ct))) if _ct is not None
-            else _ENGAGEMENT_DEFAULTS["max_catchup_touches_per_day"])
+            min(_cap_max, max(CATCHUP_TOUCHES_MIN, int(_ct))) if _ct is not None
+            else min(_cap_max, _ENGAGEMENT_DEFAULTS["max_catchup_touches_per_day"]))
     except (TypeError, ValueError):
-        merged["max_catchup_touches_per_day"] = _ENGAGEMENT_DEFAULTS["max_catchup_touches_per_day"]
+        merged["max_catchup_touches_per_day"] = min(
+            _cap_max, _ENGAGEMENT_DEFAULTS["max_catchup_touches_per_day"])
     # Drop unknown milestone types before they hit the ENUM-validated ledger.
     merged["catchup_event_types"] = [t for t in (merged.get("catchup_event_types") or [])
                                      if t in tuple(CatchupEventType)]

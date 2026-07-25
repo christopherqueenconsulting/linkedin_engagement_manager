@@ -20,7 +20,7 @@ from cqc_lem.utilities.db import (
     update_connection_request_status, ConnectionRequestStatus, count_invites_sent_today,
     get_users_with_reply_mode, get_engagement_preferences,
     get_approved_catchup_touches, get_orphaned_catchup_touches, update_catchup_touch_status,
-    count_catchup_touches_sent_today, CatchupTouchStatus,
+    count_catchup_touches_sent_today, CatchupTouchStatus, max_catchup_touches_allowed,
 )
 from cqc_lem.utilities.env_constants import SELENIUM_KEEP_VIDEOS_X_DAYS, CQC_LEM_POST_TIME_DELTA_MINUTES
 from cqc_lem.utilities.logger import myprint, log_info, log_debug, log_warning
@@ -865,7 +865,9 @@ def auto_check_catchup_touches():
                         user_id=user_id, task_name="auto_check_catchup_touches")
             continue
         if user_id not in budgets:
-            cap = int(get_engagement_preferences(user_id).get("max_catchup_touches_per_day") or 0)
+            # 10/day is a premium-plan allowance; every other plan tops out at 5 (see db.py).
+            cap = min(int(get_engagement_preferences(user_id).get("max_catchup_touches_per_day") or 0),
+                      max_catchup_touches_allowed(user_id))
             budgets[user_id] = max(0, cap - count_catchup_touches_sent_today(user_id))
         if budgets[user_id] <= 0:
             continue  # cap met for today — the rest stay 'approved' for tomorrow

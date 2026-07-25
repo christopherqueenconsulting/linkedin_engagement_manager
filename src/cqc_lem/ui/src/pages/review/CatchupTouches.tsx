@@ -6,9 +6,9 @@ import { formatInTimezone } from '../../utils/datetime'
 import { CATCHUP_EVENTS } from '../account/types'
 
 // LinkedIn Catch-up congratulations (issue #482). LEM scans your Catch-up feed daily, scores each
-// milestone against your targeting, and drafts a personal congratulations in your voice. NOTHING is
-// sent until you approve it (unless you switched Account → Catch-up approval to auto-approve), and
-// sends drip out under your daily catch-up + DM caps.
+// milestone against your targeting, and queues LinkedIn's own suggested congratulations (or an
+// AI-written one when catchup_message_source='ai'). NOTHING is sent until you approve it (unless you
+// switched Account → Catch-up approval to auto-use), and sends drip out under your catch-up + DM caps.
 const MESSAGE_MAX = 1000
 
 interface CatchupTouch {
@@ -88,10 +88,11 @@ export default function CatchupTouches({ userTimezone }: { userTimezone: string 
         <h3 className="font-semibold text-gray-700">Catch-up congratulations</h3>
         <p className="text-xs text-gray-500">
           LEM scans your LinkedIn Catch-up feed daily for network milestones — new jobs, promotions,
-          work anniversaries — scores them against your targeting, and drafts a personal
-          congratulations in your voice. <span className="font-semibold">Nothing sends until you
-          approve it</span>, each milestone is messaged at most once, and approved messages drip out
-          under your daily catch-up and DM caps (Account → Engagement).
+          work anniversaries — scores them against your targeting, and queues LinkedIn's own suggested
+          congratulations for each one (switch to an AI-written version in Account → Catch-up message).
+          <span className="font-semibold"> Nothing sends until you approve it</span>, each milestone is
+          messaged at most once, and approved messages drip out under your daily catch-up and DM caps
+          (Account → Engagement).
         </p>
       </div>
 
