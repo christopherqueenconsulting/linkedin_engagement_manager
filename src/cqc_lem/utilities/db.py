@@ -13,7 +13,7 @@ from cqc_lem.utilities.env_constants import (
     SESSION_IDLE_HOURS,
 )
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
-from cqc_lem.utilities.logger import myprint
+from cqc_lem.utilities.logger import myprint, log_error
 from cqc_lem.utilities.utils import get_top_level_domain, get_aws_ssm_secret
 from dotenv import load_dotenv
 from mysql.connector import errorcode
@@ -177,6 +177,26 @@ class LeadSignalKind(StrEnum):
     PROFILE_VIEW = 'profile_view'  # they viewed our profile (dm_followups, profile_viewer event)
     CONNECT = 'connect'            # we sent them a connection request (connection_requests)
     FUNNEL = 'funnel'              # they are in the comment->connect->DM funnel (issue #399)
+
+
+class FeedbackSource(StrEnum):
+    """Where a piece of user feedback came in from (issue #496). Only WIDGET is captured today —
+    the rest are the channels the feedback->auto-work loop will add later."""
+    WIDGET = 'widget'    # the in-app feedback/bug widget
+    BUG = 'bug'          # a bug report raised outside the widget (e.g. support email)
+    NPS = 'nps'          # an NPS survey response
+    REVIEW = 'review'    # a public review (marketplace/G2/etc.)
+    PASSIVE = 'passive'  # inferred from behavior, not typed by the user
+
+
+class FeedbackStatus(StrEnum):
+    """Lifecycle of a feedback item as it moves through the auto-work loop (issue #496)."""
+    NEW = 'new'                      # just captured, not looked at
+    TRIAGED = 'triaged'              # reviewed/classified
+    CLUSTERED = 'clustered'          # grouped with similar reports
+    ISSUE_CREATED = 'issue_created'  # a GitHub issue was opened for its cluster
+    RESOLVED = 'resolved'            # shipped/answered
+    DISMISSED = 'dismissed'          # not actionable
 
 
 # Enum for log actions types
@@ -6319,6 +6339,34 @@ def get_margin_users() -> list:
     except mysql.connector.Error as err:
         myprint(f"Could not fetch margin users | Error: {err}")
         return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def insert_feedback(body: str, user_id: int = None,
+                    source: "FeedbackSource" = FeedbackSource.WIDGET,
+                    type_hint: str = None, context: dict = None,
+                    sentiment: str = None) -> Optional[int]:
+    """Persist one piece of user feedback (issue #496). user_id is optional — the widget is offered
+    to logged-out visitors too. `context` is the auto-attached client context (route, app version,
+    PostHog session id, optional screenshot) and is stored as JSON."""
+    if not body or not str(body).strip():
+        return None
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO feedback (user_id, source, type_hint, body, context_json, sentiment) "
+            "VALUES (%s,%s,%s,%s,%s,%s)",
+            (user_id, str(source), str(type_hint)[:32] if type_hint else None, str(body),
+             json.dumps(context) if context else None,
+             str(sentiment)[:16] if sentiment else None))
+        connection.commit()
+        return cursor.lastrowid
+    except mysql.connector.Error as err:
+        log_error("Could not insert feedback", exc=err, user_id=user_id)
+        return None
     finally:
         cursor.close()
         connection.close()

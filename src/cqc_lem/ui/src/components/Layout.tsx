@@ -1,6 +1,7 @@
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import AccountReadinessBanner from './AccountReadinessBanner'
+import FeedbackWidget from './FeedbackWidget'
 import Footer from './Footer'
 
 // Pages whose features depend on a fully set-up account — show the readiness banner here.
@@ -74,6 +75,7 @@ export default function Layout() {
         <Outlet />
       </main>
       <Footer />
+      <FeedbackWidget />
     </div>
   )
 }
