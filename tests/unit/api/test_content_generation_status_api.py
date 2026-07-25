@@ -87,3 +87,13 @@ class TestCreateWeeklyContentMarksQueued:
             resp = client.post("/api/create_weekly_content/", params={"user_id": 0})
         assert resp.status_code == 400
         queued.assert_not_called()
+
+    def test_dispatch_failure_clears_the_queued_record(self, client):
+        """A broker outage must not strand the SPA polling a run that will never start."""
+        with patch("cqc_lem.api.main.mark_queued"), \
+             patch("cqc_lem.api.main.clear_generation_status") as cleared, \
+             patch("cqc_lem.api.main.celery_chain") as chain:
+            chain.return_value.apply_async.side_effect = OSError("broker unreachable")
+            resp = client.post("/api/create_weekly_content/", params={"user_id": _USER})
+        assert resp.status_code == 500
+        cleared.assert_called_once_with(_USER)

@@ -18,13 +18,25 @@ import json
 import os
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Optional
+from typing import Any, Optional, Protocol
 
 from cqc_lem.utilities.logger import log_debug
 
 _KEY_PREFIX = "content_generation:status:"
 _DEFAULT_TTL_SECONDS = 24 * 60 * 60
 _DEFAULT_RESULT_TTL_SECONDS = 60 * 60
+
+
+class RedisLike(Protocol):
+    """The slice of the Redis API this module uses — structural, so `redis.Redis` and the test
+    doubles both satisfy it without importing `redis` at module scope (it is imported lazily so
+    the module keeps working, no-opping, when the client is unavailable)."""
+
+    def get(self, name: str) -> Any: ...
+
+    def set(self, name: str, value: str, ex: Optional[int] = None) -> Any: ...
+
+    def delete(self, *names: str) -> Any: ...
 
 
 class ContentGenerationState(StrEnum):
@@ -53,7 +65,7 @@ def _result_ttl_seconds() -> int:
         return _DEFAULT_RESULT_TTL_SECONDS
 
 
-def _redis_client():
+def _redis_client() -> Optional[RedisLike]:
     """Redis handle for the progress key, or None if unavailable (progress then no-ops).
 
     Mirrors the 429 breaker's resolution order: the Celery broker URL when it points at Redis,
@@ -82,7 +94,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _read(client, user_id: int) -> Optional[dict]:
+def _read(client: RedisLike, user_id: int) -> Optional[dict]:
     try:
         raw = client.get(_key(user_id))
     except Exception:
@@ -96,7 +108,7 @@ def _read(client, user_id: int) -> Optional[dict]:
     return status if isinstance(status, dict) else None
 
 
-def _write(client, user_id: int, status: dict, ttl: Optional[int] = None) -> None:
+def _write(client: RedisLike, user_id: int, status: dict, ttl: Optional[int] = None) -> None:
     status["updated_at"] = _now()
     try:
         client.set(_key(user_id), json.dumps(status), ex=ttl if ttl is not None else _ttl_seconds())

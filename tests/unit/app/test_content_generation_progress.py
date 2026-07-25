@@ -145,6 +145,33 @@ class TestProgressTracking:
         progress["finished"].assert_called_once_with(1)
         progress["generated"].assert_not_called()
 
+    def test_persist_failure_counts_as_failed_and_run_continues(self, progress):
+        """A raise AFTER generation (video download, DB write) must not abort the whole run."""
+        from cqc_lem.app.run_content_plan import auto_create_weekly_content
+        patches = _generation_patches(
+            [_planned(1, 11), _planned(1, 12)],
+            **{"update_db_post_content": {"side_effect": [RuntimeError("db gone"), None]}})
+        with _Patched(patches):
+            auto_create_weekly_content(user_id=1)
+
+        progress["failed"].assert_called_once_with(1, 11)
+        progress["generated"].assert_called_once_with(1, 12)
+        progress["finished"].assert_called_once_with(1)
+        progress["notify"].assert_called_once_with(1, 1, 1)
+
+    def test_unexpected_raise_still_finishes_the_run(self, progress):
+        """Belt-and-braces: even if the per-post loop blows up, the record can't stay in_progress."""
+        from cqc_lem.app.run_content_plan import auto_create_weekly_content
+        patches = _generation_patches([_planned(1, 11)])
+        with _Patched(patches), \
+                patch(f"{_RCP}._create_content_for_planned_post",
+                      side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError):
+                auto_create_weekly_content(user_id=1)
+
+        progress["finished"].assert_called_once_with(1)
+        progress["notify"].assert_not_called()
+
     def test_no_planned_posts_and_no_user_tracks_nothing(self, progress):
         """The beat run never published a 'queued' record, so there is nothing to close out."""
         from cqc_lem.app.run_content_plan import auto_create_weekly_content
