@@ -107,11 +107,32 @@ class TestMarkers:
         record_pre_post_scheduled(11, 7, window)
 
         key, mapping = mock_redis.hset.call_args[0][0], mock_redis.hset.call_args[1]["mapping"]
-        assert key == "engagement:prepost:11"
+        assert key == "engagement:prepost:11:automate_commenting"
         assert mapping["status"] == "scheduled"
         assert mapping["window_seconds"] == "900"
         assert mapping["task_name"] == "automate_commenting"
         mock_redis.expire.assert_called_once()
+
+    def test_each_pre_post_task_gets_its_own_marker(self, mock_redis):
+        """Both pre-post tasks fire for the SAME post — the viewer dispatch must not overwrite the
+        commenting window's eta/duration (Copilot review, PR #594)."""
+        from cqc_lem.utilities.engagement_window import (
+            PRE_POST_TASK_COMMENTING, PRE_POST_TASK_VIEWER, PrePostWindow, record_pre_post_scheduled)
+        record_pre_post_scheduled(18, 7, PrePostWindow(eta=_NOW, duration_seconds=900, clamped=False))
+        record_pre_post_scheduled(18, 7, PrePostWindow(eta=_NOW, duration_seconds=600, clamped=False),
+                                  task_name=PRE_POST_TASK_VIEWER)
+
+        writes = {c[0][0]: c[1]["mapping"] for c in mock_redis.hset.call_args_list}
+        assert writes[f"engagement:prepost:18:{PRE_POST_TASK_COMMENTING}"]["window_seconds"] == "900"
+        assert writes[f"engagement:prepost:18:{PRE_POST_TASK_VIEWER}"]["window_seconds"] == "600"
+
+    def test_run_marker_targets_the_commenting_key(self, mock_redis):
+        from cqc_lem.utilities.engagement_window import record_pre_post_run
+        record_pre_post_run(19, 7, 2)
+
+        assert mock_redis.hset.call_args[0][0] == "engagement:prepost:19:automate_commenting"
+        assert all(c[0][0] == "engagement:prepost:19:automate_commenting"
+                   for c in mock_redis.hincrby.call_args_list)
 
     def test_skipped_marker_records_reason(self, mock_redis):
         from cqc_lem.utilities.engagement_window import record_pre_post_skipped
@@ -193,6 +214,13 @@ class TestGetPrePostWindowStat:
         mock_redis.hgetall.return_value = {b"runs": b"n/a"}
 
         assert get_pre_post_window_stat(23)["runs"] == "n/a"
+
+    def test_reads_the_requested_task_marker(self, mock_redis):
+        from cqc_lem.utilities.engagement_window import PRE_POST_TASK_VIEWER, get_pre_post_window_stat
+        mock_redis.hgetall.return_value = {b"status": b"scheduled"}
+        get_pre_post_window_stat(27, task_name=PRE_POST_TASK_VIEWER)
+
+        assert mock_redis.hgetall.call_args[0][0] == f"engagement:prepost:27:{PRE_POST_TASK_VIEWER}"
 
     def test_unknown_post_returns_empty_dict(self, mock_redis):
         from cqc_lem.utilities.engagement_window import get_pre_post_window_stat

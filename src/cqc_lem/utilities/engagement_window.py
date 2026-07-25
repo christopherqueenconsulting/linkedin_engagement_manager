@@ -43,6 +43,12 @@ PRE_POST_SKIP_PAST_WINDOW = "past_window"
 PRE_POST_SKIP_THROTTLED = "throttled"
 PRE_POST_SKIP_USER_INACTIVE = "user_inactive"
 
+# The task each marker belongs to. One post dispatches BOTH pre-post tasks, so the marker is keyed
+# per task — otherwise the viewer dispatch (written second) would clobber the commenting window's
+# eta/window_seconds/clamped and the read-back would describe the wrong task.
+PRE_POST_TASK_COMMENTING = "automate_commenting"
+PRE_POST_TASK_VIEWER = "automate_profile_viewer_engagement"
+
 
 @dataclass(frozen=True)
 class PrePostWindow:
@@ -82,15 +88,16 @@ def plan_pre_post_window(scheduled_time: datetime, lead_minutes: int,
     return PrePostWindow(eta=now, duration_seconds=int(remaining), clamped=True)
 
 
-def _marker_key(post_id: int) -> str:
-    return f"{_MARKER_PREFIX}{int(post_id)}"
+def _marker_key(post_id: int, task_name: str = PRE_POST_TASK_COMMENTING) -> str:
+    return f"{_MARKER_PREFIX}{int(post_id)}:{task_name}"
 
 
-def _write_marker(post_id: int, fields: dict, increments: Optional[dict] = None) -> None:
+def _write_marker(post_id: int, task_name: str, fields: dict,
+                  increments: Optional[dict] = None) -> None:
     client = shared_redis_client()
     if client is None:
         return
-    key = _marker_key(post_id)
+    key = _marker_key(post_id, task_name)
     try:
         if fields:
             client.hset(key, mapping={k: str(v) for k, v in fields.items() if v is not None})
@@ -102,14 +109,14 @@ def _write_marker(post_id: int, fields: dict, increments: Optional[dict] = None)
 
 
 def record_pre_post_scheduled(post_id: int, user_id: int, window: PrePostWindow,
-                              task_name: str = "automate_commenting") -> None:
+                              task_name: str = PRE_POST_TASK_COMMENTING) -> None:
     """Mark that the pre-post engagement window was dispatched for this post."""
     log_info(
         f"Pre-post engagement window scheduled for {window.eta.isoformat()} "
         f"({window.duration_seconds}s{', clamped' if window.clamped else ''})",
         post_id=post_id, user_id=user_id, task_name=task_name,
     )
-    _write_marker(post_id, {
+    _write_marker(post_id, task_name, {
         "user_id": user_id,
         "status": PRE_POST_STATUS_SCHEDULED,
         "task_name": task_name,
@@ -123,12 +130,12 @@ def record_pre_post_scheduled(post_id: int, user_id: int, window: PrePostWindow,
 
 
 def record_pre_post_skipped(post_id: int, user_id: int, reason: str,
-                            task_name: str = "automate_commenting") -> None:
+                            task_name: str = PRE_POST_TASK_COMMENTING) -> None:
     """Mark that no pre-post engagement ran for this post, and why (throttle, inactive user, or a
     window that already closed) — the skip is as important to a report as the run."""
     log_warning(f"Pre-post engagement window skipped — {reason}",
                 post_id=post_id, user_id=user_id, task_name=task_name)
-    _write_marker(post_id, {
+    _write_marker(post_id, task_name, {
         "user_id": user_id,
         "status": PRE_POST_STATUS_SKIPPED,
         "task_name": task_name,
@@ -138,28 +145,29 @@ def record_pre_post_skipped(post_id: int, user_id: int, reason: str,
                               skip_reason=reason)
 
 
-def record_pre_post_run(post_id: int, user_id: int, comments: int,
+def record_pre_post_run(post_id: int, user_id: int, comments: Optional[int],
                         now: Optional[datetime] = None) -> None:
     """Record one completed pre-post engagement pass and the comments it left. The loop re-queues
     itself across the window, so runs/comments ACCUMULATE — the marker answers "pre-post commenting
     ran N times for post X and left M comments"."""
     ran_at = _as_utc(now if now is not None else datetime.now(timezone.utc))
     log_info(f"Pre-post engagement pass complete — {comments} comment(s)",
-             post_id=post_id, user_id=user_id, task_name="automate_commenting")
-    _write_marker(post_id,
+             post_id=post_id, user_id=user_id, task_name=PRE_POST_TASK_COMMENTING)
+    _write_marker(post_id, PRE_POST_TASK_COMMENTING,
                   {"user_id": user_id, "last_run_at": ran_at.isoformat()},
                   {"runs": 1, "comments": max(0, int(comments or 0))})
     track_pre_post_engagement(post_id, user_id, "ran", comments=int(comments or 0),
                               ran_at=ran_at.isoformat())
 
 
-def get_pre_post_window_stat(post_id: int) -> dict:
-    """Read back a post's engagement-window marker (empty dict when unknown / Redis unavailable)."""
+def get_pre_post_window_stat(post_id: int, task_name: str = PRE_POST_TASK_COMMENTING) -> dict:
+    """Read back a post's engagement-window marker for one pre-post task (defaults to feed
+    commenting; empty dict when unknown / Redis unavailable)."""
     client = shared_redis_client()
     if client is None:
         return {}
     try:
-        raw = client.hgetall(_marker_key(post_id))
+        raw = client.hgetall(_marker_key(post_id, task_name))
     except Exception as e:
         log_warning("Could not read pre-post engagement marker", exc=e, post_id=post_id)
         return {}
@@ -176,7 +184,9 @@ def get_pre_post_window_stat(post_id: int) -> dict:
             try:
                 stat[numeric] = int(stat[numeric])
             except ValueError:
-                pass
+                # A marker field is only ever observability data — a corrupt/non-numeric value is
+                # surfaced verbatim rather than dropped, so a reader can see what was actually there.
+                continue
     stat.setdefault("runs", 0)
     stat.setdefault("comments", 0)
     return stat

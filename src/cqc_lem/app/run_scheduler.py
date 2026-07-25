@@ -26,6 +26,7 @@ from cqc_lem.utilities.engagement_window import (
     plan_pre_post_window, record_pre_post_scheduled, record_pre_post_skipped,
     PRE_POST_COMMENT_LEAD_MINUTES, PRE_POST_VIEWER_LEAD_MINUTES,
     PRE_POST_SKIP_PAST_WINDOW, PRE_POST_SKIP_THROTTLED, PRE_POST_SKIP_USER_INACTIVE,
+    PRE_POST_TASK_VIEWER,
 )
 from cqc_lem.utilities.env_constants import SELENIUM_KEEP_VIDEOS_X_DAYS, CQC_LEM_POST_TIME_DELTA_MINUTES, \
     COST_ROUTING_WINDOW_DAYS
@@ -119,14 +120,14 @@ def auto_check_scheduled_posts(self):
             viewer_window = plan_pre_post_window(scheduled_time, PRE_POST_VIEWER_LEAD_MINUTES)
             if viewer_window is None:
                 record_pre_post_skipped(post_id, user_id, PRE_POST_SKIP_PAST_WINDOW,
-                                        task_name="automate_profile_viewer_engagement")
+                                        task_name=PRE_POST_TASK_VIEWER)
             else:
                 automate_profile_viewer_engagement.apply_async(
                     kwargs={'user_id': user_id, 'loop_for_duration': viewer_window.duration_seconds},
                     eta=viewer_window.eta,
                 )
                 record_pre_post_scheduled(post_id, user_id, viewer_window,
-                                          task_name="automate_profile_viewer_engagement")
+                                          task_name=PRE_POST_TASK_VIEWER)
 
     # Re-queue any posts that got stuck in 'scheduled' (task was lost, e.g. on container restart)
     # but never transitioned to 'posted'. The 2-hour gap ensures we don't race with a task
