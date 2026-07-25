@@ -1,8 +1,24 @@
 # Auth, Identity & Session-Secret Protection — Research & Recommended Design
 
-**Issue:** #568 — Phase 1 (research). **Status:** awaiting owner sign-off before Phase 2 (build).
+**Issue:** #568 — Phase 1 (research). **Status:** ✅ **Approved by @gitchrisqueen on 2026-07-25** (PR #575,
+answers `1A 2A 3A`). Phase 2 builds exactly what §10 records.
 **Constraints:** security-first / phishing-resistant, easy to operate, **no paid third-party services**
 (self-hosted, free-forever libraries only).
+
+All file references below are repo-relative and were verified against the tree at the time of writing.
+
+---
+
+## 0. Approved decisions (owner sign-off)
+
+| # | Question | Decision | Where it is specified |
+|---|---|---|---|
+| 1 | Primary authentication method | **1A — Passkeys/WebAuthn primary** (`webauthn` / py_webauthn) + **TOTP** (`pyotp`) as the alternate second factor; **email-PIN demoted to bootstrap-only**; Google OAuth deferred. Prerequisite: verify the public hostname serves valid TLS before building 2c. | §4, §7 Stage 2, PR **2c** |
+| 2 | The stored LinkedIn password | **2A — Encrypt it, and make cookie-only (`li_at`) the default; deprecate the password prompt.** Users who only supplied a password are prompted once to paste a cookie instead. | §5.2, §5.4, PR **2a** |
+| 3 | Phase 2 rollout | **3A — Three sequential, independently revertible PRs: 2a encryption-at-rest → 2b identity/session hardening → 2c passkeys + recovery codes.** | §8 |
+
+Everything below is the research that produced those three decisions; the recommendation language is
+retained as written, now with the sign-off applied.
 
 ---
 
@@ -10,16 +26,16 @@
 
 | Concern | Current implementation | Risk |
 |---|---|---|
-| Identity key | `users.id INT AUTO_INCREMENT` is the real PK and every FK already points at it (`V4__add_user_ids.sql`), **but the application looks users up by email** — `get_user_id(email)`, `store_cookies(user_email, …)`, `get_cookies(url, user_email)` (`utilities/db.py:259`, `:335`). | Email is the *de-facto* identity. Change it and the code path breaks; own it and you own the account. |
-| Login | Email → 6-digit PIN emailed → verify (`api/main.py:1539` `/auth/email/init`, `:1590` `/auth/email/verify`). PIN is `sha256(pin + email)` (`utilities/email.py:28`), 10-min TTL, single-use. | **Single factor, and that factor is the inbox.** Also phishable: a proxy page can relay the PIN in real time. `sha256` of a 6-digit PIN is brute-forceable from a DB dump (10⁶ candidates × known email). |
+| Identity key | `users.id INT AUTO_INCREMENT` is the real PK and every FK already points at it (`compose/local/database/migrations/V4__add_user_ids.sql`), **but the application looks users up by email** — `get_user_id(email)` (`src/cqc_lem/utilities/db.py:550`), `store_cookies(user_email, …)` (`src/cqc_lem/utilities/db.py:259`), `get_cookies(url, user_email)` (`src/cqc_lem/utilities/db.py:335`). | Email is the *de-facto* identity. Change it and the code path breaks; own it and you own the account. |
+| Login | Email → 6-digit PIN emailed → verify (`src/cqc_lem/api/main.py:1539` `/auth/email/init`, `src/cqc_lem/api/main.py:1590` `/auth/email/verify`). PIN is `sha256(pin + email)` (`src/cqc_lem/utilities/email.py:28`), 10-min TTL, single-use. | **Single factor, and that factor is the inbox.** Also phishable: a proxy page can relay the PIN in real time. `sha256` of a 6-digit PIN is brute-forceable from a DB dump (10⁶ candidates × known email). |
 | Auth rate limiting | **None.** No throttle on `/auth/email/init` or `/auth/email/verify`. | 10⁶ PIN space with unlimited guesses inside a 10-minute window is online-brute-forceable. |
-| Session token | `secrets.token_hex(32)` stored **in plaintext** in `sessions.session_token` (`utilities/db.py:2351`), sliding 24 h idle / 30-day absolute cap (`env_constants.py:172`). Sent to the SPA and kept in `localStorage` (`ui/src/api/client.ts:16`). | A DB dump hands over **live sessions**, not just hashes. `localStorage` is XSS-exfiltratable. No per-device rows, no "sign out everywhere", no re-auth on sensitive actions. |
-| LinkedIn session cookies | `cookies.value TEXT` — **plaintext** `li_at` / `JSESSIONID` (`V2__add_new_table.sql`, `db.py:259`). | A DB dump = a working LinkedIn session for every user. This is the crown jewel. |
-| LinkedIn OAuth tokens | `users.access_token` / `users.refresh_token VARCHAR(512)` — **plaintext** (`V9`, `V11`). | Same. Refresh token = durable API access. |
-| LinkedIn **password** | `users.password VARCHAR(255)` — stored **reversibly in plaintext** on purpose, because Selenium types it into the login form (`db.py:2240`). | Worst single item in the DB. Plaintext password for an account many users reuse credentials on. |
+| Session token | `secrets.token_hex(32)` stored **in plaintext** in `sessions.session_token` (`create_session`, `src/cqc_lem/utilities/db.py:2351`; the INSERT is at `:2360`), sliding 24 h idle / 30-day absolute cap (`SESSION_IDLE_HOURS` / `SESSION_ABSOLUTE_MAX_DAYS`, `src/cqc_lem/utilities/env_constants.py:172-173`). Sent to the SPA and kept in `localStorage` under `lem_session` (`src/cqc_lem/ui/src/api/client.ts:16`). | A DB dump hands over **live sessions**, not just hashes. `localStorage` is XSS-exfiltratable. No per-device rows, no "sign out everywhere", no re-auth on sensitive actions. |
+| LinkedIn session cookies | `cookies.value TEXT` — **plaintext** `li_at` / `JSESSIONID` (`compose/local/database/migrations/V2__add_new_table.sql`; written by `store_cookies`, `src/cqc_lem/utilities/db.py:259`). | A DB dump = a working LinkedIn session for every user. This is the crown jewel. |
+| LinkedIn OAuth tokens | `users.access_token` / `users.refresh_token VARCHAR(512)` — **plaintext** (migrations `V9`, `V11`; written at `src/cqc_lem/utilities/db.py:477`). | Same. Refresh token = durable API access. |
+| LinkedIn **password** | `users.password VARCHAR(255)` — stored **reversibly in plaintext** on purpose, because Selenium types it into the login form (`update_user_linkedin_password`, `src/cqc_lem/utilities/db.py:2240`; read back by `get_user_password_pair_by_id`, `src/cqc_lem/utilities/db.py:1553`). | Worst single item in the DB. Plaintext password for an account many users reuse credentials on. |
 | Recovery | None beyond "receive another PIN by email". | Lost/compromised mailbox = lost or stolen account, with nothing else in the way. |
-| Audit trail | `users.last_login` only. | No way to see or prove "who logged in, from where, and what did they touch". |
-| Blast radius | 10 modules read these secrets; all go through `utilities/db.py`. | Good news — **one choke point** to encrypt at. |
+| Audit trail | `users.last_login` only (`src/cqc_lem/utilities/db.py:2364`). | No way to see or prove "who logged in, from where, and what did they touch". |
+| Blast radius | 10 modules read these secrets; all go through `src/cqc_lem/utilities/db.py`. | Good news — **one choke point** to encrypt at. |
 
 **The one-line summary:** the most valuable asset in the system (a live LinkedIn identity) is protected
 by a single factor that lives in someone else's inbox, and is stored in the clear behind it.
@@ -55,9 +71,11 @@ FK'd everywhere. Nothing needs re-keying. Three changes make email a mere attrib
 2. **Email becomes a verified, changeable attribute**: `users.email_verified_at`, plus a
    `user_email_history` row per change (old, new, when, by which session). `users.email` keeps its
    UNIQUE index so it stays a valid *login hint* — it just stops being the identity.
-3. **Convert the email-keyed DB functions to id-keyed** — `store_cookies`, `get_cookies`,
-   `get_user_password_pair_by_id` and friends take `user_id`; email lookup happens once, at login.
-   This is the change that actually makes an email change safe.
+3. **Convert the email-keyed DB functions to id-keyed** — `get_user_id(email)`
+   (`src/cqc_lem/utilities/db.py:550`) becomes a login-time-only lookup, and `store_cookies`
+   (`:259`) / `get_cookies` (`:335`) take `user_id` like `store_linkedin_li_at` (`:361`) and
+   `get_user_password_pair_by_id` (`:1553`) already do. This is the change that actually makes an
+   email change safe.
 
 **Email change flow:** confirm to **both** addresses (old + new), 24-hour hold before the old address
 loses its rights, notification-only email to the old address that cannot be suppressed, audit row, and
@@ -69,7 +87,7 @@ a step-up auth requirement (§6). History and all data stay attached to the same
 
 | Option | Phishing-resistant | Cost | Self-hosted | UX | Recovery story |
 |---|---|---|---|---|---|
-| **A. Passkeys / WebAuthn** (`webauthn` aka `py_webauthn`, MIT) | ✅ Yes — origin-bound, nothing to relay | Free | ✅ | Face/Touch ID, one tap; sync via iCloud/Google/1Password | Needs recovery codes + a second passkey |
+| **A. Passkeys / WebAuthn** (PyPI package `webauthn`, from the `duo-labs/py_webauthn` project — **BSD-3-Clause**) | ✅ Yes — origin-bound, nothing to relay | Free | ✅ | Face/Touch ID, one tap; sync via iCloud/Google/1Password | Needs recovery codes + a second passkey |
 | **B. Password (argon2id) + mandatory TOTP** (`argon2-cffi` + `pyotp`, both MIT) | ⚠️ No — both factors are relayable through a proxy page | Free | ✅ | Familiar but two steps + an authenticator app | Recovery codes |
 | **C. Email magic link / PIN** (today) | ❌ No | Free | ✅ | Easiest | Email = the recovery, which is the problem |
 | **D. Google OAuth** | ✅ Yes (if the Google account has a passkey) | Free forever | ❌ third party | One click | Google's | 
@@ -79,8 +97,9 @@ Notes on each:
 - **A (passkeys)** is the only option in the list that structurally defeats T3. The credential is bound
   to the origin by the browser, so a phishing proxy cannot use it. Support in 2026 is effectively
   universal (Safari 16+, Chrome 108+, Edge, Firefox 122+, iOS 16+, Android 9+, Windows Hello), and
-  synced passkeys mean "new phone" is no longer a lockout event. `py_webauthn` handles registration and
-  assertion verification in ~60 lines of server code — this is genuinely *less* work than B.
+  synced passkeys mean "new phone" is no longer a lockout event. The `webauthn` package (`py_webauthn`)
+  handles registration and assertion verification in ~60 lines of server code — this is genuinely *less*
+  work than B.
   **Prerequisite:** WebAuthn requires a secure context and a stable RP ID, i.e. the public hostname must
   serve valid TLS. Verify the Cloudflare-tunnel hostname's certificate before building this (there is a
   known historical DNS/TLS gap on the tunnel hostnames).
@@ -93,6 +112,9 @@ Notes on each:
   convenience, never as the sole factor. **Not recommended for now.**
 
 **Recommendation: A primary, B as the alternate second factor, C demoted to bootstrap, D deferred.**
+**→ Approved (decision 1A).** The TLS prerequisite above is a gate on PR 2c: confirm the Cloudflare-tunnel
+hostname presents a valid certificate *before* the passkey work starts, since WebAuthn silently requires a
+secure context.
 
 ---
 
@@ -129,11 +151,11 @@ lemv1:<key_version>:<base64url(nonce)>:<base64url(ciphertext||tag)>
 ### 5.2 What gets encrypted
 
 `cookies.value` (this is `li_at` — the crown jewel), `users.access_token`, `users.refresh_token`, and
-`users.password` (the stored LinkedIn password). Columns widen to `TEXT` — ciphertext is ~1.4× plus ~60
-bytes of framing.
+`users.password` (the stored LinkedIn password — encrypted **and** deprecated per decision 2A, §5.4).
+Columns widen to `TEXT` — ciphertext is ~1.4× plus ~60 bytes of framing.
 
-Encrypt/decrypt lives in a new `utilities/crypto.py` and is called **only** from `utilities/db.py`, so
-all 10 consuming modules are unchanged and cannot accidentally bypass it.
+Encrypt/decrypt lives in a new `src/cqc_lem/utilities/crypto.py` and is called **only** from
+`src/cqc_lem/utilities/db.py`, so all 10 consuming modules are unchanged and cannot accidentally bypass it.
 
 ### 5.3 Where the key lives — honest blast-radius analysis
 
@@ -151,11 +173,30 @@ We should not pretend otherwise. The only design that survives T5 is deriving th
 headless automation**. That option is therefore rejected, deliberately, and T5 is mitigated
 operationally (host hardening, restricted SSH, `.env` at `0600`) rather than cryptographically.
 
-**A cheap, real improvement worth taking:** offer users a **cookie-only mode** and stop asking for the
-LinkedIn password at all. `li_at` alone drives every automation path (`store_linkedin_li_at`,
-`db.py:361`), it is revocable by the user from LinkedIn's own "Sign out of all sessions", and it is
-strictly less catastrophic to lose than a password many people reuse. Recommend making cookie-only the
-default and marking the password field deprecated/optional.
+### 5.4 Cookie-only mode — approved (decision 2A)
+
+Encrypting `users.password` is not enough on its own: it stays a *decryptable* LinkedIn password, so the
+approved decision is to **stop collecting it**. `li_at` alone drives every automation path
+(`store_linkedin_li_at`, `src/cqc_lem/utilities/db.py:361`), it is revocable by the user from LinkedIn's
+own "Sign out of all sessions", and it is strictly less catastrophic to lose than a password many people
+reuse.
+
+What PR **2a** therefore does with the password column:
+
+1. Encrypt the existing values along with the other three columns (nothing is dropped — password login
+   keeps working for users who already have one, so no automation breaks mid-flight).
+2. Make **cookie-only the default** in the Account page: `LinkedInSessionCard.tsx`
+   (`src/cqc_lem/ui/src/components/LinkedInSessionCard.tsx`, `POST /api/user/linkedin-cookie`,
+   `src/cqc_lem/api/main.py:2650`) becomes the primary path, and `LinkedInLoginCard.tsx`
+   (`src/cqc_lem/ui/src/pages/account/LinkedInLoginCard.tsx`, `PUT /user/linkedin-password`,
+   `src/cqc_lem/api/main.py:2503`) is marked deprecated/optional behind a disclosure.
+3. Prompt each user who has *only* a password (no stored `li_at`) once, at next login, to paste a cookie
+   instead; once they do, their stored password is deleted rather than re-encrypted.
+4. `update_user_linkedin_password` (`src/cqc_lem/utilities/db.py:2240`) stays for the deprecation window
+   but is gated behind step-up auth (§6, item 5) from 2b onward.
+
+Removing the column entirely is deliberately **not** in 2a — it waits until the prompt has drained the
+remaining password-only accounts, so nobody's automation stops without warning.
 
 ---
 
@@ -173,6 +214,11 @@ default and marking the password field deprecated/optional.
    (`PUT /user/linkedin-password`, `POST /user/linkedin-cookie`, email change, recovery-code
    regeneration, device revocation) require a **fresh** passkey/TOTP assertion within 5 minutes. Stealing
    a session is then not enough — the attacker still needs the physical factor.
+   **Caveat found while auditing:** `/api/user/linkedin-cookie` is deliberately bearer-exempt
+   (`src/cqc_lem/api/main.py:143-153`) because the browser extension POSTs to it with only the LEM
+   `session_token` in the body. A naive step-up gate would break the one-click extension, so 2c must
+   either issue the extension a short-lived, single-purpose token minted after a step-up in the SPA, or
+   scope the step-up requirement to the SPA-originated path only. Decide this in 2c, don't discover it.
 6. **Rate limiting + lockout** on `/api/auth/*`: Redis-backed counters per email **and** per IP
    (Redis is already in the stack), exponential backoff, hard lock after N failures, generic error
    messages that don't confirm account existence.
@@ -185,7 +231,9 @@ default and marking the password field deprecated/optional.
    LinkedIn credentials without also re-enrolling a factor. Losing the mailbox therefore neither locks
    the user out nor lets an attacker in.
 
-New deps: `webauthn` (MIT), `pyotp` (MIT), `argon2-cffi` (MIT). All free, self-hosted, no service.
+New deps (licenses verified against each project's `LICENSE` file): `webauthn` — the `duo-labs/py_webauthn`
+project — **BSD-3-Clause**; `pyotp` — **MIT**; `argon2-cffi` — **MIT**. All permissive, free, self-hosted,
+no service. `cryptography` (§5.1) is already a dependency.
 
 ---
 
@@ -196,7 +244,9 @@ Timestamped migration widens the four columns to `TEXT`. Read path is **dual-mod
 `lemv1:` prefix is decrypted; anything else is treated as legacy plaintext and **lazily re-encrypted on
 next write**. A one-shot backfill task encrypts everything already at rest. Once the backfill reports
 zero plaintext rows, a follow-up flips `ENCRYPTION_REQUIRED=true` and the legacy read path fails closed.
-Rollback during the window is safe because both formats are readable.
+Rollback during the window is safe because both formats are readable. Per decision 2A this stage also
+flips the Account page to cookie-first and starts the one-time "paste a cookie instead" prompt for
+password-only accounts (§5.4).
 
 **Stage 1 — identity & sessions.**
 Backfill `public_uid` for every existing user; add `email_verified_at` (backfilled to `NOW()` for users
@@ -216,31 +266,37 @@ analytics history all stay attached.
 
 ---
 
-## 8. Recommended build order for Phase 2
+## 8. Build order for Phase 2 — approved (decision 3A)
+
+Three sequential, independently revertible PRs, in this order:
 
 | PR | Scope | Why this order |
 |---|---|---|
-| **2a** | `utilities/crypto.py`, column migration, dual-mode read, backfill task, key-rotation support | Biggest risk reduction per line of code; zero UX change; independently shippable |
+| **2a** | `src/cqc_lem/utilities/crypto.py`, column migration, dual-mode read, backfill task, key-rotation support, **cookie-only default + password-prompt deprecation** (§5.4) | Biggest risk reduction per line of code; no login-UX change; independently shippable |
 | **2b** | `public_uid`, email-as-attribute + change flow, hashed session tokens, httpOnly cookie, per-device sessions, rate limiting, `auth_audit_log` | Hardens what exists; no new login UX to design |
 | **2c** | Passkeys (`webauthn`) + TOTP (`pyotp`) + recovery codes (`argon2-cffi`) + step-up gate + enrollment UI | Largest surface, benefits from 2b's session model already being in place |
 
 Each PR carries security-focused tests (encryption round-trip + AAD-mismatch rejection + rotation,
 auth flow success/failure, session revocation, rate-limit/lockout, migration backfill idempotency) at
-≥90 % patch coverage, plus a threat-model note in the PR body.
+≥90 % patch coverage, plus a threat-model note in the PR body. New migrations use TIMESTAMP versions
+(`V<YYYYMMDDHHMMSS>__name.sql`), never bare integers.
 
 ---
 
-## 9. Summary of the recommendation
+## 9. Summary of the approved design
 
 - **Identity:** `users.id` stays the key; add `public_uid`; email becomes a verified, changeable attribute
   with dual-confirm changes; convert email-keyed DB functions to id-keyed.
-- **Auth:** passkeys/WebAuthn primary (`py_webauthn`), TOTP (`pyotp`) as the alternate second factor,
-  email-PIN demoted to bootstrap-only, Google OAuth deferred.
-- **At rest:** AES-256-GCM envelope encryption with HKDF per-user keys and row-binding AAD, master key in
-  `/opt/lem/.env` only, versioned for rotation — covering `li_at`, OAuth tokens and the LinkedIn password.
-  Honest limit: this defeats a DB leak, not host root.
+- **Auth (1A):** passkeys/WebAuthn primary (`webauthn` / py_webauthn), TOTP (`pyotp`) as the alternate
+  second factor, email-PIN demoted to bootstrap-only, Google OAuth deferred. Gated on verifying the
+  public hostname's TLS certificate first.
+- **At rest (2A):** AES-256-GCM envelope encryption with HKDF per-user keys and row-binding AAD, master key in
+  `/opt/lem/.env` only, versioned for rotation — covering `li_at`, OAuth tokens and the LinkedIn password —
+  **and** cookie-only (`li_at`) becomes the default so the stored LinkedIn password is drained, not merely
+  encrypted. Honest limit: this defeats a DB leak, not host root.
 - **Sessions:** hashed tokens, httpOnly cookie, per-device rows + revocation, rotation on privilege
   change, **step-up auth on every endpoint that touches LinkedIn credentials**, Redis rate limiting,
   audit log.
 - **Recovery:** one-time argon2id-hashed recovery codes; the mailbox stops being a single point of failure.
-- **Cost:** $0. Three MIT-licensed libraries, no new service, no third party.
+- **Rollout (3A):** 2a encryption → 2b identity/sessions → 2c passkeys, each independently revertible.
+- **Cost:** $0. Three permissively licensed libraries (BSD-3-Clause / MIT), no new service, no third party.
