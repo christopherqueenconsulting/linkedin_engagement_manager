@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.88.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.87.1...v0.88.0) (2026-07-25)
+
+
+### Features
+
+* **marketing:** dogfooding brand account under phase-gated outbound caps (closes [#504](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/504)) ([f8aab77](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f8aab774e1ce4e1c20f10d0967b764740d5afb97))
+* **marketing:** dogfooding self-marketing — brand account under phase-gated outbound caps (closes [#504](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/504)) ([ac4d4a4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ac4d4a4c1458c120585b2aa248ff86fd40a5f91a))
+
 ## [0.87.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.87.0...v0.87.1) (2026-07-25)
 
 
