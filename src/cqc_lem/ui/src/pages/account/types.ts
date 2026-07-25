@@ -119,6 +119,9 @@ export const DM_EVENTS: { key: string; label: string }[] = [
   { key: 'recommendation_received', label: 'Recommendation received' },
   { key: 'collaboration', label: 'After a collaboration' },
   { key: 'profile_viewer', label: 'Profile viewer outreach' },
+  // The direction for the next message after a lead REPLIES (issue #485). The draft is written
+  // against what they actually said; this template sets its intent, not its wording.
+  { key: 'nurture', label: 'After they reply (nurture)' },
 ]
 
 export const csv = (arr: string[] | undefined | null) => (arr && arr.length ? arr.join(', ') : '')

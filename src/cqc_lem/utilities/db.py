@@ -2902,24 +2902,84 @@ def count_dms_sent_today(user_id: int) -> int:
 
 # --- Scheduled 1:1 DMs (issue #306) — mirrors the post scheduler ---
 _SCHED_DM_COLS = ("id", "user_id", "recipient_profile_url", "recipient_name", "message",
-                  "scheduled_time", "status", "created_at", "updated_at")
+                  "source", "scheduled_time", "status", "created_at", "updated_at")
+
+# scheduled_dms.source for an auto-drafted DM-nurture reply (issue #485). NULL/absent means an
+# operator wrote it by hand, which is what every pre-#485 row is.
+SCHEDULED_DM_SOURCE_NURTURE = 'nurture'
+# Statuses where a drafted nurture DM is still "live" for its thread — a second draft to the same
+# person while one of these is open would be two messages queued for one reply.
+_OPEN_SCHED_DM_STATUSES = (ScheduledDmStatus.PENDING, ScheduledDmStatus.APPROVED,
+                           ScheduledDmStatus.SCHEDULED)
 
 
 def insert_scheduled_dm(user_id: int, recipient_profile_url: str, message: str,
                         scheduled_time: datetime, recipient_name: str = None,
-                        status: "ScheduledDmStatus" = ScheduledDmStatus.PENDING) -> Optional[int]:
+                        status: "ScheduledDmStatus" = ScheduledDmStatus.PENDING,
+                        source: str = None) -> Optional[int]:
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
         cursor.execute(
             "INSERT INTO scheduled_dms (user_id, recipient_profile_url, recipient_name, message, "
-            "scheduled_time, status) VALUES (%s,%s,%s,%s,%s,%s)",
-            (user_id, recipient_profile_url, recipient_name, message, scheduled_time, str(status)))
+            "source, scheduled_time, status) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            (user_id, recipient_profile_url, recipient_name, message,
+             str(source) if source else None, scheduled_time, str(status)))
         connection.commit()
         return cursor.lastrowid
     except mysql.connector.Error as err:
         myprint(f"Could not insert scheduled DM for user_id {user_id} | Error: {err}")
         return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def has_open_scheduled_dm(user_id: int, recipient_profile_url: str, source: str = None) -> bool:
+    """True when this person already has a queued DM that hasn't gone out yet (issue #485 dedup —
+    one drafted next message per conversation). Fails SAFE to True: on a DB error we skip drafting
+    rather than risk stacking two messages on one thread."""
+    if not recipient_profile_url:
+        return True
+    where = "user_id=%s AND recipient_profile_url=%s"
+    params: list = [user_id, recipient_profile_url]
+    if source:
+        where += " AND source=%s"
+        params.append(str(source))
+    placeholders = ", ".join(["%s"] * len(_OPEN_SCHED_DM_STATUSES))
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(f"SELECT 1 FROM scheduled_dms WHERE {where} "
+                       f"AND status IN ({placeholders}) LIMIT 1",
+                       tuple(params + [str(s) for s in _OPEN_SCHED_DM_STATUSES]))
+        return cursor.fetchone() is not None
+    except mysql.connector.Error as err:
+        myprint(f"Could not check open scheduled DMs for user {user_id} | Error: {err}")
+        return True
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def count_scheduled_dms_created_today(user_id: int, source: str = None) -> int:
+    """How many DMs were DRAFTED for this user today (optionally only from one source). The daily
+    send cap already guards delivery; this bounds the auto-nurture drafting itself, since each draft
+    costs an LLM call and fills the operator's approval queue."""
+    where = "user_id=%s AND created_at >= CURDATE()"
+    params: list = [user_id]
+    if source:
+        where += " AND source=%s"
+        params.append(str(source))
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(f"SELECT COUNT(*) FROM scheduled_dms WHERE {where}", tuple(params))
+        row = cursor.fetchone()
+        return int(row[0]) if row and row[0] else 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not count today's scheduled DMs for user {user_id} | Error: {err}")
+        return 0
     finally:
         cursor.close()
         connection.close()
@@ -5010,6 +5070,11 @@ _DM_DEFAULT_TEMPLATES = {
     "manual": "Hi {first_name}, thanks for connecting!",
     "funnel": "Hi {first_name}, really glad we connected. I've enjoyed following the work you're "
               "sharing and would love to swap notes sometime. What are you focused on this quarter?",
+    # Direction for the next message after a lead REPLIES (issue #485). The nurture draft is written
+    # against what they actually said — this template sets the intent, not the wording.
+    "nurture": "Thanks for coming back to me, {first_name} — that's helpful context. Happy to share "
+               "what I've seen work on {headline}; would a short call be useful, or shall I just "
+               "send over the one thing that would help most?",
 }
 
 

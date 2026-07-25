@@ -140,6 +140,7 @@ Use `click_element_wait_retry()` for all click interactions — it handles trans
 - **Replies** to comments on the user's own posts (`automate_reply_commenting`); **seed a first comment** on own posts (`auto_seed_comment_on_post`).
 - **Reciprocity tracking** via the `post_engagers` table — boosts commenting back on people who engaged with us (`get_recent_engagers`).
 - **DMs**: appreciation (connection / recommendation / collaboration), profile-viewer outreach, and **multi-touch follow-up sequences** — all templated and voice-aligned (`build_dm_from_template`, `dm_templates`, `dm_followups`, `process_user_followups`).
+- **DM conversation auto-nurture** (`_nurture_after_reply`, `utilities/ai/dm_nurture.py`): a reply used to END a sequence — now it's classified (interested / objection / not-now / disinterest / neutral) and becomes an **approval-gated** context-aware next message queued as a `pending` row in `scheduled_dms` (`source='nurture'`), one open draft per thread, per-day draft cap, explicit disinterest stops the thread for good.
 - Monthly **company-page invitations** (`utilities/linkedin/company_page_inviter.py`).
 
 ### Engagement configuration (`engagement_preferences` table, API in `api/main.py`, SPA in `ui/.../Account.tsx`)
