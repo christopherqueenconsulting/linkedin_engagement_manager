@@ -46,6 +46,8 @@ from cqc_lem.utilities.db import (
     has_linkedin_session, get_user_password_pair_by_id,
     get_company_linked_in_url_for_user, update_company_linked_in_url_for_user,
     get_user_subscription_info, get_user_preferences, update_user_preferences,
+    DEFAULT_CONTENT_BUFFER_DAYS, DEFAULT_CONTENT_BUFFER_MAX_POSTS,
+    MAX_CONTENT_BUFFER_DAYS, MAX_CONTENT_BUFFER_POSTS,
     get_engagement_preferences, update_engagement_preferences, get_or_create_reply_inbound_token,
     get_newsletter_settings, update_newsletter_settings,
     get_pending_newsletter_editions,
@@ -345,6 +347,10 @@ class UserPreferencesRequest(BaseModel):
     session_token: str
     last_login_inactivate_delay: Optional[int] = 90
     auto_schedule_posts: bool = False
+    # Rolling forward buffer of ready posts (issue #544). Omitted → left as-is, so a client that
+    # doesn't know about these knobs can't reset them. Bounded: they cap forward generation spend.
+    content_buffer_days: Optional[int] = Field(default=None, ge=1, le=MAX_CONTENT_BUFFER_DAYS)
+    content_buffer_max_posts: Optional[int] = Field(default=None, ge=1, le=MAX_CONTENT_BUFFER_POSTS)
 
 
 # Input length limits — kept in lockstep with the DB column widths (see migrations) so an
@@ -1797,6 +1803,9 @@ def get_user_settings(session_token: str) -> ResponseModel:
         "preferences": {
             "last_login_inactivate_delay": preferences.get("last_login_inactivate_delay") if preferences else 90,
             "auto_schedule_posts": bool(preferences.get("auto_schedule_posts")) if preferences else False,
+            "content_buffer_days": preferences.get("content_buffer_days") or DEFAULT_CONTENT_BUFFER_DAYS,
+            "content_buffer_max_posts": (preferences.get("content_buffer_max_posts")
+                                         or DEFAULT_CONTENT_BUFFER_MAX_POSTS),
         } if preferences else None,
         "blog_url": blog_url,
         "sitemap_url": sitemap_url,
@@ -1814,6 +1823,8 @@ def update_user_settings_endpoint(request: UserPreferencesRequest) -> ResponseMo
         user_id,
         inactivate_delay=request.last_login_inactivate_delay,
         auto_schedule_posts=request.auto_schedule_posts,
+        content_buffer_days=request.content_buffer_days,
+        content_buffer_max_posts=request.content_buffer_max_posts,
     )
     if not updated:
         raise HTTPException(status_code=500, detail="Could not update preferences")

@@ -19,10 +19,13 @@ from cqc_lem.utilities.ai.ai_helper import get_thought_leadership_post_from_ai, 
     get_industry_news_post_from_ai, get_personal_story_post_from_ai, generate_engagement_prompt_post, \
     get_or_create_profile_synthesis, apply_post_guidance
 from cqc_lem.utilities.db import get_post_type_counts, insert_planned_post, update_db_post_content, \
-    get_planned_posts_for_current_week, get_last_planned_post_date_for_user, get_user_password_pair_by_id, \
-    get_user_blog_url, get_user_sitemap_url, get_active_user_ids, get_planned_posts_for_next_week, PostStatus, \
+    get_last_planned_post_date_for_user, get_user_password_pair_by_id, \
+    get_user_blog_url, get_user_sitemap_url, get_active_user_ids, PostStatus, \
     update_db_post_video_url, update_db_post_status, PostType, get_user_preferences, \
     update_db_post_carousel_slides, get_post_content, get_user_timezone, get_engagement_preferences
+from cqc_lem.utilities.db import count_ready_posts_within_buffer, get_planned_posts_within_buffer, \
+    get_user_ids_with_planned_posts_within_buffer, DEFAULT_CONTENT_BUFFER_DAYS, \
+    DEFAULT_CONTENT_BUFFER_MAX_POSTS, MAX_CONTENT_BUFFER_DAYS, MAX_CONTENT_BUFFER_POSTS
 from cqc_lem.utilities.db import get_recent_post_shape_history, update_db_post_shape, get_lead_magnet_settings, \
     get_shape_performance
 from cqc_lem.utilities.db import get_recent_post_texts, update_db_post_authenticity_score, \
@@ -40,6 +43,7 @@ from cqc_lem.utilities.env_constants import API_URL_FINAL, DEFAULT_VIDEO_RATIO, 
     STANDARD_VIDEO_MODEL, PREMIUM_VIDEO_MODEL, PREMIUM_TOP_VIDEO_MODEL, \
     PREMIUM_VIDEO_CREDITS, PREMIUM_TOP_VIDEO_CREDITS
 from cqc_lem.utilities.linkedin.helper import get_my_profile, load_profile_for_user
+from cqc_lem.utilities.linkedin.rate_limit import acquire_run_lock, release_run_lock
 from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin, strip_engagement_bait
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.logger import myprint, log_info, log_warning
@@ -1386,111 +1390,163 @@ def save_content_plan(user_id: int, daily_plan: list[dict]):
         insert_planned_post(user_id, plan['scheduled_datetime'], post_type, plan['stage'])
 
 
+# A full buffer is a handful of posts, but a video post can spend minutes in Runway, so give the
+# top-up lock a generous ceiling. It only bounds crash recovery — the happy path releases it.
+_BUFFER_LOCK_TTL_SECONDS = 3600
+
+
+def _content_buffer_settings(prefs: dict) -> Tuple[int, int]:
+    """Per-user rolling-buffer window and ceiling, clamped to the supported range (issue #544)."""
+    prefs = prefs or {}
+    days = prefs.get("content_buffer_days") or DEFAULT_CONTENT_BUFFER_DAYS
+    max_posts = prefs.get("content_buffer_max_posts") or DEFAULT_CONTENT_BUFFER_MAX_POSTS
+    days = max(1, min(MAX_CONTENT_BUFFER_DAYS, int(days)))
+    max_posts = max(1, min(MAX_CONTENT_BUFFER_POSTS, int(max_posts)))
+    return days, max_posts
+
+
 @shared_task.task
 def auto_create_weekly_content(user_id: int = None):
-    """Creates content for the week from the planed content in the database"""
+    """Top up each user's bounded rolling buffer of ready posts (issue #544).
+
+    Generates the `planning` posts due within the next `content_buffer_days` days, capped at
+    `content_buffer_max_posts` minus what is already ready in that window. That closes the
+    mid-week gap the old calendar-week window left (a weekday run found only past slots and
+    generated nothing) while keeping forward LLM/video spend bounded to the buffer size — the
+    same bounded path the /create_weekly_content/ button runs, so it can't be spammed.
+    """
 
     if user_id is not None:
-        myprint(f"Creating weekly content for user id: {user_id}")
-
-    # Get the planned content for the current week or next week if today is saturday
-    if datetime.now().weekday() >= 5:
-        planned_posts = get_planned_posts_for_next_week(user_id)
+        myprint(f"Creating buffer content for user id: {user_id}")
+        user_ids = [user_id]
     else:
-        planned_posts = get_planned_posts_for_current_week(user_id)
+        user_ids = get_user_ids_with_planned_posts_within_buffer() or []
 
-    if not planned_posts:
-        myprint("No planned posts found for this period. Skipping content creation.")
+    for uid in user_ids:
+        _top_up_buffer_for_user(uid)
+
+
+def _top_up_buffer_for_user(user_id: int) -> None:
+    """Generate this user's buffer delta under a single-flight lock.
+
+    The count → select → generate sequence is read-then-write: overlapping runs for the same user
+    (repeated /create_weekly_content/ clicks, the 01:30 beat landing on a retrying worker) would
+    each read the same `already_ready` and each generate the full delta, overshooting the buffer
+    and doubling LLM/video spend. The lock serialises them; the loser skips (its own next run
+    re-reads the counts). Fails OPEN when Redis is down — same trade-off as the Selenium tasks.
+    """
+    lock_name = f"content_buffer_topup:{user_id}"
+    lock_token = acquire_run_lock(lock_name, ttl_seconds=_BUFFER_LOCK_TTL_SECONDS)
+    if lock_token is None:
+        myprint(f"user_id {user_id}: another buffer top-up is in progress — skipping this cycle.")
         return
 
-    # Cache preferences per user so we don't hit the DB once per post
-    _prefs_cache: dict[int, dict] = {}
+    try:
+        prefs = get_user_preferences(user_id) or {}
+        buffer_days, buffer_max = _content_buffer_settings(prefs)
+        already_ready = count_ready_posts_within_buffer(user_id, buffer_days)
+        if already_ready >= buffer_max:
+            myprint(f"user_id {user_id}: buffer already full ({already_ready}/{buffer_max} ready "
+                    f"within {buffer_days} days). Skipping content creation.")
+            return
 
-    for post in planned_posts:
-        user_id = post['user_id']
-        post_id = post['id']
-        post_type = post['post_type']
-        stage = post['buyer_stage']
+        planned_posts = get_planned_posts_within_buffer(user_id, buffer_days, buffer_max, already_ready)
+        if not planned_posts:
+            myprint(f"user_id {user_id}: no planned posts within {buffer_days} days. "
+                    f"Skipping content creation.")
+            return
 
-        try:
-            content, video_url = create_content(user_id, post_type, stage, post_id=post_id)
-        except Exception as e:
-            myprint(f"Skipping post_id {post_id}: content generation raised {type(e).__name__}: {e}")
-            continue
+        myprint(f"user_id {user_id}: generating {len(planned_posts)} post(s) to top buffer up to "
+                f"{buffer_max} ready within {buffer_days} days ({already_ready} already ready)")
+        for post in planned_posts:
+            _create_content_for_planned_post(post, prefs)
+    finally:
+        release_run_lock(lock_name, lock_token)
 
-        if content is None:
-            myprint(f"Skipping post_id {post_id}: content generation returned None")
-            continue
 
-        # Copy the video from url to our assets/video folder and store it to the database for later retrieval via api call
-        ai_video = False
-        if video_url:
-            # AI (Runway) output is a remote http URL; Pexels fallback is a local path.
-            ai_video = str(video_url).startswith("http")
-            # Define and create assets_dir / videos
-            videos_dir = os.path.join(assets_dir, 'videos', 'runwayml')
-            create_folder_if_not_exists(videos_dir)
-            video_file_path = save_video_url_to_dir(video_url, videos_dir)
-            myprint(f"Video from url: {video_url} | Saved to: {video_file_path}")
-            # Attach AI Content Credentials to AI-generated video only (not stock).
-            if ai_video:
-                try:
-                    from cqc_lem.utilities.c2pa_helper import add_ai_content_credentials
-                    add_ai_content_credentials(video_file_path)
-                except Exception as e:
-                    myprint(f"C2PA signing skipped for post_id={post_id}: {e}")
-            # Get the file name from the video file path
-            video_file_name = os.path.basename(video_file_path)
+def _create_content_for_planned_post(post: dict, prefs: dict) -> None:
+    """Generate, store and status one planning post. Never raises — a bad post is skipped."""
+    user_id = post['user_id']
+    post_id = post['id']
+    post_type = post['post_type']
+    stage = post['buyer_stage']
 
-            # The video url is our api prefix + 'assets?file=videos/runwayml' +  video_file_name
-            api_video_url = f"{API_URL_FINAL}/api/assets?file_name=videos/runwayml/{video_file_name}"
-            myprint(f"Video URL: {api_video_url}")
+    try:
+        content, video_url = create_content(user_id, post_type, stage, post_id=post_id)
+    except Exception as e:
+        myprint(f"Skipping post_id {post_id}: content generation raised {type(e).__name__}: {e}")
+        return
 
-            # Update the database with the video url
-            update_db_post_video_url(post_id, api_video_url)
+    if content is None:
+        myprint(f"Skipping post_id {post_id}: content generation returned None")
+        return
 
-        # Disclose AI-generated visuals in the caption (caption-line fallback for C2PA)
+    # Copy the video from url to our assets/video folder and store it to the database for later retrieval via api call
+    ai_video = False
+    if video_url:
+        # AI (Runway) output is a remote http URL; Pexels fallback is a local path.
+        ai_video = str(video_url).startswith("http")
+        # Define and create assets_dir / videos
+        videos_dir = os.path.join(assets_dir, 'videos', 'runwayml')
+        create_folder_if_not_exists(videos_dir)
+        video_file_path = save_video_url_to_dir(video_url, videos_dir)
+        myprint(f"Video from url: {video_url} | Saved to: {video_file_path}")
+        # Attach AI Content Credentials to AI-generated video only (not stock).
         if ai_video:
-            content = _apply_ai_disclosure(content)
+            try:
+                from cqc_lem.utilities.c2pa_helper import add_ai_content_credentials
+                add_ai_content_credentials(video_file_path)
+            except Exception as e:
+                myprint(f"C2PA signing skipped for post_id={post_id}: {e}")
+        # Get the file name from the video file path
+        video_file_name = os.path.basename(video_file_path)
 
-        # Dwell-proxy score (issue #391 — C2) for EVERY post type: the text post, the carousel
-        # caption, and the video caption all live or die on holding the reader past the fold.
-        # Deterministic and advisory — recorded next to the authenticity score, never a gate.
-        _score_and_persist_dwell(user_id, post_id, content)
+        # The video url is our api prefix + 'assets?file=videos/runwayml' +  video_file_name
+        api_video_url = f"{API_URL_FINAL}/api/assets?file_name=videos/runwayml/{video_file_name}"
+        myprint(f"Video URL: {api_video_url}")
 
-        # Update the database with the created content
-        myprint(f"Updating content for post_id: {post_id}")
-        update_db_post_content(post_id, content)
+        # Update the database with the video url
+        update_db_post_video_url(post_id, api_video_url)
 
-        # Respect the user's auto_schedule_posts preference (fetched once per user):
-        # True → APPROVED (Celery will pick it up); False → PENDING (manual review required)
-        if user_id not in _prefs_cache:
-            _prefs_cache[user_id] = get_user_preferences(user_id)
-        prefs = _prefs_cache[user_id]
-        auto_schedule = bool(prefs.get("auto_schedule_posts", True))
-        new_status = PostStatus.APPROVED if auto_schedule else PostStatus.PENDING
+    # Disclose AI-generated visuals in the caption (caption-line fallback for C2PA)
+    if ai_video:
+        content = _apply_ai_disclosure(content)
 
-        # Never auto-approve a video/carousel post whose media failed to generate — hold it
-        # PENDING so the backfill task (or manual review) can complete the asset before it
-        # can be scheduled/posted. Prevents assetless posts going out.
-        if _post_missing_required_asset(post_id, post_type, video_url):
+    # Dwell-proxy score (issue #391 — C2) for EVERY post type: the text post, the carousel
+    # caption, and the video caption all live or die on holding the reader past the fold.
+    # Deterministic and advisory — recorded next to the authenticity score, never a gate.
+    _score_and_persist_dwell(user_id, post_id, content)
+
+    # Update the database with the created content
+    myprint(f"Updating content for post_id: {post_id}")
+    update_db_post_content(post_id, content)
+
+    # Respect the user's auto_schedule_posts preference (fetched once per user by the caller):
+    # True → APPROVED (Celery will pick it up); False → PENDING (manual review required)
+    auto_schedule = bool((prefs or {}).get("auto_schedule_posts", True))
+    new_status = PostStatus.APPROVED if auto_schedule else PostStatus.PENDING
+
+    # Never auto-approve a video/carousel post whose media failed to generate — hold it
+    # PENDING so the backfill task (or manual review) can complete the asset before it
+    # can be scheduled/posted. Prevents assetless posts going out.
+    if _post_missing_required_asset(post_id, post_type, video_url):
+        new_status = PostStatus.PENDING
+        myprint(f"post_id {post_id}: required media asset missing — holding PENDING")
+
+    # Authenticity gate (issue #382): demote an auto-approve to PENDING when the persisted
+    # LLM-judged authenticity score (set by create_text_post's scoring step) is below threshold,
+    # so a generic-AI-flagged draft gets human review before it can post. Only downgrades an
+    # APPROVED — never upgrades a PENDING, and never blocks when unscored (score None).
+    if new_status == PostStatus.APPROVED and authenticity_gate_enabled():
+        score = get_post_authenticity_score(post_id)
+        if score is not None and score < authenticity_score_min():
             new_status = PostStatus.PENDING
-            myprint(f"post_id {post_id}: required media asset missing — holding PENDING")
+            log_warning(f"post_id {post_id}: authenticity score {score} < "
+                        f"{authenticity_score_min()} — holding PENDING for review",
+                        user_id=user_id, post_id=post_id, task_name="create_content")
 
-        # Authenticity gate (issue #382): demote an auto-approve to PENDING when the persisted
-        # LLM-judged authenticity score (set by create_text_post's scoring step) is below threshold,
-        # so a generic-AI-flagged draft gets human review before it can post. Only downgrades an
-        # APPROVED — never upgrades a PENDING, and never blocks when unscored (score None).
-        if new_status == PostStatus.APPROVED and authenticity_gate_enabled():
-            score = get_post_authenticity_score(post_id)
-            if score is not None and score < authenticity_score_min():
-                new_status = PostStatus.PENDING
-                log_warning(f"post_id {post_id}: authenticity score {score} < "
-                            f"{authenticity_score_min()} — holding PENDING for review",
-                            user_id=user_id, post_id=post_id, task_name="create_content")
-
-        myprint(f"Updating post_id: {post_id} Status={new_status}")
-        update_db_post_status(post_id, new_status)
+    myprint(f"Updating post_id: {post_id} Status={new_status}")
+    update_db_post_status(post_id, new_status)
 
 
 def is_blog_post(url):

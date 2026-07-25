@@ -302,6 +302,39 @@ class TestUserSettingsAndGroups:
         assert upd.call_args[1]["inactivate_delay"] == 30
         assert upd.call_args[1]["auto_schedule_posts"] is False
 
+    def test_update_omits_content_buffer_when_not_sent(self, client):
+        """The Account UI doesn't send the buffer knobs — they must not be reset (issue #544)."""
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.update_user_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/settings", json={
+                "session_token": _TOK, "last_login_inactivate_delay": 30,
+                "auto_schedule_posts": False})
+        assert resp.status_code == 200
+        assert upd.call_args[1]["content_buffer_days"] is None
+        assert upd.call_args[1]["content_buffer_max_posts"] is None
+
+    def test_update_passes_content_buffer_through(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.update_user_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/settings", json={
+                "session_token": _TOK, "auto_schedule_posts": True,
+                "content_buffer_days": 7, "content_buffer_max_posts": 4})
+        assert resp.status_code == 200
+        assert upd.call_args[1]["content_buffer_days"] == 7
+        assert upd.call_args[1]["content_buffer_max_posts"] == 4
+
+    @pytest.mark.parametrize("payload", [
+        {"content_buffer_days": 0}, {"content_buffer_days": 999},
+        {"content_buffer_max_posts": 0}, {"content_buffer_max_posts": 999},
+    ])
+    def test_out_of_range_content_buffer_is_422(self, client, payload):
+        """Forward generation spend is capped server-side, not just in the UI."""
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.update_user_preferences", return_value=True):
+            resp = client.put("/api/user/settings",
+                              json={"session_token": _TOK, **payload})
+        assert resp.status_code == 422
+
     def test_update_user_settings_500(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.update_user_preferences", return_value=False):

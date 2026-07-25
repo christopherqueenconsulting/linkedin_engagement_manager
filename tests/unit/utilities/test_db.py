@@ -687,7 +687,11 @@ class TestGetUserPreferences:
 
             result = get_user_preferences(5)
             # On DB error, safe defaults are returned so automation is not silently broken
-            assert result == {"last_login_inactivate_delay": None, "auto_schedule_posts": True}
+            from cqc_lem.utilities.db import (DEFAULT_CONTENT_BUFFER_DAYS,
+                                              DEFAULT_CONTENT_BUFFER_MAX_POSTS)
+            assert result == {"last_login_inactivate_delay": None, "auto_schedule_posts": True,
+                              "content_buffer_days": DEFAULT_CONTENT_BUFFER_DAYS,
+                              "content_buffer_max_posts": DEFAULT_CONTENT_BUFFER_MAX_POSTS}
 
     def test_returns_defaults_when_row_missing(self, mock_database_connection):
         from cqc_lem.utilities.db import get_user_preferences

@@ -79,8 +79,8 @@ class TestWeeklyContentPersistsDwell:
     def test_score_stored_for_each_post_type(self, post_type):
         from cqc_lem.app import run_content_plan as rcp
         from cqc_lem.utilities.ai.content_framework import dwell_score
-        with patch(f"{_RCP}.get_planned_posts_for_current_week", return_value=self._post(post_type)), \
-             patch(f"{_RCP}.get_planned_posts_for_next_week", return_value=self._post(post_type)), \
+        with patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=self._post(post_type)), \
+             patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0), \
              patch(f"{_RCP}.create_content", return_value=(_SHAPED, None)), \
              patch(f"{_RCP}.update_db_post_dwell_score") as upd_dwell, \
              patch(f"{_RCP}.update_db_post_content"), \
@@ -93,8 +93,8 @@ class TestWeeklyContentPersistsDwell:
 
     def test_scoring_failure_does_not_stop_the_post_being_saved(self):
         from cqc_lem.app import run_content_plan as rcp
-        with patch(f"{_RCP}.get_planned_posts_for_current_week", return_value=self._post()), \
-             patch(f"{_RCP}.get_planned_posts_for_next_week", return_value=self._post()), \
+        with patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=self._post()), \
+             patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0), \
              patch(f"{_RCP}.create_content", return_value=(_SHAPED, None)), \
              patch(f"{_RCP}.update_db_post_dwell_score", side_effect=RuntimeError("db down")), \
              patch(f"{_RCP}.update_db_post_content") as upd_content, \

@@ -283,6 +283,11 @@ class TestGetUserSettings:
         assert detail["subscription"]["status"] == "active"
         assert detail["subscription"]["tier"] == "starter"
         assert detail["preferences"]["last_login_inactivate_delay"] == 90
+        # Buffer knobs fall back to the defaults for a user who never set them (issue #544)
+        from cqc_lem.utilities.db import (DEFAULT_CONTENT_BUFFER_DAYS,
+                                          DEFAULT_CONTENT_BUFFER_MAX_POSTS)
+        assert detail["preferences"]["content_buffer_days"] == DEFAULT_CONTENT_BUFFER_DAYS
+        assert detail["preferences"]["content_buffer_max_posts"] == DEFAULT_CONTENT_BUFFER_MAX_POSTS
         assert detail["blog_url"] == "https://blog.example.com"
         assert detail["sitemap_url"] == "https://blog.example.com/sitemap.xml"
 
