@@ -117,6 +117,7 @@ response = client.chat.completions.create(model="lem-simple", messages=[...])
 | `lem-medium` | Balanced: comments, post refinement, blog summaries |
 | `lem-complex` | Long-form: thought leadership, personal story, industry news |
 | `lem-image` | Image generation (DALL-E 3) |
+| `lem-embedding` | Embeddings for feedback dedup/clustering (`client.embeddings.create`) |
 | `lem-router` | Auto-routes by prompt complexity via `LEMComplexityRouter` |
 
 See `ai_helper.py` for the per-function model assignment.

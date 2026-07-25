@@ -206,6 +206,18 @@ app.conf.update(
             # Sunday night's stats scrape, so cohort engagement lift covers the full week.
             'schedule': crontab(hour='12', minute='0', day_of_week='monday')
         },
+        'file-feedback-issues': {
+            'task': 'cqc_lem.app.run_scheduler.auto_file_feedback_issues',
+            # Every 30 min — captured feedback becomes a pipeline-ready issue the same hour it lands
+            # (issue #498). Deduped against open clusters, so a burst of the same report is one issue.
+            'schedule': crontab(minute='*/30')
+        },
+        'recluster-feedback': {
+            'task': 'cqc_lem.app.run_scheduler.auto_recluster_feedback',
+            # Nightly 2:45 AM — regroups the backlog (embedding backfill + late duplicates) between
+            # the 2:00 stale-invite clean-up and the 3:00 stale-profile pass. Files nothing.
+            'schedule': crontab(hour='2', minute='45')
+        },
         'daily-cost-alerts': {
             'task': 'cqc_lem.app.run_scheduler.auto_daily_cost_alerts',
             # Daily 13:00 UTC — scores YESTERDAY (the last complete UTC day), after the 6:00 Stripe

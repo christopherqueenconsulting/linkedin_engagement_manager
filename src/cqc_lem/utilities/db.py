@@ -6370,3 +6370,142 @@ def insert_feedback(body: str, user_id: int = None,
     finally:
         cursor.close()
         connection.close()
+
+
+# Clustering convention (issue #498): a cluster is identified by the `feedback.id` of its SEED row —
+# the first report that got an issue filed. The seed carries `cluster_id = id`; every later duplicate
+# copies that cluster_id and the seed's github_issue_number. No extra table, so "one recurring
+# problem = one issue" is a self-join instead of a schema change.
+_FEEDBACK_COLUMNS = ("id, user_id, source, type_hint, body, context_json, embedding, cluster_id, "
+                     "github_issue_number, status, sentiment, created_at")
+
+
+def get_feedback_by_id(feedback_id: int) -> Optional[dict]:
+    """One feedback row, or None when it does not exist (issue #498)."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(f"SELECT {_FEEDBACK_COLUMNS} FROM feedback WHERE id=%s", (feedback_id,))
+        return cursor.fetchone()
+    except mysql.connector.Error as err:
+        log_error(f"Could not fetch feedback {feedback_id}", exc=err)
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_unprocessed_feedback(limit: int = 25, statuses: tuple = (FeedbackStatus.NEW,)) -> list:
+    """Captured-but-unclustered feedback, oldest first so the queue drains FIFO (issue #498).
+
+    Defaults to `new` only — the auto-filer must not re-classify (and re-pay for) rows it already
+    parked in `triaged`. The nightly reclustering pass widens `statuses` to reconsider those."""
+    wanted = [str(s) for s in (statuses or ()) if str(s) in tuple(FeedbackStatus)]
+    if not wanted:
+        return []
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            f"SELECT {_FEEDBACK_COLUMNS} FROM feedback "
+            f"WHERE status IN ({','.join(['%s'] * len(wanted))}) AND cluster_id IS NULL "
+            "ORDER BY created_at ASC, id ASC LIMIT %s",
+            (*wanted, int(limit)))
+        return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error("Could not fetch unprocessed feedback", exc=err)
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_open_feedback_clusters(limit: int = 100) -> list:
+    """The open clusters an incoming report can be deduped against (issue #498).
+
+    One row per cluster: the seed's body/embedding (what similarity is measured against), the GitHub
+    issue it was filed as, plus `item_count` and `reporter_count` (DISTINCT non-null user_id) — the
+    demand signal that decides whether a *feature* cluster is allowed to auto-work."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT s.id AS cluster_id, s.body AS body, s.embedding AS embedding, "
+            "       s.github_issue_number AS github_issue_number, s.type_hint AS type_hint, "
+            "       COUNT(m.id) AS item_count, "
+            "       COUNT(DISTINCT m.user_id) AS reporter_count, "
+            "       MAX(m.created_at) AS last_seen_at "
+            "FROM feedback s JOIN feedback m ON m.cluster_id = s.cluster_id "
+            "WHERE s.cluster_id = s.id AND s.status IN ('clustered','issue_created') "
+            "GROUP BY s.id, s.body, s.embedding, s.github_issue_number, s.type_hint "
+            "ORDER BY last_seen_at DESC LIMIT %s",
+            (int(limit),))
+        return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error("Could not fetch open feedback clusters", exc=err)
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def count_feedback_filed_by_user(user_id: int, hours: int = 24) -> int:
+    """How many of this user's reports reached GitHub in the last `hours` — the abuse guard's counter
+    (issue #498). Anonymous feedback (NULL user_id) is not attributable, so it is never counted."""
+    if user_id is None:
+        return 0
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM feedback WHERE user_id=%s AND github_issue_number IS NOT NULL "
+            "AND created_at >= (NOW() - INTERVAL %s HOUR)",
+            (user_id, int(hours)))
+        row = cursor.fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+    except mysql.connector.Error as err:
+        log_error("Could not count filed feedback for user", exc=err, user_id=user_id)
+        return 0
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_feedback_triage(feedback_id: int, status: "FeedbackStatus" = None,
+                           cluster_id: int = None, github_issue_number: int = None,
+                           embedding: list = None, sentiment: str = None) -> bool:
+    """Stamp the auto-triage result back onto a feedback row (issue #498). Only the arguments you
+    pass are written, so the filer can save an embedding on one pass and the cluster/issue on the
+    next without clobbering anything."""
+    updates: list = []
+    params: list = []
+    if status is not None:
+        updates.append("status=%s")
+        params.append(str(status))
+    if cluster_id is not None:
+        updates.append("cluster_id=%s")
+        params.append(int(cluster_id))
+    if github_issue_number is not None:
+        updates.append("github_issue_number=%s")
+        params.append(int(github_issue_number))
+    if embedding is not None:
+        updates.append("embedding=%s")
+        params.append(json.dumps(embedding))
+    if sentiment is not None:
+        updates.append("sentiment=%s")
+        params.append(str(sentiment)[:16])
+    if not updates:
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        params.append(feedback_id)
+        cursor.execute(f"UPDATE feedback SET {', '.join(updates)} WHERE id=%s", tuple(params))
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        log_error(f"Could not update feedback triage for {feedback_id}", exc=err)
+        return False
+    finally:
+        cursor.close()
+        connection.close()
