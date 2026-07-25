@@ -545,6 +545,41 @@ class TestFileFeedbackIssue:
         assert result["cluster_id"] == 7
         mocks["create"].assert_not_called()
 
+    def test_anonymous_report_counts_zero_reporters_not_one(self):
+        # reporter_count is DISTINCT identified users — an anonymous report is a report with no
+        # attributable reporter, so it must not be floored up to 1 (that fakes the demand signal).
+        result, mocks = self._run({"id": 12, "user_id": None, "body": "comments never post"})
+        assert result["action"] == "filed"
+        assert result["cluster"]["reporter_count"] == 0
+        assert "0 distinct user(s) across 1 feedback item(s)" in mocks["create"].call_args[0][1]
+
+    def test_dedup_onto_an_anonymous_cluster_does_not_inflate_the_demand_count(self):
+        clusters = [_cluster(7, "comments never post", 101, embedding=[1.0, 0.0], reporters=0,
+                             items=1)]
+        _, mocks = self._run({"id": 15, "user_id": 4, "body": "replies do not post"},
+                             clusters=clusters)
+        assert "1 distinct reporter(s), 2 report(s)" in mocks["comment"].call_args[0][1]
+
+    def test_two_anonymous_reports_still_add_up_to_zero_reporters(self):
+        clusters = [_cluster(7, "comments never post", 101, embedding=[1.0, 0.0], reporters=0,
+                             items=1)]
+        _, mocks = self._run({"id": 15, "user_id": None, "body": "replies do not post"},
+                             clusters=clusters)
+        assert "0 distinct reporter(s), 2 report(s)" in mocks["comment"].call_args[0][1]
+
+    def test_anonymous_feature_request_does_not_satisfy_the_demand_gate(self, monkeypatch):
+        from cqc_lem.utilities.feedback.classifier import FeedbackCategory
+        monkeypatch.setenv("FEEDBACK_FEATURE_DEMAND_MIN", "1")
+        feature = _classification(category=FeedbackCategory.FEATURE, confidence=0.95)
+        anonymous, _ = self._run({"id": 12, "user_id": None, "body": "add a dark mode"},
+                                 classification=feature)
+        assert anonymous["agent_ready"] is False
+        assert 'needs-human' in anonymous["labels"]
+        # …while one identified reporter does clear a min of 1.
+        identified, _ = self._run({"id": 13, "user_id": 3, "body": "add a dark mode"},
+                                  classification=feature)
+        assert identified["agent_ready"] is True
+
     def test_failed_duplicate_comment_leaves_the_row_for_a_retry(self):
         clusters = [_cluster(7, "comments never post", 101, embedding=[1.0, 0.0])]
         result, mocks = self._run({"id": 15, "user_id": 4, "body": "replies do not post"},

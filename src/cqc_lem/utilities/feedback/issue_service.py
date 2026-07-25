@@ -391,7 +391,7 @@ def build_issue_body(classification: FeedbackClassification, feedback_id: Option
     """The `MODE=start` body: Why / Scope / Files / Acceptance, plus the provenance the pipeline and
     a human both need. Only the classifier's factual summary is included — never the raw report."""
     ready = is_agent_ready(classification, reporter_count)
-    demand = (f"Reported by {max(1, int(reporter_count or 0))} distinct user(s) across "
+    demand = (f"Reported by {max(0, int(reporter_count or 0))} distinct user(s) across "
               f"{max(1, int(item_count or 0))} feedback item(s).")
     provenance = (f"Auto-filed from in-app feedback"
                   f"{f' #{feedback_id}' if feedback_id else ''} by the feedback→auto-work loop "
@@ -475,7 +475,7 @@ def build_duplicate_comment(classification: FeedbackClassification,
         "",
         f"New detail: {classification.summary or '(none)'}",
         "",
-        f"Demand now: {max(1, int(reporter_count or 0))} distinct reporter(s), "
+        f"Demand now: {max(0, int(reporter_count or 0))} distinct reporter(s), "
         f"{max(1, int(item_count or 0))} report(s). "
         f"Latest: feedback{f' #{feedback_id}' if feedback_id else ''} "
         f"({classification.category}/{classification.severity}, confidence "
@@ -600,8 +600,10 @@ def file_feedback_issue(feedback: dict, classification: FeedbackClassification =
     match, score = find_duplicate_cluster(body, vector, open_clusters)
     match = match or cluster_by_id(open_clusters, classification.duplicate_of)
     if match:
-        reporter_count = int(match.get("reporter_count") or 1) + (1 if user_id is not None else 0)
-        item_count = int(match.get("item_count") or 1) + 1
+        # reporter_count counts DISTINCT identified users; an anonymous report adds a report but no
+        # reporter, so it must never be floored up to 1 — that would fake the feature-demand signal.
+        reporter_count = int(match.get("reporter_count") or 0) + (1 if user_id is not None else 0)
+        item_count = int(match.get("item_count") or 0) + 1
         commented = comment_on_issue(match["github_issue_number"], build_duplicate_comment(
             classification, feedback_id, reporter_count, item_count))
         if not commented:
@@ -617,7 +619,7 @@ def file_feedback_issue(feedback: dict, classification: FeedbackClassification =
                        cluster_id=match["cluster_id"],
                        issue_number=match["github_issue_number"], similarity=score)
 
-    reporter_count = 1
+    reporter_count = 1 if user_id is not None else 0
     labels = labels_for_issue(classification, reporter_count)
     ready = AGENT_READY_LABEL in labels
     number = create_github_issue(
@@ -636,7 +638,7 @@ def file_feedback_issue(feedback: dict, classification: FeedbackClassification =
                    agent_ready=ready, similarity=score,
                    cluster={"cluster_id": feedback_id, "body": body, "embedding": vector,
                             "github_issue_number": number, "item_count": 1,
-                            "reporter_count": 1 if user_id is not None else 0})
+                            "reporter_count": reporter_count})
 
 
 def process_new_feedback(limit: int = 25) -> dict:
