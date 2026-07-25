@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.81.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.80.0...v0.81.0) (2026-07-25)
+
+
+### Features
+
+* **onboarding:** activation checklist + stalled-user nudges (closes [#500](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/500)) ([ee0d0ca](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ee0d0ca1a3f3fd70e5af03090b40456940d2a6b2))
+* **onboarding:** automated activation checklist + stalled-user nudges (closes [#500](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/500)) ([30c8bda](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/30c8bdac6326a6c93709c7007fdcae0be69b4c68))
+
+
+### Bug Fixes
+
+* **onboarding:** escape nudge email copy and use structured logging ([bb9a333](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bb9a33362737235680bf4a7cf943add87082a9d6))
+
 ## [0.80.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.79.0...v0.80.0) (2026-07-25)
 
 
