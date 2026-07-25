@@ -1292,6 +1292,24 @@ def auto_daily_cost_alerts(self, days: int = 7):
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_capacity_watch(self):
+    """Sample the Chrome pool + Selenium lane depths and judge them over the rolling window (issue
+    #552, docs/scaling-plan.md §5e). Every tick samples; only a SUSTAINED breach delivers — and then
+    it files/updates one GitHub issue asking for a lane/cap review, because raising them spends real
+    resources on a shared box."""
+    from cqc_lem.utilities.capacity_alerts import collect_capacity_report, send_capacity_alerts
+
+    report = collect_capacity_report()
+    if not report.get("alert_count"):
+        return (f"Capacity ok: {report.get('sample_count')} sample(s), "
+                f"skipped {report.get('skipped_checks')}")
+    result = send_capacity_alerts(report)
+    return (f"Capacity alerts: {result['alerts']} breach(es), "
+            f"{report.get('critical_count')} critical "
+            f"(github={result['github'].get('action')}, tracked={result['tracked']})")
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
 def auto_file_feedback_issues(self, limit: int = 25):
     """Drain the captured-feedback queue into the work pipeline (issue #498, plan §B.2/B.3): classify
     each new report, dedup it against the open clusters (+1 the existing issue) and open ONE

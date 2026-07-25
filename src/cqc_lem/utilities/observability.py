@@ -553,6 +553,18 @@ def track_cost_alert(alert: dict, day: Optional[str] = None) -> None:
     )
 
 
+def track_capacity_alert(alert: dict, generated_at: Optional[str] = None) -> None:
+    """Emit one Selenium/lane capacity breach (issue #552) as a `capacity_alert` event, so the
+    saturation history is queryable next to the task latency it explains and a PostHog alert can page
+    off it. Always system-scoped: a full browser pool is an infra limit, not one user's problem."""
+    alert = dict(alert or {})
+    posthog.capture(
+        distinct_id="system",
+        event="capacity_alert",
+        properties={"generated_at": generated_at, **alert},
+    )
+
+
 def posthog_hogql_query(sql: str, timeout: int = 30) -> Optional[list]:
     """Run a HogQL query against the PostHog query API and return its result ROWS, or None when the
     read path isn't configured (no personal API key / project) or the call fails. None means

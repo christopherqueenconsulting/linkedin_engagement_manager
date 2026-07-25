@@ -636,3 +636,27 @@ class TestTrackOnboarding:
         _, kwargs = mock_ph.capture.call_args
         assert kwargs["event"] == "onboarding_nudge"
         assert kwargs["properties"]["nudge"] == "connect_linkedin"
+
+
+class TestTrackCapacityAlert:
+    def test_captures_a_system_scoped_capacity_alert(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_capacity_alert
+            track_capacity_alert({"check": "session_saturation", "severity": "critical",
+                                  "value": 0.8}, generated_at="2026-07-25T12:00:00+00:00")
+
+        mock_ph.capture.assert_called_once()
+        _, kwargs = mock_ph.capture.call_args
+        assert kwargs["event"] == "capacity_alert"
+        # A full browser pool is an infra limit, never one user's problem.
+        assert kwargs["distinct_id"] == "system"
+        props = kwargs["properties"]
+        assert props["check"] == "session_saturation" and props["severity"] == "critical"
+        assert props["generated_at"] == "2026-07-25T12:00:00+00:00"
+
+    def test_tolerates_an_empty_alert(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_capacity_alert
+            track_capacity_alert(None)
+
+        assert mock_ph.capture.call_args[1]["properties"] == {"generated_at": None}

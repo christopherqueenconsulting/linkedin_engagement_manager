@@ -108,12 +108,14 @@ task_create_missing_queues = True
 #                  API calls, content plan, Stripe sync, post_to_linkedin, etc.).
 # Selenium lanes — every task that opens a Chrome session routes to one of four
 #                  reserved lanes so a long-running loop can't starve the others.
-#   'se_engage'   (2 sessions) — long commenting/reply loops.
+#   'se_engage'   (3 sessions) — long commenting/reply loops.
 #   'se_prepost'  (2 sessions) — ONLY the ETA-based pre-post commenting warm-up
 #                                dispatched by auto_check_scheduled_posts (issue #553).
-#   'se_outreach' (1 session)  — DMs, invites, profile-viewer engagement, followups.
+#   'se_outreach' (2 sessions) — DMs, invites, profile-viewer engagement, followups.
 #   'se_content'  (1 session)  — seed comments, stats scrape, group sync/post,
 #                                newsletter publishing.
+# The per-lane session counts live in docker-compose.yml (SELENIUM_CONCURRENCY) and must sum to
+# SE_NODE_MAX_SESSIONS — see docs/scaling-plan.md §5a and tests/unit/app/test_selenium_capacity.py.
 
 # The pre-post warm-up is the only deadline-bound commenting run in the stack: its eta is
 # post_time − 15 min and a late start means the warm-up lands during/after publication.

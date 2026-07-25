@@ -12,8 +12,10 @@ scheduled times as possible.
 > sessions the box can run, and when it runs out. It deliberately does NOT
 > re-litigate the egress/ban-risk axis (see `EGRESS_AT_SCALE.md`).
 
-This is a **proposal**. Nothing here has been applied to `/opt/lem` or any running
-container.
+This is a **proposal**, except where a section is marked **APPLIED** — the Phase 1
+compose changes in §5a landed via issues #553 (the `se_prepost` lane) and #552 (the
+capacity bumps + the §5e monitor) and reach prod on the next release. Nothing else here
+has been applied to `/opt/lem` or any running container.
 
 ---
 
@@ -93,6 +95,9 @@ today, but see §6 for the pooling recommendation.
 
 ## 2. The real bottleneck: one browser, four slots
 
+> Numbers in this section are the **measured 2026-07-25 baseline**, before the Phase 1
+> bumps in §5a (now 8 slots / 3+2+2+1 lanes) shipped — see the note at the end of the section.
+
 `selenium-chrome` is a **single `selenium/standalone-chrome`** (verified live):
 
 ```
@@ -119,12 +124,14 @@ means a lane worker holds exactly one in-flight task per concurrency slot, so a
 
 **This is the constraint that makes tasks run late**, not CPU or RAM.
 
-> **Since this snapshot:** issue #553 shipped the first half of the Phase-1 proposal below — a
-> fourth lane `celery_worker_selenium_prepost` (`SELENIUM_QUEUES=se_prepost`, concurrency 2) that
-> consumes ONLY the eta-bound pre-post `automate_commenting` dispatched by
-> `auto_check_scheduled_posts`, with `SE_NODE_MAX_SESSIONS 4 → 6` and `shm_size 4g → 6g` so the
-> new lane's 2 slots are real capacity (2 + 2 + 1 + 1 = 6). The other Phase-1 bumps
-> (`se_engage 2 → 3`, `se_outreach 1 → 2`, Chrome cpus `4 → 6`) are still proposals.
+> **Since this snapshot:** the whole Phase-1 compose proposal below has shipped.
+> Issue #553 added a fourth lane `celery_worker_selenium_prepost` (`SELENIUM_QUEUES=se_prepost`,
+> concurrency 2) that consumes ONLY the eta-bound pre-post `automate_commenting` dispatched by
+> `auto_check_scheduled_posts`, taking the cap to 6. Issue #552 then raised `se_engage 2 → 3` and
+> `se_outreach 1 → 2`, so the four lanes request **3 + 2 + 2 + 1 = 8** and the node was sized to
+> match: `SE_NODE_MAX_SESSIONS 4 → 8`, `shm_size 4g → 8g`, Chrome cpus `4 → 8` (memory stays 8g).
+> That is the top of this box's Chrome budget (§4) — the next step is a Grid (§5b), and §5e is
+> the monitor that says when we're there.
 
 ---
 
@@ -240,20 +247,32 @@ applied):
 
 **Phase 1 (now — cheap headroom, fits current box):**
 
-- Raise Chrome session cap and lane concurrency together so they stay matched:
-  - `selenium-chrome`: `SE_NODE_MAX_SESSIONS: 4 → 6`, `shm_size: 4g → 6g`,
-    memory limit `8g` (keep), cpus `4 → 6`.
+- **APPLIED (issue #552)** — Chrome session cap and lane concurrency raised together so
+  they stay matched:
+  - `selenium-chrome`: `SE_NODE_MAX_SESSIONS: 4 → 8`, `shm_size: 4g → 8g`,
+    memory limit `8g` (keep), cpus `4 → 8`.
   - `celery_worker_selenium` (`se_engage`): `SELENIUM_CONCURRENCY: 2 → 3`.
   - `celery_worker_selenium_outreach` (`se_outreach`): `1 → 2`.
   - `celery_worker_selenium_content` (`se_content`): `1 → 1` (unchanged).
-  - New total requested = 3 + 2 + 1 = **6 = new session cap**.
+  - `celery_worker_selenium_prepost` (`se_prepost`): `2` (added by #553, below).
+  - New total requested = 3 + 2 + 1 + 2 = **8 = new session cap**.
+  - **Invariant: `SE_NODE_MAX_SESSIONS` == the sum of every lane's `SELENIUM_CONCURRENCY`.**
+    Under-provisioning the cap makes lanes block on session creation (tasks miss their
+    window); over-provisioning leaves paid-for slots idle. Both compose files are the single
+    source of truth and `tests/unit/app/test_selenium_capacity.py` fails the build if they
+    drift — update the cap and the lanes in the same commit. No per-user daily cap changes:
+    this adds parallelism *across* users, never more actions per account (§5d).
+  - **8 is the ceiling of this box, not a step on a ladder.** §4 puts the 8g Chrome budget at
+    ~6–8 healthy sessions and the 8-vCPU host at ~8–10 before contention slows every session.
+    The next capacity increase is §5b option B/C (a Grid), not a higher number here — the
+    monitor in §5e is what tells us we're there.
 - **Split a dedicated `se_prepost` lane** so pre-post commenting (issue #547) never
   queues behind the golden-hour loop. ✅ **Shipped (issue #553):** the
   `celery_worker_selenium_prepost` service (`SELENIUM_QUEUES=se_prepost`, concurrency 2)
   consumes the ETA-based `automate_commenting` dispatched from `auto_check_scheduled_posts`
   via a `queue=` override at the dispatch site; the daily golden-hour `automate_commenting`
-  still routes to `se_engage` through `task_routes`. Session cap went **4 → 6** with it; it
-  becomes **8** once the `se_engage 2 → 3` / `se_outreach 1 → 2` bumps above land.
+  still routes to `se_engage` through `task_routes`. It shipped at cap **6**; landing the
+  `se_engage 2 → 3` / `se_outreach 1 → 2` bumps above took it to **8**.
 
 **Phase 2 (at ~50 users):** promote each lane worker to its own concurrency 3–4 and
 move Chrome to a Grid (see §5b). Consider per-user or per-region sharding of lanes so
@@ -317,6 +336,35 @@ concurrency rises:
 - **Human pacing per session** (already present via loop durations + jitter) must not
   be shortened to gain throughput — add sessions, not speed.
 
+### 5e. Knowing when to move — the capacity monitor **APPLIED (issue #552)**
+
+Every number in §5a is a point-in-time fit for ~10 users. The failure mode of an outgrown
+cap is not a crash — it is **tasks quietly firing late**, which used to reach us only as a
+user complaint. `utilities/capacity_alerts.py` + the `capacity-watch` beat entry
+(`auto_capacity_watch`, every 15 min) is the signal that says when this section's numbers
+have stopped holding:
+
+| Check | Source | Fires when |
+|---|---|---|
+| `session_saturation` | `selenium-chrome` `/status` slots | busy slots ≥ `CAPACITY_SATURATION_PCT` of the cap on ≥ `CAPACITY_SUSTAINED_PCT` of window samples |
+| `lane_backlog` | broker queue depth per `se_*` lane | a lane holds ≥ `CAPACITY_BACKLOG_TASKS` waiting messages on a sustained share of samples |
+| `session_wait` | `get_docker_driver()` acquisition timings | p95 time to obtain a Chrome session ≥ `CAPACITY_WAIT_SECONDS` |
+
+- **Sampled, not instantaneous.** Each tick appends one sample to a Redis rolling window
+  (`CAPACITY_WINDOW_SAMPLES`, 672 ≈ 7 days at 15 min) and nothing is judged until
+  `CAPACITY_MIN_SAMPLES` exist. A single saturated sample is *healthy* use of a pool we paid
+  for; a quarter of a week is a ceiling.
+- **Unknown ≠ OK.** An unreachable Grid or Redis produces *no* sample, and the check reports
+  itself `skipped` with a reason rather than a confident all-clear.
+- **Delivery is a GitHub issue** (labels `infrastructure`, `observability`, `needs-human`)
+  carrying the measured numbers, the cap==Σ-lanes invariant, and lettered options: raise the
+  breaching lane + cap in lockstep (§5a), move to a Grid (§5b), or retune thresholds. Exactly
+  one issue is open at a time — re-breaches comment on it after
+  `CAPACITY_ISSUE_COOLDOWN_DAYS`. Requires `FEEDBACK_GITHUB_TOKEN`/`GITHUB_TOKEN`; without one
+  the breach still logs + emits a PostHog `capacity_alert` event, it just isn't filed.
+- **It never changes a limit by itself.** Raising the cap spends real RAM/CPU on a shared box
+  (§5c), so the monitor's whole job is to put that decision in front of a human with evidence.
+
 ---
 
 ## 6. Phased rollout tied to the launch
@@ -327,11 +375,12 @@ concurrency rises:
 - Add MySQL connection pooling in `db.py` (defensive; no behavior change at 1 user).
 
 **Phase 1 — launch / first ~10 users (this plan's compose proposal):**
-- `SE_NODE_MAX_SESSIONS 4 → 6–8`, `shm 4g → 6g`, Chrome cpus `4 → 6`.
-- `se_engage` concurrency `2 → 3`; `se_outreach` `1 → 2`.
 - ✅ New `se_prepost` lane + worker for pre-post commenting (fixes #547 under
-  contention) — shipped in #553 together with `SE_NODE_MAX_SESSIONS 4 → 6` /
-  `shm 4g → 6g`.
+  contention) — shipped in #553 with `SE_NODE_MAX_SESSIONS 4 → 6` / `shm 4g → 6g`.
+- ✅ `se_engage` concurrency `2 → 3`; `se_outreach` `1 → 2` (#552).
+- ✅ `SE_NODE_MAX_SESSIONS → 8`, `shm → 8g`, Chrome cpus `4 → 8` (#552) — the four lanes
+  now sum to 8, the top of this box's Chrome budget (§4).
+- ✅ Capacity monitor (§5e) to detect when these numbers stop holding (#552).
 - **Stagger `auto_daily_engagement`** by per-user offset.
 - All fits the current 8 vCPU / 31 GB box.
 
@@ -351,8 +400,10 @@ concurrency rises:
 ## Appendix — key facts this plan is grounded in
 
 - Host: **8 vCPU, 31 GiB RAM, 4 GiB swap (unused), 387 GB disk (21% used)**, load ~0.8.
-- Selenium: **1 standalone, 4 session slots**, `shm 4g`, 4 cpu / 8 GB limit.
-- Lanes: `se_engage` c=2, `se_outreach` c=1, `se_content` c=1 → **4 = session cap**.
+- Selenium: **1 standalone, 4 session slots**, `shm 4g`, 4 cpu / 8 GB limit — raised to
+  **8 slots**, `shm 8g`, 8 cpu / 8 GB by #553 + #552.
+- Lanes: `se_engage` c=2, `se_outreach` c=1, `se_content` c=1 → **4 = session cap** — now
+  `se_engage` 3, `se_prepost` 2, `se_outreach` 2, `se_content` 1 → **8 = session cap**.
 - MySQL: `max_connections=151`, `Max_used=8`, **no connection pool** (fresh connect
   per call), **1 user** today.
 - Pre-post commenting: `automate_commenting.apply_async(eta = post − 15 min)` — measured on
@@ -361,5 +412,3 @@ concurrency rises:
   onto `se_engage`.
 - 429 breaker: **global** Redis key by egress IP; per-user proxy resolution exists
   (`resolve_proxy()`).
-</content>
-</invoke>
