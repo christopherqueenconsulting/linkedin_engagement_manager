@@ -174,6 +174,66 @@ class TestRollingBufferBounds:
         mock_ready.assert_not_called()
 
 
+class TestBufferTopUpIsSingleFlight:
+    """Overlapping runs for one user must not each generate the same delta (LLM/video spend)."""
+
+    @pytest.fixture(autouse=True)
+    def default_prefs(self):
+        with patch(f"{_RCP}.get_user_preferences",
+                   return_value={"auto_schedule_posts": 0, "content_buffer_days": 5,
+                                 "content_buffer_max_posts": 5}):
+            yield
+
+    @patch(f"{_RCP}.create_content")
+    @patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0)
+    @patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=[_planned()])
+    @patch(f"{_RCP}.acquire_run_lock", return_value=None)
+    def test_loser_of_the_lock_generates_nothing(self, mock_lock, mock_planned, mock_ready,
+                                                 mock_create):
+        from cqc_lem.app.run_content_plan import auto_create_weekly_content
+        auto_create_weekly_content(user_id=1)
+        assert mock_lock.call_args[0][0] == "content_buffer_topup:1"
+        mock_ready.assert_not_called()
+        mock_planned.assert_not_called()
+        mock_create.assert_not_called()
+
+    @patch(f"{_RCP}.release_run_lock")
+    @patch(f"{_RCP}.update_db_post_status")
+    @patch(f"{_RCP}.update_db_post_content")
+    @patch(f"{_RCP}.create_content", return_value=("Text", None))
+    @patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0)
+    @patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=[_planned()])
+    @patch(f"{_RCP}.acquire_run_lock", return_value="tok")
+    def test_lock_is_released_after_a_successful_run(self, mock_lock, mock_planned, mock_ready,
+                                                     mock_create, upd_content, upd_status,
+                                                     mock_release):
+        from cqc_lem.app.run_content_plan import auto_create_weekly_content
+        auto_create_weekly_content(user_id=1)
+        upd_content.assert_called_once()
+        mock_release.assert_called_once_with("content_buffer_topup:1", "tok")
+
+    @patch(f"{_RCP}.release_run_lock")
+    @patch(f"{_RCP}.count_ready_posts_within_buffer", side_effect=RuntimeError("db down"))
+    @patch(f"{_RCP}.acquire_run_lock", return_value="tok")
+    def test_lock_is_released_when_the_run_raises(self, mock_lock, mock_ready, mock_release):
+        from cqc_lem.app.run_content_plan import auto_create_weekly_content
+        with pytest.raises(RuntimeError):
+            auto_create_weekly_content(user_id=1)
+        mock_release.assert_called_once_with("content_buffer_topup:1", "tok")
+
+    @patch(f"{_RCP}.release_run_lock")
+    @patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=9)
+    @patch(f"{_RCP}.acquire_run_lock", return_value="tok")
+    @patch(f"{_RCP}.get_user_ids_with_planned_posts_within_buffer", return_value=[4, 9])
+    def test_beat_run_locks_each_user_separately(self, mock_users, mock_lock, mock_ready,
+                                                 mock_release):
+        from cqc_lem.app.run_content_plan import auto_create_weekly_content
+        auto_create_weekly_content()
+        assert [c[0][0] for c in mock_lock.call_args_list] == ["content_buffer_topup:4",
+                                                               "content_buffer_topup:9"]
+        assert mock_release.call_count == 2
+
+
 class TestContentBufferSettings:
     def test_defaults_when_prefs_missing(self):
         from cqc_lem.app.run_content_plan import _content_buffer_settings

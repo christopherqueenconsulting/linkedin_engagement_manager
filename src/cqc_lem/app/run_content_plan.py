@@ -43,6 +43,7 @@ from cqc_lem.utilities.env_constants import API_URL_FINAL, DEFAULT_VIDEO_RATIO, 
     STANDARD_VIDEO_MODEL, PREMIUM_VIDEO_MODEL, PREMIUM_TOP_VIDEO_MODEL, \
     PREMIUM_VIDEO_CREDITS, PREMIUM_TOP_VIDEO_CREDITS
 from cqc_lem.utilities.linkedin.helper import get_my_profile, load_profile_for_user
+from cqc_lem.utilities.linkedin.rate_limit import acquire_run_lock, release_run_lock
 from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin, strip_engagement_bait
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.logger import myprint, log_info, log_warning
@@ -1389,6 +1390,11 @@ def save_content_plan(user_id: int, daily_plan: list[dict]):
         insert_planned_post(user_id, plan['scheduled_datetime'], post_type, plan['stage'])
 
 
+# A full buffer is a handful of posts, but a video post can spend minutes in Runway, so give the
+# top-up lock a generous ceiling. It only bounds crash recovery — the happy path releases it.
+_BUFFER_LOCK_TTL_SECONDS = 3600
+
+
 def _content_buffer_settings(prefs: dict) -> Tuple[int, int]:
     """Per-user rolling-buffer window and ceiling, clamped to the supported range (issue #544)."""
     prefs = prefs or {}
@@ -1417,24 +1423,45 @@ def auto_create_weekly_content(user_id: int = None):
         user_ids = get_user_ids_with_planned_posts_within_buffer() or []
 
     for uid in user_ids:
-        prefs = get_user_preferences(uid) or {}
+        _top_up_buffer_for_user(uid)
+
+
+def _top_up_buffer_for_user(user_id: int) -> None:
+    """Generate this user's buffer delta under a single-flight lock.
+
+    The count → select → generate sequence is read-then-write: overlapping runs for the same user
+    (repeated /create_weekly_content/ clicks, the 01:30 beat landing on a retrying worker) would
+    each read the same `already_ready` and each generate the full delta, overshooting the buffer
+    and doubling LLM/video spend. The lock serialises them; the loser skips (its own next run
+    re-reads the counts). Fails OPEN when Redis is down — same trade-off as the Selenium tasks.
+    """
+    lock_name = f"content_buffer_topup:{user_id}"
+    lock_token = acquire_run_lock(lock_name, ttl_seconds=_BUFFER_LOCK_TTL_SECONDS)
+    if lock_token is None:
+        myprint(f"user_id {user_id}: another buffer top-up is in progress — skipping this cycle.")
+        return
+
+    try:
+        prefs = get_user_preferences(user_id) or {}
         buffer_days, buffer_max = _content_buffer_settings(prefs)
-        already_ready = count_ready_posts_within_buffer(uid, buffer_days)
+        already_ready = count_ready_posts_within_buffer(user_id, buffer_days)
         if already_ready >= buffer_max:
-            myprint(f"user_id {uid}: buffer already full ({already_ready}/{buffer_max} ready "
+            myprint(f"user_id {user_id}: buffer already full ({already_ready}/{buffer_max} ready "
                     f"within {buffer_days} days). Skipping content creation.")
-            continue
+            return
 
-        planned_posts = get_planned_posts_within_buffer(uid, buffer_days, buffer_max, already_ready)
+        planned_posts = get_planned_posts_within_buffer(user_id, buffer_days, buffer_max, already_ready)
         if not planned_posts:
-            myprint(f"user_id {uid}: no planned posts within {buffer_days} days. "
+            myprint(f"user_id {user_id}: no planned posts within {buffer_days} days. "
                     f"Skipping content creation.")
-            continue
+            return
 
-        myprint(f"user_id {uid}: generating {len(planned_posts)} post(s) to top buffer up to "
+        myprint(f"user_id {user_id}: generating {len(planned_posts)} post(s) to top buffer up to "
                 f"{buffer_max} ready within {buffer_days} days ({already_ready} already ready)")
         for post in planned_posts:
             _create_content_for_planned_post(post, prefs)
+    finally:
+        release_run_lock(lock_name, lock_token)
 
 
 def _create_content_for_planned_post(post: dict, prefs: dict) -> None:
