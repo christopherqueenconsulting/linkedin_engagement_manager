@@ -13,7 +13,7 @@ from cqc_lem.utilities.env_constants import (
     SESSION_IDLE_HOURS,
 )
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
-from cqc_lem.utilities.logger import myprint, log_error
+from cqc_lem.utilities.logger import myprint, log_error, log_info
 from cqc_lem.utilities.utils import get_top_level_domain, get_aws_ssm_secret
 from dotenv import load_dotenv
 from mysql.connector import errorcode
@@ -7000,6 +7000,185 @@ def has_automated_engagement(user_id: int) -> bool:
     except mysql.connector.Error as err:
         log_error(f"Could not check automated engagement for user_id {user_id}", exc=err)
         return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+# ---------------------------------------------------------------------------
+# Early-adopter extended trial (issue #499)
+# ---------------------------------------------------------------------------
+
+# Cohorts are tried in order: P0 (the hand-picked launch group) fills first, then P1. Capacities
+# come from env at call time so the caps can be retuned without a migration or a code change.
+EARLY_ADOPTER_COHORTS = ("P0", "P1")
+
+# Statuses an extension may act on. A paying ('active'/'past_due') or churned ('cancelled') user is
+# not on a trial, so extending one would either be a no-op or silently reopen a closed account.
+_EXTENDABLE_STATUSES = ("trial", "inactive")
+
+
+def _as_naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """MySQL DATETIME columns come back naive; our own timestamps are UTC-aware. Normalize both to
+    naive-UTC so they can be compared without a TypeError."""
+    if dt is None or dt.tzinfo is None:
+        return dt
+    return dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def get_latest_review_feedback_id(user_id: int) -> Optional[int]:
+    """The most recent `feedback` row this user filed with source='review' — the gate the
+    early-adopter extension is traded for. None when they haven't left a review yet."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT id FROM feedback WHERE user_id=%s AND source=%s ORDER BY created_at DESC, id DESC LIMIT 1",
+            (user_id, str(FeedbackSource.REVIEW)),
+        )
+        row = cursor.fetchone()
+        return int(row[0]) if row else None
+    except mysql.connector.Error as err:
+        log_error("Could not look up review feedback", exc=err, user_id=user_id)
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_early_adopter_grant(user_id: int) -> Optional[dict]:
+    """The user's early-adopter grant, or None. Read by the checkout flow so the extension mirrors
+    into Stripe on conversion."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT id, user_id, cohort, trial_days, feedback_id, trial_ends_at, granted_at "
+            "FROM early_adopter_grants WHERE user_id=%s",
+            (user_id,),
+        )
+        return cursor.fetchone()
+    except mysql.connector.Error as err:
+        log_error("Could not fetch early-adopter grant", exc=err, user_id=user_id)
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_early_adopter_slot_usage() -> dict:
+    """`{cohort: used}` for every cohort row — what the caps are measured against."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT cohort, used FROM early_adopter_slots")
+        return {str(cohort): int(used or 0) for cohort, used in cursor.fetchall()}
+    except mysql.connector.Error as err:
+        log_error("Could not read early-adopter slot usage", exc=err)
+        return {}
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def extend_trial_for_user(user_id: int, feedback_id: Optional[int] = None) -> dict:
+    """Claim an early-adopter cohort slot and extend the user's trial to
+    `trial_started_at + EARLY_ADOPTER_TRIAL_DAYS` (issue #499).
+
+    The caller owns the review gate; this owns atomicity. Everything below runs in ONE transaction:
+    the slot claim is a single conditional UPDATE (its rowcount IS the claim result, so two
+    concurrent requests can never both take the last slot), and the unique `user_id` on
+    early_adopter_grants means a duplicate request rolls the whole thing back — including the
+    counter — rather than burning a second slot.
+
+    Returns a dict the API can hand straight to the SPA:
+      granted, reason, cohort, trial_days, trial_ends_at
+    where reason is one of granted | already_granted | slots_exhausted | not_on_trial |
+    user_not_found | error.
+    """
+    from cqc_lem.utilities.env_constants import (
+        EARLY_ADOPTER_P0_SLOTS, EARLY_ADOPTER_P1_SLOTS, EARLY_ADOPTER_TRIAL_DAYS, FREE_TRIAL_DAYS,
+    )
+    capacities = {"P0": EARLY_ADOPTER_P0_SLOTS, "P1": EARLY_ADOPTER_P1_SLOTS}
+
+    def _result(granted: bool, reason: str, cohort: Optional[str] = None,
+                trial_days: int = FREE_TRIAL_DAYS, trial_ends_at: Optional[datetime] = None) -> dict:
+        return {"granted": granted, "reason": reason, "cohort": cohort,
+                "trial_days": trial_days, "trial_ends_at": trial_ends_at}
+
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        connection.start_transaction()
+
+        cursor.execute(
+            "SELECT cohort, trial_days, trial_ends_at FROM early_adopter_grants WHERE user_id=%s FOR UPDATE",
+            (user_id,),
+        )
+        existing = cursor.fetchone()
+        if existing:
+            connection.rollback()
+            return _result(True, "already_granted", existing["cohort"],
+                           int(existing["trial_days"]), existing["trial_ends_at"])
+
+        cursor.execute(
+            "SELECT subscription_status, trial_started_at, trial_ends_at FROM users WHERE id=%s FOR UPDATE",
+            (user_id,),
+        )
+        user = cursor.fetchone()
+        if not user:
+            connection.rollback()
+            return _result(False, "user_not_found")
+        if user["subscription_status"] not in _EXTENDABLE_STATUSES:
+            connection.rollback()
+            return _result(False, "not_on_trial")
+
+        claimed: Optional[str] = None
+        for cohort in EARLY_ADOPTER_COHORTS:
+            capacity = int(capacities.get(cohort, 0))
+            if capacity <= 0:
+                continue
+            cursor.execute(
+                "UPDATE early_adopter_slots SET used = used + 1 WHERE cohort=%s AND used < %s",
+                (cohort, capacity),
+            )
+            if cursor.rowcount == 1:
+                claimed = cohort
+                break
+        if not claimed:
+            connection.rollback()
+            return _result(False, "slots_exhausted")
+
+        started = _as_naive_utc(user["trial_started_at"]) or datetime.now(timezone.utc).replace(tzinfo=None)
+        new_end = started + timedelta(days=EARLY_ADOPTER_TRIAL_DAYS)
+        current_end = _as_naive_utc(user["trial_ends_at"])
+        # An extension must never shorten a trial the user already has.
+        if current_end and current_end > new_end:
+            new_end = current_end
+
+        cursor.execute(
+            "INSERT INTO early_adopter_grants (user_id, cohort, trial_days, feedback_id, trial_ends_at) "
+            "VALUES (%s,%s,%s,%s,%s)",
+            (user_id, claimed, EARLY_ADOPTER_TRIAL_DAYS, feedback_id, new_end),
+        )
+        cursor.execute(
+            "UPDATE users SET trial_started_at=%s, trial_ends_at=%s, subscription_status='trial', "
+            "subscription_tier=COALESCE(subscription_tier,'free_trial') WHERE id=%s",
+            (started, new_end, user_id),
+        )
+        connection.commit()
+        log_info("Early-adopter trial granted", user_id=user_id)
+        return _result(True, "granted", claimed, EARLY_ADOPTER_TRIAL_DAYS, new_end)
+    except mysql.connector.Error as err:
+        connection.rollback()
+        if err.errno == errorcode.ER_DUP_ENTRY:
+            # Two concurrent requests for the same user; the rollback released the slot this one took.
+            existing = get_early_adopter_grant(user_id)
+            if existing:
+                return _result(True, "already_granted", existing["cohort"],
+                               int(existing["trial_days"]), existing["trial_ends_at"])
+        log_error("Could not extend trial", exc=err, user_id=user_id)
+        return _result(False, "error")
     finally:
         cursor.close()
         connection.close()

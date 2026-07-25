@@ -59,14 +59,24 @@ def create_stripe_customer(email: str, user_id: int) -> Optional[str]:
         return None
 
 
+# Stripe rejects a subscription trial longer than 2 years.
+STRIPE_MAX_TRIAL_DAYS = 730
+
+
 def create_checkout_session(
     stripe_customer_id: str,
     tier: str,
     success_url: str,
     cancel_url: str,
+    trial_period_days: Optional[int] = None,
+    discounts: Optional[list[dict]] = None,
 ) -> Optional[str]:
     """Create a Stripe Checkout session for a subscription upgrade.
     Returns the checkout session URL, or None on failure.
+
+    `trial_period_days` carries an unfinished trial (e.g. an early-adopter extension, issue #499)
+    into Stripe so converting early doesn't forfeit the remaining days; `discounts` is passed
+    straight through as Stripe's discounts list (e.g. `[{"coupon": "EARLYBIRD"}]`).
     """
     price_id = TIER_PRICE_MAP.get(tier)
     if not price_id:
@@ -75,6 +85,14 @@ def create_checkout_session(
     if not STRIPE_API_KEY:
         myprint("STRIPE_API_KEY not set — cannot create checkout session")
         return None
+
+    extra: dict = {}
+    if trial_period_days and int(trial_period_days) > 0:
+        extra["subscription_data"] = {
+            "trial_period_days": min(int(trial_period_days), STRIPE_MAX_TRIAL_DAYS)
+        }
+    if discounts:
+        extra["discounts"] = discounts
 
     stripe = _get_stripe()
     try:
@@ -85,6 +103,7 @@ def create_checkout_session(
             mode="subscription",
             success_url=success_url,
             cancel_url=cancel_url,
+            **extra,
         )
         return session.url
     except Exception as e:

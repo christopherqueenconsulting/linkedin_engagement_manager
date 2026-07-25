@@ -132,6 +132,60 @@ class TestCreateCheckoutSession:
 
         assert result == "https://checkout.stripe.com/pay/cs_abc"
 
+    def test_no_trial_or_discount_keeps_payload_unchanged(self):
+        """Standard conversion must not gain subscription_data/discounts (issue #499)."""
+        mock_stripe = _make_stripe_mock()
+
+        with patch("cqc_lem.utilities.stripe_util.STRIPE_API_KEY", "sk_test_key"), \
+             patch("cqc_lem.utilities.stripe_util.TIER_PRICE_MAP", {"starter": "price_starter_id"}), \
+             patch("cqc_lem.utilities.stripe_util._get_stripe", return_value=mock_stripe):
+            from cqc_lem.utilities.stripe_util import create_checkout_session
+            create_checkout_session("cus_abc", "starter", "https://e.com/s", "https://e.com/c")
+
+        kwargs = mock_stripe.checkout.Session.create.call_args.kwargs
+        assert "subscription_data" not in kwargs
+        assert "discounts" not in kwargs
+
+    def test_trial_days_and_coupon_are_forwarded(self):
+        """An early-adopter extension mirrors into Stripe as a trial + coupon (issue #499)."""
+        mock_stripe = _make_stripe_mock()
+
+        with patch("cqc_lem.utilities.stripe_util.STRIPE_API_KEY", "sk_test_key"), \
+             patch("cqc_lem.utilities.stripe_util.TIER_PRICE_MAP", {"starter": "price_starter_id"}), \
+             patch("cqc_lem.utilities.stripe_util._get_stripe", return_value=mock_stripe):
+            from cqc_lem.utilities.stripe_util import create_checkout_session
+            create_checkout_session("cus_abc", "starter", "https://e.com/s", "https://e.com/c",
+                                    trial_period_days=47, discounts=[{"coupon": "EARLYBIRD"}])
+
+        kwargs = mock_stripe.checkout.Session.create.call_args.kwargs
+        assert kwargs["subscription_data"] == {"trial_period_days": 47}
+        assert kwargs["discounts"] == [{"coupon": "EARLYBIRD"}]
+
+    def test_trial_days_capped_at_stripe_maximum(self):
+        mock_stripe = _make_stripe_mock()
+
+        with patch("cqc_lem.utilities.stripe_util.STRIPE_API_KEY", "sk_test_key"), \
+             patch("cqc_lem.utilities.stripe_util.TIER_PRICE_MAP", {"starter": "price_starter_id"}), \
+             patch("cqc_lem.utilities.stripe_util._get_stripe", return_value=mock_stripe):
+            from cqc_lem.utilities.stripe_util import create_checkout_session, STRIPE_MAX_TRIAL_DAYS
+            create_checkout_session("cus_abc", "starter", "https://e.com/s", "https://e.com/c",
+                                    trial_period_days=5000)
+
+        kwargs = mock_stripe.checkout.Session.create.call_args.kwargs
+        assert kwargs["subscription_data"]["trial_period_days"] == STRIPE_MAX_TRIAL_DAYS
+
+    def test_non_positive_trial_days_is_ignored(self):
+        mock_stripe = _make_stripe_mock()
+
+        with patch("cqc_lem.utilities.stripe_util.STRIPE_API_KEY", "sk_test_key"), \
+             patch("cqc_lem.utilities.stripe_util.TIER_PRICE_MAP", {"starter": "price_starter_id"}), \
+             patch("cqc_lem.utilities.stripe_util._get_stripe", return_value=mock_stripe):
+            from cqc_lem.utilities.stripe_util import create_checkout_session
+            create_checkout_session("cus_abc", "starter", "https://e.com/s", "https://e.com/c",
+                                    trial_period_days=0)
+
+        assert "subscription_data" not in mock_stripe.checkout.Session.create.call_args.kwargs
+
     def test_missing_price_id_for_tier_returns_none(self):
         with patch("cqc_lem.utilities.stripe_util.STRIPE_API_KEY", "sk_test_key"), \
              patch("cqc_lem.utilities.stripe_util.TIER_PRICE_MAP", {"starter": None}):
