@@ -7,7 +7,6 @@ from unittest.mock import patch
 
 pytestmark = pytest.mark.unit
 
-_S = "cqc_lem.app.run_scheduler"
 _M = "cqc_lem.utilities.margin"
 
 

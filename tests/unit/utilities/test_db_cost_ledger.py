@@ -50,7 +50,7 @@ class TestGetCostRollup:
             assert get_cost_rollup(date(2026, 7, 1), date(2026, 7, 25)) == {"content": 1.5,
                                                                            "comment": 0.25}
         sql, params = cur.execute.call_args[0]
-        assert "SUM(usd)" in sql and "GROUP BY feature" in sql
+        assert "SUM(usd)" in sql and "CAST(feature AS CHAR)" in sql and "GROUP BY rollup_key" in sql
         assert "user_id = %s" not in sql  # no user filter → shared/system rows included
         assert params == (date(2026, 7, 1), date(2026, 7, 25))
 
@@ -61,8 +61,19 @@ class TestGetCostRollup:
             assert get_cost_rollup(date(2026, 7, 1), date(2026, 7, 25),
                                    group_by="category", user_id=5) == {"llm": 7.0}
         sql, params = cur.execute.call_args[0]
-        assert "GROUP BY category" in sql and "user_id = %s" in sql
+        assert "CAST(category AS CHAR)" in sql and "GROUP BY rollup_key" in sql
+        assert "user_id = %s" in sql
         assert params == (date(2026, 7, 1), date(2026, 7, 25), 5)
+
+    def test_numeric_dimension_is_cast_so_null_never_collapses_into_user_zero(self):
+        conn, cur = _mock_conn(fetch_all=[("unknown", 3.0), ("7", 1.0)])
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_cost_rollup
+            assert get_cost_rollup(date(2026, 7, 1), date(2026, 7, 25),
+                                   group_by="user") == {"unknown": 3.0, "7": 1.0}
+        sql = cur.execute.call_args[0][0]
+        assert "COALESCE(CAST(user_id AS CHAR), 'unknown')" in sql
+        assert "GROUP BY rollup_key" in sql
 
     def test_rejects_an_unknown_dimension_instead_of_interpolating_it(self):
         with patch(f"{_DB}.get_db_connection") as gc:
@@ -84,7 +95,7 @@ class TestGetCostRollup:
             assert get_user_cost(9, date(2026, 7, 1), date(2026, 7, 25)) == {"llm": 2.0,
                                                                             "proxy": 1.0}
         sql, params = cur.execute.call_args[0]
-        assert "GROUP BY category" in sql and params[-1] == 9
+        assert "CAST(category AS CHAR)" in sql and params[-1] == 9
 
 
 class TestGetMarginUsers:

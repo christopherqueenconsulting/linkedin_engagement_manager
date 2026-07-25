@@ -352,7 +352,7 @@ def render_margin_report_text(report: Mapping) -> str:
     lines = [f"LEM margin report — {period.get('start')} → {period.get('end')} "
              f"({period.get('days')}d, {period.get('basis')} basis)", ""]
     if not report.get("ledger_available", True):
-        lines += ["NOTE: cost_ledger is not present yet — spend reads as $0 and margin is "
+        lines += ["NOTE: cost_ledger is not present yet — spend reads as $0 and margin is " +
                   "revenue-only until it lands.", ""]
     lines += [
         f"System: {system.get('active_users')} active user(s), {system.get('paying_users')} paying",

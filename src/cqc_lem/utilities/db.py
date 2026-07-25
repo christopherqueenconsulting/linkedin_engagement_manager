@@ -6249,7 +6249,9 @@ def get_cost_rollup(start_date, end_date, group_by: str = "feature",
     """Summed `cost_ledger.usd` over [start_date, end_date] grouped by one dimension from
     COST_ROLLUP_COLUMNS → `{key: usd}`. Omitting `user_id` includes EVERY row, shared/system spend
     (NULL user_id) included, which is what the system-wide margin totals need. Rows with a NULL
-    group value collapse into the "unknown" key so their spend is never dropped."""
+    group value collapse into the "unknown" key so their spend is never dropped — the column is CAST
+    to CHAR first so a numeric dimension (user_id) can't coerce 'unknown' into 0 and merge NULL
+    rows with a real user 0."""
     column = COST_ROLLUP_COLUMNS.get(group_by)
     if not column:
         myprint(f"Unsupported cost rollup dimension '{group_by}'")
@@ -6257,13 +6259,13 @@ def get_cost_rollup(start_date, end_date, group_by: str = "feature",
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
-        sql = (f"SELECT COALESCE({column}, 'unknown'), COALESCE(SUM(usd), 0) FROM cost_ledger "
-               "WHERE incurred_on BETWEEN %s AND %s")
+        sql = (f"SELECT COALESCE(CAST({column} AS CHAR), 'unknown') AS rollup_key, "
+               "COALESCE(SUM(usd), 0) FROM cost_ledger WHERE incurred_on BETWEEN %s AND %s")
         params = [start_date, end_date]
         if user_id is not None:
             sql += " AND user_id = %s"
             params.append(user_id)
-        cursor.execute(sql + f" GROUP BY {column}", tuple(params))
+        cursor.execute(sql + " GROUP BY rollup_key", tuple(params))
         return {str(key): float(usd or 0) for key, usd in cursor.fetchall()}
     except mysql.connector.Error:
         return {}  # table not created yet (or unreadable) — caller reports it as unavailable

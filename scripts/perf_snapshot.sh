@@ -23,7 +23,12 @@ mkdir -p "$DIR"
 DBU=$(sudo -n grep -E "^MYSQL_USER=" "$ENVF"|cut -d= -f2)
 DBP=$(sudo -n grep -E "^MYSQL_PASSWORD=" "$ENVF"|cut -d= -f2)
 DBN=$(sudo -n grep -E "^MYSQL_DATABASE=" "$ENVF"|cut -d= -f2)
-q(){ sudo -n docker exec mysql_db mysql -u"$DBU" -p"$DBP" -N -B -e "$1" 2>/dev/null | grep -vi "using a password" | head -1; }
+# The password reaches the mysql client as MYSQL_PWD from a 0600 env-file, never as a `-p` CLI arg:
+# an argv password is readable in the container's process list (and by anything scraping it).
+PWF=$(mktemp)                       # mktemp creates 0600
+trap 'rm -f "$PWF"' EXIT
+printf 'MYSQL_PWD=%s\n' "$DBP" > "$PWF"
+q(){ sudo -n docker exec --env-file "$PWF" mysql_db mysql -u"$DBU" -N -B -e "$1" 2>/dev/null | grep -vi "using a password" | head -1; }
 
 U=1
 DAY="SELECT COUNT(*) FROM $DBN.logs WHERE user_id=$U AND result='success' AND created_at>=NOW()-INTERVAL 1 DAY AND action_type="
