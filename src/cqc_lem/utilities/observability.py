@@ -111,11 +111,15 @@ FEATURE_CONTENT = "content"
 FEATURE_COMMENT = "comment"
 FEATURE_DM = "dm"
 FEATURE_NEWSLETTER = "newsletter"
+# Outbound/marketing production (video tutorials, issue #505) — spend that acquires users rather
+# than serving one, so it must never blend into a user's per-feature content cost.
+FEATURE_MARKETING = "marketing"
 FEATURE_SYSTEM = "system"
 
 # First match wins, so the order encodes precedence: `dispatch_comment_followups` is comment work,
 # and `automate_profile_viewer_engagement` is outreach DM work despite ending in "engagement".
 _TASK_FEATURE_RULES = (
+    ("tutorial", FEATURE_MARKETING),
     ("newsletter", FEATURE_NEWSLETTER),
     ("edition", FEATURE_NEWSLETTER),
     ("profile_viewer", FEATURE_DM),

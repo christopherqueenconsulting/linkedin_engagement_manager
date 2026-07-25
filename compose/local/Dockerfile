@@ -11,6 +11,8 @@ RUN apt-get update -y && apt-get install --no-install-suggests --no-install-reco
     # Curl needed for AWS health checks
     curl \
     netcat-traditional \
+    # ffmpeg + ffprobe render the marketing tutorial videos (issue #505)
+    ffmpeg \
     # cleaning up unused files
     && apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false \
     && rm -rf /var/lib/apt/lists/*

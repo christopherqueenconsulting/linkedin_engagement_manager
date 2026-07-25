@@ -150,6 +150,9 @@ task_routes = {
     'cqc_lem.app.run_automation.auto_post_to_group': {'queue': 'se_content'},
     'cqc_lem.app.run_automation.auto_publish_newsletter_edition': {'queue': 'se_content'},
     'cqc_lem.app.run_automation.auto_publish_edition': {'queue': 'se_content'},
+    # Marketing tutorial capture drives a browser against OUR OWN SPA (issue #505), not LinkedIn,
+    # but it still needs a Selenium session — so it shares the content lane.
+    'cqc_lem.app.run_scheduler.auto_produce_feature_tutorial': {'queue': 'se_content'},
 }
 
 

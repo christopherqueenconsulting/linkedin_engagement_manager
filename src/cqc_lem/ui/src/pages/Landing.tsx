@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
+import TutorialVideos from '../components/TutorialVideos'
 
 function FaqItem({ question, answer }: { question: string; answer: string }) {
   const [open, setOpen] = useState(false)
@@ -112,6 +113,9 @@ export default function Landing() {
           </div>
         </div>
       </section>
+
+      {/* Automated feature tutorials (issue #505) — renders nothing until one is produced */}
+      <TutorialVideos />
 
       {/* Stats */}
       <section className="py-16 px-4 bg-white">
