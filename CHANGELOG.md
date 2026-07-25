@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.92.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.92.1...v0.92.2) (2026-07-25)
+
+
+### Bug Fixes
+
+* **engagement:** clamp the pre-post feed-commenting window + per-post observability (closes [#547](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/547)) ([fe88820](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/fe88820cbfd71d11572762530e407f7fe845a63b))
+* **engagement:** key pre-post markers per task + address review threads ([90cc038](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/90cc03847c52d3abdd826d1215b050213e7495ae))
+* **engagement:** reliable pre-post feed-commenting window + per-post observability (closes [#547](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/547)) ([be0143e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/be0143ef688e1c2fd94affff46d71750a805f5f6))
+
 ## [0.92.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.92.0...v0.92.1) (2026-07-25)
 
 
