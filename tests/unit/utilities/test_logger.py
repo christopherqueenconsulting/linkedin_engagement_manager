@@ -233,3 +233,46 @@ class TestLoggerConfiguration:
             return  # no key configured — handler absent, nothing to assert
         expected = getattr(logging, os.getenv("POSTHOG_LOG_LEVEL", "ERROR").upper(), logging.ERROR)
         assert ph_handlers[0].level == expected
+
+
+# ---------------------------------------------------------------------------
+# OTLP resource (service.name) — issue: logs were landing under 'unknown_service'
+# ---------------------------------------------------------------------------
+
+@patch.dict(os.environ, {"HOSTNAME": "celery_worker_selenium", "IMAGE_TAG": "v0.70.0", "DEPLOY_ENV": "prod"}, clear=False)
+def test_otlp_resource_sets_service_name_and_instance():
+    from cqc_lem.utilities.logger import _otlp_resource
+    attrs = _otlp_resource().attributes
+    assert attrs["service.name"] == "cqc-lem"
+    assert attrs["service.instance.id"] == "celery_worker_selenium"
+    assert attrs["service.version"] == "v0.70.0"
+    assert attrs["deployment.environment"] == "prod"
+
+
+@patch.dict(os.environ, {"OTEL_SERVICE_NAME": "cqc-lem-web"}, clear=False)
+def test_otlp_resource_service_name_overridable():
+    from cqc_lem.utilities.logger import _otlp_resource
+    assert _otlp_resource().attributes["service.name"] == "cqc-lem-web"
+
+
+def test_otlp_resource_defaults_when_env_absent():
+    from cqc_lem.utilities.logger import _otlp_resource
+    with patch.dict(os.environ, {}, clear=True):
+        attrs = _otlp_resource().attributes
+        assert attrs["service.name"] == "cqc-lem"
+        assert attrs["service.instance.id"] == "unknown-instance"
+        assert "service.version" not in attrs  # not set when IMAGE_TAG absent
+
+
+def test_posthog_handler_provider_carries_the_resource():
+    """The LoggerProvider must be built WITH the resource (regression: was LoggerProvider())."""
+    import cqc_lem.utilities.logger as mod
+    with patch.dict(os.environ, {"POSTHOG_API_KEY": "phc_x"}, clear=False), \
+         patch("opentelemetry.sdk._logs.LoggerProvider") as LP, \
+         patch("opentelemetry.sdk._logs.LoggingHandler"), \
+         patch("opentelemetry.sdk._logs.export.BatchLogRecordProcessor"), \
+         patch("opentelemetry.exporter.otlp.proto.http._log_exporter.OTLPLogExporter"), \
+         patch("opentelemetry._logs.set_logger_provider"):
+        mod._build_posthog_handler(logging.ERROR)
+    assert "resource" in LP.call_args.kwargs
+    assert LP.call_args.kwargs["resource"].attributes["service.name"] == "cqc-lem"

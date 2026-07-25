@@ -14,6 +14,25 @@ LOGGING_FILENAME = "logs/cqc_lem_" + _today.strftime("%Y_%m_%d") + ".log"
 os.makedirs("logs", exist_ok=True)
 
 
+def _otlp_resource():
+    """OTel Resource identifying LEM in PostHog Logs. Without this the provider defaults to
+    'unknown_service' — set a real service.name so logs are filterable, tag the version from the
+    deployed image tag, and use the container hostname as the instance id so each worker
+    (web_app / celery_worker / *_selenium / *_content) is distinguishable."""
+    from opentelemetry.sdk.resources import Resource
+    attrs = {
+        "service.name": os.getenv("OTEL_SERVICE_NAME", "cqc-lem"),
+        "service.instance.id": os.getenv("HOSTNAME", "") or "unknown-instance",
+    }
+    version = os.getenv("IMAGE_TAG", "")
+    if version:
+        attrs["service.version"] = version
+    env = os.getenv("DEPLOY_ENV", "")
+    if env:
+        attrs["deployment.environment"] = env
+    return Resource.create(attrs)
+
+
 def _build_posthog_handler(level: int) -> Optional[logging.Handler]:
     """Build an OTLP-backed LoggingHandler that ships logs to PostHog Logs."""
     api_key = os.getenv("POSTHOG_API_KEY", "")
@@ -30,7 +49,7 @@ def _build_posthog_handler(level: int) -> Optional[logging.Handler]:
         endpoint=f"{host}/i/v1/logs",
         headers={"Authorization": f"Bearer {api_key}"},
     )
-    provider = LoggerProvider()
+    provider = LoggerProvider(resource=_otlp_resource())
     provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
     set_logger_provider(provider)
 
