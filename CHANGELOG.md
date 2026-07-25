@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.82.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.81.0...v0.82.0) (2026-07-25)
+
+
+### Features
+
+* **feedback:** NPS/CSAT + review capture (closes [#501](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/501)) ([7446e6f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7446e6fde577b6d533e0410acbb2010db302f970))
+* **feedback:** NPS/CSAT + review capture, review unlocks the extended trial (closes [#501](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/501)) ([61cca79](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/61cca79927ba3ac9c6722c71e102da9f472ff509))
+
+
+### Documentation
+
+* **feedback:** clarify survey_key ledger semantics in SurveyModal ([5141f2b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5141f2b06956d0385935e9ce3f1be1facdbfcc29))
+
 ## [0.81.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.80.0...v0.81.0) (2026-07-25)
 
 
