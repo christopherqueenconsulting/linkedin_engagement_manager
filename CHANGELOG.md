@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.92.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.91.3...v0.92.0) (2026-07-25)
+
+
+### Features
+
+* **content:** progress notification + status for post generation (closes [#545](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/545)) ([c273fcf](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c273fcf15f76efc90fab6aa0eb9c0d2eeb101a0d))
+* **content:** progress notification + status for post generation (closes [#545](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/545)) ([3900836](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3900836010e3b804aba4139aa275b9d25dca3d5e))
+
+
+### Bug Fixes
+
+* **content:** contain post-generation failures and clear a failed dispatch ([#545](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/545)) ([27818f3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/27818f3f4d5ebee37365dbce8e36584d5de16344))
+
 ## [0.91.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.91.2...v0.91.3) (2026-07-25)
 
 
