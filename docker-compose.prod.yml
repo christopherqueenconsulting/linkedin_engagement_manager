@@ -169,7 +169,8 @@ services:
           memory: 512m
 
   selenium-chrome:
-    # already restart: unless-stopped + 2cpu/4g in the base file
+    # Session cap (8), shm (8g) and limits (8cpu/8g) come from the base file — prod runs the
+    # same browser pool as dev so the "cap == summed lane concurrency" invariant holds in both.
     # Bind noVNC (7900) and the Selenium hub (4444) to loopback only. 7900 lets the
     # live browser be watched via an SSH tunnel (ssh -L 7900:localhost:7900 …) or the
     # lemvnc.<domain> Cloudflare hostname; 4444 lets host-side tooling — notably the
