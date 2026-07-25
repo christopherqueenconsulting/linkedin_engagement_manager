@@ -34,7 +34,7 @@ from cqc_lem.utilities.db import (
     get_lead_signals, get_lead_signal, update_lead_signal,
     count_new_lead_signals, LeadSignalStatus,
     get_leads, get_lead, update_lead, count_hot_leads, LeadStage,
-    get_catchup_touches, get_catchup_touch_user_id, update_catchup_touch,
+    get_catchup_touches, get_catchup_touch, get_catchup_touch_user_id, update_catchup_touch,
     update_catchup_touch_status, CatchupTouchStatus, CatchupEventType,
     DEFAULT_CATCHUP_EVENT_TYPES, VALID_CATCHUP_TOUCH_MODES, VALID_CATCHUP_MESSAGE_SOURCES,
     CATCHUP_TOUCHES_MIN, CATCHUP_TOUCHES_MAX, CATCHUP_TOUCHES_MAX_STANDARD,
@@ -2053,7 +2053,8 @@ def update_catchup_touch_endpoint(request: UpdateCatchupTouchRequest) -> Respons
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
-    if get_catchup_touch_user_id(request.touch_id) != user_id:
+    touch = get_catchup_touch(request.touch_id)
+    if not touch or touch.get("user_id") != user_id:
         raise HTTPException(status_code=404, detail="Catch-up touch not found")
     action_map = {"approve": CatchupTouchStatus.APPROVED, "cancel": CatchupTouchStatus.CANCELED}
     if request.action is not None and request.action not in action_map:
@@ -2062,6 +2063,12 @@ def update_catchup_touch_endpoint(request: UpdateCatchupTouchRequest) -> Respons
     status = action_map.get(request.action)
     if status is None and all(v is None for v in (request.message, request.person_name)):
         raise HTTPException(status_code=422, detail="Nothing to update — provide at least one field or an action")
+    if request.message is not None and not request.message.strip():
+        raise HTTPException(status_code=422, detail="Message cannot be empty")
+    # Approving is what queues the send, and send_catchup_touch turns a blank message into a permanent
+    # SKIPPED — so an approval must always land on a real message, saved now or already stored.
+    if status == CatchupTouchStatus.APPROVED and not (request.message or touch.get("message") or "").strip():
+        raise HTTPException(status_code=422, detail="Add a message before approving this catch-up touch")
     if not update_catchup_touch(request.touch_id, message=request.message,
                                 person_name=request.person_name, status=status):
         raise HTTPException(status_code=500, detail="Could not update catch-up touch")

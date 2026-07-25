@@ -52,11 +52,17 @@ class TestListTouches:
         assert resp.status_code == 401
 
 
+def _touch(**kw):
+    base = {"id": 3, "user_id": _U, "message": "Congrats Jane!", "status": "pending"}
+    base.update(kw)
+    return base
+
+
 class TestUpdateTouch:
     def test_approve_maps_to_approved_status(self, client):
         from cqc_lem.utilities.db import CatchupTouchStatus
         with patch(f"{_M}.get_session_user_id", return_value=_U), \
-             patch(f"{_M}.get_catchup_touch_user_id", return_value=_U), \
+             patch(f"{_M}.get_catchup_touch", return_value=_touch()), \
              patch(f"{_M}.update_catchup_touch", return_value=True) as upd:
             resp = client.put("/api/catchup/touch",
                               json={"session_token": _S, "touch_id": 3, "action": "approve"})
@@ -65,7 +71,7 @@ class TestUpdateTouch:
 
     def test_edit_message_without_action(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_U), \
-             patch(f"{_M}.get_catchup_touch_user_id", return_value=_U), \
+             patch(f"{_M}.get_catchup_touch", return_value=_touch()), \
              patch(f"{_M}.update_catchup_touch", return_value=True) as upd:
             resp = client.put("/api/catchup/touch",
                               json={"session_token": _S, "touch_id": 3, "message": "Congrats!"})
@@ -73,22 +79,70 @@ class TestUpdateTouch:
         assert upd.call_args.kwargs["message"] == "Congrats!"
         assert upd.call_args.kwargs["status"] is None
 
+    def test_approve_saves_the_edited_message_in_the_same_call(self, client):
+        from cqc_lem.utilities.db import CatchupTouchStatus
+        with patch(f"{_M}.get_session_user_id", return_value=_U), \
+             patch(f"{_M}.get_catchup_touch", return_value=_touch()), \
+             patch(f"{_M}.update_catchup_touch", return_value=True) as upd:
+            resp = client.put("/api/catchup/touch", json={
+                "session_token": _S, "touch_id": 3, "action": "approve", "message": "Edited congrats!"})
+        assert resp.status_code == 200
+        assert upd.call_args.kwargs["message"] == "Edited congrats!"
+        assert upd.call_args.kwargs["status"] == CatchupTouchStatus.APPROVED
+
+    @pytest.mark.parametrize("blank", ["", "   ", "\n\t "])
+    def test_blank_message_is_rejected(self, client, blank):
+        """A blank message would become a permanent SKIPPED at send time — reject it at the boundary."""
+        with patch(f"{_M}.get_session_user_id", return_value=_U), \
+             patch(f"{_M}.get_catchup_touch", return_value=_touch()), \
+             patch(f"{_M}.update_catchup_touch", return_value=True) as upd:
+            resp = client.put("/api/catchup/touch",
+                              json={"session_token": _S, "touch_id": 3, "message": blank})
+        assert resp.status_code == 422
+        upd.assert_not_called()
+
+    def test_approving_a_touch_with_no_stored_message_is_rejected(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=_U), \
+             patch(f"{_M}.get_catchup_touch", return_value=_touch(message=None)), \
+             patch(f"{_M}.update_catchup_touch", return_value=True) as upd:
+            resp = client.put("/api/catchup/touch",
+                              json={"session_token": _S, "touch_id": 3, "action": "approve"})
+        assert resp.status_code == 422
+        upd.assert_not_called()
+
+    def test_canceling_a_touch_with_no_message_is_still_allowed(self, client):
+        from cqc_lem.utilities.db import CatchupTouchStatus
+        with patch(f"{_M}.get_session_user_id", return_value=_U), \
+             patch(f"{_M}.get_catchup_touch", return_value=_touch(message=None)), \
+             patch(f"{_M}.update_catchup_touch", return_value=True) as upd:
+            resp = client.put("/api/catchup/touch",
+                              json={"session_token": _S, "touch_id": 3, "action": "cancel"})
+        assert resp.status_code == 200
+        assert upd.call_args.kwargs["status"] == CatchupTouchStatus.CANCELED
+
     def test_unknown_action_is_rejected(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_U), \
-             patch(f"{_M}.get_catchup_touch_user_id", return_value=_U):
+             patch(f"{_M}.get_catchup_touch", return_value=_touch()):
             resp = client.put("/api/catchup/touch",
                               json={"session_token": _S, "touch_id": 3, "action": "send_now"})
         assert resp.status_code == 422
 
     def test_empty_update_is_rejected(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_U), \
-             patch(f"{_M}.get_catchup_touch_user_id", return_value=_U):
+             patch(f"{_M}.get_catchup_touch", return_value=_touch()):
             resp = client.put("/api/catchup/touch", json={"session_token": _S, "touch_id": 3})
         assert resp.status_code == 422
 
     def test_another_users_touch_is_not_found(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_U), \
-             patch(f"{_M}.get_catchup_touch_user_id", return_value=99):
+             patch(f"{_M}.get_catchup_touch", return_value=_touch(user_id=99)):
+            resp = client.put("/api/catchup/touch",
+                              json={"session_token": _S, "touch_id": 3, "action": "approve"})
+        assert resp.status_code == 404
+
+    def test_missing_touch_is_not_found(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=_U), \
+             patch(f"{_M}.get_catchup_touch", return_value=None):
             resp = client.put("/api/catchup/touch",
                               json={"session_token": _S, "touch_id": 3, "action": "approve"})
         assert resp.status_code == 404
@@ -101,7 +155,7 @@ class TestUpdateTouch:
 
     def test_db_failure_is_a_500(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_U), \
-             patch(f"{_M}.get_catchup_touch_user_id", return_value=_U), \
+             patch(f"{_M}.get_catchup_touch", return_value=_touch()), \
              patch(f"{_M}.update_catchup_touch", return_value=False):
             resp = client.put("/api/catchup/touch",
                               json={"session_token": _S, "touch_id": 3, "action": "approve"})

@@ -516,7 +516,7 @@ class TestSendCatchupTouch:
             "dms": patch(f"{_RA}.count_dms_sent_today", return_value=dms_today),
             "send": patch(f"{_RA}.send_dm_now", return_value=sent),
             "upd": patch(f"{_RA}.update_catchup_touch_status"),
-            "enq": patch(f"{_RA}.enqueue_next_followup"),
+            "enq": patch(f"{_RA}._schedule_catchup_followup"),
         }
 
     def test_sends_and_marks_sent(self):
@@ -618,6 +618,49 @@ class TestSendCatchupTouch:
         send.assert_not_called()
         upd.assert_called_once_with(3, CatchupTouchStatus.SKIPPED)
         assert "no message" in out
+
+
+class TestScheduleCatchupFollowup:
+    """The row this schedules is what process_user_followups reads — and the reply check it drives is
+    the ONLY thing that routes a replying prospect into the funnel, so it has to exist even for a user
+    who never configured a step-1 template (the defaults only cover step 0)."""
+
+    def test_configured_step_one_template_runs_the_normal_sequence(self):
+        from cqc_lem.app.run_automation import _schedule_catchup_followup
+        with patch(f"{_RA}.get_dm_template", return_value={"template_text": "…", "delay_hours": 72}), \
+             patch(f"{_RA}.enqueue_next_followup") as nxt, patch(f"{_RA}.enqueue_followup") as enq:
+            _schedule_catchup_followup(1, "https://www.linkedin.com/in/jane", "Jane", "job_change")
+        nxt.assert_called_once_with(1, "https://www.linkedin.com/in/jane", "Jane", "job_change", 0)
+        enq.assert_not_called()
+
+    @pytest.mark.parametrize("event_type", ["job_change", "promotion"])
+    def test_high_value_milestone_gets_a_reply_check_without_a_template(self, event_type):
+        from datetime import datetime, timezone
+        from cqc_lem.app.run_automation import _schedule_catchup_followup, CATCHUP_REPLY_CHECK_HOURS
+        with patch(f"{_RA}.get_dm_template", return_value=None), \
+             patch(f"{_RA}.enqueue_next_followup") as nxt, patch(f"{_RA}.enqueue_followup") as enq:
+            _schedule_catchup_followup(1, "https://www.linkedin.com/in/jane", "Jane", event_type)
+        nxt.assert_not_called()
+        args = enq.call_args[0]
+        assert args[:5] == (1, "https://www.linkedin.com/in/jane", "Jane", event_type, 1)
+        hours = (args[5] - datetime.now(timezone.utc).replace(tzinfo=None)).total_seconds() / 3600
+        assert CATCHUP_REPLY_CHECK_HOURS - 1 < hours <= CATCHUP_REPLY_CHECK_HOURS
+
+    @pytest.mark.parametrize("event_type", ["work_anniversary", "birthday"])
+    def test_low_value_milestone_without_a_template_schedules_nothing(self, event_type):
+        from cqc_lem.app.run_automation import _schedule_catchup_followup
+        with patch(f"{_RA}.get_dm_template", return_value=None), \
+             patch(f"{_RA}.enqueue_next_followup") as nxt, patch(f"{_RA}.enqueue_followup") as enq:
+            _schedule_catchup_followup(1, "https://www.linkedin.com/in/jane", "Jane", event_type)
+        nxt.assert_not_called()
+        enq.assert_not_called()
+
+    def test_failure_never_propagates(self):
+        from cqc_lem.app.run_automation import _schedule_catchup_followup
+        with patch(f"{_RA}.get_dm_template", side_effect=RuntimeError("db down")), \
+             patch(f"{_RA}.log_warning") as warn:
+            _schedule_catchup_followup(1, "https://www.linkedin.com/in/jane", "Jane", "job_change")
+        warn.assert_called_once()
 
 
 class TestRouteRepliedCatchupToFunnel:

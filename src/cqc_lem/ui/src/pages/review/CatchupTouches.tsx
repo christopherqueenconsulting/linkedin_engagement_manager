@@ -73,10 +73,17 @@ export default function CatchupTouches({ userTimezone }: { userTimezone: string 
     onError: () => flash(false, 'Could not save the message.'),
   })
 
+  // Approving sends, so it carries the textarea's current value — otherwise an edit the user never
+  // clicked "Save message" on would be silently dropped and the OLD draft would go out.
   const actionMutation = useMutation({
-    mutationFn: (v: { id: number; action: 'approve' | 'cancel' }) =>
-      api.put('/catchup/touch', { session_token: sessionToken, touch_id: v.id, action: v.action }),
-    onSuccess: () => invalidate(),
+    mutationFn: (v: { id: number; action: 'approve' | 'cancel'; message?: string }) =>
+      api.put('/catchup/touch', {
+        session_token: sessionToken, touch_id: v.id, action: v.action,
+        ...(v.message !== undefined ? { message: v.message } : {}),
+      }),
+    onSuccess: (_r, v) => {
+      invalidate(); setEdits((e) => { const n = { ...e }; delete n[v.id]; return n })
+    },
     onError: () => flash(false, 'Could not update this touch.'),
   })
 
@@ -153,8 +160,10 @@ export default function CatchupTouches({ userTimezone }: { userTimezone: string 
                       Save message
                     </button>
                     {['pending', 'failed'].includes(t.status) && (
-                      <button onClick={() => actionMutation.mutate({ id: t.id, action: 'approve' })}
-                        disabled={actionMutation.isPending}
+                      <button
+                        onClick={() => actionMutation.mutate({ id: t.id, action: 'approve', message: messageValue.trim() })}
+                        disabled={actionMutation.isPending || !messageValue.trim()}
+                        title={!messageValue.trim() ? 'Write a message before approving' : undefined}
                         className="px-3 py-1 bg-green-600 text-white rounded text-xs font-semibold hover:bg-green-700 disabled:opacity-50">
                         {t.status === 'pending' ? 'Approve & send' : 'Retry'}
                       </button>

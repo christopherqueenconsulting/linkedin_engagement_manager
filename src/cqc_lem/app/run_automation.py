@@ -4261,6 +4261,9 @@ _CATCHUP_CLASSIFIERS = [
 _CATCHUP_ANNUAL_EVENTS = ("work_anniversary", "birthday")
 # The milestone types worth nurturing toward a real BD conversation once they reply.
 _CATCHUP_HIGH_VALUE_EVENTS = ("job_change", "promotion")
+# How long after a high-value congratulations we check whether they replied, when the user configured
+# no step-1 follow-up template of their own. Long enough that a same-day reply has landed.
+CATCHUP_REPLY_CHECK_HOURS = int(os.getenv("CATCHUP_REPLY_CHECK_HOURS", "48"))
 
 
 def _normalize_profile_url(url: str) -> str:
@@ -4404,8 +4407,10 @@ def _dismiss_catchup_composer(driver: WebDriver) -> None:
                 return
         ActionChains(driver).send_keys(Keys.ESCAPE).perform()
     except (StaleElementReferenceException, NoSuchElementException, ElementNotInteractableException,
-            WebDriverException):
-        pass
+            WebDriverException) as e:
+        # Nothing to recover: the overlay is already gone or unreachable, and the very next action is
+        # a fresh driver.get() of the catch-up feed. Logged only, so a dismiss miss never fails a scan.
+        log_warning("Could not dismiss the catch-up composer", exc=e, action_type="catchup")
 
 
 def _scrape_catchup_moments(driver: WebDriver, max_moments: int = 40, user_id: int = None,
@@ -4606,8 +4611,29 @@ def send_catchup_touch(self, touch_id: int):
     update_catchup_touch_status(touch_id, CatchupTouchStatus.SENT if sent else CatchupTouchStatus.FAILED)
     if sent:
         first_name = (touch.get("person_name") or "").strip().split(" ")[0] or "there"
-        enqueue_next_followup(user_id, touch["profile_url"], first_name, str(touch["event_type"]), 0)
+        _schedule_catchup_followup(user_id, touch["profile_url"], first_name, str(touch["event_type"]))
     return f"Catch-up touch {touch_id} -> {'sent' if sent else 'failed'}"
+
+
+def _schedule_catchup_followup(user_id: int, profile_url: str, first_name: str, event_type: str) -> None:
+    """Queue the dm_followups row that process_user_followups works off after a congratulations goes out.
+
+    When the user configured a step-1 template this is the normal follow-up sequence. When they didn't
+    — the out-of-the-box case, since the catch-up defaults only cover step 0 — a high-value milestone
+    STILL needs the row, because the reply check it drives is what routes a replying prospect into the
+    outreach funnel (#482, step 5). With no template build_dm_from_template returns None, so that row
+    only ever checks for a reply and is then stopped; it can never send an extra DM."""
+    try:
+        if get_dm_template(user_id, event_type, 1):
+            enqueue_next_followup(user_id, profile_url, first_name, event_type, 0)
+            return
+        if event_type not in _CATCHUP_HIGH_VALUE_EVENTS:
+            return
+        due = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=CATCHUP_REPLY_CHECK_HOURS)
+        enqueue_followup(user_id, profile_url, first_name, event_type, 1, due)
+    except Exception as e:
+        log_warning("Could not schedule the catch-up reply check", exc=e, user_id=user_id,
+                    action_type="catchup")
 
 
 def _route_replied_catchup_to_funnel(user_id: int, followup: dict) -> None:
