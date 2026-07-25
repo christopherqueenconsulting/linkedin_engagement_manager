@@ -6651,16 +6651,23 @@ def get_feedback_reporters_for_issue(github_issue_number: int) -> list:
 def mark_feedback_resolved_for_issue(github_issue_number: int) -> int:
     """Close the loop on a shipped cluster: every still-open report behind this issue becomes
     `resolved`. Dismissed rows are left alone (they were never part of the fix). Returns how many
-    rows moved."""
+    rows moved.
+
+    Uses the SAME self-join as `get_feedback_reporters_for_issue`, so a report attached to the seed
+    by `cluster_id` before the issue number propagated is resolved too — otherwise the users we
+    notify and the rows we close would drift apart."""
     if not github_issue_number:
         return 0
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
         cursor.execute(
-            "UPDATE feedback SET status = %s "
-            "WHERE github_issue_number = %s AND status NOT IN (%s, %s)",
-            (str(FeedbackStatus.RESOLVED), int(github_issue_number),
+            "UPDATE feedback f "
+            "LEFT JOIN feedback s ON s.id = f.cluster_id "
+            "SET f.status = %s "
+            "WHERE (f.github_issue_number = %s OR s.github_issue_number = %s) "
+            "  AND f.status NOT IN (%s, %s)",
+            (str(FeedbackStatus.RESOLVED), int(github_issue_number), int(github_issue_number),
              str(FeedbackStatus.RESOLVED), str(FeedbackStatus.DISMISSED)))
         connection.commit()
         return cursor.rowcount or 0

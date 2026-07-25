@@ -57,8 +57,19 @@ class TestResolveCluster:
             from cqc_lem.utilities.db import mark_feedback_resolved_for_issue
             assert mark_feedback_resolved_for_issue(498) == 3
         sql, params = cur.execute.call_args[0]
-        assert "status NOT IN" in sql
-        assert params == ("resolved", 498, "resolved", "dismissed")
+        assert "f.status NOT IN" in sql
+        assert params == ("resolved", 498, 498, "resolved", "dismissed")
+
+    def test_resolves_cluster_attached_rows_the_same_way_reporters_are_mapped(self):
+        """The UPDATE must span the same self-join as get_feedback_reporters_for_issue, or a row
+        attached by cluster_id before the issue number propagated stays open forever."""
+        conn, cur = _conn(rowcount=2)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import mark_feedback_resolved_for_issue
+            mark_feedback_resolved_for_issue(498)
+        sql = cur.execute.call_args[0][0]
+        assert "LEFT JOIN feedback s ON s.id = f.cluster_id" in sql
+        assert "f.github_issue_number = %s OR s.github_issue_number = %s" in sql
 
     def test_zero_on_no_issue_or_error(self):
         from cqc_lem.utilities.db import mark_feedback_resolved_for_issue

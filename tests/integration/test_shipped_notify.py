@@ -55,11 +55,14 @@ class _FakeCursor:
                     if row["user_id"] not in users:
                         users.append(row["user_id"])
             self._result = [(u,) for u in users]
-        elif s.startswith("UPDATE feedback SET status = %s WHERE github_issue_number"):
+        elif s.startswith("UPDATE feedback f LEFT JOIN feedback s ON s.id = f.cluster_id"):
             status, issue = params[0], params[1]
+            seeds = {r["id"] for r in self.store["feedback"]
+                     if r.get("github_issue_number") == issue}
             for row in self.store["feedback"]:
-                if (row.get("github_issue_number") == issue
-                        and row["status"] not in ("resolved", "dismissed")):
+                if row["status"] in ("resolved", "dismissed"):
+                    continue
+                if row.get("github_issue_number") == issue or row.get("cluster_id") in seeds:
                     row["status"] = status
                     self.rowcount += 1
         elif s.startswith("UPDATE feedback SET status=%s WHERE id=%s"):
@@ -160,7 +163,8 @@ def client():
 
 @pytest.fixture
 def store():
-    """Two reporters (4 and 7) behind cluster/issue #498, plus one anonymous report and one
+    """Two reporters (4 and 7) behind cluster/issue #498, plus one anonymous report, one report
+    attached to the seed by `cluster_id` only (the issue number never propagated to it), and one
     unrelated report that must never be notified."""
     return {
         "feedback": [
@@ -172,6 +176,8 @@ def store():
              "cluster_id": 1, "github_issue_number": 498, "source": "widget"},
             {"id": 4, "user_id": 9, "body": "unrelated carousel bug", "status": "issue_created",
              "cluster_id": 4, "github_issue_number": 601, "source": "widget"},
+            {"id": 5, "user_id": 4, "body": "comment button does nothing", "status": "clustered",
+             "cluster_id": 1, "github_issue_number": None, "source": "widget"},
         ],
         "notices": [],
         "recipients": {},
@@ -216,8 +222,10 @@ class TestShippedNotifyLoop:
         # Only the two IDENTIFIED reporters behind #498 — never the anonymous row, never user 9.
         assert sorted(_emails(store)) == ["user4@example.com", "user7@example.com"]
         assert sorted(uid for (_n, uid) in store["recipients"]) == [4, 7]
-        # The cluster is closed out; the unrelated report is untouched.
+        # The cluster is closed out — including the row attached by cluster_id only, which is the
+        # same row the reporter mapping counted; the unrelated report is untouched.
         assert [r["status"] for r in store["feedback"][:3]] == ["resolved"] * 3
+        assert store["feedback"][4]["status"] == "resolved"
         assert store["feedback"][3]["status"] == "issue_created"
 
         # A second pass over the same (overlapping) window must not re-email anyone.
@@ -237,6 +245,27 @@ class TestShippedNotifyLoop:
         assert detail["notices"] == []
         # The changelog itself is public — only the ASK is scheduled.
         assert detail["changelog"][0]["issue_number"] == 498
+
+    def test_an_ack_inside_the_delay_cannot_burn_the_notice(self, client, store):
+        """The ack endpoint applies the SAME delay gate as the GET — otherwise a client could ack
+        (and CSAT) a notice it was never shown, and the notice would never surface afterwards."""
+        _run_pass(store)
+        store["recipients"][(1, 4)]["notified_at"] = datetime.now()  # notified just now
+
+        with patch.dict("os.environ", {"FEEDBACK_FIX_CSAT_DELAY_HOURS": "24"}):
+            ack = _call(client, store, "post", "/api/shipped/ack", json={
+                "session_token": "sess", "notice_id": 1, "resolved": True})
+        assert ack.status_code == 404
+        assert store["recipients"][(1, 4)]["seen_at"] is None
+
+        # Once the delay has elapsed the very same notice is surfaced and ackable.
+        store["recipients"][(1, 4)]["notified_at"] = datetime.now() - timedelta(hours=30)
+        with patch.dict("os.environ", {"FEEDBACK_FIX_CSAT_DELAY_HOURS": "24"}):
+            detail = _call(client, store, "get",
+                           "/api/user/shipped?session_token=sess").json()["detail"]
+            assert detail["notices"][0]["id"] == 1
+            assert _call(client, store, "post", "/api/shipped/ack", json={
+                "session_token": "sess", "notice_id": 1, "resolved": True}).status_code == 200
 
     def test_a_not_fixed_answer_re_enters_the_auto_work_loop(self, client, store):
         _run_pass(store)

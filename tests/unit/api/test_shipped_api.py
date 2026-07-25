@@ -63,8 +63,9 @@ class TestShippedNoticesEndpoint:
 class TestAckEndpoint:
     def test_records_the_micro_csat_and_marks_the_notice_seen(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=42), \
-             patch(f"{_DB}.get_unseen_shipped_notices", return_value=[_NOTICE]), \
+             patch(f"{_DB}.get_unseen_shipped_notices", return_value=[_NOTICE]) as unseen, \
              patch(f"{_DB}.mark_shipped_notice_seen", return_value=True) as seen, \
+             patch("cqc_lem.utilities.feedback.shipped.fix_csat_delay_hours", return_value=24), \
              patch(f"{_S}.record_fix_csat_response", return_value=77) as record:
             resp = client.post("/api/shipped/ack", json={
                 "session_token": "tok", "notice_id": 11, "resolved": False,
@@ -74,6 +75,23 @@ class TestAckEndpoint:
         seen.assert_called_once_with(11, 42)
         assert record.call_args.args == (42, 498, False)
         assert record.call_args.kwargs["comment"] == "still broken"
+        # Same delay gate as the GET — an ack can't outrun the notice it acknowledges.
+        assert unseen.call_args.kwargs["delay_hours"] == 24
+
+    def test_a_notice_still_inside_the_csat_delay_is_not_ackable(self, client):
+        """The delay gate is applied on ack too: acking early would consume the notice (and its
+        micro-CSAT) before the user was ever shown it."""
+        with patch(f"{_M}.get_session_user_id", return_value=42), \
+             patch(f"{_DB}.get_unseen_shipped_notices", return_value=[]) as unseen, \
+             patch(f"{_DB}.mark_shipped_notice_seen") as seen, \
+             patch("cqc_lem.utilities.feedback.shipped.fix_csat_delay_hours", return_value=24), \
+             patch(f"{_S}.record_fix_csat_response") as record:
+            resp = client.post("/api/shipped/ack", json={
+                "session_token": "tok", "notice_id": 11, "resolved": True})
+        assert resp.status_code == 404
+        assert unseen.call_args.kwargs["delay_hours"] == 24
+        seen.assert_not_called()
+        record.assert_not_called()
 
     def test_dismissal_without_an_answer_records_no_feedback(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=42), \

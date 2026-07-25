@@ -918,9 +918,13 @@ def ack_shipped_notice_endpoint(request: ShippedNoticeAckRequest) -> ResponseMod
         raise HTTPException(status_code=401, detail="Invalid or expired session")
 
     from cqc_lem.utilities.db import get_unseen_shipped_notices, mark_shipped_notice_seen
+    from cqc_lem.utilities.feedback.shipped import fix_csat_delay_hours
     from cqc_lem.utilities.surveys import record_fix_csat_response
-    # Ownership check: a notice is only ackable by a reporter it was actually addressed to.
-    notice = next((n for n in get_unseen_shipped_notices(user_id, limit=50)
+    # Ownership check: a notice is only ackable by a reporter it was actually addressed to, and only
+    # once it is actually surfacable — same delay gate as GET /api/user/shipped, so an early ack
+    # can't burn a notice (and its micro-CSAT) before the user has been shown it.
+    notice = next((n for n in get_unseen_shipped_notices(
+                       user_id, delay_hours=fix_csat_delay_hours(), limit=50)
                    if n.get("id") == request.notice_id), None)
     if not notice:
         raise HTTPException(status_code=404, detail="Notice not found or already acknowledged")
