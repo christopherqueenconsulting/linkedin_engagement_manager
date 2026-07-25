@@ -308,6 +308,44 @@ def track_margin_report(report: dict) -> None:
     )
 
 
+def track_cost_alert(alert: dict, day: Optional[str] = None) -> None:
+    """Emit one budget/anomaly alert (plan §E.2) as a `cost_alert` event so a breach is queryable
+    next to the spend it came from, and a PostHog alert can page off it. Per-user alerts are keyed
+    to that user's distinct_id; system-wide ones to "system"."""
+    alert = dict(alert or {})
+    posthog.capture(
+        distinct_id=str(alert.get("user_id") or "system"),
+        event="cost_alert",
+        properties={"date": day, **alert},
+    )
+
+
+def posthog_hogql_query(sql: str, timeout: int = 30) -> Optional[list]:
+    """Run a HogQL query against the PostHog query API and return its result ROWS, or None when the
+    read path isn't configured (no personal API key / project) or the call fails. None means
+    "unknown" — never zero — so a check reading it reports itself skipped instead of alerting on a
+    missing analytics plane. Reads only; the write/provision path lives in scripts/posthog_dashboards.py."""
+    api_key = os.getenv("POSTHOG_PERSONAL_API_KEY", "")
+    project_id = os.getenv("POSTHOG_PROJECT_ID", "")
+    if not api_key or not project_id:
+        return None
+    host = os.getenv("POSTHOG_APP_HOST", "https://us.posthog.com").rstrip("/")
+    try:
+        import requests
+        response = requests.post(
+            f"{host}/api/projects/{project_id}/query/",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={"query": {"kind": "HogQLQuery", "query": sql}},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json().get("results") or []
+    except Exception as e:
+        from cqc_lem.utilities.logger import log_warning
+        log_warning("PostHog HogQL query failed", exc=e, api_provider="posthog")
+        return None
+
+
 def track_task(
     task_name: str,
     duration_ms: int,

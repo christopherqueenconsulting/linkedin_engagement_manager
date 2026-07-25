@@ -6279,6 +6279,28 @@ def get_user_cost(user_id: int, start_date, end_date) -> dict:
     return get_cost_rollup(start_date, end_date, group_by="category", user_id=user_id)
 
 
+def get_daily_cost_totals(start_date, end_date) -> dict:
+    """Total spend per DAY over [start_date, end_date] → `{'YYYY-MM-DD': usd}` — the trailing series
+    the §E.2 spend-anomaly check scores today against. A day with no ledger rows is ABSENT rather
+    than 0.0 so a ledger that only started capturing mid-window can't manufacture a zero baseline
+    (and then flag the first real day of spend as an anomaly)."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT incurred_on, COALESCE(SUM(usd), 0) FROM cost_ledger "
+            "WHERE incurred_on BETWEEN %s AND %s GROUP BY incurred_on ORDER BY incurred_on",
+            (start_date, end_date),
+        )
+        return {day.isoformat() if hasattr(day, "isoformat") else str(day): float(usd or 0)
+                for day, usd in cursor.fetchall()}
+    except mysql.connector.Error:
+        return {}  # table not created yet (or unreadable) — caller reports the check as skipped
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_margin_users() -> list:
     """Users the margin report covers: everyone on an active/past-due subscription or an open trial.
     Trials are included (tier `free_trial`, $0 MRR) so the cost they incur still lands in system

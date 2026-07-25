@@ -1152,5 +1152,21 @@ def auto_weekly_margin_report(self, days: int = 7):
             f"(emailed={result['emailed']}, tracked={result['tracked']})")
 
 
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_daily_cost_alerts(self, days: int = 7):
+    """Daily budget/anomaly guardrails (issue #493, plan §E.2): per-user cost ceiling, system
+    gross-margin floor, spend anomaly (μ+Nσ / absolute budget), LLM cache-hit collapse and
+    unattributed spend. Evaluates the last COMPLETE UTC day and delivers only actual breaches
+    (owner email + a PostHog `cost_alert` event each)."""
+    from cqc_lem.utilities.cost_alerts import collect_cost_alert_report, send_cost_alerts
+
+    report = collect_cost_alert_report(days=days)
+    result = send_cost_alerts(report)
+    return (f"Cost alerts {report.get('date')}: {result['alerts']} alert(s), "
+            f"{report.get('critical_count')} critical, "
+            f"skipped {report.get('skipped_checks')} "
+            f"(emailed={result['emailed']}, tracked={result['tracked']})")
+
+
 if __name__ == "__main__":
     print("Process finished")

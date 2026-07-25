@@ -285,7 +285,7 @@ could degrade output quality is gated by the quality signals (engagement_rate,
 | Cadence | Job | Output |
 |---|---|---|
 | **Daily** | Extend `snapshot.sh` with a cost+margin block (`cost_by_feature`, `spend_usd`, est. `mrr`, `contribution_margin`) appended to `metrics.jsonl` | trend line for cost & margin next to engagement |
-| **Daily** | Spend anomaly detection (spend vs. trailing-7-day mean/σ) | alert if today's spend > μ+3σ or a per-user ceiling is breached |
+| **Daily** | Spend anomaly detection (spend vs. trailing-7-day mean/σ) — *shipped, issue #493: Celery beat `daily-cost-alerts` → `run_scheduler.auto_daily_cost_alerts`, see §E.2* | alert if the last complete day's spend > μ+3σ or a per-user ceiling is breached |
 | **Weekly** | Margin report (per-user CM, system gross margin, cohort engagement lift, LTV:CAC) | posted to owner (email/PostHog dashboard) |
 | **Weekly** | Auto-optimization recommender: scans cost×quality by feature×tier, emits ranked recommendations; for **safe** changes (config toggle, cache extension) the agent pipeline can open an `agent:ready` PR; anything touching routing/quality is filed **`risk:product-decision`** for a human call | recommendations + optional auto-PRs |
 
@@ -350,12 +350,29 @@ exact §C.1 figures from the durable ledger.
 
 ### E.2 Alerts (thresholds)
 
-- **Per-user cost ceiling breached** (variable cost > X% of tier MRR).
-- **Gross-margin floor breached** (system gross_margin% < target).
-- **Spend anomaly** (daily spend > μ+3σ of trailing 7 days, or > absolute daily budget).
-- **Cache-hit-rate collapse** (LLM cache-hit% drops → cost spike warning).
-- **Unattributed spend** (share of `llm_call` events with `user_id="system"` or null `feature`
-  rises above a threshold → instrumentation regression).
+**Shipped (issue #493).** `src/cqc_lem/utilities/cost_alerts.py` holds the pure, unit-tested
+evaluators plus the ledger/PostHog collectors and delivery; Celery beat `daily-cost-alerts` →
+`run_scheduler.auto_daily_cost_alerts` runs them **daily at 13:00 UTC over the last COMPLETE UTC
+day** (a partial today would read as a spend collapse). Also `python -m cqc_lem.utilities.cost_alerts
+[--json] [--email] [--day YYYY-MM-DD]` — exit 2 signals a breach.
+
+| Alert | Source | Fires when | Threshold env var (default) |
+|---|---|---|---|
+| **Per-user cost ceiling** | `cost_ledger` via the §D.2 margin report | a user's variable+semi-variable cost > X% of their tier MRR (critical when it exceeds MRR outright — that user is margin-negative) | `COST_ALERT_USER_COST_PCT` (0.25) |
+| **Gross-margin floor** | same | system `gross_margin%` < target (critical when negative) | `COST_ALERT_MARGIN_FLOOR` (0.70) |
+| **Spend anomaly** | `db.get_daily_cost_totals` | a day's spend > μ+Nσ of the trailing 7 days, and/or > an absolute daily budget (critical) | `COST_ALERT_SPEND_SIGMA` (3), `COST_ALERT_DAILY_BUDGET_USD` (0 = off), `COST_ALERT_MIN_SPEND_USD` (1, noise floor) |
+| **Cache-hit collapse** | PostHog `llm_call` (`cached`), read via `observability.posthog_hogql_query` | cache-hit% falls by X% vs its trailing call-weighted baseline, or under an optional absolute floor | `COST_ALERT_CACHE_DROP_PCT` (0.5), `COST_ALERT_CACHE_HIT_FLOOR` (0 = off), `COST_ALERT_CACHE_MIN_CALLS` (50) |
+| **Unattributed spend** | `cost_ledger` rollups | share of spend with no `user_id` **or** no/`system` `feature` rises above a threshold | `COST_ALERT_UNATTRIBUTED_PCT` (0.10) |
+
+Every check reports `ok`, `alert` or **`skipped` with a reason** — an absent `cost_ledger`, a day
+with no rows, too little trailing data, or an unconfigured PostHog read path is unknown data, never
+a $0 "all clear" and never a false alarm. Days missing from the ledger are NOT counted as $0 spend,
+so a ledger that starts capturing mid-window can't flag its first real day as a spike.
+
+Delivery reuses the margin report's path: an owner email (only when something actually fired — a
+daily "all clear" trains people to ignore it) to `COST_ALERT_EMAIL`, falling back to
+`MARGIN_REPORT_EMAIL`; one PostHog `cost_alert` event per alert; and a structured log line
+(`log_error` for critical, which the logger forwards to PostHog on its own).
 
 ### E.3 KPI tree (north-star: **System Gross Margin $ at target margin %**)
 
@@ -372,7 +389,8 @@ Quality guardrail (must hold): cohort engagement_rate · median authenticity_sco
 
 ### E.4 Cadence summary
 
-- **Daily:** engagement snapshot (exists) **+ new cost/margin block**; spend-anomaly check.
+- **Daily:** engagement snapshot (exists) **+ new cost/margin block**; the §E.2 alert sweep
+  (spend anomaly, per-user ceiling, margin floor, cache-hit collapse, unattributed spend).
 - **Weekly:** margin report + auto-optimization recommendations.
 - **Monthly:** proxy/infra accrual; cohort LTV:CAC review; target-margin recalibration.
 
@@ -399,7 +417,8 @@ Quality guardrail (must hold): cohort engagement_rate · median authenticity_sco
    *(Shipped, issue #491 — see the table at the end of §D.2. Exact spend needs step 2's ledger.)*
 4. **PostHog dashboards** (Cost Explorer, Margin by Cohort, Engagement Lift, Scorecard).
    *(Shipped, issue #492 — links + the `scripts/posthog_dashboards.py` provisioner in §E.1.)*
-5. **Alerts** — per-user ceiling, gross-margin floor, spend anomaly, unattributed-spend.
+5. **Alerts** — per-user ceiling, gross-margin floor, spend anomaly, cache-hit collapse,
+   unattributed-spend. *(Shipped, issue #493 — the table + thresholds in §E.2.)*
 6. **Cost-aware optimization loop** extending `complexity_router.py` (`risk:product-decision`).
 
 Each is filed as an `agent:ready` GitHub issue referencing this doc. Anything that can auto-degrade
