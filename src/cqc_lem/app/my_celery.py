@@ -253,6 +253,12 @@ app.conf.update(
             # sync so tier MRR is current, and after the weekly margin report so they never overlap.
             'schedule': crontab(hour='13', minute='0')
         },
+        'weekly-cost-routing': {
+            'task': 'cqc_lem.app.run_scheduler.auto_weekly_cost_routing',
+            # Mondays 14:00 UTC — after the margin report (12:00) and the alert sweep (13:00), so a
+            # routing change is judged on the same week's cost/quality picture those just reported.
+            'schedule': crontab(hour='14', minute='0', day_of_week='monday')
+        },
 
     }
 )

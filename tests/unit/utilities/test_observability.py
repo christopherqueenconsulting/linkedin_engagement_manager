@@ -530,6 +530,38 @@ class TestTrackCostAlert:
         assert mock_ph.capture.call_args[1]["distinct_id"] == "system"
 
 
+class TestTrackRoutingPolicy:
+    def _report(self):
+        return {"date": "2026-08-01", "window_days": 28, "observations": 42,
+                "policy": {"enabled": True, "buckets": {
+                    "content:lem-complex": {"state": "experiment", "to_tier": "lem-medium",
+                                            "cohort_pct": 0.1}}},
+                "changes": [{"bucket": "content:lem-complex", "action": "rollback",
+                             "reason": "engagement fell", "comparison": {"treatment": {"n": 40}}}],
+                "recommendations": [{"feature": "comment", "recommendation": "human call"}]}
+
+    def test_captures_the_routing_decision(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_routing_policy
+            track_routing_policy(self._report())
+
+        kwargs = mock_ph.capture.call_args[1]
+        props = kwargs["properties"]
+        assert kwargs["event"] == "routing_policy" and kwargs["distinct_id"] == "system"
+        assert props["enabled"] is True and props["observations"] == 42
+        assert props["change_count"] == 1 and props["rollback_count"] == 1
+        assert props["buckets"][0] == {"bucket": "content:lem-complex", "state": "experiment",
+                                       "to_tier": "lem-medium", "cohort_pct": 0.1}
+        # The full arm statistics stay out of the event body — the verdict is what a tile needs.
+        assert "comparison" not in props["changes"][0]
+
+    def test_empty_report_does_not_raise(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_routing_policy
+            track_routing_policy({})
+        assert mock_ph.capture.call_args[1]["properties"]["change_count"] == 0
+
+
 class TestPostHogHogqlQuery:
     def test_returns_none_when_the_read_path_is_not_configured(self):
         with patch.dict("os.environ", {"POSTHOG_PERSONAL_API_KEY": "", "POSTHOG_PROJECT_ID": ""},

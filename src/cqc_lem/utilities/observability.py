@@ -491,6 +491,34 @@ def track_margin_report(report: dict) -> None:
     )
 
 
+def track_routing_policy(report: dict) -> None:
+    """Emit the weekly cost-aware routing decision (plan §D.1(1)) as one `routing_policy` event, so
+    a down-route — and especially an auto-rollback — is queryable next to the cost it was meant to
+    save and the engagement it was gated on. The full comparison stats stay out of the event body;
+    the per-bucket verdict and cohort are what a dashboard needs."""
+    report = dict(report or {})
+    policy = dict(report.get("policy") or {})
+    buckets = policy.get("buckets") or {}
+    posthog.capture(
+        distinct_id="system",
+        event="routing_policy",
+        properties={
+            "date": report.get("date"),
+            "enabled": policy.get("enabled"),
+            "window_days": report.get("window_days"),
+            "observations": report.get("observations"),
+            "change_count": len(report.get("changes") or []),
+            "rollback_count": sum(1 for c in report.get("changes") or []
+                                  if c.get("action") == "rollback"),
+            "changes": [{"bucket": c.get("bucket"), "action": c.get("action"),
+                         "reason": c.get("reason")} for c in report.get("changes") or []],
+            "buckets": [{"bucket": key, "state": b.get("state"), "to_tier": b.get("to_tier"),
+                         "cohort_pct": b.get("cohort_pct")} for key, b in buckets.items()],
+            "recommendations": report.get("recommendations") or [],
+        },
+    )
+
+
 def track_cost_alert(alert: dict, day: Optional[str] = None) -> None:
     """Emit one budget/anomaly alert (plan §E.2) as a `cost_alert` event so a breach is queryable
     next to the spend it came from, and a PostHog alert can page off it. Per-user alerts are keyed
