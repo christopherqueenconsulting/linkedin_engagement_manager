@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.76.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.75.0...v0.76.0) (2026-07-25)
+
+
+### Features
+
+* **observability:** PostHog cost/margin dashboards as code (closes [#492](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/492)) ([61cbeb7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/61cbeb7236a45ae65b3bb6a510bd615423d581a0))
+* **observability:** PostHog cost/margin dashboards as code (closes [#492](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/492)) ([9a87747](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9a877474be6ac40c4c4a6dfc58e23e45a1e540b4))
+
+
+### Bug Fixes
+
+* **observability:** address Copilot review threads on the dashboards script ([ae8d8ef](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ae8d8efefb3bc4aa40100a00686db634a4c836b8))
+
 ## [0.75.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.74.0...v0.75.0) (2026-07-25)
 
 
