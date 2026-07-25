@@ -85,7 +85,11 @@ from cqc_lem.utilities.env_constants import LI_CLIENT_ID, LI_CLIENT_SECRET, LI_R
 import requests
 from cqc_lem.utilities.logger import myprint, log_warning, log_info
 from cqc_lem.utilities.mime_type_helper import get_file_mime_type
-from cqc_lem.utilities.observability import track_api_call
+from cqc_lem.utilities.observability import (
+    track_api_call, track_funnel_event, anonymous_distinct_id,
+    FUNNEL_SIGNUP_STARTED, FUNNEL_SIGNUP_COMPLETED, FUNNEL_TRIAL_STARTED,
+    FUNNEL_SUBSCRIPTION_STARTED, FUNNEL_CHURNED,
+)
 from cqc_lem.utilities.utils import get_file_extension_from_filepath
 from fastapi import FastAPI, HTTPException, Request, status, APIRouter, Header, Depends
 from fastapi import File, Form, Query, UploadFile
@@ -277,13 +281,28 @@ class UserSettingsRequest(BaseModel):
     sitemap_url: Optional[str] = None
 
 
+class FunnelAttribution(BaseModel):
+    """Where a visitor came from, captured client-side on first landing (issue #503). Every field is
+    optional — a direct visit sends none of them."""
+    utm_source: Optional[str] = None
+    utm_medium: Optional[str] = None
+    utm_campaign: Optional[str] = None
+    utm_content: Optional[str] = None
+    utm_term: Optional[str] = None
+    referrer: Optional[str] = None
+    landing_page: Optional[str] = None
+    channel: Optional[str] = None
+
+
 class AuthInitRequest(BaseModel):
     email: str
+    attribution: Optional[FunnelAttribution] = None
 
 
 class AuthVerifyRequest(BaseModel):
     email: str
     pin: str
+    attribution: Optional[FunnelAttribution] = None
 
 
 class LogoutRequest(BaseModel):
@@ -1473,6 +1492,22 @@ def get_assets(file_name: str, content_type: Optional[str] = None,
         return FileResponse(status_code=200, path=file_path, media_type=mim_type, content_disposition_type=content_type)
 
 
+def _attribution_dict(attribution: Optional[FunnelAttribution]) -> dict:
+    return attribution.model_dump(exclude_none=True) if attribution else {}
+
+
+def _track_signup_funnel(user_id: int, email: str, attribution: dict, pin_bypassed: bool) -> None:
+    """`signup_completed` + `trial_started` for an account that was just created. Both are aliased
+    onto the anonymous id `signup_started` used, so the funnel joins end to end in PostHog; the trial
+    starts at the same instant because `add_user_by_email` opens the free trial on insert."""
+    from cqc_lem.utilities.env_constants import FREE_TRIAL_DAYS
+    anon_id = anonymous_distinct_id(email)
+    track_funnel_event(FUNNEL_SIGNUP_COMPLETED, user_id=user_id, attribution=attribution,
+                       alias_from=anon_id, method="email_pin", pin_bypassed=pin_bypassed)
+    track_funnel_event(FUNNEL_TRIAL_STARTED, user_id=user_id, attribution=attribution,
+                       trial_days=FREE_TRIAL_DAYS, tier="free_trial")
+
+
 # LinkedIn OAuth initiation — builds the authorization URL and redirects user to LinkedIn
 @router.post("/auth/email/init")
 def auth_email_init(request: AuthInitRequest) -> ResponseModel:
@@ -1481,6 +1516,11 @@ def auth_email_init(request: AuthInitRequest) -> ResponseModel:
         raise HTTPException(status_code=400, detail="Email is required")
 
     user_exists = bool(get_user_id(email))
+    attribution = _attribution_dict(request.attribution)
+    if not user_exists:
+        # A known email re-authenticating is a login, not a signup — only new emails enter the funnel.
+        track_funnel_event(FUNNEL_SIGNUP_STARTED, distinct_id=anonymous_distinct_id(email),
+                           attribution=attribution, method="email_pin")
     pin = generate_pin()
     pin_hash = hash_pin(pin, email)
 
@@ -1497,6 +1537,8 @@ def auth_email_init(request: AuthInitRequest) -> ResponseModel:
         session_token = create_session(user_id)
         if not session_token:
             raise HTTPException(status_code=500, detail="Could not create session")
+        if is_new_user:
+            _track_signup_funnel(user_id, email, attribution, pin_bypassed=True)
         return ResponseModel(status_code=200, detail={
             "bypass": True,
             "session_token": session_token,
@@ -1539,6 +1581,10 @@ def auth_email_verify(request: AuthVerifyRequest) -> ResponseModel:
     session_token = create_session(user_id)
     if not session_token:
         raise HTTPException(status_code=500, detail="Could not create session")
+
+    if is_new_user:
+        _track_signup_funnel(user_id, email, _attribution_dict(request.attribution),
+                             pin_bypassed=False)
 
     return ResponseModel(
         status_code=200,
@@ -2830,6 +2876,20 @@ def billing_create_portal_session(request: PortalSessionRequest) -> ResponseMode
     return ResponseModel(status_code=200, detail={"portal_url": url})
 
 
+def _track_billing_funnel(event: str, stripe_customer_id: str, **props) -> None:
+    """Funnel event for a Stripe lifecycle webhook. The webhook carries no UTMs — PostHog holds them
+    on the person from the `$set_once` written at signup — so only the plan facts ride along here.
+    The customer→user lookup is guarded: analytics must never fail a billing webhook, because Stripe
+    would retry it and the subscription state is already committed."""
+    try:
+        user = get_user_by_stripe_customer_id(stripe_customer_id) or {}
+        track_funnel_event(event, user_id=user.get("id"),
+                           distinct_id=f"stripe_{stripe_customer_id}",
+                           stripe_customer_id=stripe_customer_id, **props)
+    except Exception as e:
+        log_warning(f"Could not track billing funnel event '{event}'", exc=e)
+
+
 @router.post("/billing/webhook")
 async def billing_webhook(request: Request) -> dict:
     payload = await request.body()
@@ -2879,6 +2939,12 @@ async def billing_webhook(request: Request) -> dict:
         update_subscription_from_stripe(
             stripe_customer_id, db_status, tier, stripe_subscription_id, period_end
         )
+        # Only `created` — `updated` fires on every plan/status change and would double-count.
+        if event_type == "customer.subscription.created":
+            _track_billing_funnel(
+                FUNNEL_SUBSCRIPTION_STARTED, stripe_customer_id, tier=tier, status=db_status,
+                stripe_subscription_id=stripe_subscription_id,
+            )
 
     elif event_type == "customer.subscription.deleted":
         stripe_customer_id = data.get("customer")
@@ -2891,6 +2957,8 @@ async def billing_webhook(request: Request) -> dict:
         update_subscription_from_stripe(
             stripe_customer_id, "cancelled", None, stripe_subscription_id
         )
+        _track_billing_funnel(FUNNEL_CHURNED, stripe_customer_id, reason="subscription_deleted",
+                              stripe_subscription_id=stripe_subscription_id)
 
     # --- Invoice / payment events (fired on every billing cycle renewal) ---
     elif event_type == "invoice.payment_succeeded":

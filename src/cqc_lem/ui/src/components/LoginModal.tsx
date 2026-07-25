@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import api from '../api/client'
+import { getAttribution } from '../utils/attribution'
 
 type Step = 'email' | 'pin'
 
@@ -18,7 +19,10 @@ export default function LoginModal() {
     setError(null)
     setLoading(true)
     try {
-      const r = await api.post('/auth/email/init', { email: email.trim().toLowerCase() })
+      const r = await api.post('/auth/email/init', {
+        email: email.trim().toLowerCase(),
+        attribution: getAttribution(),
+      })
       const detail = r.data.detail
 
       if (detail.bypass) {
@@ -42,7 +46,7 @@ export default function LoginModal() {
     setError(null)
     setLoading(true)
     try {
-      const r = await api.post('/auth/email/verify', { email, pin })
+      const r = await api.post('/auth/email/verify', { email, pin, attribution: getAttribution() })
       const { session_token, email: verifiedEmail } = r.data.detail
       login(session_token, verifiedEmail)
     } catch (err: unknown) {

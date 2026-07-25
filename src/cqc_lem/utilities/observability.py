@@ -1,4 +1,5 @@
 import contextvars
+import hashlib
 import inspect
 import json
 import os
@@ -7,6 +8,7 @@ from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from functools import wraps
 from typing import Iterator, Optional, Tuple
+from urllib.parse import urlparse
 
 import posthog
 
@@ -608,6 +610,203 @@ def track_survey_response(user_id: int, source: str, **extra) -> None:
         event="survey_response",
         properties={"source": source, **extra},
     )
+
+
+# --- Launch funnel (issue #503, docs/launch-and-marketing-plan.md §C.5 / §D.1) -------------------
+# Keep these event names STABLE — the PostHog funnel insights, the WARU north-star tile and the
+# per-channel CAC rollup all key off these exact strings.
+FUNNEL_SIGNUP_STARTED = "signup_started"
+FUNNEL_SIGNUP_COMPLETED = "signup_completed"
+FUNNEL_TRIAL_STARTED = "trial_started"
+FUNNEL_ONBOARDING_STEP_COMPLETED = "onboarding_step_completed"
+FUNNEL_ACTIVATED = "activated"
+FUNNEL_SUBSCRIPTION_STARTED = "subscription_started"
+FUNNEL_CHURNED = "churned"
+
+FUNNEL_EVENTS = (
+    FUNNEL_SIGNUP_STARTED,
+    FUNNEL_SIGNUP_COMPLETED,
+    FUNNEL_TRIAL_STARTED,
+    FUNNEL_ONBOARDING_STEP_COMPLETED,
+    FUNNEL_ACTIVATED,
+    FUNNEL_SUBSCRIPTION_STARTED,
+    FUNNEL_CHURNED,
+)
+
+# The acquisition channels every trial is attributed to (plan §C.5). Stable vocabulary — breakdowns
+# and CAC-per-channel are grouped on these values.
+CHANNEL_LINKEDIN = "linkedin"
+CHANNEL_NEWSLETTER = "newsletter"
+CHANNEL_SEO = "seo"
+CHANNEL_EMAIL = "email"
+CHANNEL_REFERRAL = "referral"
+CHANNEL_AFFILIATE = "affiliate"
+CHANNEL_PAID = "paid"
+CHANNEL_DIRECT = "direct"
+CHANNEL_OTHER = "other"
+
+CHANNELS = (
+    CHANNEL_LINKEDIN,
+    CHANNEL_NEWSLETTER,
+    CHANNEL_SEO,
+    CHANNEL_EMAIL,
+    CHANNEL_REFERRAL,
+    CHANNEL_AFFILIATE,
+    CHANNEL_PAID,
+    CHANNEL_DIRECT,
+    CHANNEL_OTHER,
+)
+
+# Client-supplied attribution is allow-listed: a funnel event's schema is ours, not the caller's.
+_ATTRIBUTION_KEYS = (
+    "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
+    "referrer", "landing_page",
+)
+_ATTRIBUTION_MAX_LEN = 255
+
+# First match wins, so order encodes precedence: a `linkedin_newsletter` source is newsletter work,
+# not generic brand-LinkedIn traffic — hence the newsletter needles come before "linkedin".
+_SOURCE_CHANNEL_RULES = (
+    ("newsletter", CHANNEL_NEWSLETTER),
+    ("substack", CHANNEL_NEWSLETTER),
+    ("beehiiv", CHANNEL_NEWSLETTER),
+    ("affiliate", CHANNEL_AFFILIATE),
+    ("partner", CHANNEL_AFFILIATE),
+    ("linkedin", CHANNEL_LINKEDIN),
+    ("google", CHANNEL_SEO),
+    ("bing", CHANNEL_SEO),
+    ("duckduckgo", CHANNEL_SEO),
+    ("referral", CHANNEL_REFERRAL),
+)
+_MEDIUM_CHANNEL_RULES = (
+    ("affiliate", CHANNEL_AFFILIATE),
+    ("newsletter", CHANNEL_NEWSLETTER),
+    ("referral", CHANNEL_REFERRAL),
+    ("email", CHANNEL_EMAIL),
+    ("organic", CHANNEL_SEO),
+    ("seo", CHANNEL_SEO),
+    ("social", CHANNEL_LINKEDIN),
+)
+_PAID_MEDIUM_NEEDLES = ("cpc", "ppc", "paid")
+
+
+def _clean_property(value) -> Optional[str]:
+    """A trimmed string for a client-supplied property, or None when it carries no signal."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text[:_ATTRIBUTION_MAX_LEN] if text else None
+
+
+def _referrer_host(referrer) -> Optional[str]:
+    """The bare host a referrer came from, or None when there's no referrer to read."""
+    text = _clean_property(referrer)
+    if not text:
+        return None
+    try:
+        host = (urlparse(text).netloc or text).lower()
+    except ValueError:
+        host = text.lower()   # malformed URL (e.g. an unterminated IPv6 host) — match on the raw value
+    return host[4:] if host.startswith("www.") else host
+
+
+def resolve_channel(attribution: Optional[dict]) -> str:
+    """The acquisition channel a visit came from, derived from UTMs then the referrer. An explicit
+    `channel` always wins (a link we built already knows) but only when it names one of `CHANNELS` —
+    a typo or an unknown value becomes `other` rather than a new bucket the CAC rollup can't group.
+    Paid mediums are checked before source so `utm_source=google&utm_medium=cpc` is paid spend, not
+    SEO. Anything with UTMs we don't recognise is `other` rather than `direct` — a tagged visit was
+    never direct."""
+    data = attribution if isinstance(attribution, dict) else {}
+    explicit = _clean_property(data.get("channel"))
+    if explicit:
+        normalized = explicit.lower()
+        return normalized if normalized in CHANNELS else CHANNEL_OTHER
+
+    source = (_clean_property(data.get("utm_source")) or "").lower()
+    medium = (_clean_property(data.get("utm_medium")) or "").lower()
+    if any(needle in medium for needle in _PAID_MEDIUM_NEEDLES):
+        return CHANNEL_PAID
+    for needle, channel in _SOURCE_CHANNEL_RULES:
+        if needle in source:
+            return channel
+    for needle, channel in _MEDIUM_CHANNEL_RULES:
+        if needle in medium:
+            return channel
+    if source or medium or _clean_property(data.get("utm_campaign")):
+        return CHANNEL_OTHER
+
+    host = _referrer_host(data.get("referrer"))
+    if host:
+        for needle, channel in _SOURCE_CHANNEL_RULES:
+            if needle in host:
+                return channel
+        return CHANNEL_REFERRAL
+    return CHANNEL_DIRECT
+
+
+def normalize_attribution(attribution: Optional[dict]) -> dict:
+    """The allow-listed source/UTM properties for a funnel event plus the derived `channel`. Unknown
+    keys are dropped so a client can't widen the event schema, and `channel` is always present so a
+    PostHog breakdown never has an ungrouped bucket."""
+    data = attribution if isinstance(attribution, dict) else {}
+    props = {}
+    for key in _ATTRIBUTION_KEYS:
+        value = _clean_property(data.get(key))
+        if value:
+            props[key] = value
+    props["channel"] = resolve_channel(data)
+    return props
+
+
+def anonymous_distinct_id(email: str) -> str:
+    """Stable pseudonymous distinct_id for a visitor who has no user row yet, so `signup_started`
+    can be aliased onto the real user id once the account exists. The email is hashed — the funnel
+    needs a stable key, not the address itself."""
+    normalized = (email or "").strip().lower()
+    if not normalized:
+        return "anonymous"
+    return "anon_" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:32]
+
+
+def track_funnel_event(
+    event: str,
+    user_id: Optional[int] = None,
+    distinct_id: Optional[str] = None,
+    attribution: Optional[dict] = None,
+    alias_from: Optional[str] = None,
+    **extra,
+) -> None:
+    """Emit one acquisition → activation → monetization funnel event (plan §C.5) with its source/UTM
+    and `channel` properties.
+
+    First-touch attribution is ALSO written onto the PostHog person via `$set_once`, so the later
+    events that cannot know the UTMs — `subscription_started` from a Stripe webhook, `churned` — stay
+    attributable to the channel that brought the user in. `alias_from` merges the pre-signup
+    anonymous person into the identified one so the funnel joins end to end.
+
+    Never raises: analytics must not fail a signup or a billing webhook."""
+    from cqc_lem.utilities.logger import log_warning
+    try:
+        if event not in FUNNEL_EVENTS:
+            # Emit anyway — losing the event is worse than an extra name — but make the typo visible.
+            log_warning(f"Unknown funnel event '{event}' — emitting anyway")
+        attribution_props = normalize_attribution(attribution)
+        resolved_id = str(user_id) if user_id is not None else (distinct_id or "anonymous")
+        if alias_from and alias_from != resolved_id:
+            posthog.alias(previous_id=alias_from, distinct_id=resolved_id)
+        posthog.capture(
+            distinct_id=resolved_id,
+            event=event,
+            properties={
+                **attribution_props,
+                "user_id": user_id,
+                "$set_once": {f"initial_{key}": value for key, value in attribution_props.items()},
+                **extra,
+            },
+        )
+    except Exception as e:
+        log_warning(f"Could not track funnel event '{event}'", exc=e, user_id=user_id)
 
 
 def track_task(

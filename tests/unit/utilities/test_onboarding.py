@@ -172,6 +172,25 @@ class TestSyncOnboardingState:
         assert marked == [OnboardingStep.VOICE_SET, OnboardingStep.CAPS_ENABLED]
         assert track.call_count == 2
 
+    def test_each_step_also_emits_the_funnel_event_and_activation(self):
+        from cqc_lem.utilities.db import OnboardingStep
+        state = {"started_at": NOW - timedelta(hours=5)}
+        with patch(f"{_ON}.ensure_onboarding_state", return_value=True), \
+             patch(f"{_ON}.get_onboarding_state", return_value=state), \
+             patch(f"{_ON}.evaluate_steps", return_value={
+                 OnboardingStep.LINKEDIN_CONNECTED: True, OnboardingStep.ACTIVATED: True}), \
+             patch(f"{_ON}.mark_onboarding_step", return_value=True), \
+             patch("cqc_lem.utilities.observability.track_onboarding_step"), \
+             patch("cqc_lem.utilities.observability.track_funnel_event") as funnel:
+            from cqc_lem.utilities.onboarding import sync_onboarding_state
+            sync_onboarding_state(7)
+
+        events = [c.args[0] for c in funnel.call_args_list]
+        # One step event per completed step, plus the dedicated `activated` milestone.
+        assert events == ["onboarding_step_completed", "onboarding_step_completed", "activated"]
+        assert funnel.call_args_list[0].kwargs["step"] == str(OnboardingStep.LINKEDIN_CONNECTED)
+        assert funnel.call_args_list[-1].kwargs["user_id"] == 7
+
     def test_tracking_failure_does_not_break_the_sync(self):
         from cqc_lem.utilities.db import OnboardingStep
         with patch(f"{_ON}.ensure_onboarding_state", return_value=True), \
