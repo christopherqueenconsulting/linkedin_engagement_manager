@@ -211,6 +211,14 @@ class FeedbackStatus(StrEnum):
     DISMISSED = 'dismissed'          # not actionable
 
 
+class FaqStatus(StrEnum):
+    """Lifecycle of a public FAQ answer (issue #506). Only PUBLISHED rows are served on the front
+    page — an auto-generated answer lands as DRAFT until it is reviewed."""
+    PUBLISHED = 'published'
+    DRAFT = 'draft'
+    ARCHIVED = 'archived'
+
+
 class OnboardingStep(StrEnum):
     """Steps of the activation checklist (issue #500), in the order a user completes them.
     ACTIVATED is the "aha" moment: first AI post published AND first automated comment/DM sent."""
@@ -7013,6 +7021,32 @@ def get_recent_shipped_notices(limit: int = 10) -> list:
     finally:
         cursor.close()
         connection.close()
+
+
+# --- Public FAQ (issue #506) --------------------------------------------------------
+def get_published_faq_entries(limit: int = 50) -> list:
+    """The published FAQ shown on the landing page, in display order. Only PUBLISHED rows leave the
+    database — drafts written by the auto-FAQ pass stay unpublished until reviewed."""
+    # Connect inside the try: an unreachable database must degrade to an empty FAQ, never bubble an
+    # exception up into the logged-out landing page.
+    connection = None
+    cursor = None
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT id, question, answer, cluster_id, updated_at FROM faq_entries "
+            "WHERE status = %s ORDER BY sort_order ASC, id ASC LIMIT %s",
+            (FaqStatus.PUBLISHED.value, int(limit)))
+        return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error("Could not get published FAQ entries", exc=err)
+        return []
+    finally:
+        if cursor is not None:
+            cursor.close()
+        if connection is not None:
+            connection.close()
 
 
 # --- Onboarding / activation checklist (issue #500) ---------------------------------

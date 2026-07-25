@@ -145,16 +145,31 @@ _API_ACCESS_TOKEN_SET = {t.strip() for t in API_ACCESS_TOKENS.split(",") if t.st
 # self-authenticating: the handler validates the user's own LEM session_token and 401s if
 # it's invalid — same model as the /api/auth/ endpoints. This exact leaf path only; the rest
 # of /api/user/* stays gated.
+# /api/faq is public: it serves the published front-page FAQ (issue #506) to logged-out visitors on
+# the landing page. GET-only, no user data — same shape as /api/app-info.
 _PUBLIC_API_PREFIXES = ("/api/auth/", "/api/billing/webhook", "/api/assets",
                         "/api/linkedin/verification-pin", "/api/linkedin/comment-notification",
-                        "/api/app-info",
+                        "/api/app-info", "/api/faq",
                         "/api/extension/", "/api/user/linkedin-cookie")
+
+
+def _is_public_api_path(path: str) -> bool:
+    # An entry ending in "/" opens that whole subtree; every other entry matches only itself or a
+    # path segment beneath it. Without the boundary, "/api/faq" would also unlock a future
+    # "/api/faq-admin".
+    for prefix in _PUBLIC_API_PREFIXES:
+        if prefix.endswith("/"):
+            if path.startswith(prefix):
+                return True
+        elif path == prefix or path.startswith(prefix + "/"):
+            return True
+    return False
 
 
 def _api_token_required(path: str) -> bool:
     if not _API_ACCESS_TOKEN_SET or not path.startswith("/api/"):
         return False
-    return not any(path.startswith(p) for p in _PUBLIC_API_PREFIXES)
+    return not _is_public_api_path(path)
 
 
 def _bearer_token(authorization: Optional[str]) -> Optional[str]:
@@ -931,6 +946,18 @@ def shipped_notices_endpoint(session_token: str) -> ResponseModel:
         "changelog": [{"issue_number": n.get("github_issue_number"),
                        "changelog_line": n.get("changelog_line"),
                        "shipped_at": n.get("shipped_at")} for n in get_recent_shipped_notices()],
+    })
+
+
+@router.get("/faq")
+def faq_endpoint() -> ResponseModel:
+    """Public: the front-page FAQ (issue #506). Serves only the published entries, in display
+    order — the SPA falls back to its built-in copy if this is empty or unreachable."""
+    from cqc_lem.utilities.db import get_published_faq_entries
+    return ResponseModel(status_code=200, detail={
+        "entries": [{"id": e.get("id"), "question": e.get("question"), "answer": e.get("answer"),
+                     "updated_at": _utc_iso(e.get("updated_at"))}
+                    for e in get_published_faq_entries()],
     })
 
 

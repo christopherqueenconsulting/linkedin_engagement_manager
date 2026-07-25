@@ -76,6 +76,28 @@ class TestApiTokenRequired:
         with patch.object(main_mod, "_API_ACCESS_TOKEN_SET", {"tok"}):
             assert main_mod._api_token_required(path) is False
 
+    @pytest.mark.parametrize("path", [
+        "/api/faq-admin",              # sibling of the public /api/faq
+        "/api/app-info-internal",
+        "/api/assets-private",
+        "/api/billing/webhook-replay",
+        "/api/user/linkedin-cookie-export",
+    ])
+    def test_a_public_entry_does_not_unlock_its_siblings(self, main_mod, path):
+        """Public entries match on a path-segment boundary, not a bare string prefix."""
+        with patch.object(main_mod, "_API_ACCESS_TOKEN_SET", {"tok"}):
+            assert main_mod._api_token_required(path) is True
+
+    @pytest.mark.parametrize("path", [
+        "/api/auth/email/init",                          # trailing-slash entry: whole subtree
+        "/api/extension/linkedin-connect.zip",
+        "/api/linkedin/verification-pin/inbound",        # leaf entry: segments below it stay public
+        "/api/linkedin/comment-notification/inbound",
+    ])
+    def test_public_subpaths_stay_public(self, main_mod, path):
+        with patch.object(main_mod, "_API_ACCESS_TOKEN_SET", {"tok"}):
+            assert main_mod._api_token_required(path) is False
+
 
 # ---------------------------------------------------------------------------
 # Middleware behavior via TestClient
