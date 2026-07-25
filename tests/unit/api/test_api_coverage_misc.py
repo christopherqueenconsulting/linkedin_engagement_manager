@@ -367,11 +367,16 @@ class TestUserSettingsAndGroups:
         recs = [{"weekday_num": 2, "hour": 15}]
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.get_post_engagement_rows", return_value=rows), \
+             patch(f"{_M}.get_user_timezone", return_value="America/New_York"), \
              patch("cqc_lem.utilities.post_stats.recommend_post_times",
-                   return_value=recs):
+                   return_value=recs) as mock_recs:
             resp = client.get(f"/api/user/post-stats?session_token={_TOK}")
         detail = resp.json()["detail"]
         assert detail["recommendations"] == recs and detail["sample_size"] == 1
+        # Recommended hours are rendered as the user's own wall clock, so the ranking must be
+        # bucketed in their timezone rather than the UTC the stats are stored in (issue #546).
+        assert detail["timezone"] == "America/New_York"
+        assert mock_recs.call_args.kwargs["tz"] == "America/New_York"
 
 
 class TestEngagementAnalytics:

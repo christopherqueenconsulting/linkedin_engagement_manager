@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
-import { formatInTimezone } from '../../utils/datetime'
+import { formatInTimezone, zonedInputToUtcIso } from '../../utils/datetime'
 
 // Schedule 1:1 DMs to chosen recipients at chosen times (issue #306), mirroring the scheduled-posts
 // preview/approve workflow. Drafts are 'pending'; approving queues them for the scanner to send at
@@ -63,14 +63,14 @@ export default function ScheduledDMs({ userTimezone }: { userTimezone: string })
   const invalidate = () => qc.invalidateQueries({ queryKey: ['scheduled-dms'] })
 
   const createMutation = useMutation({
-    mutationFn: (status: 'pending' | 'approved') =>
+    mutationFn: (v: { status: 'pending' | 'approved'; scheduledUtc: string }) =>
       api.post('/schedule_dm', {
         session_token: sessionToken,
         recipient_profile_url: url.trim(),
         recipient_name: name.trim() || null,
         message: body,
-        scheduled_datetime: new Date(when).toISOString(),
-        status,
+        scheduled_datetime: v.scheduledUtc,
+        status: v.status,
       }),
     onSuccess: () => {
       invalidate(); setUrl(''); setName(''); setBody(''); setWhen('')
@@ -78,6 +78,14 @@ export default function ScheduledDMs({ userTimezone }: { userTimezone: string })
     },
     onError: () => flash(false, 'Could not schedule — check the fields and try again.'),
   })
+
+  // The picker is a bare wall clock — read it in the user's timezone, not the browser's. An
+  // unparseable value yields null, which the API would reject with a 422; catch it here instead.
+  const submit = (status: 'pending' | 'approved') => {
+    const scheduledUtc = zonedInputToUtcIso(when, userTimezone)
+    if (!scheduledUtc) { flash(false, 'Scheduled date/time is not valid.'); return }
+    createMutation.mutate({ status, scheduledUtc })
+  }
 
   const actionMutation = useMutation({
     mutationFn: (v: { id: number; action: 'approve' | 'cancel' }) =>
@@ -110,13 +118,16 @@ export default function ScheduledDMs({ userTimezone }: { userTimezone: string })
           placeholder="Your message…"
           className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
         <div className="flex flex-wrap items-center gap-3">
-          <input type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)}
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm" />
-          <button onClick={() => createMutation.mutate('pending')} disabled={!canSubmit || createMutation.isPending}
+          <label className="flex items-center gap-2 text-xs text-gray-500">
+            <input type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)}
+              className="border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+            {userTimezone}
+          </label>
+          <button onClick={() => submit('pending')} disabled={!canSubmit || createMutation.isPending}
             className="px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50">
             Save draft
           </button>
-          <button onClick={() => createMutation.mutate('approved')} disabled={!canSubmit || createMutation.isPending}
+          <button onClick={() => submit('approved')} disabled={!canSubmit || createMutation.isPending}
             className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50">
             {createMutation.isPending ? 'Scheduling…' : 'Approve & schedule'}
           </button>

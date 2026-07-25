@@ -6,6 +6,7 @@ import LinkedInPostPreview from '../../components/LinkedInPostPreview'
 import TopicAuthorityMeter from '../../components/TopicAuthorityMeter'
 import { useAuth } from '../../contexts/AuthContext'
 import { useUserTimezone } from '../../hooks/useUserTimezone'
+import { zonedInputToUtcIso } from '../../utils/datetime'
 
 const POST_TYPES = ['TEXT', 'VIDEO', 'CAROUSEL'] as const
 type PostType = typeof POST_TYPES[number]
@@ -162,6 +163,9 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
     if (!email) { setResult({ ok: false, msg: 'Set your email in Account settings first.' }); return }
     if (!content.trim()) { setResult({ ok: false, msg: 'Post content is required.' }); return }
     if (!scheduledAt) { setResult({ ok: false, msg: 'Scheduled date/time is required.' }); return }
+    // The picker is a bare wall clock — read it in the user's timezone, not the browser's.
+    const scheduledUtc = zonedInputToUtcIso(scheduledAt, userTimezone)
+    if (!scheduledUtc) { setResult({ ok: false, msg: 'Scheduled date/time is not valid.' }); return }
     if (postType === 'CAROUSEL') {
       const activeSlides = carouselMode === 'ai' ? generatedSlideUrls : slides.filter((s) => s.trim())
       if (activeSlides.length === 0) {
@@ -176,7 +180,7 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
       const payload: Record<string, unknown> = {
         content,
         post_type: postType.toLowerCase(),
-        scheduled_datetime: new Date(scheduledAt).toISOString(),
+        scheduled_datetime: scheduledUtc,
         email,
         status,
         use_avatar: postType !== 'TEXT' && useAvatar && hasActiveAvatar,
@@ -525,7 +529,9 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
 
           {/* Schedule date/time */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Schedule Date &amp; Time</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Schedule Date &amp; Time <span className="font-normal text-gray-400">({userTimezone})</span>
+            </label>
             <input
               type="datetime-local"
               value={scheduledAt}

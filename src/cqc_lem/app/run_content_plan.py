@@ -193,10 +193,10 @@ def plan_content_for_user(self, user_id: int):
         # enough post-stats, else the 2026 default peak model.
         post_time = get_post_time(post_date.date(), user_id)
 
-        # get_best_posting_time returns the user's LOCAL audience time (e.g. 2pm). Convert
-        # it from the user's timezone to UTC for storage, because the scheduler treats
-        # stored scheduled_time as UTC. Without this, a 14:00 local post was stored as
-        # 14:00 UTC and fired hours off the intended local time.
+        # get_post_time returns the user's LOCAL audience time (e.g. 2pm). Convert it from the
+        # user's timezone to UTC for storage — scheduled_time is naive UTC by contract
+        # (docs/timezone-contract.md). Without this, a 14:00 local post was stored as 14:00 UTC
+        # and fired hours off the intended local time.
         scheduled_datetime = datetime.combine(post_date, post_time)
         try:
             user_tz = pytz.timezone(get_user_timezone(user_id))
@@ -204,7 +204,8 @@ def plan_content_for_user(self, user_id: int):
                 user_tz.localize(scheduled_datetime).astimezone(pytz.utc).replace(tzinfo=None)
             )
         except Exception as e:
-            myprint(f"Timezone conversion failed for user {user_id} — storing as UTC: {e}")
+            log_warning(f"Timezone conversion failed for user {user_id} — storing as UTC",
+                        exc=e, user_id=user_id, task_name="plan_content_for_user")
 
         daily_plan.append({
             "scheduled_datetime": scheduled_datetime,

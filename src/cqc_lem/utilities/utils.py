@@ -112,16 +112,18 @@ def get_best_posting_time(selected_date: date):
 
 
 def get_post_time(selected_date: date, user_id: int = None):
-    """Best posting time for a date. Prefers the user's own data-driven best hour for that weekday
-    (learned by recommend_post_times, Phase 3) and falls back to the 2026 default model until enough
-    data exists. Keeps the default's minutes so times aren't all on the hour."""
+    """Best posting time for a date, as the user's LOCAL wall clock — callers convert it to UTC for
+    storage (docs/timezone-contract.md). Prefers the user's own data-driven best hour for that
+    weekday (learned by recommend_post_times, Phase 3) and falls back to the 2026 default model
+    until enough data exists. Keeps the default's minutes so times aren't all on the hour."""
     default = get_best_posting_time(selected_date)
     if user_id is None:
         return default
     try:
-        from cqc_lem.utilities.db import get_post_engagement_rows
+        from cqc_lem.utilities.db import get_post_engagement_rows, get_user_timezone
         from cqc_lem.utilities.post_stats import recommend_post_times
-        recs = recommend_post_times(get_post_engagement_rows(user_id), top_n=7)
+        recs = recommend_post_times(get_post_engagement_rows(user_id), top_n=7,
+                                    tz=get_user_timezone(user_id))
         for r in recs:
             if r["weekday_num"] == selected_date.weekday():
                 return time(r["hour"], default.minute)

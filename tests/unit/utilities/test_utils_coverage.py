@@ -215,6 +215,7 @@ class TestGetPostTime:
         # 2026-07-08 is a Wednesday (weekday 2); default is 16:00
         recs = [{"weekday_num": 2, "hour": 9}]
         with patch("cqc_lem.utilities.db.get_post_engagement_rows", return_value=[]), \
+             patch("cqc_lem.utilities.db.get_user_timezone", return_value="America/New_York"), \
              patch("cqc_lem.utilities.post_stats.recommend_post_times", return_value=recs):
             assert get_post_time(date(2026, 7, 8), user_id=1) == time(9, 0)
 

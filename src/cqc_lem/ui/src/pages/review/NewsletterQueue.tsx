@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
 import NewsletterArticlePreview from '../../components/NewsletterArticlePreview'
-import { formatInTimezone } from '../../utils/datetime'
+import { formatInTimezone, toZonedInputValue, zonedInputToUtcIso } from '../../utils/datetime'
 import type { NewsletterDraft, NewsletterEdition } from '../account/types'
 
 const STATUS_COLORS: Record<string, string> = {
@@ -13,14 +13,6 @@ const STATUS_COLORS: Record<string, string> = {
 
 // e.g. "case_study" -> "Case Study" for the format/hook badges.
 const prettyKey = (k: string) => k.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
-
-// UTC ISO string -> value for a <input type="datetime-local"> (local wall-clock, minute precision).
-const toLocalInput = (iso?: string | null): string => {
-  if (!iso) return ''
-  const d = new Date(iso)
-  if (isNaN(d.getTime())) return ''
-  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
-}
 
 export default function NewsletterQueue({ userTimezone }: { userTimezone: string }) {
   const { user, sessionToken } = useAuth()
@@ -219,11 +211,15 @@ export default function NewsletterQueue({ userTimezone }: { userTimezone: string
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Publish date &amp; time</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Publish date &amp; time <span className="font-normal text-gray-400">({userTimezone})</span>
+              </label>
               <input
                 type="datetime-local"
-                value={toLocalInput(draftEdit.scheduled_for)}
-                onChange={(e) => setDe({ scheduled_for: e.target.value ? new Date(e.target.value).toISOString() : draftEdit.scheduled_for })}
+                value={toZonedInputValue(draftEdit.scheduled_for, userTimezone)}
+                onChange={(e) =>
+                  setDe({ scheduled_for: zonedInputToUtcIso(e.target.value, userTimezone) ?? draftEdit.scheduled_for })
+                }
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>

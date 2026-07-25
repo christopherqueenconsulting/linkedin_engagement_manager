@@ -80,6 +80,21 @@ class TestListDms:
         assert resp.status_code == 200
         assert lst.call_args.kwargs["status_filter"] == "pending"
 
+    def test_datetimes_serialized_as_explicit_utc(self, client):
+        """Issue #546 — db.get_scheduled_dms isoformats naive UTC with no offset; the endpoint must
+        stamp the 'Z' or the SPA parses it as local time and shows the wrong send time."""
+        from datetime import datetime
+        dms = [{"id": 3, "scheduled_time": datetime(2026, 8, 1, 13, 0),
+                "created_at": datetime(2026, 7, 30, 8, 0), "updated_at": None}]
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_scheduled_dms",
+                   return_value={"dms": dms, "total": 1, "page": 1, "page_size": 25}):
+            resp = client.get(f"/api/dms?session_token={_S}")
+        row = resp.json()["detail"]["dms"][0]
+        assert row["scheduled_time"] == "2026-08-01T13:00:00Z"
+        assert row["created_at"] == "2026-07-30T08:00:00Z"
+        assert row["updated_at"] is None
+
 
 class TestUpdateAndCancel:
     def test_approve(self, client):

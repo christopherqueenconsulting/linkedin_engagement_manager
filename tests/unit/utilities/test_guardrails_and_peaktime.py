@@ -45,5 +45,6 @@ class TestGetPostTime:
         d = dt.date(2026, 7, 8)  # Wednesday (weekday 2)
         recs = [{"weekday_num": 2, "hour": 19, "avg_engagement": 50, "sample": 4}]
         with patch("cqc_lem.utilities.db.get_post_engagement_rows", return_value=[("x",)] * 4), \
+             patch("cqc_lem.utilities.db.get_user_timezone", return_value="America/New_York"), \
              patch("cqc_lem.utilities.post_stats.recommend_post_times", return_value=recs):
             assert utils.get_post_time(d, user_id=1).hour == 19

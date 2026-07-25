@@ -3,8 +3,9 @@
 comparison set carries impressions, and always recency-weighted so stale posts fade out."""
 
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone, tzinfo
 from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 _WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
@@ -111,20 +112,41 @@ def _group_metrics(rows: Iterable[Sequence], rate_mode: bool, now: Optional[date
                    "metric": METRIC_RATE if rate_mode else METRIC_COUNT}
 
 
+def _local_wall_clock(scheduled: datetime, zone: Optional[tzinfo]) -> datetime:
+    """Stored scheduled_time is naive UTC (docs/timezone-contract.md); a "best hour" is only
+    meaningful as the AUDIENCE's wall clock, so shift it into the user's zone before bucketing."""
+    if zone is None:
+        return scheduled
+    aware = scheduled.replace(tzinfo=timezone.utc) if scheduled.tzinfo is None else scheduled
+    return aware.astimezone(zone)
+
+
 def recommend_post_times(rows: Iterable[Sequence], top_n: int = 3, min_posts: int = 3,
                          now: Optional[datetime] = None,
-                         half_life_days: float = RECENCY_HALF_LIFE_DAYS) -> list:
+                         half_life_days: float = RECENCY_HALF_LIFE_DAYS,
+                         tz: Optional[str] = None) -> list:
     """rows: iterable of `db.get_post_engagement_rows` tuples (at minimum
     (scheduled_time[datetime], reactions, comments, reposts)). Returns the top (weekday, hour)
     buckets by recency-weighted average engagement per post — or engagement RATE when every row
-    has impressions. Empty until >= min_posts of data so we don't recommend off noise."""
+    has impressions. Empty until >= min_posts of data so we don't recommend off noise.
+
+    `tz` is the user's IANA timezone: the returned weekday/hour are that zone's wall clock, which is
+    what callers need — get_post_time hands the hour straight back to the scheduler as a LOCAL time
+    to be converted to UTC for storage, so bucketing the raw UTC hour would shift every
+    recommendation by the user's offset twice. Omitted (or unknown) means UTC."""
     usable = [row for row in rows if row and _cell(row, _IDX_SCHEDULED) is not None]
     if len(usable) < min_posts:
         return []
+    zone = None
+    if tz:
+        try:
+            zone = ZoneInfo(tz)
+        except (ZoneInfoNotFoundError, ValueError):
+            zone = None
     rate_mode = _rate_mode(usable)
     buckets = defaultdict(list)
     for row in usable:
-        scheduled = row[_IDX_SCHEDULED]
+        scheduled = _local_wall_clock(row[_IDX_SCHEDULED], zone)
         buckets[(scheduled.weekday(), scheduled.hour)].append(row)
     ranked = []
     for (weekday, hour), bucket_rows in buckets.items():
