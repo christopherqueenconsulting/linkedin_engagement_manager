@@ -516,16 +516,23 @@ def collect_quality_observations(days: int = COST_ROUTING_WINDOW_DAYS,
 
 
 def collect_routing_report(days: int = COST_ROUTING_WINDOW_DAYS, today: Optional[date] = None,
-                           thresholds: Optional[Mapping] = None) -> dict:
+                           thresholds: Optional[Mapping] = None,
+                           enabled: bool = COST_ROUTING_ENABLED) -> dict:
     """Read the live policy, the window's quality observations and (when the ledger is capturing) the
-    per-feature spend, then build the next policy."""
+    per-feature spend, then build the next policy.
+
+    While `COST_ROUTING_ENABLED` is off nothing is being routed, so the window is not scanned at all —
+    the weekly run costs one Redis read/write instead of a cross-user posts+post_stats scan. It still
+    republishes the parked (`enabled: false`) document so the proxy sees the flag flip, and any bucket
+    left in it is judged on no data, which can only HOLD: turning the flag back on resumes exactly
+    where the loop left off, and no experiment can open while it is off."""
     from cqc_lem.utilities.db import cost_ledger_available, get_cost_rollup
 
     today = today or _today()
-    observations = collect_quality_observations(days, end=today)
-    spend = get_cost_rollup(today - timedelta(days=max(int(days), 1)), today,
-                            group_by="feature") if cost_ledger_available() else {}
-    result = build_routing_policy(load_policy(), observations, today, spend, thresholds)
+    observations = collect_quality_observations(days, end=today) if enabled else []
+    spend = (get_cost_rollup(today - timedelta(days=max(int(days), 1)), today, group_by="feature")
+             if enabled and cost_ledger_available() else {})
+    result = build_routing_policy(load_policy(), observations, today, spend, thresholds, enabled)
     return {
         "date": today.isoformat(),
         "window_days": int(days),

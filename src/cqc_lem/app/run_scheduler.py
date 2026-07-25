@@ -1348,7 +1348,8 @@ def auto_weekly_cost_routing(self, days: int = COST_ROUTING_WINDOW_DAYS):
     down-route experiment against the §D.3 quality gate (engagement non-inferiority +
     `posts.authenticity_score`), promotes the ones that hold, **auto-rolls-back** the ones that
     don't, opens at most `COST_ROUTING_MAX_EXPERIMENTS` new ones, and publishes the policy the
-    LiteLLM complexity router reads. A no-op unless COST_ROUTING_ENABLED is on."""
+    LiteLLM complexity router reads. While COST_ROUTING_ENABLED is off it observes nothing and only
+    republishes the parked policy, so the loop is dormant until the flag is turned on."""
     from cqc_lem.utilities.cost_routing import apply_routing_report, collect_routing_report
 
     report = collect_routing_report(days=days)

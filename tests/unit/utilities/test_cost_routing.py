@@ -300,6 +300,43 @@ def test_collect_routing_report_skips_spend_without_a_ledger():
     assert report["date"] == "2026-08-01"
 
 
+def test_collect_routing_report_observes_nothing_while_the_flag_is_off():
+    """Dormant (owner decision on PR #529): no window scan, no ledger read — just the parked policy."""
+    with patch.object(cr, "collect_quality_observations") as observe, \
+         patch("cqc_lem.utilities.db.cost_ledger_available") as ledger, \
+         patch.object(cr, "load_policy", return_value={}):
+        report = cr.collect_routing_report(days=7, today=TODAY, enabled=False)
+    observe.assert_not_called()
+    ledger.assert_not_called()
+    assert report["observations"] == 0
+    assert report["policy"]["enabled"] is False
+    assert report["policy"]["buckets"] == {} and report["changes"] == []
+
+
+def test_dormant_run_holds_an_existing_bucket_instead_of_moving_it():
+    """A bucket left over from an earlier run is judged on no data, so it can only HOLD — flipping the
+    flag back on resumes the experiment where it stopped."""
+    bucket = _bucket(cohort_pct=0.5)
+    policy = {"version": rp.POLICY_VERSION, "enabled": True,
+              "buckets": {rp.bucket_key("content", rp.TIER_COMPLEX): bucket}}
+    with patch.object(cr, "collect_quality_observations") as observe, \
+         patch.object(cr, "load_policy", return_value=policy):
+        report = cr.collect_routing_report(days=7, today=TODAY, enabled=False)
+    observe.assert_not_called()
+    held = report["policy"]["buckets"][rp.bucket_key("content", rp.TIER_COMPLEX)]
+    assert held["state"] == rp.STATE_EXPERIMENT and held["cohort_pct"] == 0.5
+    assert report["changes"] == [] and len(report["holds"]) == 1
+
+
+def test_collect_routing_report_scans_the_window_when_enabled():
+    with patch.object(cr, "collect_quality_observations", return_value=_rows(3, 10)) as observe, \
+         patch("cqc_lem.utilities.db.cost_ledger_available", return_value=False), \
+         patch.object(cr, "load_policy", return_value={}):
+        report = cr.collect_routing_report(days=7, today=TODAY, enabled=True)
+    observe.assert_called_once()
+    assert report["observations"] == 3 and report["policy"]["enabled"] is True
+
+
 def test_apply_routing_report_publishes_and_emails_only_on_change():
     report = {"date": "2026-08-01", "policy": {"version": 1, "enabled": True, "buckets": {}},
               "changes": [], "holds": [], "recommendations": []}

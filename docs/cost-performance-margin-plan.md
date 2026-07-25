@@ -325,6 +325,20 @@ reached. At most `COST_ROUTING_MAX_EXPERIMENTS` buckets run at once. Every failu
 unreachable Redis, malformed document, a broken decision core, a call with no user id — fails open to
 the tier the call would have used before this feature existed.
 
+**Shipped state (owner decision on PR #529, 2026-07-25).** Merged **dormant**: both flags stay
+`false` in production, so no experiment opens and no call is down-routed until someone turns them on.
+The weekly beat task still runs, but while `COST_ROUTING_ENABLED` is off it skips the observation
+window entirely and only republishes the parked policy. The gate ships at its documented defaults
+(5% equivalence margin, authenticity floor 60, max median drop 5 points, 95% CI, 20 posts per arm),
+and the first bucket is left to the ranker rather than named by hand — it will take the most
+expensive tier first, i.e. `content:lem-complex → lem-medium`.
+
+**Turning it on later.** Set `COST_ROUTING_ENABLED=true` **and** `COST_AWARE_ROUTING_ENABLED=true`
+together in `/opt/lem/.env`, recreate the app services and `litellm`, then either wait for Monday
+14:00 UTC or run `python -m cqc_lem.utilities.cost_routing --json` in a worker to see what the next
+run would do before it does it. Turning either flag back off parks every bucket without losing the
+experiment state the next run needs.
+
 **What is NOT auto-routed.** Only features with a per-artifact quality signal (`MEASURABLE_FEATURES`,
 today just `content`) can be auto-experimented. Comments, DMs and newsletters have nothing that could
 clear an automated gate, so their spend is surfaced as a ranked human-gated recommendation in the
