@@ -460,6 +460,31 @@ class TestAutoCheckScheduledPosts:
         assert viewer_call["eta"] == scheduled_dt - timedelta(minutes=10)
         assert viewer_call["kwargs"]["loop_for_duration"] == 10 * 60
 
+    def test_pre_post_commenting_is_dispatched_to_its_own_lane(self):
+        """Issue #553: the eta-bound warm-up must land on se_prepost, not se_engage, or it waits
+        behind a 15-minute golden-hour loop and starts after its own window closed."""
+        from cqc_lem.app.celeryconfig import SE_PREPOST_QUEUE
+
+        scheduled_dt = _future_dt(60)
+        posts = [(46, scheduled_dt, 7)]
+
+        mock_commenting_task = _async_task_mock()
+        mock_profile_task = _async_task_mock()
+
+        with patch(_PATCH_GET_POSTS, return_value=posts), \
+             patch(_PATCH_GET_ACTIVE, return_value=[7]), \
+             patch(_PATCH_GET_ORPHANED, return_value=[]), \
+             patch(_PATCH_UPDATE_POST_STATUS), \
+             patch(_PATCH_POST_TO_LINKEDIN, _async_task_mock()), \
+             patch(_PATCH_AUTOMATE_COMMENTING, mock_commenting_task), \
+             patch(_PATCH_AUTOMATE_PROFILE_VIEWER, mock_profile_task):
+            from cqc_lem.app.run_scheduler import auto_check_scheduled_posts
+            auto_check_scheduled_posts.run()
+
+        assert mock_commenting_task.apply_async.call_args[1]["queue"] == SE_PREPOST_QUEUE
+        # The profile-viewer warm-up keeps its own lane (se_outreach, via the task decorator).
+        assert "queue" not in mock_profile_task.apply_async.call_args[1]
+
     def test_late_pickup_clamps_eta_to_now_and_shortens_loop(self):
         """A post picked up 5 min before its time gets an eta that is NOT in the past, and a loop
         that ends at the post time instead of running past it."""

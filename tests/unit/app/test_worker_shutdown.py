@@ -67,7 +67,7 @@ class TestStopGracePeriod:
         # Docker's 10s default is shorter than a ~6 min video generation.
         services = re.split(r"\n  (?=\w)", compose)
         worker_blocks = [s for s in services if s.startswith("celery_worker")]
-        assert len(worker_blocks) == 4  # main + three Selenium lanes
+        assert len(worker_blocks) == 5  # main + four Selenium lanes (se_prepost added by #553)
         for block in worker_blocks:
             assert "stop_grace_period: ${CELERY_STOP_GRACE_PERIOD:-8m}" in block, block[:60]
 

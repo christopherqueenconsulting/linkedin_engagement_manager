@@ -23,7 +23,7 @@ ENV_FILE="/opt/lem/.env"
 DIR="/home/lem/li-version-check"
 LOG="$DIR/li_version_check.log"
 COMPOSE="sudo -n docker compose -f /opt/lem/docker-compose.yml -f /opt/lem/docker-compose.prod.yml"
-APP_SERVICES="web_app celery_worker celery_worker_selenium celery_worker_selenium_outreach celery_worker_selenium_content celery_beat flower"
+APP_SERVICES="web_app celery_worker celery_worker_selenium celery_worker_selenium_prepost celery_worker_selenium_outreach celery_worker_selenium_content celery_beat flower"
 MIN_HEADROOM="${MIN_HEADROOM:-2}"
 # DRY_RUN=1 plans and runs the unit gate, but never writes .env, recreates containers, opens a
 # PR or emails — so the bump path can be rehearsed against prod safely.

@@ -119,6 +119,13 @@ means a lane worker holds exactly one in-flight task per concurrency slot, so a
 
 **This is the constraint that makes tasks run late**, not CPU or RAM.
 
+> **Since this snapshot:** issue #553 shipped the first half of the Phase-1 proposal below — a
+> fourth lane `celery_worker_selenium_prepost` (`SELENIUM_QUEUES=se_prepost`, concurrency 2) that
+> consumes ONLY the eta-bound pre-post `automate_commenting` dispatched by
+> `auto_check_scheduled_posts`, with `SE_NODE_MAX_SESSIONS 4 → 6` and `shm_size 4g → 6g` so the
+> new lane's 2 slots are real capacity (2 + 2 + 1 + 1 = 6). The other Phase-1 bumps
+> (`se_engage 2 → 3`, `se_outreach 1 → 2`, Chrome cpus `4 → 6`) are still proposals.
+
 ---
 
 ## 3. Concurrency demand: what fires when
@@ -241,12 +248,12 @@ applied):
   - `celery_worker_selenium_content` (`se_content`): `1 → 1` (unchanged).
   - New total requested = 3 + 2 + 1 = **6 = new session cap**.
 - **Split a dedicated `se_prepost` lane** so pre-post commenting (issue #547) never
-  queues behind the golden-hour loop. Add a `celery_worker_selenium_prepost` service
-  (`SELENIUM_QUEUES=se_prepost`, concurrency 2) and route the ETA-based
-  `automate_commenting` dispatched from `auto_check_scheduled_posts` to it (leave the
-  daily golden-hour `automate_commenting` on `se_engage`). Requires a small code
-  change: a `queue=` override on the pre-post dispatch path + register the queue in
-  `celeryconfig.py`. Bump session cap to **8** to cover it.
+  queues behind the golden-hour loop. ✅ **Shipped (issue #553):** the
+  `celery_worker_selenium_prepost` service (`SELENIUM_QUEUES=se_prepost`, concurrency 2)
+  consumes the ETA-based `automate_commenting` dispatched from `auto_check_scheduled_posts`
+  via a `queue=` override at the dispatch site; the daily golden-hour `automate_commenting`
+  still routes to `se_engage` through `task_routes`. Session cap went **4 → 6** with it; it
+  becomes **8** once the `se_engage 2 → 3` / `se_outreach 1 → 2` bumps above land.
 
 **Phase 2 (at ~50 users):** promote each lane worker to its own concurrency 3–4 and
 move Chrome to a Grid (see §5b). Consider per-user or per-region sharding of lanes so
@@ -322,8 +329,9 @@ concurrency rises:
 **Phase 1 — launch / first ~10 users (this plan's compose proposal):**
 - `SE_NODE_MAX_SESSIONS 4 → 6–8`, `shm 4g → 6g`, Chrome cpus `4 → 6`.
 - `se_engage` concurrency `2 → 3`; `se_outreach` `1 → 2`.
-- New `se_prepost` lane + worker for pre-post commenting (fixes #547 under
-  contention).
+- ✅ New `se_prepost` lane + worker for pre-post commenting (fixes #547 under
+  contention) — shipped in #553 together with `SE_NODE_MAX_SESSIONS 4 → 6` /
+  `shm 4g → 6g`.
 - **Stagger `auto_daily_engagement`** by per-user offset.
 - All fits the current 8 vCPU / 31 GB box.
 
@@ -347,8 +355,8 @@ concurrency rises:
 - Lanes: `se_engage` c=2, `se_outreach` c=1, `se_content` c=1 → **4 = session cap**.
 - MySQL: `max_connections=151`, `Max_used=8`, **no connection pool** (fresh connect
   per call), **1 user** today.
-- Pre-post commenting: `automate_commenting.apply_async(eta = post − 15 min)` on
-  `se_engage` (`run_scheduler.py`).
+- Pre-post commenting: `automate_commenting.apply_async(eta = post − 15 min)` — measured on
+  `se_engage`, moved to the dedicated `se_prepost` lane by #553 (`run_scheduler.py`).
 - Golden-hour: single `13:00 UTC` crontab fans out one 15-min loop per active user
   onto `se_engage`.
 - 429 breaker: **global** Redis key by egress IP; per-user proxy resolution exists

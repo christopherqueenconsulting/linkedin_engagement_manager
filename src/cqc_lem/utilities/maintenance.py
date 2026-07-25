@@ -54,7 +54,7 @@ DEFAULT_POLL_SECONDS = 5
 INSPECT_TIMEOUT_SECONDS = 10
 
 # Used only when the Celery config can't be imported (e.g. a stripped CLI context).
-FALLBACK_QUEUES: Tuple[str, ...] = ("celery", "se_engage", "se_outreach", "se_content")
+FALLBACK_QUEUES: Tuple[str, ...] = ("celery", "se_engage", "se_prepost", "se_outreach", "se_content")
 
 
 def queue_names() -> Tuple[str, ...]:
