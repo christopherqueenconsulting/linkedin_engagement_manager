@@ -7,6 +7,7 @@ import type { DmTemplate } from './types'
 import { useRegisterSaveSection } from './SettingsSaveContext'
 import PlaceholderChips from './PlaceholderChips'
 import { FIELD_LIMITS } from './fieldLimits'
+import { EVENTS, capture, maskProps } from '../../utils/analytics'
 
 export default function DmTemplatesCard() {
   const { sessionToken } = useAuth()
@@ -58,6 +59,11 @@ export default function DmTemplatesCard() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['dm-templates'] })
       setSavedSig(JSON.stringify(dmTemplates))
+      capture(EVENTS.dmTemplateSaved, {
+        templates: dmTemplates.filter((t) => t.template_text.trim()).length,
+        // How many events have a follow-up sequence configured, not the message bodies.
+        followup_steps: dmTemplates.filter((t) => t.step > 0 && t.template_text.trim()).length,
+      })
       setDmMsg({ ok: true, text: 'DM templates saved.' })
       setTimeout(() => setDmMsg(null), 3000)
     },
@@ -112,7 +118,7 @@ export default function DmTemplatesCard() {
                 <textarea value={t.template_text} rows={2} maxLength={FIELD_LIMITS.dm_template}
                   onChange={(e) => updateTemplate(ev.key, t.step, { template_text: e.target.value })}
                   placeholder="Leave blank for the default message"
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+                  {...maskProps('w-full border border-gray-300 rounded-lg px-3 py-2 text-sm')} />
               </div>
             ))}
             <button type="button" onClick={() => addFollowupStep(ev.key)}

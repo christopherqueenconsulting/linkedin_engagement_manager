@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { useAppInfo } from '../hooks/useAppInfo'
 import api from '../api/client'
+import { EVENTS, analyticsSessionId, capture } from '../utils/analytics'
 
 const TYPE_HINTS = [
   { value: 'bug', label: '🐞 Something is broken' },
@@ -14,17 +15,6 @@ const TYPE_HINTS = [
 
 // Base64 inflates a file by ~4/3, and the API caps the encoded data URL at 2,000,000 chars.
 const MAX_SCREENSHOT_BYTES = 1_400_000
-
-// PostHog is loaded (when configured) as a global script, not an npm dep — read the session id
-// defensively so the widget works with or without it.
-function posthogSessionId(): string | undefined {
-  const ph = (window as unknown as { posthog?: { get_session_id?: () => string } }).posthog
-  try {
-    return ph?.get_session_id?.()
-  } catch {
-    return undefined
-  }
-}
 
 function readAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -94,7 +84,7 @@ export default function FeedbackWidget() {
           route: `${location.pathname}${location.search}`,
           user_id: user?.userId ?? null,
           app_version: appInfo?.version ?? null,
-          posthog_session_id: posthogSessionId() ?? null,
+          posthog_session_id: analyticsSessionId() ?? null,
           user_agent: navigator.userAgent,
           viewport: `${window.innerWidth}x${window.innerHeight}`,
         },
@@ -111,7 +101,7 @@ export default function FeedbackWidget() {
   if (!isOpen) {
     return (
       <button
-        onClick={() => setIsOpen(true)}
+        onClick={() => { setIsOpen(true); capture(EVENTS.feedbackOpened, { route: location.pathname }) }}
         className="fixed bottom-4 right-4 z-40 bg-blue-600 text-white text-xs font-semibold px-3.5 py-2 rounded-full shadow-lg hover:bg-blue-700 transition-colors"
         aria-label="Feedback / Report a bug"
       >

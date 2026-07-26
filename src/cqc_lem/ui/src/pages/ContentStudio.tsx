@@ -17,6 +17,7 @@ import ComposePost from './content/ComposePost'
 import { useAuth } from '../contexts/AuthContext'
 import { useUserTimezone } from '../hooks/useUserTimezone'
 import { formatInTimezone, toZonedInputValue, zonedInputToUtcIso } from '../utils/datetime'
+import { EVENTS, capture, maskProps } from '../utils/analytics'
 
 // Consolidated content hub: compose posts, schedule DMs, manage newsletters, and review/edit
 // existing content — one page, four tabs, synced to ?tab= for deep-linking.
@@ -79,6 +80,8 @@ interface Post {
   status: string
   carousel_slides: string[] | null
   post_url?: string | null
+  // The SHAPE the draft was written to (V51 posts.archetype) — reported with the review decision.
+  archetype?: string | null
   // Quality-gate verdict (issue #421) — why a PENDING post is being held, and its A1 score.
   authenticity_score?: number | null
   gate_reason?: GateFinding[] | null
@@ -203,6 +206,21 @@ export default function ContentStudio() {
   const total = data?.detail?.total ?? 0
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
 
+  // The review decision is the product moment autocapture can't name: a click on "Save Changes"
+  // says nothing about which way the draft went. Only a real STATUS TRANSITION counts — re-saving
+  // (or re-deleting) a post that already has that status is an edit, not a second decision.
+  const capturePostDecision = (postId: number, status: string, extra: Record<string, unknown> = {}) => {
+    if (status !== 'approved' && status !== 'rejected') return
+    const post = posts.find((p) => p.post_id === postId)
+    if (post?.status === status) return
+    capture(status === 'approved' ? EVENTS.postApproved : EVENTS.postRejected, {
+      post_id: postId,
+      post_type: post?.post_type ?? null,
+      archetype: post?.archetype ?? null,
+      ...extra,
+    })
+  }
+
   const updateMutation = useMutation({
     mutationFn: (post: Post) =>
       api.post(`/update_post/?post_id=${post.post_id}`, {
@@ -213,7 +231,9 @@ export default function ContentStudio() {
         email,
         status: post.status,
       }),
-    onSuccess: () => {
+    onSuccess: (_res, post) => {
+      // post_type is editable in this dialog, so report what was SAVED, not the stale list row.
+      capturePostDecision(post.post_id, post.status, { source: 'editor', post_type: post.post_type })
       qc.invalidateQueries({ queryKey: ['posts', email] })
       setEditingPost(null)
     },
@@ -252,7 +272,12 @@ export default function ContentStudio() {
   const bulkUpdateMutation = useMutation({
     mutationFn: (body: { post_ids: number[]; status?: string; scheduled_datetime?: string }) =>
       api.post('/posts/bulk_update/', body),
-    onSuccess: () => {
+    onSuccess: (_res, body) => {
+      // One event per post, not one per click — an approval rate broken down by archetype needs
+      // the same unit whether the user approved from the editor or from the bulk bar.
+      if (body.status) {
+        for (const id of body.post_ids) capturePostDecision(id, body.status, { source: 'bulk' })
+      }
       qc.invalidateQueries({ queryKey: ['posts', email] })
       setSelectedIds(new Set())
       setBulkDate('')
@@ -261,7 +286,9 @@ export default function ContentStudio() {
 
   const bulkDeleteMutation = useMutation({
     mutationFn: (post_ids: number[]) => api.delete('/posts/', { data: { post_ids } }),
-    onSuccess: () => {
+    onSuccess: (_res, post_ids) => {
+      // The delete endpoint is a soft delete (status=rejected) — the same decision, another door.
+      for (const id of post_ids) capturePostDecision(id, 'rejected', { source: 'bulk_delete' })
       qc.invalidateQueries({ queryKey: ['posts', email] })
       setSelectedIds(new Set())
     },
@@ -271,6 +298,7 @@ export default function ContentStudio() {
   const deleteMutation = useMutation({
     mutationFn: (post_id: number) => api.delete('/posts/', { data: { post_ids: [post_id] } }),
     onSuccess: (_res, post_id) => {
+      capturePostDecision(post_id, 'rejected', { source: 'delete' })
       qc.invalidateQueries({ queryKey: ['posts', email] })
       setConfirmDeletePost(null)
       setSelectedIds((prev) => { const n = new Set(prev); n.delete(post_id); return n })
@@ -323,7 +351,10 @@ export default function ContentStudio() {
       api.get(`/user_id/?email=${encodeURIComponent(email)}`).then((r) =>
         api.post(`/create_weekly_content/?user_id=${r.data.detail}`)
       ),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['content-generation-status', sessionToken] }),
+    onSuccess: () => {
+      capture(EVENTS.contentPlanGenerated, { source: 'content_studio' })
+      qc.invalidateQueries({ queryKey: ['content-generation-status', sessionToken] })
+    },
   })
 
   // A finished run expires server-side within the hour, so there's no staleness to reason about
@@ -861,7 +892,7 @@ export default function ContentStudio() {
                   rows={6}
                   value={editingPost.content}
                   onChange={(e) => setEditingPost({ ...editingPost, content: e.target.value })}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                  {...maskProps('w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none')}
                 />
 
                 <div>

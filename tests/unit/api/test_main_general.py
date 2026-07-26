@@ -238,12 +238,41 @@ class TestAuthCheckSession:
 
     def test_valid_session_returns_user_id_and_email(self, client):
         with patch(f"{_MAIN}.get_session_user_id", return_value=7), \
-             patch(f"{_MAIN}.get_user_email", return_value="me@example.com"):
+             patch(f"{_MAIN}.get_user_email", return_value="me@example.com"), \
+             patch(f"{_MAIN}.get_user_analytics_profile", return_value={}):
             resp = client.get(self.BASE, params={"session_token": "valid-token-abc"})
         assert resp.status_code == 200
         detail = resp.json()["detail"]
         assert detail["user_id"] == 7
         assert detail["email"] == "me@example.com"
+
+    def test_returns_person_facts_for_posthog_identify(self, client):
+        profile = {
+            "subscription_tier": "premium",
+            "subscription_status": "active",
+            "timezone": "America/Chicago",
+            "created_at": datetime(2026, 1, 2, 3, 4, 5),
+        }
+        with patch(f"{_MAIN}.get_session_user_id", return_value=7), \
+             patch(f"{_MAIN}.get_user_email", return_value="me@example.com"), \
+             patch(f"{_MAIN}.get_user_analytics_profile", return_value=profile):
+            resp = client.get(self.BASE, params={"session_token": "valid-token-abc"})
+        detail = resp.json()["detail"]
+        assert detail["plan"] == "premium"
+        assert detail["plan_status"] == "active"
+        assert detail["timezone"] == "America/Chicago"
+        assert detail["created_at"] == "2026-01-02T03:04:05Z"
+
+    def test_missing_profile_row_leaves_person_facts_null(self, client):
+        with patch(f"{_MAIN}.get_session_user_id", return_value=7), \
+             patch(f"{_MAIN}.get_user_email", return_value="me@example.com"), \
+             patch(f"{_MAIN}.get_user_analytics_profile", return_value={}):
+            resp = client.get(self.BASE, params={"session_token": "valid-token-abc"})
+        detail = resp.json()["detail"]
+        assert detail["plan"] is None
+        assert detail["plan_status"] is None
+        assert detail["timezone"] is None
+        assert detail["created_at"] is None
 
 
 # ---------------------------------------------------------------------------

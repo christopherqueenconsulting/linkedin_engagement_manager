@@ -1,0 +1,56 @@
+"""get_user_analytics_profile — the person facts the SPA identifies with (issue #646)."""
+
+import pytest
+from unittest.mock import MagicMock, patch
+from datetime import datetime
+
+import mysql.connector
+
+pytestmark = pytest.mark.unit
+
+_DB = "cqc_lem.utilities.db"
+
+
+def _conn(fetch_one=None):
+    conn = MagicMock()
+    cur = MagicMock()
+    cur.fetchone.return_value = fetch_one
+    conn.cursor.return_value = cur
+    return conn, cur
+
+
+class TestGetUserAnalyticsProfile:
+    def test_returns_plan_timezone_and_signup(self):
+        row = {
+            "subscription_tier": "premium",
+            "subscription_status": "active",
+            "timezone": "America/Chicago",
+            "created_at": datetime(2026, 1, 2, 3, 4, 5),
+        }
+        conn, cur = _conn(fetch_one=row)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_user_analytics_profile
+            assert get_user_analytics_profile(7) == row
+        assert cur.execute.call_args[0][1] == (7,)
+
+    def test_selects_no_credentials(self):
+        conn, cur = _conn(fetch_one={})
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_user_analytics_profile
+            get_user_analytics_profile(1)
+        sql = cur.execute.call_args[0][0].lower()
+        for secret in ("password", "access_token", "refresh_token", "linkedin"):
+            assert secret not in sql
+
+    def test_unknown_user_returns_empty_dict(self):
+        conn, _ = _conn(fetch_one=None)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_user_analytics_profile
+            assert get_user_analytics_profile(999) == {}
+
+    def test_db_error_returns_empty_dict(self):
+        conn, cur = _conn()
+        cur.execute.side_effect = mysql.connector.Error("boom")
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_user_analytics_profile
+            assert get_user_analytics_profile(1) == {}

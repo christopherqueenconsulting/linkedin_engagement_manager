@@ -1,0 +1,50 @@
+import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { SettingsSaveProvider, SaveAllBar, useRegisterSaveSection } from './SettingsSaveContext'
+
+const capture = vi.fn()
+vi.mock('../../utils/analytics', () => ({
+  capture: (...args: unknown[]) => capture(...args),
+  EVENTS: { prefsSaved: 'prefs_saved' },
+}))
+
+function Section({ id, save }: { id: string; save: () => Promise<boolean> }) {
+  useRegisterSaveSection(id, id, true, save)
+  return null
+}
+
+function harness(sections: { id: string; save: () => Promise<boolean> }[]) {
+  return render(
+    <SettingsSaveProvider>
+      {sections.map((s) => <Section key={s.id} id={s.id} save={s.save} />)}
+      <SaveAllBar />
+    </SettingsSaveProvider>
+  )
+}
+
+beforeEach(() => capture.mockClear())
+afterEach(cleanup)
+
+describe('prefs_saved instrumentation (issue #646)', () => {
+  it('reports one event per saved section, named by section', async () => {
+    harness([
+      { id: 'voice', save: () => Promise.resolve(true) },
+      { id: 'targeting', save: () => Promise.resolve(true) },
+    ])
+    fireEvent.click(screen.getByRole('button', { name: /Save All/ }))
+    await waitFor(() => expect(capture).toHaveBeenCalledTimes(2))
+    expect(capture).toHaveBeenCalledWith('prefs_saved', { section: 'voice', ok: true })
+    expect(capture).toHaveBeenCalledWith('prefs_saved', { section: 'targeting', ok: true })
+  })
+
+  it('records a failed save as ok:false rather than dropping it', async () => {
+    harness([
+      { id: 'voice', save: () => Promise.reject(new Error('500')) },
+      { id: 'volume', save: () => Promise.resolve(false) },
+    ])
+    fireEvent.click(screen.getByRole('button', { name: /Save All/ }))
+    await waitFor(() => expect(capture).toHaveBeenCalledTimes(2))
+    expect(capture).toHaveBeenCalledWith('prefs_saved', { section: 'voice', ok: false })
+    expect(capture).toHaveBeenCalledWith('prefs_saved', { section: 'volume', ok: false })
+  })
+})

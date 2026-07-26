@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
 import { formatInTimezone, zonedInputToUtcIso } from '../../utils/datetime'
+import { maskProps } from '../../utils/analytics'
 
 // Schedule 1:1 DMs to chosen recipients at chosen times (issue #306), mirroring the scheduled-posts
 // preview/approve workflow. Drafts are 'pending'; approving queues them for the scanner to send at
@@ -116,7 +117,7 @@ export default function ScheduledDMs({ userTimezone }: { userTimezone: string })
         </div>
         <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={3} maxLength={MSG_MAX}
           placeholder="Your message…"
-          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+          {...maskProps('w-full border border-gray-300 rounded-lg px-3 py-2 text-sm')} />
         <div className="flex flex-wrap items-center gap-3">
           <label className="flex items-center gap-2 text-xs text-gray-500">
             <input type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)}
