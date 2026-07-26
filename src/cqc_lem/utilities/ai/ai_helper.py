@@ -269,14 +269,24 @@ def get_or_create_profile_synthesis(user_id: int, profile: "LinkedInProfile" = N
 
 def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=None, post_comment: str = None,
                          prefs: dict = None, profile_synthesis: str = None,
-                         blueprint: dict = None, research: dict = None):
+                         blueprint: dict = None, research: dict = None,
+                         recent_comments: list = None, user_id: int = None):
     """Feed comment in the user's voice, GROUNDED IN THE TARGET POST (that contract never changes).
     `blueprint` assigns this comment's ANGLE from the shared comment menu (Expander, Storyteller,
     Questioner, ... — see content_framework) so a day's comments vary in approach; callers that track
     per-run rotation pass one in, otherwise a fresh angle is selected here. `research` is optional
     {'findings','sources'} background material — comment research is OFF by default (comments run at
     high volume; the target post is the primary grounding, see content_research cost policy), so a
-    normal call adds NO research API cost."""
+    normal call adds NO research API cost.
+
+    Every fresh feed comment must clear the QUALITY CONTRACT and the similarity gate before it ships
+    (issue #617): a draft that opens on validation filler, misses the target post's specifics, adds
+    nothing, or near-duplicates one of `recent_comments` is regenerated with an explicit fix-list up
+    to `comment_gate_max_attempts()` times — and if it still fails, this returns None so the caller
+    SKIPS the post. A template comment costs reach; a skipped post costs one comment.
+
+    Replying to a specific comment (`post_comment`) keeps its own acknowledge-and-answer contract and
+    is not gated here."""
     image_attached = "(image attached)" if post_img_url else ""
     _no_hashtags = "" if (prefs and prefs.get("use_hashtags")) else " without using any hashtags"
     user_comment = f"\n\nRespond to this Comment Directly: <comment>{post_comment}</comment>\n\nYou are responding as the author of the LinkedIn Content. Keep your response short and sweet{_no_hashtags}.\n\n" if post_comment else ""
@@ -348,6 +358,7 @@ def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=No
           preamble, no sign-off, no hashtags/emojis unless explicitly allowed below.
 
         Output ONLY the final comment text — no quotes, no labels, no explanation.""" + blueprint_block
+        + (_framework.comment_contract_directive() if post_comment is None else "")
     }
 
     # User prompt to be sent with each API call
@@ -356,27 +367,56 @@ def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=No
         "content": content
     }
 
-    response = _call_llm(
-        model="lem-medium",
-        messages=[system_prompt, user_message],  # System prompt + current user prompt
-        temperature=round(random.uniform(0.4, 0.6), 2),  # Rand temp between .5 and .7
+    def _draft(fix_directive: str = "") -> "str | None":
+        response = _call_llm(
+            model="lem-medium",
+            messages=[{"role": "system", "content": system_prompt["content"] + fix_directive},
+                      user_message],
+            temperature=round(random.uniform(0.4, 0.6), 2),  # Rand temp between .5 and .7
 
-        # Balances coherent response generation with some degree of creative variation.
-        top_p=round(random.uniform(0.8, 0.9), 2),
-        # Reduces repetition in common responses.
-        frequency_penalty=round(random.uniform(0.2, 0.4), 2),
-        # Supports fresh responses aligned with user-specific tone.
-        presence_penalty=round(random.uniform(0.3, 0.5), 2),
+            # Balances coherent response generation with some degree of creative variation.
+            top_p=round(random.uniform(0.8, 0.9), 2),
+            # Reduces repetition in common responses.
+            frequency_penalty=round(random.uniform(0.2, 0.4), 2),
+            # Supports fresh responses aligned with user-specific tone.
+            presence_penalty=round(random.uniform(0.3, 0.5), 2),
 
-        # max_tokens=150  # Set token limit as required
-    )
+            # max_tokens=150  # Set token limit as required
+        )
+        text = response.choices[0].message.content
+        if text is None:
+            return None
+        # Humanization pass (issue #416 — A5): de-slop the comment before it's posted.
+        return _humanize_text(text.strip(), content_type="comment",
+                              profile_synthesis=profile_synthesis, prefs=prefs)
 
-    content = response.choices[0].message.content
-    if content is None:
-        return None
-    # Humanization pass (issue #416 — A5): de-slop the comment before it's posted.
-    return _humanize_text(content.strip(), content_type="comment",
-                          profile_synthesis=profile_synthesis, prefs=prefs)
+    if post_comment is not None:
+        return _draft()
+
+    # The quality contract + similarity gate run on the FINAL text (post-humanization) — what would
+    # actually ship — so nothing downstream can reintroduce a banned opener.
+    fix_directive = ""
+    attempts = _framework.comment_gate_max_attempts()
+    for attempt in range(1, attempts + 1):
+        candidate = _draft(fix_directive)
+        if candidate is None:
+            return None
+        report = _framework.comment_contract_report(candidate, str(post_content or ""))
+        similar = _framework.comment_similarity_report(candidate, recent_comments)
+        if report["passes"] and not similar["too_similar"]:
+            return candidate
+        failures = list(report["failures"])
+        if similar["too_similar"]:
+            failures.append(f"near-duplicate of a recent comment ({similar['measure']} similarity "
+                            f"{similar['score']:.2f} > max {similar['threshold']:.2f})")
+        log_debug(f"Comment draft rejected (attempt {attempt}/{attempts}): {'; '.join(failures)}",
+                  user_id=user_id, action_type="comment")
+        if attempt < attempts:
+            fix_directive = _framework.comment_retry_directive(
+                failures, offending_comment=similar["match"] if similar["too_similar"] else None)
+    log_warning(f"Comment failed the quality contract after {attempts} attempt(s) — skipping this "
+                f"post: {'; '.join(failures)}", user_id=user_id, action_type="comment")
+    return None
 
 
 # LinkedIn's reaction set, safest-first (also the random-fallback preference order). 'Funny' is

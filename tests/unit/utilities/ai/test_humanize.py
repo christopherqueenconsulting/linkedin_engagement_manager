@@ -340,15 +340,20 @@ class TestGeneratorsRouteThroughHumanize:
         from cqc_lem.utilities.ai import ai_helper
         seen = {}
 
+        # The humanized text is what the comment quality gate grades (issue #617), so the spy
+        # returns a contract-clearing comment rather than a bare marker string.
+        humanized = ("Your post on the target number is the part I'd push on. We tried that last "
+                     "month and it slowed us down.")
+
         def _spy(text, content_type="post", **kw):
             seen["content_type"] = content_type
-            return "HUMANIZED-COMMENT"
+            return humanized
 
         with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_llm_reply("raw comment")), \
              patch("cqc_lem.utilities.ai.ai_helper.research_topic", return_value={}), \
              patch("cqc_lem.utilities.ai.ai_helper._humanize_text", side_effect=_spy):
             out = ai_helper.generate_ai_response("a target post", self._profile())
-        assert out == "HUMANIZED-COMMENT"
+        assert out == humanized
         assert seen["content_type"] == "comment"
 
     def test_seed_comment_routes_through(self, monkeypatch):

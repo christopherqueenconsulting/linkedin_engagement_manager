@@ -8,6 +8,7 @@ This generalizes the newsletter-only blueprint system (V50): the newsletter menu
 posts/comments now rotate through their own menus with the same guarantees — no two consecutive
 pieces share a format or hook style, and nothing repeats within the recent-history window."""
 
+import json
 import os
 import random
 import re
@@ -473,6 +474,20 @@ COMMENT_FORMATS: dict = {
             "End with a question asking the author how they handle that part",
         ],
     },
+    # Completes the rotation's coverage of the four contract value-adds below (experience →
+    # storyteller, disagreement → respectful_contrarian, question → questioner, DATA → here).
+    "evidence_add": {
+        "label": "Evidence Add",
+        "guidance": ("Bring ONE concrete number, benchmark, or measured result that supports or "
+                     "complicates the post's specific claim — a real figure the commenter actually "
+                     "knows, never an invented statistic. If no real number is available, use a "
+                     "measured observation from their own work instead."),
+        "structure": [
+            "Name the specific claim in the post the number speaks to",
+            "The number or measured result, with where it came from",
+            "End with a question asking whether the author sees the same numbers",
+        ],
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -905,6 +920,43 @@ def text_similarity(a: str, b: str) -> float:
     return len(ta & tb) / min(len(ta), len(tb))
 
 
+def cosine_similarity(a: Optional[list], b: Optional[list]) -> float:
+    """Cosine of two equal-length embedding vectors, clamped to 0.0-1.0. Mismatched lengths,
+    empties, and zero-norm vectors are 0.0 (not an error) so a half-written embedding can never
+    claim a match. Negative cosines are clamped to 0.0 — "less than unrelated" is still unrelated.
+
+    Lives here, next to `text_similarity`, because this module is the ONE similarity toolbox every
+    dedup gate shares: the feedback loop's duplicate detection imports it from here (issue #498),
+    and so does the comment-side gate below (issue #617)."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    try:
+        dot = sum(float(x) * float(y) for x, y in zip(a, b))
+        norm_a = sum(float(x) * float(x) for x in a) ** 0.5
+        norm_b = sum(float(y) * float(y) for y in b) ** 0.5
+    except (TypeError, ValueError):
+        return 0.0
+    if norm_a <= 0 or norm_b <= 0:
+        return 0.0
+    return max(0.0, min(1.0, dot / (norm_a * norm_b)))
+
+
+def as_vector(raw: object) -> Optional[list]:
+    """An embedding as a list of floats. A stored one (`feedback.embedding` is a JSON column) comes
+    back as a str on some connector versions and a list on others; junk becomes None."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    if not isinstance(raw, list) or not raw:
+        return None
+    try:
+        return [float(x) for x in raw]
+    except (TypeError, ValueError):
+        return None
+
+
 def find_most_similar(text: str, candidates: list) -> tuple:
     """(best_score, best_candidate_text) of `text` against each candidate; (0.0, None) when there is
     nothing to compare."""
@@ -1212,3 +1264,313 @@ def post_writing_directive() -> str:
         + dwell_directive()
         + "\n- Output ONLY the final post text — no quotes, no labels, no explanation.\n"
     )
+
+
+# ---------------------------------------------------------------------------
+# COMMENT QUALITY CONTRACT v2 + comment-side similarity gate (issue #617 / G2). Sampled production
+# comments opened with "I totally agree that...", ran one [validate]+[generic insight]+[question]
+# template, and near-duplicated each other across different posts the same day — exactly the
+# semantic-sameness + pattern signal LinkedIn's May 2026 crackdown demotes out of "Most Relevant".
+# Posts already had a similarity gate (POST_SIMILARITY_MAX above); comments had nothing.
+#
+# Both halves live HERE, in the shared core, so the writer side and the checking side can never
+# drift (and so no parallel comment-only helper module appears):
+#   - `comment_contract_directive()` steers generation — what a comment MUST carry, what it may
+#     never open with, and the "write for the post's READERS, add what the post missed" framing.
+#   - `comment_contract_report()` measures the finished draft deterministically (no LLM, no I/O),
+#     and `comment_similarity_report()` rejects a draft that repeats the user's own recent comments.
+# The caller (ai_helper.generate_ai_response) regenerates a failing draft a bounded number of times
+# and then ships NOTHING — a skipped post costs one comment; a template comment costs reach.
+# ---------------------------------------------------------------------------
+
+# A one-liner reads as bot noise no matter how on-topic it is.
+COMMENT_MIN_SENTENCES = 2
+# How many of the user's most recent posted comments a fresh draft is deduped against.
+COMMENT_HISTORY_LIMIT = 50
+# Meaningful tokens a draft must share with the target post to count as "references a SPECIFIC
+# claim from it". Capped by what the post actually offers, so a very short post stays gradeable.
+COMMENT_POST_REFERENCE_TOKENS = 3
+# Total generation attempts before the post is skipped (initial draft + regenerations).
+COMMENT_GATE_MAX_ATTEMPTS_DEFAULT = 3
+# Embedding cosine ABOVE which two comments are "the same comment again" (the gate rejects on
+# `score > threshold`, matching the post gate's strictly-greater comparison). Deliberately NOT
+# the POST_SIMILARITY_MAX value: that ceiling grades TOKEN-SET OVERLAP, where two unrelated texts
+# score ~0.2-0.4, while two unrelated professional comments still embed at cosine ~0.4-0.6. 0.82 is
+# the same "same underlying text" cosine bar the feedback-dedup uses, and it is what the lexical
+# ceiling below (which IS the post gate's scale) mirrors on the fallback path.
+COMMENT_SIMILARITY_MAX_DEFAULT = 0.82
+COMMENT_LEXICAL_SIMILARITY_MAX_DEFAULT = POST_SIMILARITY_MAX_DEFAULT
+COMMENT_EMBEDDING_MODEL = "lem-embedding"
+# Comments are short; this only guards against a pathological log row inflating the embed call.
+COMMENT_EMBED_CHARS = 2000
+
+# The validation-filler openers a comment may never start on — the exact tells sampled from
+# production logs 89-96. Extend per-deploy with COMMENT_FILLER_OPENERS (never shrink: these are
+# the pattern LinkedIn scores against).
+COMMENT_FILLER_OPENERS: tuple = (
+    # The seven named in issue #617 come first — `comment_contract_directive` shows the head of
+    # this tuple to the writer, so the canonical tells are the ones it always names.
+    "i totally agree", "you raise an excellent", "great post", "spot on", "so insightful",
+    "love this", "well said",
+    # Same-shape siblings observed alongside them.
+    "totally agree", "i completely agree", "couldn't agree more", "could not agree more",
+    "you raise a great", "you make an excellent", "you make a great",
+    "great point", "great insight", "great read", "great take",
+    "very insightful", "well put", "thanks for sharing", "this resonates", "so true",
+)
+
+# Only the OPENING of a comment is graded for filler — "Great point about the 40% figure" two
+# paragraphs in is a callback, not a validation opener. Two sentences covers the "Wow. Great
+# post!" shape without reaching into the body.
+_OPENER_SCAN_SENTENCES = 2
+
+# A comment carrying a real number is bringing evidence rather than vibes.
+_DATA_POINT_RE = re.compile(
+    r"\d|\b(?:percent|dozens?|hundreds?|thousands?|millions?|billions?)\b", re.IGNORECASE)
+
+# Respectful disagreement — the highest-value comment there is, and the one a validation template
+# never produces.
+_DISAGREEMENT_RE = re.compile(
+    r"\b(?:disagree|push ?back|counter-?point|one caveat|the catch|less convinced|"
+    r"not (?:so )?sure|i'?d (?:argue|challenge|question|push)|"
+    r"where i (?:differ|part ways)|the other way (?:a)?round|in practice though)\b",
+    re.IGNORECASE)
+
+# First-hand experience: the commenter did the thing, not just read about it.
+_EXPERIENCE_CUE_RE = re.compile(
+    r"\b(?:in my experience|when (?:i|we)|our team|i'?ve|we'?ve|i had|we had)\b"
+    r"|\b(?:i|we)\s+(?:once\s+|just\s+|recently\s+|actually\s+)?"
+    r"(?:ran|run|tried|built|shipped|tested|worked|saw|watched|noticed|found|learned|spent|"
+    r"switched|started|stopped|used|measured|rebuilt|rewrote|hired|migrated)\b",
+    re.IGNORECASE)
+
+# Reflex closers that ask for a reply without giving one anywhere to go — they do NOT count as the
+# contract's "genuine question" value-add.
+_GENERIC_QUESTIONS: frozenset = frozenset({
+    "thoughts", "agree", "right", "what do you think", "any thoughts", "am i wrong", "who else",
+    "make sense", "sound familiar", "curious what others think",
+})
+
+_SMART_PUNCTUATION = str.maketrans({"’": "'", "‘": "'", "“": '"', "”": '"'})
+
+
+def _plain(text: Optional[str]) -> str:
+    """Lowercased text with smart quotes folded to ASCII, so 'couldn’t' and "couldn't" match
+    the same ban entry."""
+    return (text or "").translate(_SMART_PUNCTUATION).lower()
+
+
+def _sentences(text: Optional[str]) -> list:
+    return [s.strip() for s in _PROOF_SENTENCE_SPLIT.split(text or "") if s.strip()]
+
+
+def comment_filler_openers() -> tuple:
+    """The banned validation-filler openers, read at call time (the POST_SIMILARITY_MAX live-env
+    pattern). `COMMENT_FILLER_OPENERS` (comma-separated) EXTENDS the built-in list so ops can ban a
+    newly-observed tell without a deploy; it can never shrink it."""
+    raw = (os.environ.get("COMMENT_FILLER_OPENERS") or "").split(",")
+    extra = [p.strip().lower() for p in raw]
+    return COMMENT_FILLER_OPENERS + tuple(
+        p for p in dict.fromkeys(extra) if p and p not in COMMENT_FILLER_OPENERS)
+
+
+def filler_openers_found(text: Optional[str]) -> list:
+    """Every banned filler phrase present in the comment's OPENING. The trailing guard keeps
+    "a great post-mortem" from matching the "great post" ban."""
+    opening = _plain(" ".join(_sentences(text)[:_OPENER_SCAN_SENTENCES]))
+    return [p for p in comment_filler_openers()
+            if re.search(rf"\b{re.escape(p)}\b(?![-\w])", opening)]
+
+
+def references_post(comment: Optional[str], post_content: Optional[str]) -> bool:
+    """True when the comment demonstrably engages with THIS post: it shares enough meaningful
+    (non-stopword) vocabulary with the post that it could not sit unchanged under a different one.
+    A post with no extractable content can't be graded against, so it passes rather than burning
+    regenerations on a grounding we cannot check."""
+    post_words = content_tokens(post_content)
+    if not post_words:
+        return True
+    shared = content_tokens(comment) & post_words
+    return len(shared) >= min(COMMENT_POST_REFERENCE_TOKENS, len(post_words))
+
+
+def has_genuine_question(text: Optional[str]) -> bool:
+    """True when the comment asks something the author has to think about — a reflex closer
+    ("Thoughts?", "Agree?") does not count."""
+    for sentence in _sentences(text):
+        if not sentence.endswith("?"):
+            continue
+        if _plain(sentence).strip("?!. ") in _GENERIC_QUESTIONS:
+            continue
+        if len(content_tokens(sentence)) >= 3:
+            return True
+    return False
+
+
+def comment_value_adds(text: Optional[str]) -> list:
+    """Which of the contract's four value-adds the comment actually carries: own experience, a data
+    point, respectful disagreement, or a genuine question."""
+    found = []
+    if any(_EXPERIENCE_CUE_RE.search(s) for s in _sentences(text)):
+        found.append("experience")
+    if _DATA_POINT_RE.search(text or ""):
+        found.append("data_point")
+    if _DISAGREEMENT_RE.search(text or ""):
+        found.append("disagreement")
+    if has_genuine_question(text):
+        found.append("question")
+    return found
+
+
+def comment_contract_report(comment: Optional[str], post_content: Optional[str] = None) -> dict:
+    """Grade one finished comment draft against the quality contract. Deterministic — no LLM, no
+    I/O — so the same draft always gets the same verdict and the tests can assert it.
+
+    `value_add` requires AT LEAST one of the four, not exactly one: every comment blueprint closes
+    on a question by design, so an exactly-one rule would reject every well-formed draft that also
+    brought experience or a number — the opposite of what the contract is for."""
+    text = (comment or "").strip()
+    fillers = filler_openers_found(text)
+    value_adds = comment_value_adds(text)
+    checks = {
+        "not_empty": bool(text),
+        "min_sentences": len(_sentences(text)) >= COMMENT_MIN_SENTENCES,
+        "no_filler_opener": not fillers,
+        "references_post": references_post(text, post_content),
+        "value_add": bool(value_adds),
+    }
+    failures = []
+    if not checks["not_empty"]:
+        failures.append("empty comment")
+    if not checks["min_sentences"]:
+        failures.append(f"fewer than {COMMENT_MIN_SENTENCES} sentences")
+    if not checks["no_filler_opener"]:
+        failures.append("opens with validation filler (" + ", ".join(fillers) + ")")
+    if not checks["references_post"]:
+        failures.append("does not reference a specific claim from the target post")
+    if not checks["value_add"]:
+        failures.append("adds no experience, data point, disagreement, or genuine question")
+    return {"passes": all(checks.values()), "checks": checks, "failures": failures,
+            "value_adds": value_adds, "filler_openers": fillers}
+
+
+def meets_comment_contract(comment: Optional[str], post_content: Optional[str] = None) -> bool:
+    """True when the draft satisfies every rule of the comment quality contract."""
+    return comment_contract_report(comment, post_content)["passes"]
+
+
+def comment_similarity_max() -> float:
+    """Embedding-cosine ceiling for a fresh comment vs the user's recent ones, read at call time
+    (the POST_SIMILARITY_MAX live-env pattern) so ops can tune COMMENT_SIMILARITY_MAX without a
+    restart."""
+    raw = (os.environ.get("COMMENT_SIMILARITY_MAX") or "").strip()
+    try:
+        return float(raw) if raw else COMMENT_SIMILARITY_MAX_DEFAULT
+    except ValueError:
+        return COMMENT_SIMILARITY_MAX_DEFAULT
+
+
+def comment_lexical_similarity_max() -> float:
+    """Token-overlap ceiling used when embeddings are unavailable — the post gate's scale and
+    default, so the fallback path stays as strict as the one comments were missing."""
+    raw = (os.environ.get("COMMENT_LEXICAL_SIMILARITY_MAX") or "").strip()
+    try:
+        return float(raw) if raw else COMMENT_LEXICAL_SIMILARITY_MAX_DEFAULT
+    except ValueError:
+        return COMMENT_LEXICAL_SIMILARITY_MAX_DEFAULT
+
+
+def comment_gate_max_attempts() -> int:
+    """Total generation attempts the comment gate may spend on one post before skipping it."""
+    raw = (os.environ.get("COMMENT_GATE_MAX_ATTEMPTS") or "").strip()
+    try:
+        return max(1, min(5, int(raw))) if raw else COMMENT_GATE_MAX_ATTEMPTS_DEFAULT
+    except ValueError:
+        return COMMENT_GATE_MAX_ATTEMPTS_DEFAULT
+
+
+def embed_comments(texts: list) -> Optional[list]:
+    """Embed a batch of comment texts in ONE `lem-embedding` call (the draft plus the history it is
+    compared against). Returns None on any failure — the caller then grades with the deterministic
+    token-overlap measure, never with "nothing is similar"."""
+    batch = [str(t or "")[:COMMENT_EMBED_CHARS] for t in (texts or [])]
+    if not batch or not all(batch):
+        return None
+    try:
+        # Lazy imports keep this module's import graph free of the AI client and the logger.
+        from cqc_lem.utilities.ai.client import client
+        response = client.embeddings.create(model=COMMENT_EMBEDDING_MODEL, input=batch)
+        rows = sorted(response.data, key=lambda row: getattr(row, "index", 0) or 0)
+        vectors = [as_vector(list(row.embedding)) for row in rows]
+    except Exception as exc:
+        from cqc_lem.utilities.logger import log_warning
+        log_warning("Comment embedding failed — dedup falls back to token overlap", exc=exc,
+                    ai_model=COMMENT_EMBEDDING_MODEL)
+        return None
+    if len(vectors) != len(batch) or not all(vectors):
+        return None
+    return vectors
+
+
+def comment_similarity_report(draft: Optional[str], recent_comments: list) -> dict:
+    """How close a fresh comment sits to the user's own last `COMMENT_HISTORY_LIMIT` comments.
+    Prefers embedding cosine (it catches the same comment reworded into different vocabulary, which
+    is exactly what a template produces) and degrades to token overlap when the embedding endpoint
+    is unavailable — each measure graded against its OWN ceiling. Empty history ⇒ no API call at
+    all, so a first-ever comment costs nothing."""
+    text = (draft or "").strip()
+    history = [c.strip() for c in (recent_comments or []) if (c or "").strip()][:COMMENT_HISTORY_LIMIT]
+    if not text or not history:
+        return {"score": 0.0, "threshold": comment_similarity_max(), "match": None,
+                "measure": "none", "too_similar": False}
+    vectors = embed_comments([text] + history)
+    if vectors:
+        threshold = comment_similarity_max()
+        scores = [cosine_similarity(vectors[0], v) for v in vectors[1:]]
+        measure = "embedding"
+    else:
+        threshold = comment_lexical_similarity_max()
+        scores = [text_similarity(text, c) for c in history]
+        measure = "lexical"
+    best = max(range(len(scores)), key=lambda i: scores[i])
+    return {"score": round(scores[best], 4), "threshold": threshold, "match": history[best],
+            "measure": measure, "too_similar": scores[best] > threshold}
+
+
+def comment_contract_directive() -> str:
+    """The WRITER-side contract injected into every fresh feed-comment prompt. Rule 5 is the "Tip
+    #8" framing: a comment's audience is the post's READERS, and its job is to add what the post
+    missed — flattery for the author earns nothing and is what the 2026 ranking demotes."""
+    banned = ", ".join(f"'{p}'" for p in comment_filler_openers()[:8])
+    return (
+        "\n\nCOMMENT QUALITY CONTRACT — a draft that misses ANY of these is thrown away and "
+        "rewritten, so satisfy all of them:\n"
+        "1. REFERENCE A SPECIFIC CLAIM from the post — quote or paraphrase the actual sentence, "
+        "number, or example you are responding to. A comment that could sit unchanged under any "
+        "other post has already failed.\n"
+        "2. ADD AT LEAST ONE thing the post did not have: a first-hand experience of your own, a "
+        "concrete data point you actually know, a respectful disagreement, or a genuinely curious "
+        "question the post leaves open. One done well beats a checklist of all four, and never "
+        "invent a statistic to satisfy this.\n"
+        f"3. AT LEAST {COMMENT_MIN_SENTENCES} sentences. A one-liner reads as a bot.\n"
+        f"4. NEVER open with validation filler — banned openers include {banned}. Open on the "
+        "substance: the specific claim you are engaging with.\n"
+        "5. WRITE FOR THE POST'S READERS, NOT ITS AUTHOR. Your job is to add what the post missed "
+        "so the next person scrolling the thread learns something. Flattery adds nothing, and "
+        "LinkedIn's 2026 ranking demotes comments that only validate.\n"
+        "6. Use your own words and rhythm every time — never reuse the shape, opening, or phrasing "
+        "of a comment you have already left on another post.\n"
+    )
+
+
+def comment_retry_directive(failures: list, offending_comment: Optional[str] = None) -> str:
+    """The regeneration steer after a draft fails the gate: name exactly what went wrong and, for a
+    near-duplicate, show the earlier comment the retry must not resemble."""
+    lines = ["\n\nYOUR PREVIOUS DRAFT WAS REJECTED. Fix ALL of this and write a genuinely "
+             "different comment:"]
+    lines += [f"- {reason}" for reason in (failures or []) if reason]
+    if offending_comment:
+        lines.append("- It was too close to a comment this author already left elsewhere. Take a "
+                     "different angle, a different opening, and different words than:\n  \""
+                     + str(offending_comment).strip()[:400] + "\"")
+    return "\n".join(lines) + "\n"

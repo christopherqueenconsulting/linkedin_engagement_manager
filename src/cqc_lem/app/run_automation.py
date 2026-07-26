@@ -43,7 +43,7 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     update_db_post_content, update_db_post_first_comment_link, get_post_first_comment_link, \
     get_dm_history_for_profile, get_post_status, get_user_blog_url, get_post_type, get_carousel_slides, \
     get_dm_template, enqueue_followup, get_due_followups, mark_followup, stop_followups_for_profile, \
-    set_profile_synthesis, get_duplicate_comment_posts, count_dms_sent_today, \
+    set_profile_synthesis, get_duplicate_comment_posts, get_recent_comment_texts, count_dms_sent_today, \
     get_approved_outreach_targets, update_outreach_target, update_outreach_target_status, \
     OutreachStage, OutreachStatus, insert_outreach_target, get_outreach_target_by_url, \
     insert_lead_signal, has_lead_signal, get_lead_signal, update_lead_signal, \
@@ -1133,21 +1133,26 @@ def get_feed_funnel(user_id: int) -> "dict | None":
 
 def _engage_card(driver, wait, my_profile: LinkedInProfile, user_id: int, card, key: str,
                  content: str, author: str, prefs: dict, profile_synthesis,
-                 used_comment_shapes: list) -> bool:
+                 used_comment_shapes: list, recent_comments: list = None) -> bool:
     """Claim -> generate -> react -> comment on ONE post card. True only when the comment actually
     landed. Shared by the roster pass and the feed walk so both go through the same at-most-once
-    claim, the same per-run blueprint rotation, and the same react-before-submit ordering."""
+    claim, the same per-run blueprint rotation, and the same react-before-submit ordering.
+
+    `recent_comments` is the user's own recent comment history (newest first) that the quality gate
+    dedups this draft against; a comment that lands is prepended to it, so two posts in the SAME run
+    can't get near-identical comments either (issue #617)."""
     if not claim_post_for_comment(user_id, key):
         return False
     comment_blueprint = select_blueprint("comment", recent_formats=used_comment_shapes)
     with llm_attribution(user_id=user_id, feature=FEATURE_COMMENT):
         comment_text = generate_ai_response(content, my_profile, None, prefs=prefs,
                                             profile_synthesis=profile_synthesis,
-                                            blueprint=comment_blueprint)
+                                            blueprint=comment_blueprint,
+                                            recent_comments=recent_comments, user_id=user_id)
     if comment_text and comment_blueprint.get("format"):
         used_comment_shapes.insert(0, comment_blueprint["format"])
     if not comment_text:
-        release_post_claim(user_id, key)  # no comment generated — release the claim
+        release_post_claim(user_id, key)  # no comment generated (or none cleared the quality gate)
         return False
     driver.execute_script("arguments[0].scrollIntoView({block:'center'});", card)
     time.sleep(simulate_reading_time(content) / 2 + simulate_thinking_time())
@@ -1166,13 +1171,15 @@ def _engage_card(driver, wait, my_profile: LinkedInProfile, user_id: int, card, 
     mark_post_commented(user_id, key)
     insert_new_log(user_id=user_id, action_type=LogActionType.COMMENT,
                    result=LogResultType.SUCCESS, post_url=key, message=comment_text)
+    if recent_comments is not None:
+        recent_comments.insert(0, comment_text)
     time.sleep(random.uniform(6, 14))  # human pacing between comments
     return True
 
 
 def comment_on_roster_posts(driver, wait, my_profile: LinkedInProfile, user_id: int, max_posts: int,
                             prefs: dict, profile_synthesis, used_comment_shapes: list, seen: set,
-                            deadline_ts: float = None) -> dict:
+                            deadline_ts: float = None, recent_comments: list = None) -> dict:
     """Comment on the user's CURATED engagement roster before the home feed ever gets a look
     (issue #616): each selected target's recent-activity page is opened, and the first post that
     clears hard excludes, the dedup ledger and the on-topic gate gets a comment.
@@ -1238,7 +1245,7 @@ def comment_on_roster_posts(driver, wait, my_profile: LinkedInProfile, user_id: 
                          task_name="comment_on_roster_posts")
                 continue
             if _engage_card(driver, wait, my_profile, user_id, card, key, content, author, prefs,
-                            profile_synthesis, used_comment_shapes):
+                            profile_synthesis, used_comment_shapes, recent_comments):
                 posted_here += 1
                 stats["posted"] += 1
                 stats["commented_key_sources"][key_source] = \
@@ -1283,13 +1290,23 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     # shape history, and per-run rotation is what a reader of the same feed would notice.
     used_comment_shapes: list = []
 
+    # The user's own recent comments — what the comment-side similarity gate dedups each fresh draft
+    # against (issue #617). Loaded once per run and appended to as comments land, so neither a
+    # rewording of yesterday's comment nor two near-identical comments in this run can ship.
+    try:
+        recent_comments: list = list(get_recent_comment_texts(user_id))
+    except Exception as e:
+        log_warning("Could not load recent comment history; similarity gate degrades to none",
+                    exc=e, user_id=user_id, action_type="comment")
+        recent_comments = []
+
     posted, seen, scrolls = 0, set(), 0
     # Roster FIRST (issue #616): curated peers / ICP / large creators outrank whatever the home
     # feed happens to serve. An empty roster returns zeros here and the run degrades to the plain
     # feed walk below. `seen` is shared, so a roster post can never be re-commented from the feed.
     roster_stats = comment_on_roster_posts(driver, wait, my_profile, user_id, max_posts, prefs,
                                            profile_synthesis, used_comment_shapes, seen,
-                                           deadline_ts=deadline_ts)
+                                           deadline_ts=deadline_ts, recent_comments=recent_comments)
     posted = roster_stats["posted"]
     off_topic_skipped = 0
 
@@ -1401,7 +1418,7 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             # a prior/concurrent run already holds it, we lose the race there and move on — at most
             # one comment per post per user, across the pre-post run, the golden-hour run, and retries.
             if _engage_card(driver, wait, my_profile, user_id, card, key, content, author, prefs,
-                            profile_synthesis, used_comment_shapes):
+                            profile_synthesis, used_comment_shapes, recent_comments):
                 posted_key_sources[key_source] = posted_key_sources.get(key_source, 0) + 1
                 log_info(f"Feed comment keyed by {key_source} ({key})", user_id=user_id,
                          action_type="comment", task_name="comment_on_feed_inline")
@@ -3550,9 +3567,21 @@ def generate_and_post_comment(driver, wait, post_link, my_profile: LinkedInProfi
         log_warning("Could not load engagement preferences for comment; generating with defaults",
                     exc=e, user_id=user_id, action_type="comment")
         prefs = None
+    try:
+        recent_comments = list(get_recent_comment_texts(user_id))
+    except Exception as e:
+        log_warning("Could not load recent comment history; similarity gate degrades to none",
+                    exc=e, user_id=user_id, action_type="comment")
+        recent_comments = []
     with llm_attribution(user_id=user_id, feature=FEATURE_COMMENT):
         comment_text = generate_ai_response(content, my_profile, img_url, prefs=prefs,
-                                            profile_synthesis=profile_synthesis)
+                                            profile_synthesis=profile_synthesis,
+                                            recent_comments=recent_comments, user_id=user_id)
+
+    if not comment_text:
+        log_info("No comment cleared the quality contract for this post — skipping",
+                 user_id=user_id, action_type="comment")
+        return False
 
     myprint(f"AI Generated Comment: {comment_text}")
     # Simulate typing the AI-generated comment

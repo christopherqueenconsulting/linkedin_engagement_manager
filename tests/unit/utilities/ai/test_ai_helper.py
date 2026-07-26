@@ -8,6 +8,11 @@ from unittest.mock import MagicMock, patch, call
 @pytest.mark.unit
 class TestGenerateAiResponse:
     def test_calls_api_and_returns_string(self, mock_openai_client, sample_linkedin_profile):
+        # The draft has to clear the comment quality contract (issue #617) to be returned at all:
+        # grounded in the target post, 2+ sentences, a real value-add, no validation-filler opener.
+        mock_openai_client.chat.completions.create.return_value.choices[0].message.content = (
+            "Your point about AI writing every comment is the one I keep hitting. We tried it on "
+            "40 posts last month and replies dropped. What made you write about it now?")
         with patch("cqc_lem.utilities.ai.ai_helper.client", mock_openai_client):
             from cqc_lem.utilities.ai.ai_helper import generate_ai_response
             from cqc_lem.utilities.linkedin.profile import LinkedInProfile
