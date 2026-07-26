@@ -18,6 +18,7 @@ from cqc_lem.utilities.db import (
     get_onboarding_nudges_sent, record_onboarding_nudge,
     get_engagement_preferences, has_engagement_preferences, has_linkedin_session,
     has_post_with_status, has_automated_engagement, get_user_subscription_info,
+    count_story_bank_entries, STORY_BANK_TARGET_ENTRIES,
 )
 from cqc_lem.utilities.logger import log_info, log_warning
 
@@ -49,6 +50,7 @@ NUDGE_CONNECT = "connect_linkedin"
 NUDGE_VOICE = "set_voice"
 NUDGE_FIRST_POST = "approve_post"
 NUDGE_TRIAL_ENDING = "trial_ending"
+NUDGE_STORY_BANK = "seed_story_bank"
 
 # Step nudges, in checklist order: the earliest incomplete step whose grace period has elapsed wins.
 _STEP_NUDGES: tuple = (
@@ -86,6 +88,24 @@ _STEP_NUDGES: tuple = (
         "cta_path": "/content?tab=review",
     },
 )
+
+# Story bank seeding (issue #620). Not a checklist STEP — automation runs fine without it — but an
+# empty bank is the difference between posts anchored to something the user actually did and posts
+# that read like anyone could have written them. Fires once the voice is set (so it never competes
+# with the blocking setup steps) and only while the bank is under the target.
+STORY_BANK_AFTER_HOURS = 48
+_STORY_BANK_NUDGE: dict = {
+    "key": NUDGE_STORY_BANK,
+    "step": OnboardingStep.VOICE_SET,
+    "subject": "Give LEM 5 things only you could write about",
+    "headline": "Your posts need your stories, not just your voice",
+    "body": ("LEM knows how you sound — it doesn't yet know what you've actually done. Drop in "
+             "5–10 quick entries: a real number, a client win, a mistake you made, an opinion you "
+             "hold. Every post gets anchored to one of them, and nothing outside them gets "
+             "invented."),
+    "cta_label": "Add your stories",
+    "cta_path": "/account?section=content",
+}
 
 # Sent when the trial is within this many days of ending and the user still hasn't activated.
 TRIAL_ENDING_WITHIN_DAYS = 3
@@ -164,13 +184,15 @@ def _track_step(user_id: int, step: "OnboardingStep", started_at: Optional[datet
 def select_nudge(steps: dict, started_at: Optional[datetime] = None,
                  trial_ends_at: Optional[datetime] = None, sent_keys=(),
                  last_sent_at: Optional[datetime] = None,
-                 now: Optional[datetime] = None) -> Optional[dict]:
+                 now: Optional[datetime] = None,
+                 story_bank_count: Optional[int] = None) -> Optional[dict]:
     """The next-best nudge for a stalled user, or None when there's nothing worth sending.
 
     Rules: activated users are never nudged; each nudge sends at most once (`sent_keys`); at most one
     nudge per NUDGE_COOLDOWN_HOURS (`last_sent_at`); a step nudge only fires once its grace period
-    has elapsed since `started_at`; the earliest incomplete step wins, and the trial-ending nudge is
-    the fallback once the blocking step has already been nudged."""
+    has elapsed since `started_at`; the earliest incomplete step wins, then the story-bank seeding
+    nudge, and the trial-ending nudge is the fallback once the blocking step has already been
+    nudged."""
     now = now or datetime.now()
     if steps.get(OnboardingStep.ACTIVATED):
         return None
@@ -189,6 +211,12 @@ def select_nudge(steps: dict, started_at: Optional[datetime] = None,
         # (they'd be premature), but not the time-critical trial warning below.
         break
 
+    # The bank only matters once LEM is writing in the user's voice, so it waits behind VOICE_SET.
+    if (story_bank_count is not None and steps.get(OnboardingStep.VOICE_SET)
+            and story_bank_count < STORY_BANK_TARGET_ENTRIES
+            and NUDGE_STORY_BANK not in sent and age_hours >= STORY_BANK_AFTER_HOURS):
+        return dict(_STORY_BANK_NUDGE)
+
     if trial_ends_at and NUDGE_TRIAL_ENDING not in sent:
         remaining = trial_ends_at - now
         if timedelta(0) < remaining <= timedelta(days=TRIAL_ENDING_WITHIN_DAYS):
@@ -203,9 +231,14 @@ def next_nudge_for_user(user_id: int, state: Optional[dict] = None) -> Optional[
     sent = get_onboarding_nudges_sent(user_id)
     sub = get_user_subscription_info(user_id) or {}
     last_sent = max(sent.values()) if sent else None
+    try:
+        story_count = count_story_bank_entries(user_id)
+    except Exception as e:
+        log_warning("Could not count story bank entries for nudge selection", exc=e, user_id=user_id)
+        story_count = None
     return select_nudge(steps, started_at=state.get("started_at"),
                         trial_ends_at=sub.get("trial_ends_at"), sent_keys=set(sent),
-                        last_sent_at=last_sent)
+                        last_sent_at=last_sent, story_bank_count=story_count)
 
 
 def onboarding_snapshot(user_id: int) -> dict:

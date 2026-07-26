@@ -30,6 +30,7 @@ from cqc_lem.utilities.db import get_recent_post_shape_history, update_db_post_s
     get_shape_performance
 from cqc_lem.utilities.db import get_recent_post_texts, update_db_post_authenticity_score, \
     get_post_authenticity_score, update_db_post_dwell_score, update_db_post_gate_reason
+from cqc_lem.utilities.db import get_story_bank_entries, record_story_bank_use
 from cqc_lem.utilities.quality_gates import (authenticity_finding, similarity_finding,
                                              focus_finding, missing_asset_finding,
                                              demoting_findings)
@@ -41,6 +42,7 @@ from cqc_lem.utilities.ai.content_alignment import (
     personal_proof_directive, topic_authority_score, topic_authority_min, profile_topic_dna,
     content_matches_focus, score_authenticity, authenticity_gate_enabled, authenticity_score_min,
     humanize_text)
+from cqc_lem.utilities.ai import story_bank as _story_bank
 from cqc_lem.utilities.content_generation_status import mark_in_progress, mark_finished, \
     record_post_generated, record_post_failed
 from cqc_lem.utilities.notifications import notify_content_generation_ready
@@ -675,6 +677,30 @@ def _proof_regen_enabled() -> bool:
         "1", "true", "yes", "on")
 
 
+def _fabrication_regen_enabled() -> bool:
+    """Whether a draft that states a first-person specific we never gave it is regenerated (vs. only
+    logged). Same live-env pattern as POST_PROOF_REGEN_ENABLED; defaults ON because a fabricated
+    number about the author is the one failure the story bank exists to prevent (issues #620/#416).
+    Only ever consulted when a story entry WAS selected — without one there is no allow-list."""
+    return str(os.getenv("POST_FABRICATION_REGEN_ENABLED", "on")).strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _select_story_for_post(user_id: int, prefs: dict = None,
+                           blueprint: dict = None) -> Optional[dict]:
+    """The one story-bank entry this post is anchored to, or None when the bank can't ground it
+    (empty, all retired, or nothing related to the user's focus topics). Never fatal — a DB hiccup
+    just falls back to the no-fabrication directive."""
+    try:
+        entries = get_story_bank_entries(user_id, active_only=True)
+    except Exception as e:
+        myprint(f"Story bank unavailable (writing without a fact anchor): {e}")
+        return None
+    topics = [str(t).strip() for t in ((prefs or {}).get("focus_topics") or []) if str(t).strip()]
+    return _story_bank.select_story(entries, subject=(blueprint or {}).get("subject"),
+                                    focus_topics=topics)
+
+
 def _score_and_persist_authenticity(user_id: int, post_id: int, content: str,
                                     user_profile: LinkedInProfile, profile_synthesis: str = None,
                                     prefs: dict = None) -> None:
@@ -875,26 +901,47 @@ def _score_and_persist_dwell(user_id: int, post_id: int, content: str) -> Option
         return None
 
 
+def _fabricated_specifics(content: str, story: Optional[dict],
+                          profile_synthesis: Optional[str] = None) -> list:
+    """First-person specifics in the draft that appear in NONE of the material we supplied — i.e.
+    invented facts about the author (issue #620, enforcing the #416 no-fabrication rule). Only
+    meaningful when a story entry was selected: with no entry there is no allow-list, so every
+    number would look fabricated and the check is skipped entirely."""
+    if not story or not content:
+        return []
+    return _story_bank.unsourced_specifics(
+        content, _story_bank.fact_sources(story, profile_synthesis))
+
+
 def _review_generated_post(user_id: int, stage: str, post_type: str, user_profile: LinkedInProfile,
                            blueprint: dict, post_id: int, lead_magnet_cta: str, content: str,
                            recent_texts: list, prefs: dict = None,
-                           profile_synthesis: Optional[str] = None) -> str:
+                           profile_synthesis: Optional[str] = None,
+                           story: Optional[dict] = None,
+                           story_directive: Optional[str] = None) -> str:
     """The post-generation REVIEW GATE (the newsletter's dedup maturity applied to posts): compare
     the finished post against the user's recent posts with the deterministic token-set overlap in
-    content_framework, AND check the A2 personal-proof slot (a concrete first-person lived detail).
-    Too similar (> POST_SIMILARITY_MAX) or missing proof → regenerate ONCE with an explicit
-    avoid/proof directive; still failing → log a structured warning and keep the second attempt
-    (never loop, never hard-block). Also runs the cheap focus-alignment check on whatever content
-    ships."""
+    content_framework, check the A2 personal-proof slot (a concrete first-person lived detail), AND
+    check that every first-person specific traces back to the user's story-bank entry. Too similar
+    (> POST_SIMILARITY_MAX), missing proof, or fabricated specifics → regenerate ONCE with an
+    explicit avoid/proof/no-invention directive; still failing → log a structured warning and keep
+    the second attempt (never loop, never hard-block). Also runs the cheap focus-alignment check on
+    whatever content ships."""
     threshold = post_similarity_max(prefs)
     score, match = find_most_similar(content, recent_texts)
     too_similar = score > threshold
     missing_proof = not has_first_person_proof(content)
     proof_regen = missing_proof and _proof_regen_enabled()
+    fabricated = _fabricated_specifics(content, story, profile_synthesis)
+    fabrication_regen = bool(fabricated) and _fabrication_regen_enabled()
 
-    if not too_similar and not proof_regen:
+    if not too_similar and not proof_regen and not fabrication_regen:
         if missing_proof:
             log_warning("Generated post lacks a concrete first-person lived detail (A2 proof slot)",
+                        user_id=user_id, post_id=post_id, task_name="create_text_post")
+        if fabricated:
+            log_warning(f"Generated post states first-person specifics not in the story bank: "
+                        f"{', '.join(fabricated)}",
                         user_id=user_id, post_id=post_id, task_name="create_text_post")
         _check_post_alignment(content, prefs, user_id, post_id, user_profile, profile_synthesis)
         return content
@@ -904,17 +951,22 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
         reasons.append(f"too similar to a recent post (score {score:.2f} > max {threshold:.2f})")
     if proof_regen:
         reasons.append("missing a concrete first-person lived detail (A2 proof slot)")
+    if fabrication_regen:
+        reasons.append(f"states unsourced first-person specifics ({', '.join(fabricated)})")
     myprint(f"Post {'; '.join(reasons)} — retrying once with an explicit avoid/proof directive")
 
     retry_directive = history_avoidance_directive(
         recent_texts, offending_text=match if too_similar else None)
     if proof_regen:
         retry_directive += personal_proof_directive(profile_synthesis)
+    if fabrication_regen:
+        retry_directive += _story_bank.fabrication_repair_directive(fabricated)
     try:
         second = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=True,
                                   blueprint=blueprint, post_id=post_id,
                                   lead_magnet_cta=lead_magnet_cta,
-                                  history_directive=retry_directive, similarity_check=False)
+                                  history_directive=retry_directive, similarity_check=False,
+                                  story_directive=story_directive)
     except Exception as e:
         log_warning("Review-gate retry generation failed; keeping first draft", exc=e,
                     user_id=user_id, post_id=post_id, task_name="create_text_post")
@@ -932,6 +984,11 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
         log_warning("Post still lacks a concrete first-person lived detail after retry "
                     "(A2 proof slot); keeping second attempt",
                     user_id=user_id, post_id=post_id, task_name="create_text_post")
+    still_fabricated = _fabricated_specifics(second, story, profile_synthesis)
+    if still_fabricated:
+        log_warning(f"Post still states first-person specifics not in the story bank after retry "
+                    f"({', '.join(still_fabricated)}); keeping second attempt",
+                    user_id=user_id, post_id=post_id, task_name="create_text_post")
     _check_post_alignment(second, prefs, user_id, post_id, user_profile, profile_synthesis)
     return second
 
@@ -940,7 +997,7 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
 def create_text_post(user_id: int, stage: str, post_type: str = None, user_profile: LinkedInProfile=None,
                      refine_final_post: bool = True, blueprint: dict = None, post_id: int = None,
                      lead_magnet_cta: str = None, history_directive: str = None,
-                     similarity_check: bool = True):
+                     similarity_check: bool = True, story_directive: str = None):
     """
     Generate a text post for LinkedIn based on the user's profile, blog, or website content.
 
@@ -1030,6 +1087,22 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
     myprint(f"Post blueprint: format={blueprint.get('format')} hook={blueprint.get('hook_style')} "
             f"cta={blueprint.get('cta_style')}")
 
+    # Story bank (issue #620): anchor the post to ONE thing the user actually did, and make that
+    # entry the ONLY personal specific the writer may state. An empty bank — or a bank with nothing
+    # related to the user's focus topics — ships the explicit no-fabrication fallback instead, so a
+    # missing story degrades to an industry observation rather than an invented anecdote. Recursive
+    # calls (type fallbacks / the review-gate retry) receive the directive so the whole post stays
+    # anchored to the same entry and the bank is read at most once per outermost call.
+    story = None
+    if story_directive is None:
+        story = _select_story_for_post(user_id, prefs, blueprint)
+        story_directive = _story_bank.story_directive(story)
+        if story:
+            myprint(f"Story bank anchor for post_id={post_id}: "
+                    f"[{story.get('kind')}] {story.get('title')}")
+        else:
+            myprint("No story bank entry available — writing a non-story archetype")
+
     # Lead-magnet soft-ask: on a deterministic 1-in-N rotation (keyed off post_id so it's stable and
     # testable), weave the user's configured "comment KEYWORD and I'll DM it to you" CTA into the
     # post — the compliant way to share a resource and what fires the keyword listener in the
@@ -1058,7 +1131,8 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                                                             blueprint=blueprint,
                                                             lead_magnet_cta=lead_magnet_cta,
                                                             post_id=post_id,
-                                                            history_directive=history_directive)
+                                                            history_directive=history_directive,
+                                                            story_directive=story_directive)
     elif post_type == "blog_summary":
         # Get the users blog url
         user_main_blog_url = get_user_blog_url(user_id)
@@ -1068,7 +1142,8 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             final_content = get_blog_summary_post_from_ai(blog_post_url, blog_post_content, user_profile, stage,
                                                           prefs=prefs, profile_synthesis=profile_synthesis,
                                                           blueprint=blueprint, lead_magnet_cta=lead_magnet_cta,
-                                                          history_directive=history_directive)
+                                                          history_directive=history_directive,
+                                                          story_directive=story_directive)
         else:
             myprint("No blog post found for this user. Generating another post type")
             # Chose another random post type that is not "blog_summary"
@@ -1076,7 +1151,8 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             post_type = random.choice(post_types)
             final_content = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=False,
                                              blueprint=blueprint, post_id=post_id, lead_magnet_cta=lead_magnet_cta,
-                                             history_directive=history_directive, similarity_check=False)
+                                             history_directive=history_directive, similarity_check=False,
+                                             story_directive=story_directive)
     elif post_type == "website_content":
         # Get the users sitemap url
         sitemap_url = get_user_sitemap_url(user_id)
@@ -1084,7 +1160,8 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             content = generate_website_content_post(sitemap_url, user_profile, stage, prefs=prefs,
                                                     profile_synthesis=profile_synthesis,
                                                     blueprint=blueprint, lead_magnet_cta=lead_magnet_cta,
-                                                    history_directive=history_directive)
+                                                    history_directive=history_directive,
+                                                    story_directive=story_directive)
             if content:
                 final_content = content
             else:
@@ -1094,7 +1171,8 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                 post_type = random.choice(post_types)
                 final_content = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=False,
                                              blueprint=blueprint, post_id=post_id, lead_magnet_cta=lead_magnet_cta,
-                                             history_directive=history_directive, similarity_check=False)
+                                             history_directive=history_directive, similarity_check=False,
+                                             story_directive=story_directive)
         else:
             myprint("No sitemap found for this user. Generating another post type")
             # Chose another random post type that is not "website_content"
@@ -1102,25 +1180,29 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             post_type = random.choice(post_types)
             final_content = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=False,
                                              blueprint=blueprint, post_id=post_id, lead_magnet_cta=lead_magnet_cta,
-                                             history_directive=history_directive, similarity_check=False)
+                                             history_directive=history_directive, similarity_check=False,
+                                             story_directive=story_directive)
     elif post_type == "industry_news":
         final_content = get_industry_news_post_from_ai(user_profile, stage, prefs=prefs,
                                                        profile_synthesis=profile_synthesis,
                                                        blueprint=blueprint, lead_magnet_cta=lead_magnet_cta,
                                                        post_id=post_id,
-                                                       history_directive=history_directive)
+                                                       history_directive=history_directive,
+                                                       story_directive=story_directive)
     elif post_type == "personal_story":
         final_content = get_personal_story_post_from_ai(user_profile, stage, prefs=prefs,
                                                         profile_synthesis=profile_synthesis,
                                                         blueprint=blueprint, lead_magnet_cta=lead_magnet_cta,
                                                         post_id=post_id,
-                                                        history_directive=history_directive)
+                                                        history_directive=history_directive,
+                                                        story_directive=story_directive)
     else:
         final_content = generate_engagement_prompt_post(user_profile, stage, prefs=prefs,
                                                         profile_synthesis=profile_synthesis,
                                                         blueprint=blueprint, lead_magnet_cta=lead_magnet_cta,
                                                         post_id=post_id,
-                                                        history_directive=history_directive)
+                                                        history_directive=history_directive,
+                                                        story_directive=story_directive)
 
     if refine_final_post:
         # Both refinement passes get the user's prefs so the LLM rewrites can't re-introduce
@@ -1165,7 +1247,8 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
     if final_content and refine_final_post and similarity_check:
         final_content = _review_generated_post(user_id, stage, post_type, user_profile, blueprint,
                                                post_id, lead_magnet_cta, final_content,
-                                               recent_texts, prefs, profile_synthesis)
+                                               recent_texts, prefs, profile_synthesis,
+                                               story=story, story_directive=story_directive)
 
         # Dwell shaping (issue #391 — C2): deterministic, no-LLM repair of the structural dwell
         # killer every LLM rewrite above can re-introduce — wall-of-text paragraphs. Runs on
@@ -1187,6 +1270,15 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             log_info("Lead-magnet CTA lost in refinement - repaired deterministically",
                      post_id=post_id, user_id=user_id, task_name="create_text_post")
             final_content = repaired
+
+    # Count the story-bank entry as used so the NEXT post rotates to different raw material. Only
+    # the outermost call (the one that actually selected an entry) writes, and only when a post
+    # really came out of it — a failed generation must not burn the anecdote.
+    if story and final_content and story.get("id"):
+        try:
+            record_story_bank_use(user_id, int(story["id"]))
+        except Exception as e:
+            myprint(f"Could not record story bank use for entry {story.get('id')}: {e}")
 
     # Persist the assigned shape so FUTURE posts rotate away from it (the newsletter's V50 shape
     # history, applied to posts via V51). Only the outermost call (which knows the post row) writes.
@@ -1350,7 +1442,8 @@ def process_selected_post(url, content):
 
 def generate_website_content_post(sitemap_url, linked_user_profile, stage: str, prefs: dict = None,
                                   profile_synthesis: Optional[str] = None, blueprint: dict = None,
-                                  lead_magnet_cta: str = None, history_directive: str = None):
+                                  lead_magnet_cta: str = None, history_directive: str = None,
+                                  story_directive: str = None):
     """
     Generate a post based on content found on the user's website using their sitemap url catered to readers in the desired buyers journey stage.
     Scrapes or retrieves key points from the website's sitemap.
@@ -1382,7 +1475,8 @@ def generate_website_content_post(sitemap_url, linked_user_profile, stage: str, 
             social_media_post = get_website_content_post_from_ai(content, selected_url, linked_user_profile, stage,
                                                                  prefs=prefs, profile_synthesis=profile_synthesis,
                                                                  blueprint=blueprint, lead_magnet_cta=lead_magnet_cta,
-                                                                 history_directive=history_directive)
+                                                                 history_directive=history_directive,
+                                                                 story_directive=story_directive)
             return social_media_post
         else:
             myprint("No content extracted from the selected URL.")

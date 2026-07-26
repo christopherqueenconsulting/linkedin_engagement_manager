@@ -3362,6 +3362,139 @@ def suggest_engagement_targets(user_id: int, limit: int = 20) -> list:
     return out
 
 
+# --- Story bank / fact intake (issue #620) ---
+# The user's OWN raw material: the anecdotes, numbers, opinions, wins, mistakes and artifacts a post
+# is allowed to cite as a personal specific. `profiles.synthesis` (V48) is the VOICE brief; this is
+# the FACT source, and generation may not invent specifics outside it (issue #416).
+STORY_BANK_KINDS = ("anecdote", "number", "opinion", "client_win", "mistake", "artifact")
+# What "a seeded bank" means — the onboarding nudge and the SPA both aim the user at this many.
+STORY_BANK_TARGET_ENTRIES = 5
+_STORY_BANK_COLS = ("id", "kind", "title", "body", "happened_at", "used_count", "last_used_at",
+                    "active")
+_LEN_STORY_TITLE = 255
+
+
+def _clean_story_row(row: dict) -> dict:
+    row["active"] = bool(row.get("active"))
+    row["used_count"] = int(row.get("used_count") or 0)
+    return row
+
+
+def get_story_bank_entries(user_id: int, active_only: bool = False) -> list:
+    """The user's story bank, least-recently-used first — the rotation order the selector consumes
+    directly (never-used entries sort ahead of used ones, oldest use next)."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        sql = f"SELECT {', '.join(_STORY_BANK_COLS)} FROM story_bank WHERE user_id=%s"
+        if active_only:
+            sql += " AND active=1"
+        sql += " ORDER BY used_count ASC, last_used_at IS NOT NULL, last_used_at ASC, id ASC"
+        cursor.execute(sql, (user_id,))
+        return [_clean_story_row(r) for r in (cursor.fetchall() or [])]
+    except mysql.connector.Error as err:
+        log_error("Could not list story bank entries", exc=err, user_id=user_id)
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def count_story_bank_entries(user_id: int, active_only: bool = True) -> int:
+    """How many entries the user has seeded — what the onboarding nudge decides on."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        sql = "SELECT COUNT(*) FROM story_bank WHERE user_id=%s"
+        if active_only:
+            sql += " AND active=1"
+        cursor.execute(sql, (user_id,))
+        row = cursor.fetchone()
+        return int(row[0]) if row else 0
+    except mysql.connector.Error as err:
+        log_error("Could not count story bank entries", exc=err, user_id=user_id)
+        return 0
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def upsert_story_bank_entries(user_id: int, entries: list) -> bool:
+    """Insert new entries and update existing ones (matched on id + user_id). The rotation counters
+    belong to generation, so an edit never resets used_count/last_used_at."""
+    inserts, updates = [], []
+    for e in entries or []:
+        title = str(e.get("title") or "").strip()[:_LEN_STORY_TITLE]
+        body = str(e.get("body") or "").strip()
+        if not body:
+            continue
+        kind = e.get("kind")
+        kind = kind if kind in STORY_BANK_KINDS else "anecdote"
+        # The whole point is low friction: a user who only types the story gets a title for free.
+        title = title or body[:80]
+        happened_at = e.get("happened_at") or None
+        active = 1 if e.get("active", True) else 0
+        entry_id = e.get("id")
+        if entry_id:
+            updates.append((kind, title, body, happened_at, active, int(entry_id), user_id))
+        else:
+            inserts.append((user_id, kind, title, body, happened_at, active))
+    if not inserts and not updates:
+        return True
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        if inserts:
+            cursor.executemany(
+                "INSERT INTO story_bank (user_id, kind, title, body, happened_at, active) "
+                "VALUES (%s,%s,%s,%s,%s,%s)", inserts)
+        if updates:
+            cursor.executemany(
+                "UPDATE story_bank SET kind=%s, title=%s, body=%s, happened_at=%s, active=%s "
+                "WHERE id=%s AND user_id=%s", updates)
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        log_error("Could not upsert story bank entries", exc=err, user_id=user_id)
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def delete_story_bank_entry(user_id: int, entry_id: int) -> bool:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("DELETE FROM story_bank WHERE user_id=%s AND id=%s", (user_id, int(entry_id)))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        log_error("Could not delete story bank entry", exc=err, user_id=user_id)
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def record_story_bank_use(user_id: int, entry_id: int) -> bool:
+    """Count one use against an entry so the next post rotates to different raw material."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE story_bank SET used_count = used_count + 1, last_used_at = NOW() "
+            "WHERE user_id=%s AND id=%s", (user_id, int(entry_id)))
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        log_error("Could not record story bank use", exc=err, user_id=user_id)
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_or_create_reply_inbound_token(user_id: int) -> Optional[str]:
     """The user's PERSISTENT inbound token for the comment-notification forwarding address
     (reply+<token>@parse-domain). Minted once and stored on the users row so the Gmail forward
