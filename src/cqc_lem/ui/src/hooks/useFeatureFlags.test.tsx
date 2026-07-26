@@ -12,8 +12,11 @@ function payload(flags: Record<string, boolean>, localEvaluation = true) {
 }
 
 function harness(ui: ReactNode) {
-  // retry:false so an error case resolves in one tick instead of on the query's own back-off.
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  // retryDelay:0, NOT retry:false — useFeatureFlags() sets `retry: 1` on the query itself (one
+  // transient blip must not drop the whole bootstrap), and a per-query option beats a client
+  // default, so the retry happens either way. Only the back-off is a default, and left at the
+  // real one (~1s) the error case settles slower than waitFor's 1s timeout.
+  const client = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } })
   return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>)
 }
 
