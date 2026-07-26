@@ -227,6 +227,10 @@ ARTIFACT_CTA_POLICY = (
 
 # Precision over recall, the _SOFT_OFFER_RE philosophy: each pattern needs explicit meeting intent, so
 # ordinary prose ("we scheduled the migration", "let's talk about why this matters") is never flagged.
+# The verb-less forms below lean on these anchors for that intent: an ask either OPENS the sentence
+# (headline/imperative) or addresses the reader as "you". Mid-sentence, the same words are narrative.
+_SENTENCE_START = r"(?:^|[.?!\n:;])[^\w]{0,6}"
+_READER_ADDRESSED = r"(?:" + _SENTENCE_START + r"|\byou(?:'re|\s+are)?\s+)"
 _MEETING_ASK_PATTERNS: tuple = (
     r"\bbook(?:ing)?\s+(?:a|an|your|some|my)\s+(?:call|time|slot|demo|meeting|chat|consult\w*|session|intro\w*)",
     r"\bschedul(?:e|ing)\s+(?:a|an|your|some|our)\s+(?:call|time|demo|meeting|chat|consult\w*|session|intro\w*)",
@@ -243,15 +247,20 @@ _MEETING_ASK_PATTERNS: tuple = (
     r"(?:(?:free|quick|short|discovery|intro(?:ductory)?|strategy|\d{1,2}[- ]min(?:ute)?)\s+)+"
     r"(?:call|consult\w*|session|chat|demo)\b",
     # Same offer, framed as the reader's interest instead of a verb ("Want a free strategy session?").
-    # Still explicit meeting intent — narrative uses the past tense ("I wanted a quick call"), which
-    # cannot match.
-    r"\b(?:want|interested\s+in|up\s+for|ready\s+for|keen\s+on)\s+(?:a|an|your|some)?\s*"
+    # It must be addressed to the READER — opening the sentence, or an explicit "you" — because the
+    # identical words are ordinary third-person present narrative ("Most buyers want a quick call
+    # before they commit", "they're ready for a strategy session"), and the repair DELETES whatever
+    # matches. Past-tense narrative ("I wanted a quick call") cannot match either way.
+    _READER_ADDRESSED + r"(?:want|interested\s+in|up\s+for|ready\s+for|keen\s+on)\s+"
+    r"(?:a|an|your|some)?\s*"
     r"(?:(?:free|quick|short|discovery|intro(?:ductory)?|strategy|\d{1,2}[- ]min(?:ute)?)\s+)+"
     r"(?:call|consult\w*|session|chat|demo)s?\b",
     # Headline offer with no verb at all ("Free discovery call for the first 5 people") — matched
-    # ONLY when an unambiguous booking marker follows in the same sentence, so narrative that merely
-    # mentions a call ("I ran a discovery call with them last week") is still left alone.
-    r"\b(?:free|quick|short|discovery|intro(?:ductory)?|strategy|\d{1,2}[- ]min(?:ute)?)\s+"
+    # ONLY when it OPENS the sentence (a headline, never a clause inside narrative: "that quick call
+    # led to a sign up", "after our discovery call I told them to DM me") AND an unambiguous booking
+    # marker follows in the same sentence.
+    _SENTENCE_START + r"(?:(?:free|quick|short|discovery|intro(?:ductory)?|strategy|"
+    r"\d{1,2}[- ]min(?:ute)?)\s+)+"
     r"(?:call|consult\w*|session|chat|demo)s?\b[^.?!\n]{0,40}?"
     r"\b(?:link\s+in\s+(?:bio|comments)|sign\s+up\b|dm\s+me\b|comment\s+below\b|"
     r"for\s+the\s+first\s+\d+|(?:slots?|spots?)\s+(?:are\s+)?(?:open|available|left)\b)",
@@ -271,6 +280,9 @@ def meeting_ask_excerpts(content: Optional[str]) -> list:
     seen = []
     for match in _MEETING_ASK_RE.findall(content):
         phrase = (match if isinstance(match, str) else next((m for m in match if m), "")).strip()
+        # The verb-less patterns anchor on the END of the previous sentence, so a mid-post match
+        # carries its punctuation in — the excerpt is shown to a human, keep it readable.
+        phrase = re.sub(r"^[^\w]+", "", phrase).strip()
         if phrase and phrase.lower() not in [s.lower() for s in seen]:
             seen.append(phrase)
     return seen
