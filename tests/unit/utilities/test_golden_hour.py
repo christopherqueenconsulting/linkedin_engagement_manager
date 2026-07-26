@@ -99,6 +99,18 @@ class TestWindows:
         assert g.should_report(g.GOLDEN_HOUR_REPORT_MAX_MINUTES + 1) is False
         assert g.should_report(None) is True
 
+    def test_report_horizon_is_twice_the_phase_window(self):
+        # A sweep 2h late is a real (gradeable) late sweep; the same sweep walking yesterday's post
+        # 10h on is a routine revisit and must not land in the on-time denominator.
+        assert g.should_report(120.0) is True
+        assert g.should_report(10 * 60.0) is False
+        # ...but 10h IS the second wave's own business, so its horizon has to be wider.
+        assert g.should_report(10 * 60.0, g.PHASE_SECOND_WAVE) is True
+
+    def test_report_horizon_never_exceeds_the_hard_ceiling(self, monkeypatch):
+        monkeypatch.setenv("SECOND_WAVE_MAX_HOURS", "20")
+        assert g.report_horizon_minutes(g.PHASE_SECOND_WAVE) == g.GOLDEN_HOUR_REPORT_MAX_MINUTES
+
 
 class TestSweepRetryCountdown:
     def test_retries_inside_the_window(self, pacing_off):
@@ -148,29 +160,61 @@ class TestSecondWaveSchedule:
     def test_lands_between_six_and_eight_hours(self):
         rng = random.Random(7)
         for _ in range(50):
-            hours = g.second_wave_countdown_seconds(rng) / 3600
+            hours = g.second_wave_due_minutes(rng=rng) / 60
             assert g.SECOND_WAVE_MIN_HOURS <= hours <= g.SECOND_WAVE_MAX_HOURS
 
     def test_is_not_a_fixed_offset(self):
         rng = random.Random(11)
-        assert len({g.second_wave_countdown_seconds(rng) for _ in range(20)}) > 1
+        assert len({g.second_wave_due_minutes(rng=rng) for _ in range(20)}) > 1
 
     def test_env_bounds_are_honoured(self, monkeypatch):
         monkeypatch.setenv("SECOND_WAVE_MIN_HOURS", "3")
         monkeypatch.setenv("SECOND_WAVE_MAX_HOURS", "4")
-        hours = g.second_wave_countdown_seconds(random.Random(3)) / 3600
+        hours = g.second_wave_due_minutes(rng=random.Random(3)) / 60
         assert 3 <= hours <= 4
 
     def test_inverted_bounds_are_swapped_not_ignored(self, monkeypatch):
         monkeypatch.setenv("SECOND_WAVE_MIN_HOURS", "9")
         monkeypatch.setenv("SECOND_WAVE_MAX_HOURS", "7")
-        hours = g.second_wave_countdown_seconds(random.Random(5)) / 3600
+        hours = g.second_wave_due_minutes(rng=random.Random(5)) / 60
         assert 7 <= hours <= 9
 
     def test_bounds_are_clamped_to_a_day(self, monkeypatch):
         monkeypatch.setenv("SECOND_WAVE_MIN_HOURS", "0")
         monkeypatch.setenv("SECOND_WAVE_MAX_HOURS", "900")
-        assert 0 < g.second_wave_countdown_seconds(random.Random(1)) <= 24 * 3600
+        assert 0 < g.second_wave_due_minutes(rng=random.Random(1)) <= 24 * 60
+
+    def test_due_offset_is_stable_per_post(self):
+        """The wait is served in hops, so every re-arm has to recompute the SAME target — a fresh
+        draw per hop would walk the second wave forward forever."""
+        first = g.second_wave_due_minutes(1, 9)
+        assert first == g.second_wave_due_minutes(1, 9)
+        assert g.SECOND_WAVE_MIN_HOURS * 60 <= first <= g.SECOND_WAVE_MAX_HOURS * 60
+
+    def test_due_offset_differs_between_posts(self):
+        assert len({g.second_wave_due_minutes(1, p) for p in range(20)}) > 1
+
+    def test_hop_never_outlasts_the_broker_visibility_timeout(self, monkeypatch):
+        """A single 6-8h countdown is redelivered every visibility_timeout with task_acks_late —
+        that is how one second wave becomes five self-comments."""
+        monkeypatch.setenv("CELERY_VISIBILITY_TIMEOUT", "4500")
+        hop = g.second_wave_hop_seconds(7 * 60.0, 5.0)
+        assert 0 < hop <= g.second_wave_hop_cap_seconds() < 4500
+        assert g.second_wave_first_countdown(1, 9) <= g.second_wave_hop_cap_seconds()
+
+    def test_hop_shrinks_with_a_shorter_visibility_timeout(self, monkeypatch):
+        monkeypatch.setenv("CELERY_VISIBILITY_TIMEOUT", "600")
+        assert g.second_wave_hop_cap_seconds() == 360
+
+    def test_last_hop_lands_on_the_due_time(self):
+        assert g.second_wave_hop_seconds(7 * 60.0, 7 * 60.0 - 5) == 5 * 60
+
+    def test_no_hop_once_the_post_is_due(self):
+        assert g.second_wave_hop_seconds(7 * 60.0, 7 * 60.0) is None
+        assert g.second_wave_hop_seconds(7 * 60.0, 9 * 60.0) is None
+
+    def test_an_unknown_post_age_acts_rather_than_hopping_forever(self):
+        assert g.second_wave_hop_seconds(7 * 60.0, None) is None
 
     def test_enabled_by_default_and_killable(self, monkeypatch):
         monkeypatch.delenv("SECOND_WAVE_COMMENT_ENABLED", raising=False)

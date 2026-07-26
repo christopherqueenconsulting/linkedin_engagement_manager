@@ -22,6 +22,7 @@ def _second_wave_on(monkeypatch):
 def _happy_path():
     """Every collaborator of the task stubbed for the success case; individual tests patch over."""
     with patch(f"{_RA}.is_automation_paused", return_value=False), \
+         patch(f"{_RA}.get_post_age_minutes", return_value=9 * 60), \
          patch(f"{_RA}.get_post_url_from_log_for_user", return_value=_URL), \
          patch(f"{_RA}.count_user_comments_on_post_url", return_value=1), \
          patch(f"{_RA}.get_post_content", return_value="the real post body"), \
@@ -105,6 +106,43 @@ class TestSecondWaveComment:
         gen.assert_not_called()
         api.assert_not_called()
 
+    def test_re_arms_itself_until_the_post_is_due(self, _happy_path):
+        """The 6-8h wait is served in hops: a single long countdown sits unacked past the broker's
+        visibility timeout and gets redelivered — which would post several self-comments."""
+        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities import golden_hour as g
+        with patch(f"{_RA}.get_post_age_minutes", return_value=30.0), \
+             patch(f"{_RA}.generate_second_wave_comment") as gen, \
+             patch(f"{_RA}.comment_on_linkedin_post") as api, \
+             patch.object(ra.auto_second_wave_comment, "apply_async") as rearm:
+            result = ra.auto_second_wave_comment.run(user_id=1, post_id=9)
+        assert "re-armed" in result
+        gen.assert_not_called()
+        api.assert_not_called()
+        assert rearm.call_args.kwargs["kwargs"] == {"user_id": 1, "post_id": 9}
+        assert 0 < rearm.call_args.kwargs["countdown"] <= g.second_wave_hop_cap_seconds()
+
+    def test_a_pause_during_the_wait_does_not_cost_the_second_wave(self, _happy_path):
+        """The pause is checked at the DUE time, not on every hop — a pause that lifts in the
+        meantime must not silently cancel the amplification."""
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.get_post_age_minutes", return_value=30.0), \
+             patch(f"{_RA}.is_automation_paused", return_value=True), \
+             patch.object(ra.auto_second_wave_comment, "apply_async") as rearm:
+            result = ra.auto_second_wave_comment.run(user_id=1, post_id=9)
+        assert "re-armed" in result
+        rearm.assert_called_once()
+
+    def test_an_unknown_publish_time_acts_rather_than_hopping_forever(self, _happy_path):
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.get_post_age_minutes", return_value=None), \
+             patch(f"{_RA}.generate_second_wave_comment", return_value="insight"), \
+             patch(f"{_RA}.comment_on_linkedin_post", return_value="urn:li:comment:(x,2)") as api, \
+             patch.object(ra.auto_second_wave_comment, "apply_async") as rearm:
+            ra.auto_second_wave_comment.run(user_id=1, post_id=9)
+        api.assert_called_once()
+        rearm.assert_not_called()
+
     def test_kill_switch(self, _happy_path, monkeypatch):
         from cqc_lem.app.run_automation import auto_second_wave_comment
         monkeypatch.setenv("SECOND_WAVE_COMMENT_ENABLED", "false")
@@ -180,8 +218,10 @@ class TestSecondWaveComment:
 
 
 class TestSecondWaveDispatch:
-    def test_publishing_schedules_the_second_wave_six_to_eight_hours_out(self):
-        """post_to_linkedin dispatches it alongside the seed comment and the golden-hour sweeps."""
+    def test_publishing_schedules_the_second_wave_within_one_hop(self):
+        """post_to_linkedin dispatches it alongside the seed comment and the golden-hour sweeps —
+        but only for one hop: the task re-arms itself the rest of the way to its 6-8h offset, so the
+        broker never holds a message past its visibility timeout (which would redeliver it)."""
         from cqc_lem.app import run_automation as ra
         with patch(f"{_RA}.get_post_content", return_value="body"), \
              patch(f"{_RA}.get_post_status", return_value="approved"), \
@@ -196,8 +236,9 @@ class TestSecondWaveDispatch:
              patch(f"{_RA}.auto_second_wave_comment") as second, \
              patch(f"{_RA}.get_post_video_url", return_value=None):
             ra.post_to_linkedin.run(user_id=1, post_id=9)
+        from cqc_lem.utilities import golden_hour as g
         countdown = second.apply_async.call_args.kwargs["countdown"]
-        assert 6 * 3600 <= countdown <= 8 * 3600
+        assert 0 < countdown <= g.second_wave_hop_cap_seconds()
         assert second.apply_async.call_args.kwargs["kwargs"] == {"user_id": 1, "post_id": 9}
 
     def test_kill_switch_stops_the_dispatch(self, monkeypatch):

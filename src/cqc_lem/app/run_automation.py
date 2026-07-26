@@ -2006,9 +2006,23 @@ def auto_second_wave_comment(self, user_id: int, post_id: int):
     amplification, so it stands down while automation is paused (the #629 suppression tripwire and
     any manual pause). The self-comment cap is enforced on the COUNT of our own comments on this
     post, so the seed and the second wave can never stack into thread-stuffing however they are
-    re-dispatched. A draft that can't clear the comment quality contract ships NOTHING."""
+    re-dispatched. A draft that can't clear the comment quality contract ships NOTHING.
+
+    The 6–8h wait is served in HOPS, not one long countdown: with `task_acks_late` the broker
+    redelivers any message left unacked past `visibility_timeout` (~75 min), so a single 8-hour
+    countdown would be handed to another worker every 75 minutes and post the comment several times
+    over. Each run re-checks the post's real age and re-arms itself until the post is due."""
     if not _golden.second_wave_enabled():
         return "Second-wave comment disabled"
+    due_minutes = _golden.second_wave_due_minutes(user_id, post_id)
+    hop = _golden.second_wave_hop_seconds(
+        due_minutes, _golden.latency_minutes(get_post_age_minutes(user_id, post_id)))
+    if hop is not None:
+        # Not due yet — re-arm inside the broker's visibility timeout. Checked BEFORE the pause so a
+        # pause that lifts before the post is due doesn't cost it its second wave.
+        auto_second_wave_comment.apply_async(kwargs={'user_id': user_id, 'post_id': post_id},
+                                             countdown=hop)
+        return f"Second wave not due yet ({due_minutes:.0f} min after publish) — re-armed in {hop}s"
     if is_automation_paused():
         reason = automation_pause_reason() or "automation paused"
         log_info(f"Second-wave comment skipped — {reason}", user_id=user_id, post_id=post_id,
@@ -2659,23 +2673,32 @@ def _record_golden_hour_report(user_id: int, post_id: int, sweep_slot: int, outc
     anything? A sweep that arrived late is logged as a WARNING: that is the queue-backlog signal the
     #401 audit had no way to see."""
     outcome = dict(outcome or {})
-    minutes = _golden.latency_minutes(get_post_age_minutes(user_id, post_id))
-    if not _golden.should_report(minutes):
+    try:
+        minutes = _golden.latency_minutes(get_post_age_minutes(user_id, post_id))
+    except Exception as e:
+        # Measurement must never break the thing it measures — an unreadable age reports as unknown
+        # (and therefore out-of-window), it does not abort the sweep mid-post.
+        log_warning("Golden-hour latency unreadable", exc=e, user_id=user_id, post_id=post_id)
+        minutes = None
+    # Scoped to the phase's own horizon: the sweep also walks older posts by design, and grading
+    # those revisits would bury the real reading under permanent out-of-window noise.
+    if not _golden.should_report(minutes, phase):
         return None
     report = _golden.golden_hour_report(
         post_id, minutes, comments_found=outcome.get("comments_found"),
         replies_sent=outcome.get("replies_sent"), status=outcome.get("status") or "ok",
         sweep_slot=sweep_slot, phase=phase)
     summary = _golden.report_summary(report)
-    task_name = ("auto_second_wave_comment" if phase == _golden.PHASE_SECOND_WAVE
-                 else "sweep_reply_comments")
+    second_wave = phase == _golden.PHASE_SECOND_WAVE
+    task_name = "auto_second_wave_comment" if second_wave else "sweep_reply_comments"
+    action_type = "comment" if second_wave else "reply"
     if report["within_window"]:
-        log_info(summary, user_id=user_id, post_id=post_id, action_type="reply",
+        log_info(summary, user_id=user_id, post_id=post_id, action_type=action_type,
                  task_name=task_name)
     else:
         # Out of window on a post young enough to still matter (should_report already dropped the
         # older ones) — that is the queue-backlog / rate-limit signal, so it goes out as a WARNING.
-        log_warning(summary, user_id=user_id, post_id=post_id, action_type="reply",
+        log_warning(summary, user_id=user_id, post_id=post_id, action_type=action_type,
                     task_name=task_name)
     try:
         track_golden_hour_report(user_id, report)
@@ -2684,20 +2707,30 @@ def _record_golden_hour_report(user_id: int, post_id: int, sweep_slot: int, outc
     return report
 
 
-def _retry_golden_hour_sweep(user_id: int, sweep_slot: int, attempt: int, reason: str) -> bool:
-    """A golden-hour sweep that could not run at all gets ONE more chance while the window is still
-    open — the #401 amplifier used to lose the whole hour to a single transient 429. Returns True
-    when a retry was scheduled. Bounded by `sweep_retry_countdown` (attempts AND window), so a
-    sustained rate-limit decays to nothing instead of hammering LinkedIn."""
+def _retry_golden_hour_sweep(user_id: int, sweep_slot: int, attempt: int, status: str) -> bool:
+    """A golden-hour sweep that could not run at all REPORTS itself and then gets one more chance
+    while the window is still open — the #401 amplifier used to lose the whole hour to a single
+    transient 429, and the audit could never tell that apart from a post nobody commented on.
+
+    The report is what makes the difference visible: it carries `status` ("rate_limited",
+    "session_failed") against the freshest post's latency, so a silent hour has a cause in PostHog
+    instead of an absence. Returns True when a retry was scheduled — bounded by
+    `sweep_retry_countdown` (attempts AND window), so a sustained rate-limit decays to nothing
+    instead of hammering LinkedIn."""
     post_ids = get_recent_posted_post_ids(user_id, days=1)
-    minutes = _golden.latency_minutes(get_post_age_minutes(user_id, post_ids[0])) if post_ids else None
-    countdown = _golden.sweep_retry_countdown(minutes, attempt)
+    if not post_ids:
+        return False
+    # The report carries the latency reading the retry decision needs, so the post age is read once.
+    report = _record_golden_hour_report(user_id, post_ids[0], sweep_slot,
+                                        _reply_outcome(status, f"Sweep could not run ({status})"))
+    countdown = _golden.sweep_retry_countdown(report.get("latency_minutes") if report else None,
+                                              attempt)
     if countdown is None:
         return False
     sweep_reply_comments.apply_async(
         kwargs={'user_id': user_id, 'sweep_slot': sweep_slot, 'attempt': int(attempt) + 1},
         countdown=countdown)
-    log_info(f"Golden-hour sweep retry {int(attempt) + 1} scheduled in {countdown}s ({reason})",
+    log_info(f"Golden-hour sweep retry {int(attempt) + 1} scheduled in {countdown}s ({status})",
              user_id=user_id, action_type="reply", task_name="sweep_reply_comments")
     return True
 
@@ -2737,12 +2770,12 @@ def sweep_reply_comments(self, user_id: int, sweep_slot: int = 0, attempt: int =
         log_warning("Reply sweep skipped — LinkedIn rate-limited", exc=e, user_id=user_id,
                     task_name="sweep_reply_comments")
         release_run_lock(lock_name, lock_token)
-        retried = _retry_golden_hour_sweep(user_id, sweep_slot, attempt, "rate limited")
+        retried = _retry_golden_hour_sweep(user_id, sweep_slot, attempt, "rate_limited")
         return "Skipped — rate limited" + (" (retry scheduled)" if retried else "")
     except Exception as e:
         log_error("Error starting reply sweep", exc=e, user_id=user_id, task_name="sweep_reply_comments")
         release_run_lock(lock_name, lock_token)
-        retried = _retry_golden_hour_sweep(user_id, sweep_slot, attempt, "session failed")
+        retried = _retry_golden_hour_sweep(user_id, sweep_slot, attempt, "session_failed")
         return f"Failed to start reply sweep: {e}" + (" (retry scheduled)" if retried else "")
     try:
         profile_synthesis = get_or_create_profile_synthesis(user_id, my_profile)
@@ -6203,9 +6236,11 @@ def post_to_linkedin(self, user_id: int, post_id: int):
         # the published post's URL — and gated at run time (cap, pause, quality) rather than here,
         # so a re-dispatch can never stack a second one onto the same post.
         if _golden.second_wave_enabled():
+            # First hop only — the task re-arms itself until its 6–8h offset is reached, so the
+            # broker never holds a message longer than its visibility timeout (see the task).
             auto_second_wave_comment.apply_async(
                 kwargs={'user_id': user_id, 'post_id': post_id},
-                countdown=_golden.second_wave_countdown_seconds())
+                countdown=_golden.second_wave_first_countdown(user_id, post_id))
 
         return f"Post successfully created"
 
