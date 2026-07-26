@@ -19,7 +19,7 @@ from cqc_lem.utilities.ai.ai_helper import generate_ai_response, get_ai_message_
     ai_check_message_history, post_is_relevant, generate_newsletter_edition, generate_group_post, \
     generate_thread_reply, generate_comment_reply_followup, generate_seed_comment, choose_post_reaction, \
     get_or_create_profile_synthesis, generate_lead_response, generate_nurture_dm, \
-    synthesize_profile
+    synthesize_profile, lint_repaired
 from cqc_lem.utilities.ai.lead_intent import detect_lead_signals
 from cqc_lem.utilities.ai.dm_nurture import classify_reply_intent, is_stop_intent, nurture_delay_hours
 from cqc_lem.utilities.connection_targeting import CandidateSignal, ScoredCandidate, \
@@ -3180,11 +3180,18 @@ def build_dm_from_template(user_id: int, event_type: str, first_name: str,
     rendered = render_dm_placeholders(tmpl["template_text"], first_name=first_name,
                                       headline=headline, blog_url=blog_url,
                                       event_detail=event_detail)
-    try:
-        refined = get_ai_message_refinement(rendered, character_limit=300)
+    def _refine(fix_directive: str = "") -> str:
+        refined = get_ai_message_refinement(rendered, character_limit=300,
+                                            extra_directive=fix_directive)
         # Humanization pass (issue #416 — A5): de-slop the DM before it's sent. Fails open and keeps
         # the pre-humanize text if a rewrite would exceed the 300-char DM budget.
         return humanize_text((refined or rendered).strip(), content_type="dm", max_chars=300)
+
+    try:
+        # Deterministic slop lint + bounded re-refine (issue #625 / D1). A DM has no review queue,
+        # so a still-slopped one is sent with the patterns named in the log rather than dropped —
+        # dropping it would silently break the outreach sequence.
+        return lint_repaired(_refine(), "dm", _refine, user_id=user_id, action_type="dm")
     except Exception as e:
         log_warning("DM refinement failed; sending rendered template", exc=e, action_type="dm", user_id=user_id)
         return rendered.strip()

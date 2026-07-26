@@ -19,6 +19,7 @@ GATE_FOCUS = "focus_alignment"
 GATE_MISSING_ASSET = "missing_asset"
 GATE_MEETING_CTA = "meeting_cta"
 GATE_FACT_GROUNDING = "fact_grounding"
+GATE_SLOP = "ai_slop"
 
 GATE_LABELS = {
     GATE_AUTHENTICITY: "Authenticity",
@@ -27,6 +28,7 @@ GATE_LABELS = {
     GATE_MISSING_ASSET: "Missing media",
     GATE_MEETING_CTA: "Meeting-ask CTA",
     GATE_FACT_GROUNDING: "Unverified specifics",
+    GATE_SLOP: "AI-slop patterns",
 }
 
 # The user-tunable thresholds behind these gates, in the units the SPA edits them in. Bounds are
@@ -156,6 +158,26 @@ def fact_grounding_finding(unverified: Optional[list] = None,
                      f"It deliberately did not invent them, so it is held until you fill them in."),
         remediation="Edit the post, replace each [[...]] placeholder with the real detail, and re-score it.",
         details=[f"Fill in: {p}" for p in to_fill[:10]])
+
+
+def slop_finding(hard_reasons: Optional[list] = None,
+                 warn_reasons: Optional[list] = None) -> dict:
+    """Deterministic AI-slop lint (issue #625 / D1). The draft still carries a pattern LinkedIn's
+    2026 ranking suppresses after its regeneration budget ran out, so it is held with the exact
+    constructions named — this gate is the only one that can tell the user *which sentence* to fix."""
+    hard = [str(r).strip() for r in (hard_reasons or []) if str(r).strip()]
+    warn = [str(r).strip() for r in (warn_reasons or []) if str(r).strip()]
+    return build_finding(
+        GATE_SLOP,
+        explanation=(f"This draft still matches {len(hard)} AI-slop pattern(s) after being rewritten. "
+                     f"LinkedIn's 2026 update suppresses these constructions outright, and readers "
+                     f"skim past them, so it is held instead of auto-scheduled."),
+        remediation=("Rewrite the flagged lines in the words you would actually say out loud — drop "
+                     "the contrastive \"it's not X, it's Y\" framing, the manufactured \"here's the "
+                     "kicker\" beats, the emoji bullets, and the reflex closer. Do not swap in "
+                     "invented specifics for what you cut."),
+        score=float(len(hard)), threshold=0.0,
+        details=hard[:10] + [f"(advisory) {w}" for w in warn[:5]])
 
 
 def parse_gate_findings(raw: Any) -> list[dict]:
