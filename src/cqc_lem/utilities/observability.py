@@ -553,6 +553,35 @@ def track_audience_snapshot(
     )
 
 
+def track_golden_hour_report(
+    user_id: Optional[int],
+    report: Optional[dict] = None,
+    **extra,
+) -> None:
+    """Emit one golden-hour presence reading (issue #622) — per reply sweep and per second-wave
+    self-comment, so "did the amplifier actually fire inside the window?" is a query instead of a
+    log grep. `latency_minutes` stays None when the publish time is unknown, and `within_window` is
+    then False: an unmeasured sweep must never count as an on-time one."""
+    report = dict(report or {})
+    posthog.capture(
+        distinct_id=str(user_id or "system"),
+        event="golden_hour_report",
+        properties={
+            "user_id": user_id,
+            "phase": report.get("phase"),
+            "post_id": report.get("post_id"),
+            "sweep_slot": report.get("sweep_slot"),
+            "status": report.get("status"),
+            "latency_minutes": report.get("latency_minutes"),
+            "within_window": bool(report.get("within_window")),
+            "window_minutes": report.get("window_minutes"),
+            "comments_found": int(report.get("comments_found") or 0),
+            "replies_sent": int(report.get("replies_sent") or 0),
+            **extra,
+        },
+    )
+
+
 def track_comment_outcome(
     user_id: Optional[int],
     log_id: Optional[int],

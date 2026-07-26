@@ -15,6 +15,7 @@ BASE_PATCHES = [
     ("cqc_lem.app.run_automation.sweep_reply_comments", {}),
     # post_to_linkedin dispatches the seed first comment itself once the post is live (#392).
     ("cqc_lem.app.run_automation.auto_seed_comment_on_post", {}),
+    ("cqc_lem.app.run_automation.auto_second_wave_comment", {}),
 ]
 
 

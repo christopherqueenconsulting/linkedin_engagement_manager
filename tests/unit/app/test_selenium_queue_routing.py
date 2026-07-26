@@ -53,9 +53,11 @@ SELENIUM_TASK_LANES = {
 
 SELENIUM_LANES = {"se_engage", "se_prepost", "se_outreach", "se_content"}
 
-# REST task that must stay on the default 'celery' queue.
+# REST tasks that must stay on the default 'celery' queue — they publish through the LinkedIn API
+# and never open a browser, so they must not hold a Selenium session slot (issue #622).
 NON_SELENIUM_TASKS = [
     "post_to_linkedin",
+    "auto_second_wave_comment",
 ]
 
 

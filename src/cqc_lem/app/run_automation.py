@@ -19,7 +19,7 @@ from cqc_lem.utilities.ai.ai_helper import generate_ai_response, get_ai_message_
     ai_check_message_history, post_is_relevant, generate_newsletter_edition, generate_group_post, \
     generate_thread_reply, generate_comment_reply_followup, generate_seed_comment, choose_post_reaction, \
     get_or_create_profile_synthesis, generate_lead_response, generate_nurture_dm, \
-    synthesize_profile, lint_repaired
+    synthesize_profile, lint_repaired, generate_second_wave_comment
 from cqc_lem.utilities.ai.lead_intent import detect_lead_signals
 from cqc_lem.utilities.ai.dm_nurture import classify_reply_intent, is_stop_intent, nurture_delay_hours
 from cqc_lem.utilities.connection_targeting import CandidateSignal, ScoredCandidate, \
@@ -58,12 +58,16 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     update_catchup_touch_status, count_catchup_touches_sent_today, max_catchup_touches_allowed, \
     get_engagement_targets, record_target_engagement, ENGAGEMENT_TARGET_WEEKLY_DEFAULT, \
     record_follower_stat, get_linkedin_profile_url_by_user_id, \
-    get_comment_outcome_targets, record_comment_outcome
+    get_comment_outcome_targets, record_comment_outcome, \
+    count_user_comments_on_post_url, get_post_age_minutes, get_story_bank_entries, \
+    record_story_bank_use
 from cqc_lem.utilities.audience_stats import parse_follower_count, parse_connection_count, \
     parse_profile_views, parse_search_appearances
 from cqc_lem.utilities.engagement_window import record_pre_post_run
+from cqc_lem.utilities.ai import story_bank as _story_bank
+from cqc_lem.utilities import golden_hour as _golden
 from cqc_lem.utilities.human_pacing import pace_read, record_action, remaining_actions, \
-    engagement_caps_from_prefs, dispatch_jitter_seconds, PACE_RESPONSIVE, \
+    engagement_caps_from_prefs, \
     ACTION_COMMENT, ACTION_DM, ACTION_INVITE, ACTION_REPLY
 from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
@@ -72,12 +76,13 @@ from cqc_lem.utilities.linkedin.poster import share_on_linkedin, share_carousel_
     share_document_on_linkedin, comment_on_linkedin_post, object_urn_from_post_url
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited, _redis_client, \
-    acquire_run_lock, release_run_lock, commenting_hold_reason, is_commenting_held
+    acquire_run_lock, release_run_lock, commenting_hold_reason, is_commenting_held, \
+    is_automation_paused, automation_pause_reason
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
 from cqc_lem.utilities.logger import myprint, log_error, log_info, log_warning
 from cqc_lem.utilities.observability import track_post_outcome, track_audience_snapshot, \
-    track_comment_outcome, attribute_llm_cost, llm_attribution, FEATURE_COMMENT, FEATURE_CONTENT, \
-    FEATURE_DM
+    track_comment_outcome, track_golden_hour_report, attribute_llm_cost, llm_attribution, \
+    FEATURE_COMMENT, FEATURE_CONTENT, FEATURE_DM
 from cqc_lem.utilities.selenium_util import click_element_wait_retry, \
     get_element_wait_retry, get_elements_as_list_wait_stale, getText, close_tab, get_driver_wait_pair, quit_gracefully, \
     wait_for_ajax, find_first, click_first, find_all_first
@@ -1972,6 +1977,102 @@ def auto_seed_comment_on_post(self, user_id: int, post_id: int):
         return f"Seed comment error: {e}"
 
 
+def _second_wave_story_directive(user_id: int, post_message: str, prefs: dict) -> tuple:
+    """The story-bank injection for the second wave and the entry it came from (issue #620): the
+    added insight must be the user's OWN material, so the writer gets one relevant entry and the
+    hard rule that its facts are the only personal specifics it may state. An empty or irrelevant
+    bank yields the explicit no-fabrication fallback rather than an invented anecdote."""
+    try:
+        entries = get_story_bank_entries(user_id, active_only=True)
+    except Exception as e:
+        log_warning("Story bank unavailable for the second-wave comment", exc=e, user_id=user_id)
+        entries = []
+    focus = (prefs or {}).get("focus_topics")
+    story = _story_bank.select_story(entries, subject=str(post_message or "")[:300],
+                                     focus_topics=focus if isinstance(focus, list) else None)
+    return _story_bank.story_directive(story), story
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True,
+                                                   'keys': ['user_id', 'post_id']})
+def auto_second_wave_comment(self, user_id: int, post_id: int):
+    """The SECOND WAVE (issue #622 / G7): 6–8 hours after publishing, add ONE self-comment that
+    brings a substantive insight the post itself didn't carry — the evening re-surface of a post
+    that is still earning engagement is a second distribution window, and a comment with real value
+    in it is what re-opens the thread.
+
+    Like the #344 seed comment it publishes through the socialActions API (no Selenium, no login),
+    so it is immune to the feed-navigation 429 — but unlike the seed it IS discretionary
+    amplification, so it stands down while automation is paused (the #629 suppression tripwire and
+    any manual pause). The self-comment cap is enforced on the COUNT of our own comments on this
+    post, so the seed and the second wave can never stack into thread-stuffing however they are
+    re-dispatched. A draft that can't clear the comment quality contract ships NOTHING."""
+    if not _golden.second_wave_enabled():
+        return "Second-wave comment disabled"
+    if is_automation_paused():
+        reason = automation_pause_reason() or "automation paused"
+        log_info(f"Second-wave comment skipped — {reason}", user_id=user_id, post_id=post_id,
+                 action_type="comment", task_name="auto_second_wave_comment")
+        return f"Skipped — {reason}"
+    post_url = get_post_url_from_log_for_user(user_id, post_id)
+    if not post_url:
+        return "No post URL yet for the second-wave comment"
+    object_urn = object_urn_from_post_url(post_url)
+    if not object_urn:
+        return f"Could not derive object URN from {post_url}"
+    cap = _golden.self_comment_cap()
+    already = count_user_comments_on_post_url(user_id, post_url)
+    if already >= cap:
+        return f"Self-comment cap reached ({already}/{cap}) for this post"
+    post_message = get_post_content(post_id) or get_post_message_from_log_for_user(user_id, post_id)
+    if not post_message:
+        return "No post content to build a second-wave comment from"
+    try:
+        my_profile = load_profile_for_user(user_id)  # cached DB read — no scrape/login
+        prefs = get_engagement_preferences(user_id)
+        story_directive, story = _second_wave_story_directive(user_id, post_message, prefs)
+        with llm_attribution(user_id=user_id, feature=FEATURE_COMMENT):
+            comment = generate_second_wave_comment(
+                post_message, my_profile, prefs=prefs,
+                profile_synthesis=get_or_create_profile_synthesis(user_id, my_profile),
+                story_directive=story_directive,
+                recent_comments=list(get_recent_comment_texts(user_id)), user_id=user_id)
+        if not comment:
+            # The gate rejected every attempt. Nothing ships — a filler self-comment on our own post
+            # costs more reach than the silence does.
+            log_warning("Second-wave comment skipped — no draft cleared the quality contract",
+                        user_id=user_id, post_id=post_id, action_type="comment",
+                        task_name="auto_second_wave_comment")
+            _record_golden_hour_report(user_id, post_id, 0,
+                                       _reply_outcome("gate_failed", "no draft passed the gate"),
+                                       phase=_golden.PHASE_SECOND_WAVE)
+            return "No second-wave comment passed the quality gate"
+        comment_urn = comment_on_linkedin_post(user_id, object_urn, comment)
+        if not comment_urn:
+            _record_golden_hour_report(user_id, post_id, 0,
+                                       _reply_outcome("post_failed", "API rejected the comment"),
+                                       phase=_golden.PHASE_SECOND_WAVE)
+            return "Second-wave comment failed to post"
+        insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.COMMENT,
+                       result=LogResultType.SUCCESS, post_url=post_url, message=comment)
+        # Recorded for visibility, NOT charged to the outbound envelope: like a reply on our own
+        # post, this is presence on our own thread rather than discretionary outreach (#626).
+        record_action(user_id, ACTION_REPLY)
+        if story and story.get("id"):
+            record_story_bank_use(user_id, story["id"])
+        _record_golden_hour_report(user_id, post_id, 0,
+                                   _reply_outcome("ok", "second wave posted", replies_sent=1),
+                                   phase=_golden.PHASE_SECOND_WAVE)
+        log_info(f"Second-wave comment posted on post {post_id} via API ({comment_urn})",
+                 user_id=user_id, post_id=post_id, action_type="comment",
+                 task_name="auto_second_wave_comment")
+        return f"Second-wave comment posted via API ({comment_urn})"
+    except Exception as e:
+        log_error("Second-wave comment error", exc=e, user_id=user_id, post_id=post_id,
+                  task_name="auto_second_wave_comment")
+        return f"Second-wave comment error: {e}"
+
+
 _ANALYTICS_URL = "https://www.linkedin.com/analytics/post-summary/{urn}/"
 
 
@@ -2348,31 +2449,12 @@ _MAX_REPLIES_PER_SWEEP = 15
 # left while the post is still being distributed gets a timely, substantive reply. Sweep count is
 # env-tunable (GOLDEN_HOUR_REPLY_SWEEPS); each sweep is QueueOnce + 429-safe, so an extra/overlapping
 # run is harmless and a rate-limited session skips cleanly.
-_GOLDEN_HOUR_MINUTES = 60
-_GOLDEN_HOUR_REPLY_SWEEPS = 3
-# Hard cap on scheduled sweeps — a misconfigured GOLDEN_HOUR_REPLY_SWEEPS can't flood the broker
-# with ETA tasks or fragment the golden hour into meaninglessly tight intervals.
-_GOLDEN_HOUR_MAX_SWEEPS = 12
-
-
-def _golden_hour_sweep_countdowns(sweeps: int = _GOLDEN_HOUR_REPLY_SWEEPS,
-                                  window_minutes: int = _GOLDEN_HOUR_MINUTES) -> list[int]:
-    """Countdown seconds (from publish) for the golden-hour reply sweeps, spread evenly across the
-    window so a comment left at any point in the golden hour is answered within window/sweeps minutes.
-    e.g. 3 sweeps over 60 min → [1200, 2400, 3600] (20, 40, 60 min in). Sweep count is floored to 1
-    and capped at _GOLDEN_HOUR_MAX_SWEEPS so misconfiguration can't schedule an unbounded burst.
-
-    Each slot carries a small RESPONSIVE jitter (issue #626): replying quickly to comments on your
-    OWN post is human, so these are exempt from the tens-of-minutes engagement jitter — but landing
-    on 20:00/40:00/60:00 after every single publish is a machine signature, so the exact minute
-    still moves. Jitter is additive (never earlier), so the last sweep still covers the window."""
-    n = max(1, min(_GOLDEN_HOUR_MAX_SWEEPS, int(sweeps)))
-    step = (window_minutes * 60) / n
-    # Half a step is the hard jitter ceiling: even a misconfigured PACING_RESPONSIVE_JITTER_MAX_SECONDS
-    # can then never reorder two sweeps or collapse them onto the same minute.
-    jitter_cap = int(step // 2)
-    return [int(round(step * i)) + min(jitter_cap, dispatch_jitter_seconds(PACE_RESPONSIVE))
-            for i in range(1, n + 1)]
+# The timing decisions themselves live in utilities/golden_hour.py (issue #622) so they can be tested
+# without importing the task module; these names stay as the in-module vocabulary.
+_GOLDEN_HOUR_MINUTES = _golden.GOLDEN_HOUR_MINUTES
+_GOLDEN_HOUR_REPLY_SWEEPS = _golden.GOLDEN_HOUR_REPLY_SWEEPS
+_GOLDEN_HOUR_MAX_SWEEPS = _golden.GOLDEN_HOUR_MAX_SWEEPS
+_golden_hour_sweep_countdowns = _golden.sweep_countdowns
 
 
 # --- inbound hot-lead detection (issue #483) ---------------------------------------------------
@@ -2438,15 +2520,24 @@ def _flag_lead_signal(user_id: int, text: str, source: "LeadSignalSource", threa
         return None
 
 
+def _reply_outcome(status: str, summary: str, comments_found: int = 0,
+                   replies_sent: int = 0) -> dict:
+    """One post's reply-sweep outcome. A dict, not a string, because the golden-hour report
+    (issue #622) needs the counts the old summary line only ever rendered."""
+    return {"status": status, "summary": summary, "comments_found": int(comments_found),
+            "replies_sent": int(replies_sent)}
+
+
 def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my_profile,
-                                    profile_synthesis: str) -> str:
+                                    profile_synthesis: str) -> dict:
     """Navigate to the user's own post and reply to comments on it (thread-builder replies, plus
     reciprocity/lead-magnet handling). Shared by the per-post reply task and the recent-posts sweep.
-    Returns a short human result string. Assumes the caller already has a live driver/profile."""
+    Returns a `_reply_outcome` dict (status + counts + human summary). Assumes the caller already
+    has a live driver/profile."""
     post_url = get_post_url_from_log_for_user(user_id, post_id)
     if not post_url:
         myprint(f"No successful post URL for post {post_id}; skipping replies.")
-        return "No post URL"
+        return _reply_outcome("no_post_url", "No post URL")
     # Ground replies in the canonical post body (posts table); fall back to the log message.
     post_message = get_post_content(post_id) or get_post_message_from_log_for_user(user_id, post_id)
 
@@ -2477,7 +2568,8 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
     if not unique_url_name:
         log_warning("Reply sweep: could not resolve own profile slug — skipping replies to avoid "
                     "duplicate/self replies", user_id=user_id, post_id=post_id, action_type="reply")
-        return "Skipped — no profile slug for dedup"
+        return _reply_outcome("no_profile_slug", "Skipped — no profile slug for dedup",
+                              comments_found=len(comments))
 
     comments_replied_count = 0
     leads_flagged = 0
@@ -2555,19 +2647,76 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
         else:
             insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.REPLY,
                            result=LogResultType.FAILURE, post_url=post_url, message=response)
-    return f"Replied to {comments_replied_count} comments"
+    return _reply_outcome("ok", f"Replied to {comments_replied_count} comments",
+                          comments_found=len(comments), replies_sent=comments_replied_count)
+
+
+def _record_golden_hour_report(user_id: int, post_id: int, sweep_slot: int, outcome: dict,
+                               phase: str = _golden.PHASE_REPLY_SWEEP) -> "dict | None":
+    """Build, log and ship ONE post's golden-hour report (issue #622), or None for a post too old to
+    be the amplifier's business. Latency is measured from the post's real publish time, so the
+    report answers the audit's question — did this sweep land inside the window, and did it find
+    anything? A sweep that arrived late is logged as a WARNING: that is the queue-backlog signal the
+    #401 audit had no way to see."""
+    outcome = dict(outcome or {})
+    minutes = _golden.latency_minutes(get_post_age_minutes(user_id, post_id))
+    if not _golden.should_report(minutes):
+        return None
+    report = _golden.golden_hour_report(
+        post_id, minutes, comments_found=outcome.get("comments_found"),
+        replies_sent=outcome.get("replies_sent"), status=outcome.get("status") or "ok",
+        sweep_slot=sweep_slot, phase=phase)
+    summary = _golden.report_summary(report)
+    task_name = ("auto_second_wave_comment" if phase == _golden.PHASE_SECOND_WAVE
+                 else "sweep_reply_comments")
+    if report["within_window"]:
+        log_info(summary, user_id=user_id, post_id=post_id, action_type="reply",
+                 task_name=task_name)
+    else:
+        # Out of window on a post young enough to still matter (should_report already dropped the
+        # older ones) — that is the queue-backlog / rate-limit signal, so it goes out as a WARNING.
+        log_warning(summary, user_id=user_id, post_id=post_id, action_type="reply",
+                    task_name=task_name)
+    try:
+        track_golden_hour_report(user_id, report)
+    except Exception as e:
+        log_warning("Golden-hour report not tracked", exc=e, user_id=user_id, post_id=post_id)
+    return report
+
+
+def _retry_golden_hour_sweep(user_id: int, sweep_slot: int, attempt: int, reason: str) -> bool:
+    """A golden-hour sweep that could not run at all gets ONE more chance while the window is still
+    open — the #401 amplifier used to lose the whole hour to a single transient 429. Returns True
+    when a retry was scheduled. Bounded by `sweep_retry_countdown` (attempts AND window), so a
+    sustained rate-limit decays to nothing instead of hammering LinkedIn."""
+    post_ids = get_recent_posted_post_ids(user_id, days=1)
+    minutes = _golden.latency_minutes(get_post_age_minutes(user_id, post_ids[0])) if post_ids else None
+    countdown = _golden.sweep_retry_countdown(minutes, attempt)
+    if countdown is None:
+        return False
+    sweep_reply_comments.apply_async(
+        kwargs={'user_id': user_id, 'sweep_slot': sweep_slot, 'attempt': int(attempt) + 1},
+        countdown=countdown)
+    log_info(f"Golden-hour sweep retry {int(attempt) + 1} scheduled in {countdown}s ({reason})",
+             user_id=user_id, action_type="reply", task_name="sweep_reply_comments")
+    return True
 
 
 @shared_task.task(bind=True, base=QueueOnce,
                   once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id', 'sweep_slot']},
                   queue='se_engage')
-def sweep_reply_comments(self, user_id: int, sweep_slot: int = 0):
+def sweep_reply_comments(self, user_id: int, sweep_slot: int = 0, attempt: int = 0):
     """Reply to new comments across the user's RECENT posts in ONE Selenium session. Triggered by a
     forwarded comment-notification email (event mode) or the scheduled dispatcher — replacing the old
     24h-per-post polling loop that drove the 429 rate-limiting. 429-safe: a rate-limited session logs
     a clean skip and returns (a later trigger/sweep retries). sweep_slot is part of the QueueOnce key
     so the golden-hour amplifier can enqueue several distinct sweeps for one user (same user_id+slot
-    still dedups); the single-shot scheduled/API triggers leave it at 0."""
+    still dedups); the single-shot scheduled/API triggers leave it at 0.
+
+    Every post swept emits a golden-hour report (issue #622) — comments found, replies sent, minutes
+    since publish — so the amplifier's silence can be diagnosed instead of guessed at. `attempt` is
+    the in-window retry counter; it is NOT part of the QueueOnce key, so a retry of the same slot
+    still dedups against a concurrently-queued one."""
     prefs = get_engagement_preferences(user_id)
     days = int(prefs.get("reply_max_post_age_days") or 2)
     post_ids = get_recent_posted_post_ids(user_id, days=days)
@@ -2588,21 +2737,26 @@ def sweep_reply_comments(self, user_id: int, sweep_slot: int = 0):
         log_warning("Reply sweep skipped — LinkedIn rate-limited", exc=e, user_id=user_id,
                     task_name="sweep_reply_comments")
         release_run_lock(lock_name, lock_token)
-        return "Skipped — rate limited"
+        retried = _retry_golden_hour_sweep(user_id, sweep_slot, attempt, "rate limited")
+        return "Skipped — rate limited" + (" (retry scheduled)" if retried else "")
     except Exception as e:
         log_error("Error starting reply sweep", exc=e, user_id=user_id, task_name="sweep_reply_comments")
         release_run_lock(lock_name, lock_token)
-        return f"Failed to start reply sweep: {e}"
+        retried = _retry_golden_hour_sweep(user_id, sweep_slot, attempt, "session failed")
+        return f"Failed to start reply sweep: {e}" + (" (retry scheduled)" if retried else "")
     try:
         profile_synthesis = get_or_create_profile_synthesis(user_id, my_profile)
         swept = 0
         for post_id in post_ids:
             try:
-                _reply_to_comments_on_open_post(driver, wait, user_id, post_id, my_profile, profile_synthesis)
+                outcome = _reply_to_comments_on_open_post(driver, wait, user_id, post_id, my_profile,
+                                                          profile_synthesis)
                 swept += 1
             except Exception as e:
                 log_warning("Reply sweep: post failed", exc=e, user_id=user_id, post_id=post_id,
                             task_name="sweep_reply_comments")
+                outcome = _reply_outcome("error", f"Reply sweep failed: {e}")
+            _record_golden_hour_report(user_id, post_id, sweep_slot, outcome)
         return f"Swept replies on {swept}/{len(post_ids)} recent posts"
     finally:
         quit_gracefully(driver)
@@ -3404,7 +3558,8 @@ def automate_reply_commenting(self, user_id: int, post_id: int, loop_for_duratio
         # Stable VOICE synthesis reused across every reply in this run (voice source, not the raw JSON).
         profile_synthesis = get_or_create_profile_synthesis(user_id, my_profile)
 
-        result = _reply_to_comments_on_open_post(driver, wait, user_id, post_id, my_profile, profile_synthesis)
+        result = _reply_to_comments_on_open_post(driver, wait, user_id, post_id, my_profile,
+                                                 profile_synthesis)["summary"]
 
         # Re-schedule the task in the queue for the future
         if loop_for_duration:
@@ -6036,12 +6191,21 @@ def post_to_linkedin(self, user_id: int, post_id: int):
         # nothing.
         reply_mode = prefs.get("reply_check_mode", "event")
         if reply_mode == "event":
-            sweeps = int(_env_float("GOLDEN_HOUR_REPLY_SWEEPS", _GOLDEN_HOUR_REPLY_SWEEPS))
+            sweeps = _golden.reply_sweeps()
             # Distinct sweep_slot per sweep → distinct QueueOnce key, so celery-once enqueues all of
             # them; keyed only on user_id, the 2nd/3rd apply_async would be dropped as duplicates.
             for slot, countdown in enumerate(_golden_hour_sweep_countdowns(sweeps)):
                 sweep_reply_comments.apply_async(kwargs={'user_id': user_id, 'sweep_slot': slot},
                                                  countdown=countdown)
+
+        # Second wave (issue #622): ONE self-comment 6–8h out, when LinkedIn re-surfaces a post that
+        # is still earning. Dispatched from here for the same reason the seed comment is — it needs
+        # the published post's URL — and gated at run time (cap, pause, quality) rather than here,
+        # so a re-dispatch can never stack a second one onto the same post.
+        if _golden.second_wave_enabled():
+            auto_second_wave_comment.apply_async(
+                kwargs={'user_id': user_id, 'post_id': post_id},
+                countdown=_golden.second_wave_countdown_seconds())
 
         return f"Post successfully created"
 

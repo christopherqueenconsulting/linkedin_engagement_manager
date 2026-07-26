@@ -763,6 +763,44 @@ class TestTrackCommentOutcome:
         assert mock_ph.capture.call_args[1]["properties"]["status"] is None
 
 
+class TestTrackGoldenHourReport:
+    """Issue #622: one event per reply sweep and per second wave, so the #401 amplifier's silence
+    is a query instead of a log grep."""
+
+    def test_emits_the_reading(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_golden_hour_report
+            track_golden_hour_report(4, {"phase": "reply_sweep", "post_id": 9, "sweep_slot": 1,
+                                         "status": "ok", "latency_minutes": 22.5,
+                                         "within_window": True, "window_minutes": 90.0,
+                                         "comments_found": 3, "replies_sent": 2})
+
+        _, kwargs = mock_ph.capture.call_args
+        assert kwargs["event"] == "golden_hour_report" and kwargs["distinct_id"] == "4"
+        props = kwargs["properties"]
+        assert props["phase"] == "reply_sweep" and props["post_id"] == 9
+        assert props["latency_minutes"] == 22.5 and props["within_window"] is True
+        assert props["comments_found"] == 3 and props["replies_sent"] == 2
+
+    def test_unknown_latency_is_not_coerced_to_on_time(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_golden_hour_report
+            track_golden_hour_report(None, {"phase": "second_wave", "latency_minutes": None})
+
+        _, kwargs = mock_ph.capture.call_args
+        assert kwargs["distinct_id"] == "system"
+        props = kwargs["properties"]
+        assert props["latency_minutes"] is None and props["within_window"] is False
+        assert props["comments_found"] == 0 and props["replies_sent"] == 0
+
+    def test_tolerates_an_empty_report(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_golden_hour_report
+            track_golden_hour_report(4, None)
+
+        assert mock_ph.capture.call_args[1]["properties"]["phase"] is None
+
+
 class TestTrackCommentQuality:
     def test_emits_the_rates_and_the_verdict(self):
         with patch(f"{_MOD}.posthog") as mock_ph:
