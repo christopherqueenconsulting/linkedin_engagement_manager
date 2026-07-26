@@ -83,13 +83,13 @@ class TestUseAccounting:
         use.assert_not_called()
 
 
-def _review(content, story=_STORY, second="second draft", **env):
+def _review(content, story=_STORY, second="second draft", lead_magnet_cta="", **env):
     from cqc_lem.app import run_content_plan as rcp
     with patch(f"{_RCP}.create_text_post", return_value=second) as retry, \
          patch(f"{_RCP}._check_post_alignment", return_value=True), \
          patch.dict("os.environ", env, clear=False):
         out = rcp._review_generated_post(
-            1, "awareness", "thought_leadership", MagicMock(), {}, 77, "", content, [],
+            1, "awareness", "thought_leadership", MagicMock(), {}, 77, lead_magnet_cta, content, [],
             prefs={}, profile_synthesis="", story=story, story_directive="STORY DIRECTIVE")
     return out, retry
 
@@ -109,6 +109,17 @@ class TestFabricationGate:
         retry.assert_called_once()
         assert retry.call_args.kwargs["story_directive"] == "STORY DIRECTIVE"
         assert "47" in retry.call_args.kwargs["history_directive"]
+
+    def test_lead_magnet_cta_numbers_are_not_flagged_as_fabricated(self):
+        # The CTA directive is material WE handed the writer — a number in the user's configured
+        # resource name ("my 5-step checklist") must not trigger a spurious regeneration that
+        # would then be steered to strip the CTA mechanic.
+        cta = "Lead magnet: comment AUDIT and I'll DM you my 5-step checklist."
+        content = ("I cut a client's onboarding from 12 days to 3. "
+                   "Comment AUDIT and I'll DM you my 5-step checklist.")
+        out, retry = _review(content, lead_magnet_cta=cta)
+        assert out == content
+        retry.assert_not_called()
 
     def test_regeneration_can_be_switched_off(self):
         out, retry = _review(self._INVENTED, POST_FABRICATION_REGEN_ENABLED="off")

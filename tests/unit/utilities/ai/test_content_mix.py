@@ -124,6 +124,23 @@ class TestMeetingAskDetector:
         "DM me to discuss your funnel.",
         "Reach out and we can discuss the details.",
         "Booking a consult is the fastest way in.",
+        # 'an' is the ONLY article "intro"/"introductory" ever takes — an offer-verb pattern that
+        # omits it cannot match the most natural phrasing of the ask it exists to catch.
+        "Book an intro call with me this week.",
+        "Schedule an introductory call if that helps.",
+        "Grab an intro session on my calendar.",
+        # The same ask framed as the reader's interest, or as a bare headline offer with a booking
+        # marker — no offer verb, still unambiguously a meeting ask.
+        "Want a free strategy session? Comment below.",
+        "Interested in a discovery call?",
+        "Free discovery call for the first 5 people who reply.",
+        "Free strategy session — link in comments.",
+        # Both verb-less forms still have to fire mid-post, where the anchor is the end of the
+        # previous sentence rather than the start of the string.
+        "I had two people ask this week. Free discovery call — link in bio.",
+        "Here's the offer: free 30-minute call, spots are open.",
+        "So if you want a quick call, my calendar is open.",
+        "Up for a quick call? DM me.",
     ])
     def test_flags_meeting_asks(self, text):
         from cqc_lem.utilities.ai.content_alignment import contains_meeting_ask
@@ -135,6 +152,24 @@ class TestMeetingAskDetector:
         "I called the vendor twice before anyone answered.",
         "Comment AUDIT and I'll DM you the checklist.",
         "What would you have done differently? Curious how others handle this.",
+        # First-person NARRATIVE about calls/sessions is often the story-bank anecdote itself —
+        # the repair deletes flagged sentences, so a bare noun phrase must never match (#620 seam).
+        "I ran a discovery call with them last week and it changed the scope.",
+        "Our last strategy session surfaced three gaps in the funnel.",
+        "The 30-minute call with their CTO was where the real problem showed up.",
+        "I book discovery calls with new clients every Friday.",
+        "I wanted a quick call but they were booked solid.",
+        "That discovery call opened my eyes to the real bottleneck.",
+        # Same trap in the verb-less forms: THIRD-PERSON PRESENT narrative uses the exact words of
+        # the reader-interest ask, and a noun phrase buried mid-sentence sits within 40 characters
+        # of an ordinary "sign up" / "DM me" often enough to matter. Neither is an ask, and the
+        # repair deletes the whole sentence, so neither may match.
+        "Most buyers want a quick call before they commit to anything.",
+        "Clients want a free consultation before they'll even look at pricing.",
+        "They're ready for a strategy session long before we are.",
+        "My team was up for a quick call but the client ghosted us.",
+        "That quick call led to a sign up the same day.",
+        "After our discovery call I told them to DM me anytime.",
         "",
         None,
     ])
@@ -172,6 +207,18 @@ class TestReplaceMeetingAskCta:
         out = replace_meeting_ask_cta(self._DRAFT)
         assert contains_meeting_ask(out) is False
         assert "subscribe" not in out.lower() and "comment" not in out.lower()
+
+    def test_keeps_narrative_that_merely_mentions_a_call(self):
+        # The repair DELETES every sentence the detector matches, so a detector that over-reaches
+        # silently destroys story-bank content. Only the actual ask may go.
+        from cqc_lem.utilities.ai.content_alignment import replace_meeting_ask_cta
+        draft = ("Most buyers want a quick call before they commit.\n\n"
+                 "That quick call led to a sign up the same day.\n\n"
+                 "Want a free strategy session? Comment below.")
+        out = replace_meeting_ask_cta(draft, lead_magnet=_LM, post_id=2)
+        assert "Most buyers want a quick call" in out
+        assert "led to a sign up" in out
+        assert "strategy session" not in out.lower()
 
     def test_unchanged_when_there_is_no_meeting_ask(self):
         from cqc_lem.utilities.ai.content_alignment import replace_meeting_ask_cta

@@ -122,7 +122,8 @@ class TestMixFlowsIntoGeneration:
         assert text.call_args.kwargs["content_mix"] == "authority"
 
 
-def _run_text_post(generated, content_mix=None, lead_magnet=None, newsletter=None, post_id=77):
+def _run_text_post(generated, content_mix=None, lead_magnet=None, newsletter=None, post_id=77,
+                   stories=None):
     """Drive create_text_post with a stubbed generator, returning (content, generator, blueprint)."""
     from cqc_lem.app import run_content_plan as rcp
     from cqc_lem.utilities.ai.content_framework import select_blueprint as real_select
@@ -135,6 +136,8 @@ def _run_text_post(generated, content_mix=None, lead_magnet=None, newsletter=Non
         patch(f"{_RCP}.get_newsletter_settings", return_value=newsletter or _NO_NEWSLETTER),
         patch(f"{_RCP}.get_recent_post_texts", return_value=[]),
         patch(f"{_RCP}.get_recent_post_shape_history", return_value=[]),
+        patch(f"{_RCP}.get_story_bank_entries", return_value=stories or []),
+        patch(f"{_RCP}.record_story_bank_use"),
         patch(f"{_RCP}.get_shape_performance", return_value=None),
         patch(f"{_RCP}.select_blueprint", selector),
         patch(f"{_RCP}.update_db_post_shape"),
@@ -171,10 +174,24 @@ class TestCreateTextPostMixHandling:
         _, gen, _ = _run_text_post(_CLEAN, content_mix="authority")
         assert gen.call_args.kwargs["content_mix"] == "authority"
 
-    def test_promo_slot_is_forced_into_a_case_study_shape(self):
-        _, gen, selector = _run_text_post(_CLEAN, content_mix="promo")
+    _PROMO_STORY = {"id": 5, "kind": "client_win", "title": "Churn fix",
+                    "body": "We cut a client's churn from 9% to 4% in one quarter.",
+                    "happened_at": None, "used_count": 0, "last_used_at": None, "active": True}
+
+    def test_promo_slot_with_a_story_anchor_is_forced_into_a_case_study_shape(self):
+        _, gen, selector = _run_text_post(_CLEAN, content_mix="promo",
+                                          stories=[self._PROMO_STORY])
         assert selector.call_args.kwargs["guidance"] == "case_snapshot"
         assert gen.call_args.kwargs["blueprint"]["format"] == "case_snapshot"
+        assert gen.call_args.kwargs["content_mix"] == "promo"
+
+    def test_promo_without_a_story_anchor_is_demoted_to_value(self):
+        # Integration seam (#618 x #620): with no story anchor the fabrication gate has no
+        # allow-list and is skipped — a promo case study would be free to invent its outcome
+        # number. The slot must degrade to audience-value content, not an invented case study.
+        _, gen, selector = _run_text_post(_CLEAN, content_mix="promo")
+        assert selector.call_args.kwargs["guidance"] is None
+        assert gen.call_args.kwargs["content_mix"] == "value"
 
     def test_unclassified_post_keeps_pure_shape_rotation(self):
         _, gen, selector = _run_text_post(_CLEAN)
