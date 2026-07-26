@@ -3244,7 +3244,10 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
     try:
         existing = _select_engagement_row(user_id)
     except mysql.connector.Error as err:
-        myprint(f"Could not read engagement prefs before update for user_id {user_id} | Error: {err}")
+        # ERROR, not myprint: this silently ABORTS the user's save, so it has to reach PostHog
+        # rather than sit at INFO under the default POSTHOG_LOG_LEVEL.
+        log_error("Could not read engagement prefs before update — aborting write",
+                  exc=err, user_id=user_id)
         return False
     base = {**_ENGAGEMENT_DEFAULTS,
             **{k: v for k, v in (existing or {}).items() if k in _ENGAGEMENT_DEFAULTS}}
