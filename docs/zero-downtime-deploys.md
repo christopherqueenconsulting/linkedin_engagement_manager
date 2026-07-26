@@ -16,6 +16,9 @@ Cloudflare Tunnel (dashboard ingress: http://web_app:8000  — UNCHANGED)
 
 - The Cloudflare dashboard still targets `http://web_app:8000` — no tunnel changes were needed;
   the nginx edge simply took over the `web_app` service name in `docker-compose.prod.yml`.
+- Ports are templated end-to-end: the edge listens on `__EDGE_PORT__` (8000 — fixed, that's the
+  tunnel ingress) and proxies to `__BACKEND_PORT__`, which `deploy.sh` reads from `/opt/lem/.env`
+  as `API_PORT` — the same value the FastAPI containers bind and the per-color health check probes.
 - The conf uses `resolver 127.0.0.11` + a variable `proxy_pass`, so backend IPs are re-resolved
   per request — recreating a color container never leaves the edge holding a stale IP
   (verified live: backend recreated with a new IP, traffic continued without a reload).
@@ -56,8 +59,9 @@ gh workflow run deploy-vps.yml -f tag=vX.Y.Z -f rollback=true   # rollback.sh pa
 ## Operational notes
 
 - `/opt/lem/deploy/` and `/opt/lem/.active_color` are runtime state (git-ignored). If routing ever
-  needs a manual flip: render the conf by hand from `compose/prod/nginx/default.conf.tmpl`, then
-  `docker exec web_app nginx -t && docker exec web_app nginx -s reload`.
+  needs a manual flip: render the conf by hand from `compose/prod/nginx/default.conf.tmpl`
+  (substitute all three placeholders — `__ACTIVE_COLOR__`, `__EDGE_PORT__`, `__BACKEND_PORT__`),
+  then `docker exec web_app nginx -t && docker exec web_app nginx -s reload`.
 - Both colors mount the same `./logs` and `assets` volume; the standby serves no traffic but is
   warm, so a flip is instant.
 - RAM cost of the standby ≈ one FastAPI container (~0.5-1 GB), well within the box's headroom.

@@ -21,6 +21,23 @@ DRAIN_TIMEOUT="${DRAIN_TIMEOUT:-480}"
 
 log() { echo "[deploy $(date -u +%H:%M:%S)] $*"; }
 
+# Read a key from the compose .env (the same file the containers get via env_file), so this script
+# can never disagree with what the app actually bound. A value already exported into this shell
+# wins, mirroring how compose resolves variables.
+env_value() {  # $1 = key, $2 = default
+  local val=""
+  if [[ -f "${ENV_FILE}" ]]; then
+    val="$(sed -nE "s/^[[:space:]]*$1=[\"']?([^\"'#[:space:]]*).*/\1/p" "${ENV_FILE}" | tail -n1)"
+  fi
+  echo "${val:-$2}"
+}
+
+# The FastAPI containers listen on ${API_PORT} (compose/local/fastapi/start-cloud), so both the
+# per-color health check and the nginx upstream must use it. The EDGE port stays 8000 regardless:
+# the Cloudflare tunnel ingress is the fixed `http://web_app:8000`.
+API_PORT="${API_PORT:-$(env_value API_PORT 8000)}"
+EDGE_PORT=8000
+
 # Run a maintenance-mode subcommand inside whichever app container is up. Best-effort by design:
 # a stack that can't answer must not block the deploy (warm shutdown + acks_late still protect
 # in-flight work), so every call site tolerates a non-zero exit.
@@ -110,14 +127,16 @@ NGINX_DIR="${ROOT_DIR}/deploy/nginx"
 mkdir -p "${NGINX_DIR}"
 
 render_nginx() {  # $1 = color to route to
-  sed "s/__ACTIVE_COLOR__/web_api_$1/" \
+  sed -e "s/__ACTIVE_COLOR__/web_api_$1/" \
+      -e "s/__EDGE_PORT__/${EDGE_PORT}/" \
+      -e "s/__BACKEND_PORT__/${API_PORT}/" \
     "${ROOT_DIR}/compose/prod/nginx/default.conf.tmpl" > "${NGINX_DIR}/default.conf"
 }
 
 color_healthy() {  # $1 = color, $2 = timeout seconds
   local deadline=$(( $(date +%s) + $2 ))
   while (( $(date +%s) < deadline )); do
-    if docker exec "web_api_$1" curl -fsS "http://localhost:${API_PORT:-8000}/health" >/dev/null 2>&1; then
+    if docker exec "web_api_$1" curl -fsS "http://localhost:${API_PORT}/health" >/dev/null 2>&1; then
       return 0
     fi
     sleep 5
@@ -135,8 +154,9 @@ else
   TARGET="blue"
 fi
 # A conf must exist before the nginx edge can start; keep routing to the CURRENT color until the
-# new one proves healthy.
-[[ -f "${NGINX_DIR}/default.conf" ]] || render_nginx "${TARGET}"
+# new one proves healthy. Only on a first cutover/recovery (no ACTIVE color) does the seed conf
+# point at TARGET — otherwise an edge restart mid-deploy would send traffic to an unproven color.
+[[ -f "${NGINX_DIR}/default.conf" ]] || render_nginx "${ACTIVE:-${TARGET}}"
 
 log "Blue/green: active=${ACTIVE:-<none>} -> deploying ${TAG} to ${TARGET}"
 ${COMPOSE} up -d --no-deps "web_api_${TARGET}"
@@ -179,11 +199,13 @@ else
   exit 1
 fi
 
-# 6c. Confirm the edge serves the new color end-to-end.
+# 6c. Confirm the edge serves the new color end-to-end. nginx:alpine ships no curl, so fall back
+#     to busybox wget rather than mistaking a missing binary for an unhealthy edge.
 log "Verifying edge -> web_api_${TARGET}"
 edge_ok=false
+edge_probe="curl -fsS http://localhost:${EDGE_PORT}/health || wget -q -O /dev/null http://localhost:${EDGE_PORT}/health"
 for _ in 1 2 3 4 5 6; do
-  if docker exec web_app curl -fsS "http://localhost:8000/health" >/dev/null 2>&1; then
+  if docker exec web_app sh -c "${edge_probe}" >/dev/null 2>&1; then
     edge_ok=true; break
   fi
   sleep 5
