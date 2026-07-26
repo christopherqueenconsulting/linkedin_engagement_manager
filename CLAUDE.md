@@ -204,6 +204,30 @@ from cqc_lem.utilities.observability import track_llm_call, track_task, track_ap
 
 PostHog receives LLM usage (model, tokens, latency, cost) and Celery task metrics for fine-tuning decisions.
 
+### LLM analytics (LiteLLM → PostHog, issue #647)
+
+There are TWO LLM streams in PostHog and they must never be summed together — see
+`docs/llm-analytics.md` for the full split.
+
+- **`llm_call`** (app, `track_llm_call`) — LEM's cost ESTIMATE, keyed by the tier alias the caller
+  asked for. It is what `cost_ledger`, the margin report and the budget alerts are built on, so
+  **every money question uses this one**.
+- **`$ai_generation`** / **`$ai_embedding`** (proxy) — LiteLLM's native `posthog` callback emits one
+  per call with the model that ACTUALLY served it (post-fallback, post-down-route), the provider's
+  own `response_cost`, tokens and latency. This is PostHog's LLM-analytics product; **use it for
+  latency, error rate, model mix and volume**.
+
+`utilities/ai/client.py` stamps `metadata: {user_id, feature}` on every `lem-*` request — attribution
+lives in the ONE client, not at the ~10 call sites, because a call that skips it is invisible to both
+cost routing and analytics. `metadata.user_id` becomes the event's distinct_id and falls back to the
+`"system"` sentinel (same one `observability.py` uses, same person the SPA's `String(user_id)`
+resolves to), so a user's browser, Celery and proxy events land on ONE PostHog person. Don't remove
+`_attach_routing_metadata` from `_call_llm`: it is what lets an explicit `_track_user_id` beat the
+ambient `llm_attribution()` scope.
+
+Prompts and completions are redacted (`litellm_settings.turn_off_message_logging`) — they are the
+user's own LinkedIn material, and the SPA masks the same content.
+
 ### Browser-side analytics (SPA, issue #646)
 
 The SPA has ONE PostHog surface — `ui/src/utils/analytics.ts`. Never call `posthog` directly from a

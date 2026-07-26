@@ -391,6 +391,14 @@ services:
       - COST_AWARE_ROUTING_ENABLED=${COST_AWARE_ROUTING_ENABLED:-false}
       - COST_ROUTING_REDIS_URL=${COST_ROUTING_REDIS_URL:-redis://redis:6379/0}
       - COST_ROUTING_POLICY_TTL_SECONDS=${COST_ROUTING_POLICY_TTL_SECONDS:-60}
+      # LLM analytics (issue #647): the native posthog callback in .litellm/config.yaml reads these
+      # two names specifically. Same project key + host the app and the SPA report to, so a user's
+      # $ai_generation lands on the same PostHog person as their llm_call and browser events.
+      # Without POSTHOG_API_KEY the logger fails to initialize and LiteLLM swallows it as
+      # non-blocking: calls still complete, they just emit no $ai_generation. Silent, so if the
+      # events don't show up, check this env var in /opt/lem/.env first.
+      - POSTHOG_API_KEY=${POSTHOG_API_KEY}
+      - POSTHOG_API_URL=${POSTHOG_HOST:-https://us.i.posthog.com}
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')\" 2>/dev/null || exit 1"]

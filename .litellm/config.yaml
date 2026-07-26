@@ -134,6 +134,22 @@ litellm_settings:
     port: 6379
   custom_callbacks:
     - /app/.litellm/complexity_router.py
+  # ── LLM analytics → PostHog (issue #647, docs/llm-analytics.md) ──────────────
+  # LiteLLM's native logger (>=1.77.3) emits ONE $ai_generation / $ai_embedding per call with the
+  # provider model, tokens, response_cost and latency — the proxy's own accounting, so it needs no
+  # app-side estimate. distinct_id comes from the request's `metadata.user_id`, which
+  # utilities/ai/client.py stamps on every lem-* call; every other metadata key (feature) rides
+  # along as an event property. Needs POSTHOG_API_KEY in this container — see docker-compose.yml.
+  # The app's own `llm_call` event stays: it is what the cost ledger and margin report are built on.
+  # Do NOT sum spend across both streams — see the doc for which insight uses which.
+  success_callback: ["posthog"]
+  failure_callback: ["posthog"]
+  # Prompts and completions are the USER'S LinkedIn material (profile synthesis, story-bank
+  # anecdotes, draft DMs). LEM's analytics contract is that none of it leaves the stack, so the
+  # logging pipeline redacts $ai_input/$ai_output_choices before any callback sees them — the same
+  # rule the SPA follows with maskProps(). Metrics (tokens/cost/latency/model) are unaffected.
+  # Flip to false only deliberately: it turns PostHog's generation view into full conversation text.
+  turn_off_message_logging: true
   drop_params: true
   request_timeout: 180
 

@@ -56,6 +56,13 @@ ROUTING_STATES = frozenset({STATE_EXPERIMENT, STATE_ADOPTED})
 ARM_TREATMENT = "treatment"
 ARM_CONTROL = "control"
 
+# Placeholder a request carries in `metadata.user_id` when no user owns the call. It exists because
+# LiteLLM's PostHog logger uses that field verbatim as the event's distinct_id (issue #647), and an
+# absent one would mint a fresh anonymous person per call — "system" is the same sentinel
+# observability.py uses server-side, so all of LEM's system traffic lands on ONE person. It is NOT a
+# user id, so `assign_arm` must read it exactly like a missing one.
+SYSTEM_USER_ID = "system"
+
 POLICY_VERSION = 1
 POLICY_REDIS_KEY = "lem:routing:policy"
 
@@ -143,7 +150,9 @@ def assign_arm(user_id: Optional[Any], bucket: Optional[Mapping]) -> str:
     previously rolled-back experiment reshuffles the cohort instead of re-testing the same users.
 
     Traffic with no user id (system/housekeeping calls) always lands in control: it cannot be
-    attributed to a cohort, so it must not silently join the treatment.
+    attributed to a cohort, so it must not silently join the treatment. That includes the
+    SYSTEM_USER_ID placeholder — it is an analytics distinct_id, not a user, and hashing it would
+    put every unattributed call in the same arm.
 
     SHA-256 is used purely as a uniform, stable hash of (bucket, user) — nothing here is a secret —
     but a weak digest has no upside for that and trips security scanners, so don't "optimize" it back.
@@ -156,7 +165,7 @@ def assign_arm(user_id: Optional[Any], bucket: Optional[Mapping]) -> str:
         return ARM_CONTROL
     if pct <= 0:
         return ARM_CONTROL
-    if user_id is None or str(user_id).strip() == "":
+    if user_id is None or str(user_id).strip().lower() in ("", SYSTEM_USER_ID):
         return ARM_CONTROL
     if pct >= 1:
         return ARM_TREATMENT
