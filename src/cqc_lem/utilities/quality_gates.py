@@ -18,6 +18,7 @@ GATE_SIMILARITY = "similarity"
 GATE_FOCUS = "focus_alignment"
 GATE_MISSING_ASSET = "missing_asset"
 GATE_MEETING_CTA = "meeting_cta"
+GATE_FACT_GROUNDING = "fact_grounding"
 
 GATE_LABELS = {
     GATE_AUTHENTICITY: "Authenticity",
@@ -25,6 +26,7 @@ GATE_LABELS = {
     GATE_FOCUS: "Off your focus topics",
     GATE_MISSING_ASSET: "Missing media",
     GATE_MEETING_CTA: "Meeting-ask CTA",
+    GATE_FACT_GROUNDING: "Unverified specifics",
 }
 
 # The user-tunable thresholds behind these gates, in the units the SPA edits them in. Bounds are
@@ -130,6 +132,30 @@ def meeting_cta_finding(phrases: Optional[list] = None) -> dict:
                      "— your lead-magnet resource (comment your trigger word) or your newsletter — or "
                      "close on a specific question instead."),
         score=None, threshold=None, details=phrases)
+
+
+def fact_grounding_finding(unverified: Optional[list] = None,
+                           placeholders: Optional[list] = None) -> dict:
+    """No-fabrication guard for the save-targeted archetypes (issue #619 / G4). Two shapes, both
+    holding the post: a draft that stated specifics nothing verifies (it made them up), and a draft
+    that honestly deferred them to placeholders the author still has to fill in."""
+    made_up = [str(u).strip() for u in (unverified or []) if str(u).strip()]
+    to_fill = [str(p).strip() for p in (placeholders or []) if str(p).strip()]
+    if made_up:
+        return build_finding(
+            GATE_FACT_GROUNDING,
+            explanation=(f"This draft states {len(made_up)} specific(s) that no verified fact backs "
+                         f"— on a build receipt or resource list those numbers ARE the post, so an "
+                         f"invented one is the fastest way to lose the audience's trust."),
+            remediation=("Replace each one with the real figure, or delete it. Adding the project to "
+                         "your story bank lets future drafts use these numbers automatically."),
+            details=[f"Unbacked specific: {m}" for m in made_up[:10]])
+    return build_finding(
+        GATE_FACT_GROUNDING,
+        explanation=(f"This draft has {len(to_fill)} placeholder(s) waiting on your real numbers. "
+                     f"It deliberately did not invent them, so it is held until you fill them in."),
+        remediation="Edit the post, replace each [[...]] placeholder with the real detail, and re-score it.",
+        details=[f"Fill in: {p}" for p in to_fill[:10]])
 
 
 def parse_gate_findings(raw: Any) -> list[dict]:

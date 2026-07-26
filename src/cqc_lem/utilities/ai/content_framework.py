@@ -198,6 +198,16 @@ HOOK_STYLES: dict = {
     },
 }
 
+# The hook styles that can honestly LEAD WITH A REAL NUMBER. Save-targeted archetypes (issue #619 /
+# G4) restrict their hook menu to these: a build receipt or a bookmarkable compendium earns the
+# scroll-stop with the count/cost/duration in the first line, not with a rhetorical opener.
+NUMBER_LED_HOOK_STYLES: tuple = ("surprising_stat", "direct_promise", "mistake_confession")
+
+# How much `select_blueprint(prefer_save_targeted=True)` multiplies a save-targeted archetype's
+# tie-break weight. 2x surfaces them roughly twice as often WITHOUT breaking rotation — recency is
+# still the primary axis, so a save-targeted archetype can never repeat back-to-back.
+SAVE_TARGETED_BOOST = 2.0
+
 # ---------------------------------------------------------------------------
 # 2026 CTA + hashtag policy (issue #393 / C4). Two things flipped under the 2026 algorithm:
 # engagement-bait closes ("comment YES", "tag 3 people", "follow for more") are demoted instead of
@@ -374,6 +384,51 @@ POST_FORMATS: dict = {
             "CTA in the assigned CTA style",
         ],
     },
+    # --- Save-targeted archetypes (issue #619 / G4) ------------------------------------------
+    # Both trade entirely on REAL specifics, so both are fact-anchored: the writer may only state a
+    # number that comes from a verified fact, otherwise it must ship as a marked placeholder the
+    # author fills in at approval (see `fact_anchor_directive` / `fact_grounding_report`).
+    "build_receipt": {
+        "label": "Build Receipt",
+        "guidance": ("A receipt for something the author ACTUALLY built: what it is, the exact "
+                     "stack, what broke on the way, and what it can be pointed at. The credibility "
+                     "comes from the unglamorous specifics — the dead end, the tool that did not "
+                     "work, the real number — so never smooth them out and never invent them."),
+        "structure": [
+            "Hook in the assigned hook style — lead with the real number (what was built, at what "
+            "scale, cost, or time)",
+            "What it actually is, in two plain lines: the problem it solves and who it is for",
+            "The stack: the specific tools, models, or services used, and what each one does here",
+            "What broke: the failure, dead end, or wrong assumption that cost real time — and what "
+            "was done instead",
+            "Concrete use cases: 2-4 specific jobs a reader could point this at tomorrow",
+            "CTA in the assigned CTA style, closed as a SOFT ARTIFACT offer (the build log, the "
+            "template, the checklist) — never a pitch, never 'book a call'",
+        ],
+        "save_targeted": True,
+        "fact_anchored": True,
+        "hook_styles": NUMBER_LED_HOOK_STYLES,
+    },
+    "resource_compendium": {
+        "label": "Bookmarkable Compendium",
+        "guidance": ("A reference the reader expects to need again: a counted, curated set of "
+                     "resources, tools, prompts, or checks, each with the exact job it does. Written "
+                     "to be SAVED, not scrolled past — every entry must be real and something the "
+                     "author has actually used."),
+        "structure": [
+            "Hook in the assigned hook style — lead with the real count of what is inside and who "
+            "it is for",
+            "Why this was compiled: the specific problem that made the list worth assembling",
+            "The numbered entries — each one line naming the resource plus one line on the exact "
+            "job it does and when to reach for it",
+            "The single entry to start with if the reader only uses one",
+            "What was deliberately LEFT OFF the list, and why",
+            "CTA in the assigned CTA style, closed as a SOFT ARTIFACT offer — never a pitch",
+        ],
+        "save_targeted": True,
+        "fact_anchored": True,
+        "hook_styles": NUMBER_LED_HOOK_STYLES,
+    },
     "question_starter": {
         "label": "Conversation Starter",
         "guidance": ("A short setup that frames ONE genuinely open question the author actually "
@@ -542,6 +597,41 @@ def structure_for(content_type: str, format_key) -> list:
     return list(meta["structure"]) if meta else []
 
 
+def format_meta(content_type: str, format_key) -> dict:
+    """The menu entry for a format key, or {} when it is unknown/absent."""
+    key = normalize_key(content_type, "format", format_key)
+    return _menu(content_type)["formats"].get(key or "") or {}
+
+
+def allowed_hooks(content_type: str, format_key=None) -> dict:
+    """The hook menu a given format may draw from. Most formats use the whole menu; a save-targeted
+    archetype (issue #619) narrows it to the hook styles that can honestly lead with a real number.
+    An unknown format or an empty intersection falls back to the full menu rather than to nothing."""
+    hooks = _menu(content_type)["hooks"]
+    allowed = format_meta(content_type, format_key).get("hook_styles")
+    if not allowed or not hooks:
+        return hooks
+    return {k: hooks[k] for k in allowed if k in hooks} or hooks
+
+
+def is_save_targeted(content_type: str, format_key) -> bool:
+    """True for the archetypes written to be SAVED rather than scrolled past — the save signal is
+    weighted ~5x a like in 2026 and feeds evergreen redistribution, so scheduling can prefer them."""
+    return bool(format_meta(content_type, format_key).get("save_targeted"))
+
+
+def save_targeted_formats(content_type: str) -> list:
+    """Every save-targeted format key for a content type, in menu order."""
+    return [k for k, m in _menu(content_type)["formats"].items() if m.get("save_targeted")]
+
+
+def requires_fact_anchor(content_type: str, format_key) -> bool:
+    """True for archetypes whose whole value IS the specifics (build receipt, compendium). Their
+    drafts run through the no-fabrication guard: a number that no verified fact backs must be a
+    marked placeholder, never an invention (#416 policy)."""
+    return bool(format_meta(content_type, format_key).get("fact_anchored"))
+
+
 def options_text(content_type: str) -> str:
     """The menu of formats/hooks/CTAs given to a PLANNER so it assigns real, known values."""
     menu = _menu(content_type)
@@ -690,6 +780,9 @@ def enforce_variety(content_type: str, blueprints: list, recent_formats: list = 
             fmt = _pick(formats, f_recency, {prev_f} | batch_f | window_f)
         item = dict(bp)
         item.update({"format": fmt, "structure": list(formats[fmt]["structure"])})
+        # A save-targeted archetype narrows the hook menu to the number-led styles, so the hook is
+        # validated against THIS format's menu, not the content type's whole one.
+        hooks = allowed_hooks(content_type, fmt)
         if hooks:
             hook = _normalize(bp.get("hook_style"), hooks)
             if hook is None or hook == prev_h or hook in batch_h or hook in window_h:
@@ -713,13 +806,16 @@ def enforce_variety(content_type: str, blueprints: list, recent_formats: list = 
 
 def select_blueprint(content_type: str, subject: str = None, angle: str = None,
                      recent_formats: list = None, recent_hook_styles: list = None,
-                     guidance: str = None, performance: Optional[dict] = None) -> dict:
+                     guidance: str = None, performance: Optional[dict] = None,
+                     prefer_save_targeted: bool = False) -> dict:
     """A fresh blueprint for ONE piece of any content type, chosen in code (no LLM call): rotate
     away from the recent formats/hooks — including the piece's own previous shape — so consecutive
     pieces change form, not just words. Free-text `guidance` may name a format (e.g. 'make it a
     case study'); honor it when it does. `performance` (from `db.get_shape_performance`, keys
     'format'/'hook') closes the feedback loop — under-performing shapes are surfaced less often
-    while rotation and exploration are preserved (issue #389 / B4)."""
+    while rotation and exploration are preserved (issue #389 / B4). `prefer_save_targeted` biases
+    the tie-break toward the save-optimized archetypes (issue #619 / G4) — a bias, never a
+    forced pick, so rotation and variety still hold."""
     menu = _menu(content_type)
     formats, hooks, ctas = menu["formats"], menu["hooks"], menu["ctas"]
     hinted = _normalize(guidance, formats) if guidance else None
@@ -733,18 +829,33 @@ def select_blueprint(content_type: str, subject: str = None, angle: str = None,
     rh = [h for h in (_normalize(x, hooks) for x in (recent_hook_styles or [])) if h]
     fmt_weights = performance_weights((performance or {}).get("format"), formats.keys())
     hook_weights = performance_weights((performance or {}).get("hook"), hooks.keys())
+    if prefer_save_targeted:
+        fmt_weights = dict(fmt_weights or {k: 1.0 for k in formats})
+        for key in save_targeted_formats(content_type):
+            fmt_weights[key] = fmt_weights.get(key, 1.0) * SAVE_TARGETED_BOOST
     fmt = hinted or _pick(formats, rf, {rf[0] if rf else None} | set(rf[:_AVOID_WINDOW]), fmt_weights)
     out = {"subject": subject, "angle": angle or "", "format": fmt,
            "structure": list(formats[fmt]["structure"])}
+    # Number-led archetypes draw their hook from the narrowed menu (see `allowed_hooks`).
+    hooks = allowed_hooks(content_type, fmt)
     out["hook_style"] = _pick(hooks, rh, {rh[0] if rh else None} | set(rh[:_AVOID_WINDOW]),
                               hook_weights) if hooks else None
     out["cta_style"] = _pick(ctas, [], set()) if ctas else None
     return out
 
 
-def blueprint_directive(content_type: str, blueprint: dict) -> str:
+def blueprint_directive(content_type: str, blueprint: dict,
+                        fact_anchors: Optional[list] = None) -> str:
     """The WRITER-side injection: the assigned format's guidance + ordered structure skeleton, the
-    hook style, and the CTA style. Returns '' when the blueprint carries no known format."""
+    hook style, and the CTA style. Returns '' when the blueprint carries no known format.
+
+    For a save-targeted, fact-anchored archetype (issue #619 / G4) it also injects the number-led
+    hook constraints and the no-fabrication rules — `fact_anchors` is the list of VERIFIED,
+    human-sourced facts the writer may state as its own (the story bank, issue #620 / G5, is the
+    source). Callers that already thread a blueprint through several prompt builders can instead hang
+    the anchors on the blueprint itself as `fact_anchors`; the explicit argument wins. With no anchors
+    either way the writer may not state a specific at all: every number ships as a marked placeholder
+    the author fills in at approval."""
     if not isinstance(blueprint, dict):
         return ""
     menu = _menu(content_type)
@@ -767,6 +878,8 @@ def blueprint_directive(content_type: str, blueprint: dict) -> str:
     if hook:
         h_meta = menu["hooks"][hook]
         lines.append(f"OPENING HOOK STYLE: {h_meta['label']}. {h_meta['guidance']}")
+    if f_meta.get("hook_styles"):
+        lines.append(hook_constraint_directive())
     cta = _normalize(blueprint.get("cta_style"), menu["ctas"])
     if cta:
         c_meta = menu["ctas"][cta]
@@ -774,6 +887,9 @@ def blueprint_directive(content_type: str, blueprint: dict) -> str:
         lines.append(cta_policy_directive())
     if content_type in _PROOF_SLOT_TYPES:
         lines.append(PERSONAL_PROOF_SLOT)
+    if f_meta.get("fact_anchored"):
+        lines.append(fact_anchor_directive(
+            blueprint.get("fact_anchors") if fact_anchors is None else fact_anchors))
     return "\n".join(lines) + "\n"
 
 
@@ -837,6 +953,10 @@ _SPECIFICITY_RE = re.compile(
     r"|\b(?:last|past|next|first|second|third)\s+"
     r"(?:year|month|week|weekend|quarter|decade|time|day|night|morning)\b"
     r"|\bback\s+in\b"
+    # A marked fact placeholder (issue #619) IS a concrete particular — one the author fills in at
+    # approval rather than one the model invented. Without this the proof-slot regeneration would
+    # fight the no-fabrication guard, which forbids stating the very number the proof slot wants.
+    r"|\[\[[^\]]+\]\]"
     rf"|\b(?:{_PROOF_MONTHS})\b"
     rf"|\b(?:{_PROOF_WEEKDAYS})\b",
     re.IGNORECASE)
@@ -1575,4 +1695,214 @@ def comment_retry_directive(failures: list, offending_comment: Optional[str] = N
         lines.append("- It was too close to a comment this author already left elsewhere. Take a "
                      "different angle, a different opening, and different words than:\n  \""
                      + str(offending_comment).strip()[:400] + "\"")
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# SAVE-TARGETED ARCHETYPE SUPPORT: number-led hook constraints + the NO-FABRICATION guard
+# (issue #619 / G4). The build receipt and the bookmarkable compendium are the two save-optimized
+# post shapes, and both trade entirely on REAL specifics — which is exactly what an LLM will
+# hallucinate if left alone. Both halves live HERE, in the shared core, so the writer side and the
+# checking side can never drift (the same reason the comment contract above lives here):
+#   - `hook_constraint_directive()` / `hook_report()` — the hook must lead with a real number and
+#     fit the mobile feed's ~140-char preview.
+#   - `fact_anchor_directive()` / `fact_grounding_report()` — the writer may state a specific ONLY
+#     when a verified fact backs it; anything else ships as a clearly-marked placeholder, and a
+#     draft that invented a number anyway is blocked from auto-publishing.
+# The verified facts come from the story bank (issue #620 / G5). Until that lands, callers pass no
+# anchors, so the guard runs in its strictest mode: placeholders only, approval required.
+# ---------------------------------------------------------------------------
+
+# LinkedIn's mobile feed truncates the first line well before the desktop fold; ~140 chars is what
+# survives intact on a phone, which is where the scroll-stop actually happens.
+MOBILE_HOOK_MAX_CHARS = 140
+
+# The one placeholder form the writer may use for a specific it cannot verify — deliberately loud
+# so it is impossible to publish by accident and trivial to find in the review UI.
+FACT_PLACEHOLDER_EXAMPLE = "[[METRIC: hours saved per week]]"
+_FACT_PLACEHOLDER_RE = re.compile(r"\[\[\s*([^\[\]]+?)\s*\]\]")
+
+# A numeric specific: 20, 8%, $4,000, 2.5x. The lookbehind keeps the tail of a version string or a
+# decimal from being counted a second time.
+_NUMBER_TOKEN_RE = re.compile(r"(?<![\w.$])\$?\d[\d,]*(?:\.\d+)?\s*(?:%|percent|x)?", re.IGNORECASE)
+# A bare year is a public, checkable fact, not a project specific — a build receipt saying "in 2026"
+# is not fabricating anything, so years never trip the guard.
+_YEAR_RE = re.compile(r"^(?:19|20)\d{2}$")
+# List/step numbering is structure, not a claim.
+_LEADING_ENUM_RE = re.compile(r"^\s*(?:\d+[.)]\s*|step\s+\d+\s*[:.)]?\s*)", re.IGNORECASE)
+
+
+def hook_constraint_directive() -> str:
+    """The hook rules for a number-led archetype: open on a real number, inside the mobile budget."""
+    return (
+        "HOOK CONSTRAINTS (this archetype lives or dies on its first line):\n"
+        "- LEAD WITH A REAL NUMBER — the count, the cost, the duration, the scale. The number must "
+        "appear in the FIRST line, not the second.\n"
+        f"- Keep that first line to {MOBILE_HOOK_MAX_CHARS} characters or fewer so it survives the "
+        "mobile feed preview whole; a hook that truncates mid-thought reads as noise.\n"
+        "- The number must come from a verified fact you were given. If you do not have one, write "
+        "the placeholder instead — NEVER estimate, round, or invent it."
+    )
+
+
+def hook_report(text: Optional[str], content_type: str = "post", format_key=None) -> dict:
+    """Grade a finished draft's first line against the hook constraints. Deterministic — no LLM, no
+    I/O. `required` is False (and `passes` therefore True) for an archetype that has no number-led
+    constraint, so this is safe to run over every draft."""
+    hook = opening_line(text or "", max_chars=LINKEDIN_MAX_CHARS)
+    required = bool(format_meta(content_type, format_key).get("hook_styles")) if format_key else False
+    # A placeholder in the hook IS the number slot, correctly deferred — it counts as number-led.
+    number_led = bool(re.search(r"\d", _FACT_PLACEHOLDER_RE.sub("0", hook)))
+    within_budget = 0 < len(hook) <= MOBILE_HOOK_MAX_CHARS
+    issues = []
+    if required and not number_led:
+        issues.append("hook does not lead with a number")
+    if required and not within_budget:
+        issues.append(f"hook is {len(hook)} chars (mobile budget is {MOBILE_HOOK_MAX_CHARS})")
+    return {"hook": hook, "chars": len(hook), "number_led": number_led,
+            "within_mobile_budget": within_budget, "required": required,
+            "passes": not issues, "issues": issues}
+
+
+def fact_anchor_directive(anchors: Optional[list] = None) -> str:
+    """The NO-FABRICATION rules for a fact-anchored archetype. With verified facts, they are the only
+    specifics the writer may state. With none, every specific must ship as a marked placeholder —
+    the #416 policy applied where it bites hardest: a receipt full of invented numbers is worse than
+    no receipt at all."""
+    facts = [str(f).strip() for f in (anchors or []) if str(f or "").strip()]
+    lines = ["NO-FABRICATION RULE (this archetype is built on specifics, so this is absolute):"]
+    if facts:
+        lines.append("- These are the ONLY verified facts you may state as the author's own. Use "
+                     "their numbers and names EXACTLY as written:")
+        lines += [f"  * {f}" for f in facts]
+        lines.append("- Any OTHER specific — a number, a duration, a cost, a tool you were not "
+                     f"given — must be written as a placeholder, e.g. {FACT_PLACEHOLDER_EXAMPLE}, "
+                     "for the author to fill in.")
+    else:
+        lines.append("- You have been given NO verified project facts, so you may not state a "
+                     "single specific of your own. Every number, duration, cost, tool name, and "
+                     "outcome must be written as a placeholder in double square brackets, e.g. "
+                     f"{FACT_PLACEHOLDER_EXAMPLE} or [[TOOL: which model handled extraction]].")
+    lines.append("- This OVERRIDES every other instruction that asks for a specific, including the "
+                 "personal-proof slot: if no verified fact gives you the number, the proof detail "
+                 "is a placeholder too.")
+    lines.append("- Write the surrounding prose in full so the author only has to fill the brackets."
+                 " NEVER estimate, round, illustrate, or invent a specific — an invented number "
+                 "gets the whole draft blocked, an honest placeholder does not.")
+    return "\n".join(lines)
+
+
+def fact_placeholders(text: Optional[str]) -> list:
+    """Every clearly-marked placeholder in a draft, in order — the specifics the author still has to
+    fill in before it can publish."""
+    return [m.group(1).strip() for m in _FACT_PLACEHOLDER_RE.finditer(text or "") if m.group(1).strip()]
+
+
+def _normalize_number(token: str) -> str:
+    """A numeric token reduced to comparable digits: '$4,000' -> '4000', '8 %' -> '8', '2.5x' -> '2.5'."""
+    return re.sub(r"[^\d.]", "", (token or "").replace(",", "")).rstrip(".")
+
+
+def _anchor_numbers(anchors: Optional[list]) -> set:
+    """Every number the verified facts actually contain — the set a draft's specifics are checked
+    against."""
+    found = set()
+    for fact in anchors or []:
+        for match in _NUMBER_TOKEN_RE.finditer(str(fact or "")):
+            value = _normalize_number(match.group(0))
+            if value:
+                found.add(value)
+    return found
+
+
+def _self_evident_counts(text: Optional[str]) -> set:
+    """Counts the draft PROVES on its own page: the number of numbered/bulleted entries it contains.
+    'The 7 checks I run' above a 7-item list is self-verifying, so it is not a fabrication."""
+    count = len(_LIST_LINE_RE.findall(text or ""))
+    return {str(count)} if count else set()
+
+
+def numeric_claims(text: Optional[str]) -> list:
+    """Every numeric specific a draft ASSERTS, as {value, raw, context} dicts. Placeholders, list/step
+    numbering, and bare years are excluded — none of them is a claim the author has to stand behind."""
+    body = _FACT_PLACEHOLDER_RE.sub(" ", text or "")
+    body = "\n".join(_LEADING_ENUM_RE.sub("", line) for line in body.splitlines())
+    claims = []
+    for sentence in _PROOF_SENTENCE_SPLIT.split(body):
+        stripped = sentence.strip()
+        if not stripped:
+            continue
+        for match in _NUMBER_TOKEN_RE.finditer(stripped):
+            raw = match.group(0).strip()
+            value = _normalize_number(raw)
+            if not value or _YEAR_RE.match(value):
+                continue
+            claims.append({"value": value, "raw": raw, "context": stripped})
+    return claims
+
+
+def fact_grounding_report(text: Optional[str], anchors: Optional[list] = None) -> dict:
+    """Grade a fact-anchored draft for fabrication. Deterministic — no LLM, no I/O.
+
+    `unverified` holds every numeric specific the draft asserts that no verified fact backs and the
+    draft does not prove on its own page; ANY of them fails the guard, because that is precisely a
+    number the model made up. `placeholders` are the honestly-deferred specifics — they do not fail
+    the draft, they make it approval-gated so the author fills them in before it publishes."""
+    placeholders = fact_placeholders(text)
+    anchor_numbers = _anchor_numbers(anchors) | _self_evident_counts(text)
+    verified, unverified = [], []
+    for claim in numeric_claims(text):
+        (verified if claim["value"] in anchor_numbers else unverified).append(claim)
+    return {
+        "placeholders": placeholders,
+        "verified": verified,
+        "unverified": unverified,
+        "unverified_values": [c["raw"] for c in unverified],
+        "needs_approval": bool(placeholders),
+        "passes": not unverified,
+    }
+
+
+def meets_fact_grounding(text: Optional[str], anchors: Optional[list] = None) -> bool:
+    """True when the draft states no specific that a verified fact does not back."""
+    return fact_grounding_report(text, anchors)["passes"]
+
+
+def fact_retry_directive(report: dict) -> str:
+    """The regeneration steer after a draft invented specifics: name the exact numbers it may not
+    keep, and how to defer them instead."""
+    offenders = [str(c.get("raw")) for c in (report or {}).get("unverified", []) if c.get("raw")]
+    lines = ["\n\nYOUR PREVIOUS DRAFT INVENTED SPECIFICS AND WAS REJECTED. Rewrite it with every "
+             "unverified number replaced by a placeholder:"]
+    if offenders:
+        lines.append("- These numbers are not backed by any verified fact and must NOT appear: "
+                     + ", ".join(dict.fromkeys(offenders)))
+    lines.append(f"- Replace each one with a labelled placeholder, e.g. {FACT_PLACEHOLDER_EXAMPLE}, "
+                 "and keep the prose around it complete.")
+    return "\n".join(lines) + "\n"
+
+
+def carousel_blueprint_directive(blueprint: dict, fact_anchors: Optional[list] = None) -> str:
+    """The post archetype's shape mapped onto a CAROUSEL/document (issue #619 / G4). A build receipt
+    renders naturally as a document post — the highest-engagement LinkedIn format there is — so the
+    carousel generator draws its beats from the SAME post menu instead of a parallel carousel-only
+    prompt. Returns '' for a blueprint with no known post format."""
+    if not isinstance(blueprint, dict):
+        return ""
+    fmt = normalize_key("post", "format", blueprint.get("format"))
+    if not fmt:
+        return ""
+    meta = POST_FORMATS[fmt]
+    lines = [
+        "\n\nTHIS CAROUSEL'S ASSIGNED ARCHETYPE — it OVERRIDES the generic slide guidance above:",
+        f"ARCHETYPE: {meta['label']}. {meta['guidance']}",
+        "Map these beats ONTO THE SLIDES IN THIS ORDER — the cover carries the first beat, the "
+        "closing slide the last, and the middle beats become one slide each (merge adjacent beats "
+        "only if the schema has fewer slots):",
+    ]
+    lines += [f"{i}. {s}" for i, s in enumerate(meta["structure"], 1)]
+    if meta.get("hook_styles"):
+        lines.append(hook_constraint_directive())
+    if meta.get("fact_anchored"):
+        lines.append(fact_anchor_directive(fact_anchors))
     return "\n".join(lines) + "\n"
