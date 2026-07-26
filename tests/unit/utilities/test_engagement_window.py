@@ -411,3 +411,38 @@ class TestClaimDailySlot:
         client.set.side_effect = RuntimeError("redis down")
         with patch(f"{_MOD}.shared_redis_client", return_value=client):
             assert claim_daily_slot(7, "GOLDEN_HOUR") is None
+
+
+class TestApprovedFanoutDefaults:
+    """The three shipped windows are a product decision the owner signed off on in PR #607
+    (`1A 2A 3A`): golden hour 09:00 + 3h, appreciation DMs 08:00 + 2h, groups 12:00 + 2h — each
+    anchored on the USER's clock, not UTC. The rest of the suite exercises a local literal, so
+    without this the constants could drift away from the approved values silently. Retuning is an
+    env change (`<NAME>_ANCHOR_HOUR` / `_WINDOW_MINUTES` / `_ANCHOR_TZ`); changing these numbers is
+    changing the default every deployment inherits, so it needs the same sign-off again.
+    """
+
+    @pytest.mark.parametrize("fanout,expected", [
+        ("STAGGER_GOLDEN_HOUR", ("GOLDEN_HOUR", 9, 180)),
+        ("STAGGER_APPRECIATION_DM", ("APPRECIATION_DM", 8, 120)),
+        ("STAGGER_GROUP_ENGAGEMENT", ("GROUP_ENGAGEMENT", 12, 120)),
+    ])
+    def test_anchor_hour_and_window_match_the_approved_decision(self, fanout, expected):
+        import cqc_lem.utilities.engagement_window as mod
+        assert getattr(mod, fanout) == expected
+
+    @pytest.mark.parametrize("fanout", ["STAGGER_GOLDEN_HOUR", "STAGGER_APPRECIATION_DM",
+                                        "STAGGER_GROUP_ENGAGEMENT"])
+    def test_each_fanout_anchors_on_the_users_own_clock(self, monkeypatch, fanout):
+        import cqc_lem.utilities.engagement_window as mod
+        name = getattr(mod, fanout)[0]
+        for suffix in ("_ANCHOR_HOUR", "_WINDOW_MINUTES", "_ANCHOR_TZ"):
+            monkeypatch.delenv(f"{name}{suffix}", raising=False)
+        assert mod.stagger_config(getattr(mod, fanout)).local is True
+
+    def test_every_window_is_wide_enough_to_stagger(self):
+        """A window narrower than the beat cadence would put the whole fleet back on one tick."""
+        import cqc_lem.utilities.engagement_window as mod
+        for fanout in (mod.STAGGER_GOLDEN_HOUR, mod.STAGGER_APPRECIATION_DM,
+                       mod.STAGGER_GROUP_ENGAGEMENT):
+            assert fanout[2] >= mod.STAGGER_TICK_MINUTES
