@@ -1,0 +1,39 @@
+# Template for the zero-downtime edge proxy (prod service `web_app`, an nginx that keeps the
+# Cloudflare-tunnel target stable while FastAPI containers swap behind it).
+# scripts/deploy.sh renders this to /opt/lem/deploy/nginx/default.conf, substituting
+# __ACTIVE_COLOR__ with web_api_blue / web_api_green, and issues `nginx -s reload` to flip —
+# a graceful reload that drops no in-flight connections. Do not edit the rendered copy by hand.
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 8000;
+
+    # Per-request resolution through Docker's embedded DNS: a recreated backend container gets a
+    # new IP, and a variable proxy_pass re-resolves instead of pinning the IP cached at reload.
+    resolver 127.0.0.11 valid=10s ipv6=off;
+
+    # Media uploads (avatar/video assets) go through the API.
+    client_max_body_size 200m;
+
+    location / {
+        set $backend "http://__ACTIVE_COLOR__:8000";
+        proxy_pass $backend;
+
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        # Long-poll/SSE-friendly: no buffering, generous read window for slow API work.
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+}

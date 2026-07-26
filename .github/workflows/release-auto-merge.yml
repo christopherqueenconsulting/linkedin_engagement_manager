@@ -1,29 +1,45 @@
 name: Auto-merge Release PRs
 
-# Enables auto-merge on release-please PRs so a green release merges itself -> tag -> build -> VPS deploy,
-# with no manual "Merge when ready" click. Mirrors dependabot-auto-merge.yml: uses RELEASE_DISPATCH_TOKEN
-# when present (a PAT behaves like a human enqueue and reliably drains this repo's merge queue; the
-# built-in GITHUB_TOKEN from a bot action does not). No strategy flag — the merge queue fixes the strategy.
+# Batched releases: instead of merging the release-please PR the moment it goes green (which shipped
+# a deploy — and a ~30-60s prod restart — for EVERY merged PR), this merges the accumulated release
+# PR on a fixed cadence, 4x daily. Between windows, release-please keeps updating one open PR with
+# everything that lands on main, so each window ships one release/deploy covering the whole batch.
+#
+# Manual dispatch (owner, or a Claude session acting with the owner's gh auth):
+#   gh workflow run release-auto-merge.yml        # release whatever is pending right now
+# Redeploying/rolling back an EXISTING tag stays on deploy-vps.yml:
+#   gh workflow run deploy-vps.yml -f tag=vX.Y.Z
+#
+# Uses RELEASE_DISPATCH_TOKEN when present (a PAT behaves like a human enqueue and reliably drains
+# this repo's merge queue; the built-in GITHUB_TOKEN from a bot action does not). No strategy flag —
+# the merge queue fixes the strategy.
 
 on:
-  pull_request:
-    types: [opened, reopened, synchronize, labeled, ready_for_review]
+  schedule:
+    # 4x daily: 05/11/17/23 UTC (~01/07/13/19 ET). Auto-merge is enqueued at the window and the PR
+    # merges as soon as its CI is green, so a window never ships a red build.
+    - cron: "0 5,11,17,23 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
 
 jobs:
-  auto-merge:
-    name: Auto-merge release-please PRs
+  merge-pending-release:
+    name: Merge the pending release PR
     runs-on: ubuntu-latest
-    if: |
-      startsWith(github.event.pull_request.head.ref, 'release-please--') ||
-      contains(github.event.pull_request.labels.*.name, 'autorelease: pending')
-
-    permissions:
-      contents: write
-      pull-requests: write
-
     steps:
-      - name: Enable auto-merge on the release PR
-        run: gh pr merge --auto "$PR_URL"
+      - name: Find and auto-merge the open release-please PR
         env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          PR="$(gh pr list --repo "$REPO" --state open --json number,headRefName \
+                --jq '[.[] | select(.headRefName | startswith("release-please--"))][0].number // empty')"
+          if [ -z "$PR" ]; then
+            echo "No pending release PR — nothing to release."
+            exit 0
+          fi
+          echo "Enabling auto-merge on release PR #$PR"
+          gh pr merge --auto "$PR" --repo "$REPO"

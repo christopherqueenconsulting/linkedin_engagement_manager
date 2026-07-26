@@ -129,9 +129,17 @@ class TestDeployMaintenanceWiring:
         deploy = _read("scripts/deploy.sh")
         assert deploy.index("${COMPOSE} stop celery_beat") < deploy.index("maint drain")
 
-    def test_resumes_on_success_and_on_rollback(self):
+    def test_resumes_on_success_and_on_every_abort_path(self):
+        # The property under guard: once maintenance began, NO exit path may leave the stack
+        # paused. The blue/green flip added abort paths (standby unhealthy, bad nginx conf,
+        # edge health fail) — every one of them must still `maint end`, as must success.
         deploy = _read("scripts/deploy.sh")
-        assert deploy.count("maint end") == 2
+        assert deploy.count("maint end") >= 2
+        began = deploy.index("maint begin")
+        for i, line in enumerate(deploy[began:].splitlines()):
+            if line.strip().startswith("exit 1"):
+                window = "\n".join(deploy[began:].splitlines()[max(0, i - 6):i])
+                assert "maint end" in window, f"exit path without maint end near: {line!r}"
 
     def test_calls_the_real_maintenance_module(self):
         assert "python -m cqc_lem.utilities.maintenance" in _read("scripts/deploy.sh")
