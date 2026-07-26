@@ -30,9 +30,28 @@ class TestBeatDispatchJitter:
              patch(f"{_RS}.has_linkedin_session", return_value=True), \
              patch(f"{_RS}._stagger_due", return_value=True), \
              patch(f"{_RS}._skip_if_throttled", return_value=False), \
-             patch(f"{_RS}.automate_commenting") as ac:
+             patch(f"{_RS}.dispatch_golden_hour_engagement") as shim:
             auto_daily_engagement()
-        assert 30 * 60 <= ac.apply_async.call_args[1]["countdown"] <= 90 * 60
+        assert 30 * 60 <= shim.apply_async.call_args[1]["countdown"] <= 90 * 60
+
+    def test_the_jitter_never_rides_the_queueonce_commenting_task_itself(self, pacing_on):
+        """celery-once locks on apply_async and (unlock_before_run) only releases when the task
+        RUNS. A 30–90 min countdown on automate_commenting would hold that user's key for the whole
+        delay and silently swallow the pre-post warm-up dispatch, which shares it."""
+        from cqc_lem.app.run_scheduler import auto_daily_engagement, dispatch_golden_hour_engagement
+        with patch(f"{_RS}.get_active_user_ids", return_value=[1]), \
+             patch(f"{_RS}.has_linkedin_session", return_value=True), \
+             patch(f"{_RS}._stagger_due", return_value=True), \
+             patch(f"{_RS}._skip_if_throttled", return_value=False), \
+             patch(f"{_RS}.automate_commenting") as ac, \
+             patch(f"{_RS}.dispatch_golden_hour_engagement") as shim:
+            auto_daily_engagement()
+        ac.apply_async.assert_not_called()
+        # ...and the shim queues the real run with no countdown, so the lock is taken only then.
+        with patch(f"{_RS}.automate_commenting") as ac:
+            dispatch_golden_hour_engagement(user_id=1)
+        assert "countdown" not in ac.apply_async.call_args[1]
+        assert ac.apply_async.call_args[1]["kwargs"]["user_id"] == 1
 
     def test_appreciation_dms_are_dispatched_with_a_jitter_countdown(self, pacing_on):
         from cqc_lem.app.run_scheduler import auto_appreciate_dms
@@ -63,9 +82,9 @@ class TestBeatDispatchJitter:
              patch(f"{_RS}.has_linkedin_session", return_value=True), \
              patch(f"{_RS}._stagger_due", return_value=True), \
              patch(f"{_RS}._skip_if_throttled", return_value=False), \
-             patch(f"{_RS}.automate_commenting") as ac:
+             patch(f"{_RS}.dispatch_golden_hour_engagement") as shim:
             auto_daily_engagement()
-        assert ac.apply_async.call_args[1]["countdown"] == 0
+        assert shim.apply_async.call_args[1]["countdown"] == 0
 
 
 class TestGoldenHourSweepJitter:
@@ -150,6 +169,27 @@ class TestPacedBudgetsAtTheLanes:
              patch(f"{_RS}.send_connection_request") as send:
             auto_check_connection_requests()
         assert 30 * 60 <= send.apply_async.call_args[1]["countdown"] <= 90 * 60
+
+    def test_invite_jitter_can_never_outlast_the_orphan_recovery_gap(self, pacing_on, monkeypatch):
+        """A request is marked 'sending' at dispatch and re-queued once it has sat there for
+        _CONNECTION_ORPHAN_LOOKBACK_HOURS. A jitter longer than that gap would have the reaper send
+        a second invite to the same person while the first is still pending."""
+        from cqc_lem.app import run_scheduler as rs
+        monkeypatch.setenv("PACING_JITTER_MIN_MINUTES", "600")
+        monkeypatch.setenv("PACING_JITTER_MAX_MINUTES", "900")
+        with patch(f"{_RS}._skip_if_throttled", return_value=False), \
+             patch(f"{_RS}.get_approved_connection_requests", return_value=[(11, 7)]), \
+             patch(f"{_RS}.get_active_user_ids", return_value=[7]), \
+             patch(f"{_RS}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
+             patch(f"{_RS}.count_invites_sent_today", return_value=0), \
+             patch(f"{_RS}.update_connection_request_status"), \
+             patch(f"{_RS}.get_orphaned_connection_requests", return_value=[]) as orphans, \
+             patch(f"{_RS}.send_connection_request") as send:
+            rs.auto_check_connection_requests()
+        countdown = send.apply_async.call_args[1]["countdown"]
+        assert countdown == rs._MAX_INVITE_DISPATCH_DELAY_SECONDS
+        assert countdown < rs._CONNECTION_ORPHAN_LOOKBACK_HOURS * 3600
+        assert orphans.call_args[1]["lookback_hours"] == rs._CONNECTION_ORPHAN_LOOKBACK_HOURS
 
 
 class TestGovernorAccounting:

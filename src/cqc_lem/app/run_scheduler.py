@@ -221,6 +221,15 @@ def auto_check_scheduled_dms(self):
     return f"Scheduled {dispatched} DM(s); re-queued {len(orphaned)} orphaned DM(s)"
 
 
+# How long a request may sit in 'sending' before the reaper below assumes its send task was lost.
+_CONNECTION_ORPHAN_LOOKBACK_HOURS = 2
+# ...which is also the hard ceiling on the pacing countdown a dispatch may carry (issue #626): a
+# jitter longer than the orphan gap would let the reaper queue a SECOND send for a request whose
+# first one is still legitimately pending, i.e. invite the same person twice. The 15-minute margin
+# keeps a tuned-up PACING_JITTER_MAX_MINUTES from ever reaching that boundary.
+_MAX_INVITE_DISPATCH_DELAY_SECONDS = _CONNECTION_ORPHAN_LOOKBACK_HOURS * 3600 - 15 * 60
+
+
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, }, reject_on_worker_lost=True)
 def auto_check_connection_requests(self):
     """Scan for approved proactive connection requests and dispatch the send task, enforcing the
@@ -255,15 +264,17 @@ def auto_check_connection_requests(self):
         # Mark 'sending' so it isn't re-dispatched on the next scan, then send. The countdown spreads
         # the day's invites instead of firing the whole approved batch on one 5-minute beat tick.
         update_connection_request_status(request_id, ConnectionRequestStatus.SENDING)
-        send_connection_request.apply_async(kwargs={'request_id': request_id},
-                                            countdown=dispatch_jitter_seconds())
+        send_connection_request.apply_async(
+            kwargs={'request_id': request_id},
+            countdown=min(dispatch_jitter_seconds(), _MAX_INVITE_DISPATCH_DELAY_SECONDS))
         log_info(f"Connection request {request_id} dispatched",
                  user_id=user_id, task_name="auto_check_connection_requests")
         dispatched += 1
 
     # Re-queue requests stuck in 'sending' whose send task was lost (e.g. on container restart) —
-    # mirrors the orphaned-DM recovery. The 2-hour gap avoids racing an in-flight task.
-    orphaned = get_orphaned_connection_requests(lookback_hours=2)
+    # mirrors the orphaned-DM recovery. The lookback gap avoids racing an in-flight task — which is
+    # why the dispatch countdown above is clamped to stay inside it.
+    orphaned = get_orphaned_connection_requests(lookback_hours=_CONNECTION_ORPHAN_LOOKBACK_HOURS)
     for request_id, user_id in orphaned:
         log_warning(f"Re-queueing orphaned connection request {request_id}",
                     user_id=user_id, task_name="auto_check_connection_requests")
@@ -336,10 +347,28 @@ def auto_daily_engagement():
         # Human pacing (issue #626): the staggered slot is stable per user, so without this the run
         # would start at the same clock minute every single day. A countdown of tens of minutes
         # moves the actual start; the worker is never blocked (this is eta scheduling, not a sleep).
-        automate_commenting.apply_async(kwargs={'user_id': user_id, 'loop_for_duration': 60 * 15},
-                                        countdown=dispatch_jitter_seconds())
+        # The countdown rides the shim below rather than automate_commenting itself — see its
+        # docstring for why hanging it on a QueueOnce task would silently drop the pre-post run.
+        dispatch_golden_hour_engagement.apply_async(
+            kwargs={'user_id': user_id, 'loop_for_duration': 60 * 15},
+            countdown=dispatch_jitter_seconds())
         dispatched += 1
     return f"Golden-hour engagement dispatched for {dispatched}/{len(users)} active user(s)"
+
+
+@shared_task.task
+def dispatch_golden_hour_engagement(user_id: int, loop_for_duration: int = 60 * 15):
+    """Lock-free carrier for the golden-hour run's pacing countdown (issue #626).
+
+    `automate_commenting` is QueueOnce keyed on user_id, and celery-once takes that lock inside
+    apply_async — not when the task finally runs. Hanging the 30–90 min pacing countdown directly
+    on it would therefore hold the user's lock for the whole delay, and every pre-post warm-up
+    dispatch for that user in the meantime (same key, `graceful: True`) would be swallowed with no
+    error and no log — losing exactly the run that matters most. Carrying the countdown here keeps
+    the jitter while the lock is taken only at the moment the run is really queued."""
+    automate_commenting.apply_async(kwargs={'user_id': user_id,
+                                            'loop_for_duration': loop_for_duration})
+    return f"Golden-hour engagement queued for user {user_id}"
 
 
 @shared_task.task

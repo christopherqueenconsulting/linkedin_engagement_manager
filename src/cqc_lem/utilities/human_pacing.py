@@ -204,6 +204,10 @@ def daily_budget(user_id: int, action: str, cap: int, day: Optional[date] = None
     Persisted in Redis for the day so a mid-day cap edit (or a re-run) doesn't change the number
     already being spent against; the draw is seeded anyway, so with no Redis the same value is
     re-derived rather than re-rolled. Returns `cap` unchanged when pacing is disabled.
+
+    The stored value is still clamped to the CURRENT cap on the way out: stability must never make
+    us more aggressive than the user's own setting, so lowering a cap mid-day (the one edit someone
+    makes because they're worried about the account) takes effect immediately.
     """
     cap = max(0, int(cap or 0))
     if not pacing_enabled() or cap == 0:
@@ -215,7 +219,7 @@ def daily_budget(user_id: int, action: str, cap: int, day: Optional[date] = None
         try:
             stored = client.get(key)
             if stored is not None:
-                return max(0, int(stored))
+                return max(0, min(cap, int(stored)))
         except (ValueError, TypeError):
             pass  # corrupt value — fall through and re-derive
         except Exception as e:
@@ -301,9 +305,13 @@ def remaining_actions(user_id: int, action: str, cap: int, used_today: int,
     and what the account envelope has left across every lane. Pass `caps` (from
     `engagement_caps_from_prefs`) to engage the account-level governor; without it the envelope is
     just this lane and the call degrades to the per-lane budget.
+
+    With pacing disabled the envelope is skipped entirely, not just softened: the whole point of the
+    switch is that it restores the pre-#626 behaviour, and pre-#626 each lane spent its own cap with
+    no shared pool at all.
     """
     lane_left = max(0, daily_budget(user_id, action, cap, day) - max(0, int(used_today or 0)))
-    if not caps:
+    if not caps or not pacing_enabled():
         return lane_left
     envelope_left = max(0, account_envelope(user_id, caps, day) - actions_used_today(user_id, day=day))
     return min(lane_left, envelope_left)

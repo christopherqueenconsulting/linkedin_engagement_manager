@@ -199,6 +199,17 @@ class TestDailyBudget:
         assert daily_budget(3, ACTION_COMMENT, 200, _FRIDAY) == first  # read back, not re-drawn
         assert any(ttl > 24 * 60 * 60 for _, ttl in fake_redis.expires)
 
+    def test_lowering_the_cap_mid_day_takes_effect_immediately(self, fake_redis, monkeypatch):
+        """Stability must never make us MORE aggressive than the user's own setting: someone who
+        drops their cap because they're worried about the account has to be obeyed now, not
+        tomorrow."""
+        from cqc_lem.utilities.human_pacing import daily_budget, ACTION_COMMENT
+        monkeypatch.setenv("PACING_REST_DAY_CHANCE", "0")
+        monkeypatch.setenv("PACING_BUDGET_MIN_RATIO", "1")
+        monkeypatch.setenv("PACING_BUDGET_MAX_RATIO", "1")
+        assert daily_budget(3, ACTION_COMMENT, 20, _FRIDAY) == 20   # persists 20 for the day
+        assert daily_budget(3, ACTION_COMMENT, 3, _FRIDAY) == 3     # ...clamped to the new cap
+
     def test_a_corrupt_stored_budget_is_re_derived(self, fake_redis, monkeypatch):
         from cqc_lem.utilities.human_pacing import daily_budget, ACTION_COMMENT
         monkeypatch.setenv("PACING_REST_DAY_CHANCE", "0")
@@ -321,6 +332,16 @@ class TestGovernor:
         assert remaining_actions(1, ACTION_COMMENT, 20, 0, caps=caps) == 0
         # ...and without the caps argument the call still degrades to the per-lane budget.
         assert remaining_actions(1, ACTION_COMMENT, 20, 0) > 0
+
+    def test_disabling_pacing_removes_the_envelope_too(self, fake_redis, monkeypatch):
+        """HUMAN_PACING_ENABLED=false has to restore the PRE-#626 behaviour exactly. Pre-#626 each
+        lane spent its own cap and there was no shared pool, so a busy DM day must not be able to
+        shut commenting down through an envelope the switch is supposed to have turned off."""
+        from cqc_lem.utilities.human_pacing import (remaining_actions, record_action,
+                                                    ACTION_COMMENT, ACTION_DM)
+        record_action(1, ACTION_DM, 500)  # far past any envelope
+        monkeypatch.setenv("HUMAN_PACING_ENABLED", "false")
+        assert remaining_actions(1, ACTION_COMMENT, 20, 5, caps=self._caps()) == 15
 
     def test_without_redis_the_governor_fails_open(self, no_redis, monkeypatch):
         from cqc_lem.utilities.human_pacing import remaining_actions, daily_budget, ACTION_COMMENT
