@@ -47,6 +47,14 @@ export function initAnalytics(): Promise<PostHog | null> {
         // Attribute values can carry content (a post title in aria-label, a draft in value).
         mask_all_element_attributes: true,
         capture_performance: { web_vitals: true },
+        // Error tracking (issue #648). Unhandled errors and rejections become grouped $exception
+        // issues; console.error stays OFF — it is noisy and routinely carries user content in the
+        // message, which the rest of this module goes out of its way to keep out of PostHog.
+        capture_exceptions: {
+          capture_unhandled_errors: true,
+          capture_unhandled_rejections: true,
+          capture_console_errors: false,
+        },
         // Replay is issue #650 (PH4). Session ids still resolve with it off, which is all the
         // feedback widget needs.
         disable_session_recording: true,
@@ -106,6 +114,13 @@ export function resetAnalytics(): void {
 
 export function capture(event: string, properties?: Record<string, unknown>): void {
   withClient((ph) => ph.capture(event, properties))
+}
+
+// A caught error worth an error-tracking issue (an API failure the user was shown, a render the
+// boundary rescued). Autocapture only sees what reaches window, so anything we catch needs this.
+// Never `capture('$exception', …)` — only captureException produces a groupable stack trace.
+export function captureException(error: unknown, properties?: Record<string, unknown>): void {
+  withClient((ph) => ph.captureException(error, properties))
 }
 
 export function capturePageview(): void {

@@ -48,6 +48,30 @@ POSTHOG_HOST=https://us.i.posthog.com
 
 ---
 
+## PostHog Error Tracking (issue #648 — `docs/error-tracking.md`)
+
+Code is shipped and default-ON; these three are configuration only, and each is independently
+optional (skipping one costs that one thing, nothing else).
+
+- [ ] **Point the daily cron at the new scan.** The old `~/error-to-issues/scan.sh` grepped LOGS and
+  refiled the same error every day; the replacement reads error-tracking issues and dedups on the
+  issue id. As `lem`: `crontab -e` and swap the line for
+  `30 8 * * * /home/lem/linkedin_engagement_manager/scripts/error_to_issues.sh`.
+  Dry-run it first: `scripts/posthog_error_issues.py` (exit 2 just means "issues pending").
+  _Until this is switched, the old cron keeps filing duplicate-prone issues._
+
+- [ ] **`POSTHOG_CLI_TOKEN`** (repo **secret**) — personal API key with `error_tracking:write`, plus
+  repo **variables** `POSTHOG_PROJECT_ID=475262` and `POSTHOG_APP_HOST=https://us.posthog.com`.
+  Used by the release image build to upload SPA source maps. _Without it, browser stack traces stay
+  minified; nothing else changes and no source map is ever served either way._
+
+- [ ] **Alerts** — in [error tracking → configuration →
+  Alerting](https://us.posthog.com/project/475262/error_tracking/configuration#selectedSetting=error-tracking-alerting),
+  create an "issue created or reopened" notification to email, and enable spike detection. This is
+  the real-time half: the cron files the work item, the alert tells you.
+
+---
+
 ## Ollama (Optional — Local Model Fallback)
 
 Ollama runs locally inside Docker. No API key needed, but the first run will download model weights (~2 GB for llama3.2:3b). This happens automatically when the container starts. No action needed unless you want to pre-pull a specific model.
