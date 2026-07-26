@@ -15,18 +15,32 @@
 
 | Capability | Where it lives | How this plan uses it |
 |---|---|---|
-| **Autonomous issue→deploy pipeline** | `/home/lem/agent-pipeline/RUNBOOK.md`; labels `agent:ready`, `agent:working`, `agent:blocked`, `needs-human`, `risk:*` | The feedback loop files `agent:ready` issues; the pipeline builds/ships them. This is the backbone of "iterate until users are satisfied." |
-| **Stripe billing + 14-day trial** | `utilities/stripe_util.py` (`create_checkout_session`, `upgrade_subscription`, `fetch_subscription`), `FREE_TRIAL_DAYS=14` (`env_constants.py:177`), trial row created in `db.py` (~L2168, `subscription_status='trial'`, `subscription_tier='free_trial'`, `trial_ends_at`) | Extended-trial cohort program grants a longer `trial_ends_at` + Stripe coupon. Tiers: `starter` / `professional` / `enterprise` (price IDs in `env_constants.py:174-176`). |
-| **PostHog analytics** | `utilities/observability.py` (`track_llm_call`, `track_task`, `track_api_call`) | Extended with signup/activation/funnel events → CAC, activation rate, retention, channel ROI. |
-| **Content generation engine** | `app/run_content_plan.py` (`auto_generate_content`, `plan_content_for_user`, `create_content`), unified core `utilities/ai/content_framework.py` / `content_research.py` / `content_alignment.py` | Dogfooding: the LEM company account runs the same 30-day content plan to market LEM. |
-| **Feed engagement + outreach** | `app/run_automation.py` — `automate_commenting`, `comment_on_feed_inline`, `build_dm_from_template`, `invite_to_connect`, `automate_appreciation_dms_for_user`, `process_user_followups`, `automate_invites_to_company_page_for_user` | Dogfooding: comment→connect→DM funnel run **as** the LEM brand account to acquire users. |
-| **Newsletter engine** | `run_scheduler.py` (`auto_generate_newsletter_drafts`, `auto_publish_scheduled_editions`), `newsletter_editions` table | LEM publishes a LinkedIn newsletter about LinkedIn growth → top-of-funnel awareness. |
+| **Autonomous issue→deploy pipeline** | `scripts/agent-pipeline/RUNBOOK.md`; labels `agent:ready`, `agent:working`, `agent:blocked`, `needs-human`, `risk:*` | The feedback loop files `agent:ready` issues; the pipeline builds/ships them. This is the backbone of "iterate until users are satisfied." |
+| **Stripe billing + 14-day trial** | `src/cqc_lem/utilities/stripe_util.py` (`create_checkout_session`, `upgrade_subscription`, `fetch_subscription`), `FREE_TRIAL_DAYS` (default 14) in `src/cqc_lem/utilities/env_constants.py`, trial row created in `src/cqc_lem/utilities/db.py` (`subscription_status='trial'`, `subscription_tier='free_trial'`, `trial_ends_at`) | Extended-trial cohort program grants a longer `trial_ends_at` + Stripe coupon. Tiers: `starter` / `professional` / `enterprise` (`STRIPE_PRICE_ID_*` in `env_constants.py`). |
+| **PostHog analytics** | `src/cqc_lem/utilities/observability.py` (`track_llm_call`, `track_task`, `track_api_call`) | Extended with signup/activation/funnel events → CAC, activation rate, retention, channel ROI. |
+| **Content generation engine** | `src/cqc_lem/app/run_content_plan.py` (`auto_generate_content`, `plan_content_for_user`, `create_content`), unified core `src/cqc_lem/utilities/ai/content_framework.py` / `content_research.py` / `content_alignment.py` | Dogfooding: the LEM company account runs the same 30-day content plan to market LEM. |
+| **Feed engagement + outreach** | `src/cqc_lem/app/run_automation.py` — `automate_commenting`, `comment_on_feed_inline`, `build_dm_from_template`, `invite_to_connect`, `automate_appreciation_dms_for_user`, `process_user_followups`, `automate_invites_to_company_page_for_user` | Dogfooding: comment→connect→DM funnel run **as** the LEM brand account to acquire users. |
+| **Newsletter engine** | `src/cqc_lem/app/run_scheduler.py` (`auto_generate_newsletter_drafts`, `auto_publish_scheduled_editions`), `newsletter_editions` table | LEM publishes a LinkedIn newsletter about LinkedIn growth → top-of-funnel awareness. |
 | **Lead-gen (in-flight)** | Issues #482–#486 (inbound-intent detection, lead scoring/CRM-lite, catch-up/trigger outreach, smart connection targeting) | These same features power LEM's **self**-lead-gen once shipped — the marketing engine is a first customer of the lead-gen roadmap. |
-| **Celery beat scheduler** | `app/my_celery.py` `beat_schedule` | All marketing/feedback agents are new beat entries (content 01:00, engagement 13:00, newsletter 10:00, etc. already exist as the pattern). |
+| **Celery beat scheduler** | `src/cqc_lem/app/my_celery.py` `beat_schedule` | All marketing/feedback agents are new beat entries (content 01:00, engagement 13:00, newsletter 10:00, etc. already exist as the pattern). |
 
-**Gaps this plan fills (all greenfield, all buildable by the pipeline):** there is currently **no** in-app
-feedback widget, NPS/survey capture, onboarding/activation flow, trial-extension endpoint, feedback→issue
-classifier, or auto-changelog/notify service. These are the Section B/A build items below.
+**Build status.** This plan was written when Sections A and B were entirely greenfield. Much of that has since
+shipped through the pipeline (issues #496–#507); the table below is the current state, so follow-on issues don't
+re-file work that already exists. Sections A–D remain the plan of record for everything still open.
+
+| Plan item | Status | Where it landed |
+|---|---|---|
+| In-app feedback widget + bug reporter (B.1) | **Shipped** | `POST /feedback`, `ui/src/components/FeedbackWidget.tsx`, `feedback` table (`V20260725063146__add_feedback.sql`) |
+| NPS / CSAT survey capture (B.1) | **Shipped** | `POST /survey/nps`, `survey-prompts` beat |
+| Feedback→issue classifier, dedup/recluster, FAQ auto-reply (B.2, B.3) | **Shipped** | `utilities/feedback/classifier.py`, `issue_service.py`, `faq_service.py`; beats `file-feedback-issues`, `recluster-feedback`, `update-faq` |
+| Auto-changelog + notify reporter (B.4) | **Shipped** | `utilities/feedback/shipped.py`, `changelog-notify` beat |
+| Onboarding/activation checklist + stalled-user nudges (A.3) | **Shipped** | `OnboardingChecklist.tsx`, `onboarding_state` (`V20260725090900__add_onboarding_state.sql`), `onboarding-nudges` beat |
+| Extended-trial endpoint + cohort slots (A.2) | **Shipped** | `POST /trial/extend`, `extend_trial_for_user`, `early_adopter_slots` / `early_adopter_grants`, `EARLY_ADOPTER_*` + `LAUNCH_PHASE` env |
+| Funnel instrumentation (C.5) | **Shipped** | `track_funnel_event` in `observability.py` |
+| Brand-account dogfooding (C.2) | **Partial** | `sync-brand-account` beat (`auto_sync_brand_account`), gated by `BRAND_ACCOUNT_ENABLED`; the brand runs the existing content/engagement/newsletter tasks |
+| Passive-signal mining (B.1) | **Planned** | — |
+| SEO, email-nurture, referral, lead-magnet, retargeting and partner/affiliate agents (C.3, C.4) | **Planned** | — |
+| Analytics agent: CAC / channel-ROI rollups + optimization loop (C.5) | **Planned** | — |
 
 ---
 
@@ -40,7 +54,7 @@ outbound volume ramps only as ToS-safety and satisfaction signals hold).
 | Phase | Cohort & size | Entry criteria | Exit criteria (→ next phase) |
 |---|---|---|---|
 | **P0 — Private early-adopter** | Hand-picked + waitlist, **cap 25 users** | Core loops green in prod (content plan, feed commenting, DMs, newsletter); auto-onboarding live; feedback loop live; billing + trial live | ≥15 activated users; **0 open `priority:critical` bugs**; week-1 retention ≥ 50%; ≥ 8 pieces of actionable feedback processed end-to-end through the pipeline |
-| **P1 — Open beta** | Public signup, self-serve, **soft cap 250** | P0 exit met; extended-trial automation live; self-marketing dogfool loop running at throttled volume; deliverability warmed | Activation rate ≥ 40%; **week-2 retention ≥ 30%**; NPS ≥ 30 (min 20 responses); trial→paid conversion ≥ 8%; 0 open `priority:critical`, ≤ 3 open `priority:high` bugs |
+| **P1 — Open beta** | Public signup, self-serve, **soft cap 250** | P0 exit met; extended-trial automation live; self-marketing dogfood loop running at throttled volume; deliverability warmed | Activation rate ≥ 40%; **week-2 retention ≥ 30%**; NPS ≥ 30 (min 20 responses); trial→paid conversion ≥ 8%; 0 open `priority:critical`, ≤ 3 open `priority:high` bugs |
 | **P2 — GA / official release** | Unlimited public | P1 exit met + GA gate (A.4) | — (continuous improvement continues via the same loop) |
 
 Phase state is a single config key (`LAUNCH_PHASE` env / Redis) read by marketing agents and the signup path so
@@ -49,8 +63,8 @@ guardrails (caps, outbound volume, price display) switch atomically. Advancing a
 
 ### A.2 Extended trial for first adopters
 
-- **Standard trial today:** 14 days, all Professional features, no credit card (`FREE_TRIAL_DAYS=14`;
-  `streamlit/Home.py` copy; trial row in `db.py`). Keep this as the default.
+- **Standard trial today:** 14 days, all Professional features, no credit card (`FREE_TRIAL_DAYS`, default 14;
+  `src/cqc_lem/streamlit/Home.py` copy; trial row in `src/cqc_lem/utilities/db.py`). Keep this as the default.
 - **Early-adopter offer:** a **materially longer 60-day trial** for the first **capped cohort (P0: 25, P1 first
   100)**, granted automatically — no human touch:
   1. New endpoint `POST /trial/extend` (feature-flagged, cohort-gated) sets `trial_ends_at = trial_started_at +
@@ -58,8 +72,8 @@ guardrails (caps, outbound volume, price display) switch atomically. Advancing a
      (`extend_trial_for_user`). All DB access stays in `db.py` per `CLAUDE.md`.
   2. Mirror it in Stripe: create a reusable **early-adopter coupon / `trial_period_days` override** and attach it
      when the user later converts (extend `create_checkout_session` to accept `trial_period_days` /
-     `discounts=[{coupon}]`; it currently accepts neither).
-  3. Cohort membership is claimed automatically at signup while a **atomic counter** (`early_adopter_slots`
+     `discounts=[{coupon}]`). *Shipped:* `create_checkout_session` now takes both parameters.
+  3. Cohort membership is claimed automatically at signup while an **atomic counter** (`early_adopter_slots`
      in Redis/DB) is > 0; when slots run out, new signups fall back to the 14-day default. No codes to type.
   4. Because it **auto-modifies billing terms**, the issue that builds this carries `risk:product-decision` — the
      owner signs off on the length (60d), the cap, and the coupon once via Decision Comment.
@@ -280,7 +294,7 @@ config (daily connect/DM caps) the owner signs off once.
 - **LinkedIn ToS / rate limits:** all self-marketing runs through the same caps + backoff as paying users; the
   brand account is not special-cased to go faster. A tripped 429 breaker pauses brand outbound just like a user.
 - **Brand voice / quality:** anti-AI-slop authenticity policy (READER-mode humanization, never fabricate facts —
-  see the humanization policy in memory) applies to all brand content; a similarity/quality review gate
+  see `docs/AUTHENTICITY_RUBRIC.md`) applies to all brand content; a similarity/quality review gate
   (`POST_SIMILARITY_MAX`) blocks repetitive posts.
 - **Email compliance:** CAN-SPAM + GDPR as above.
 - **Over-automation quality risk:** the `risk:product-decision` gate + the review/CI/Copilot gates in the
