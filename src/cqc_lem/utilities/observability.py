@@ -28,6 +28,22 @@ if not posthog.api_key:
     posthog.disabled = True
 
 
+def _env_flag(name: str, default: bool = True) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw not in ("0", "false", "no", "off")
+
+
+# Error tracking (issue #648). posthog-python installs its own sys.excepthook / threading hook, so
+# an exception that kills a process is captured as a grouped $exception issue without any call site
+# knowing about it. It only ever fires for UNCAUGHT exceptions — everything LEM catches reaches
+# PostHog through capture_exception() below (from log_error/log_critical, the Celery signals and the
+# FastAPI middleware). Read at import so the flag is set before posthog.setup() builds the client.
+EXCEPTION_AUTOCAPTURE_ENABLED = bool(posthog.api_key) and _env_flag("POSTHOG_EXCEPTION_AUTOCAPTURE")
+posthog.enable_exception_autocapture = EXCEPTION_AUTOCAPTURE_ENABLED
+
+
 # Approximate USD cost per 1K tokens as (input, output), keyed by the model string passed to
 # track_llm_call — the tier alias (lem-*) in normal operation, or a raw model name. These are
 # coarse blended estimates for cost TREND analytics, not billing; override any entry with the
@@ -220,6 +236,41 @@ def current_llm_attribution() -> Tuple[Optional[int], Optional[str]]:
         user_id = user_id if user_id is not None else task_user_id
         feature = feature or feature_from_task_name(task_name)
     return user_id, feature
+
+
+# --- Error tracking (issue #648) -----------------------------------------------------------
+# PostHog groups $exception events into ISSUES by fingerprint, so the dedup the old log-grep cron
+# hand-rolled is done for us. Every capture below is best-effort: telemetry must never be the reason
+# a task or a request fails.
+
+def capture_exception(exc: Optional[BaseException] = None, user_id: Optional[int] = None,
+                      **context) -> None:
+    """Send one caught exception to PostHog Error Tracking with LEM's context on it.
+
+    `posthog.capture_exception` is idempotent per exception INSTANCE, so a task that logs
+    `log_error(exc=e)` and then re-raises produces ONE occurrence, not two — the Celery signal
+    handler capturing the same object is a no-op.
+
+    The task name/user default to the running Celery task's, so a call site that knows nothing about
+    its context still lands attributed. distinct_id follows the same convention as every other
+    event here: the user id, or the `"system"` sentinel."""
+    if posthog.disabled:
+        return
+    try:
+        task_name, task_user_id = _current_task_context()
+        properties = {k: v for k, v in context.items() if v is not None}
+        properties.setdefault("task_name", task_name)
+        if user_id is None:
+            user_id = task_user_id
+        properties["user_id"] = user_id
+        posthog.capture_exception(
+            exc,
+            distinct_id=str(user_id if user_id is not None else "system"),
+            properties={k: v for k, v in properties.items() if v is not None},
+        )
+    except Exception as e:
+        # A logger call here would recurse straight back into capture_exception via log_error.
+        log_warning(f"Could not capture exception in PostHog: {e}")
 
 
 def _model_tier(model: Optional[str]) -> Optional[str]:

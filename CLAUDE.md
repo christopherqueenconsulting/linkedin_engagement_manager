@@ -228,6 +228,28 @@ ambient `llm_attribution()` scope.
 Prompts and completions are redacted (`litellm_settings.turn_off_message_logging`) — they are the
 user's own LinkedIn material, and the SPA masks the same content.
 
+### Error tracking (`$exception` → issues, issue #648)
+
+Errors reach PostHog TWICE on purpose, and the two are not redundant — see `docs/error-tracking.md`.
+
+- **Logs** (`logger.py` → PostHog Logs) keep the message and its structured context. Unchanged.
+- **`$exception`** is the grouped, fingerprinted ISSUE — what alerting and the error→GitHub-issue
+  cron are built on. Emitted by `posthog.enable_exception_autocapture` (uncaught), by
+  `log_error`/`log_critical` **when `exc=` is passed**, by the `task_failure`/`task_retry` handlers in
+  `my_celery.py`, by the unhandled branch of `api/main.py`'s `observability_middleware`, and by
+  `posthog-js` in the SPA.
+
+Use `observability.capture_exception(exc, user_id=..., **context)` for anything you catch and do NOT
+re-raise; everything else is already covered. It is safe to call twice with the same exception
+object — `posthog.capture_exception` is idempotent per instance, so the log call and the Celery
+signal do not double-count. A route's own `HTTPException` is NEVER captured: a 4xx is a response,
+not an issue.
+
+`scripts/posthog_error_issues.py` (cron: `scripts/error_to_issues.sh`) files ONE `agent:ready` GitHub
+issue per ACTIVE PostHog issue, deduped on `posthog-issue-<issue_id>` across open AND closed issues.
+It replaced the old log-grep scan, whose sha1-of-the-message dedup refiled any error with an id in
+its text every single day. Don't add a second dedup layer — the fingerprint IS the dedup.
+
 ### Browser-side analytics (SPA, issue #646)
 
 The SPA has ONE PostHog surface — `ui/src/utils/analytics.ts`. Never call `posthog` directly from a

@@ -103,6 +103,29 @@ if _posthog_handler is not None:
 
 _PRIMITIVE_TYPES = (bool, str, bytes, int, float)
 
+# Errors reach PostHog twice on purpose (issue #648): the log stream keeps the message for CONTEXT,
+# and the same exception is captured as a grouped $exception so alerting can move to issues. Off
+# with POSTHOG_EXCEPTION_CAPTURE=false.
+_CAPTURE_EXCEPTIONS = (os.getenv("POSTHOG_EXCEPTION_CAPTURE", "") or "").strip().lower() not in (
+    "0", "false", "no", "off")
+
+
+def _capture(exc: Optional[BaseException], message: str, level: str, context: dict) -> None:
+    """Forward a logged exception to PostHog Error Tracking. Imported lazily because
+    observability.py imports this module — and swallowing everything (including a caller's context
+    key colliding with a named argument), since a telemetry failure must never turn a logged error
+    into a raised one."""
+    if exc is None or not _CAPTURE_EXCEPTIONS:
+        return
+    try:
+        from cqc_lem.utilities.observability import capture_exception
+        props = dict(context)
+        props["log_message"] = message
+        props["log_level"] = level
+        capture_exception(exc, **props)
+    except Exception:
+        pass
+
 
 def _extra(**kwargs) -> dict:
     # Structured-log backends (PostHog/OTel) only accept primitive attribute values, so coerce
@@ -154,9 +177,11 @@ def log_error(
     exc: Optional[BaseException] = None,
     **context,
 ) -> None:
-    """Log at ERROR level. Pass exc= to capture exception info and stack trace."""
+    """Log at ERROR level. Pass exc= to capture exception info and stack trace, and to file the
+    exception as a grouped PostHog error-tracking issue."""
     if exc is not None:
         logger.error(message, exc_info=exc, extra=_extra(**context))
+        _capture(exc, message, "ERROR", _extra(**context))
     else:
         logger.error(message, extra=_extra(**context))
 
@@ -166,8 +191,10 @@ def log_critical(
     exc: Optional[BaseException] = None,
     **context,
 ) -> None:
-    """Log at CRITICAL level. Pass exc= to capture exception info and stack trace."""
+    """Log at CRITICAL level. Pass exc= to capture exception info and stack trace, and to file the
+    exception as a grouped PostHog error-tracking issue."""
     if exc is not None:
         logger.critical(message, exc_info=exc, extra=_extra(**context))
+        _capture(exc, message, "CRITICAL", _extra(**context))
     else:
         logger.critical(message, extra=_extra(**context))

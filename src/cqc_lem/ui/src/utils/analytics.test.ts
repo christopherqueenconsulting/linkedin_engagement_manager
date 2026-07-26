@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 const ph = {
   init: vi.fn(),
   capture: vi.fn(),
+  captureException: vi.fn(),
   identify: vi.fn(),
   reset: vi.fn(),
   get_session_id: vi.fn(() => 'sess-123'),
@@ -39,10 +40,12 @@ describe('with no VITE_POSTHOG_KEY', () => {
     const a = await loadAnalytics()
     a.capture('post_approved', { post_id: 1 })
     a.capturePageview()
+    a.captureException(new Error('nope'))
     a.identifyUser({ userId: 5 })
     a.resetAnalytics()
     await Promise.resolve()
     expect(ph.capture).not.toHaveBeenCalled()
+    expect(ph.captureException).not.toHaveBeenCalled()
     expect(ph.identify).not.toHaveBeenCalled()
     expect(ph.reset).not.toHaveBeenCalled()
   })
@@ -73,6 +76,26 @@ describe('with a key configured', () => {
     expect(config.capture_performance).toEqual({ web_vitals: true })
     expect(config.session_recording.maskAllInputs).toBe(true)
     expect(config.session_recording.maskTextSelector).toBe('[data-ph-mask]')
+  })
+
+  it('autocaptures unhandled exceptions but never console.error', async () => {
+    const a = await loadAnalytics('phc_test')
+    await a.initAnalytics()
+    const [, config] = ph.init.mock.calls[0]
+    expect(config.capture_exceptions).toEqual({
+      capture_unhandled_errors: true,
+      capture_unhandled_rejections: true,
+      capture_console_errors: false,
+    })
+  })
+
+  it('captures a caught error through captureException, not capture()', async () => {
+    const a = await loadAnalytics('phc_test')
+    const err = new Error('save failed')
+    a.captureException(err, { surface: 'account' })
+    await vi.waitFor(() => expect(ph.captureException).toHaveBeenCalled())
+    expect(ph.captureException).toHaveBeenCalledWith(err, { surface: 'account' })
+    expect(ph.capture).not.toHaveBeenCalled()
   })
 
   it('inits only once no matter how many callers ask', async () => {

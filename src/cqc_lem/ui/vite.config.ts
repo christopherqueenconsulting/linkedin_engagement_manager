@@ -14,5 +14,8 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
+    // Source maps exist only so PostHog error tracking (issue #648) can un-minify a stack trace.
+    // The image build uploads them and then DELETES every .map from dist, so they are never served.
+    sourcemap: true,
   },
 })

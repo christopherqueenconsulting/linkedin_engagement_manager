@@ -103,7 +103,7 @@ from cqc_lem.utilities.quality_gates import (parse_gate_findings, clamp_threshol
                                              AUTHENTICITY_SCORE_MIN_BOUNDS,
                                              SIMILARITY_MAX_PCT_BOUNDS)
 from cqc_lem.utilities.observability import (
-    track_api_call, track_funnel_event, anonymous_distinct_id,
+    capture_exception, track_api_call, track_funnel_event, anonymous_distinct_id,
     FUNNEL_SIGNUP_STARTED, FUNNEL_SIGNUP_COMPLETED, FUNNEL_TRIAL_STARTED,
     FUNNEL_SUBSCRIPTION_STARTED, FUNNEL_CHURNED,
 )
@@ -136,6 +136,12 @@ async def observability_middleware(request: Request, call_next):
         response = await call_next(request)
         status_code = response.status_code
         return response
+    except Exception as e:
+        # Only UNHANDLED exceptions reach here — a route's own HTTPException is turned into a
+        # response by FastAPI's handler further in, so 4xx never files an error-tracking issue.
+        capture_exception(e, route=request.url.path, method=request.method,
+                          source="fastapi.middleware")
+        raise
     finally:
         track_api_call(
             route=request.url.path,

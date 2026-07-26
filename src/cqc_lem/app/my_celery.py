@@ -1,10 +1,12 @@
 import time as _time
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from celery import Celery
 from celery import current_app
 from celery.schedules import crontab
-from celery.signals import worker_process_init, task_received, task_success, task_sent, task_prerun, task_postrun
+from celery.signals import (worker_process_init, task_received, task_success, task_sent,
+                            task_prerun, task_postrun, task_failure, task_retry)
 from celery.app.control import Inspect
 
 from cqc_lem.app import celeryconfig
@@ -13,7 +15,7 @@ from cqc_lem.utilities.engagement_window import STAGGER_TICK_MINUTES
 from cqc_lem.utilities.env_constants import CODE_TRACING, AWS_REGION
 from cqc_lem.utilities.jaeger_tracer_helper import get_jaeger_tracer
 from cqc_lem.utilities.logger import myprint, logger
-from cqc_lem.utilities.observability import track_task
+from cqc_lem.utilities.observability import capture_exception, track_task
 from cqc_lem.utilities.utils import get_cloudwatch_client
 
 # AWS deployment: uses SQS as broker (see celeryconfig.py CELERY_BROKER_URL)
@@ -418,6 +420,51 @@ def on_task_postrun(task_id: str = None, task=None, state: str = None, **kwargs)
         duration_ms=int((_time.time() - start) * 1000),
         success=(state == "SUCCESS"),
         state=state or "UNKNOWN",
+    )
+
+
+def _task_user_id(kwargs) -> Optional[int]:
+    """The user a task was dispatched for. Every per-user task in LEM carries `user_id` in its
+    kwargs, which is the only attribution a signal handler can see."""
+    if not isinstance(kwargs, dict):
+        return None
+    user_id = kwargs.get("user_id")
+    try:
+        return int(user_id) if user_id is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+@task_failure.connect(weak=False)
+def on_task_failure(task_id: str = None, exception: BaseException = None, sender=None,
+                    kwargs: dict = None, einfo=None, **_) -> None:
+    """File a failed task's exception as a grouped PostHog error-tracking issue (issue #648). Celery
+    swallows the traceback into its own logger, so without this the only trace of a crashed task is
+    a log line — nothing that groups, counts or alerts."""
+    capture_exception(
+        exception,
+        user_id=_task_user_id(kwargs),
+        task_name=getattr(sender, "name", None),
+        task_id=task_id,
+        source="celery.task_failure",
+    )
+
+
+@task_retry.connect(weak=False)
+def on_task_retry(request=None, reason=None, sender=None, einfo=None, **_) -> None:
+    """A retry is a failure that will be tried again — worth the same issue so a task that only ever
+    succeeds on its 3rd attempt is still visible. `reason` is the exception when the retry was
+    raised from one; anything else (a bare `self.retry()`) carries no exception to group and is
+    skipped rather than filed as a synthetic one."""
+    if not isinstance(reason, BaseException):
+        return
+    capture_exception(
+        reason,
+        user_id=_task_user_id(getattr(request, "kwargs", None)),
+        task_name=getattr(sender, "name", None),
+        task_id=getattr(request, "id", None),
+        retries=getattr(request, "retries", None),
+        source="celery.task_retry",
     )
 
 

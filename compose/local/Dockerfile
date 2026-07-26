@@ -39,10 +39,31 @@ ARG VITE_POSTHOG_KEY=""
 ENV VITE_POSTHOG_KEY=${VITE_POSTHOG_KEY}
 ARG VITE_POSTHOG_HOST=""
 ENV VITE_POSTHOG_HOST=${VITE_POSTHOG_HOST}
+# Source-map upload for error tracking (issue #648). The INJECTED bundle is what must ship — the
+# chunk ids posthog-cli writes into the JS are how a captured stack finds its map — so this runs
+# here, inside the stage that produces dist/, and not as a separate CI build.
+ARG POSTHOG_CLI_ENV_ID=""
+ENV POSTHOG_CLI_ENV_ID=${POSTHOG_CLI_ENV_ID}
+ARG POSTHOG_CLI_HOST=""
+ENV POSTHOG_CLI_HOST=${POSTHOG_CLI_HOST}
 COPY ./src/cqc_lem/ui/package.json ./src/cqc_lem/ui/package-lock.json ./
 RUN npm ci
 COPY ./src/cqc_lem/ui ./
 RUN npm run build
+# Best-effort by construction: no token (dev/local builds) or a failed upload must never fail a
+# release build — it only costs readable stack traces. The .map files are deleted either way, so a
+# build that skips the upload still never serves them.
+RUN --mount=type=secret,id=posthog_cli_token \
+    if [ -s /run/secrets/posthog_cli_token ] && [ -n "$POSTHOG_CLI_ENV_ID" ]; then \
+      POSTHOG_CLI_TOKEN="$(cat /run/secrets/posthog_cli_token)"; export POSTHOG_CLI_TOKEN; \
+      ( npm install -g @posthog/cli \
+        && posthog-cli sourcemap inject --directory dist \
+        && posthog-cli sourcemap upload --directory dist ) \
+        || echo "posthog-cli source-map upload failed — shipping minified stacks"; \
+    else \
+      echo "posthog-cli source-map upload skipped — no POSTHOG_CLI_TOKEN/POSTHOG_CLI_ENV_ID"; \
+    fi; \
+    find dist -name '*.map' -delete
 
 FROM base AS builder
 
