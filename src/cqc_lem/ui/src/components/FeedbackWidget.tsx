@@ -3,7 +3,7 @@ import { useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { useAppInfo } from '../hooks/useAppInfo'
 import api from '../api/client'
-import { EVENTS, analyticsSessionId, capture } from '../utils/analytics'
+import { EVENTS, analyticsSessionId, capture, replayEnabled } from '../utils/analytics'
 
 const TYPE_HINTS = [
   { value: 'bug', label: '🐞 Something is broken' },
@@ -171,6 +171,8 @@ export default function FeedbackWidget() {
           )}
           <p className="text-[11px] text-gray-400">
             We attach the page you're on{appInfo?.version ? ` and app v${appInfo.version}` : ''} automatically.
+            {/* Say it plainly — the report now links a recording of this session when one exists. */}
+            {replayEnabled() && ' If this session was recorded, we link that too (typed text is masked).'}
           </p>
           {error && <p className="text-xs text-red-600">{error}</p>}
           <button

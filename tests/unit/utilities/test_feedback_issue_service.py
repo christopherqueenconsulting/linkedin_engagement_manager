@@ -342,6 +342,71 @@ class TestIssueBody:
         assert "4 distinct user(s) across 9 feedback item(s)" in body
 
 
+class TestReplayLink:
+    _SESSION = "0198f0aa-1b2c-7000-8000-abcdef012345"
+
+    def _url(self, monkeypatch):
+        monkeypatch.setenv("POSTHOG_PROJECT_ID", "475262")
+        monkeypatch.setenv("POSTHOG_APP_HOST", "https://us.posthog.com")
+        return f"https://us.posthog.com/project/475262/replay/{self._SESSION}"
+
+    def test_context_session_id_becomes_a_replay_url(self, monkeypatch):
+        expected = self._url(monkeypatch)
+        assert _mod().replay_url_from_context(
+            {"route": "/content", "posthog_session_id": self._SESSION}) == expected
+
+    @pytest.mark.parametrize("context", [None, {}, "not-a-dict", {"posthog_session_id": None},
+                                         {"posthog_session_id": ""}])
+    def test_a_report_with_no_session_gets_no_link(self, context, monkeypatch):
+        self._url(monkeypatch)
+        assert _mod().replay_url_from_context(context) is None
+
+    def test_the_filed_body_links_the_replay(self, monkeypatch):
+        url = self._url(monkeypatch)
+        body = _mod().build_issue_body(_classification(), feedback_id=3, replay_url=url)
+        assert f"[Watch the session replay]({url})" in body
+        # Still a MODE=start body — the link sits above Scope, not inside it.
+        assert body.index(url) < body.index("## Scope")
+
+    def test_a_body_without_a_replay_says_nothing_about_one(self):
+        assert "session replay" not in _mod().build_issue_body(_classification(), feedback_id=3)
+
+    def test_each_repeat_report_links_its_own_session(self, monkeypatch):
+        url = self._url(monkeypatch)
+        comment = _mod().build_duplicate_comment(_classification(), feedback_id=9, replay_url=url)
+        assert url in comment
+        assert _mod().PLAN_DOC in comment
+
+    def test_filing_passes_the_report_session_through_to_github(self, monkeypatch):
+        url = self._url(monkeypatch)
+        svc = _mod()
+        with patch(f"{_SVC}.classify_feedback", return_value=_classification()), \
+                patch(f"{_SVC}.create_github_issue", return_value=55) as create, \
+                patch(f"{_SVC}.embed_text", return_value=None), \
+                patch(f"{_SVC}.count_feedback_filed_by_user", return_value=0), \
+                patch(f"{_SVC}.update_feedback_triage"):
+            svc.file_feedback_issue(
+                {"id": 11, "user_id": 1, "body": "the approve button does nothing",
+                 "context_json": json.dumps({"posthog_session_id": self._SESSION})}, clusters=[])
+        assert url in create.call_args[0][1]
+
+    def test_a_deduped_report_links_its_replay_on_the_existing_issue(self, monkeypatch):
+        url = self._url(monkeypatch)
+        svc = _mod()
+        with patch(f"{_SVC}.classify_feedback",
+                   return_value=_classification(duplicate_of=7)), \
+                patch(f"{_SVC}.comment_on_issue", return_value=True) as comment, \
+                patch(f"{_SVC}.embed_text", return_value=None), \
+                patch(f"{_SVC}.count_feedback_filed_by_user", return_value=0), \
+                patch(f"{_SVC}.update_feedback_triage"):
+            result = svc.file_feedback_issue(
+                {"id": 12, "user_id": 2, "body": "comments never post to the feed",
+                 "context_json": json.dumps({"posthog_session_id": self._SESSION})},
+                clusters=[_cluster()])
+        assert result["action"] == "deduped"
+        assert url in comment.call_args[0][1]
+
+
 class TestDecisionComment:
     @pytest.mark.parametrize("risk", ['product-decision', 'live-linkedin', 'migration', 'security'])
     def test_risk_comment_is_letter_pickable_with_a_recommendation(self, risk):

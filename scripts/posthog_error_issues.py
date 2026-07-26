@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from typing import Optional
@@ -64,7 +65,10 @@ QUERY_TIMEOUT_SECONDS = 60
 # The columns the query selects, in order — parse_rows() zips these onto each result row rather than
 # trusting the API to echo a `columns` array back.
 COLUMNS = ("issue_id", "name", "description", "status", "first_seen", "last_seen",
-           "occurrences", "users", "lib", "task_name", "route")
+           "occurrences", "users", "lib", "task_name", "route", "session_id")
+
+# What posthog-js hands out as a session id. A value that isn't this shape is not linked (#649).
+SESSION_ID_RE = re.compile(r"[A-Za-z0-9._-]{8,64}")
 
 
 # ─────────────────────────── pure logic (unit-tested) ────────────────────────────
@@ -81,7 +85,7 @@ def build_query(hours: int = DEFAULT_HOURS, min_occurrences: int = DEFAULT_MIN_O
         "any(issue_status) AS status, min(issue_first_seen) AS first_seen, "
         "max(timestamp) AS last_seen, count() AS occurrences, uniq(distinct_id) AS users, "
         "any(properties.$lib) AS lib, any(properties.task_name) AS task_name, "
-        "any(properties.route) AS route "
+        "any(properties.route) AS route, any(properties.$session_id) AS session_id "
         "FROM events "
         f"WHERE event = '$exception' AND timestamp > now() - INTERVAL {hours} HOUR "
         "GROUP BY issue_id "
@@ -122,6 +126,17 @@ def is_actionable(row: dict) -> bool:
 def issue_url(issue_id: str, project_id: str = DEFAULT_PROJECT_ID,
               app_host: str = DEFAULT_APP_HOST) -> str:
     return f"{app_host.rstrip('/')}/project/{project_id}/error_tracking/{issue_id}"
+
+
+def replay_url(session_id, project_id: str = DEFAULT_PROJECT_ID,
+               app_host: str = DEFAULT_APP_HOST) -> Optional[str]:
+    """The replay permalink for a browser session that threw (issue #649), or None. Backend
+    exceptions carry no `$session_id`, and `any()` skips NULLs, so a mixed issue still links the
+    browser session if one of its occurrences had one."""
+    sid = str(session_id if session_id is not None else "").strip()
+    if not sid or not SESSION_ID_RE.fullmatch(sid):
+        return None
+    return f"{app_host.rstrip('/')}/project/{project_id}/replay/{sid}"
 
 
 def _text(value) -> str:
@@ -167,8 +182,12 @@ def build_body(row: dict, hours: int = DEFAULT_HOURS, project_id: str = DEFAULT_
     lines += ["",
               f"[Open the issue in PostHog]({issue_url(issue_id, project_id, app_host)}) — it has "
               f"the stack trace, the grouped occurrences and the affected people.",
-              "",
-              "## Scope",
+              ""]
+    replay = replay_url(row.get("session_id"), project_id, app_host)
+    if replay:
+        lines += [f"[Watch the session replay]({replay}) — the browser session one of these "
+                  f"exceptions was thrown in.", ""]
+    lines += ["## Scope",
               "- Fix the root cause of the exception, not the symptom.",
               "- If it is an EXPECTED best-effort failure that already degrades gracefully (a "
               "Selenium selector miss, a third-party timeout the caller retries), stop raising it "

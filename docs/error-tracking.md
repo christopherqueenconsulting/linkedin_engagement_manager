@@ -75,6 +75,9 @@ with no GitHub issue carrying its marker, it files one `agent:ready` + `bug` iss
 pipeline's `MODE=start` (Why / Scope / Files / Acceptance), with a link to the PostHog issue for the
 stack trace.
 
+- **Browser exceptions link their replay** (issue #649): the query also reads `$session_id`, so a
+  filed issue for an SPA error carries a "Watch the session replay" link. Backend exceptions have no
+  session and simply omit the line. See `docs/session-replay.md`.
 - **Dedup is the id**, not the message: the body carries `posthog-issue-<issue_id>`, and the next
   run searches for that literal string across open AND closed issues. Closed counts — a fixed
   exception that trickles in for one more day must not reopen the backlog item.

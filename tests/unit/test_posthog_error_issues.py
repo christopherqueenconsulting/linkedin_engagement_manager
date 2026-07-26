@@ -104,6 +104,34 @@ class TestTitleAndBody:
         assert "API route:" not in body
 
 
+class TestReplayLink:
+    _SESSION = "0198f0aa-1b2c-7000-8000-abcdef012345"
+
+    def test_query_pulls_a_session_id_for_the_replay(self, mod):
+        assert "any(properties.$session_id) AS session_id" in mod.build_query()
+        assert mod.COLUMNS[-1] == "session_id"
+
+    def test_parse_rows_reads_the_session_id_column(self, mod):
+        rows = mod.parse_rows([["id-1", "TypeError", "boom", "active", "t0", "t1", 2, 1,
+                                "web", None, "/content", self._SESSION]])
+        assert rows[0]["session_id"] == self._SESSION
+
+    def test_a_browser_exception_links_its_replay(self, mod):
+        body = mod.build_body(_row(mod, lib="web", session_id=self._SESSION),
+                              project_id="475262")
+        assert f"/project/475262/replay/{self._SESSION}" in body
+        assert body.index("replay/") < body.index("## Scope")
+
+    def test_a_backend_exception_has_no_replay_line(self, mod):
+        assert "session replay" not in mod.build_body(_row(mod))
+
+    @pytest.mark.parametrize("session_id", [None, "", "  ", "short", "has space",
+                                            ")](https://evil.example"])
+    def test_an_unshaped_session_id_is_never_linked(self, mod, session_id):
+        assert mod.replay_url(session_id) is None
+        assert "replay/" not in mod.build_body(_row(mod, session_id=session_id))
+
+
 class TestPlanActions:
     def test_files_one_issue_per_unfiled_active_issue(self, mod):
         rows = [_row(mod, issue_id="a"), _row(mod, issue_id="b")]

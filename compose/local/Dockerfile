@@ -39,6 +39,12 @@ ARG VITE_POSTHOG_KEY=""
 ENV VITE_POSTHOG_KEY=${VITE_POSTHOG_KEY}
 ARG VITE_POSTHOG_HOST=""
 ENV VITE_POSTHOG_HOST=${VITE_POSTHOG_HOST}
+# Session replay (issue #649). Both empty = replay ON at the 10% default sample; the error trigger
+# is unconditional. VITE_POSTHOG_REPLAY=false is the kill switch (needs a rebuild, like the key).
+ARG VITE_POSTHOG_REPLAY=""
+ENV VITE_POSTHOG_REPLAY=${VITE_POSTHOG_REPLAY}
+ARG VITE_POSTHOG_REPLAY_SAMPLE=""
+ENV VITE_POSTHOG_REPLAY_SAMPLE=${VITE_POSTHOG_REPLAY_SAMPLE}
 # Source-map upload for error tracking (issue #648). The INJECTED bundle is what must ship — the
 # chunk ids posthog-cli writes into the JS are how a captured stack finds its map — so this runs
 # here, inside the stage that produces dist/, and not as a separate CI build.
