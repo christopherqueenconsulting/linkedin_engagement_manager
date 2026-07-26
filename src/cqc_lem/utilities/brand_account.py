@@ -111,8 +111,11 @@ def sync_brand_preferences(phase: Optional[str] = None) -> Optional[dict]:
     """Push the current phase's outbound policy onto the brand account's engagement preferences.
 
     Returns the applied overrides, or None when there is no brand account to sync. The whole upsert
-    is one row (the V52 incident), so the existing prefs are merged in rather than replaced — voice,
-    tone and targeting the owner set stay exactly as they are.
+    is one row (the V52 incident), so ONLY the policy fields are sent — voice, tone and targeting the
+    owner set are preserved by `update_engagement_preferences`, which merges over the saved row and
+    aborts when it can't read it (issue #639). Re-sending `existing` here would defeat that abort:
+    a transient read error makes `get_engagement_preferences` return code defaults, and this nightly
+    task would then write all 39 of them over the brand account's real settings.
     """
     user_id = get_brand_user_id()
     if user_id is None:
@@ -121,7 +124,7 @@ def sync_brand_preferences(phase: Optional[str] = None) -> Optional[dict]:
     resolved_phase = (phase or current_launch_phase()).strip().upper()
     existing = get_engagement_preferences(user_id) or {}
     overrides = brand_preference_overrides(existing, resolved_phase)
-    if not update_engagement_preferences(user_id, {**existing, **overrides}):
+    if not update_engagement_preferences(user_id, overrides):
         log_warning("Could not sync brand account preferences", user_id=user_id)
         return None
     log_debug(f"Brand account synced to phase {resolved_phase}", user_id=user_id)

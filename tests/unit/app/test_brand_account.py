@@ -168,7 +168,10 @@ class TestSyncBrandPreferences:
             assert sync_brand_preferences() is None
         upsert.assert_not_called()
 
-    def test_merges_phase_policy_onto_existing_prefs(self):
+    def test_sends_only_the_policy_fields(self):
+        """Issue #639: the upsert merges over the SAVED row, so this task must send its policy
+        fields ONLY — re-sending the read-back prefs would rewrite every column from a dict that
+        is code defaults whenever the read failed."""
         from cqc_lem.utilities.brand_account import sync_brand_preferences
         existing = {"tone": "warm", "max_comments_per_day": 20, "focus_topics": ["agency growth"]}
         with _Patched(_enabled(phase="P1")), \
@@ -178,10 +181,27 @@ class TestSyncBrandPreferences:
             applied = sync_brand_preferences()
         saved = upsert.call_args.args[1]
         assert upsert.call_args.args[0] == 7
-        assert saved["tone"] == "warm"                        # voice the owner set survives
-        assert saved["focus_topics"] == ["agency growth"]     # so do their focus topics
+        assert "tone" not in saved                            # voice the owner set is never rewritten
+        assert "focus_topics" not in saved                    # nor their non-empty focus topics
         assert saved["max_comments_per_day"] == 15            # but the phase cap wins
         assert applied["max_dms_per_day"] == 10
+
+    def test_unreadable_prefs_cannot_reset_the_whole_row(self):
+        """A failed read makes `get_engagement_preferences` return code DEFAULTS. Those must never
+        ride into the upsert — the db layer aborts on its own unreadable read, and it can only do
+        that if this caller isn't handing it a full 39-column dict."""
+        from cqc_lem.utilities.brand_account import sync_brand_preferences
+        from cqc_lem.utilities.db import _ENGAGEMENT_DEFAULTS
+        with _Patched(_enabled(phase="P0")), \
+             patch(f"{_DB}.get_user_id", return_value=7), \
+             patch(f"{_DB}.get_engagement_preferences", return_value=dict(_ENGAGEMENT_DEFAULTS)), \
+             patch(f"{_DB}.update_engagement_preferences", return_value=True) as upsert:
+            sync_brand_preferences()
+        saved = upsert.call_args.args[1]
+        assert set(saved) <= {"max_comments_per_day", "max_dms_per_day", "max_invites_per_day",
+                              "connection_request_mode", "connection_targeting_mode",
+                              "focus_topics", "business_goals"}
+        assert "tone" not in saved and "reply_check_mode" not in saved
 
     def test_explicit_phase_argument_overrides_the_env(self):
         from cqc_lem.utilities.brand_account import sync_brand_preferences

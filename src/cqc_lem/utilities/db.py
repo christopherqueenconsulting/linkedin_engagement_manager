@@ -3187,9 +3187,12 @@ def _coerce_json_list(value) -> list:
         return []
 
 
-def get_engagement_preferences(user_id: int) -> dict:
-    """Return the user's engagement preferences (voice/targeting/caps) with code-level
-    defaults when no row exists — so behaviour is unchanged until the user customizes."""
+def _select_engagement_row(user_id: int) -> Optional[dict]:
+    """The user's SAVED engagement row, decoded — or None when they have never saved one.
+
+    Deliberately lets `mysql.connector.Error` escape: a read failure is not the same as a missing
+    row, and `update_engagement_preferences` must be able to tell them apart before it rewrites
+    every column (issue #639)."""
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -3198,7 +3201,7 @@ def get_engagement_preferences(user_id: int) -> dict:
             (user_id,))
         row = cursor.fetchone()
         if row is None:
-            return dict(_ENGAGEMENT_DEFAULTS)
+            return None
         # A NULL catchup_event_types (every row predating the V20260724211808 migration) means
         # "never configured" -> the default BD subset. An explicit empty list means the user turned
         # catch-up touches off, so only coerce the NULL case.
@@ -3215,17 +3218,40 @@ def get_engagement_preferences(user_id: int) -> dict:
         for f in _ENGAGEMENT_BOOL_FIELDS:
             row[f] = bool(row.get(f))
         return row
-    except mysql.connector.Error as err:
-        myprint(f"Could not get engagement prefs for user_id {user_id} | Error: {err}")
-        return dict(_ENGAGEMENT_DEFAULTS)
     finally:
         cursor.close()
         connection.close()
 
 
+def get_engagement_preferences(user_id: int) -> dict:
+    """Return the user's engagement preferences (voice/targeting/caps) with code-level
+    defaults when no row exists — so behaviour is unchanged until the user customizes."""
+    try:
+        row = _select_engagement_row(user_id)
+    except mysql.connector.Error as err:
+        myprint(f"Could not get engagement prefs for user_id {user_id} | Error: {err}")
+        return dict(_ENGAGEMENT_DEFAULTS)
+    return dict(_ENGAGEMENT_DEFAULTS) if row is None else row
+
+
 def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
     """Upsert the user's engagement preferences (INSERT ... ON DUPLICATE KEY UPDATE)."""
-    merged = {**_ENGAGEMENT_DEFAULTS, **{k: v for k, v in prefs.items() if k in _ENGAGEMENT_DEFAULTS}}
+    # The upsert writes EVERY column, so a partial `prefs` dict must merge over the user's own
+    # SAVED row — merging over `_ENGAGEMENT_DEFAULTS` reset tone/targeting/caps/goals for anyone
+    # calling with a single key (issue #639, e.g. set_default_video_quality). Code defaults are
+    # the base only for a genuinely new row. An UNREADABLE row aborts the write: overwriting all
+    # 39 columns with defaults because a SELECT failed is exactly the data loss being fixed.
+    try:
+        existing = _select_engagement_row(user_id)
+    except mysql.connector.Error as err:
+        # ERROR, not myprint: this silently ABORTS the user's save, so it has to reach PostHog
+        # rather than sit at INFO under the default POSTHOG_LOG_LEVEL.
+        log_error("Could not read engagement prefs before update — aborting write",
+                  exc=err, user_id=user_id)
+        return False
+    base = {**_ENGAGEMENT_DEFAULTS,
+            **{k: v for k, v in (existing or {}).items() if k in _ENGAGEMENT_DEFAULTS}}
+    merged = {**base, **{k: v for k, v in prefs.items() if k in _ENGAGEMENT_DEFAULTS}}
 
     # Clamp/validate reply-check config so a bad value can't overflow a column and roll back the
     # WHOLE single-row upsert (the V52 tone incident). Bad mode → the safe default; out-of-range
