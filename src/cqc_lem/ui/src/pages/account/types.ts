@@ -75,10 +75,38 @@ export type FeedReach = {
   matched_topics: number
   commented: number
   fallback_used: boolean
+  // Roster-sourced vs feed-sourced split + the on-topic gate's rejections (issue #616).
+  roster_commented?: number
+  feed_commented?: number
+  roster_targets_visited?: number
+  roster_examined?: number
+  off_topic_skipped?: number
   max_post_age_hours?: number
   min_reactions?: number
   at?: string
 }
+
+export type EngagementTargetCategory = 'peer' | 'icp' | 'creator'
+
+// One account on the curated engagement roster. last_engaged_at / comments_this_week are written
+// by the commenting task and are read-only here.
+export type EngagementTarget = {
+  id?: number
+  profile_url: string
+  name: string | null
+  category: EngagementTargetCategory
+  max_comments_per_week: number
+  active: boolean
+  source: 'user' | 'suggested'
+  last_engaged_at?: string | null
+  comments_this_week?: number
+}
+
+export const TARGET_CATEGORIES: { key: EngagementTargetCategory; label: string; hint: string }[] = [
+  { key: 'peer', label: 'Peer', hint: 'Creators at your level — aim for ~50% of the roster' },
+  { key: 'icp', label: 'ICP', hint: 'Buyers / prospects — aim for ~30%' },
+  { key: 'creator', label: 'Large creator', hint: 'Big audiences you borrow reach from — ~20%' },
+]
 
 export type DmTemplate = {
   event_type: string

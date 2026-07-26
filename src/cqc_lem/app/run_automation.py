@@ -53,7 +53,8 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     insert_connection_request, count_open_connection_requests, get_requested_person_keys, \
     get_engager_candidates, get_profile_facts, count_invites_sent_today, ConnectionRequestStatus, \
     CatchupTouchStatus, insert_catchup_touch, has_catchup_touch, get_catchup_touch, \
-    update_catchup_touch_status, count_catchup_touches_sent_today, max_catchup_touches_allowed
+    update_catchup_touch_status, count_catchup_touches_sent_today, max_catchup_touches_allowed, \
+    get_engagement_targets, record_target_engagement, ENGAGEMENT_TARGET_WEEKLY_DEFAULT
 from cqc_lem.utilities.engagement_window import record_pre_post_run
 from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
@@ -975,6 +976,100 @@ def post_matches_preferences(content: str, author: str, prefs: dict) -> bool:
     return False
 
 
+def _topic_gate_topics(prefs: dict) -> list:
+    """The topics a candidate post is judged on-topic against: the user's focus_topics (what they
+    want authority in), falling back to include_topics when no focus is set."""
+    focus = [t for t in ((prefs or {}).get("focus_topics") or []) if t]
+    if focus:
+        return focus
+    return [t for t in ((prefs or {}).get("include_topics") or []) if t]
+
+
+def passes_topic_gate(content: str, prefs: dict) -> bool:
+    """Hard on-topic gate (issue #616). Under 2026 Topic Authority ranking an off-topic comment
+    actively damages distribution, so a post that isn't about the user's focus topics is NEVER
+    commented on — not by the strict path and not by the empty-filter fallback, which is exactly
+    how the 2026-07-25 funnel ended up commenting on AI-in-HR posts for a non-HR account.
+
+    With no topics configured there is nothing to be off-topic against, so the gate is inert. A
+    literal topic mention short-circuits the classifier; the classifier itself fails OPEN (a
+    lem-simple hiccup must not silence all engagement)."""
+    topics = _topic_gate_topics(prefs)
+    if not topics:
+        return True
+    text = (content or "").lower()
+    if any(_mentions_topic(text, t) for t in topics):
+        return True
+    return post_is_relevant(content, topics)
+
+
+def _mentions_topic(text: str, topic: str) -> bool:
+    """Whole-term match for the gate's literal short-circuit. Substring matching would let a short
+    topic ("HR") fire on an unrelated word ("thrive") and skip the classifier entirely, so the term
+    has to be bounded by non-word characters on both sides."""
+    term = str(topic or "").strip().lower()
+    if not term:
+        return False
+    return re.search(rf"(?<!\w){re.escape(term)}(?!\w)", text) is not None
+
+
+# Roster blend (issue #616): the mix every fast-growing native creator studied engaged on —
+# ~50% peers, 30% ICP, 20% large creators. Buckets that run dry spill their slots to the others.
+_ROSTER_MIX = (("peer", 0.5), ("icp", 0.3), ("creator", 0.2))
+# Anti-pod: at most ONE comment per roster author per run, on top of their weekly cap. Repeatedly
+# engaging the same account in a session is the pod signature LinkedIn demotes.
+_ROSTER_MAX_POSTS_PER_AUTHOR = 1
+
+
+def _target_staleness(target: dict) -> tuple:
+    """Rotation sort key: never-engaged targets first, then least-recently-engaged."""
+    last = target.get("last_engaged_at")
+    if last is None:
+        return (0, 0.0)
+    try:
+        return (1, last.timestamp())
+    except AttributeError:
+        return (1, 0.0)
+
+
+def select_roster_targets(targets: list, limit: int) -> list:
+    """Which roster authors to engage this run: active targets still under their per-author weekly
+    cap, drawn in the 50/30/20 peer/ICP/creator blend, least-recently-engaged first."""
+    if limit <= 0:
+        return []
+    eligible = []
+    for t in targets or []:
+        if not t.get("active", True):
+            continue
+        cap = int(t.get("max_comments_per_week") or ENGAGEMENT_TARGET_WEEKLY_DEFAULT)
+        if int(t.get("comments_this_week") or 0) >= cap:
+            continue
+        eligible.append(t)
+    buckets = {category: [] for category, _ in _ROSTER_MIX}
+    for t in sorted(eligible, key=_target_staleness):
+        buckets[t.get("category") if t.get("category") in buckets else "peer"].append(t)
+    picked = []
+    for category, share in _ROSTER_MIX:
+        quota = int(limit * share)
+        picked.extend(buckets[category][:quota])
+        buckets[category] = buckets[category][quota:]
+    # Rounding + short buckets leave slots over; fill them with the stalest targets left, whatever
+    # their category, so a lopsided roster still uses the whole run budget.
+    leftovers = sorted([t for b in buckets.values() for t in b], key=_target_staleness)
+    picked.extend(leftovers[:max(0, limit - len(picked))])
+    return picked[:limit]
+
+
+def _roster_activity_url(profile_url: str) -> str:
+    """A roster author's recent-activity page — the roster's equivalent of the home feed."""
+    base = str(profile_url or "").strip().rstrip("/")
+    if not base:
+        return ""
+    if "/recent-activity/" in base:
+        return base + "/"
+    return f"{base}/recent-activity/all/"
+
+
 def _switch_feed_to_recent(driver, wait) -> None:
     """Best-effort: flip the feed sort from 'Top' to 'Recent' so golden-hour posts surface for
     commenting. Silent no-op if the 'Sort by' control isn't present."""
@@ -1036,13 +1131,135 @@ def get_feed_funnel(user_id: int) -> "dict | None":
         return None
 
 
+def _engage_card(driver, wait, my_profile: LinkedInProfile, user_id: int, card, key: str,
+                 content: str, author: str, prefs: dict, profile_synthesis,
+                 used_comment_shapes: list) -> bool:
+    """Claim -> generate -> react -> comment on ONE post card. True only when the comment actually
+    landed. Shared by the roster pass and the feed walk so both go through the same at-most-once
+    claim, the same per-run blueprint rotation, and the same react-before-submit ordering."""
+    if not claim_post_for_comment(user_id, key):
+        return False
+    comment_blueprint = select_blueprint("comment", recent_formats=used_comment_shapes)
+    with llm_attribution(user_id=user_id, feature=FEATURE_COMMENT):
+        comment_text = generate_ai_response(content, my_profile, None, prefs=prefs,
+                                            profile_synthesis=profile_synthesis,
+                                            blueprint=comment_blueprint)
+    if comment_text and comment_blueprint.get("format"):
+        used_comment_shapes.insert(0, comment_blueprint["format"])
+    if not comment_text:
+        release_post_claim(user_id, key)  # no comment generated — release the claim
+        return False
+    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", card)
+    time.sleep(simulate_reading_time(content) / 2 + simulate_thinking_time())
+    # React BEFORE submitting the comment: posting re-renders the card and staled the element, so
+    # the old post-comment reaction attempt silently failed. Skip our OWN posts. Non-fatal — a
+    # missed reaction never blocks the comment.
+    if not _author_is_me(author, my_profile):
+        if react_to_post_inline(driver, wait, card, post_content=content,
+                                comment_text=comment_text, user_id=user_id):
+            mark_post_reacted(user_id, key)
+        else:
+            log_warning("Could not leave a reaction on post", user_id=user_id, action_type="comment")
+    if not post_comment_inline(driver, wait, card, comment_text, user_id=user_id):
+        release_post_claim(user_id, key)  # posting failed — let a later run retry
+        return False
+    mark_post_commented(user_id, key)
+    insert_new_log(user_id=user_id, action_type=LogActionType.COMMENT,
+                   result=LogResultType.SUCCESS, post_url=key, message=comment_text)
+    time.sleep(random.uniform(6, 14))  # human pacing between comments
+    return True
+
+
+def comment_on_roster_posts(driver, wait, my_profile: LinkedInProfile, user_id: int, max_posts: int,
+                            prefs: dict, profile_synthesis, used_comment_shapes: list, seen: set,
+                            deadline_ts: float = None) -> dict:
+    """Comment on the user's CURATED engagement roster before the home feed ever gets a look
+    (issue #616): each selected target's recent-activity page is opened, and the first post that
+    clears hard excludes, the dedup ledger and the on-topic gate gets a comment.
+
+    Fail-closed by design — an author page that renders no commentable card (selector drift, an
+    auth wall, a profile with only reshares) is logged and skipped, never guessed at. Returns the
+    run counters the caller folds into the feed funnel."""
+    stats = {"posted": 0, "targets_visited": 0, "examined": 0, "off_topic_skipped": 0,
+             "key_sources": {}, "commented_key_sources": {}}
+    if max_posts <= 0:
+        return stats
+    targets = get_engagement_targets(user_id, active_only=True)
+    if not targets:
+        return stats
+    for target in select_roster_targets(targets, max_posts):
+        if stats["posted"] >= max_posts or (deadline_ts and time.time() >= deadline_ts):
+            break
+        profile_url = target.get("profile_url")
+        url = _roster_activity_url(profile_url)
+        if not url:
+            continue
+        try:
+            driver.get(url)
+            wait_for_ajax(driver)
+        except Exception as e:
+            log_warning("Could not open roster target's activity page", exc=e, user_id=user_id,
+                        action_type="comment", task_name="comment_on_roster_posts")
+            continue
+        time.sleep(random.uniform(2, 4))
+        stats["targets_visited"] += 1
+        weekly_left = max(0, int(target.get("max_comments_per_week") or ENGAGEMENT_TARGET_WEEKLY_DEFAULT)
+                          - int(target.get("comments_this_week") or 0))
+        allowed_here = min(_ROSTER_MAX_POSTS_PER_AUTHOR, weekly_left, max_posts - stats["posted"])
+        posted_here = 0
+        for box in driver.find_elements(By.CSS_SELECTOR, _FEED_POST_TEXT_SEL):
+            if posted_here >= allowed_here or (deadline_ts and time.time() >= deadline_ts):
+                break
+            try:
+                content = (box.text or "").strip()
+            except StaleElementReferenceException:
+                continue
+            if len(content) < 20:
+                continue
+            card = _card_for_textbox(driver, box)
+            if card is None:
+                continue  # no comment affordance on this item — not a commentable post
+            author = _post_author_from_card(card) or (target.get("name") or "")
+            key, key_source = _feed_post_identity(card, author, content, driver=driver)
+            fps = _feed_content_fingerprints(author, content)
+            if key in seen or (fps & seen):
+                continue
+            stats["examined"] += 1
+            stats["key_sources"][key_source] = stats["key_sources"].get(key_source, 0) + 1
+            seen.add(key)
+            seen.update(fps)
+            if (has_commented_post(user_id, key) or has_user_commented_on_post_url(user_id, key)
+                    or not _passes_hard_excludes(content, author, prefs)):
+                continue
+            if not passes_topic_gate(content, prefs):
+                stats["off_topic_skipped"] += 1
+                log_info(f"Skipped roster post by {author or profile_url}: off-topic for the "
+                         f"user's focus topics", user_id=user_id, action_type="comment",
+                         task_name="comment_on_roster_posts")
+                continue
+            if _engage_card(driver, wait, my_profile, user_id, card, key, content, author, prefs,
+                            profile_synthesis, used_comment_shapes):
+                posted_here += 1
+                stats["posted"] += 1
+                stats["commented_key_sources"][key_source] = \
+                    stats["commented_key_sources"].get(key_source, 0) + 1
+                record_target_engagement(user_id, profile_url)
+                myprint(f"Commented on roster target {author or profile_url} "
+                        f"({target.get('category')})")
+        if posted_here == 0:
+            log_info(f"No commentable on-topic post found for roster target {profile_url}",
+                     user_id=user_id, action_type="comment", task_name="comment_on_roster_posts")
+    return stats
+
+
 def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: int,
                            max_posts: int = 10, deadline_ts: float = None, prefs: dict = None,
                            engagers: set = None) -> int:
-    """Walk the SDUI feed and comment inline, prioritizing by a scoring matrix instead of DOM
-    order: recency-dominant (golden hour), then relevance, reciprocity (people who engaged with
-    us), and healthy activity. Applies targeting filters + per-day cap + a max-post-age gate.
-    Returns the number of comments posted."""
+    """Comment on the user's curated engagement ROSTER first (issue #616), then walk the SDUI feed
+    for whatever budget is left, prioritizing by a scoring matrix instead of DOM order:
+    recency-dominant (golden hour), then relevance, reciprocity (people who engaged with us), and
+    healthy activity. Applies targeting filters + per-day cap + a max-post-age gate, and never
+    comments on a post that fails the on-topic gate. Returns the total number of comments posted."""
     from selenium.common.exceptions import StaleElementReferenceException
     if prefs is None:
         prefs = get_engagement_preferences(user_id)
@@ -1059,7 +1276,6 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     # Stable VOICE synthesis (cached weekly, lazily created on first use) — the voice source for every
     # comment this run, in place of the bloated/volatile full profile JSON.
     profile_synthesis = get_or_create_profile_synthesis(user_id, my_profile)
-    _switch_feed_to_recent(driver, wait)  # surface golden-hour posts; scoring still ranks them
 
     # Per-run comment ANGLE rotation from the shared framework core: each comment this run gets a
     # different archetype (Expander, Storyteller, Questioner, ...) so a day's comments never all
@@ -1068,6 +1284,18 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     used_comment_shapes: list = []
 
     posted, seen, scrolls = 0, set(), 0
+    # Roster FIRST (issue #616): curated peers / ICP / large creators outrank whatever the home
+    # feed happens to serve. An empty roster returns zeros here and the run degrades to the plain
+    # feed walk below. `seen` is shared, so a roster post can never be re-commented from the feed.
+    roster_stats = comment_on_roster_posts(driver, wait, my_profile, user_id, max_posts, prefs,
+                                           profile_synthesis, used_comment_shapes, seen,
+                                           deadline_ts=deadline_ts)
+    posted = roster_stats["posted"]
+    off_topic_skipped = 0
+
+    if roster_stats["targets_visited"]:
+        navigate_to_feed(driver, wait)  # the roster pass navigated away from the feed
+    _switch_feed_to_recent(driver, wait)  # surface golden-hour posts; scoring still ranks them
     # Reach funnel (surfaced to the user so they can tell when their targeting is too strict) and the
     # empty-filter fallback. examined = posts we looked at; hard = passed excludes/recency/min-reactions;
     # include = also matched the user's include topics/keywords/authors.
@@ -1153,6 +1381,15 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             if not fallback_active and fallback_enabled and strict_misses >= _FEED_FALLBACK_AFTER_MISSES:
                 fallback_active = True
                 myprint("Feed targeting matched nothing — falling back to top feed posts for this run")
+            # On-topic gate FIRST and unconditionally (issue #616): the fallback may widen WHICH
+            # posts qualify, but it may never put a comment on a post that is off-topic for the
+            # user's focus topics — that is what damaged distribution in the 2026-07-25 funnel.
+            if not passes_topic_gate(content, prefs):
+                off_topic_skipped += 1
+                log_info(f"Skipped feed post by {author or 'unknown author'}: off-topic for the "
+                         f"user's focus topics", user_id=user_id, action_type="comment",
+                         task_name="comment_on_feed_inline")
+                continue
             if fallback_active:
                 fallback_used = True
             elif post_matches_preferences(content, author, prefs):
@@ -1160,46 +1397,17 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             else:
                 strict_misses += 1
                 continue
-            # Atomically claim the post BEFORE spending an LLM call or commenting. If a prior/
-            # concurrent run already holds it, we lose the race here and move on — at most one
-            # comment per post per user, across the pre-post run, the golden-hour run, and retries.
-            if not claim_post_for_comment(user_id, key):
-                continue
-            comment_blueprint = select_blueprint("comment", recent_formats=used_comment_shapes)
-            with llm_attribution(user_id=user_id, feature=FEATURE_COMMENT):
-                comment_text = generate_ai_response(content, my_profile, None, prefs=prefs,
-                                                    profile_synthesis=profile_synthesis,
-                                                    blueprint=comment_blueprint)
-            if comment_text and comment_blueprint.get("format"):
-                used_comment_shapes.insert(0, comment_blueprint["format"])
-            if comment_text:
-                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", card)
-                time.sleep(simulate_reading_time(content) / 2 + simulate_thinking_time())
-                # React BEFORE submitting the comment: posting re-renders the card and staled the
-                # element, so the old post-comment reaction attempt silently failed. Skip our OWN
-                # posts. Non-fatal — a missed reaction never blocks the comment.
-                if not _author_is_me(author, my_profile):
-                    if react_to_post_inline(driver, wait, card, post_content=content,
-                                            comment_text=comment_text, user_id=user_id):
-                        mark_post_reacted(user_id, key)
-                    else:
-                        log_warning("Could not leave a reaction on post", user_id=user_id,
-                                    action_type="comment")
-                if post_comment_inline(driver, wait, card, comment_text, user_id=user_id):
-                    mark_post_commented(user_id, key)
-                    insert_new_log(user_id=user_id, action_type=LogActionType.COMMENT,
-                                   result=LogResultType.SUCCESS, post_url=key, message=comment_text)
-                    posted_key_sources[key_source] = posted_key_sources.get(key_source, 0) + 1
-                    log_info(f"Feed comment keyed by {key_source} ({key})", user_id=user_id,
-                             action_type="comment", task_name="comment_on_feed_inline")
-                    posted += 1
-                    myprint(f"Commented on {author or 'a'}'s post "
-                            f"(score {score:.2f}, age {'?' if age is None else str(age) + 'm'}) ({posted}/{max_posts})")
-                    time.sleep(random.uniform(6, 14))  # human pacing between comments
-                else:
-                    release_post_claim(user_id, key)  # posting failed — let a later run retry
-            else:
-                release_post_claim(user_id, key)  # no comment generated — release the claim
+            # _engage_card atomically claims the post BEFORE spending an LLM call or commenting. If
+            # a prior/concurrent run already holds it, we lose the race there and move on — at most
+            # one comment per post per user, across the pre-post run, the golden-hour run, and retries.
+            if _engage_card(driver, wait, my_profile, user_id, card, key, content, author, prefs,
+                            profile_synthesis, used_comment_shapes):
+                posted_key_sources[key_source] = posted_key_sources.get(key_source, 0) + 1
+                log_info(f"Feed comment keyed by {key_source} ({key})", user_id=user_id,
+                         action_type="comment", task_name="comment_on_feed_inline")
+                posted += 1
+                myprint(f"Commented on {author or 'a'}'s post "
+                        f"(score {score:.2f}, age {'?' if age is None else str(age) + 'm'}) ({posted}/{max_posts})")
             continue  # DOM re-rendered / candidate consumed — re-gather from the top
         # Nothing cleared the hard filters this pass. If the whole feed keeps coming up empty
         # (0 posts past excludes + recency + min-reactions) but some only missed the recency/
@@ -1223,11 +1431,24 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     examined_key_sources: dict = {}
     for source in key_source_by_key.values():
         examined_key_sources[source] = examined_key_sources.get(source, 0) + 1
+    for source, count in roster_stats["key_sources"].items():
+        examined_key_sources[source] = examined_key_sources.get(source, 0) + count
+    for source, count in roster_stats["commented_key_sources"].items():
+        posted_key_sources[source] = posted_key_sources.get(source, 0) + count
+    feed_commented = posted - roster_stats["posted"]
+    off_topic_total = off_topic_skipped + roster_stats["off_topic_skipped"]
     set_feed_funnel(user_id, {
-        "examined": len(examined_keys),
+        "examined": len(examined_keys) + roster_stats["examined"],
         "passed_filters": len(hard_keys),      # cleared excludes + recency + min-reactions
         "matched_topics": len(include_keys),   # also matched include topics/keywords/authors
         "commented": posted,
+        # Roster-sourced vs feed-sourced split (issue #616): a healthy account comments mostly on
+        # its curated roster, so this is the number that says whether the roster is actually working.
+        "roster_commented": roster_stats["posted"],
+        "feed_commented": feed_commented,
+        "roster_targets_visited": roster_stats["targets_visited"],
+        "roster_examined": roster_stats["examined"],
+        "off_topic_skipped": off_topic_total,  # failed the on-topic gate — never commented on
         "fallback_used": fallback_used,
         "key_sources": examined_key_sources,           # every post we looked at
         "commented_key_sources": posted_key_sources,   # only the ones we commented on
@@ -1235,8 +1456,10 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
         "min_reactions": min_reactions,
         "at": datetime.now().isoformat(),
     })
-    log_info(f"Feed scan: examined {len(examined_keys)}, passed filters {len(hard_keys)}, "
-             f"matched topics {len(include_keys)}, commented {posted}, fallback={fallback_used}, "
+    log_info(f"Engagement scan: examined {len(examined_keys) + roster_stats['examined']}, "
+             f"passed filters {len(hard_keys)}, matched topics {len(include_keys)}, "
+             f"commented {posted} (roster {roster_stats['posted']} / feed {feed_commented}), "
+             f"off-topic skipped {off_topic_total}, fallback={fallback_used}, "
              f"key sources {examined_key_sources}", user_id=user_id, action_type="comment",
              task_name="comment_on_feed_inline")
     if posted_key_sources.get("hash"):

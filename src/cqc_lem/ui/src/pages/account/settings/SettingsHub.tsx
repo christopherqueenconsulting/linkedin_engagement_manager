@@ -9,6 +9,7 @@ import ContentProfileCard from '../ContentProfileCard'
 import NewsletterCard from '../NewsletterCard'
 import GroupsCard from '../GroupsCard'
 import DmTemplatesCard from '../DmTemplatesCard'
+import EngagementRosterCard from '../EngagementRosterCard'
 import LeadMagnetCard from '../LeadMagnetCard'
 import { SettingsSaveProvider, SaveAllBar } from '../SettingsSaveContext'
 import { EngagementPrefsProvider, useEngagementPrefs } from './EngagementPrefsContext'
@@ -31,7 +32,7 @@ function SectionBody({ section }: { section: SectionKey }) {
     case 'content':
       return <><ContentProfileCard /><ContentSection /></>
     case 'targeting':
-      return <><TargetingSection /><GroupsCard /></>
+      return <><EngagementRosterCard /><TargetingSection /><GroupsCard /></>
     case 'volume':
       return <VolumeSection />
     case 'outreach':

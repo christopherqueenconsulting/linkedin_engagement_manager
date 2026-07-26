@@ -29,6 +29,21 @@ function FeedReachFunnel() {
         commented on <span className="font-semibold">{reach.commented}</span>
         {reach.fallback_used ? ' (used the fallback)' : ''}.
       </p>
+      {(reach.roster_commented ?? 0) + (reach.feed_commented ?? 0) > 0 && (
+        <p className="mt-1">
+          <span className="font-semibold">{reach.roster_commented ?? 0}</span> from your roster
+          {typeof reach.roster_targets_visited === 'number'
+            ? ` (${reach.roster_targets_visited} accounts visited)`
+            : ''}
+          , <span className="font-semibold">{reach.feed_commented ?? 0}</span> from the feed.
+        </p>
+      )}
+      {(reach.off_topic_skipped ?? 0) > 0 && (
+        <p className="mt-1">
+          Skipped <span className="font-semibold">{reach.off_topic_skipped}</span> off-topic post
+          {reach.off_topic_skipped === 1 ? '' : 's'} — commenting off your focus topics hurts reach.
+        </p>
+      )}
     </div>
   )
 }

@@ -1,0 +1,342 @@
+"""Unit tests for the target-creator engagement roster (issue #616): 50/30/20 selection, the
+per-author weekly cap, the on-topic gate, and the roster-vs-feed funnel diagnostics."""
+
+import pytest
+from datetime import datetime, timedelta
+from unittest.mock import MagicMock, patch
+from contextlib import ExitStack
+
+pytestmark = pytest.mark.unit
+
+_RA = "cqc_lem.app.run_automation"
+
+
+@pytest.fixture(autouse=True)
+def _no_sleep():
+    with patch(f"{_RA}.time.sleep"):
+        yield
+
+
+def _target(url, category="peer", *, last=None, cap=2, used=0, active=True, name=None):
+    return {"id": abs(hash(url)) % 10000, "profile_url": url, "name": name or url,
+            "category": category, "max_comments_per_week": cap, "active": active,
+            "last_engaged_at": last, "comments_this_week": used, "source": "user"}
+
+
+class TestSelectRosterTargets:
+    def test_blends_fifty_thirty_twenty(self):
+        from cqc_lem.app.run_automation import select_roster_targets
+        targets = ([_target(f"peer{i}", "peer") for i in range(10)]
+                   + [_target(f"icp{i}", "icp") for i in range(10)]
+                   + [_target(f"cre{i}", "creator") for i in range(10)])
+        picked = select_roster_targets(targets, 10)
+        assert len(picked) == 10
+        by_cat = {c: sum(1 for t in picked if t["category"] == c) for c in ("peer", "icp", "creator")}
+        assert by_cat == {"peer": 5, "icp": 3, "creator": 2}
+
+    def test_never_engaged_targets_come_first(self):
+        from cqc_lem.app.run_automation import select_roster_targets
+        recent = _target("recent", "peer", last=datetime.now())
+        stale = _target("stale", "peer", last=datetime.now() - timedelta(days=9))
+        fresh = _target("never", "peer", last=None)
+        picked = select_roster_targets([recent, stale, fresh], 2)
+        assert [t["profile_url"] for t in picked] == ["never", "stale"]
+
+    def test_weekly_cap_excludes_a_spent_author(self):
+        from cqc_lem.app.run_automation import select_roster_targets
+        spent = _target("spent", "peer", cap=2, used=2)
+        left = _target("left", "peer", cap=2, used=1)
+        picked = select_roster_targets([spent, left], 5)
+        assert [t["profile_url"] for t in picked] == ["left"]
+
+    def test_inactive_targets_are_skipped(self):
+        from cqc_lem.app.run_automation import select_roster_targets
+        picked = select_roster_targets([_target("off", "peer", active=False)], 5)
+        assert picked == []
+
+    def test_short_buckets_spill_their_slots(self):
+        # Roster is peers-only: the ICP/creator quotas must not go to waste.
+        from cqc_lem.app.run_automation import select_roster_targets
+        targets = [_target(f"peer{i}", "peer") for i in range(6)]
+        assert len(select_roster_targets(targets, 5)) == 5
+
+    def test_zero_limit_picks_nothing(self):
+        from cqc_lem.app.run_automation import select_roster_targets
+        assert select_roster_targets([_target("a")], 0) == []
+
+
+class TestActivityUrl:
+    def test_builds_recent_activity_url(self):
+        from cqc_lem.app.run_automation import _roster_activity_url
+        assert _roster_activity_url("https://www.linkedin.com/in/jane/") == \
+            "https://www.linkedin.com/in/jane/recent-activity/all/"
+
+    def test_keeps_an_explicit_activity_url(self):
+        from cqc_lem.app.run_automation import _roster_activity_url
+        assert _roster_activity_url("https://www.linkedin.com/in/jane/recent-activity/all") == \
+            "https://www.linkedin.com/in/jane/recent-activity/all/"
+
+    def test_blank_url_is_empty(self):
+        from cqc_lem.app.run_automation import _roster_activity_url
+        assert _roster_activity_url("  ") == ""
+
+
+class TestTopicGate:
+    def test_inert_without_configured_topics(self):
+        from cqc_lem.app.run_automation import passes_topic_gate
+        with patch(f"{_RA}.post_is_relevant") as classifier:
+            assert passes_topic_gate("anything at all", {}) is True
+        classifier.assert_not_called()  # nothing to be off-topic against — and no LLM spend
+
+    def test_literal_focus_topic_short_circuits_the_classifier(self):
+        from cqc_lem.app.run_automation import passes_topic_gate
+        with patch(f"{_RA}.post_is_relevant") as classifier:
+            assert passes_topic_gate("Our RevOps rollout went sideways",
+                                     {"focus_topics": ["RevOps"]}) is True
+        classifier.assert_not_called()
+
+    def test_short_topic_inside_another_word_does_not_short_circuit(self):
+        from cqc_lem.app.run_automation import passes_topic_gate
+        with patch(f"{_RA}.post_is_relevant", return_value=False) as classifier:
+            assert passes_topic_gate("How we thrive on shorter sprints",
+                                     {"focus_topics": ["HR"]}) is False
+        classifier.assert_called_once()  # "thrive" is not an HR mention — the classifier decides
+
+    def test_multi_word_topic_matches_on_a_word_boundary(self):
+        from cqc_lem.app.run_automation import passes_topic_gate
+        with patch(f"{_RA}.post_is_relevant") as classifier:
+            assert passes_topic_gate("Notes on our RevOps tooling stack.",
+                                     {"focus_topics": ["revops tooling"]}) is True
+        classifier.assert_not_called()
+
+    def test_off_topic_post_is_rejected(self):
+        from cqc_lem.app.run_automation import passes_topic_gate
+        with patch(f"{_RA}.post_is_relevant", return_value=False):
+            assert passes_topic_gate("AI in HR hiring screens", {"focus_topics": ["RevOps"]}) is False
+
+    def test_focus_topics_win_over_include_topics(self):
+        from cqc_lem.app.run_automation import passes_topic_gate
+        with patch(f"{_RA}.post_is_relevant", return_value=True) as classifier:
+            passes_topic_gate("some post", {"focus_topics": ["RevOps"], "include_topics": ["HR"]})
+        assert classifier.call_args[0][1] == ["RevOps"]
+
+    def test_falls_back_to_include_topics(self):
+        from cqc_lem.app.run_automation import passes_topic_gate
+        with patch(f"{_RA}.post_is_relevant", return_value=True) as classifier:
+            passes_topic_gate("some post", {"include_topics": ["HR tech"]})
+        assert classifier.call_args[0][1] == ["HR tech"]
+
+
+def _box(text):
+    b = MagicMock()
+    b.text = text
+    return b
+
+
+def _run_roster(boxes, targets, *, prefs=None, relevant=True, engage=True, max_posts=5):
+    """Drive comment_on_roster_posts with every Selenium/DB collaborator mocked."""
+    from cqc_lem.app import run_automation as ra
+
+    driver = MagicMock()
+    driver.find_elements.return_value = boxes
+    driver.execute_script.return_value = None  # no URN on the card -> hash key
+
+    engage_mock = MagicMock(return_value=engage)
+    record = MagicMock(return_value=True)
+    seen = set()
+
+    with ExitStack() as es:
+        p = lambda name, **kw: es.enter_context(patch(f"{_RA}.{name}", **kw))
+        p("get_engagement_targets", return_value=targets)
+        p("wait_for_ajax")
+        p("_card_for_textbox", side_effect=lambda d, b: MagicMock())
+        p("_post_author_from_card", return_value="Jane Author")
+        p("_post_permalink_from_card", return_value=None)
+        p("has_commented_post", return_value=False)
+        p("has_user_commented_on_post_url", return_value=False)
+        p("_passes_hard_excludes", return_value=True)
+        p("post_is_relevant", return_value=relevant)
+        p("_engage_card", new=engage_mock)
+        p("record_target_engagement", new=record)
+        stats = ra.comment_on_roster_posts(driver, MagicMock(), MagicMock(), 1, max_posts,
+                                           prefs or {}, "synthesis", [], seen)
+    return {"stats": stats, "engage": engage_mock, "record": record, "driver": driver, "seen": seen}
+
+
+class TestCommentOnRosterPosts:
+    def test_empty_roster_is_a_noop(self):
+        r = _run_roster([_box("A post long enough to be scanned here.")], [])
+        assert r["stats"]["posted"] == 0
+        assert r["stats"]["targets_visited"] == 0
+        r["driver"].get.assert_not_called()  # never opens a browser page for an empty roster
+
+    def test_visits_activity_page_and_comments(self):
+        r = _run_roster([_box("A roster author's post, long enough to scan.")],
+                        [_target("https://www.linkedin.com/in/jane", "peer")])
+        assert r["stats"]["posted"] == 1
+        assert r["stats"]["targets_visited"] == 1
+        r["driver"].get.assert_called_once_with(
+            "https://www.linkedin.com/in/jane/recent-activity/all/")
+        r["record"].assert_called_once_with(1, "https://www.linkedin.com/in/jane")
+
+    def test_one_comment_per_author_per_run(self):
+        # Three posts on one author's page — anti-pod means we take exactly one.
+        boxes = [_box(f"Roster author post number {i}, long enough to scan.") for i in range(3)]
+        r = _run_roster(boxes, [_target("https://www.linkedin.com/in/jane", "peer")])
+        assert r["stats"]["posted"] == 1
+        assert r["engage"].call_count == 1
+
+    def test_off_topic_roster_post_is_never_commented_on(self):
+        r = _run_roster([_box("Wholly unrelated content of sufficient length.")],
+                        [_target("https://www.linkedin.com/in/jane", "peer")],
+                        prefs={"focus_topics": ["RevOps"]}, relevant=False)
+        assert r["stats"]["posted"] == 0
+        assert r["stats"]["off_topic_skipped"] == 1
+        r["engage"].assert_not_called()
+        r["record"].assert_not_called()
+
+    def test_author_at_weekly_cap_is_not_visited(self):
+        r = _run_roster([_box("A roster author's post, long enough to scan.")],
+                        [_target("https://www.linkedin.com/in/jane", "peer", cap=2, used=2)])
+        assert r["stats"]["targets_visited"] == 0
+        r["driver"].get.assert_not_called()
+
+    def test_seen_keys_block_the_later_feed_walk(self):
+        r = _run_roster([_box("A roster author's post, long enough to scan.")],
+                        [_target("https://www.linkedin.com/in/jane", "peer")])
+        assert r["seen"], "roster keys must be shared so the feed walk can't re-comment them"
+
+    def test_page_without_commentable_cards_is_skipped(self):
+        from cqc_lem.app import run_automation as ra
+        driver = MagicMock()
+        driver.find_elements.return_value = [_box("An item with no comment affordance at all.")]
+        with ExitStack() as es:
+            p = lambda name, **kw: es.enter_context(patch(f"{_RA}.{name}", **kw))
+            p("get_engagement_targets", return_value=[_target("https://www.linkedin.com/in/jane")])
+            p("wait_for_ajax")
+            p("_card_for_textbox", return_value=None)  # fail closed
+            engage = es.enter_context(patch(f"{_RA}._engage_card"))
+            stats = ra.comment_on_roster_posts(driver, MagicMock(), MagicMock(), 1, 5, {},
+                                               "synthesis", [], set())
+        assert stats["posted"] == 0
+        engage.assert_not_called()
+
+    def test_deadline_stops_the_roster_pass(self):
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.get_engagement_targets",
+                   return_value=[_target("https://www.linkedin.com/in/jane")]), \
+             patch(f"{_RA}._engage_card") as engage:
+            driver = MagicMock()
+            stats = ra.comment_on_roster_posts(driver, MagicMock(), MagicMock(), 1, 5, {},
+                                               "synthesis", [], set(), deadline_ts=1.0)
+        assert stats["posted"] == 0
+        driver.get.assert_not_called()
+        engage.assert_not_called()
+
+    def test_navigation_failure_moves_on(self):
+        from cqc_lem.app import run_automation as ra
+        driver = MagicMock()
+        driver.get.side_effect = Exception("auth wall")
+        with ExitStack() as es:
+            p = lambda name, **kw: es.enter_context(patch(f"{_RA}.{name}", **kw))
+            p("get_engagement_targets", return_value=[_target("https://www.linkedin.com/in/jane")])
+            p("wait_for_ajax")
+            p("log_warning")
+            engage = es.enter_context(patch(f"{_RA}._engage_card"))
+            stats = ra.comment_on_roster_posts(driver, MagicMock(), MagicMock(), 1, 5, {},
+                                               "synthesis", [], set())
+        assert stats["posted"] == 0 and stats["targets_visited"] == 0
+        engage.assert_not_called()
+
+
+def _run_feed(boxes, *, prefs=None, relevant=True, roster_stats=None, matches=True):
+    """Drive comment_on_feed_inline end-to-end with the roster pass stubbed, so the assertions are
+    about the feed walk's on-topic gate and the merged funnel."""
+    from cqc_lem.app import run_automation as ra
+
+    driver = MagicMock()
+    driver.find_elements.return_value = boxes
+    driver.execute_script.return_value = None
+    engage = MagicMock(return_value=True)
+    funnel = {}
+    empty_roster = {"posted": 0, "targets_visited": 0, "examined": 0, "off_topic_skipped": 0,
+                    "key_sources": {}, "commented_key_sources": {}}
+
+    with ExitStack() as es:
+        p = lambda name, **kw: es.enter_context(patch(f"{_RA}.{name}", **kw))
+        p("get_engagement_preferences", return_value=prefs or {"max_comments_per_day": 20})
+        p("get_recent_engagers", return_value=set())
+        p("count_comments_today", return_value=0)
+        p("get_or_create_profile_synthesis", return_value="synthesis")
+        p("comment_on_roster_posts", return_value=roster_stats or empty_roster)
+        p("navigate_to_feed")
+        p("_switch_feed_to_recent")
+        p("_card_for_textbox", side_effect=lambda d, b: MagicMock())
+        p("_post_author_from_card", return_value="Jane Author")
+        p("_post_permalink_from_card", return_value=None)
+        p("has_commented_post", return_value=False)
+        p("has_user_commented_on_post_url", return_value=False)
+        p("_passes_hard_excludes", return_value=True)
+        p("_post_age_minutes", return_value=10)
+        p("_post_social_counts", return_value={"comments": 0, "reactions": 0})
+        p("_literal_relevant", return_value=True)
+        p("_score_feed_post", return_value=1.0)
+        p("post_matches_preferences", return_value=matches)
+        p("post_is_relevant", return_value=relevant)
+        p("_engage_card", new=engage)
+        p("set_feed_funnel", side_effect=lambda uid, f: funnel.update(f))
+        posted = ra.comment_on_feed_inline(driver, MagicMock(), MagicMock(), user_id=1, max_posts=5)
+    return {"posted": posted, "engage": engage, "funnel": funnel}
+
+
+class TestFeedOnTopicGate:
+    def test_off_topic_feed_post_is_never_commented_on(self):
+        r = _run_feed([_box("AI in HR hiring screens, a post of adequate length.")],
+                      prefs={"max_comments_per_day": 20, "focus_topics": ["RevOps"]},
+                      relevant=False)
+        assert r["posted"] == 0
+        r["engage"].assert_not_called()
+        assert r["funnel"]["off_topic_skipped"] == 1
+
+    def test_fallback_cannot_comment_on_an_off_topic_post(self):
+        # The empty-filter fallback widens WHICH posts qualify — it must never widen past the
+        # on-topic gate, which is exactly what produced the off-ICP comments in the 2026-07 funnel.
+        boxes = [_box(f"Off-topic post number {i} of adequate scanning length.") for i in range(9)]
+        r = _run_feed(boxes, matches=False,
+                      prefs={"max_comments_per_day": 20, "include_topics": ["RevOps"],
+                             "feed_fallback_when_empty": True},
+                      relevant=False)
+        assert r["posted"] == 0
+        r["engage"].assert_not_called()
+        assert r["funnel"]["fallback_used"] is False
+
+    def test_on_topic_post_still_gets_a_comment(self):
+        r = _run_feed([_box("A RevOps pipeline post of adequate scanning length.")],
+                      prefs={"max_comments_per_day": 20, "focus_topics": ["RevOps"]})
+        assert r["posted"] == 1
+        assert r["funnel"]["off_topic_skipped"] == 0
+
+
+class TestFunnelSourceSplit:
+    def test_roster_and_feed_counts_are_reported_separately(self):
+        roster = {"posted": 2, "targets_visited": 3, "examined": 4, "off_topic_skipped": 1,
+                  "key_sources": {"card": 4}, "commented_key_sources": {"card": 2}}
+        r = _run_feed([_box("A feed post of entirely adequate scanning length.")],
+                      roster_stats=roster)
+        f = r["funnel"]
+        assert f["commented"] == 3            # 2 roster + 1 feed
+        assert f["roster_commented"] == 2 and f["feed_commented"] == 1
+        assert f["roster_targets_visited"] == 3
+        assert f["examined"] == 5             # 4 roster + 1 feed
+        assert f["off_topic_skipped"] == 1
+        assert f["key_sources"] == {"card": 4, "hash": 1}
+        assert f["commented_key_sources"] == {"hash": 1, "card": 2}
+
+    def test_roster_comments_count_against_the_run_budget(self):
+        # The roster used the whole budget: the feed walk must not comment again on top of it.
+        roster = {"posted": 5, "targets_visited": 5, "examined": 5, "off_topic_skipped": 0,
+                  "key_sources": {}, "commented_key_sources": {}}
+        r = _run_feed([_box("A feed post of entirely adequate scanning length.")],
+                      roster_stats=roster)
+        assert r["posted"] == 5
+        r["engage"].assert_not_called()
