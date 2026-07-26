@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.95.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.95.1...v0.95.2) (2026-07-26)
+
+
+### Bug Fixes
+
+* **automation:** drop dead pre-SDUI feed sort that paged 11x/24h (closes [#569](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/569)) ([8bc8834](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8bc883461b5947057c4e8161066c79be826bbb34))
+* **automation:** drop dead pre-SDUI feed sort that paged 11x/24h (closes [#569](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/569)) ([c19facb](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c19facbe8c419d45dc175eb512cbf76df7ff0d90))
+
 ## [0.95.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.95.0...v0.95.1) (2026-07-26)
 
 
