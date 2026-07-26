@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.95.4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.95.3...v0.95.4) (2026-07-26)
+
+
+### Documentation
+
+* **settings:** settings research + IA proposal for the config UX rebuild (closes [#558](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/558)) ([daa28a3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/daa28a3d09dbdfd41b9c219e60b6b36f4ffb6611))
+
 ## [0.95.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.95.2...v0.95.3) (2026-07-26)
 
 
