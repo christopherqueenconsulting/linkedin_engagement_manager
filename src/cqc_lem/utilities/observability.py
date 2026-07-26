@@ -732,6 +732,27 @@ def track_capacity_alert(alert: dict, generated_at: Optional[str] = None) -> Non
     )
 
 
+def track_rate_limit_trip(seconds: int, trips: int, reason: str = "429") -> None:
+    """Emit one LinkedIn 429 breaker trip (issue #650) as a `rate_limit_trip` event.
+
+    Until now a trip only produced a WARNING log, which never reaches PostHog at the default
+    POSTHOG_LOG_LEVEL — so the one signal that says "LinkedIn is throttling us" was invisible to
+    both dashboards and alerts. `trips` is the CONSECUTIVE-trip counter, so an escalating doom loop
+    is distinguishable from a single unlucky session. Always system-scoped: LinkedIn rate-limits by
+    egress IP, so a trip is an account-wide condition, not one user's.
+
+    Never raises: the breaker must open even when analytics is down."""
+    try:
+        posthog.capture(
+            distinct_id="system",
+            event="rate_limit_trip",
+            properties={"cooldown_seconds": int(seconds), "consecutive_trips": int(trips),
+                        "reason": reason or "429"},
+        )
+    except Exception:
+        pass
+
+
 def session_replay_url(session_id: Optional[str]) -> Optional[str]:
     """The PostHog replay permalink for a browser session id (issue #649), or None when there is no
     id or no project configured — a link that can't be built is simply omitted, never guessed.

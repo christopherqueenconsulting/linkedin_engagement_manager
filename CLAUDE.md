@@ -305,6 +305,25 @@ Every report links its recording: `session_replay_url()` in `observability.py` t
 uuid-ish, or a missing `POSTHOG_PROJECT_ID`, omits the line rather than guessing a URL. Full posture
 (who is recorded, what is masked, how to verify): `docs/session-replay.md`.
 
+### KPI funnels, dashboards, alerts + weekly report (issue #650)
+
+`scripts/posthog_provision.py` is the ONE place the business-KPI surface is defined — two
+consolidated dashboards (**LEM Health**: task failures, 429 trips, LLM spend/day, posts/day,
+follower delta, API errors · **LEM Growth**: the content-loop and signup→subscription funnels,
+onboarding drop-off, the comment→reply loop, ER/audience trends), four threshold alerts, and one
+weekly email subscription of Growth that replaces the hand-run perf-report cron. `--dry-run`
+(default) diffs, `--apply` converges, `--simulate 'NAME=VALUE'` proves an alert's threshold without
+waiting for a real breach. Details: `docs/kpi-dashboards.md`.
+
+It sits ON TOP of the cost/margin set (`scripts/posthog_dashboards.py`), which it does not replace.
+Both plan by insight NAME against the same project, so **insight names must stay unique across the
+two scripts** — a unit test fails the build if they collide. Alert-bearing tiles must stay native
+single-series `TrendsQuery` insights (a threshold is evaluated against one `series_index`), and they filter on STRING
+properties (`celery_task.state = 'FAILURE'`) rather than booleans: a boolean filter that matches
+nothing yields an alert that never fires. Money tiles read `$ai_generation`, never `llm_call`.
+`mark_rate_limited()` emits `rate_limit_trip` (issue #650) because the breaker's WARNING log never
+reaches PostHog at the default `POSTHOG_LOG_LEVEL`.
+
 ## CI Gates
 
 Before merging any PR, all of the following must pass:

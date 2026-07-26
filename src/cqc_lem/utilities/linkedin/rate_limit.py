@@ -113,6 +113,11 @@ def mark_rate_limited(reason: str = "") -> None:
         client.set(_COOLDOWN_KEY, reason or "429", ex=seconds)
         log_warning(f"LinkedIn 429 circuit breaker OPEN for {seconds}s (consecutive trip #{trips}) "
                     "— Selenium engagement paused", action_type="rate_limit", http_status=429)
+        # The warning above stops at the log; PostHog only forwards ERROR and up by default. Emit
+        # the trip as its own event so the 429 dashboard tile and its spike alert have a signal
+        # (issue #650). Imported here — observability reaches back into this module for Redis.
+        from cqc_lem.utilities.observability import track_rate_limit_trip
+        track_rate_limit_trip(seconds, trips, reason or "429")
     except Exception as e:
         log_warning("Failed to set LinkedIn 429 circuit breaker", exc=e, action_type="rate_limit")
 
