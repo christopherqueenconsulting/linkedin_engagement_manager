@@ -49,6 +49,7 @@ from cqc_lem.utilities.db import (
     DEFAULT_CONTENT_BUFFER_DAYS, DEFAULT_CONTENT_BUFFER_MAX_POSTS,
     MAX_CONTENT_BUFFER_DAYS, MAX_CONTENT_BUFFER_POSTS,
     get_engagement_preferences, has_engagement_preferences, update_engagement_preferences,
+    DEFAULT_POSTS_PER_WEEK, POSTS_PER_WEEK_MIN, POSTS_PER_WEEK_MAX,
     get_or_create_reply_inbound_token,
     get_newsletter_settings, update_newsletter_settings,
     get_pending_newsletter_editions,
@@ -587,6 +588,8 @@ class EngagementPreferencesRequest(BaseModel):
     reply_max_post_age_days: int = 2
     feed_fallback_when_empty: bool = True
     link_in_first_comment: bool = True
+    # Publishing cadence — how many day-type slots a week the content plan fills (issue #621).
+    posts_per_week: int = DEFAULT_POSTS_PER_WEEK
     # Catch-up congratulations (issue #482)
     max_catchup_touches_per_day: int = CATCHUP_TOUCHES_MAX_STANDARD
     catchup_touch_mode: str = "pre_review"  # 'pre_review' (default) | 'auto_approve'
@@ -641,6 +644,14 @@ class EngagementPreferencesRequest(BaseModel):
             return min(14, max(1, int(v)))
         except (TypeError, ValueError):
             return 2
+
+    @field_validator("posts_per_week")
+    @classmethod
+    def _clamp_posts_per_week(cls, v: int) -> int:
+        try:
+            return min(POSTS_PER_WEEK_MAX, max(POSTS_PER_WEEK_MIN, int(v)))
+        except (TypeError, ValueError):
+            return DEFAULT_POSTS_PER_WEEK
 
     @field_validator("authenticity_score_min")
     @classmethod

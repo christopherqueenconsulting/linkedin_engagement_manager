@@ -81,6 +81,7 @@ export function blockingIssues(eng: EngPrefs): Finding[] {
     ['min_connection_icp_score', eng.min_connection_icp_score, 0, 100, 'outreach', 'ICP fit score must be between 0 and 100.'],
     ['authenticity_score_min', eng.authenticity_score_min, 0, 100, 'content', 'Minimum authenticity score must be between 0 and 100.'],
     ['post_similarity_max_pct', eng.post_similarity_max_pct, 10, 100, 'content', 'Max overlap must be between 10% and 100%.'],
+    ['posts_per_week', eng.posts_per_week, 2, 7, 'content', 'Posts per week must be between 2 and 7.'],
   ]
   for (const [anchor, value, lo, hi, section, message] of numeric) {
     if (!inRange(value, lo, hi))
@@ -291,6 +292,16 @@ export function evaluateConflicts(ctx: ConflictContext): Finding[] {
     out.push({
       id: 'C26', severity: 'inform', section: 'voice', anchor: 'comment_length',
       message: 'LinkedIn weights substantive comments (15+ words) about 2.5× higher than one-liners.',
+    })
+  }
+  // C27 — cadence above the 2026 sweet spot. Posting more often reaches fewer people per post, so
+  // this is the one place a higher number is the worse setting (issue #621).
+  const cadence = eng.posts_per_week ?? 3
+  if (cadence > 4) {
+    out.push({
+      id: 'C27', severity: 'warn', section: 'content', anchor: 'posts_per_week',
+      message: `${cadence} posts a week is above the 2-4 that performs best in 2026 — daily posting measures roughly 26% less average reach per post, so more posts usually means fewer readers.`,
+      fix: { label: 'Use 3 a week', patch: { posts_per_week: 3 } },
     })
   }
   return out

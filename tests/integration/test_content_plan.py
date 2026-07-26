@@ -11,19 +11,36 @@ from cqc_lem.utilities.db import PostType, PostStatus
 
 @pytest.mark.integration
 class TestPlanContentForUser:
-    def test_plan_content_creates_30_days_of_posts(self, mock_database_connection):
-        """plan_content_for_user should create ~30 planned posts covering the next 4 weeks."""
+    def test_plan_content_fills_the_month_at_the_weekly_cadence(self, mock_database_connection):
+        """The plan covers the rest of the month at 2-4 posts/week, never one a day (issue #621).
+
+        June 2026 has 29 days left after the start date; the default 3/week calendar (Tue/Wed/Thu)
+        turns that into ~12 slots instead of 29.
+        """
         from cqc_lem.app.run_content_plan import plan_content_for_user
-        # Freeze to June 1 so days_left_in_month = 29, giving target_posts = 29 >= 20.
         # Direct module patch avoids pydantic v1 metaclass conflicts from freeze_time.
         fixed_now = datetime(2026, 6, 1, 0, 0, 0)
+        captured = []
+
+        def cap(user_id, scheduled_time, post_type, buyer_stage, content_mix=None):
+            captured.append(scheduled_time)
+            return True
+
         with patch('cqc_lem.app.run_content_plan.datetime') as mock_dt, \
              patch('cqc_lem.app.run_content_plan.get_last_planned_post_date_for_user', return_value=None), \
-             patch('cqc_lem.app.run_content_plan.insert_planned_post', return_value=True) as mock_insert:
+             patch('cqc_lem.app.run_content_plan.get_engagement_preferences',
+                   return_value={"posts_per_week": 3}), \
+             patch('cqc_lem.app.run_content_plan.insert_planned_post', side_effect=cap):
             mock_dt.now.return_value = fixed_now
             mock_dt.combine = datetime.combine
             plan_content_for_user(user_id=1)
-            assert mock_insert.call_count >= 20, f"Expected at least 20 planned posts, got {mock_insert.call_count}"
+
+        assert 8 <= len(captured) <= 16, f"Expected a weekly cadence, got {len(captured)} posts"
+        dates = [st.date() for st in captured]
+        assert len(dates) == len(set(dates)), "planned two posts on the same day"
+        ordered = sorted(captured)
+        for earlier, later in zip(ordered, ordered[1:]):
+            assert later - earlier >= timedelta(hours=24), "planned two posts within 24 hours"
 
     def test_plan_content_balanced_post_types(self, mock_database_connection):
         """plan_content_for_user should use multiple post types."""
@@ -89,18 +106,24 @@ class TestPlanContentForUser:
 
         assert captured, "no posts were planned"
         tz = pytz.timezone('America/New_York')
-        local_best = {t.strftime('%H:%M') for t in get_best_posting_times().values()}
+        # Times carry 15-30 minutes of jitter (issue #621), so a stored instant lands NEAR its
+        # local best-time rather than exactly on it — within an hour of one of them.
+        best_minutes = {t.hour * 60 + t.minute for t in get_best_posting_times().values()}
+
+        def near_a_best_time(moment) -> bool:
+            minutes = moment.hour * 60 + moment.minute
+            return any(abs(minutes - b) <= 60 for b in best_minutes)
+
         for st in captured:
             # Stored value is naive UTC; converting back to the user's tz must land on a best-time.
             local = pytz.utc.localize(st).astimezone(tz)
-            assert local.strftime('%H:%M') in local_best, (
-                f"stored {st} (UTC) -> {local} ET, not a configured local best-time"
+            assert near_a_best_time(local), (
+                f"stored {st} (UTC) -> {local} ET, not near a configured local best-time"
             )
-        # ET is offset from UTC, so the stored UTC hour must differ from the naive local hour
-        # for at least one post — proving conversion actually happened (not stored as-is).
-        assert any(
-            st.strftime('%H:%M') not in local_best for st in captured
-        ), "scheduled times were stored unconverted (still local-as-UTC)"
+        # ET is offset from UTC, so the stored UTC hour must differ from the local hour for at
+        # least one post — proving conversion actually happened (not stored as-is).
+        assert any(not near_a_best_time(st) for st in captured), \
+            "scheduled times were stored unconverted (still local-as-UTC)"
 
 
 @pytest.mark.integration

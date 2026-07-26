@@ -448,3 +448,87 @@ class TestPerformanceAwareSelection:
         strong_hits = self._count_hook(strong, perf)
         # Without steering both are equally likely among the same tie group.
         assert abs(weak_hits - strong_hits) < weak_hits * 0.4
+
+
+class TestDayTypeCalendar:
+    """The fixed weekly day-type calendar (issue #621 / G6)."""
+
+    def test_every_weekday_has_a_complete_day_type(self):
+        assert sorted(fw.POST_DAY_TYPES) == [0, 1, 2, 3, 4, 5, 6]
+        for weekday, meta in fw.POST_DAY_TYPES.items():
+            assert meta["key"] and meta["label"] and meta["job"]
+            assert meta["stage"] in ("awareness", "consideration", "decision")
+            assert meta["formats"], f"weekday {weekday} has no archetype family"
+            for fmt in meta["formats"]:
+                assert fmt in fw.POST_FORMATS
+
+    def test_priorities_are_a_permutation_of_the_week(self):
+        priorities = sorted(m["priority"] for m in fw.POST_DAY_TYPES.values())
+        assert priorities == list(range(1, 8))
+
+    def test_default_cadence_is_the_three_strongest_windows(self):
+        # Tue / Wed / Thu — build receipt, story, spiky POV.
+        assert fw.weekly_post_slots(3) == [1, 2, 3]
+        assert [fw.POST_DAY_TYPES[wd]["key"] for wd in fw.weekly_post_slots(3)] == \
+            ["build_receipt", "story", "spiky_pov"]
+
+    def test_slots_are_weekday_ordered_and_sized_by_cadence(self):
+        for count in range(1, 8):
+            slots = fw.weekly_post_slots(count)
+            assert len(slots) == count
+            assert slots == sorted(slots)
+            assert len(set(slots)) == count
+
+    def test_raising_cadence_only_adds_days(self):
+        for count in range(2, 7):
+            assert set(fw.weekly_post_slots(count)).issubset(set(fw.weekly_post_slots(count + 1)))
+
+    def test_cadence_is_clamped_to_a_real_week(self):
+        assert fw.weekly_post_slots(0) == fw.weekly_post_slots(1)
+        assert fw.weekly_post_slots(99) == [0, 1, 2, 3, 4, 5, 6]
+        assert fw.weekly_post_slots("nonsense") == fw.weekly_post_slots(1)
+
+    def test_seven_a_week_is_daily(self):
+        assert fw.weekly_post_slots(7) == [0, 1, 2, 3, 4, 5, 6]
+
+    def test_day_type_lookups(self):
+        assert fw.day_type_for_weekday(2)["key"] == "story"
+        assert fw.day_type_for_weekday(9) is None
+        assert fw.day_type_for_weekday(None) is None
+        assert fw.day_type_formats(2) == ["personal_lesson"]
+        assert fw.day_type_formats(9) == []
+        assert fw.day_type_stage(1) == "decision"
+        assert fw.day_type_stage(9) == "awareness"
+        assert fw.day_type_stage(9, default="consideration") == "consideration"
+
+
+class TestBlueprintHonoursTheDayType:
+    def test_preferred_formats_narrow_the_menu(self):
+        for _ in range(20):
+            out = fw.select_blueprint("post", preferred_formats=["contrarian_take", "myth_vs_reality"])
+            assert out["format"] in ("contrarian_take", "myth_vs_reality")
+            assert out["structure"] == fw.POST_FORMATS[out["format"]]["structure"]
+
+    def test_rotation_still_applies_within_the_family(self):
+        out = fw.select_blueprint("post", preferred_formats=["contrarian_take", "myth_vs_reality"],
+                                  recent_formats=["contrarian_take"])
+        assert out["format"] == "myth_vs_reality"
+
+    def test_single_format_family_is_honoured_even_when_recent(self):
+        # Wednesday only writes stories — recency can't push it out of its own family.
+        out = fw.select_blueprint("post", preferred_formats=fw.day_type_formats(2),
+                                  recent_formats=["personal_lesson"])
+        assert out["format"] == "personal_lesson"
+
+    def test_unknown_family_falls_back_to_the_full_menu(self):
+        out = fw.select_blueprint("post", preferred_formats=["not_a_real_format"])
+        assert out["format"] in fw.POST_FORMATS
+
+    def test_explicit_guidance_beats_the_day_type(self):
+        out = fw.select_blueprint("post", preferred_formats=fw.day_type_formats(2),
+                                  guidance="make this one a Case Snapshot")
+        assert out["format"] == "case_snapshot"
+
+    def test_no_preferred_formats_is_unchanged(self):
+        out = fw.select_blueprint("post", recent_formats=["personal_lesson"])
+        assert out["format"] in fw.POST_FORMATS and out["format"] != "personal_lesson"

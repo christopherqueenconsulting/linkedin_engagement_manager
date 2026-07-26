@@ -183,6 +183,27 @@ class TestReplyCheckConfig:
         assert upd.call_args[0][1]["reply_check_mode"] == "event"
 
 
+class TestPostsPerWeek:
+    """Publishing cadence (issue #621)."""
+
+    def test_defaults_to_three_when_omitted(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/engagement-preferences",
+                              json={"session_token": _SESSION})
+        assert resp.status_code == 200
+        assert upd.call_args[0][1]["posts_per_week"] == 3
+
+    def test_passthrough_and_clamps(self, client):
+        for given, expected in ((2, 2), (7, 7), (0, 2), (99, 7)):
+            with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+                 patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+                resp = client.put("/api/user/engagement-preferences",
+                                  json={"session_token": _SESSION, "posts_per_week": given})
+            assert resp.status_code == 200
+            assert upd.call_args[0][1]["posts_per_week"] == expected
+
+
 class TestEngagementPersistenceRegression:
     """Guards for the class of bug that silently dropped engagement settings."""
 

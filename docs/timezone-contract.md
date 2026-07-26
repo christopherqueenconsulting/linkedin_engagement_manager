@@ -33,8 +33,12 @@ early, with no error. Never pass a caller-supplied datetime straight into a sche
 ## 2. Scheduling — compute local, store UTC
 
 `get_post_time()` / `get_best_posting_time()` return the user's **local** wall clock (the 2026 peak
-model, or the user's own learned best hour). The caller converts to UTC before storing —
-see `run_content_plan.plan_content_for_user`.
+model, or the user's own learned best hour, clamped into the waking window `POST_HOUR_MIN..MAX`).
+The caller converts to UTC before storing — see `run_content_plan._schedule_slot_utc`. It applies
+`apply_schedule_jitter` (±15-30 min) to the LOCAL time before conversion, then enforces the ≥24h
+spacing floor on the stored UTC instants (issue #621) — the gap between two posts is a real elapsed
+duration, so it must be measured on the absolute instants, not on naive local wall clocks that a
+DST shift would silently move by an hour.
 
 `recommend_post_times()` takes a `tz=` argument and buckets each post's stored UTC time into that
 zone before ranking. Omitting it yields UTC hours, which callers that feed the result back into the

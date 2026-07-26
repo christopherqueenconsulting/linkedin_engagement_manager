@@ -48,3 +48,64 @@ class TestGetPostTime:
              patch("cqc_lem.utilities.db.get_user_timezone", return_value="America/New_York"), \
              patch("cqc_lem.utilities.post_stats.recommend_post_times", return_value=recs):
             assert utils.get_post_time(d, user_id=1).hour == 19
+
+
+class TestWakingHourBounds:
+    """Sane posting hours (issue #621 / G6) — no 03:00 or 05:00 local slots."""
+
+    def test_default_model_is_already_inside_the_window(self):
+        from cqc_lem.utilities.utils import get_best_posting_times, POST_HOUR_MIN, POST_HOUR_MAX
+        assert all(POST_HOUR_MIN <= t.hour <= POST_HOUR_MAX
+                   for t in get_best_posting_times().values())
+
+    def test_clamp_pulls_overnight_hours_into_the_window(self):
+        from cqc_lem.utilities.utils import clamp_to_waking_hours, POST_HOUR_MIN, POST_HOUR_MAX
+        assert clamp_to_waking_hours(dt.time(3, 30)) == dt.time(POST_HOUR_MIN, 30)
+        assert clamp_to_waking_hours(dt.time(5, 0)) == dt.time(POST_HOUR_MIN, 0)
+        assert clamp_to_waking_hours(dt.time(23, 15)) == dt.time(POST_HOUR_MAX, 15)
+        assert clamp_to_waking_hours(dt.time(16, 0)) == dt.time(16, 0)
+
+    def test_learned_overnight_hour_is_clamped(self):
+        from cqc_lem.utilities import utils
+        d = dt.date(2026, 7, 8)  # Wednesday
+        recs = [{"weekday_num": 2, "hour": 3, "avg_engagement": 50, "sample": 4}]
+        with patch("cqc_lem.utilities.db.get_post_engagement_rows", return_value=[("x",)] * 4), \
+             patch("cqc_lem.utilities.db.get_user_timezone", return_value="America/New_York"), \
+             patch("cqc_lem.utilities.post_stats.recommend_post_times", return_value=recs):
+            assert utils.get_post_time(d, user_id=1).hour == utils.POST_HOUR_MIN
+
+    def test_operator_override_outside_the_window_is_clamped(self, monkeypatch):
+        from cqc_lem.utilities import utils
+        monkeypatch.setenv("DEFAULT_POSTING_HOURS", "3,3,3,3,3,3,3")
+        assert utils.get_post_time(dt.date(2026, 7, 8)).hour == utils.POST_HOUR_MIN
+
+
+class TestScheduleJitter:
+    def test_offset_is_always_15_to_30_minutes(self):
+        from cqc_lem.utilities.utils import (apply_schedule_jitter, SCHEDULE_JITTER_MIN_MINUTES,
+                                             SCHEDULE_JITTER_MAX_MINUTES)
+        base = dt.time(16, 0)
+        base_minutes = base.hour * 60 + base.minute
+        offsets = set()
+        for _ in range(200):
+            jittered = apply_schedule_jitter(base)
+            offset = jittered.hour * 60 + jittered.minute - base_minutes
+            assert SCHEDULE_JITTER_MIN_MINUTES <= abs(offset) <= SCHEDULE_JITTER_MAX_MINUTES
+            offsets.add(offset)
+        # Both directions get used, and the result is not one machine-exact time.
+        assert any(o < 0 for o in offsets) and any(o > 0 for o in offsets)
+        assert len(offsets) > 4
+
+    def test_jitter_never_leaves_the_waking_window(self):
+        from cqc_lem.utilities.utils import apply_schedule_jitter, POST_HOUR_MIN, POST_HOUR_MAX
+        for base in (dt.time(POST_HOUR_MIN, 0), dt.time(POST_HOUR_MAX, 59), dt.time(12, 30)):
+            for _ in range(100):
+                jittered = apply_schedule_jitter(base)
+                assert POST_HOUR_MIN <= jittered.hour <= POST_HOUR_MAX
+
+    def test_accepts_an_injected_rng_for_determinism(self):
+        import random
+        from cqc_lem.utilities.utils import apply_schedule_jitter
+        first = apply_schedule_jitter(dt.time(16, 0), rng=random.Random(7))
+        second = apply_schedule_jitter(dt.time(16, 0), rng=random.Random(7))
+        assert first == second
