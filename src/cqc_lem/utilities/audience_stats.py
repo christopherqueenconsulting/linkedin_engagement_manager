@@ -24,6 +24,9 @@ SEARCH_APPEARANCE_LABEL = r"search appearances?"
 # Growth windows reported on the dashboard panel.
 GROWTH_WINDOWS = (7, 30)
 
+_ALL_LABELS = (FOLLOWER_LABEL, CONNECTION_LABEL, PROFILE_VIEW_LABEL, SEARCH_APPEARANCE_LABEL)
+_NUMBER = r"(\d[\d.,]*)[ \t]*([KkMm]?)\+?"
+
 
 def parse_labeled_count(text: Optional[str], label: str) -> Optional[int]:
     """Pull the count belonging to `label` out of LinkedIn label text.
@@ -33,19 +36,38 @@ def parse_labeled_count(text: Optional[str], label: str) -> Optional[int]:
     Precedence is deliberate: LinkedIn writes the number BEFORE the label everywhere it renders one
     (inline on the profile, stacked above the caption on the analytics cards), so a number
     immediately preceding the label wins. The gap it may span is at most one line break, so a count
-    belonging to some OTHER card further up the page can't bind to this label. A label with no
-    number in front of it falls back to the first number just after it. Returns None when no count
-    is present — callers persist that as NULL, which is distinct from a real zero."""
+    belonging to some OTHER card further up the page can't bind to this label — and a number that
+    is already the VALUE of a different label in front of it (`_claimed_by_another_label`) is
+    skipped, so a stacked label-first page can't hand every metric the first card's number. A label
+    with no number in front of it falls back to the first number just after it. Returns None when no
+    count is present — callers persist that as NULL, which is distinct from a real zero."""
     if not text:
         return None
-    number = r"(\d[\d.,]*)[ \t]*([KkMm]?)\+?"
-    for pattern in (rf"{number}[ \t]*\n?[ \t]*{label}", rf"{label}[^\d\n]{{0,20}}\n?[ \t]*{number}"):
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
-            value = _to_number(match.group(1), match.group(2))
-            if value is not None:
-                return value
-    return None
+    for match in re.finditer(rf"{_NUMBER}[ \t]*\n?[ \t]*{label}", text, flags=re.IGNORECASE):
+        if _claimed_by_another_label(text, match.start(), label):
+            continue
+        value = _to_number(match.group(1), match.group(2))
+        if value is not None:
+            return value
+    match = re.search(rf"{label}[^\d\n]{{0,20}}\n?[ \t]*{_NUMBER}", text, flags=re.IGNORECASE)
+    return _to_number(match.group(1), match.group(2)) if match else None
+
+
+def _claimed_by_another_label(text: str, start: int, label: str) -> bool:
+    """True when the number starting at `start` is really the value of a DIFFERENT audience label
+    sitting immediately in front of it — LinkedIn's label-first card stack ("Profile views\\n288\\n
+    Search appearances\\n88") would otherwise hand 288 to search appearances too, silently recording
+    one metric's number under another. The other label only owns the number if it doesn't already
+    have one of its own in front of it (the value-first layout, where "4,312 followers\\n500+
+    connections" leaves 500 legitimately ours)."""
+    head = text[:start]
+    for other in _ALL_LABELS:
+        if other == label:
+            continue
+        owner = re.search(rf"{other}[^\d]{{0,3}}$", head, flags=re.IGNORECASE)
+        if owner and not re.search(rf"{_NUMBER}[ \t]*\n?[ \t]*$", head[:owner.start()]):
+            return True
+    return False
 
 
 def _to_number(raw: str, suffix: str) -> Optional[int]:

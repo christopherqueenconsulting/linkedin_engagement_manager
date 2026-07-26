@@ -89,6 +89,22 @@ class TestCaptureAudienceSnapshot:
             counts = capture_audience_snapshot(driver, "https://www.linkedin.com/in/me/")
         assert counts["follower_count"] == 4312
 
+    def test_falls_back_to_body_when_main_is_empty(self):
+        # A half-hydrated <main> reads blank; that is as unread as a missing one, so the body
+        # fallback must still run instead of recording an all-NULL snapshot.
+        from cqc_lem.app.run_automation import capture_audience_snapshot
+        driver = MagicMock()
+
+        def _find(_by, tag):
+            el = MagicMock()
+            el.text = "   \n " if tag == "main" else _PROFILE_TEXT
+            return el
+
+        driver.find_element.side_effect = _find
+        with patch(f"{_RA}.time.sleep"):
+            counts = capture_audience_snapshot(driver, "https://www.linkedin.com/in/me/")
+        assert counts["follower_count"] == 4312 and counts["connection_count"] == 500
+
 
 class TestCaptureFollowerStatsTask:
     def _patches(self, counts, profile_url="https://www.linkedin.com/in/me/"):

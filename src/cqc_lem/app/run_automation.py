@@ -2052,9 +2052,13 @@ def _read_page_text(driver, url: str) -> str:
     time.sleep(random.uniform(4, 6))
     for tag in ("main", "body"):
         try:
-            return driver.find_element(By.TAG_NAME, tag).text or ""
+            text = driver.find_element(By.TAG_NAME, tag).text or ""
         except Exception:
             continue
+        # An EMPTY <main> is as unread as a missing one (LinkedIn renders parts of the analytics
+        # surface outside it, and a half-hydrated shell reads blank), so keep falling back.
+        if text.strip():
+            return text
     return ""
 
 

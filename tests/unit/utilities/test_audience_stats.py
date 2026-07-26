@@ -59,6 +59,22 @@ class TestLabelParsing:
         # A page that only renders followers must not yield a connection count from the same digits.
         assert parse_connection_count("4,000 followers") is None
 
+    def test_stacked_label_first_cards_do_not_share_one_number(self):
+        # A wholly label-first page: every metric after the first would otherwise inherit the FIRST
+        # card's number (288 recorded as search appearances, 4312 as connections) — a silently WRONG
+        # count is worse than the NULL this module exists to prefer.
+        analytics = "Profile views\n288\nSearch appearances\n88"
+        assert parse_profile_views(analytics) == 288
+        assert parse_search_appearances(analytics) == 88
+        profile = "Followers\n4,312\nConnections\n500"
+        assert parse_follower_count(profile) == 4312
+        assert parse_connection_count(profile) == 500
+
+    def test_value_first_neighbour_still_owns_the_next_number(self):
+        # The mirror case: "followers" already HAS its number in front of it, so the 500 that
+        # follows belongs to connections and must not be rejected as someone else's.
+        assert parse_connection_count("4,312 followers\n500+ connections") == 500
+
 
 class TestFollowerSeries:
     def test_collapses_same_day_captures_to_the_latest(self):

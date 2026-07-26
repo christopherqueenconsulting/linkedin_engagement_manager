@@ -125,6 +125,13 @@ function deltaColor(d: AudienceDelta | null | undefined): string {
   return d.delta > 0 ? 'text-green-600' : 'text-red-600'
 }
 
+// The baseline is the newest capture on or BEFORE the window edge, so after a run of failed
+// captures a "7-day change" can really span longer. Name the date it was measured from rather than
+// letting the tile imply a window it didn't cover.
+function deltaSince(d: AudienceDelta | null | undefined): string {
+  return d ? `since ${shortDate(d.from_date)}` : 'not enough history'
+}
+
 // "2026-07-20" → "Jul 20" for compact chart/table axes (dates are tz-agnostic calendar days).
 const _MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 function shortDate(iso: string): string {
@@ -370,6 +377,7 @@ export default function Dashboard() {
                       {formatDelta(audience?.deltas?.[w])}
                     </p>
                     <p className="text-xs text-gray-500 mt-0.5">{w}-day change</p>
+                    <p className="text-[10px] text-gray-400">{deltaSince(audience?.deltas?.[w])}</p>
                   </div>
                 ))}
                 <div>
