@@ -3760,8 +3760,9 @@ _SCHED_DM_COLS = ("id", "user_id", "recipient_profile_url", "recipient_name", "m
 # operator wrote it by hand, which is what every pre-#485 row is.
 SCHEDULED_DM_SOURCE_NURTURE = 'nurture'
 # scheduled_dms.source for an approval-gated owned-asset delivery (issue #624) — the lead magnet a
-# commenter asked for by keyword. Kept distinct from 'nurture' so each mechanic gets its own
-# one-open-draft rule, its own daily draft cap, and its own delivery count.
+# commenter asked for by keyword. Kept distinct from 'nurture' so each mechanic gets its own daily
+# draft cap and its own delivery count; the one-open-draft rule is deliberately SHARED across the
+# two (both write to the same thread, so two queued messages would read as spam to one person).
 SCHEDULED_DM_SOURCE_ARTIFACT = 'artifact'
 # Statuses where a drafted nurture DM is still "live" for its thread — a second draft to the same
 # person while one of these is open would be two messages queued for one reply.
@@ -6072,6 +6073,14 @@ def get_latest_newsletter_subscriber_count(user_id: int) -> "int | None":
         connection.close()
 
 
+def _like_literal(value: str, escape: str = "!") -> str:
+    """Escape LIKE metacharacters so a value is matched literally. A newsletter URL can carry
+    percent-encoding ('%20'), and an unescaped '%' inside the pattern matches ANY text — which would
+    silently over-count the attribution it feeds."""
+    return (str(value).replace(escape, escape + escape)
+            .replace("%", escape + "%").replace("_", escape + "_"))
+
+
 def count_artifact_cta_deliveries(user_id: int, days: int = 90,
                                   newsletter_url: Optional[str] = None) -> dict:
     """Owned-asset CTA deliveries in the last `days` (issue #624) — the attribution half of the loop,
@@ -6079,9 +6088,16 @@ def count_artifact_cta_deliveries(user_id: int, days: int = 90,
 
     The two mechanics are counted SEPARATELY because they deliver differently and one of them is not
     a send at all: `lead_magnet_dms` counts the approval-gated DM drafts this automation queued, and
-    `newsletter_links` counts the published posts that carried the subscribe URL into their first
-    comment. `newsletter_links` is None — not 0 — when the user has no newsletter URL configured:
-    there was nothing to carry, which is a different fact from "carried nothing"."""
+    `newsletter_links` counts the published posts that carried the subscribe URL. `newsletter_links`
+    is None — not 0 — when the user has no newsletter URL configured: there was nothing to carry,
+    which is a different fact from "carried nothing".
+
+    The link side matches EITHER column, because which one holds the URL depends on the host and
+    only one of the two cases is the common one: `newsletter_url` is written by
+    `mark_newsletter_published` from a linkedin.com article URL, and #392's split deliberately leaves
+    in-platform links in the BODY (they carry no reach penalty), so `first_comment_link` alone would
+    report 0 forever for the mainline LinkedIn newsletter. An off-platform newsletter (Substack &c.)
+    is the reverse: the split moves it out of `content` and into `first_comment_link`."""
     window = max(1, int(days or 1))
     out: dict = {"window_days": window, "lead_magnet_dms": 0, "newsletter_links": None}
     connection = get_db_connection()
@@ -6095,10 +6111,12 @@ def count_artifact_cta_deliveries(user_id: int, days: int = 90,
         out["lead_magnet_dms"] = int(row[0]) if row and row[0] else 0
         url = str(newsletter_url or "").strip()
         if url:
+            pattern = f"%{_like_literal(url)}%"
             cursor.execute(
                 "SELECT COUNT(*) FROM posts WHERE user_id = %s AND status = %s "
-                "AND first_comment_link LIKE %s AND updated_at >= (NOW() - INTERVAL %s DAY)",
-                (user_id, PostStatus.POSTED.value, f"%{url}%", window))
+                "AND (content LIKE %s ESCAPE '!' OR first_comment_link LIKE %s ESCAPE '!') "
+                "AND updated_at >= (NOW() - INTERVAL %s DAY)",
+                (user_id, PostStatus.POSTED.value, pattern, pattern, window))
             row = cursor.fetchone()
             out["newsletter_links"] = int(row[0]) if row and row[0] else 0
         return out

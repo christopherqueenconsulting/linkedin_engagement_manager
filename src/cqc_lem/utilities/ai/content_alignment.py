@@ -346,8 +346,10 @@ def artifact_cta_line(lead_magnet: Optional[dict] = None, newsletter: Optional[d
         line = (f"I break this kind of thing down in more depth in {named} "
                 "— subscribe if it would help.")
         # The subscribe URL is the whole deliverable: without it the CTA asks the reader to go find
-        # the thing themselves. It is safe to write into the body here because post_to_linkedin
-        # splits carried links out into the first comment before publishing (#392).
+        # the thing themselves. Writing it into the body is safe either way — an OFF-platform
+        # newsletter link is moved into the first comment by post_to_linkedin's split (#392), and a
+        # linkedin.com newsletter (what mark_newsletter_published records) is deliberately left in
+        # the body by that same split, because the reach penalty only applies off-platform.
         return f"{line} {delivery['url']}" if delivery["url"] else line
     return ""
 

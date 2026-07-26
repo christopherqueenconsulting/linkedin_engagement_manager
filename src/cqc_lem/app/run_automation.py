@@ -4043,9 +4043,12 @@ def _nurture_after_reply(user_id: int, followup: dict, their_message: str,
                      user_id=user_id, action_type="dm")
             return None
 
-        # One drafted next message per conversation. A thread re-checked before the operator has
-        # acted must not stack a second draft on the same reply.
-        if has_open_scheduled_dm(user_id, profile_url, source=SCHEDULED_DM_SOURCE_NURTURE):
+        # One drafted next message per conversation, across BOTH auto-drafting mechanics. A thread
+        # re-checked before the operator has acted must not stack a second draft on the same reply —
+        # and neither must an owned-asset delivery already queued on this thread (#624), or the
+        # person ends up with two pending messages, which is the spam shape both gates exist to stop.
+        if (has_open_scheduled_dm(user_id, profile_url, source=SCHEDULED_DM_SOURCE_NURTURE)
+                or has_open_scheduled_dm(user_id, profile_url, source=SCHEDULED_DM_SOURCE_ARTIFACT)):
             log_info(f"DM nurture: {first_name or profile_url} already has a queued draft; skipping",
                      user_id=user_id, action_type="dm")
             return None
