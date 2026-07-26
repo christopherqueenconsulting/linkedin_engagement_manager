@@ -24,7 +24,9 @@ to prove demand. Anything risky gets the matching `risk:*` + `needs-human` label
 RUNBOOK-shaped Decision Comment so the hold is letter-pickable instead of prose.
 
 Privacy: only the classifier's factual `summary` reaches GitHub — never the raw feedback text or any
-reporter identity. Issues reference the internal `feedback.id` for correlation.
+reporter identity. Issues reference the internal `feedback.id` for correlation, and (issue #649) a
+LINK to the PostHog session replay — a pointer into an access-controlled tool that masks the same
+content the SPA does, not the content itself.
 
 Env:
   FEEDBACK_GITHUB_TOKEN / GITHUB_TOKEN   — token used to file/comment; NO token == nothing is filed
@@ -357,10 +359,22 @@ def _files_hint(component: str) -> list:
     return list(_COMPONENT_FILES.get(component, ())) + ["tests/unit/"]
 
 
+def replay_url_from_context(context: object) -> Optional[str]:
+    """The PostHog replay link for the session a report was filed from (issue #649), or None. The
+    widget stamps `posthog_session_id` onto every report; without this the id sits in the DB and
+    nobody ever watches the session that produced the bug."""
+    if not isinstance(context, dict):
+        return None
+    from cqc_lem.utilities.observability import session_replay_url
+    return session_replay_url(context.get("posthog_session_id"))
+
+
 def build_issue_body(classification: FeedbackClassification, feedback_id: Optional[int] = None,
-                     reporter_count: int = 1, item_count: int = 1) -> str:
+                     reporter_count: int = 1, item_count: int = 1,
+                     replay_url: Optional[str] = None) -> str:
     """The `MODE=start` body: Why / Scope / Files / Acceptance, plus the provenance the pipeline and
-    a human both need. Only the classifier's factual summary is included — never the raw report."""
+    a human both need. Only the classifier's factual summary is included — never the raw report; a
+    replay link is a pointer into PostHog, which is access-controlled and masks the same content."""
     ready = is_agent_ready(classification, reporter_count)
     demand = (f"Reported by {max(0, int(reporter_count or 0))} distinct user(s) across "
               f"{max(1, int(item_count or 0))} feedback item(s).")
@@ -387,8 +401,11 @@ def build_issue_body(classification: FeedbackClassification, feedback_id: Option
         acceptance.append("A human has answered the Decision Comment before this is merged.")
 
     lines = ["## Why", classification.summary or "(no summary — see the classifier verdict below)",
-             "", demand, "", provenance, "",
-             "## Scope"]
+             "", demand, "", provenance, ""]
+    if replay_url:
+        lines += [f"[Watch the session replay]({replay_url}) — the browser session this report was "
+                  f"filed from.", ""]
+    lines += ["## Scope"]
     lines += [f"- {item}" for item in scope]
     lines += ["", "## Files",
               "Likely starting points (verify before editing; add/extend the unit tests):"]
@@ -438,10 +455,11 @@ def build_decision_comment(classification: FeedbackClassification,
 
 def build_duplicate_comment(classification: FeedbackClassification,
                             feedback_id: Optional[int] = None, reporter_count: int = 1,
-                            item_count: int = 1) -> str:
+                            item_count: int = 1, replay_url: Optional[str] = None) -> str:
     """The +1 that a repeat report leaves on the EXISTING issue instead of opening a new one — the
-    demand signal the pipeline prioritizes by."""
-    return "\n".join([
+    demand signal the pipeline prioritizes by. Each repeat carries its OWN replay: the second
+    reporter's session is often the one that shows what the first report couldn't explain."""
+    lines = [
         "**+1 — reported again via in-app feedback.**",
         "",
         f"New detail: {classification.summary or '(none)'}",
@@ -452,8 +470,11 @@ def build_duplicate_comment(classification: FeedbackClassification,
         f"({classification.category}/{classification.severity}, confidence "
         f"{classification.confidence:.2f}).",
         "",
-        f"_Auto-deduplicated by the feedback→auto-work loop (`{PLAN_DOC}` §B.3)._",
-    ])
+    ]
+    if replay_url:
+        lines += [f"[Watch this report's session replay]({replay_url})", ""]
+    lines.append(f"_Auto-deduplicated by the feedback→auto-work loop (`{PLAN_DOC}` §B.3)._")
+    return "\n".join(lines)
 
 
 # --- GitHub I/O ---------------------------------------------------------------------------------
@@ -550,6 +571,7 @@ def file_feedback_issue(feedback: dict, classification: FeedbackClassification =
             context = json.loads(context)
         except ValueError:
             context = None
+    replay_url = replay_url_from_context(context)
 
     if classification is None:
         classification = classify_feedback(
@@ -578,7 +600,7 @@ def file_feedback_issue(feedback: dict, classification: FeedbackClassification =
         reporter_count = int(match.get("reporter_count") or 0) + (1 if user_id is not None else 0)
         item_count = int(match.get("item_count") or 0) + 1
         commented = comment_on_issue(match["github_issue_number"], build_duplicate_comment(
-            classification, feedback_id, reporter_count, item_count))
+            classification, feedback_id, reporter_count, item_count, replay_url))
         if not commented:
             return _result(IssueAction.ERROR, feedback_id, reason="duplicate comment failed",
                            cluster_id=match.get("cluster_id"))
@@ -597,7 +619,8 @@ def file_feedback_issue(feedback: dict, classification: FeedbackClassification =
     ready = AGENT_READY_LABEL in labels
     number = create_github_issue(
         build_issue_title(classification),
-        build_issue_body(classification, feedback_id, reporter_count, item_count=1),
+        build_issue_body(classification, feedback_id, reporter_count, item_count=1,
+                         replay_url=replay_url),
         labels, assignees=None if ready else [issue_assignee()])
     if number is None:
         # Leave the row unclustered/`new` — the next pass retries rather than losing the report.

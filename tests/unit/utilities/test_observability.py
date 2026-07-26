@@ -587,6 +587,35 @@ class TestTrackRoutingPolicy:
         assert mock_ph.capture.call_args[1]["properties"]["change_count"] == 0
 
 
+class TestSessionReplayUrl:
+    def test_builds_the_replay_permalink(self):
+        with patch.dict("os.environ", {"POSTHOG_PROJECT_ID": "475262",
+                                       "POSTHOG_APP_HOST": "https://us.posthog.com/"}):
+            from cqc_lem.utilities.observability import session_replay_url
+            assert session_replay_url("0198f0aa-1b2c-7000-8000-abcdef012345") == (
+                "https://us.posthog.com/project/475262/replay/"
+                "0198f0aa-1b2c-7000-8000-abcdef012345")
+
+    def test_defaults_the_app_host(self):
+        with patch.dict("os.environ", {"POSTHOG_PROJECT_ID": "475262"}, clear=False):
+            import os
+            os.environ.pop("POSTHOG_APP_HOST", None)
+            from cqc_lem.utilities.observability import session_replay_url
+            assert session_replay_url("abcd1234").startswith("https://us.posthog.com/project/")
+
+    @pytest.mark.parametrize("session_id", [None, "", "   ", "short", "has space",
+                                            "a)](https://evil.example", "x" * 65])
+    def test_a_missing_or_unshaped_session_id_is_not_linked(self, session_id):
+        with patch.dict("os.environ", {"POSTHOG_PROJECT_ID": "475262"}):
+            from cqc_lem.utilities.observability import session_replay_url
+            assert session_replay_url(session_id) is None
+
+    def test_no_project_means_no_link_rather_than_a_guess(self):
+        with patch.dict("os.environ", {"POSTHOG_PROJECT_ID": ""}):
+            from cqc_lem.utilities.observability import session_replay_url
+            assert session_replay_url("0198f0aa-1b2c-7000-8000-abcdef012345") is None
+
+
 class TestPostHogHogqlQuery:
     def test_returns_none_when_the_read_path_is_not_configured(self):
         with patch.dict("os.environ", {"POSTHOG_PERSONAL_API_KEY": "", "POSTHOG_PROJECT_ID": ""},

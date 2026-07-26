@@ -275,11 +275,35 @@ capture(EVENTS.postApproved, { post_id, post_type, archetype })
   `capture`/`identify` is a no-op.
 - **Autocapture is on**, with `mask_all_element_attributes` and pageviews owned by the router
   (`capture_pageview: false` + a `usePageviews()` hook, so in-app navigation is counted). Web vitals
-  ride on `capture_performance`. Replay is off here — that's PH4.
+  ride on `capture_performance`.
 - `maskProps()` adds BOTH the `ph-no-capture` class (autocapture skips the element) and
   `data-ph-mask` (replay's `maskTextSelector`). Use it on every new content editor.
 - New product events go in `EVENTS` — that vocabulary is what PostHog insights key off, so add to it
   rather than passing a bare string.
+
+### Session replay (issue #649)
+
+The recording RULES live in the SDK, not in PostHog's project settings, so they are one testable
+place: a `VITE_POSTHOG_REPLAY_SAMPLE` slice (default 10%) of ordinary sessions, **plus every session
+that produces an `$exception` or opens the feedback widget**. Both go through one
+`ensureSessionRecorded()` in `analytics.ts`; the error one is wired to a single
+`posthog.on('eventCaptured')` hook, which catches both posthog's own unhandled-error autocapture and
+`captureException()`. Never gate that override on `posthog.sessionRecordingStarted()` — posthog
+attaches rrweb for EVERY session and sampling only decides whether the buffer is sent, so it reads
+`true` in exactly the sampled-out case the override is for. Leave the project's own sampling at 100%
+(and Record user sessions ON, or nothing records at all): the local `sampleRate` takes
+precedence, and configuring both multiplies them. Only **minimum duration** (the bounce filter) is
+remote config; `strictMinimumDuration: true` in code makes it measure the buffer, not session age.
+
+Inputs are masked wholesale, `data-ph-mask` masks non-input text, and network capture is timings
+only — never headers (session token) or bodies (the user's LinkedIn content). Canvas is off.
+`VITE_POSTHOG_REPLAY=false` ships a bundle that never records.
+
+Every report links its recording: `session_replay_url()` in `observability.py` turns the widget's
+`posthog_session_id` into the link on auto-filed feedback issues and their `+1` comments, and
+`scripts/posthog_error_issues.py` does the same from the exception's `$session_id`. An id that isn't
+uuid-ish, or a missing `POSTHOG_PROJECT_ID`, omits the line rather than guessing a URL. Full posture
+(who is recorded, what is masked, how to verify): `docs/session-replay.md`.
 
 ## CI Gates
 

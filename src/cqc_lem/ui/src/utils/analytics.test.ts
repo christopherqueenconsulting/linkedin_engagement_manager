@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // One fake posthog-js shared by every import of the module under test.
+type CapturedEvent = { event?: string }
+let onEventCaptured: ((event: CapturedEvent) => void) | null = null
+
 const ph = {
   init: vi.fn(),
   capture: vi.fn(),
@@ -8,14 +11,21 @@ const ph = {
   identify: vi.fn(),
   reset: vi.fn(),
   get_session_id: vi.fn(() => 'sess-123'),
+  on: vi.fn((event: string, cb: (e: CapturedEvent) => void) => {
+    if (event === 'eventCaptured') onEventCaptured = cb
+    return () => undefined
+  }),
+  startSessionRecording: vi.fn(),
+  sessionRecordingStarted: vi.fn(() => false),
 }
 vi.mock('posthog-js', () => ({ posthog: ph }))
 
-// The key is read at module scope, so each case stubs it and re-imports.
-async function loadAnalytics(key?: string) {
+// The key and the replay settings are read at module scope, so each case stubs them and re-imports.
+async function loadAnalytics(key?: string, replayEnv: Record<string, string> = {}) {
   vi.resetModules()
-  if (key) vi.stubEnv('VITE_POSTHOG_KEY', key)
-  else vi.stubEnv('VITE_POSTHOG_KEY', '')
+  onEventCaptured = null
+  vi.stubEnv('VITE_POSTHOG_KEY', key || '')
+  for (const [name, value] of Object.entries(replayEnv)) vi.stubEnv(name, value)
   return import('./analytics')
 }
 
@@ -73,7 +83,7 @@ describe('with a key configured', () => {
     expect(config.capture_pageview).toBe(false)
     expect(config.autocapture).toBe(true)
     expect(config.mask_all_element_attributes).toBe(true)
-    expect(config.capture_performance).toEqual({ web_vitals: true })
+    expect(config.capture_performance).toEqual({ web_vitals: true, network_timing: true })
     expect(config.session_recording.maskAllInputs).toBe(true)
     expect(config.session_recording.maskTextSelector).toBe('[data-ph-mask]')
   })
@@ -164,6 +174,119 @@ describe('with a key configured', () => {
     ph.get_session_id.mockImplementationOnce(() => { throw new Error('blocked') })
     await a.initAnalytics()
     expect(a.analyticsSessionId()).toBeUndefined()
+  })
+})
+
+describe('session replay', () => {
+  it('records a sampled slice with content masked and no payloads', async () => {
+    const a = await loadAnalytics('phc_test')
+    expect(a.replayEnabled()).toBe(true)
+    await a.initAnalytics()
+    const [, config] = ph.init.mock.calls[0]
+    expect(config.disable_session_recording).toBe(false)
+    expect(config.enable_recording_console_log).toBe(true)
+    expect(config.session_recording).toEqual({
+      maskAllInputs: true,
+      maskTextSelector: '[data-ph-mask]',
+      sampleRate: 0.1,
+      strictMinimumDuration: true,
+      recordHeaders: false,
+      recordBody: false,
+      captureCanvas: { recordCanvas: false },
+    })
+  })
+
+  it('takes the sample rate from the build env and clamps nonsense', async () => {
+    let a = await loadAnalytics('phc_test', { VITE_POSTHOG_REPLAY_SAMPLE: '0.25' })
+    await a.initAnalytics()
+    expect(ph.init.mock.calls[0][1].session_recording.sampleRate).toBe(0.25)
+
+    ph.init.mockClear()
+    a = await loadAnalytics('phc_test', { VITE_POSTHOG_REPLAY_SAMPLE: '7' })
+    await a.initAnalytics()
+    expect(ph.init.mock.calls[0][1].session_recording.sampleRate).toBe(1)
+
+    ph.init.mockClear()
+    a = await loadAnalytics('phc_test', { VITE_POSTHOG_REPLAY_SAMPLE: 'lots' })
+    await a.initAnalytics()
+    expect(ph.init.mock.calls[0][1].session_recording.sampleRate).toBe(0.1)
+  })
+
+  it('records every session that throws, overriding the sample', async () => {
+    const a = await loadAnalytics('phc_test')
+    await a.initAnalytics()
+    expect(onEventCaptured).toBeTypeOf('function')
+    onEventCaptured!({ event: '$exception' })
+    expect(ph.startSessionRecording).toHaveBeenCalledWith({ sampling: true })
+  })
+
+  // posthog attaches rrweb for EVERY session — sampling only decides whether the buffer is sent —
+  // so sessionRecordingStarted() reads true for a sampled-OUT session and must never gate this.
+  it('still overrides when rrweb is already attached but the session was sampled out', async () => {
+    const a = await loadAnalytics('phc_test')
+    await a.initAnalytics()
+    ph.sessionRecordingStarted.mockReturnValueOnce(true)
+    onEventCaptured!({ event: '$exception' })
+    expect(ph.startSessionRecording).toHaveBeenCalledWith({ sampling: true })
+  })
+
+  it('ignores other events and overrides at most once per session', async () => {
+    const a = await loadAnalytics('phc_test')
+    await a.initAnalytics()
+    onEventCaptured!({ event: '$pageview' })
+    expect(ph.startSessionRecording).not.toHaveBeenCalled()
+
+    onEventCaptured!({ event: '$exception' })
+    onEventCaptured!({ event: '$exception' })
+    expect(ph.startSessionRecording).toHaveBeenCalledTimes(1)
+
+    // A new session id is a fresh sampling decision, so the trigger re-arms.
+    ph.get_session_id.mockReturnValueOnce('sess-456')
+    onEventCaptured!({ event: '$exception' })
+    expect(ph.startSessionRecording).toHaveBeenCalledTimes(2)
+  })
+
+  it('never lets a recording decision throw into the page', async () => {
+    const a = await loadAnalytics('phc_test')
+    await a.initAnalytics()
+    ph.startSessionRecording.mockImplementationOnce(() => { throw new Error('blocked') })
+    expect(() => onEventCaptured!({ event: '$exception' })).not.toThrow()
+  })
+
+  it('ships no recording at all when replay is turned off', async () => {
+    const a = await loadAnalytics('phc_test', { VITE_POSTHOG_REPLAY: 'false' })
+    expect(a.replayEnabled()).toBe(false)
+    await a.initAnalytics()
+    const [, config] = ph.init.mock.calls[0]
+    expect(config.disable_session_recording).toBe(true)
+    expect(config.enable_recording_console_log).toBe(false)
+    expect(config.capture_performance).toEqual({ web_vitals: true, network_timing: false })
+    expect(ph.on).not.toHaveBeenCalled()
+  })
+
+  it('is off with analytics itself off', async () => {
+    const a = await loadAnalytics()
+    expect(a.replayEnabled()).toBe(false)
+  })
+
+  it('records on demand so a feedback report always has a replay to link', async () => {
+    const a = await loadAnalytics('phc_test')
+    await a.initAnalytics()
+    a.ensureSessionRecorded()
+    await Promise.resolve()
+    expect(ph.startSessionRecording).toHaveBeenCalledWith({ sampling: true })
+
+    // Shares the once-per-session budget with the error trigger.
+    onEventCaptured!({ event: '$exception' })
+    expect(ph.startSessionRecording).toHaveBeenCalledTimes(1)
+  })
+
+  it('records nothing on demand when replay is off', async () => {
+    const a = await loadAnalytics('phc_test', { VITE_POSTHOG_REPLAY: 'false' })
+    await a.initAnalytics()
+    a.ensureSessionRecorded()
+    await Promise.resolve()
+    expect(ph.startSessionRecording).not.toHaveBeenCalled()
   })
 })
 

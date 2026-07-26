@@ -3,6 +3,7 @@ import hashlib
 import inspect
 import json
 import os
+import re
 import time
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
@@ -42,6 +43,9 @@ def _env_flag(name: str, default: bool = True) -> bool:
 # FastAPI middleware). Read at import so the flag is set before posthog.setup() builds the client.
 EXCEPTION_AUTOCAPTURE_ENABLED = bool(posthog.api_key) and _env_flag("POSTHOG_EXCEPTION_AUTOCAPTURE")
 posthog.enable_exception_autocapture = EXCEPTION_AUTOCAPTURE_ENABLED
+
+# What posthog-js hands out as a session id (uuid v7-ish). Anything else is not linked (#649).
+_SESSION_ID_RE = re.compile(r"[A-Za-z0-9._-]{8,64}")
 
 
 # Approximate USD cost per 1K tokens as (input, output), keyed by the model string passed to
@@ -726,6 +730,22 @@ def track_capacity_alert(alert: dict, generated_at: Optional[str] = None) -> Non
         event="capacity_alert",
         properties={"generated_at": generated_at, **alert},
     )
+
+
+def session_replay_url(session_id: Optional[str]) -> Optional[str]:
+    """The PostHog replay permalink for a browser session id (issue #649), or None when there is no
+    id or no project configured — a link that can't be built is simply omitted, never guessed.
+
+    The SPA sends its `posthog_session_id` with every feedback report; this is what turns that
+    opaque id into something a human can open. Ids that aren't the SDK's own uuid-ish shape are
+    rejected rather than escaped: the result is pasted into GitHub markdown, and a "session id"
+    carrying a space or a bracket is not a session id."""
+    sid = str(session_id or "").strip()
+    project_id = (os.getenv("POSTHOG_PROJECT_ID") or "").strip()
+    if not sid or not project_id or not _SESSION_ID_RE.fullmatch(sid):
+        return None
+    host = (os.getenv("POSTHOG_APP_HOST") or "https://us.posthog.com").rstrip("/")
+    return f"{host}/project/{project_id}/replay/{sid}"
 
 
 def posthog_hogql_query(sql: str, timeout: int = 30) -> Optional[list]:

@@ -13,6 +13,29 @@ import type { PostHog } from 'posthog-js'
 const KEY = import.meta.env.VITE_POSTHOG_KEY as string | undefined
 const HOST = (import.meta.env.VITE_POSTHOG_HOST as string | undefined) || 'https://us.i.posthog.com'
 
+// Session replay (issue #649). Recordings are quota'd, so the SDK — not a project setting — owns
+// WHO is recorded: a sampled slice of ordinary sessions, plus every session that produces an
+// $exception. Local `sampleRate` takes precedence over the project's sampling setting, so the two
+// can never multiply into a rate nobody intended.
+const DEFAULT_REPLAY_SAMPLE = 0.1
+
+function envFlag(value: string | undefined, fallback: boolean): boolean {
+  const raw = (value ?? '').trim().toLowerCase()
+  if (!raw) return fallback
+  return !['0', 'false', 'no', 'off'].includes(raw)
+}
+
+function replaySampleRate(): number {
+  const raw = (import.meta.env.VITE_POSTHOG_REPLAY_SAMPLE as string | undefined) ?? ''
+  if (!raw.trim()) return DEFAULT_REPLAY_SAMPLE
+  const value = Number(raw)
+  if (!Number.isFinite(value)) return DEFAULT_REPLAY_SAMPLE
+  return Math.min(1, Math.max(0, value))
+}
+
+const REPLAY_ENABLED = envFlag(import.meta.env.VITE_POSTHOG_REPLAY as string | undefined, true)
+const REPLAY_SAMPLE = replaySampleRate()
+
 // Any element carrying this attribute holds the user's own content (a DM, a story, a draft post).
 // Its text is masked in replay (PH4) and it is opted out of autocapture entirely.
 export const MASK_ATTRIBUTE = 'data-ph-mask'
@@ -27,6 +50,57 @@ export function maskProps(className = ''): { className: string } & Record<string
 
 export function analyticsEnabled(): boolean {
   return !!KEY
+}
+
+export function replayEnabled(): boolean {
+  return !!KEY && REPLAY_ENABLED
+}
+
+// The session id we have already forced a recording for, so a page throwing in a loop costs one
+// override and not one full snapshot per exception. Deliberately NOT `sessionRecordingStarted()`:
+// posthog attaches rrweb for every session and the sampling decision only governs whether the
+// buffer is SENT, so that method reads `true` in exactly the sampled-OUT case this override exists
+// for. A new session id is a new sampling decision, so it re-arms.
+let forcedReplaySession: string | null = null
+
+function forceSessionRecording(ph: PostHog): void {
+  if (!REPLAY_ENABLED) return
+  try {
+    let sessionId = ''
+    try {
+      sessionId = ph.get_session_id?.() || ''
+    } catch {
+      // No resolvable session id — fall through and force once.
+    }
+    if (forcedReplaySession !== null && forcedReplaySession === sessionId) return
+    forcedReplaySession = sessionId
+    ph.startSessionRecording({ sampling: true })
+  } catch {
+    // A recording decision must never surface as a UI error.
+  }
+}
+
+// Record THIS session even if sampling left it out. Called for the two moments a recording is worth
+// more than the quota it spends: an exception, and a user opening the feedback widget — a report
+// whose replay link 404s is worse than no link, and only ~REPLAY_SAMPLE of sessions are recorded
+// otherwise. Recording starts HERE; the lead-up exists only for the sampled slice.
+export function ensureSessionRecorded(): void {
+  withClient(forceSessionRecording)
+}
+
+// The recording rule that matters: a session that threw is the session someone will want to watch,
+// so it is recorded even when sampling left it out. `eventCaptured` fires for BOTH posthog's own
+// unhandled-error autocapture and captureException() below, so the rule lives in exactly one place.
+function armErrorTriggeredReplay(ph: PostHog): void {
+  if (!REPLAY_ENABLED) return
+  try {
+    ph.on('eventCaptured', (event: { event?: string } | undefined) => {
+      if (event?.event !== '$exception') return
+      forceSessionRecording(ph)
+    })
+  } catch {
+    // Older/stubbed clients without the hook simply keep the sampled-only behavior.
+  }
 }
 
 let client: PostHog | null = null
@@ -46,7 +120,9 @@ export function initAnalytics(): Promise<PostHog | null> {
         autocapture: true,
         // Attribute values can carry content (a post title in aria-label, a draft in value).
         mask_all_element_attributes: true,
-        capture_performance: { web_vitals: true },
+        // network_timing rides with replay: PerformanceObserver entries (url, status, duration) so a
+        // recording shows WHICH call failed. Never the request/response bodies — see below.
+        capture_performance: { web_vitals: true, network_timing: REPLAY_ENABLED },
         // Error tracking (issue #648). Unhandled errors and rejections become grouped $exception
         // issues; console.error stays OFF — it is noisy and routinely carries user content in the
         // message, which the rest of this module goes out of its way to keep out of PostHog.
@@ -55,13 +131,30 @@ export function initAnalytics(): Promise<PostHog | null> {
           capture_unhandled_rejections: true,
           capture_console_errors: false,
         },
-        // Replay is issue #650 (PH4). Session ids still resolve with it off, which is all the
-        // feedback widget needs.
-        disable_session_recording: true,
-        session_recording: { maskAllInputs: true, maskTextSelector: MASK_SELECTOR },
+        // Replay (issue #649). Session ids resolve either way, which is all the feedback widget
+        // needs — VITE_POSTHOG_REPLAY=false turns the recording itself off and nothing else.
+        disable_session_recording: !REPLAY_ENABLED,
+        // Console lines land on the replay timeline. Unlike console.error->$exception (deliberately
+        // off), this stays inside the recording, which is already masked and access-controlled.
+        enable_recording_console_log: REPLAY_ENABLED,
+        session_recording: {
+          maskAllInputs: true,
+          maskTextSelector: MASK_SELECTOR,
+          sampleRate: REPLAY_SAMPLE,
+          // Measure the minimum duration against the recorded buffer, not wall-clock session age,
+          // so a bounce spread over two page loads is still dropped as a bounce.
+          strictMinimumDuration: true,
+          // A body is the user's own LinkedIn content and a header is their session token; timing
+          // (above) is what debugging actually needs.
+          recordHeaders: false,
+          recordBody: false,
+          // Canvas is the carousel/slide preview — expensive to record and never the bug.
+          captureCanvas: { recordCanvas: false },
+        },
       })
       // The feedback widget and any legacy script-tag reader look for window.posthog.
       ;(window as unknown as { posthog?: PostHog }).posthog = posthog
+      armErrorTriggeredReplay(posthog)
       client = posthog
       return posthog
     })
