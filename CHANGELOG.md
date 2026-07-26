@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.100.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.99.0...v0.100.0) (2026-07-26)
+
+
+### Features
+
+* **engagement:** auto-pause automation when reach step-collapses (closes [#629](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/629)) ([275edab](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/275edab903a86301ab50e961e88541068f76a671))
+* **engagement:** auto-pause automation when reach step-collapses (closes [#629](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/629)) ([027064d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/027064d5085919d30b478966ee39b07a630ed781))
+* **engagement:** comment outcome tracking — replies, likes, Most-Relevant visibility (closes [#628](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/628)) ([4e54460](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4e544600515c7ac2dadddf2a75a91c262ca82e90))
+* **engagement:** golden-hour report + 6-8h second-wave self-comment (closes [#622](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/622)) ([08866c1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/08866c1098ba74b402ca925d4a770992688596f8))
+* **engagement:** golden-hour report + 6-8h second-wave self-comment (closes [#622](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/622)) ([9b7ca56](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9b7ca56a152c7f98209ef77aa3513c5db4b8d5a3))
+* **observability:** capture $exception into PostHog error tracking (closes [#648](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/648)) ([ba38d78](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ba38d78b4c843f444317671024c4a6e327fdcec9))
+* **observability:** capture $exception into PostHog error tracking (closes [#648](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/648)) ([5f7ada3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5f7ada3b246fe0f3cd13eaa8460d478ace7f690d))
+* **observability:** emit $ai_generation from the LiteLLM proxy to PostHog (closes [#647](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/647)) ([979f67c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/979f67cfe080f3a5f296ebb9265087d4e627f715))
+* **observability:** error-triggered + sampled session replay (closes [#649](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/649)) ([90b6e7f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/90b6e7faf244cd28b028cd9e7ba828a71f44f5a5))
+* **observability:** error-triggered + sampled session replay (closes [#649](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/649)) ([f8d391b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f8d391bd0a591891ec4f1e3081ff81312572b10d))
+* **observability:** KPI funnels, consolidated dashboards, threshold alerts + weekly report (closes [#650](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/650)) ([3a7606f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3a7606f81a43b41c8fdb49da512517d7f06048cb))
+* **observability:** KPI funnels, Health/Growth dashboards, threshold alerts + weekly report (closes [#650](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/650)) ([605da7e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/605da7e1b6eed2fabf872e161a378b9378f38103))
+* **observability:** LLM analytics — LiteLLM→PostHog native callback ($ai_generation) (closes [#647](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/647)) ([14d8326](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/14d832675773b77442ad9154b25e35afc72f6778))
+* **ui:** instrument the SPA with PostHog — identify, autocapture, product events (closes [#646](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/646)) ([13adf35](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/13adf352e9d0651ff83c674bcbc130acefeebb1e))
+* **ui:** instrument the SPA with PostHog — identify, autocapture, product events (closes [#646](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/646)) ([50ad82a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/50ad82aa210ca03816cff6860f2f17a6629cb0d9))
+
+
+### Bug Fixes
+
+* **brand:** stop the nightly brand sync from rewriting all 39 pref columns ([cb1184b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/cb1184b11f173bc990a4e0f22185c2097cf187cf))
+* **ci:** provision the integration DB schema so the [#628](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/628) tests can run ([38d7033](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/38d7033387a7a8b05bd2b72aad6af79580d562e0))
+* **db:** stop partial engagement-prefs updates from wiping the row ([5b01134](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5b0113493be3748ecc28c7e8c5e060714723fda4)), closes [#639](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/639)
+* **db:** stop partial engagement-prefs updates from wiping the row (closes [#639](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/639)) ([a675249](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a675249224e3cce9d3fd133f27e4c4d966eddd9d))
+* **engagement:** case-fold the comment sort match and compare profile slugs exactly ([#628](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/628)) ([71983e9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/71983e90293284f450d19bdffb0450bea2fc3a45))
+* **engagement:** keep measuring, and scope the resume, under a suppression pause ([ce515da](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ce515daf5ef1d6afda0d1466b05d573ed88bfd15))
+* **engagement:** keep the second wave under the broker visibility timeout + report unrunnable sweeps ([5e8fd6e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5e8fd6e7af6031f2c3941f7f881b6343aad8d480))
+* **observability:** make the error-triggered replay actually fire ([f4d09c6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f4d09c67e8e9b1087fbb5f5e94a185e93efabd49))
+* **observability:** repair broken follower-delta tile and subscriber-less alerts ([ab40021](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ab40021dbd559a2ea91183b6262a6b4575e0ebfe))
+* **ui:** report prefs_saved from a card's own Save button, mask the rest of the DM editors ([f6dc96b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f6dc96b1e260cdf5b8eba30ff626f1139a9266f3))
+
 ## [0.99.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.98.0...v0.99.0) (2026-07-26)
 
 
