@@ -29,7 +29,7 @@ class TestPlanContentForUser:
         """plan_content_for_user should use multiple post types."""
         from cqc_lem.app.run_content_plan import plan_content_for_user
         inserted_types = []
-        def capture_insert(user_id, scheduled_time, post_type, buyer_stage):
+        def capture_insert(user_id, scheduled_time, post_type, buyer_stage, content_mix=None):
             inserted_types.append(post_type)
             return True
         # Freeze to June 1 so target_posts is large enough to span multiple types;
@@ -44,6 +44,28 @@ class TestPlanContentForUser:
             unique_types = set(inserted_types)
             assert len(unique_types) > 1, f"Expected multiple post types, got only: {unique_types}"
 
+    def test_plan_content_mix_is_governed(self, mock_database_connection):
+        """Every planned post is classified and promo stays at/below the 10% ceiling (issue #618)."""
+        from cqc_lem.app.run_content_plan import plan_content_for_user
+        from cqc_lem.utilities.ai.content_alignment import CONTENT_MIX_TARGET, PROMO_MAX_RATIO
+
+        mixes = []
+        def cap_mix(user_id, scheduled_time, post_type, buyer_stage, content_mix=None):
+            mixes.append(content_mix)
+            return True
+
+        fixed_now = datetime(2026, 6, 1, 0, 0, 0)
+        with patch('cqc_lem.app.run_content_plan.datetime') as mock_dt, \
+             patch('cqc_lem.app.run_content_plan.get_last_planned_post_date_for_user', return_value=None), \
+             patch('cqc_lem.app.run_content_plan.insert_planned_post', side_effect=cap_mix):
+            mock_dt.now.return_value = fixed_now
+            mock_dt.combine = datetime.combine
+            plan_content_for_user(user_id=1)
+
+        assert mixes, "no posts were planned"
+        assert all(m in CONTENT_MIX_TARGET for m in mixes)
+        assert mixes.count('promo') / len(mixes) <= PROMO_MAX_RATIO
+
     def test_scheduled_times_converted_from_user_local_to_utc(self, mock_database_connection):
         """Regression: best-times are the user's LOCAL audience times and must be stored
         as UTC, so posts fire at the intended local time (not hours off)."""
@@ -52,7 +74,7 @@ class TestPlanContentForUser:
         from cqc_lem.utilities.utils import get_best_posting_times
 
         captured = []
-        def cap(user_id, scheduled_time, post_type, buyer_stage):
+        def cap(user_id, scheduled_time, post_type, buyer_stage, content_mix=None):
             captured.append(scheduled_time)
             return True
 

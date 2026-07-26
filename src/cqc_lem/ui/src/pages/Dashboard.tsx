@@ -45,11 +45,33 @@ interface TrendPoint {
   posts: number
 }
 
+// 70/20/10 content-mix compliance for the window (#618) — a property of the plan, not of stats.
+interface ContentMix {
+  counts: Record<string, number>
+  total: number
+  ratios: Record<string, number | null>
+  target: Record<string, number>
+  promo_max_ratio: number
+  promo_every_n: number
+  compliant: boolean
+}
+
 interface Analytics {
   per_post: PerPost[]
   trend: TrendPoint[]
   sample_size: number
   days: number
+  content_mix?: ContentMix
+}
+
+const MIX_LABELS: Record<string, string> = {
+  value: 'Audience value',
+  authority: 'Authority education',
+  promo: 'Soft promo',
+}
+
+function formatPct(ratio: number | null | undefined): string {
+  return ratio == null ? '—' : `${Math.round(ratio * 100)}%`
 }
 
 // "2026-07-20" → "Jul 20" for compact chart/table axes (dates are tz-agnostic calendar days).
@@ -195,6 +217,7 @@ export default function Dashboard() {
   const perPost = analytics?.per_post ?? []
   const trend = analytics?.trend ?? []
   const hasAnalytics = (analytics?.sample_size ?? 0) > 0
+  const mix = analytics?.content_mix
 
   const rateTrend: LinePoint[] = trend.map((t) => ({ x: shortDate(t.date), y: t.engagement_rate }))
   const impressionTrend: LinePoint[] = trend.map((t) => ({ x: shortDate(t.date), y: t.impressions }))
@@ -245,6 +268,43 @@ export default function Dashboard() {
             <h2 className="text-lg font-semibold text-gray-700">Engagement Analytics</h2>
             <span className="text-xs text-gray-400">Last {analytics?.days ?? 90} days</span>
           </div>
+
+          {/* Content mix governor (#618) — how much of the plan sells vs. gives value */}
+          {mix && mix.total > 0 && (
+            <div>
+              <div className="flex items-baseline justify-between mb-2">
+                <h3 className="text-sm font-semibold text-gray-700">
+                  Content mix <span className="font-normal text-gray-400">(target 70/20/10)</span>
+                </h3>
+                <span
+                  className={`text-xs px-2 py-0.5 rounded-full ${
+                    mix.compliant ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'
+                  }`}
+                >
+                  {mix.compliant
+                    ? 'On policy'
+                    : `Promo over ${formatPct(mix.promo_max_ratio)} ceiling`}
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-4">
+                {['value', 'authority', 'promo'].map((k) => (
+                  <div key={k}>
+                    <p className="text-2xl font-bold text-gray-800">{formatPct(mix.ratios[k])}</p>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      {MIX_LABELS[k]} — {mix.counts[k] ?? 0} of {mix.total}
+                    </p>
+                    <p className="text-xs text-gray-400">target {formatPct(mix.target[k])}</p>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-gray-400 mt-2">
+                One soft-promo post per {mix.promo_every_n} planned posts, case-study shaped with an
+                artifact CTA — never a meeting ask.
+                {(mix.counts.unclassified ?? 0) > 0 &&
+                  ` ${mix.counts.unclassified} older post(s) predate the mix governor and are not counted.`}
+              </p>
+            </div>
+          )}
 
           {!hasAnalytics ? (
             <p className="text-sm text-gray-400 py-4 text-center">

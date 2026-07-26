@@ -17,12 +17,14 @@ GATE_AUTHENTICITY = "authenticity"
 GATE_SIMILARITY = "similarity"
 GATE_FOCUS = "focus_alignment"
 GATE_MISSING_ASSET = "missing_asset"
+GATE_MEETING_CTA = "meeting_cta"
 
 GATE_LABELS = {
     GATE_AUTHENTICITY: "Authenticity",
     GATE_SIMILARITY: "Near-duplicate",
     GATE_FOCUS: "Off your focus topics",
     GATE_MISSING_ASSET: "Missing media",
+    GATE_MEETING_CTA: "Meeting-ask CTA",
 }
 
 # The user-tunable thresholds behind these gates, in the units the SPA edits them in. Bounds are
@@ -114,6 +116,20 @@ def missing_asset_finding(post_type: str) -> dict:
         remediation=("Wait for the media backfill to finish, re-generate the post, or switch it to "
                      "a text post."),
         score=None, threshold=None)
+
+
+def meeting_cta_finding(phrases: Optional[list] = None) -> dict:
+    """The draft closes on a meeting ask — the CTA shape the 70/20/10 policy bans (issue #618).
+    Held, not just flagged: a call-booking close is the single biggest reach penalty in 2026 and the
+    fix is a one-line edit."""
+    return build_finding(
+        GATE_MEETING_CTA,
+        explanation=("This draft asks the reader for a call or meeting. Salesy CTAs cost up to 70% of "
+                     "a post's reach in 2026, so it is held instead of auto-scheduled."),
+        remediation=("Swap the meeting ask for an ARTIFACT the reader gets without talking to anyone "
+                     "— your lead-magnet resource (comment your trigger word) or your newsletter — or "
+                     "close on a specific question instead."),
+        score=None, threshold=None, details=phrases)
 
 
 def parse_gate_findings(raw: Any) -> list[dict]:

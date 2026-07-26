@@ -27,13 +27,13 @@ from cqc_lem.utilities.db import count_ready_posts_within_buffer, get_planned_po
     get_user_ids_with_planned_posts_within_buffer, DEFAULT_CONTENT_BUFFER_DAYS, \
     DEFAULT_CONTENT_BUFFER_MAX_POSTS, MAX_CONTENT_BUFFER_DAYS, MAX_CONTENT_BUFFER_POSTS
 from cqc_lem.utilities.db import get_recent_post_shape_history, update_db_post_shape, get_lead_magnet_settings, \
-    get_shape_performance
+    get_shape_performance, get_newsletter_settings, get_post_content_mix
 from cqc_lem.utilities.db import get_recent_post_texts, update_db_post_authenticity_score, \
     get_post_authenticity_score, update_db_post_dwell_score, update_db_post_gate_reason
 from cqc_lem.utilities.db import get_story_bank_entries, record_story_bank_use
 from cqc_lem.utilities.quality_gates import (authenticity_finding, similarity_finding,
                                              focus_finding, missing_asset_finding,
-                                             demoting_findings)
+                                             meeting_cta_finding, demoting_findings)
 from cqc_lem.utilities.ai.content_framework import select_blueprint, history_avoidance_directive, \
     find_most_similar, post_similarity_max, has_first_person_proof, shape_for_dwell, dwell_report, \
     dwell_score_min
@@ -41,7 +41,8 @@ from cqc_lem.utilities.ai.content_alignment import (
     should_include_lead_magnet_cta, lead_magnet_cta_directive, ensure_lead_magnet_cta,
     personal_proof_directive, topic_authority_score, topic_authority_min, profile_topic_dna,
     content_matches_focus, score_authenticity, authenticity_gate_enabled, authenticity_score_min,
-    humanize_text)
+    humanize_text, ContentMix, assign_content_mix, contains_meeting_ask, meeting_ask_excerpts,
+    normalize_content_mix, replace_meeting_ask_cta)
 from cqc_lem.utilities.ai import story_bank as _story_bank
 from cqc_lem.utilities.content_generation_status import mark_in_progress, mark_finished, \
     record_post_generated, record_post_failed
@@ -90,6 +91,10 @@ def plan_content_for_user(self, user_id: int):
 
     # Calculate the total posts and percentages of each type
     total_posts = sum(current_counts.values())
+    # The 70/20/10 governor's rotation offset: continuing from how many posts this user already has
+    # stops a new plan from restarting the promo cadence (which could place two promo posts back to
+    # back across the plan boundary).
+    existing_post_count = total_posts
     if total_posts == 0:
         # New user with no posts — treat all types as equally unrepresented
         percentages = {post_type: 0.0 for post_type in current_counts}
@@ -183,10 +188,17 @@ def plan_content_for_user(self, user_id: int):
     # Shuffle the post types to ensure a random order
     random.shuffle(post_types)
 
+    # 70/20/10 content-mix governor (issue #618): classify every planned post BEFORE post types are
+    # handed out, so the one-in-ten promo slot can claim a text post (its case-study/no-pressure
+    # shape is steered in the text-post prompt) and the rest stay audience-value/authority content.
+    mix_classes = assign_content_mix(target_posts, offset=existing_post_count)
+
     # Generate content plan evenly across buyer journey stages and post types
     for day in range(target_posts):  # Plan for end of this month
+        content_mix = mix_classes[day]
+
         # Choose a post type from the shuffled list
-        post_type = post_types.pop()
+        post_type = _take_planned_post_type(post_types, content_mix)
 
         # Choose a buyer journey stage in a round-robin fashion
         stage = journey_stages[day % len(journey_stages)]
@@ -215,7 +227,8 @@ def plan_content_for_user(self, user_id: int):
         daily_plan.append({
             "scheduled_datetime": scheduled_datetime,
             "post_type": post_type,
-            "stage": stage
+            "stage": stage,
+            "content_mix": content_mix
         })
 
         # Update the needed_posts count for the selected post type
@@ -229,6 +242,17 @@ def plan_content_for_user(self, user_id: int):
     save_content_plan(user_id, daily_plan)
 
 
+def _take_planned_post_type(post_types: list, content_mix: str = None) -> str:
+    """Pop the next post type off the shuffled plan list. The promo slot PREFERS a text post because
+    the governor requires a case-study-shaped, no-pressure BODY, and that shaping is steered in the
+    text-post prompt (carousels/videos run their own generators). Falls back to whatever is left, so
+    a plan of only carousels still schedules its promo slot."""
+    if content_mix == ContentMix.PROMO.value and PostType.TEXT.value in post_types:
+        post_types.remove(PostType.TEXT.value)
+        return PostType.TEXT.value
+    return post_types.pop()
+
+
 # Function to find the key with the highest value in a dictionary
 def get_max_key(d):
     return max(d, key=d.get)
@@ -239,8 +263,10 @@ def get_min_key(d):
     return min(d, key=d.get)
 
 
-def create_content(user_id: int, post_type: str, stage: str, post_id: int = None):
-    """Create content based on the specified post type and buyer journey stage."""
+def create_content(user_id: int, post_type: str, stage: str, post_id: int = None,
+                   content_mix: str = None):
+    """Create content based on the specified post type and buyer journey stage. `content_mix` is the
+    post's 70/20/10 class from the plan governor (issue #618) — it steers the text-post prompt."""
 
     video_url = None
     content = None
@@ -252,7 +278,7 @@ def create_content(user_id: int, post_type: str, stage: str, post_id: int = None
         # native PDF instead of a multi-image share (see share_document_on_linkedin).
         content = create_carousel_content(user_id, stage, post_id)
     else:
-        content = create_text_post(user_id, stage, post_id=post_id)
+        content = create_text_post(user_id, stage, post_id=post_id, content_mix=content_mix)
         if content:
             content = content.strip()
 
@@ -598,7 +624,8 @@ def regenerate_post(post_id: int, guidance: str = None) -> Optional[str]:
     stage = get_post_buyer_stage(post_id) or "awareness"
     # Cached/DB-backed profile (no Selenium) — same source the newsletter regenerate uses.
     user_profile = load_profile_for_user(user_id)
-    content = create_text_post(user_id, stage, user_profile=user_profile, post_id=post_id)
+    content = create_text_post(user_id, stage, user_profile=user_profile, post_id=post_id,
+                               content_mix=_post_content_mix(post_id))
     if not content:
         myprint(f"regenerate_post: generation produced nothing for post {post_id}")
         return None
@@ -635,6 +662,16 @@ def regenerate_post(post_id: int, guidance: str = None) -> Optional[str]:
 def regenerate_post_task(post_id: int, guidance: str = None):
     """Celery wrapper so post regeneration (slow lem-complex call) runs async off the API request."""
     return regenerate_post(post_id, guidance)
+
+
+def _post_content_mix(post_id: int) -> Optional[str]:
+    """The post's assigned 70/20/10 class — a regenerate has to keep it or the plan's mix silently
+    drifts. Best-effort: an unreadable class only costs the mix steering, never the regenerate."""
+    try:
+        return get_post_content_mix(post_id)
+    except Exception as e:
+        myprint(f"Could not read the content mix class for post {post_id}: {e}")
+        return None
 
 
 def _check_post_alignment(content: str, prefs: dict, user_id: int = None, post_id: int = None,
@@ -752,6 +789,11 @@ def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, s
         threshold = authenticity_score_min(prefs)
         if authenticity_score < threshold:
             findings.append(authenticity_finding(authenticity_score, threshold))
+
+    # Artifact-CTA lint (issue #618): runs for EVERY post type — the deterministic repair in
+    # create_text_post only covers text posts, and a user can edit a meeting ask back in.
+    if content and contains_meeting_ask(content):
+        findings.append(meeting_cta_finding(meeting_ask_excerpts(content)))
 
     if content and recent_texts:
         threshold = post_similarity_max(prefs)
@@ -918,7 +960,8 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
                            recent_texts: list, prefs: dict = None,
                            profile_synthesis: Optional[str] = None,
                            story: Optional[dict] = None,
-                           story_directive: Optional[str] = None) -> str:
+                           story_directive: Optional[str] = None,
+                           content_mix: Optional[str] = None) -> str:
     """The post-generation REVIEW GATE (the newsletter's dedup maturity applied to posts): compare
     the finished post against the user's recent posts with the deterministic token-set overlap in
     content_framework, check the A2 personal-proof slot (a concrete first-person lived detail), AND
@@ -966,7 +1009,7 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
                                   blueprint=blueprint, post_id=post_id,
                                   lead_magnet_cta=lead_magnet_cta,
                                   history_directive=retry_directive, similarity_check=False,
-                                  story_directive=story_directive)
+                                  story_directive=story_directive, content_mix=content_mix)
     except Exception as e:
         log_warning("Review-gate retry generation failed; keeping first draft", exc=e,
                     user_id=user_id, post_id=post_id, task_name="create_text_post")
@@ -997,19 +1040,24 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
 def create_text_post(user_id: int, stage: str, post_type: str = None, user_profile: LinkedInProfile=None,
                      refine_final_post: bool = True, blueprint: dict = None, post_id: int = None,
                      lead_magnet_cta: str = None, history_directive: str = None,
-                     similarity_check: bool = True, story_directive: str = None):
+                     similarity_check: bool = True, story_directive: str = None,
+                     content_mix: str = None):
     """
     Generate a text post for LinkedIn based on the user's profile, blog, or website content.
 
     Parameters:
     - user_id: ID of user to grab user profile
     - stage: Buyer journey stage for the post.
+    - content_mix: this post's 70/20/10 class from the plan governor (issue #618). 'promo' is the
+      one-in-ten soft-promo slot and is forced into a case-study shape; anything else sells nothing.
 
     Returns:
     - str: Generated text post content.
     """
 
     final_content = None
+
+    content_mix = normalize_content_mix(content_mix)
 
     # Define possible post types
     post_types = ["thought_leadership", "blog_summary", "website_content", "industry_news", "personal_story",
@@ -1079,11 +1127,14 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
         except Exception as e:
             myprint(f"Could not load shape performance (selecting without it): {e}")
             performance = None
+        # The promo slot's shape is not negotiable: the governor requires a case study (client as
+        # hero, real outcome number), so it is hinted into selection rather than left to rotation.
         blueprint = select_blueprint(
             "post",
             recent_formats=[h.get("archetype") for h in shape_history if h.get("archetype")],
             recent_hook_styles=[h.get("hook_style") for h in shape_history if h.get("hook_style")],
-            performance=performance)
+            performance=performance,
+            guidance="case_snapshot" if content_mix == ContentMix.PROMO.value else None)
     myprint(f"Post blueprint: format={blueprint.get('format')} hook={blueprint.get('hook_style')} "
             f"cta={blueprint.get('cta_style')}")
 
@@ -1132,7 +1183,8 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                                                             lead_magnet_cta=lead_magnet_cta,
                                                             post_id=post_id,
                                                             history_directive=history_directive,
-                                                            story_directive=story_directive)
+                                                            story_directive=story_directive,
+                                                            content_mix=content_mix)
     elif post_type == "blog_summary":
         # Get the users blog url
         user_main_blog_url = get_user_blog_url(user_id)
@@ -1143,7 +1195,8 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                                                           prefs=prefs, profile_synthesis=profile_synthesis,
                                                           blueprint=blueprint, lead_magnet_cta=lead_magnet_cta,
                                                           history_directive=history_directive,
-                                                          story_directive=story_directive)
+                                                          story_directive=story_directive,
+                                                          content_mix=content_mix)
         else:
             myprint("No blog post found for this user. Generating another post type")
             # Chose another random post type that is not "blog_summary"
@@ -1152,7 +1205,8 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             final_content = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=False,
                                              blueprint=blueprint, post_id=post_id, lead_magnet_cta=lead_magnet_cta,
                                              history_directive=history_directive, similarity_check=False,
-                                             story_directive=story_directive)
+                                             story_directive=story_directive,
+                                             content_mix=content_mix)
     elif post_type == "website_content":
         # Get the users sitemap url
         sitemap_url = get_user_sitemap_url(user_id)
@@ -1161,7 +1215,8 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                                                     profile_synthesis=profile_synthesis,
                                                     blueprint=blueprint, lead_magnet_cta=lead_magnet_cta,
                                                     history_directive=history_directive,
-                                                    story_directive=story_directive)
+                                                    story_directive=story_directive,
+                                                    content_mix=content_mix)
             if content:
                 final_content = content
             else:
@@ -1172,7 +1227,8 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                 final_content = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=False,
                                              blueprint=blueprint, post_id=post_id, lead_magnet_cta=lead_magnet_cta,
                                              history_directive=history_directive, similarity_check=False,
-                                             story_directive=story_directive)
+                                             story_directive=story_directive,
+                                             content_mix=content_mix)
         else:
             myprint("No sitemap found for this user. Generating another post type")
             # Chose another random post type that is not "website_content"
@@ -1181,28 +1237,32 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
             final_content = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=False,
                                              blueprint=blueprint, post_id=post_id, lead_magnet_cta=lead_magnet_cta,
                                              history_directive=history_directive, similarity_check=False,
-                                             story_directive=story_directive)
+                                             story_directive=story_directive,
+                                             content_mix=content_mix)
     elif post_type == "industry_news":
         final_content = get_industry_news_post_from_ai(user_profile, stage, prefs=prefs,
                                                        profile_synthesis=profile_synthesis,
                                                        blueprint=blueprint, lead_magnet_cta=lead_magnet_cta,
                                                        post_id=post_id,
                                                        history_directive=history_directive,
-                                                       story_directive=story_directive)
+                                                       story_directive=story_directive,
+                                                       content_mix=content_mix)
     elif post_type == "personal_story":
         final_content = get_personal_story_post_from_ai(user_profile, stage, prefs=prefs,
                                                         profile_synthesis=profile_synthesis,
                                                         blueprint=blueprint, lead_magnet_cta=lead_magnet_cta,
                                                         post_id=post_id,
                                                         history_directive=history_directive,
-                                                        story_directive=story_directive)
+                                                        story_directive=story_directive,
+                                                        content_mix=content_mix)
     else:
         final_content = generate_engagement_prompt_post(user_profile, stage, prefs=prefs,
                                                         profile_synthesis=profile_synthesis,
                                                         blueprint=blueprint, lead_magnet_cta=lead_magnet_cta,
                                                         post_id=post_id,
                                                         history_directive=history_directive,
-                                                        story_directive=story_directive)
+                                                        story_directive=story_directive,
+                                                        content_mix=content_mix)
 
     if refine_final_post:
         # Both refinement passes get the user's prefs so the LLM rewrites can't re-introduce
@@ -1248,7 +1308,8 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
         final_content = _review_generated_post(user_id, stage, post_type, user_profile, blueprint,
                                                post_id, lead_magnet_cta, final_content,
                                                recent_texts, prefs, profile_synthesis,
-                                               story=story, story_directive=story_directive)
+                                               story=story, story_directive=story_directive,
+                                               content_mix=content_mix)
 
         # Dwell shaping (issue #391 — C2): deterministic, no-LLM repair of the structural dwell
         # killer every LLM rewrite above can re-introduce — wall-of-text paragraphs. Runs on
@@ -1257,6 +1318,26 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
         # targets are steered in the prompt (content_framework.dwell_directive) and measured into
         # the persisted dwell-proxy score when the post is saved.
         final_content = shape_for_dwell(final_content)
+
+    # Artifact-CTA policy (issue #618): a meeting ask ("book a call", "DM me to discuss") is the CTA
+    # shape 2026 demotes hardest, and every LLM pass above can write one back in even though the
+    # prompt bans it. Deterministic repair, run on whatever draft the review gate kept: drop the ask
+    # and — only when the user genuinely has an artifact (their lead magnet, else their newsletter) —
+    # close on that instead. What survives is still lint-checked by the review gate.
+    if final_content and refine_final_post and similarity_check and contains_meeting_ask(final_content):
+        try:
+            newsletter = get_newsletter_settings(user_id)
+        except Exception as e:
+            myprint(f"Newsletter settings unavailable for artifact-CTA routing: {e}")
+            newsletter = None
+        repaired = replace_meeting_ask_cta(
+            final_content, lead_magnet=lead_magnet, newsletter=newsletter, post_id=post_id,
+            use_emojis=bool((prefs or {}).get("use_emojis")))
+        if repaired and repaired != final_content:
+            log_warning("Meeting-ask CTA replaced with an artifact CTA (70/20/10 promo policy): "
+                        f"{'; '.join(meeting_ask_excerpts(final_content))}",
+                        user_id=user_id, post_id=post_id, task_name="create_text_post")
+            final_content = repaired
 
     # The refinement passes above (and any review-gate retry) are LLM rewrites — verified in prod to
     # reword the "comment KEYWORD" mechanic into a generic ask or drop it entirely, which silently
@@ -1443,7 +1524,7 @@ def process_selected_post(url, content):
 def generate_website_content_post(sitemap_url, linked_user_profile, stage: str, prefs: dict = None,
                                   profile_synthesis: Optional[str] = None, blueprint: dict = None,
                                   lead_magnet_cta: str = None, history_directive: str = None,
-                                  story_directive: str = None):
+                                  story_directive: str = None, content_mix: str = None):
     """
     Generate a post based on content found on the user's website using their sitemap url catered to readers in the desired buyers journey stage.
     Scrapes or retrieves key points from the website's sitemap.
@@ -1476,7 +1557,8 @@ def generate_website_content_post(sitemap_url, linked_user_profile, stage: str, 
                                                                  prefs=prefs, profile_synthesis=profile_synthesis,
                                                                  blueprint=blueprint, lead_magnet_cta=lead_magnet_cta,
                                                                  history_directive=history_directive,
-                                                                 story_directive=story_directive)
+                                                                 story_directive=story_directive,
+                                                                 content_mix=content_mix)
             return social_media_post
         else:
             myprint("No content extracted from the selected URL.")
@@ -1647,7 +1729,8 @@ def save_content_plan(user_id: int, daily_plan: list[dict]):
     for plan in daily_plan:
         # Convert plan['post_type'] to Post Type object
         post_type = PostType[plan['post_type'].upper()]
-        insert_planned_post(user_id, plan['scheduled_datetime'], post_type, plan['stage'])
+        insert_planned_post(user_id, plan['scheduled_datetime'], post_type, plan['stage'],
+                            content_mix=plan.get('content_mix'))
 
 
 # A full buffer is a handful of posts, but a video post can spend minutes in Runway, so give the
@@ -1768,9 +1851,11 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
     post_id = post['id']
     post_type = post['post_type']
     stage = post['buyer_stage']
+    content_mix = post.get('content_mix')
 
     try:
-        content, video_url = create_content(user_id, post_type, stage, post_id=post_id)
+        content, video_url = create_content(user_id, post_type, stage, post_id=post_id,
+                                            content_mix=content_mix)
     except Exception as e:
         myprint(f"Skipping post_id {post_id}: content generation raised {type(e).__name__}: {e}")
         record_post_failed(user_id, post_id)

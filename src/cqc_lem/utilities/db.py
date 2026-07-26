@@ -731,7 +731,8 @@ def insert_post(email: str, content: str, scheduled_time: datetime, post_type: P
     return success
 
 
-def insert_planned_post(user_id: int, scheduled_time: datetime, post_type: PostType, buyer_stage: str) -> bool:
+def insert_planned_post(user_id: int, scheduled_time: datetime, post_type: PostType, buyer_stage: str,
+                        content_mix: Optional[str] = None) -> bool:
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -741,9 +742,10 @@ def insert_planned_post(user_id: int, scheduled_time: datetime, post_type: PostT
         scheduled_time = to_naive_utc(scheduled_time)
 
         cursor.execute("""
-            INSERT INTO posts (scheduled_time, post_type, user_id, buyer_stage, status, content)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, (scheduled_time, post_type.value, user_id, buyer_stage, PostStatus.PLANNING.value, 'TBD'))
+            INSERT INTO posts (scheduled_time, post_type, user_id, buyer_stage, content_mix, status, content)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (scheduled_time, post_type.value, user_id, buyer_stage,
+              str(content_mix) if content_mix else None, PostStatus.PLANNING.value, 'TBD'))
 
         connection.commit()
         success = cursor.rowcount == 1
@@ -1265,6 +1267,49 @@ def get_post_buyer_stage(post_id: int) -> Optional[str]:
         cursor.close()
         connection.close()
     return row['buyer_stage'] if row else None
+
+
+def get_post_content_mix(post_id: int) -> Optional[str]:
+    """This post's 70/20/10 mix class as assigned by the content-plan governor (issue #618).
+    None for a post planned before the governor existed (or created by hand)."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT content_mix FROM posts WHERE id = %s", (post_id,))
+        row = cursor.fetchone()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get content_mix for post id: {post_id} | Error: {err}")
+        row = None
+    finally:
+        cursor.close()
+        connection.close()
+    return row['content_mix'] if row else None
+
+
+def get_content_mix_counts(user_id: int, days: Optional[int] = None) -> dict:
+    """Planned/published post counts per 70/20/10 mix class for the analytics dashboard's mix-
+    compliance ratio (issue #618). Rejected posts are excluded (they were never part of the mix the
+    audience saw), unclassified posts are counted under 'unclassified'. `days` windows on
+    scheduled_time (None = every post)."""
+    counts = {"unclassified": 0}
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        window = "AND scheduled_time >= (NOW() - INTERVAL %s DAY) " if days is not None else ""
+        params = (user_id, days) if days is not None else (user_id,)
+        cursor.execute(
+            "SELECT content_mix, COUNT(*) FROM posts "
+            "WHERE user_id = %s AND status <> 'rejected' " + window +
+            "GROUP BY content_mix", params)
+        for mix, count in (cursor.fetchall() or []):
+            key = str(mix).strip().lower() if mix else "unclassified"
+            counts[key] = counts.get(key, 0) + int(count or 0)
+    except mysql.connector.Error as err:
+        myprint(f"Could not get content mix counts for user {user_id} | Error: {err}")
+    finally:
+        cursor.close()
+        connection.close()
+    return counts
 
 
 def get_post_type(post_id: int) -> Optional[PostType]:
@@ -2015,7 +2060,7 @@ def get_planned_posts_within_buffer(user_id: int,
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute(
-            "SELECT user_id, id, post_type, buyer_stage FROM posts"
+            "SELECT user_id, id, post_type, buyer_stage, content_mix FROM posts"
             " WHERE status = 'planning' AND user_id = %s"
             " AND scheduled_time BETWEEN NOW() AND NOW() + INTERVAL %s DAY"
             " ORDER BY scheduled_time ASC, id ASC LIMIT %s",
