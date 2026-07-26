@@ -135,6 +135,11 @@ class TestMeetingAskDetector:
         "I called the vendor twice before anyone answered.",
         "Comment AUDIT and I'll DM you the checklist.",
         "What would you have done differently? Curious how others handle this.",
+        # First-person NARRATIVE about calls/sessions is often the story-bank anecdote itself —
+        # the repair deletes flagged sentences, so a bare noun phrase must never match (#620 seam).
+        "I ran a discovery call with them last week and it changed the scope.",
+        "Our last strategy session surfaced three gaps in the funnel.",
+        "The 30-minute call with their CTO was where the real problem showed up.",
         "",
         None,
     ])

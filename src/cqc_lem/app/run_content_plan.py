@@ -1072,15 +1072,18 @@ def _score_and_persist_dwell(user_id: int, post_id: int, content: str) -> Option
 
 
 def _fabricated_specifics(content: str, story: Optional[dict],
-                          profile_synthesis: Optional[str] = None) -> list:
+                          profile_synthesis: Optional[str] = None,
+                          *extra_sources: Optional[str]) -> list:
     """First-person specifics in the draft that appear in NONE of the material we supplied — i.e.
     invented facts about the author (issue #620, enforcing the #416 no-fabrication rule). Only
     meaningful when a story entry was selected: with no entry there is no allow-list, so every
-    number would look fabricated and the check is skipped entirely."""
+    number would look fabricated and the check is skipped entirely. `extra_sources` covers other
+    text we legitimately handed the writer (e.g. the lead-magnet CTA directive, whose keyword or
+    resource name can carry a number) so it is never flagged as invented."""
     if not story or not content:
         return []
     return _story_bank.unsourced_specifics(
-        content, _story_bank.fact_sources(story, profile_synthesis))
+        content, _story_bank.fact_sources(story, profile_synthesis, *extra_sources))
 
 
 def _review_generated_post(user_id: int, stage: str, post_type: str, user_profile: LinkedInProfile,
@@ -1106,7 +1109,7 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
     too_similar = score > threshold
     missing_proof = not has_first_person_proof(content)
     proof_regen = missing_proof and _proof_regen_enabled()
-    fabricated = _fabricated_specifics(content, story, profile_synthesis)
+    fabricated = _fabricated_specifics(content, story, profile_synthesis, lead_magnet_cta)
     fabrication_regen = bool(fabricated) and _fabrication_regen_enabled()
     # No-fabrication guard (issue #619 / G4) — only on the archetypes whose value IS the specifics.
     # Checked against the user's verified story bank (#620 / G5), so a real number out of their own
@@ -1171,7 +1174,7 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
         log_warning("Post still lacks a concrete first-person lived detail after retry "
                     "(A2 proof slot); keeping second attempt",
                     user_id=user_id, post_id=post_id, task_name="create_text_post")
-    still_fabricated = _fabricated_specifics(second, story, profile_synthesis)
+    still_fabricated = _fabricated_specifics(second, story, profile_synthesis, lead_magnet_cta)
     if still_fabricated:
         log_warning(f"Post still states first-person specifics not in the story bank after retry "
                     f"({', '.join(still_fabricated)}); keeping second attempt",
@@ -1259,6 +1262,36 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
     if history_directive is None:
         history_directive = history_avoidance_directive(recent_texts)
 
+    # Story bank (issue #620): anchor the post to ONE thing the user actually did, and make that
+    # entry the ONLY personal specific the writer may state. An empty bank — or a bank with nothing
+    # related to the user's focus topics — ships the explicit no-fabrication fallback instead, so a
+    # missing story degrades to an industry observation rather than an invented anecdote. Recursive
+    # calls (type fallbacks / the review-gate retry) receive the directive so the whole post stays
+    # anchored to the same entry and the bank is read at most once per outermost call. Selected
+    # BEFORE the blueprint so the promo demotion below can still steer shape selection.
+    story = None
+    story_selected_here = story_directive is None
+    if story_selected_here:
+        story = _select_story_for_post(user_id, prefs, blueprint)
+        story_directive = _story_bank.story_directive(story)
+        if story:
+            myprint(f"Story bank anchor for post_id={post_id}: "
+                    f"[{story.get('kind')}] {story.get('title')}")
+        else:
+            myprint("No story bank entry available — writing a non-story archetype")
+
+    # Integration seam (#618 x #620): the promo slot demands a case study built on ONE real outcome
+    # number, but without a story-bank anchor the fabrication detector has no allow-list and is
+    # skipped entirely — so the one post most likely to invent a client figure would ship unchecked.
+    # A promo post the bank cannot ground is demoted to audience-value content instead (and NOT
+    # forced into the case_snapshot blueprint below). The plan row keeps its 'promo' class, which
+    # only makes the dashboard's mix-compliance ratio conservative.
+    if story_selected_here and story is None and content_mix == ContentMix.PROMO.value:
+        log_warning("Promo slot has no story-bank anchor — demoting this post to 'value' so a "
+                    "case study cannot be invented", user_id=user_id, post_id=post_id,
+                    task_name="create_text_post")
+        content_mix = ContentMix.VALUE.value
+
     # ONE assigned SHAPE per post from the SHARED framework core (content_framework): rotate away
     # from this user's recently used post archetypes/hook styles (V51 history) exactly the way
     # newsletter editions rotate — chosen in code, no extra LLM call.
@@ -1273,28 +1306,15 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
     myprint(f"Post blueprint: format={blueprint.get('format')} hook={blueprint.get('hook_style')} "
             f"cta={blueprint.get('cta_style')}")
 
-    # Story bank (issue #620): anchor the post to ONE thing the user actually did, and make that
-    # entry the ONLY personal specific the writer may state. An empty bank — or a bank with nothing
-    # related to the user's focus topics — ships the explicit no-fabrication fallback instead, so a
-    # missing story degrades to an industry observation rather than an invented anecdote. Recursive
-    # calls (type fallbacks / the review-gate retry) receive the directive so the whole post stays
-    # anchored to the same entry and the bank is read at most once per outermost call.
-    story = None
-    if story_directive is None:
-        story = _select_story_for_post(user_id, prefs, blueprint)
-        story_directive = _story_bank.story_directive(story)
-        # The no-fabrication allow-list a fact-anchored archetype (#619) writes against is exactly
-        # the entry it was handed — a number from some OTHER bank entry was never in this prompt, so
-        # the writer stating one would still be inventing. Carried ON the blueprint because that is
-        # what every post-prompt builder (and the recursive type fallbacks) already thread through —
-        # on a copy, so a blueprint the caller owns is never mutated behind its back.
+    # The no-fabrication allow-list a fact-anchored archetype (#619) writes against is exactly the
+    # entry the story bank handed us above — a number from some OTHER bank entry was never in this
+    # prompt, so the writer stating one would still be inventing. Carried ON the blueprint because
+    # that is what every post-prompt builder (and the recursive type fallbacks) already thread
+    # through — on a copy, so a blueprint the caller owns is never mutated behind its back. Only
+    # when the story was selected HERE: a recursive call was handed both, already paired.
+    if story_selected_here:
         blueprint = {**blueprint,
                      "fact_anchors": _story_bank.fact_sources(story) if story else []}
-        if story:
-            myprint(f"Story bank anchor for post_id={post_id}: "
-                    f"[{story.get('kind')}] {story.get('title')}")
-        else:
-            myprint("No story bank entry available — writing a non-story archetype")
 
     # Lead-magnet soft-ask: on a deterministic 1-in-N rotation (keyed off post_id so it's stable and
     # testable), weave the user's configured "comment KEYWORD and I'll DM it to you" CTA into the

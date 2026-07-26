@@ -233,7 +233,12 @@ _MEETING_ASK_PATTERNS: tuple = (
     r"\b(?:hop|jump|get)\s+on\s+a\s+(?:quick\s+)?(?:call|zoom|chat|huddle)",
     r"\bset\s+up\s+(?:a|some)\s+(?:call|time|meeting|chat|demo|consult\w*)",
     r"\blet'?s\s+(?:set\s+up|schedule|book|find|grab)\s+(?:a|some)?\s*(?:call|time|chat|coffee|meeting)",
-    r"\b(?:free|quick|short|discovery|intro(?:ductory)?|strategy|\d{1,2}[- ]min(?:ute)?)\s+"
+    # Offer-verb context is REQUIRED: a bare "discovery call" / "strategy session" noun phrase also
+    # appears in ordinary first-person narrative ("I ran a discovery call last week" — often the
+    # story-bank anecdote itself), and the repair DELETES matching sentences, so flagging the noun
+    # phrase alone would silently destroy real story content.
+    r"\b(?:grab|claim|snag|book|schedule|join|reserve|get|offer(?:ing)?)\s+(?:a|your|my|this|some)\s+"
+    r"(?:(?:free|quick|short|discovery|intro(?:ductory)?|strategy|\d{1,2}[- ]min(?:ute)?)\s+)+"
     r"(?:call|consult\w*|session|chat|demo)\b",
     r"\b(?:calendly|savvycal|my\s+calendar\s+link|calendar\s+link|link\s+to\s+my\s+calendar)\b",
     r"\bdm\s+me\s+(?:to|if\s+you\s+want\s+to|and\s+we(?:'ll|\s+will|\s+can))\s+"
