@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.95.5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.95.4...v0.95.5) (2026-07-26)
+
+
+### Documentation
+
+* engagement growth analysis + Milestones 13-14 plan ([7060d86](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7060d86c15f3eed467bd26d1dfb9d375e24ab0c2))
+
 ## [0.95.4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.95.3...v0.95.4) (2026-07-26)
 
 
