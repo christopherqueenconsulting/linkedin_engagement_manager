@@ -72,6 +72,51 @@ interface CommentQuality {
   hold: { active: boolean; reason: string | null; seconds_remaining: number }
 }
 
+// Content-quality telemetry (#630). One period of scored content plus the period before it — the
+// comparison IS the signal, because a prompt/model swap regresses quality silently. Every metric is
+// nullable and carries its own sample size: dimensions are measured on different subsets (engagement
+// only where impressions were captured, similarity only where a history existed), and an unmeasured
+// one must read as "—", never as zero.
+interface QualityPeriod {
+  items: number
+  by_surface: Record<string, number>
+  slop_sample: number
+  slop_score_avg: number | null
+  slop_hard_rate: number | null
+  slop_hard_total: number
+  similarity_sample: number
+  similarity_avg: number | null
+  similarity_max: number | null
+  authenticity_sample: number
+  authenticity_avg: number | null
+  hook_sample: number
+  hook_chars_avg: number | null
+  hook_budget_rate: number | null
+  hook_budget: number
+  engagement_rate_sample: number
+  engagement_rate: number | null
+  impressions: number | null
+  detector_sample: number
+  detector_avg: number | null
+}
+
+interface ContentQualityAlert {
+  name: string
+  metric: string
+  reason: string
+  delta: number | null
+  threshold: number
+  sample: number
+}
+
+interface ContentQuality {
+  days: number
+  current: QualityPeriod
+  prior: QualityPeriod
+  deltas: Record<string, number | null>
+  alerts: ContentQualityAlert[]
+}
+
 interface Analytics {
   per_post: PerPost[]
   trend: TrendPoint[]
@@ -79,6 +124,7 @@ interface Analytics {
   days: number
   content_mix?: ContentMix
   comment_quality?: CommentQuality
+  content_quality?: ContentQuality
 }
 
 // Follower & audience telemetry (#627). Every count is nullable: a capture that could not read a
@@ -128,6 +174,17 @@ const MIX_LABELS: Record<string, string> = {
 
 function formatPct(ratio: number | null | undefined): string {
   return ratio == null ? '—' : `${Math.round(ratio * 100)}%`
+}
+
+function formatScore(value: number | null | undefined, digits = 2): string {
+  return value == null ? '—' : value.toFixed(digits)
+}
+
+// A quality delta is null until BOTH periods were measured. "no baseline" and "no change" are
+// different facts, so the second period of a new account shows "vs — " rather than "vs 0.00".
+function formatQualityDelta(value: number | null | undefined, digits = 2): string {
+  if (value == null) return 'vs —'
+  return `${value > 0 ? '+' : ''}${value.toFixed(digits)} vs last period`
 }
 
 // A follower delta is null until there is a baseline snapshot old enough to measure against —
@@ -305,6 +362,7 @@ export default function Dashboard() {
   const hasAnalytics = (analytics?.sample_size ?? 0) > 0
   const mix = analytics?.content_mix
   const commentQuality = analytics?.comment_quality
+  const contentQuality = analytics?.content_quality
 
   const rateTrend: LinePoint[] = trend.map((t) => ({ x: shortDate(t.date), y: t.engagement_rate }))
   const impressionTrend: LinePoint[] = trend.map((t) => ({ x: shortDate(t.date), y: t.impressions }))
@@ -538,6 +596,94 @@ export default function Dashboard() {
                 but still present under "Most recent"; comments we could not read either way are
                 excluded rather than counted as healthy.
               </p>
+            </div>
+          )}
+
+          {/* Content quality (#630) — is the WRITING drifting? A model or prompt swap regresses this
+              silently, so every tile is shown against the previous period. */}
+          {contentQuality && contentQuality.current.items > 0 && (
+            <div>
+              <div className="flex items-baseline justify-between mb-2">
+                <h3 className="text-sm font-semibold text-gray-700">
+                  Content quality{' '}
+                  <span className="font-normal text-gray-400">
+                    ({contentQuality.current.items} pieces scored, last {contentQuality.days} days)
+                  </span>
+                </h3>
+                <span
+                  className={`text-xs px-2 py-0.5 rounded-full ${
+                    contentQuality.alerts.length > 0
+                      ? 'bg-red-100 text-red-700'
+                      : 'bg-green-100 text-green-700'
+                  }`}
+                >
+                  {contentQuality.alerts.length > 0
+                    ? `${contentQuality.alerts.length} regression${contentQuality.alerts.length > 1 ? 's' : ''}`
+                    : 'steady'}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <div>
+                  <p className="text-2xl font-bold text-gray-800">
+                    {formatScore(contentQuality.current.slop_score_avg)}
+                  </p>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    AI-slop score ({contentQuality.current.slop_sample} linted)
+                  </p>
+                  <p className="text-[10px] text-gray-400">
+                    {formatQualityDelta(contentQuality.deltas.slop_score_avg)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-gray-800">
+                    {formatScore(contentQuality.current.similarity_avg)}
+                  </p>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Self-similarity ({contentQuality.current.similarity_sample} compared)
+                  </p>
+                  <p className="text-[10px] text-gray-400">
+                    {formatQualityDelta(contentQuality.deltas.similarity_avg)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-gray-800">
+                    {formatScore(contentQuality.current.authenticity_avg, 0)}
+                  </p>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Authenticity ({contentQuality.current.authenticity_sample} posts)
+                  </p>
+                  <p className="text-[10px] text-gray-400">
+                    {formatQualityDelta(contentQuality.deltas.authenticity_avg, 1)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-gray-800">
+                    {contentQuality.current.engagement_rate == null
+                      ? '—'
+                      : `${(contentQuality.current.engagement_rate * 100).toFixed(2)}%`}
+                  </p>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Engagement / impression ({contentQuality.current.engagement_rate_sample} posts)
+                  </p>
+                  <p className="text-[10px] text-gray-400">
+                    Hook within {contentQuality.current.hook_budget} chars:{' '}
+                    {formatPct(contentQuality.current.hook_budget_rate)}
+                  </p>
+                </div>
+              </div>
+              {contentQuality.alerts.length > 0 ? (
+                <ul className="text-xs text-red-600 mt-2 space-y-0.5">
+                  {contentQuality.alerts.map((a) => (
+                    <li key={a.name}>• {a.reason}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-xs text-gray-400 mt-2">
+                  Scored nightly across posts, comments and newsletter editions. A lower AI-slop score
+                  and a lower self-similarity are better; both are compared against your own previous
+                  period, so a prompt or model change that degrades the writing shows up here.
+                </p>
+              )}
             </div>
           )}
 

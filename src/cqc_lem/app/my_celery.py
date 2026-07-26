@@ -158,6 +158,20 @@ app.conf.update(
             # automated emails in the same minute. Auto-pauses engagement on a reach collapse (#629).
             'schedule': crontab(hour='9', minute='15')
         },
+        'nightly-content-quality': {
+            'task': 'cqc_lem.app.run_scheduler.auto_nightly_content_quality',
+            # Nightly 02:40 UTC — after the 23:00 post-stats scrape and the 23:40 follower capture, so
+            # yesterday's posts already have impressions and can be scored for engagement-per-impression
+            # (issue #630). Ahead of the 03:30 lead re-score so the two nightly passes don't overlap.
+            'schedule': crontab(hour='2', minute='40')
+        },
+        'weekly-content-quality': {
+            'task': 'cqc_lem.app.run_scheduler.auto_weekly_content_quality',
+            # Mondays 09:45 UTC — after the 08:45 comment-quality score and the 09:15 suppression
+            # tripwire, so the quality rollup is the last of the Monday reports and reads a fully
+            # scored week (issue #630).
+            'schedule': crontab(hour='9', minute='45', day_of_week='monday')
+        },
         'generate-newsletter-drafts': {
             'task': 'cqc_lem.app.run_scheduler.auto_generate_newsletter_drafts',
             'schedule': crontab(hour='10', minute='0')  # Daily: top up each user's newsletter draft queue for review

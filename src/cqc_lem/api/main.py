@@ -2669,10 +2669,13 @@ def get_post_stats_endpoint(session_token: str) -> ResponseModel:
 def get_engagement_analytics_endpoint(session_token: str, days: int = 90) -> ResponseModel:
     """Per-post performance table + a daily engagement-rate / impression trend for the analytics
     dashboard (issue #395), derived from the user's captured post_stats, plus the 70/20/10
-    content-mix compliance ratio for the same window (issue #618) and the comment-outcome quality
-    score (issue #628). The hook/format leaderboard is served by /user/post-stats (rankings)."""
+    content-mix compliance ratio for the same window (issue #618), the comment-outcome quality
+    score (issue #628) and the content-quality rollup (issue #630). The hook/format leaderboard is
+    served by /user/post-stats (rankings)."""
     from cqc_lem.utilities.ai.content_alignment import content_mix_compliance
     from cqc_lem.utilities.comment_outcomes import comment_quality_report
+    from cqc_lem.utilities.content_quality import quality_rollup, rollup_days
+    from cqc_lem.utilities.db import get_content_quality_scores
     from cqc_lem.utilities.linkedin.rate_limit import commenting_hold_reason, commenting_hold_remaining
     from cqc_lem.utilities.post_stats import build_engagement_trend, build_performance_table
     user_id = get_session_user_id(session_token)
@@ -2697,6 +2700,11 @@ def get_engagement_analytics_endpoint(session_token: str, days: int = 90) -> Res
         # post has engagement data yet.
         "content_mix": content_mix_compliance(get_content_mix_counts(user_id, days=days)),
         "comment_quality": comment_quality,
+        # Content quality reads its OWN period (the rollup's week), not the analytics window: the
+        # panel's whole job is this-period-vs-last-period, and a 90-day "current" period would have
+        # nothing to compare against.
+        "content_quality": quality_rollup(
+            get_content_quality_scores(user_id, days=rollup_days() * 2)),
     })
 
 

@@ -5136,6 +5136,162 @@ def get_recent_comment_texts(user_id: int, limit: int = 50) -> list:
         connection.close()
 
 
+def get_shipped_content_for_quality(user_id: int, days: int = 1) -> list:
+    """Everything the user SHIPPED in the last `days`, across all three writing surfaces, as the input
+    to the nightly content-quality scoring pass (issue #630).
+
+    One function and one connection for three queries on purpose: the scorer treats posts, comments and
+    newsletter editions as one stream of writing, and three separate readers would let a surface drift
+    out of the window silently. Each row is
+    ``{surface, ref_id, text, shipped_on, format_key, authenticity_score, reactions, comments,
+    reposts, impressions}`` — the engagement fields are None for a surface that has no per-item stats
+    (comments, newsletters) and for a post whose stats have not been captured yet, which is the normal
+    case the night it ships.
+    """
+    window = max(1, int(days))
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    rows: list = []
+    try:
+        # LEFT JOIN: a post shipped tonight has no post_stats row yet and must still be scored — its
+        # engagement rate simply reports as unmeasured until the daily scrape catches up.
+        cursor.execute(
+            "SELECT p.id, p.content, p.archetype, p.authenticity_score, "
+            "  DATE(p.scheduled_time) AS shipped_on, "
+            "  s.reactions, s.comments, s.reposts, s.impressions "
+            "FROM posts p LEFT JOIN post_stats s "
+            "  ON s.post_id=p.id AND s.user_id=p.user_id "
+            "  AND s.id IN (SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id) "
+            "WHERE p.user_id=%s AND p.status=%s AND p.content IS NOT NULL AND p.content <> '' "
+            "  AND p.scheduled_time >= (NOW() - INTERVAL %s DAY) "
+            "ORDER BY p.scheduled_time DESC",
+            (user_id, user_id, PostStatus.POSTED.value, window))
+        for r in (cursor.fetchall() or []):
+            rows.append({
+                "surface": "post", "ref_id": str(r["id"]), "text": r["content"],
+                "shipped_on": r["shipped_on"], "format_key": r.get("archetype"),
+                "authenticity_score": r.get("authenticity_score"),
+                "reactions": r.get("reactions"), "comments": r.get("comments"),
+                "reposts": r.get("reposts"), "impressions": r.get("impressions"),
+            })
+
+        cursor.execute(
+            "SELECT id, message, DATE(created_at) AS shipped_on FROM logs "
+            "WHERE user_id=%s AND action_type=%s AND result=%s "
+            "  AND message IS NOT NULL AND message <> '' "
+            "  AND created_at >= (NOW() - INTERVAL %s DAY) ORDER BY id DESC",
+            (user_id, LogActionType.COMMENT.value, LogResultType.SUCCESS.value, window))
+        for r in (cursor.fetchall() or []):
+            rows.append({
+                "surface": "comment", "ref_id": str(r["id"]), "text": r["message"],
+                "shipped_on": r["shipped_on"], "format_key": None,
+                "authenticity_score": None, "reactions": None, "comments": None,
+                "reposts": None, "impressions": None,
+            })
+
+        # published_at can be NULL on a row marked published by an older path; scheduled_for is the
+        # intended ship day and is NOT NULL, so it is the fallback rather than dropping the edition.
+        cursor.execute(
+            "SELECT id, body, `format`, DATE(COALESCE(published_at, scheduled_for)) AS shipped_on "
+            "FROM newsletter_editions "
+            "WHERE user_id=%s AND status='published' AND body IS NOT NULL AND body <> '' "
+            "  AND COALESCE(published_at, scheduled_for) >= (NOW() - INTERVAL %s DAY) "
+            "ORDER BY id DESC",
+            (user_id, window))
+        for r in (cursor.fetchall() or []):
+            rows.append({
+                "surface": "newsletter", "ref_id": str(r["id"]), "text": r["body"],
+                "shipped_on": r["shipped_on"], "format_key": r.get("format"),
+                "authenticity_score": None, "reactions": None, "comments": None,
+                "reposts": None, "impressions": None,
+            })
+        return rows
+    except mysql.connector.Error as err:
+        myprint(f"Could not get shipped content for user {user_id} | Error: {err}")
+        return rows
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def record_content_quality_score(user_id: int, score: dict) -> bool:
+    """Persist ONE scored piece of content (issue #630). Upsert on (user_id, surface, ref_id) so a
+    re-run of the nightly pass refreshes the reading instead of double-counting it — which is what
+    makes the weekly rollup's week-over-week comparison stable.
+
+    Every measured column is nullable and is written as NULL when the dimension was not measured; a 0
+    would read as "clean" or "no reach" instead of "not scored"."""
+    score = dict(score or {})
+    ref_id = str(score.get("ref_id") or "").strip()
+    if not ref_id:
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO content_quality_scores (user_id, surface, ref_id, shipped_on, slop_hard, "
+            "  slop_warn, slop_score, similarity, similarity_measure, authenticity_score, "
+            "  hook_chars, hook_within_budget, engagement_rate, impressions, detector_score, "
+            "  detector_provider, checks) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "ON DUPLICATE KEY UPDATE shipped_on=VALUES(shipped_on), slop_hard=VALUES(slop_hard), "
+            "  slop_warn=VALUES(slop_warn), slop_score=VALUES(slop_score), "
+            "  similarity=VALUES(similarity), similarity_measure=VALUES(similarity_measure), "
+            "  authenticity_score=VALUES(authenticity_score), hook_chars=VALUES(hook_chars), "
+            "  hook_within_budget=VALUES(hook_within_budget), "
+            "  engagement_rate=VALUES(engagement_rate), impressions=VALUES(impressions), "
+            "  detector_score=VALUES(detector_score), detector_provider=VALUES(detector_provider), "
+            "  checks=VALUES(checks), scored_at=CURRENT_TIMESTAMP",
+            (user_id, str(score.get("surface") or "")[:20], ref_id[:64], score.get("shipped_on"),
+             score.get("slop_hard"), score.get("slop_warn"), score.get("slop_score"),
+             score.get("similarity"),
+             (str(score.get("similarity_measure"))[:16] if score.get("similarity_measure") else None),
+             score.get("authenticity_score"), score.get("hook_chars"),
+             (None if score.get("hook_within_budget") is None
+              else int(bool(score.get("hook_within_budget")))),
+             score.get("engagement_rate"), score.get("impressions"), score.get("detector_score"),
+             (str(score.get("detector_provider"))[:32] if score.get("detector_provider") else None),
+             json.dumps(score.get("slop_checks") or [])))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not record content quality score for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_content_quality_scores(user_id: int, days: int = 14) -> list:
+    """Scored content rows shipped in the last `days`, newest first — the input to the weekly rollup
+    and the analytics panel (issue #630). The rollup needs TWO periods, so callers pass twice their
+    comparison window."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT surface, ref_id, shipped_on, slop_hard, slop_warn, slop_score, similarity, "
+            "  similarity_measure, authenticity_score, hook_chars, hook_within_budget, "
+            "  engagement_rate, impressions, detector_score, detector_provider, scored_at "
+            "FROM content_quality_scores "
+            "WHERE user_id=%s AND shipped_on >= (CURDATE() - INTERVAL %s DAY) "
+            "ORDER BY shipped_on DESC, id DESC",
+            (user_id, max(1, int(days))))
+        return [
+            {**r,
+             "slop_score": float(r["slop_score"]) if r.get("slop_score") is not None else None,
+             "similarity": float(r["similarity"]) if r.get("similarity") is not None else None,
+             "engagement_rate": (float(r["engagement_rate"])
+                                 if r.get("engagement_rate") is not None else None)}
+            for r in (cursor.fetchall() or [])
+        ]
+    except mysql.connector.Error:
+        return []  # table not created yet (or unreadable) — the rollup reports an empty window
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def upsert_user_group(user_id: int, group_id: str, group_name: str = None) -> bool:
     """Record a joined group (new groups default to enabled=1). Refreshes name + last_synced_at
     without clobbering the user's enabled choice on an existing row."""
