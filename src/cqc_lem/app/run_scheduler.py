@@ -43,7 +43,8 @@ from cqc_lem.utilities.logger import myprint, log_info, log_debug, log_warning
 from cqc_lem.utilities.linkedin.rate_limit import is_automation_paused, automation_pause_remaining, \
     rate_limit_cooldown_remaining, is_measurement_paused
 from cqc_lem.utilities.notifications import notify_linkedin_session
-from cqc_lem.utilities.observability import attribute_llm_cost, llm_attribution, FEATURE_NEWSLETTER
+from cqc_lem.utilities.observability import attribute_llm_cost, llm_attribution, FEATURE_CONTENT, \
+    FEATURE_NEWSLETTER
 
 
 def _skip_if_throttled(name: str, measurement_only: bool = False, **context) -> bool:
@@ -575,6 +576,135 @@ def auto_suppression_tripwire(self):
         tripped += 1
     return (f"Suppression checked for {checked}/{len(users)} user(s); "
             f"{tripped} newly tripped, {rearmed} re-armed")
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_nightly_content_quality(self, days: int = None):
+    """Nightly content-quality scoring pass (issue #630). Scores every piece the user SHIPPED in the
+    window — posts, feed comments, newsletter editions — and emits one `content_quality` reading each:
+    the D1 slop score, self-similarity against that surface's own recent history, #382's stored
+    authenticity score, hook length against the 140-char mobile budget, and engagement per impression
+    once the 23:00 stats scrape has captured it.
+
+    Prompt and model changes regress quality SILENTLY (the weekly model-retirement cron swaps models
+    under unchanged prompts), so the point of this task is the persisted trend, not any one reading —
+    `auto_weekly_content_quality` is what turns the trend into an alert.
+
+    Read-only over content that already shipped: it never edits, holds or re-generates anything, and a
+    dimension it cannot measure is recorded as unmeasured rather than as a zero."""
+    from cqc_lem.utilities.ai.content_framework import COMMENT_HISTORY_LIMIT
+    from cqc_lem.utilities.content_quality import (
+        SURFACE_COMMENT, SURFACE_POST, content_quality_enabled, detector_daily_max, detector_sampled,
+        detector_score, max_items_per_run, score_item, similarity_reports, window_days)
+    from cqc_lem.utilities.db import (
+        get_lead_magnet_settings, get_recent_comment_texts, get_recent_post_texts,
+        get_shipped_content_for_quality, record_content_quality_score)
+    from cqc_lem.utilities.observability import track_content_quality
+    from cqc_lem.utilities.post_stats import engagement_rate
+
+    if not content_quality_enabled():
+        return "Content quality telemetry disabled"
+    users = get_active_user_ids()
+    if not users:
+        return "No active users"
+    window = window_days() if days is None else max(1, int(days))
+    cap = max_items_per_run()
+    scored = dropped = 0
+    for user_id in users:
+        items = get_shipped_content_for_quality(user_id, days=window)
+        if not items:
+            continue
+        if len(items) > cap:
+            # A silent truncation would read as "a quiet week" in the rollup, so say what was dropped.
+            log_warning(f"Content quality scoring capped at {cap} of {len(items)} pieces "
+                        f"for user {user_id}", user_id=user_id,
+                        task_name="auto_nightly_content_quality")
+            dropped += len(items) - cap
+            items = items[:cap]
+
+        # Self-similarity is graded WITHIN a surface: a post compared against the user's comments would
+        # score as unique no matter how templated it is. Newsletter editions have no body-history
+        # reader, so their similarity reports as unmeasured rather than against the wrong scale.
+        histories = {
+            SURFACE_POST: get_recent_post_texts(user_id, limit=COMMENT_HISTORY_LIMIT),
+            SURFACE_COMMENT: get_recent_comment_texts(user_id, limit=COMMENT_HISTORY_LIMIT),
+        }
+        similarity: dict = {}
+        # similarity_reports is the ONLY LLM spend in this pass (one lem-embedding call per surface),
+        # and this task loops over users rather than taking a user_id kwarg — so without an explicit
+        # scope current_llm_attribution() has nobody to bill and every embedding lands on the "system"
+        # sentinel instead of the account whose content it scored.
+        with llm_attribution(user_id=user_id, feature=FEATURE_CONTENT):
+            for surface, history in histories.items():
+                group = [item for item in items if item.get("surface") == surface]
+                if not group:
+                    continue
+                reports = similarity_reports([item.get("text") for item in group], history)
+                for item, report in zip(group, reports):
+                    similarity[(surface, item.get("ref_id"))] = report
+
+        keyword = (get_lead_magnet_settings(user_id) or {}).get("keyword")
+        detector_budget = detector_daily_max()
+        for item in items:
+            surface = str(item.get("surface") or "")
+            detector = None
+            if detector_budget > 0 and detector_sampled(surface, item.get("ref_id")):
+                detector = detector_score(item.get("text"))
+                detector_budget -= 1  # spent whether or not it answered — the CALL is the cost
+            score = score_item(
+                surface=surface, ref_id=item.get("ref_id"), text=item.get("text"),
+                shipped_on=item.get("shipped_on"), format_key=item.get("format_key"),
+                authenticity=item.get("authenticity_score"),
+                similarity=similarity.get((surface, item.get("ref_id"))),
+                engagement_rate=engagement_rate(item.get("reactions"), item.get("comments"),
+                                                item.get("reposts"), item.get("impressions")),
+                impressions=item.get("impressions"), exempt_keyword=keyword, detector=detector)
+            record_content_quality_score(user_id, score)
+            track_content_quality(user_id, score)
+            scored += 1
+    return f"Content quality scored {scored} piece(s) across {len(users)} user(s); {dropped} over cap"
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_weekly_content_quality(self, days: int = None):
+    """Weekly content-quality rollup + regression alerts (issue #630).
+
+    Reads back the nightly scores for TWO periods and compares them, so a regression is measured
+    against the account's own prior week rather than an absolute target — the one exception being the
+    engagement floor, which is the only threshold with a published benchmark behind it (B2B ER by
+    impressions runs ~3.6%).
+
+    Alerts ride the EXISTING pipeline: `log_error` forwards to PostHog at the default
+    POSTHOG_LOG_LEVEL, so a regression becomes a grouped `$exception` issue without a second alerting
+    path. Nothing is paused or held — quality drift is a "go look at the prompts" signal, not an
+    account-safety one (that is #629's job)."""
+    from cqc_lem.utilities.content_quality import (content_quality_enabled, quality_rollup,
+                                                   rollup_days)
+    from cqc_lem.utilities.db import get_content_quality_scores
+    from cqc_lem.utilities.logger import log_error
+    from cqc_lem.utilities.observability import track_content_quality_rollup
+
+    if not content_quality_enabled():
+        return "Content quality telemetry disabled"
+    users = get_active_user_ids()
+    if not users:
+        return "No active users"
+    window = rollup_days() if days is None else max(1, int(days))
+    reported = alerted = 0
+    for user_id in users:
+        rows = get_content_quality_scores(user_id, days=window * 2)
+        rollup = quality_rollup(rows, days=window)
+        if not (rollup.get("current") or {}).get("items"):
+            continue  # nothing shipped this period — no rollup to report and nothing to regress
+        track_content_quality_rollup(user_id, rollup)
+        reported += 1
+        for alert in rollup.get("alerts") or []:
+            log_error(f"Content quality regression ({alert.get('name')}) for user {user_id} — "
+                      f"{alert.get('reason')}", user_id=user_id, action_type="post",
+                      task_name="auto_weekly_content_quality")
+            alerted += 1
+    return (f"Content quality rollup reported for {reported}/{len(users)} user(s); "
+            f"{alerted} regression alert(s)")
 
 
 def _max_dt(*dts):

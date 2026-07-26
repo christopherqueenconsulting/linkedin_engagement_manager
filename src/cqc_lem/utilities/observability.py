@@ -669,6 +669,74 @@ def track_comment_quality(user_id: Optional[int], report: Optional[dict] = None,
     )
 
 
+def track_content_quality(user_id: Optional[int], score: Optional[dict] = None, **extra) -> None:
+    """Emit ONE nightly per-piece content-quality reading (issue #630) — slop score, self-similarity,
+    the stored authenticity score, hook length vs the 140-char mobile budget, and engagement per
+    impression once stats exist — as a `content_quality` event.
+
+    Every unmeasured dimension stays None: an event that reported 0 for a post with no impressions
+    yet would drag every ER average toward zero the night it shipped. Content BODIES are never sent
+    (they are the user's own LinkedIn material, redacted everywhere else too) — only the names of the
+    slop checks that fired, which is what makes a regression explainable."""
+    score = dict(score or {})
+    posthog.capture(
+        distinct_id=str(user_id or "system"),
+        event="content_quality",
+        properties={
+            "user_id": user_id,
+            "surface": score.get("surface"),
+            "ref_id": score.get("ref_id"),
+            "shipped_on": str(score.get("shipped_on")) if score.get("shipped_on") else None,
+            "chars": score.get("chars"),
+            "slop_checked": score.get("slop_checked"),
+            "slop_hard": score.get("slop_hard"),
+            "slop_warn": score.get("slop_warn"),
+            "slop_score": score.get("slop_score"),
+            "slop_checks": score.get("slop_checks") or [],
+            "similarity": score.get("similarity"),
+            "similarity_measure": score.get("similarity_measure"),
+            "authenticity_score": score.get("authenticity_score"),
+            "hook_chars": score.get("hook_chars"),
+            "hook_within_budget": score.get("hook_within_budget"),
+            "engagement_rate": score.get("engagement_rate"),
+            "impressions": score.get("impressions"),
+            "detector_score": score.get("detector_score"),
+            "detector_provider": score.get("detector_provider"),
+            **extra,
+        },
+    )
+
+
+def track_content_quality_rollup(user_id: Optional[int], rollup: Optional[dict] = None,
+                                 **extra) -> None:
+    """Emit the weekly content-quality rollup (issue #630) as one `content_quality_rollup` event:
+    this period's summary, the prior period's, the deltas between them, and any regression alert that
+    fired. Both periods ride on the SAME event so a dashboard tile (and a PostHog alert) can read the
+    regression without joining two time ranges — the comparison is the point of the event."""
+    rollup = dict(rollup or {})
+    current = dict(rollup.get("current") or {})
+    prior = dict(rollup.get("prior") or {})
+    deltas = dict(rollup.get("deltas") or {})
+    alerts = [a for a in (rollup.get("alerts") or []) if isinstance(a, dict)]
+    posthog.capture(
+        distinct_id=str(user_id or "system"),
+        event="content_quality_rollup",
+        properties={
+            "user_id": user_id,
+            "days": rollup.get("days"),
+            "alert_count": len(alerts),
+            "alerts": [a.get("name") for a in alerts],
+            "alert_reasons": [a.get("reason") for a in alerts],
+            **{f"current_{key}": value for key, value in current.items() if key != "by_surface"},
+            **{f"prior_{key}": value for key, value in prior.items() if key != "by_surface"},
+            **{f"delta_{key}": value for key, value in deltas.items()},
+            "by_surface": current.get("by_surface") or {},
+            "config": rollup.get("config") or {},
+            **extra,
+        },
+    )
+
+
 def track_pre_post_engagement(post_id: int, user_id: Optional[int], status: str, **extra) -> None:
     """Emit the per-post pre-post engagement-window marker (issue #547) — dispatched, skipped (with
     the reason) or ran (with the comment count) — so a report can confirm the warm-up before a post

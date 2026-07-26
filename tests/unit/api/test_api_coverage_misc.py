@@ -382,9 +382,10 @@ class TestUserSettingsAndGroups:
 class TestEngagementAnalytics:
     @pytest.fixture(autouse=True)
     def _no_comment_outcomes(self):
-        # The endpoint also scores comment outcomes (#628); default to an empty window so the
-        # post-stats assertions below stay about post stats.
-        with patch(f"{_M}.get_comment_outcomes", return_value=[]):
+        # The endpoint also scores comment outcomes (#628) and rolls up content quality (#630);
+        # default both to an empty window so the post-stats assertions below stay about post stats.
+        with patch(f"{_M}.get_comment_outcomes", return_value=[]), \
+             patch("cqc_lem.utilities.db.get_content_quality_scores", return_value=[]):
             yield
 
     def test_returns_per_post_table_and_trend(self, client):
@@ -470,6 +471,49 @@ class TestEngagementAnalytics:
         assert quality["reply_rate"] is None and quality["demotion_rate"] is None
         assert quality["verdict"]["status"] == "unknown"
         assert quality["hold"] == {"active": False, "reason": None, "seconds_remaining": 0}
+
+    def test_content_quality_rollup_reports_both_periods(self, client):
+        from datetime import date, timedelta
+        today = date.today()
+
+        def _row(day, **kw):
+            row = {"surface": "post", "ref_id": "1", "shipped_on": day.isoformat(),
+                   "slop_hard": 0, "slop_warn": 0, "slop_score": 1.0, "similarity": 0.3,
+                   "similarity_measure": "embedding", "authenticity_score": 90, "hook_chars": 90,
+                   "hook_within_budget": True, "engagement_rate": 0.05, "impressions": 1000}
+            row.update(kw)
+            return row
+
+        rows = ([_row(today - timedelta(days=1), slop_score=5.0) for _ in range(6)]
+                + [_row(today - timedelta(days=9)) for _ in range(6)])
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.get_content_mix_counts", return_value={}), \
+             patch(f"{_M}.get_post_performance_rows", return_value=[]), \
+             patch("cqc_lem.utilities.db.get_content_quality_scores", return_value=rows) as fetch, \
+             patch("cqc_lem.utilities.linkedin.rate_limit.commenting_hold_remaining",
+                   return_value=0):
+            resp = client.get(f"/api/user/engagement-analytics?session_token={_TOK}&days=90")
+        quality = resp.json()["detail"]["content_quality"]
+        # The panel reads the ROLLUP's own two periods, never the 90-day analytics window: a 90-day
+        # "current" period would have nothing to compare against.
+        assert fetch.call_args[1]["days"] == 14
+        assert quality["days"] == 7
+        assert quality["current"]["items"] == 6 and quality["prior"]["items"] == 6
+        assert quality["deltas"]["slop_score_avg"] == 4.0
+        assert [a["name"] for a in quality["alerts"]] == ["slop_regression"]
+
+    def test_content_quality_is_empty_not_zero_without_scores(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.get_content_mix_counts", return_value={}), \
+             patch(f"{_M}.get_post_performance_rows", return_value=[]), \
+             patch("cqc_lem.utilities.linkedin.rate_limit.commenting_hold_remaining",
+                   return_value=0):
+            resp = client.get(f"/api/user/engagement-analytics?session_token={_TOK}")
+        quality = resp.json()["detail"]["content_quality"]
+        assert quality["current"]["items"] == 0
+        assert quality["current"]["slop_score_avg"] is None
+        assert quality["current"]["engagement_rate"] is None
+        assert quality["alerts"] == []
 
 
 class TestAudienceGrowth:
