@@ -8,6 +8,9 @@ Answers, against a REAL logged-in session, the two questions
      identify it), or as a multi-image share? — grounds C1 (#390).
   2. Which of reactions/comments/reposts/impressions/saves are actually scrapeable, and from
      which page — the post detail view or ``/analytics/post-summary/``? — grounds B2 (#387).
+  3. On a post we already commented on: does the comment sort control exist, is our comment present
+     under the default 'Most relevant' view, and does flipping to 'Most recent' surface it? —
+     grounds the demotion signal in D4 (#628) before it is trusted to hold commenting.
 
 **Read-only.** It navigates and reads: it publishes nothing, comments on nothing, sends no
 invites or DMs and changes no settings. ``--probe-composer`` additionally OPENS the post
@@ -242,27 +245,106 @@ def probe_composer(driver, sleep=time.sleep) -> dict:
             "document_affordance": find_document_affordance(controls)}
 
 
+def comment_outcome_verdict(reading: Optional[dict]) -> str:
+    """What one comment-outcome read proves about the 'Most relevant' demotion signal.
+
+    'visible' / 'demoted' are the two real answers. Everything else is 'ambiguous', which is what
+    the sweep persists as NULL — the point of this probe is to find out how often that happens
+    BEFORE the demotion rate is trusted to hold a user's commenting.
+    """
+    reading = dict(reading or {})
+    if not reading.get("sort_control_found"):
+        return "ambiguous: no sort control"
+    if reading.get("found_most_relevant"):
+        return "visible"
+    if not reading.get("switched_to_recent"):
+        return "ambiguous: could not switch sort"
+    if reading.get("found_most_recent"):
+        return "demoted"
+    return "ambiguous: comment not found in either sort"
+
+
+def probe_comment_outcome(driver, post_url: str, our_slug: str, comment_text: str = "",
+                          sleep=time.sleep) -> dict:
+    """D4 (#628): on a post the user has ALREADY commented on, report what the outcome reader sees
+    under each comment sort — so the demotion signal is grounded live before anything relies on it.
+
+    Read-only: it navigates, scrolls, expands and flips the sort control. It posts nothing.
+    """
+    from cqc_lem.app.run_automation import (_comment_items, _comment_like_count, _comment_sort_label,
+                                            _find_our_comment, _load_comment_thread,
+                                            _post_author_href, _switch_comment_sort,
+                                            _thread_replies, _SORT_MOST_RECENT)
+    from selenium.webdriver.support.ui import WebDriverWait
+
+    wait = WebDriverWait(driver, 10)
+    driver.get(post_url)
+    sleep(5)
+    _load_comment_thread(driver)
+
+    items = _comment_items(driver)
+    reading = {"post_url": post_url, "our_slug": our_slug,
+               "rendered_comments": len(items),
+               "authors": [a for (_tb, _c, a) in items][:20],
+               "sort_label": _comment_sort_label(driver, wait)}
+    reading["sort_control_found"] = bool(reading["sort_label"])
+    ours = _find_our_comment(items, our_slug, comment_text)
+    reading["found_most_relevant"] = ours is not None and reading["sort_label"] == "most relevant"
+
+    if ours is None and reading["sort_label"] == "most relevant":
+        reading["switched_to_recent"] = _switch_comment_sort(driver, wait, _SORT_MOST_RECENT)
+        if reading["switched_to_recent"]:
+            _load_comment_thread(driver)
+            items = _comment_items(driver)
+            ours = _find_our_comment(items, our_slug, comment_text)
+        reading["found_most_recent"] = ours is not None
+    else:
+        reading["switched_to_recent"] = False
+        reading["found_most_recent"] = None
+
+    if ours is not None:
+        replies = _thread_replies(driver, ours, items)
+        reading["like_count"] = _comment_like_count(driver, ours)
+        reading["reply_authors"] = [a for (_c, a) in replies][:20]
+        reading["post_author_href"] = _post_author_href(driver)
+    reading["verdict"] = comment_outcome_verdict(reading)
+    return reading
+
+
 def main(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(description="Read-only live LinkedIn validation probe (#404)")
     parser.add_argument("--user-id", type=int, default=1, help="user whose session drives the probe")
     parser.add_argument("--post-url", help="permalink of one of that user's OWN published posts")
     parser.add_argument("--probe-composer", action="store_true",
                         help="also open the post composer to capture document-upload anchors")
+    parser.add_argument("--comment-outcome-url",
+                        help="permalink of someone else's post this user has commented on (#628)")
+    parser.add_argument("--our-slug", help="the user's /in/<slug> (defaults to their profile URL)")
+    parser.add_argument("--comment-text", default="",
+                        help="the comment we left, so the reader can match the right one")
     args = parser.parse_args(argv)
 
-    if not args.post_url and not args.probe_composer:
-        parser.error("nothing to probe — pass --post-url and/or --probe-composer")
+    if not args.post_url and not args.probe_composer and not args.comment_outcome_url:
+        parser.error("nothing to probe — pass --post-url, --comment-outcome-url and/or --probe-composer")
 
     from cqc_lem.app.run_automation import get_current_profile
     from cqc_lem.utilities.selenium_util import quit_gracefully
 
-    driver, _wait, _email, _profile = get_current_profile(user_id=args.user_id,
-                                                         session_name="Live Validation")
+    driver, _wait, _email, profile = get_current_profile(user_id=args.user_id,
+                                                        session_name="Live Validation")
     report = {"user_id": args.user_id}
     try:
         if args.post_url:
             report["document_render"] = probe_document_render(driver, args.post_url)
             report["post_stats"] = probe_post_stats(driver, args.post_url)
+        if args.comment_outcome_url:
+            from cqc_lem.app.run_automation import _profile_slug
+            # The reader compares slugs EXACTLY, so accept either form here: a full profile URL or
+            # a bare slug typed on the command line.
+            raw = args.our_slug or str(getattr(profile, "profile_url", "") or "")
+            slug = _profile_slug(raw) or raw.strip().strip("/").lower()
+            report["comment_outcome"] = probe_comment_outcome(driver, args.comment_outcome_url,
+                                                              slug, args.comment_text)
         if args.probe_composer:
             report["composer"] = probe_composer(driver)
     finally:

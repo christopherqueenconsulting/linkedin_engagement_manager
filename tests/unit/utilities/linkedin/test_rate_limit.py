@@ -260,3 +260,100 @@ class TestAutomationPauseReason:
         fake_redis.get.side_effect = RuntimeError("boom")
         from cqc_lem.utilities.linkedin.rate_limit import automation_pause_reason
         assert automation_pause_reason() is None
+
+
+class TestCommentingHold:
+    """Issue #628: a per-user hold that stops ONLY feed commenting, so a demotion problem never
+    takes posting, replies or DMs down with it. Fails OPEN like the rest of this module."""
+
+    def test_hold_sets_key_with_ttl_and_reason(self, fake_redis):
+        from cqc_lem.utilities.linkedin.rate_limit import hold_commenting
+        assert hold_commenting(7, 3600, "demotion rate 0.6") is True
+        fake_redis.set.assert_called_once_with("linkedin:comment_quality_hold:7",
+                                               "demotion rate 0.6", ex=3600)
+
+    def test_hold_floors_seconds_at_one(self, fake_redis):
+        from cqc_lem.utilities.linkedin.rate_limit import hold_commenting
+        hold_commenting(7, 0)
+        assert fake_redis.set.call_args.kwargs["ex"] == 1
+
+    def test_hold_falls_back_to_a_default_reason(self, fake_redis):
+        from cqc_lem.utilities.linkedin.rate_limit import hold_commenting
+        hold_commenting(7, 60, "")
+        assert fake_redis.set.call_args.args[1] == "comment quality"
+
+    def test_hold_without_redis_is_false(self):
+        with patch(f"{_MOD}._redis_client", return_value=None):
+            from cqc_lem.utilities.linkedin.rate_limit import hold_commenting
+            assert hold_commenting(7, 60) is False
+
+    def test_hold_swallows_redis_error(self, fake_redis):
+        fake_redis.set.side_effect = RuntimeError("boom")
+        from cqc_lem.utilities.linkedin.rate_limit import hold_commenting
+        assert hold_commenting(7, 60) is False
+
+    def test_release_deletes_the_key(self, fake_redis):
+        from cqc_lem.utilities.linkedin.rate_limit import release_commenting_hold
+        assert release_commenting_hold(7) is True
+        fake_redis.delete.assert_called_once_with("linkedin:comment_quality_hold:7")
+
+    def test_release_without_redis_is_false(self):
+        with patch(f"{_MOD}._redis_client", return_value=None):
+            from cqc_lem.utilities.linkedin.rate_limit import release_commenting_hold
+            assert release_commenting_hold(7) is False
+
+    def test_release_swallows_redis_error(self, fake_redis):
+        fake_redis.delete.side_effect = RuntimeError("boom")
+        from cqc_lem.utilities.linkedin.rate_limit import release_commenting_hold
+        assert release_commenting_hold(7) is False
+
+    def test_remaining_and_is_held(self, fake_redis):
+        fake_redis.ttl.return_value = 120
+        from cqc_lem.utilities.linkedin.rate_limit import (commenting_hold_remaining,
+                                                           is_commenting_held)
+        assert commenting_hold_remaining(7) == 120
+        assert is_commenting_held(7) is True
+
+    def test_not_held_when_key_absent(self, fake_redis):
+        fake_redis.ttl.return_value = -2
+        from cqc_lem.utilities.linkedin.rate_limit import (commenting_hold_remaining,
+                                                           is_commenting_held)
+        assert commenting_hold_remaining(7) == 0
+        assert is_commenting_held(7) is False
+
+    def test_not_held_when_no_redis(self):
+        with patch(f"{_MOD}._redis_client", return_value=None):
+            from cqc_lem.utilities.linkedin.rate_limit import (commenting_hold_remaining,
+                                                               is_commenting_held)
+            assert commenting_hold_remaining(7) == 0
+            assert is_commenting_held(7) is False
+
+    def test_not_held_on_redis_error(self, fake_redis):
+        fake_redis.ttl.side_effect = RuntimeError("boom")
+        from cqc_lem.utilities.linkedin.rate_limit import commenting_hold_remaining
+        assert commenting_hold_remaining(7) == 0
+
+    def test_reason_is_decoded(self, fake_redis):
+        fake_redis.get.return_value = b"demotion rate 0.6"
+        from cqc_lem.utilities.linkedin.rate_limit import commenting_hold_reason
+        assert commenting_hold_reason(7) == "demotion rate 0.6"
+
+    def test_reason_str_value_unchanged(self, fake_redis):
+        fake_redis.get.return_value = "comment quality"
+        from cqc_lem.utilities.linkedin.rate_limit import commenting_hold_reason
+        assert commenting_hold_reason(7) == "comment quality"
+
+    def test_reason_none_when_not_held(self, fake_redis):
+        fake_redis.get.return_value = None
+        from cqc_lem.utilities.linkedin.rate_limit import commenting_hold_reason
+        assert commenting_hold_reason(7) is None
+
+    def test_reason_none_when_no_redis(self):
+        with patch(f"{_MOD}._redis_client", return_value=None):
+            from cqc_lem.utilities.linkedin.rate_limit import commenting_hold_reason
+            assert commenting_hold_reason(7) is None
+
+    def test_reason_none_on_redis_error(self, fake_redis):
+        fake_redis.get.side_effect = RuntimeError("boom")
+        from cqc_lem.utilities.linkedin.rate_limit import commenting_hold_reason
+        assert commenting_hold_reason(7) is None

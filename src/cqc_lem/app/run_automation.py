@@ -57,7 +57,8 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     CatchupTouchStatus, insert_catchup_touch, has_catchup_touch, get_catchup_touch, \
     update_catchup_touch_status, count_catchup_touches_sent_today, max_catchup_touches_allowed, \
     get_engagement_targets, record_target_engagement, ENGAGEMENT_TARGET_WEEKLY_DEFAULT, \
-    record_follower_stat, get_linkedin_profile_url_by_user_id
+    record_follower_stat, get_linkedin_profile_url_by_user_id, \
+    get_comment_outcome_targets, record_comment_outcome
 from cqc_lem.utilities.audience_stats import parse_follower_count, parse_connection_count, \
     parse_profile_views, parse_search_appearances
 from cqc_lem.utilities.engagement_window import record_pre_post_run
@@ -71,11 +72,12 @@ from cqc_lem.utilities.linkedin.poster import share_on_linkedin, share_carousel_
     share_document_on_linkedin, comment_on_linkedin_post, object_urn_from_post_url
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited, _redis_client, \
-    acquire_run_lock, release_run_lock
+    acquire_run_lock, release_run_lock, commenting_hold_reason, is_commenting_held
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
 from cqc_lem.utilities.logger import myprint, log_error, log_info, log_warning
 from cqc_lem.utilities.observability import track_post_outcome, track_audience_snapshot, \
-    attribute_llm_cost, llm_attribution, FEATURE_COMMENT, FEATURE_CONTENT, FEATURE_DM
+    track_comment_outcome, attribute_llm_cost, llm_attribution, FEATURE_COMMENT, FEATURE_CONTENT, \
+    FEATURE_DM
 from cqc_lem.utilities.selenium_util import click_element_wait_retry, \
     get_element_wait_retry, get_elements_as_list_wait_stale, getText, close_tab, get_driver_wait_pair, quit_gracefully, \
     wait_for_ajax, find_first, click_first, find_all_first
@@ -2251,6 +2253,16 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
 
     myprint("Starting Automate Commenting Thread...")
 
+    # Comment-quality hold (issue #628): when the weekly outcome report finds our comments are being
+    # demoted out of 'Most relevant', commenting stops for this user until a human clears it.
+    # Checked here (not in the dispatcher) so EVERY caller — golden hour, pre-post warm-up, the
+    # self-requeue — is covered by one gate. Fails open when Redis is unavailable.
+    if is_commenting_held(user_id):
+        reason = commenting_hold_reason(user_id) or "comment quality"
+        log_warning(f"Feed commenting held for user {user_id}: {reason}", user_id=user_id,
+                    action_type="comment", task_name="automate_commenting")
+        return f"Skipped: feed commenting is held ({reason})"
+
     # Single-flight per user: the pre-post trigger, the golden-hour beat, and this task's own
     # self-requeue can otherwise run concurrently and double-walk the feed. Only one commenting
     # run per user at a time; a loser skips this cycle (its own re-schedule will pick it up).
@@ -2776,6 +2788,45 @@ def _reply_under_comment_inline(driver, wait, comment_el, reply_text: str, user_
         return False
 
 
+def _load_comment_thread(driver) -> None:
+    """Make a post's comment thread actually render: a TALL viewport is what lazy-renders comments a
+    long post pushes far below the fold (scrolling alone on the default 1080-tall window did not —
+    validated live, issue #478), then scroll down and expand the '…more' / 'previous replies'
+    controls. Best-effort throughout; every step is optional."""
+    try:
+        driver.set_window_size(1400, 3400)
+    except Exception:
+        pass  # some drivers reject resize; the scrolling below is the fallback
+    for _ in range(10):
+        driver.execute_script("window.scrollBy(0, 1000);")
+        time.sleep(random.uniform(0.9, 1.4))
+        cl = driver.find_elements(By.CSS_SELECTOR, "[data-testid*='commentList']")
+        if cl:
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", cl[0])
+    for _ in range(6):
+        exp = [b for b in driver.find_elements(By.CSS_SELECTOR, "[data-testid*='commentList'] button")
+               if re.search(r'\bmore\b|repl', (b.text or ''), re.I)]
+        if not exp:
+            break
+        try:
+            driver.execute_script("arguments[0].click();", exp[0]); time.sleep(random.uniform(1.2, 2))
+        except Exception:
+            break
+
+
+def _comment_items(driver) -> list:
+    """[(text_box, container, author_href)] for every comment/reply currently rendered in the
+    thread. Text boxes with no resolvable container are dropped — a comment we can't scope to a
+    container has no author and no action bar, so it is not addressable."""
+    items = []
+    for tb in driver.find_elements(By.CSS_SELECTOR, _COMMENTLIST_TEXTBOX):
+        cont = _comment_container(driver, tb)
+        if cont is None:
+            continue
+        items.append((tb, cont, _comment_header_author(driver, cont)))
+    return items
+
+
 def _followup_on_post_comment_replies(driver, wait, user_id: int, post_url: str, post_key: str,
                                       my_profile, profile_synthesis: str, prefs: dict,
                                       replies_remaining: int) -> dict:
@@ -2789,43 +2840,14 @@ def _followup_on_post_comment_replies(driver, wait, user_id: int, post_url: str,
         log_warning("Follow-up: no profile slug — skipping to avoid mis-scoping", user_id=user_id,
                     action_type="reply")
         return result
-    # A very long post pushes comments far below the fold; a TALL viewport is what actually makes
-    # them lazy-render (scrolling alone on the default 1080-tall window did not). Validated live.
-    try:
-        driver.set_window_size(1400, 3400)
-    except Exception:
-        pass  # some drivers reject resize; scrolling below is the fallback
     if driver.current_url.split("?")[0].rstrip("/") != post_url.split("?")[0].rstrip("/"):
         driver.get(post_url)
         time.sleep(random.uniform(2.5, 4))
-    # A long post pushes comments far below the fold; scroll thoroughly so they lazy-render.
-    for _ in range(10):
-        driver.execute_script("window.scrollBy(0, 1000);")
-        time.sleep(random.uniform(0.9, 1.4))
-        cl = driver.find_elements(By.CSS_SELECTOR, "[data-testid*='commentList']")
-        if cl:
-            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", cl[0])
-    # Expand truncated replies + hidden reply threads.
-    for _ in range(6):
-        exp = [b for b in driver.find_elements(By.CSS_SELECTOR, "[data-testid*='commentList'] button")
-               if re.search(r'\bmore\b|repl', (b.text or ''), re.I)]
-        if not exp:
-            break
-        try:
-            driver.execute_script("arguments[0].click();", exp[0]); time.sleep(random.uniform(1.2, 2))
-        except Exception:
-            break
+    _load_comment_thread(driver)
 
-    boxes = driver.find_elements(By.CSS_SELECTOR, _COMMENTLIST_TEXTBOX)
-    # Map each comment text box -> (container, author_href).
-    items = []
-    for tb in boxes:
-        cont = _comment_container(driver, tb)
-        if cont is None:
-            continue
-        items.append((tb, cont, _comment_header_author(driver, cont)))
+    items = _comment_items(driver)
     our_conts = [c for (_tb, c, a) in items if f"/in/{our_slug}" in a]
-    log_info(f"Follow-up: {len(boxes)} comment box(es), {len(our_conts)} ours, on {post_url}",
+    log_info(f"Follow-up: {len(items)} comment box(es), {len(our_conts)} ours, on {post_url}",
              user_id=user_id, task_name="sweep_comment_followups")
 
     for tb, cont, author in items:
@@ -3050,6 +3072,304 @@ def _run_reconcile_comment_urns(user_id: int, days: int = _FOLLOWUP_WINDOW_DAYS)
             if update_commented_post_key(user_id, old_key, new_key):
                 upgraded += 1
         return f"Reconciled {upgraded}/{len(stale)} stale commented-post keys"
+    finally:
+        quit_gracefully(driver)
+        release_run_lock(lock_name, lock_token)
+
+
+# --- Comment outcome tracking (issue #628) -------------------------------------------------
+# LEM posted comments and never looked back. LinkedIn's May 2026 enforcement demotes
+# automated-looking comments out of the default 'Most relevant' comment view — a SILENT kill that
+# makes the whole commenting effort worthless while every log still says "success". This sweep
+# revisits each posted comment once at T+24h and records what it actually earned: author replies,
+# likes, replies in the thread, and whether it is still visible under the default sort.
+_OUTCOME_MIN_AGE_HOURS = 24    # give the thread a day to earn a reply before judging it
+_OUTCOME_MAX_AGE_HOURS = 168   # a sweep missed for days still records the sample (never re-checked)
+_MAX_OUTCOME_CHECKS_PER_RUN = 15  # volume backstop — one post navigation each
+
+# LinkedIn's comment sort control renders as a button carrying the CURRENT sort ("Most relevant" /
+# "Most recent"). The default is 'Most relevant', which is the view the demotion signal is about.
+_SORT_MOST_RELEVANT = "most relevant"
+_SORT_MOST_RECENT = "most recent"
+
+# XPath 1.0 has no lower-case(), so translate() is the case fold. Every comparison against a sort
+# label goes through it: LinkedIn renders 'Most recent', and a literal case-sensitive match against
+# any other casing silently never fires — which would leave the sort flip permanently failing and
+# the demotion signal permanently NULL.
+_X_AZ_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_X_AZ_LOWER = "abcdefghijklmnopqrstuvwxyz"
+_X_LOWER_TEXT = f"translate(normalize-space(),'{_X_AZ_UPPER}','{_X_AZ_LOWER}')"
+_X_LOWER_ARIA = f"translate(@aria-label,'{_X_AZ_UPPER}','{_X_AZ_LOWER}')"
+_COMMENT_SORT_LOCATORS = [
+    (By.XPATH, f"//button[contains({_X_LOWER_ARIA},'sort') and "
+               f"(contains({_X_LOWER_TEXT},'{_SORT_MOST_RELEVANT}') or "
+               f"contains({_X_LOWER_TEXT},'{_SORT_MOST_RECENT}'))]"),
+    (By.XPATH, f"//button[{_X_LOWER_TEXT}='{_SORT_MOST_RELEVANT}' or "
+               f"{_X_LOWER_TEXT}='{_SORT_MOST_RECENT}']"),
+    (By.XPATH, f"//button[contains({_X_LOWER_TEXT},'{_SORT_MOST_RELEVANT}') or "
+               f"contains({_X_LOWER_TEXT},'{_SORT_MOST_RECENT}')]"),
+]
+
+
+def _sort_option_locators(target: str) -> list:
+    """Menu-option locators for ONE sort, compared case-insensitively against the lowercase target.
+    An exact-case literal ('Most Recent') never matches LinkedIn's 'Most recent', and a sort flip
+    that can never find its option makes every absent comment read as unfindable instead of
+    demoted — the one reading this feature exists to produce."""
+    target = (target or "").strip().lower()
+    return [
+        (By.XPATH, "//*[self::button or @role='menuitem' or @role='menuitemradio']"
+                   f"[{_X_LOWER_TEXT}='{target}']"),
+        (By.XPATH, f"//*[{_X_LOWER_TEXT}='{target}']"),
+    ]
+
+# A rendered comment is truncated behind '…more' until expanded, so our comment is matched on a
+# truncation-proof normalized PREFIX (the #474 lesson applied to comment bodies), never full text.
+_COMMENT_MATCH_PREFIX_CHARS = 60
+
+# The reaction count sits on/next to the comment's own reactions control. Document order is what
+# scopes it: our comment's control precedes the nested replies inside the same container.
+_COMMENT_LIKE_COUNT_JS = (
+    "const c=arguments[0];"
+    "for(const el of c.querySelectorAll('button,span,a')){"
+    "  const t=((el.getAttribute('aria-label')||'')+' '+(el.innerText||'')).trim();"
+    "  const m=t.match(/([0-9][0-9.,]*[KMkm]?)\\s*(?:reaction|like)/i);"
+    "  if(m) return m[1];"
+    "}return '';")
+
+
+def _comment_sort_label(driver, wait) -> str:
+    """The comment sort currently applied, lowercased ('most relevant' / 'most recent'), or '' when
+    the control isn't present. '' is load-bearing: without knowing the sort we cannot say whether an
+    absent comment was demoted, so the visibility reading stays NULL rather than guessing."""
+    try:
+        btn = find_first(driver, wait, _COMMENT_SORT_LOCATORS, "Comment sort control", required=False)
+    except Exception:
+        return ""
+    if btn is None:
+        return ""
+    try:
+        text = f"{btn.get_attribute('aria-label') or ''} {btn.text or ''}".lower()
+    except Exception:
+        return ""
+    if _SORT_MOST_RECENT in text:
+        return _SORT_MOST_RECENT
+    if _SORT_MOST_RELEVANT in text:
+        return _SORT_MOST_RELEVANT
+    return ""
+
+
+def _switch_comment_sort(driver, wait, target: str = _SORT_MOST_RECENT) -> bool:
+    """Best-effort flip of the comment sort. True only when the control afterwards reports `target`
+    — an unverified flip would let 'not found here' be read as a demotion when the sort never
+    actually changed."""
+    try:
+        btn = find_first(driver, wait, _COMMENT_SORT_LOCATORS, "Comment sort control", required=False)
+        if btn is None:
+            return False
+        driver.execute_script("arguments[0].click();", btn)
+        time.sleep(random.uniform(1, 2))
+        opt = find_first(driver, wait, _sort_option_locators(target), f"{target} sort option",
+                         required=False)
+        if opt is None:
+            return False
+        driver.execute_script("arguments[0].click();", opt)
+        time.sleep(random.uniform(2, 3.5))
+        return _comment_sort_label(driver, wait) == target
+    except Exception as e:
+        log_warning("Comment sort switch failed", exc=e, action_type="scrape")
+        return False
+
+
+def _comment_text_matches(rendered: str, logged: str) -> bool:
+    """True when a rendered comment box is the comment we logged. Compares truncation-proof
+    normalized prefixes in BOTH directions, so a '…more'-collapsed render still matches the full
+    text we stored. Empty on either side never matches — two blank reads must not collide."""
+    a = _norm_prefix(rendered, _COMMENT_MATCH_PREFIX_CHARS)
+    b = _norm_prefix(logged, _COMMENT_MATCH_PREFIX_CHARS)
+    if not a or not b:
+        return False
+    return a.startswith(b) or b.startswith(a)
+
+
+def _href_is_profile(href: str, slug: str) -> bool:
+    """True when a profile href belongs to EXACTLY `slug`. A substring test — `f"/in/{slug}" in
+    href` — also matches every slug ours is a PREFIX of ('/in/chris' inside '/in/chris-queen-9b1'),
+    which would let a stranger's comment be read as ours and their reply be discounted as our own."""
+    if not slug:
+        return False
+    return _profile_slug(href or "") == str(slug).strip().lower()
+
+
+def _find_our_comment(items: list, our_slug: str, comment_text: str):
+    """Our comment's container within a rendered thread, or None.
+
+    Falls back to the single container authored by us when the text doesn't match: the
+    commented_posts ledger makes our automated commenting at-most-once per post, so one comment of
+    ours on the post IS this comment even when an @mention or emoji re-render broke the prefix
+    match. With several of ours present (a manual comment, a reply) the text has to decide."""
+    if not our_slug:
+        return None
+    ours = [(tb, cont) for (tb, cont, author) in items if _href_is_profile(author, our_slug)]
+    if not ours:
+        return None
+    for tb, cont in ours:
+        try:
+            text = tb.text or ""
+        except Exception:
+            continue
+        if _comment_text_matches(text, comment_text):
+            return cont
+    return ours[0][1] if len(ours) == 1 else None
+
+
+def _comment_like_count(driver, container) -> int:
+    """Reactions on one comment (0 when none/unreadable)."""
+    try:
+        return _parse_count(driver.execute_script(_COMMENT_LIKE_COUNT_JS, container) or "")
+    except Exception:
+        return 0
+
+
+def _thread_replies(driver, our_cont, items: list) -> list:
+    """[(container, author_href)] for the replies nested UNDER our comment. Replies are DOM-nested
+    inside their parent comment's container (#478 thread map), and `contains` is true for the node
+    itself, so our own container is excluded explicitly."""
+    out = []
+    for _tb, cont, author in items:
+        try:
+            nested = driver.execute_script(
+                "return arguments[0]!==arguments[1] && arguments[0].contains(arguments[1]);",
+                our_cont, cont)
+        except Exception:
+            continue
+        if nested:
+            out.append((cont, author or ""))
+    return out
+
+
+def _post_author_href(driver) -> str:
+    """The post author's profile href on a post permalink page — the first /in/ link under <main>
+    that is NOT inside the comment list (a commenter's link would otherwise win)."""
+    try:
+        return driver.execute_script(
+            "const root=document.querySelector('main')||document.body;"
+            "for(const a of root.querySelectorAll(\"a[href*='/in/']\")){"
+            "  if(!a.closest(\"[data-testid*='commentList']\")) return (a.href||'').split('?')[0];"
+            "}return '';") or ""
+    except Exception:
+        return ""
+
+
+def _read_comment_outcome(driver, wait, user_id: int, post_url: str, our_slug: str,
+                          comment_text: str) -> dict:
+    """Revisit ONE post and read what our comment there actually earned (issue #628).
+
+    Returns the kwargs `record_comment_outcome` takes. A post or comment we cannot find is a
+    graceful SKIP with a reason (deleted, private, removed) — never a fabricated zero, which would
+    drag the reply rate down with data we never observed.
+    """
+    outcome = {"status": "checked", "skip_reason": None, "author_replied": False,
+               "reply_count": 0, "like_count": 0, "visible_most_relevant": None,
+               "our_reply_sent": False}
+    driver.get(post_url)
+    time.sleep(random.uniform(2.5, 4))
+    _load_comment_thread(driver)
+
+    items = _comment_items(driver)
+    sort_label = _comment_sort_label(driver, wait)
+    ours = _find_our_comment(items, our_slug, comment_text)
+    visible = None
+    if ours is not None:
+        # Only the DEFAULT sort answers the question this feature exists to ask.
+        visible = True if sort_label == _SORT_MOST_RELEVANT else None
+    elif sort_label == _SORT_MOST_RELEVANT and _switch_comment_sort(driver, wait, _SORT_MOST_RECENT):
+        _load_comment_thread(driver)
+        items = _comment_items(driver)
+        ours = _find_our_comment(items, our_slug, comment_text)
+        # Present under 'Most recent' but absent from 'Most relevant' IS the demotion signal.
+        visible = False if ours is not None else None
+
+    outcome["visible_most_relevant"] = visible
+    if ours is None:
+        outcome["status"] = "skipped"
+        outcome["skip_reason"] = "post-unavailable" if not items else "comment-not-found"
+        log_info(f"Comment outcome skipped ({outcome['skip_reason']}) on {post_url}",
+                 user_id=user_id, action_type="scrape", task_name="sweep_comment_outcomes")
+        return outcome
+
+    replies = _thread_replies(driver, ours, items)
+    author_href = _post_author_href(driver)
+    author_slug = _profile_slug(author_href)
+    outcome["like_count"] = _comment_like_count(driver, ours)
+    outcome["reply_count"] = sum(1 for _c, a in replies if not _href_is_profile(a, our_slug))
+    outcome["our_reply_sent"] = any(_href_is_profile(a, our_slug) for _c, a in replies)
+    outcome["author_replied"] = bool(author_slug) and any(
+        _href_is_profile(a, author_slug) for _c, a in replies if not _href_is_profile(a, our_slug))
+    return outcome
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
+                  queue='se_engage')
+def sweep_comment_outcomes(self, user_id: int):
+    """Revisit comments we posted ~24h ago and record what each one earned — author replies, likes,
+    thread replies, and whether it is still visible under LinkedIn's default 'Most relevant' sort
+    (issue #628). Read-only on LinkedIn: it navigates and reads, it never comments or reacts."""
+    return _run_comment_outcomes_sweep(user_id)
+
+
+def _run_comment_outcomes_sweep(user_id: int) -> str:
+    """Body of sweep_comment_outcomes, extracted so it is unit-testable without the QueueOnce/Redis
+    task wrapper."""
+    targets = get_comment_outcome_targets(user_id, min_age_hours=_OUTCOME_MIN_AGE_HOURS,
+                                          max_age_hours=_OUTCOME_MAX_AGE_HOURS,
+                                          limit=_MAX_OUTCOME_CHECKS_PER_RUN)
+    if not targets:
+        return "No comments due an outcome check"
+    lock_name = f"sweep_comment_outcomes:{user_id}"
+    lock_token = acquire_run_lock(lock_name, ttl_seconds=1800)
+    if lock_token is None:
+        return "Skipped — another outcome sweep in progress"
+    try:
+        driver, wait, _email, my_profile = get_current_profile(user_id=user_id,
+                                                              session_name="Comment Outcomes")
+    except LinkedInRateLimited as e:
+        log_warning("Comment outcome sweep skipped — rate-limited", exc=e, user_id=user_id,
+                    task_name="sweep_comment_outcomes")
+        release_run_lock(lock_name, lock_token)
+        return "Skipped — rate limited"
+    except Exception as e:
+        log_error("Error starting comment outcome sweep", exc=e, user_id=user_id,
+                  task_name="sweep_comment_outcomes")
+        release_run_lock(lock_name, lock_token)
+        return f"Failed to start comment outcome sweep: {e}"
+    try:
+        our_slug = _profile_slug(str(my_profile.profile_url))
+        if not our_slug:
+            log_warning("Comment outcomes: no profile slug — cannot identify our own comments",
+                        user_id=user_id, task_name="sweep_comment_outcomes")
+            return "Skipped — no profile slug"
+        checked = skipped = 0
+        for row in targets:
+            key = row.get("post_url")
+            url = _post_url_from_key(key)
+            if not url:
+                continue
+            try:
+                outcome = _read_comment_outcome(driver, wait, user_id, url, our_slug,
+                                                row.get("message") or "")
+            except Exception as e:
+                log_warning("Comment outcome check failed", exc=e, user_id=user_id,
+                            task_name="sweep_comment_outcomes")
+                continue
+            record_comment_outcome(user_id, row.get("log_id"), post_key=key, **outcome)
+            track_comment_outcome(user_id, row.get("log_id"), outcome, post_key=key)
+            if outcome["status"] == "skipped":
+                skipped += 1
+            else:
+                checked += 1
+            time.sleep(random.uniform(4, 9))  # human pacing between post visits
+        return f"Comment outcomes: checked {checked}, skipped {skipped} of {len(targets)} comment(s)"
     finally:
         quit_gracefully(driver)
         release_run_lock(lock_name, lock_token)

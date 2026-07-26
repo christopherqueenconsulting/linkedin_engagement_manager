@@ -134,6 +134,20 @@ app.conf.update(
             # question-replies on our automated comments (issue #478).
             'schedule': crontab(minute='0', hour='*/6')
         },
+        'dispatch-comment-outcome-sweeps': {
+            'task': 'cqc_lem.app.run_scheduler.dispatch_comment_outcome_sweeps',
+            # Daily 08:00 UTC; a per-user 20h Redis interval gates it to ~once a day. Read-only
+            # revisit of ~24h-old comments to record replies/likes/'Most relevant' visibility
+            # (issue #628). Clear of the 06:00 Stripe sync and the golden-hour engagement windows.
+            'schedule': crontab(hour='8', minute='0')
+        },
+        'weekly-comment-quality': {
+            'task': 'cqc_lem.app.run_scheduler.auto_weekly_comment_quality',
+            # Mondays 08:45 UTC — after that morning's outcome sweep has landed, so the week's score
+            # includes the freshest readings. Holds commenting for a user whose comments are being
+            # demoted out of 'Most relevant' (issue #628).
+            'schedule': crontab(hour='8', minute='45', day_of_week='monday')
+        },
         'generate-newsletter-drafts': {
             'task': 'cqc_lem.app.run_scheduler.auto_generate_newsletter_drafts',
             'schedule': crontab(hour='10', minute='0')  # Daily: top up each user's newsletter draft queue for review

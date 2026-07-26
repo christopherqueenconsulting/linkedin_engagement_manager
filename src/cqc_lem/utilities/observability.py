@@ -498,6 +498,62 @@ def track_audience_snapshot(
     )
 
 
+def track_comment_outcome(
+    user_id: Optional[int],
+    log_id: Optional[int],
+    outcome: Optional[dict] = None,
+    **extra,
+) -> None:
+    """Emit one comment-outcome reading (issue #628) so comment→reply rate and the 'Most relevant'
+    demotion signal are queryable next to the post outcomes they were meant to drive.
+    `visible_most_relevant` stays None when the read was ambiguous — a boolean there would read as
+    a confirmed verdict the DOM never gave us."""
+    outcome = dict(outcome or {})
+    posthog.capture(
+        distinct_id=str(user_id or "system"),
+        event="comment_outcome",
+        properties={
+            "user_id": user_id,
+            "log_id": log_id,
+            "status": outcome.get("status"),
+            "skip_reason": outcome.get("skip_reason"),
+            "author_replied": bool(outcome.get("author_replied")),
+            "reply_count": int(outcome.get("reply_count") or 0),
+            "like_count": int(outcome.get("like_count") or 0),
+            "visible_most_relevant": outcome.get("visible_most_relevant"),
+            "our_reply_sent": bool(outcome.get("our_reply_sent")),
+            **extra,
+        },
+    )
+
+
+def track_comment_quality(user_id: Optional[int], report: Optional[dict] = None, **extra) -> None:
+    """Emit the weekly per-user comment-quality scorecard (issue #628) — reply/like rates plus the
+    demotion rate and the verdict that gates commenting — as one `comment_quality` event, so a hold
+    is queryable next to the rates that caused it and a PostHog alert can page off it."""
+    report = dict(report or {})
+    verdict = dict(report.get("verdict") or {})
+    posthog.capture(
+        distinct_id=str(user_id or "system"),
+        event="comment_quality",
+        properties={
+            "user_id": user_id,
+            "days": report.get("days"),
+            "sample_size": report.get("sample_size"),
+            "checked": report.get("checked"),
+            "skipped": report.get("skipped"),
+            "author_reply_rate": report.get("author_reply_rate"),
+            "reply_rate": report.get("reply_rate"),
+            "like_rate": report.get("like_rate"),
+            "demotion_rate": report.get("demotion_rate"),
+            "visibility_sample": report.get("visibility_sample"),
+            "verdict": verdict.get("status"),
+            "verdict_reason": verdict.get("reason"),
+            **extra,
+        },
+    )
+
+
 def track_pre_post_engagement(post_id: int, user_id: Optional[int], status: str, **extra) -> None:
     """Emit the per-post pre-post engagement-window marker (issue #547) — dispatched, skipped (with
     the reason) or ran (with the comment count) — so a report can confirm the warm-up before a post

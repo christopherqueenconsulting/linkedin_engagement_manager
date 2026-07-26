@@ -56,12 +56,29 @@ interface ContentMix {
   compliant: boolean
 }
 
+// Comment outcome tracking (#628). Every rate is nullable — an empty window has no reply rate, and
+// rendering 0% would read as "nobody ever replies" rather than "nothing measured yet".
+interface CommentQuality {
+  days: number
+  sample_size: number
+  checked: number
+  skipped: number
+  author_reply_rate: number | null
+  reply_rate: number | null
+  like_rate: number | null
+  demotion_rate: number | null
+  visibility_sample: number
+  verdict: { status: string; reason: string }
+  hold: { active: boolean; reason: string | null; seconds_remaining: number }
+}
+
 interface Analytics {
   per_post: PerPost[]
   trend: TrendPoint[]
   sample_size: number
   days: number
   content_mix?: ContentMix
+  comment_quality?: CommentQuality
 }
 
 // Follower & audience telemetry (#627). Every count is nullable: a capture that could not read a
@@ -287,6 +304,7 @@ export default function Dashboard() {
   const trend = analytics?.trend ?? []
   const hasAnalytics = (analytics?.sample_size ?? 0) > 0
   const mix = analytics?.content_mix
+  const commentQuality = analytics?.comment_quality
 
   const rateTrend: LinePoint[] = trend.map((t) => ({ x: shortDate(t.date), y: t.engagement_rate }))
   const impressionTrend: LinePoint[] = trend.map((t) => ({ x: shortDate(t.date), y: t.impressions }))
@@ -462,6 +480,63 @@ export default function Dashboard() {
                 artifact CTA — never a meeting ask.
                 {(mix.counts.unclassified ?? 0) > 0 &&
                   ` ${mix.counts.unclassified} older post(s) predate the mix governor and are not counted.`}
+              </p>
+            </div>
+          )}
+
+          {/* Comment outcomes (#628) — did our comments earn replies, and are they still visible? */}
+          {commentQuality && commentQuality.sample_size > 0 && (
+            <div>
+              <div className="flex items-baseline justify-between mb-2">
+                <h3 className="text-sm font-semibold text-gray-700">
+                  Comment outcomes{' '}
+                  <span className="font-normal text-gray-400">
+                    ({commentQuality.checked} checked, {commentQuality.skipped} not found)
+                  </span>
+                </h3>
+                <span
+                  className={`text-xs px-2 py-0.5 rounded-full ${
+                    commentQuality.hold.active || commentQuality.verdict.status === 'hold'
+                      ? 'bg-red-100 text-red-700'
+                      : commentQuality.verdict.status === 'watch'
+                        ? 'bg-yellow-100 text-yellow-700'
+                        : 'bg-green-100 text-green-700'
+                  }`}
+                >
+                  {commentQuality.hold.active ? 'Commenting held' : commentQuality.verdict.status}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <div>
+                  <p className="text-2xl font-bold text-gray-800">
+                    {formatPct(commentQuality.author_reply_rate)}
+                  </p>
+                  <p className="text-xs text-gray-500 mt-0.5">Author replied</p>
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-gray-800">{formatPct(commentQuality.reply_rate)}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">Earned any reply</p>
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-gray-800">{formatPct(commentQuality.like_rate)}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">Earned a like</p>
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-gray-800">
+                    {formatPct(commentQuality.demotion_rate)}
+                  </p>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Demoted ({commentQuality.visibility_sample} readable)
+                  </p>
+                </div>
+              </div>
+              <p className="text-xs text-gray-400 mt-2">
+                {commentQuality.hold.active
+                  ? `Feed commenting is paused: ${commentQuality.hold.reason ?? 'comment quality'}.`
+                  : commentQuality.verdict.reason}{' '}
+                "Demoted" means the comment was absent from LinkedIn's default "Most relevant" view
+                but still present under "Most recent"; comments we could not read either way are
+                excluded rather than counted as healthy.
               </p>
             </div>
           )}
