@@ -33,10 +33,12 @@ from cqc_lem.utilities.db import get_recent_post_texts, update_db_post_authentic
 from cqc_lem.utilities.db import get_story_bank_entries, record_story_bank_use
 from cqc_lem.utilities.quality_gates import (authenticity_finding, similarity_finding,
                                              focus_finding, missing_asset_finding,
-                                             meeting_cta_finding, demoting_findings)
+                                             meeting_cta_finding, fact_grounding_finding,
+                                             demoting_findings)
 from cqc_lem.utilities.ai.content_framework import select_blueprint, history_avoidance_directive, \
     find_most_similar, post_similarity_max, has_first_person_proof, shape_for_dwell, dwell_report, \
-    dwell_score_min
+    dwell_score_min, requires_fact_anchor, fact_grounding_report, fact_retry_directive, \
+    fact_anchored_formats
 from cqc_lem.utilities.ai.content_alignment import (
     should_include_lead_magnet_cta, lead_magnet_cta_directive, ensure_lead_magnet_cta,
     personal_proof_directive, topic_authority_score, topic_authority_min, profile_topic_dna,
@@ -285,6 +287,80 @@ def create_content(user_id: int, post_type: str, stage: str, post_id: int = None
     return content, video_url
 
 
+def _fact_anchors(user_id: int) -> list:
+    """The VERIFIED, human-sourced facts a fact-anchored archetype's specifics are CHECKED against
+    (issue #619 / G4) — the numbers a draft is allowed to have written down. The story bank
+    (issue #620 / G5) is that source, and this is every active entry, not just the one entry a given
+    post was anchored to: a number out of the user's own material is by definition not something the
+    model invented, and falsely calling a real figure fabricated is the one error the guard must not
+    make. What the WRITER may state is narrower — see the anchors handed to `blueprint_directive`.
+
+    An empty or unreadable bank returns [], which runs everything downstream in its strictest mode:
+    every specific must ship as a marked placeholder, and a draft that stated one anyway is held for
+    review. Never raises — a bank read that fails costs the credit, never the post."""
+    try:
+        entries = get_story_bank_entries(user_id, active_only=True)
+    except Exception as e:
+        myprint(f"Story bank unavailable (no verified fact anchors): {e}")
+        return []
+    return [source for entry in (entries or []) for source in _story_bank.fact_sources(entry)]
+
+
+def _fact_anchors_for(user_id: int, archetype: Optional[str]) -> list:
+    """The verified facts for the gate pass on THIS post — read only when the post's archetype is
+    actually fact-anchored, so an ordinary post never pays for a story-bank read it cannot use."""
+    return _fact_anchors(user_id) if requires_fact_anchor("post", archetype) else []
+
+
+def _select_post_blueprint(user_id: int, prefer_save_targeted: bool = False,
+                           guidance: Optional[str] = None,
+                           exclude_formats: Optional[list] = None) -> dict:
+    """ONE assigned SHAPE from the shared framework core: rotate away from this user's recently used
+    archetypes/hook styles (V51 history) and bias away from the ones that historically
+    under-perform (#389). Chosen in code — no extra LLM call. `guidance` pins the archetype when the
+    slot dictates it (the 70/20/10 promo slot needs a case study — #618); `prefer_save_targeted` only
+    biases toward one, and `exclude_formats` takes archetypes off the menu for a caller that cannot
+    honor their contract. Every input is best-effort: a history or performance read that fails costs
+    the steering, never the post."""
+    try:
+        shape_history = get_recent_post_shape_history(user_id)
+    except Exception as e:
+        myprint(f"Could not load post shape history (rotating without it): {e}")
+        shape_history = []
+    try:
+        performance = get_shape_performance(user_id)
+    except Exception as e:
+        myprint(f"Could not load shape performance (selecting without it): {e}")
+        performance = None
+    return select_blueprint(
+        "post",
+        recent_formats=[h.get("archetype") for h in shape_history if h.get("archetype")],
+        recent_hook_styles=[h.get("hook_style") for h in shape_history if h.get("hook_style")],
+        performance=performance,
+        prefer_save_targeted=prefer_save_targeted,
+        exclude_formats=exclude_formats,
+        guidance=guidance)
+
+
+def _select_carousel_blueprint(user_id: int, fact_anchors: Optional[list] = None) -> Optional[dict]:
+    """The carousel's shape — the same post menu, biased toward the save-targeted archetypes since a
+    document post is where a saved reference actually lives. Both halves of that hang on having
+    verified facts: with none, the fact-anchored archetypes are taken OFF the carousel menu entirely
+    (not merely un-preferred), because their no-fabrication contract ships every specific as a
+    `[[…]]` placeholder — and a carousel bakes its text into rendered slide IMAGES, which no edit or
+    re-score can ever fix. The caller passes the anchors it already read so the bank is read once per
+    carousel. Never raises — a carousel that loses its archetype still generates from the
+    generic slide guidance."""
+    try:
+        anchors = _fact_anchors(user_id) if fact_anchors is None else fact_anchors
+        return _select_post_blueprint(
+            user_id, prefer_save_targeted=bool(anchors),
+            exclude_formats=None if anchors else fact_anchored_formats("post"))
+    except Exception as e:
+        myprint(f"Could not select a carousel archetype (using generic slide guidance): {e}")
+        return None
+
+
 @attribute_llm_cost(FEATURE_CONTENT)
 def create_carousel_content(user_id: int, stage: str, post_id: int = None,
                             template: Optional[str] = None) -> str:
@@ -307,9 +383,18 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
     except Exception as e:
         myprint(f"Could not load profile synthesis for carousel: {e}")
         profile_synthesis = None
+
+    # Carousels draw their SHAPE from the same shared post menu as text posts (issue #619 / G4) and
+    # rotate against the same V51 shape history, so a build receipt can land as a document post —
+    # and so a carousel archetype counts against the next text post's rotation.
+    fact_anchors = _fact_anchors(user_id)
+    blueprint = _select_carousel_blueprint(user_id, fact_anchors)
     post_text, carousel_dict = generate_carousel_content(user_id, stage, prefs=prefs,
-                                                         profile_synthesis=profile_synthesis)
-    myprint(f"Carousel AI content generated for user_id={user_id} stage={stage}")
+                                                         profile_synthesis=profile_synthesis,
+                                                         blueprint=blueprint,
+                                                         fact_anchors=fact_anchors)
+    myprint(f"Carousel AI content generated for user_id={user_id} stage={stage} "
+            f"archetype={(blueprint or {}).get('format')}")
 
     # Map stage to carousel model class
     stage_lower = (stage or "").lower()
@@ -373,6 +458,15 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
         # Couldn't build a valid carousel model — flag for manual fix rather than degrade.
         update_db_post_status(post_id, PostStatus.ERROR)
         myprint(f"Post {post_id} flagged 'error' — could not generate a valid carousel model.")
+
+    # Same V51 shape history text posts write, so a carousel's archetype/hook is what the NEXT
+    # piece rotates away from — one rotation across both, never two drifting ones.
+    if post_id is not None and blueprint:
+        try:
+            update_db_post_shape(post_id, blueprint.get("format"), blueprint.get("hook_style"),
+                                 topic=blueprint.get("subject"))
+        except Exception as e:
+            myprint(f"Could not persist carousel shape for post {post_id}: {e}")
 
     return post_text
 
@@ -770,7 +864,10 @@ def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, s
                         authenticity_score: Optional[int] = None,
                         recent_texts: Optional[list[str]] = None,
                         user_profile: Optional[LinkedInProfile] = None,
-                        profile_synthesis: Optional[str] = None) -> list[dict]:
+                        profile_synthesis: Optional[str] = None,
+                        archetype: Optional[str] = None,
+                        fact_anchors: Optional[list] = None,
+                        author_edited: bool = False) -> list[dict]:
     """Run the quality gates over a FINISHED post and return their structured findings (issue #421).
 
     One evaluator for both callers: the content-plan status-setter (which knows the freshly persisted
@@ -801,6 +898,18 @@ def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, s
         if score > threshold:
             findings.append(similarity_finding(score, threshold, match))
 
+    # No-fabrication guard (issue #619 / G4): only the save-targeted archetypes whose value IS the
+    # specifics. A draft that invented a number is held; so is one that honestly deferred its
+    # numbers to placeholders — those need the author's real figures before it can publish.
+    # `author_edited` marks a re-score of text a HUMAN has since edited: the guard exists to stop
+    # the MODEL inventing specifics, so the author's own numbers are verified by definition and only
+    # unfilled placeholders can still hold the post — otherwise filling them in could never clear it.
+    if content and requires_fact_anchor("post", archetype):
+        report = fact_grounding_report(content, fact_anchors)
+        unverified = [] if author_edited else report["unverified_values"]
+        if unverified or report["placeholders"]:
+            findings.append(fact_grounding_finding(unverified, report["placeholders"]))
+
     topics = [str(t).strip() for t in (prefs.get("focus_topics") or []) if str(t).strip()]
     if content and topics:
         headline, about = profile_topic_dna(user_profile, profile_synthesis)
@@ -825,15 +934,29 @@ def _gate_findings_for_post(user_id: int, post_id: int, content: str,
         # DB hiccup would let an assetless video post auto-approve.
         myprint(f"Could not read the authenticity score for post {post_id}: {e}")
         score = None
+    archetype = _post_archetype_or_none(post_id)
     try:
         return evaluate_post_gates(
             post_id, content, post_type, video_url,
             engagement_prefs=_engagement_prefs_or_empty(user_id),
-            authenticity_score=score)
+            authenticity_score=score,
+            archetype=archetype,
+            fact_anchors=_fact_anchors_for(user_id, archetype))
     except Exception as e:
         log_warning("Could not evaluate the quality gates for this post", exc=e,
                     user_id=user_id, post_id=post_id, task_name="create_content")
         return []
+
+
+def _post_archetype_or_none(post_id: int) -> Optional[str]:
+    """The post's assigned archetype (V51), never raising — an unreadable one just means the
+    archetype-specific gates are skipped for this pass, exactly like an unreadable score does."""
+    try:
+        from cqc_lem.utilities.db import get_post_archetype
+        return get_post_archetype(post_id)
+    except Exception as e:
+        myprint(f"Could not read the archetype for post {post_id}: {e}")
+        return None
 
 
 def _persist_gate_findings(user_id: int, post_id: int, findings: list[dict]) -> None:
@@ -889,12 +1012,17 @@ def rescore_post(post_id: int) -> dict:
     _score_and_persist_authenticity(user_id, post_id, content, user_profile, profile_synthesis, prefs)
     score = get_post_authenticity_score(post_id)
 
+    archetype = _post_archetype_or_none(post_id)
     findings = evaluate_post_gates(
         post_id, content, post_type, get_post_video_url(post_id), engagement_prefs=prefs,
         authenticity_score=score,
         # The post is already saved, so it would match ITSELF at 100% without this exclusion.
         recent_texts=get_recent_post_texts(user_id, exclude_post_id=post_id),
-        user_profile=user_profile, profile_synthesis=profile_synthesis)
+        user_profile=user_profile, profile_synthesis=profile_synthesis,
+        # Re-runs the no-fabrication guard against the EDITED text, so filling the placeholders in
+        # with real numbers is what clears the hold.
+        archetype=archetype, fact_anchors=_fact_anchors_for(user_id, archetype),
+        author_edited=True)
     _persist_gate_findings(user_id, post_id, findings)
 
     passed = not demoting_findings(findings)
@@ -965,11 +1093,14 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
     """The post-generation REVIEW GATE (the newsletter's dedup maturity applied to posts): compare
     the finished post against the user's recent posts with the deterministic token-set overlap in
     content_framework, check the A2 personal-proof slot (a concrete first-person lived detail), AND
-    check that every first-person specific traces back to the user's story-bank entry. Too similar
-    (> POST_SIMILARITY_MAX), missing proof, or fabricated specifics → regenerate ONCE with an
-    explicit avoid/proof/no-invention directive; still failing → log a structured warning and keep
-    the second attempt (never loop, never hard-block). Also runs the cheap focus-alignment check on
-    whatever content ships."""
+    check that every first-person specific traces back to the user's story-bank entry. On a
+    fact-anchored archetype (#619) the numbers get a second pass too — any figure the post asserts
+    that NOTHING in the user's verified bank backs. Too similar (> POST_SIMILARITY_MAX),
+    missing proof, fabricated specifics, or unverified numbers → regenerate ONCE with an explicit
+    avoid/proof/no-invention directive; still failing → log a structured warning and keep the second
+    attempt (never loop, never hard-block — the fact-grounding GATE is what holds a still-fabricating
+    fact-anchored draft out of auto-publish). Also runs the cheap focus-alignment check on whatever
+    content ships."""
     threshold = post_similarity_max(prefs)
     score, match = find_most_similar(content, recent_texts)
     too_similar = score > threshold
@@ -977,8 +1108,16 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
     proof_regen = missing_proof and _proof_regen_enabled()
     fabricated = _fabricated_specifics(content, story, profile_synthesis)
     fabrication_regen = bool(fabricated) and _fabrication_regen_enabled()
+    # No-fabrication guard (issue #619 / G4) — only on the archetypes whose value IS the specifics.
+    # Checked against the user's verified story bank (#620 / G5), so a real number out of their own
+    # material passes and only an invented one is flagged. The story-exact check above is the
+    # stricter of the two and stays responsible for first-person specifics.
+    fact_anchored = requires_fact_anchor("post", (blueprint or {}).get("format"))
+    anchors = _fact_anchors(user_id) if fact_anchored else []
+    fact_report = fact_grounding_report(content, anchors) if fact_anchored else None
+    unverified = bool(fact_report and fact_report["unverified"])
 
-    if not too_similar and not proof_regen and not fabrication_regen:
+    if not too_similar and not proof_regen and not fabrication_regen and not unverified:
         if missing_proof:
             log_warning("Generated post lacks a concrete first-person lived detail (A2 proof slot)",
                         user_id=user_id, post_id=post_id, task_name="create_text_post")
@@ -996,6 +1135,9 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
         reasons.append("missing a concrete first-person lived detail (A2 proof slot)")
     if fabrication_regen:
         reasons.append(f"states unsourced first-person specifics ({', '.join(fabricated)})")
+    if unverified:
+        reasons.append("states specifics no verified fact backs ("
+                       + ", ".join(fact_report["unverified_values"][:5]) + ")")
     myprint(f"Post {'; '.join(reasons)} — retrying once with an explicit avoid/proof directive")
 
     retry_directive = history_avoidance_directive(
@@ -1004,6 +1146,8 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
         retry_directive += personal_proof_directive(profile_synthesis)
     if fabrication_regen:
         retry_directive += _story_bank.fabrication_repair_directive(fabricated)
+    if unverified:
+        retry_directive += fact_retry_directive(fact_report)
     try:
         second = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=True,
                                   blueprint=blueprint, post_id=post_id,
@@ -1031,6 +1175,10 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
     if still_fabricated:
         log_warning(f"Post still states first-person specifics not in the story bank after retry "
                     f"({', '.join(still_fabricated)}); keeping second attempt",
+                    user_id=user_id, post_id=post_id, task_name="create_text_post")
+    if fact_report is not None and fact_grounding_report(second, anchors)["unverified"]:
+        log_warning("Post still states unverified specifics after retry — the fact-grounding gate "
+                    "will hold it for review",
                     user_id=user_id, post_id=post_id, task_name="create_text_post")
     _check_post_alignment(second, prefs, user_id, post_id, user_profile, profile_synthesis)
     return second
@@ -1114,26 +1262,13 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
     # ONE assigned SHAPE per post from the SHARED framework core (content_framework): rotate away
     # from this user's recently used post archetypes/hook styles (V51 history) exactly the way
     # newsletter editions rotate — chosen in code, no extra LLM call.
+    # Close the feedback loop (issue #389 / B4): bias shape selection away from the user's
+    # historically under-performing archetypes/hooks while keeping rotation + exploration.
     if blueprint is None:
-        try:
-            shape_history = get_recent_post_shape_history(user_id)
-        except Exception as e:
-            myprint(f"Could not load post shape history (rotating without it): {e}")
-            shape_history = []
-        # Close the feedback loop (issue #389 / B4): bias shape selection away from the user's
-        # historically under-performing archetypes/hooks while keeping rotation + exploration.
-        try:
-            performance = get_shape_performance(user_id)
-        except Exception as e:
-            myprint(f"Could not load shape performance (selecting without it): {e}")
-            performance = None
         # The promo slot's shape is not negotiable: the governor requires a case study (client as
         # hero, real outcome number), so it is hinted into selection rather than left to rotation.
-        blueprint = select_blueprint(
-            "post",
-            recent_formats=[h.get("archetype") for h in shape_history if h.get("archetype")],
-            recent_hook_styles=[h.get("hook_style") for h in shape_history if h.get("hook_style")],
-            performance=performance,
+        blueprint = _select_post_blueprint(
+            user_id,
             guidance="case_snapshot" if content_mix == ContentMix.PROMO.value else None)
     myprint(f"Post blueprint: format={blueprint.get('format')} hook={blueprint.get('hook_style')} "
             f"cta={blueprint.get('cta_style')}")
@@ -1148,6 +1283,13 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
     if story_directive is None:
         story = _select_story_for_post(user_id, prefs, blueprint)
         story_directive = _story_bank.story_directive(story)
+        # The no-fabrication allow-list a fact-anchored archetype (#619) writes against is exactly
+        # the entry it was handed — a number from some OTHER bank entry was never in this prompt, so
+        # the writer stating one would still be inventing. Carried ON the blueprint because that is
+        # what every post-prompt builder (and the recursive type fallbacks) already thread through —
+        # on a copy, so a blueprint the caller owns is never mutated behind its back.
+        blueprint = {**blueprint,
+                     "fact_anchors": _story_bank.fact_sources(story) if story else []}
         if story:
             myprint(f"Story bank anchor for post_id={post_id}: "
                     f"[{story.get('kind')}] {story.get('title')}")

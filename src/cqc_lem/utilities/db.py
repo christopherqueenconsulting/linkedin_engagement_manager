@@ -1627,6 +1627,24 @@ def get_recent_post_shape_history(user_id: int, limit: int = 10) -> list:
         connection.close()
 
 
+def get_post_archetype(post_id: int) -> Optional[str]:
+    """The short-form ARCHETYPE assigned to one post (V51 `posts.archetype`). The quality gates read
+    it back so the archetype-specific checks (the no-fabrication guard on a build receipt, issue
+    #619) know which contract this draft was written to."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT archetype FROM posts WHERE id = %s", (post_id,))
+        row = cursor.fetchone()
+        return row[0] if row else None
+    except mysql.connector.Error as err:
+        myprint(f"Could not get archetype for post {post_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_recent_post_texts(user_id: int, limit: int = 20,
                           exclude_post_id: Optional[int] = None) -> list:
     """Recent post CONTENT (pending/approved/posted, most-recent first) — the post-side dedup

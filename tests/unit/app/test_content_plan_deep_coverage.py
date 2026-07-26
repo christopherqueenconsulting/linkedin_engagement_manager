@@ -162,7 +162,9 @@ class TestCreateTextPost:
             result = create_text_post(1, "awareness", post_type="thought_leadership",
                                       user_profile=_profile(), post_id=42)
         assert result == "refined:TL post"
-        assert m["tl"].call_args[1]["blueprint"] == _BLUEPRINT
+        # The assigned shape, plus the post's verified-fact allow-list (#619) — empty here because
+        # this harness gives the user no story-bank entries.
+        assert m["tl"].call_args[1]["blueprint"] == {**_BLUEPRINT, "fact_anchors": []}
         m["shape_save"].assert_called_once_with(42, "listicle", "question", topic=None)
 
     def test_industry_news_and_personal_story_and_prompt(self):

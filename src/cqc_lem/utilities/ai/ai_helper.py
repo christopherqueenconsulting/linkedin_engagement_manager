@@ -2922,8 +2922,13 @@ _CAROUSEL_CAPTION_MAX_CHARS = 2200
 
 
 def generate_carousel_content(user_id: int, stage: str, prefs: dict = None,
-                              profile_synthesis: str = None) -> tuple[str, dict]:
+                              profile_synthesis: str = None, blueprint: dict = None,
+                              fact_anchors: list = None) -> tuple[str, dict]:
     """Generate structured carousel content using AI and return (post_text, carousel_dict).
+
+    An assigned `blueprint` (issue #619 / G4) maps a SHORT-FORM POST ARCHETYPE onto the slides — a
+    build receipt renders naturally as a document post, LinkedIn's highest-multiplier format — so
+    carousels rotate through the same shared menu as text posts instead of a carousel-only prompt.
 
     The carousel_dict matches the schema of one of the carousel models in carousel_creator.py.
     The carousel type is chosen by buyer journey stage:
@@ -3014,6 +3019,11 @@ Return ONLY valid JSON. No explanation, no markdown fences."""
     # slide-by-slide dwell, so it must read as a reusable checklist/playbook, not an announcement.
     # Shared directive from the framework core — never a parallel per-content-type prompt helper.
     prompt += _framework.save_worthy_directive("carousel")
+
+    # The assigned post archetype's beats, mapped onto the slides (issue #619 / G4). Carries the
+    # number-led hook constraints and the no-fabrication rules with it for a fact-anchored
+    # archetype, so a build-receipt carousel can no more invent a metric than a text one can.
+    prompt += _framework.carousel_blueprint_directive(blueprint, fact_anchors)
 
     # Same alignment core as text posts: voice synthesis when available, prefs steering, and the
     # hard anti-self-promo guardrail — carousels must not drift while text posts stay aligned.

@@ -35,6 +35,11 @@ _NO_PROOF = ("Authenticity is what wins on LinkedIn.\n\nI believe leaders build 
              "and adding value. We should all strive to be genuine and put people first, always.")
 
 
+# A post archetype with no fact-anchor contract, so only the gates under test can fire.
+_NEUTRAL_BLUEPRINT = {"subject": None, "angle": "", "format": "personal_lesson",
+                      "structure": [], "hook_style": "micro_story", "cta_style": "reply_question"}
+
+
 def _run(outputs, recent=None, prefs=None, post_id=77, log=None):
     """Drive create_text_post with a generator that returns `outputs` in order."""
     from cqc_lem.app import run_content_plan as rcp
@@ -45,6 +50,10 @@ def _run(outputs, recent=None, prefs=None, post_id=77, log=None):
         patch(f"{_RCP}.get_lead_magnet_settings", return_value=_DISABLED_LM),
         patch(f"{_RCP}.get_recent_post_texts", return_value=list(recent or [])),
         patch(f"{_RCP}.get_recent_post_shape_history", return_value=[]),
+        # Pin the assigned shape: the similarity/proof gates under test are shape-independent, but
+        # a randomly-rotated FACT-ANCHORED archetype (issue #619) would add its own no-fabrication
+        # retry and make these call-count assertions depend on the roll of the rotation.
+        patch(f"{_RCP}._select_post_blueprint", return_value=dict(_NEUTRAL_BLUEPRINT)),
         patch(f"{_RCP}.update_db_post_shape"),
         patch(f"{_RCP}.get_thought_leadership_post_from_ai", gen),
         # Identity refinement passes so the gate sees the generator output verbatim.

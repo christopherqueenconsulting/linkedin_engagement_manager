@@ -63,7 +63,10 @@ class TestPostShapeRotation:
     def test_explicit_blueprint_skips_history_lookup(self):
         bp_in = {"format": "tactical_list", "hook_style": "bold_claim", "cta_style": "save_worthy"}
         out, captured, hist, save, _ = _run(blueprint=bp_in)
-        assert captured["blueprint"] is bp_in
+        # The assigned shape rides through untouched; the writer's copy additionally carries the
+        # post's verified-fact allow-list (#619), and the caller's dict is left alone.
+        assert captured["blueprint"].items() >= bp_in.items()
+        assert "fact_anchors" not in bp_in
         hist.assert_not_called()
         save.assert_called_once_with(77, "tactical_list", "bold_claim", topic=None)
 
