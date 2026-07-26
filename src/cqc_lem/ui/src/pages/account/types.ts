@@ -10,6 +10,10 @@ export type EngPrefs = {
   exclude_keywords: string[]
   include_authors: string[]
   exclude_authors: string[]
+  // Round-tripped, not edited: the PUT model defaults these and the upsert writes the WHOLE row, so
+  // omitting them from this type made every save from the SPA silently reset both columns (F2).
+  post_types: string[]
+  default_buyer_stage: string | null
   focus_topics: string[]
   business_goals: string | null
   personal_goals: string | null
@@ -43,6 +47,20 @@ export type EngPrefs = {
   // Read-only: the deploy-wide gate thresholds used when the user hasn't set their own.
   gate_defaults?: { authenticity_score_min: number; post_similarity_max_pct: number }
   feed_reach?: FeedReach | null
+  // Read-only: false when the user has never saved engagement preferences, so the hub can start a
+  // brand-new account on the Balanced preset without ever touching an existing user's saved values.
+  has_saved_preferences?: boolean
+}
+
+// What the /user/settings endpoint stores — one PUT for the whole object, so every control that
+// edits any of these fields must share one piece of state (omitting a field resets it server-side).
+export type UserPrefs = {
+  last_login_inactivate_delay: number | null
+  auto_schedule_posts: boolean
+  content_language: string | null
+  effective_content_language?: string | null
+  content_buffer_days: number
+  content_buffer_max_posts: number
 }
 
 export type GmailForwardConfirmation = {

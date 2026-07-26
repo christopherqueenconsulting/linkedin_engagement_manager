@@ -2,51 +2,13 @@ import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useAccountReadiness } from '../hooks/useAccountReadiness'
-import SubscriptionCard from './account/SubscriptionCard'
-import VideoCreditsCard from './account/VideoCreditsCard'
-import TimezoneCard from './account/TimezoneCard'
-import LoginLocationCard from './account/LoginLocationCard'
-import InactivityCard from './account/InactivityCard'
-import LinkedInLoginCard from './account/LinkedInLoginCard'
-import CompanyPageCard from './account/CompanyPageCard'
-import ContentProfileCard from './account/ContentProfileCard'
-import NewsletterCard from './account/NewsletterCard'
-import EngagementSettingsCard from './account/EngagementSettingsCard'
-import GroupsCard from './account/GroupsCard'
-import DmTemplatesCard from './account/DmTemplatesCard'
-import LeadMagnetCard from './account/LeadMagnetCard'
-import { SettingsSaveProvider, SaveAllBar } from './account/SettingsSaveContext'
-
-type TabKey = 'account' | 'linkedin' | 'content' | 'automation'
-
-const TABS: { key: TabKey; label: string }[] = [
-  { key: 'account', label: 'Account & Billing' },
-  { key: 'linkedin', label: 'LinkedIn Connection' },
-  { key: 'content', label: 'Content & Profile' },
-  { key: 'automation', label: 'Engagement & Automation' },
-]
-
-const VALID_TABS = TABS.map((t) => t.key) as string[]
+import SettingsHub from './account/settings/SettingsHub'
 
 export default function Account() {
   const queryClient = useQueryClient()
   const { data: readiness } = useAccountReadiness()
   const [searchParams, setSearchParams] = useSearchParams()
   const [oauthMsg, setOauthMsg] = useState<{ ok: boolean; text: string } | null>(null)
-
-  const tabParam = searchParams.get('tab')
-  const activeTab: TabKey = VALID_TABS.includes(tabParam ?? '') ? (tabParam as TabKey) : 'account'
-
-  const setActiveTab = (tab: TabKey) => {
-    setSearchParams(
-      (prev) => {
-        const next = new URLSearchParams(prev)
-        next.set('tab', tab)
-        return next
-      },
-      { replace: true }
-    )
-  }
 
   // Handle LinkedIn OAuth callback: ?li_connected=1 or ?li_error=... in URL
   useEffect(() => {
@@ -56,19 +18,19 @@ export default function Account() {
       localStorage.setItem('lem_li_connected', '1')
       // Force refetch so the fresh token is reflected immediately
       queryClient.invalidateQueries({ queryKey: ['token-status'] })
-      setSearchParams({}, { replace: true })
+      setSearchParams({ section: 'setup' }, { replace: true })
       setOauthMsg({ ok: true, text: 'LinkedIn connected successfully!' })
       setTimeout(() => setOauthMsg(null), 5000)
     } else if (liError) {
       setOauthMsg({ ok: false, text: 'LinkedIn connection failed — please try again.' })
-      setSearchParams({}, { replace: true })
+      setSearchParams({ section: 'setup' }, { replace: true })
       setTimeout(() => setOauthMsg(null), 8000)
     }
   }, [])
 
   return (
-    <div className="max-w-2xl space-y-6">
-      <h1 className="text-2xl font-bold text-gray-800">Account Settings</h1>
+    <div className="max-w-5xl space-y-6">
+      <h1 className="text-2xl font-bold text-gray-800">Settings</h1>
 
       {oauthMsg && (
         <p className={`text-sm font-medium ${oauthMsg.ok ? 'text-green-600' : 'text-red-600'}`}>
@@ -99,59 +61,7 @@ export default function Account() {
         </div>
       )}
 
-      {/* Tab switcher */}
-      <div className="flex flex-wrap gap-1 border-b border-gray-200">
-        {TABS.map((t) => (
-          <button
-            key={t.key}
-            type="button"
-            onClick={() => setActiveTab(t.key)}
-            className={`px-3 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${
-              activeTab === t.key
-                ? 'border-blue-600 text-blue-700'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {activeTab === 'account' && (
-        <div className="space-y-6">
-          <SubscriptionCard />
-          <VideoCreditsCard />
-          <TimezoneCard />
-          <LoginLocationCard />
-          <InactivityCard />
-        </div>
-      )}
-
-      {activeTab === 'linkedin' && (
-        <div className="space-y-6">
-          <LinkedInLoginCard />
-          <CompanyPageCard />
-        </div>
-      )}
-
-      {activeTab === 'content' && (
-        <div className="space-y-6">
-          <ContentProfileCard />
-          <NewsletterCard />
-        </div>
-      )}
-
-      {activeTab === 'automation' && (
-        <SettingsSaveProvider>
-          <div className="space-y-6">
-            <EngagementSettingsCard />
-            <GroupsCard />
-            <DmTemplatesCard />
-            <LeadMagnetCard />
-          </div>
-          <SaveAllBar />
-        </SettingsSaveProvider>
-      )}
+      <SettingsHub />
     </div>
   )
 }

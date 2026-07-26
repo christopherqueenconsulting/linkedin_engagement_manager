@@ -1,0 +1,209 @@
+import type { SectionKey } from './sections'
+
+// One declarative descriptor per setting — the single source of truth for its label and the
+// three-part microcopy contract from docs/SETTINGS_IA_RESEARCH.md §5:
+//   what        — one plain sentence, no jargon.
+//   why         — the consequence for reach / replies / safety.
+//   recommended — the default, and when to move off it.
+// Sections render from this so microcopy can't drift between the control and the docs.
+export type SettingDescriptor = {
+  key: string
+  section: SectionKey
+  label: string
+  what: string
+  why: string
+  recommended: string
+  /** Sits behind the section's "Advanced" disclosure — every section shows ≤6 primary controls. */
+  advanced?: boolean
+}
+
+const D = (d: SettingDescriptor) => d
+
+export const SETTINGS: SettingDescriptor[] = [
+  // ── My Voice ───────────────────────────────────────────────────────────────────────────────
+  D({ key: 'tone', section: 'voice', label: 'Tone',
+    what: 'A few words describing how you want to come across.',
+    why: 'Steers every comment, DM, post and newsletter LEM writes for you.',
+    recommended: 'Leave blank to infer your voice from your profile and past posts.' }),
+  D({ key: 'comment_length', section: 'voice', label: 'Comment length',
+    what: 'Roughly how long each feed comment should be.',
+    why: 'LinkedIn weights substantive comments (15+ words) about 2.5× higher than one-liners.',
+    recommended: 'Medium (~55 words). Go short only if your audience expects terse replies.' }),
+  D({ key: 'comment_style', section: 'voice', label: 'Style guidance',
+    what: 'Specific instructions layered on top of your tone.',
+    why: 'Turns a generic-sounding comment into something recognisably yours.',
+    recommended: 'Optional. Try "ask a question, avoid buzzwords".' }),
+  D({ key: 'use_emojis', section: 'voice', label: 'Use emojis',
+    what: 'Whether generated text may include emoji.',
+    why: 'Warms up short replies; can read as unserious in formal industries.',
+    recommended: 'On.' }),
+  D({ key: 'use_hashtags', section: 'voice', label: 'Use hashtags',
+    what: 'Whether posts end with a small set of hashtags.',
+    why: 'Hashtags no longer expand reach — hashtag-free posts reach roughly 5-10% more people.',
+    recommended: 'Off. Turn on only if your niche still browses by tag.' }),
+  D({ key: 'focus_topics', section: 'voice', label: 'Focus topics',
+    what: 'The subjects your own content should keep coming back to.',
+    why: 'Anchors trend-based post subjects and the angle of your comments, and feeds the ICP fit score.',
+    recommended: '3-5 topics. This is NOT a feed filter — set those under "Who I Engage".' }),
+  D({ key: 'business_goals', section: 'voice', label: 'Business goals',
+    what: 'What you want this account to produce commercially.',
+    why: 'Keeps generated content pointed at an outcome instead of generic thought leadership.',
+    recommended: 'One concrete sentence, e.g. "Book 5 discovery calls a month".' }),
+  D({ key: 'personal_goals', section: 'voice', label: 'Personal goals',
+    what: 'The reputation you want to build.',
+    why: 'Balances the commercial angle so your feed does not read like an ad.',
+    recommended: 'Optional.' }),
+  D({ key: 'content_language', section: 'voice', label: 'Content language',
+    what: 'The language your generated content is written and voiced in.',
+    why: 'Also sets the audio language on premium videos, which otherwise pick their own.',
+    recommended: 'Auto — follows the country in your Login Location.' }),
+
+  // ── Content & Publishing ───────────────────────────────────────────────────────────────────
+  D({ key: 'blog_url', section: 'content', label: 'Blog URL',
+    what: 'Your blog or article homepage.',
+    why: 'Blog-summary posts and newsletter alignment read from it.',
+    recommended: 'Optional, but it markedly improves topical grounding.' }),
+  D({ key: 'sitemap_url', section: 'content', label: 'Sitemap URL',
+    what: 'Your sitemap, so LEM can find individual posts.',
+    why: 'Lets LEM mine your existing writing for ideas instead of inventing them.',
+    recommended: 'Usually yourblog.com/sitemap.xml.' }),
+  D({ key: 'auto_schedule_posts', section: 'content', label: 'Auto-schedule AI posts',
+    what: 'Whether an approved-quality draft schedules itself.',
+    why: 'Off means nothing ever publishes until you review it — the plan quietly stalls.',
+    recommended: 'On once you trust the output. Drafts that fail the review thresholds are still held.' }),
+  D({ key: 'link_in_first_comment', section: 'content', label: 'Put links in the first comment',
+    what: 'Publishes the post without its external link and drops the link into the first comment.',
+    why: 'Links in the body cost roughly 60-68% of a post\'s reach.',
+    recommended: 'On.' }),
+  D({ key: 'default_video_quality', section: 'content', label: 'Auto-generated video quality',
+    what: 'Which renderer auto-generated videos use.',
+    why: 'Premium spends video credits per video and falls back to standard when you have none.',
+    recommended: 'Standard until you have a video that is worth the credits.' }),
+  D({ key: 'authenticity_score_min', section: 'content', label: 'Min. authenticity score', advanced: true,
+    what: 'How human and specific a draft must read (0-100) before it can auto-schedule.',
+    why: 'Higher holds more posts for review; lower ships more of them unreviewed.',
+    recommended: 'Leave blank to use the platform default.' }),
+  D({ key: 'post_similarity_max_pct', section: 'content', label: 'Max. overlap with your recent posts', advanced: true,
+    what: 'Word-overlap ceiling against your own recent posts.',
+    why: 'Lower is stricter about near-duplicates; repeats read as automated.',
+    recommended: 'Leave blank to use the platform default.' }),
+  D({ key: 'content_buffer_days', section: 'content', label: 'Generate drafts this far ahead', advanced: true,
+    what: 'How many days of upcoming posts LEM keeps generated in advance.',
+    why: 'A longer buffer means more finished drafts waiting — and more AI spend up front.',
+    recommended: '5 days (1-30).' }),
+  D({ key: 'content_buffer_max_posts', section: 'content', label: 'Max drafts to keep ready', advanced: true,
+    what: 'Hard ceiling on how many ready posts sit in the buffer.',
+    why: 'Caps forward generation spend if you pause or change direction.',
+    recommended: '5 posts (1-30).' }),
+
+  // ── Who I Engage ───────────────────────────────────────────────────────────────────────────
+  D({ key: 'include_topics', section: 'targeting', label: 'Include topics',
+    what: 'Subjects a post must be about for LEM to comment on it, judged by AI relevance.',
+    why: 'Set any include filter and posts matching none of them are skipped entirely.',
+    recommended: 'Start with none and let LinkedIn\'s own curation work; narrow later if comments drift.' }),
+  D({ key: 'exclude_topics', section: 'targeting', label: 'Exclude topics',
+    what: 'Subjects LEM must never comment on.',
+    why: 'Exclusions always win, even over your own focus topics.',
+    recommended: 'Politics and anything off-brand.' }),
+  D({ key: 'include_keywords', section: 'targeting', label: 'Include keywords',
+    what: 'Literal words a post must contain.',
+    why: 'Stricter than topics — this is exact matching, not AI judgement.',
+    recommended: 'Leave blank unless topics are letting too much through.' }),
+  D({ key: 'exclude_keywords', section: 'targeting', label: 'Exclude keywords',
+    what: 'Literal words that disqualify a post.',
+    why: 'The cheapest way to stay out of a conversation you do not want.',
+    recommended: 'Optional.' }),
+  D({ key: 'include_authors', section: 'targeting', label: 'Include authors',
+    what: 'Only comment on posts by these people.',
+    why: 'Very restrictive — most feeds will match a handful of posts a day at best.',
+    recommended: 'Leave blank unless you are deliberately courting a short list.' }),
+  D({ key: 'exclude_authors', section: 'targeting', label: 'Exclude authors',
+    what: 'Never comment on posts by these people.',
+    why: 'Useful for competitors and for anyone you would rather engage with by hand.',
+    recommended: 'Optional.' }),
+  D({ key: 'min_reactions', section: 'targeting', label: 'Min. reactions',
+    what: 'A post needs at least this many reactions before LEM will consider it.',
+    why: 'Filters out dead posts, but applies BEFORE scoring — set it high and the pool empties.',
+    recommended: '0. Raise it only if you are commenting on posts nobody sees.' }),
+  D({ key: 'max_post_age_hours', section: 'targeting', label: 'Max post age (hours)',
+    what: 'How old a post may be when LEM comments on it.',
+    why: 'Early comments earn far more reach, but a tiny window leaves almost nothing to pick from.',
+    recommended: '24 hours.' }),
+  D({ key: 'feed_fallback_when_empty', section: 'targeting', label: 'Comment anyway if my filters match nothing',
+    what: 'When no post matches your include filters, comment on the best posts in your feed instead.',
+    why: 'Without it, a sparse day produces zero comments. Excludes, recency and min-reactions still apply.',
+    recommended: 'On. It only does anything once you have set an include filter.' }),
+
+  // ── How Much & How Often ───────────────────────────────────────────────────────────────────
+  D({ key: 'max_comments_per_day', section: 'volume', label: 'Comments per day',
+    what: 'Hard daily ceiling on feed comments.',
+    why: 'The run stops the moment it is reached — this is the single biggest driver of reach.',
+    recommended: '15/day (Balanced). Ramp up as the account warms.' }),
+  D({ key: 'max_dms_per_day', section: 'volume', label: 'DMs per day',
+    what: 'Hard daily ceiling across appreciation, outreach, nurture AND catch-up messages.',
+    why: 'One budget for all of them — catch-up congratulations spend it too.',
+    recommended: '10/day (Balanced).' }),
+  D({ key: 'max_invites_per_day', section: 'volume', label: 'Invites per day',
+    what: 'Daily ceiling on connection requests and profile-viewer invites.',
+    why: 'Does NOT cover newsletter subscribe invites or company-page invites — those have their own caps.',
+    recommended: '8/day (Balanced). LinkedIn gets suspicious well before 100/week.' }),
+  D({ key: 'max_catchup_touches_per_day', section: 'volume', label: 'Catch-up messages per day',
+    what: 'Congratulations sent per day from your LinkedIn Catch-up feed.',
+    why: 'These come out of your DM budget above, so a high number starves everything else.',
+    recommended: '2-5/day. 10/day needs Professional or Enterprise.' }),
+  D({ key: 'reply_check_mode', section: 'volume', label: 'Reply follow-up mode',
+    what: 'How LEM notices new comments on your own posts.',
+    why: 'Event-driven reacts within minutes with no browser polling. Scheduled opens a session per sweep and risks a 429.',
+    recommended: 'Event-driven, once email forwarding is confirmed.' }),
+  D({ key: 'reply_sweeps_per_day', section: 'volume', label: 'Reply checks per day', advanced: true,
+    what: 'How often a scheduled sweep looks for new comments.',
+    why: 'Every sweep is a browser session — more sweeps, more rate-limit exposure.',
+    recommended: '2/day. Only used in Scheduled mode.' }),
+  D({ key: 'reply_max_post_age_days', section: 'volume', label: 'Reply look-back (days)', advanced: true,
+    what: 'How far back a reply sweep looks for posts to check.',
+    why: 'Longer look-backs re-scan old posts every run for very little return.',
+    recommended: '2 days.' }),
+
+  // ── Outreach & DMs ─────────────────────────────────────────────────────────────────────────
+  D({ key: 'connection_targeting_mode', section: 'outreach', label: 'Connection targeting',
+    what: 'Whether LEM sources ICP-fit people to connect with.',
+    why: 'Suggest only ever drafts; auto-queue defers to the approval setting below.',
+    recommended: 'Suggest until you trust the targeting, then auto-queue.' }),
+  D({ key: 'connection_request_mode', section: 'outreach', label: 'Connection approval',
+    what: 'Whether sourced targets need your sign-off before a request is sent.',
+    why: 'Auto-approve sends without you seeing it. Pre-review is the safe posture for a new account.',
+    recommended: 'Pre-review for the first few weeks.' }),
+  D({ key: 'connection_target_authors', section: 'outreach', label: 'Adjacent authors to source engagers from',
+    what: 'Profile URLs whose commenters LEM harvests as warm candidates.',
+    why: 'People already engaging with an adjacent voice convert far better than cold profiles.',
+    recommended: '2-5 thought leaders in your space. Blank = only people who engage with you.' }),
+  D({ key: 'min_connection_icp_score', section: 'outreach', label: 'Min. ICP fit score', advanced: true,
+    what: 'How well someone\'s title, company and industry must match your focus topics (0-100).',
+    why: 'Only applied to profiles LEM has scraped; set it high and almost nobody qualifies.',
+    recommended: '55.' }),
+  D({ key: 'catchup_event_types', section: 'outreach', label: 'Catch-up milestones',
+    what: 'Which network moments are worth a congratulations.',
+    why: 'Unchecking every type turns catch-up off entirely, whatever the cap says.',
+    recommended: 'New job and promotion — real reasons to reconnect.' }),
+  D({ key: 'catchup_touch_mode', section: 'outreach', label: 'Catch-up approval',
+    what: 'Whether each congratulations waits for you.',
+    why: 'A generic "Congrats!" at volume is worse than sending nothing.',
+    recommended: 'Pre-review.' }),
+  D({ key: 'catchup_message_source', section: 'outreach', label: 'Catch-up message',
+    what: 'Use LinkedIn\'s own suggested response, or rewrite it in your voice.',
+    why: 'LinkedIn already drafts one, so the default costs no AI spend at all.',
+    recommended: "LinkedIn's suggested response." }),
+
+  // ── Setup & Connection ─────────────────────────────────────────────────────────────────────
+  D({ key: 'last_login_inactivate_delay', section: 'setup', label: 'Inactivity auto-stop',
+    what: 'Pause ALL automation if you have not signed in for this long.',
+    why: 'A safety catch so LEM never keeps acting for an account you have walked away from.',
+    recommended: '90 days. Choosing a short window can silently stop everything.' }),
+]
+
+export const SETTING_BY_KEY: Record<string, SettingDescriptor> = Object.fromEntries(
+  SETTINGS.map((s) => [s.key, s])
+)
+
+export const settingsInSection = (section: SectionKey, advanced = false) =>
+  SETTINGS.filter((s) => s.section === section && !!s.advanced === advanced)
