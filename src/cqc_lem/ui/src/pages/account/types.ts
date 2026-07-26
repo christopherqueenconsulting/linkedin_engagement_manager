@@ -38,6 +38,8 @@ export type EngPrefs = {
   gmail_forward_confirmation?: GmailForwardConfirmation | null
   feed_fallback_when_empty: boolean
   link_in_first_comment: boolean
+  // How many day-type slots a week the content plan fills (issue #621). 7 = daily.
+  posts_per_week: number
   max_catchup_touches_per_day: number
   catchup_touch_mode: string
   catchup_event_types: string[]

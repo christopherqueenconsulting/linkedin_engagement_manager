@@ -460,6 +460,87 @@ POST_CTA_STYLES: dict = {
 }
 
 # ---------------------------------------------------------------------------
+# DAY-TYPE CALENDAR (issue #621 / G6). Cadence, not volume, is the 2026 lever: van der Blom's
+# 1.3M-post sample puts daily posting at roughly -26% average reach per post, and the creators who
+# compound run a FIXED weekly calendar where every slot has a known job (Alić: Mon mindset / Tue
+# guide / Wed story / Thu polarizing; van der Blom rotates formats weekly). A fixed slot builds
+# Topic Authority and reader anticipation — it replaces the old uniform buyer-journey round-robin,
+# which gave every day a differently-shaped post and no recognisable rhythm.
+#
+# One entry per weekday (Mon=0 … Sun=6):
+#   formats  — the POST_FORMATS archetype family this day draws from. The shared rotation engine
+#              still varies the shape WITHIN the family, so two guide days don't read alike.
+#   stage    — the buyer-journey stage that day's job implies (replaces the round-robin).
+#   priority — which slots a user's posts_per_week actually fills, best posting windows first:
+#              Tue/Thu/Wed are the strongest 2026 windows, Mon/Fri next, weekends last. At the
+#              default 3/week that yields Tue build-receipt · Wed story · Thu spiky POV.
+# ---------------------------------------------------------------------------
+
+POST_DAY_TYPES: dict = {
+    0: {"key": "guide", "label": "Practical guide", "priority": 4, "stage": "consideration",
+        "formats": ["how_to", "tactical_list"],
+        "job": "Open the week with ONE narrow thing the reader can run today."},
+    1: {"key": "build_receipt", "label": "Build receipt", "priority": 1, "stage": "decision",
+        "formats": ["case_snapshot", "how_to"],
+        "job": ("Show real work with real numbers — what was built, what broke, what it produced. "
+                "The receipt IS the credibility.")},
+    2: {"key": "story", "label": "Story → lesson", "priority": 3, "stage": "awareness",
+        "formats": ["personal_lesson"],
+        "job": "One true moment from the author's own experience, landing on one transferable lesson."},
+    3: {"key": "spiky_pov", "label": "Spiky POV", "priority": 2, "stage": "awareness",
+        "formats": ["contrarian_take", "myth_vs_reality"],
+        "job": ("Take a defensible position against a named common practice — spiky, never "
+                "contrarian for its own sake.")},
+    4: {"key": "observation", "label": "Observation + take", "priority": 5, "stage": "awareness",
+        "formats": ["industry_observation", "question_starter"],
+        "job": "Read one real development in the author's field and say what it actually means."},
+    5: {"key": "conversation", "label": "Conversation starter", "priority": 7, "stage": "awareness",
+        "formats": ["question_starter"],
+        "job": "A genuinely open question the author wants answers to — the thread is the point."},
+    6: {"key": "reflection", "label": "Reflection", "priority": 6, "stage": "consideration",
+        "formats": ["personal_lesson", "tactical_list"],
+        "job": "A quieter week-in-review note: what changed, what it taught, what to carry forward."},
+}
+
+# The calendar covers a full week, so this is also the hard ceiling on slots per week. The
+# PREFERENCE bounds (what a user may save) live with the other prefs bounds in utilities/db.py.
+POST_DAY_TYPE_MAX_SLOTS = len(POST_DAY_TYPES)
+
+
+def weekly_post_slots(posts_per_week: int) -> list:
+    """The weekdays (Mon=0 … Sun=6) a user posting `posts_per_week` times publishes on, in weekday
+    order. Slots fill by the calendar's `priority`, so raising the cadence ADDS days without moving
+    the ones already in use — a user who goes 3→4/week keeps Tue/Wed/Thu and gains Monday."""
+    try:
+        count = int(posts_per_week)
+    except (TypeError, ValueError):
+        count = 0
+    count = max(1, min(POST_DAY_TYPE_MAX_SLOTS, count))
+    by_priority = sorted(POST_DAY_TYPES, key=lambda wd: POST_DAY_TYPES[wd]["priority"])
+    return sorted(by_priority[:count])
+
+
+def day_type_for_weekday(weekday: int) -> Optional[dict]:
+    """The day type owning a weekday, or None for anything outside Mon..Sun."""
+    try:
+        return POST_DAY_TYPES.get(int(weekday))
+    except (TypeError, ValueError):
+        return None
+
+
+def day_type_formats(weekday: int) -> list:
+    """The archetype family for a weekday — the `preferred_formats` a blueprint is picked from."""
+    day_type = day_type_for_weekday(weekday)
+    return list(day_type["formats"]) if day_type else []
+
+
+def day_type_stage(weekday: int, default: str = "awareness") -> str:
+    """The buyer-journey stage this weekday's job implies."""
+    day_type = day_type_for_weekday(weekday)
+    return day_type["stage"] if day_type else default
+
+
+# ---------------------------------------------------------------------------
 # COMMENT menu (feed-comment angles). Every angle stays GROUNDED IN THE TARGET POST and ends
 # inviting the author to reply — the archetype only varies HOW the comment adds its value, so a
 # user's comments across a day don't all read from the same template.
@@ -815,7 +896,8 @@ def select_blueprint(content_type: str, subject: str = None, angle: str = None,
                      recent_formats: list = None, recent_hook_styles: list = None,
                      guidance: str = None, performance: Optional[dict] = None,
                      prefer_save_targeted: bool = False,
-                     exclude_formats: Optional[list] = None) -> dict:
+                     exclude_formats: Optional[list] = None,
+                     preferred_formats: list = None) -> dict:
     """A fresh blueprint for ONE piece of any content type, chosen in code (no LLM call): rotate
     away from the recent formats/hooks — including the piece's own previous shape — so consecutive
     pieces change form, not just words. Free-text `guidance` may name a format (e.g. 'make it a
@@ -826,12 +908,16 @@ def select_blueprint(content_type: str, subject: str = None, angle: str = None,
     forced pick, so rotation and variety still hold. `exclude_formats` takes archetypes OFF the menu
     entirely (guidance included) for callers that cannot honor their contract — see
     `fact_anchored_formats`; excluding every format falls back to the full menu rather than to
-    nothing."""
+    nothing. `preferred_formats` narrows the format menu to one family (the day-type calendar's
+    archetypes, issue #621) — rotation, recency and performance still apply WITHIN it, and an
+    unrecognised family is ignored rather than emptying the menu."""
     menu = _menu(content_type)
     formats, hooks, ctas = menu["formats"], menu["hooks"], menu["ctas"]
     if exclude_formats:
         dropped = {_normalize(x, formats) for x in exclude_formats}
         formats = {k: v for k, v in formats.items() if k not in dropped} or formats
+    # An explicit `guidance` format is a direct instruction, so it is resolved against the (post
+    # exclusion) FULL menu and wins over the day-type family below.
     hinted = _normalize(guidance, formats) if guidance else None
     if not hinted and guidance:
         low = guidance.lower()
@@ -839,15 +925,19 @@ def select_blueprint(content_type: str, subject: str = None, angle: str = None,
             if k.replace("_", " ") in low or meta["label"].lower() in low:
                 hinted = k
                 break
+    pickable = formats
+    if preferred_formats and not hinted:
+        family = dict.fromkeys(f for f in (_normalize(x, formats) for x in preferred_formats) if f)
+        pickable = {k: formats[k] for k in family} or formats
     rf = [f for f in (_normalize(x, formats) for x in (recent_formats or [])) if f]
     rh = [h for h in (_normalize(x, hooks) for x in (recent_hook_styles or [])) if h]
-    fmt_weights = performance_weights((performance or {}).get("format"), formats.keys())
+    fmt_weights = performance_weights((performance or {}).get("format"), pickable.keys())
     hook_weights = performance_weights((performance or {}).get("hook"), hooks.keys())
     if prefer_save_targeted:
-        fmt_weights = dict(fmt_weights or {k: 1.0 for k in formats})
+        fmt_weights = dict(fmt_weights or {k: 1.0 for k in pickable})
         for key in save_targeted_formats(content_type):
             fmt_weights[key] = fmt_weights.get(key, 1.0) * SAVE_TARGETED_BOOST
-    fmt = hinted or _pick(formats, rf, {rf[0] if rf else None} | set(rf[:_AVOID_WINDOW]), fmt_weights)
+    fmt = hinted or _pick(pickable, rf, {rf[0] if rf else None} | set(rf[:_AVOID_WINDOW]), fmt_weights)
     out = {"subject": subject, "angle": angle or "", "format": fmt,
            "structure": list(formats[fmt]["structure"])}
     # Number-led archetypes draw their hook from the narrowed menu (see `allowed_hooks`).

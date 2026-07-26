@@ -19,6 +19,7 @@ const eng = (over: Partial<EngPrefs> = {}): EngPrefs => ({
   reply_max_post_age_days: 2, feed_fallback_when_empty: true, link_in_first_comment: true,
   max_catchup_touches_per_day: 5, catchup_touch_mode: 'pre_review',
   catchup_event_types: ['job_change', 'promotion'], catchup_message_source: 'linkedin',
+  posts_per_week: 3,
   gmail_forward_confirmation: { confirmed: true },
   ...over,
 })
@@ -188,6 +189,16 @@ describe('conflict matrix', () => {
     expect(find(ctx({ eng: eng({ comment_length: 'short' }) }), 'C26')?.severity).toBe('inform')
   })
 
+  it('C27 warns once the cadence goes past the 2026 sweet spot', () => {
+    expect(find(ctx({ eng: eng({ posts_per_week: 3 }) }), 'C27')).toBeUndefined()
+    expect(find(ctx({ eng: eng({ posts_per_week: 4 }) }), 'C27')).toBeUndefined()
+    const daily = find(ctx({ eng: eng({ posts_per_week: 7 }) }), 'C27')
+    expect(daily?.severity).toBe('warn')
+    expect(daily?.anchor).toBe('posts_per_week')
+    expect(daily?.message).toMatch(/26%/)
+    expect(daily?.fix?.patch).toEqual({ posts_per_week: 3 })
+  })
+
   it('never warns about a clean, default configuration', () => {
     const warnings = evaluateConflicts(ctx()).filter((f) => f.severity !== 'inform')
     expect(warnings).toEqual([])
@@ -210,6 +221,11 @@ describe('blocking validation', () => {
     expect(found).toContain('B:reply_sweeps_per_day')
     expect(found).toContain('B:min_connection_icp_score')
     expect(found).toContain('B:post_similarity_max_pct')
+  })
+
+  it('blocks a cadence outside 2-7 a week', () => {
+    expect(blockingIssues(eng({ posts_per_week: 1 })).map((f) => f.id)).toContain('B:posts_per_week')
+    expect(blockingIssues(eng({ posts_per_week: 8 })).map((f) => f.id)).toContain('B:posts_per_week')
   })
 
   it('accepts a null threshold as "use the default"', () => {

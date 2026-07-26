@@ -25,7 +25,8 @@ from cqc_lem.utilities.db import get_post_type_counts, insert_planned_post, upda
     update_db_post_carousel_slides, get_post_content, get_user_timezone, get_engagement_preferences
 from cqc_lem.utilities.db import count_ready_posts_within_buffer, get_planned_posts_within_buffer, \
     get_user_ids_with_planned_posts_within_buffer, DEFAULT_CONTENT_BUFFER_DAYS, \
-    DEFAULT_CONTENT_BUFFER_MAX_POSTS, MAX_CONTENT_BUFFER_DAYS, MAX_CONTENT_BUFFER_POSTS
+    DEFAULT_CONTENT_BUFFER_MAX_POSTS, MAX_CONTENT_BUFFER_DAYS, MAX_CONTENT_BUFFER_POSTS, \
+    DEFAULT_POSTS_PER_WEEK, POSTS_PER_WEEK_MIN, POSTS_PER_WEEK_MAX
 from cqc_lem.utilities.db import get_recent_post_shape_history, update_db_post_shape, get_lead_magnet_settings, \
     get_shape_performance, get_newsletter_settings, get_post_content_mix
 from cqc_lem.utilities.db import get_recent_post_texts, update_db_post_authenticity_score, \
@@ -38,7 +39,7 @@ from cqc_lem.utilities.quality_gates import (authenticity_finding, similarity_fi
 from cqc_lem.utilities.ai.content_framework import select_blueprint, history_avoidance_directive, \
     find_most_similar, post_similarity_max, has_first_person_proof, shape_for_dwell, dwell_report, \
     dwell_score_min, requires_fact_anchor, fact_grounding_report, fact_retry_directive, \
-    fact_anchored_formats
+    fact_anchored_formats, weekly_post_slots, day_type_stage, day_type_formats, day_type_for_weekday
 from cqc_lem.utilities.ai.content_alignment import (
     should_include_lead_magnet_cta, lead_magnet_cta_directive, ensure_lead_magnet_cta,
     personal_proof_directive, topic_authority_score, topic_authority_min, profile_topic_dna,
@@ -60,7 +61,8 @@ from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.logger import myprint, log_info, log_warning, log_error
 from cqc_lem.utilities.observability import attribute_llm_cost, llm_attribution, FEATURE_CONTENT
 from cqc_lem.utilities.selenium_util import get_driver_wait_pair, quit_gracefully
-from cqc_lem.utilities.utils import get_best_posting_time, get_post_time, create_folder_if_not_exists, save_video_url_to_dir
+from cqc_lem.utilities.utils import get_best_posting_time, get_post_time, create_folder_if_not_exists, \
+    save_video_url_to_dir, apply_schedule_jitter
 from requests.adapters import HTTPAdapter
 from urllib3 import Retry
 
@@ -68,6 +70,11 @@ from urllib3 import Retry
 # highest-reach format, so they get an equal share alongside text/carousel/video.
 PLANNED_POST_TYPES = [PostType.CAROUSEL.value, PostType.TEXT.value,
                       PostType.VIDEO.value, PostType.DOCUMENT.value]
+
+# Never more than one post in any 24-hour window (issue #621 / G6). The day-type calendar can put
+# slots on back-to-back weekdays, and the peak model's hours vary by weekday (Thu 17:00 → Fri 11:00
+# is only 18h), so the gap is enforced on the stored UTC instants rather than assumed from dates.
+MIN_POST_INTERVAL = timedelta(hours=24)
 
 
 @shared_task.task
@@ -79,11 +86,69 @@ def auto_generate_content():
         plan_content_for_user.apply_async(kwargs={"user_id": user_id})
 
 
+def _plan_window_end(start_date: datetime) -> datetime:
+    """The last day this planning run may schedule into — the end of START DATE's month.
+
+    Anchored to the start date's own month, not "this" month: a start date that has already rolled
+    into the next month must not be handed the previous month's day count (Jan 31 → Feb 1 has no
+    31st, which would raise).
+    """
+    return start_date.replace(day=calendar.monthrange(start_date.year, start_date.month)[1])
+
+
+def _cadence_slots(user_id: int, start_date: datetime, end_date: datetime) -> list:
+    """The dates this user's day-type calendar fills between two dates, inclusive.
+
+    Cadence, not volume, is the 2026 lever (issue #621 / G6): instead of one post on every remaining
+    day of the month, a user publishes on the `posts_per_week` weekdays their fixed day-type
+    calendar owns. Falls back to the shipped default when preferences can't be read — never to daily.
+    """
+    try:
+        raw = (get_engagement_preferences(user_id) or {}).get("posts_per_week")
+        posts_per_week = DEFAULT_POSTS_PER_WEEK if raw is None else int(raw)
+    except Exception as e:
+        log_warning(f"Could not read posting cadence for user {user_id} — using the default",
+                    exc=e, user_id=user_id, task_name="plan_content_for_user")
+        posts_per_week = DEFAULT_POSTS_PER_WEEK
+    posts_per_week = max(POSTS_PER_WEEK_MIN, min(POSTS_PER_WEEK_MAX, posts_per_week))
+    weekdays = set(weekly_post_slots(posts_per_week))
+
+    slots = []
+    day = start_date.date()
+    last = end_date.date()
+    while day <= last:
+        if day.weekday() in weekdays:
+            slots.append(day)
+        day += timedelta(days=1)
+    return slots
+
+
+def _schedule_slot_utc(post_date, user_id: int, previous_utc: Optional[datetime]) -> datetime:
+    """One slot's stored (naive UTC) time: the golden/peak hour for that weekday, clamped into the
+    user's waking hours, jittered 15-30 minutes, converted from the user's zone to UTC, and finally
+    held at least 24h after the previous post so a plan can never put two posts in one day-window
+    (docs/timezone-contract.md, issue #621)."""
+    post_time = apply_schedule_jitter(get_post_time(post_date, user_id))
+    scheduled_datetime = datetime.combine(post_date, post_time)
+    try:
+        user_tz = pytz.timezone(get_user_timezone(user_id))
+        scheduled_datetime = (
+            user_tz.localize(scheduled_datetime).astimezone(pytz.utc).replace(tzinfo=None)
+        )
+    except Exception as e:
+        log_warning(f"Timezone conversion failed for user {user_id} — storing as UTC",
+                    exc=e, user_id=user_id, task_name="plan_content_for_user")
+    if previous_utc is not None and scheduled_datetime - previous_utc < MIN_POST_INTERVAL:
+        scheduled_datetime = previous_utc + MIN_POST_INTERVAL + timedelta(minutes=1)
+    return scheduled_datetime
+
+
 @shared_task.task(bind=True, reject_on_worker_lost=True, rate_limit='1/m')
 def plan_content_for_user(self, user_id: int):
     """
-    Generate and plan content for the next 30 days based on current content representation in the database.
-    Ensures a balanced distribution of post types (carousel, text, video) and buyer journey stages.
+    Generate and plan content through the end of the month on the user's day-type calendar.
+    Ensures a balanced distribution of post types (carousel, text, video, document); the buyer
+    journey stage now comes from the weekly slot's job rather than a uniform round-robin.
     """
 
     # 1. Review existing content in the database
@@ -133,15 +198,17 @@ def plan_content_for_user(self, user_id: int):
 
 
 
-    # Determine how many days are left in this month
-    days_left_in_month = days_in_month - start_date.day
+    # The plan still runs to the end of the month, but the SLOTS in that window come from the
+    # user's day-type calendar (issue #621) instead of one post on every remaining day.
+    end_of_month = _plan_window_end(start_date)
+    slots = _cadence_slots(user_id, start_date, end_of_month)
+    if not slots:
+        myprint(f"Content Plan | No cadence slots left this month after {start_date} | Skipped")
+        return
 
-    myprint(f"Days Left in Month after Start Date: {days_left_in_month}")
-
-    # Need on more post than days left in month
-    target_posts = days_left_in_month + 1  # Total posts till the end of the month
-
-    # myprint(f"Target Posts: {target_posts}")
+    target_posts = len(slots)
+    myprint(f"Content Plan | {target_posts} slot(s) through {end_of_month.date()} "
+            f"on weekdays {sorted({s.weekday() for s in slots})}")
 
     needed_posts = {post_type: target_posts // len(PLANNED_POST_TYPES) for post_type in PLANNED_POST_TYPES}
 
@@ -174,13 +241,10 @@ def plan_content_for_user(self, user_id: int):
     # myprint(f"Final Needed Posts: {needed_posts}")
     # myprint(f"Final Percentages: {percentages}")
 
-    # 3. Plan content across the buyer journey stages | logic: randomly select a post type and buyer journey stage for each post
-    # Define buyer journey stages: Awareness, Consideration, Decision
-    journey_stages = ["awareness", "consideration", "decision"]
+    # 3. Fill each calendar slot. The buyer-journey stage now comes from the slot's day type — a
+    # Tuesday build-receipt is a decision-stage post whatever else the plan holds — which replaces
+    # the old uniform awareness/consideration/decision round-robin.
     daily_plan = []
-
-    # Shuffle the journey stages to ensure a random order
-    random.shuffle(journey_stages)
 
     # Create a list of post types based on needed_posts
     post_types = []
@@ -195,36 +259,17 @@ def plan_content_for_user(self, user_id: int):
     # shape is steered in the text-post prompt) and the rest stay audience-value/authority content.
     mix_classes = assign_content_mix(target_posts, offset=existing_post_count)
 
-    # Generate content plan evenly across buyer journey stages and post types
-    for day in range(target_posts):  # Plan for end of this month
+    previous_utc = None
+    for day, post_date in enumerate(slots):
         content_mix = mix_classes[day]
 
         # Choose a post type from the shuffled list
         post_type = _take_planned_post_type(post_types, content_mix)
 
-        # Choose a buyer journey stage in a round-robin fashion
-        stage = journey_stages[day % len(journey_stages)]
+        stage = day_type_stage(post_date.weekday())
 
-        # Add this post to the daily plan
-        post_date = start_date + timedelta(days=day)
-
-        # Get the best time for the selected date — the user's data-driven best hour when we have
-        # enough post-stats, else the 2026 default peak model.
-        post_time = get_post_time(post_date.date(), user_id)
-
-        # get_post_time returns the user's LOCAL audience time (e.g. 2pm). Convert it from the
-        # user's timezone to UTC for storage — scheduled_time is naive UTC by contract
-        # (docs/timezone-contract.md). Without this, a 14:00 local post was stored as 14:00 UTC
-        # and fired hours off the intended local time.
-        scheduled_datetime = datetime.combine(post_date, post_time)
-        try:
-            user_tz = pytz.timezone(get_user_timezone(user_id))
-            scheduled_datetime = (
-                user_tz.localize(scheduled_datetime).astimezone(pytz.utc).replace(tzinfo=None)
-            )
-        except Exception as e:
-            log_warning(f"Timezone conversion failed for user {user_id} — storing as UTC",
-                        exc=e, user_id=user_id, task_name="plan_content_for_user")
+        scheduled_datetime = _schedule_slot_utc(post_date, user_id, previous_utc)
+        previous_utc = scheduled_datetime
 
         daily_plan.append({
             "scheduled_datetime": scheduled_datetime,
@@ -266,9 +311,16 @@ def get_min_key(d):
 
 
 def create_content(user_id: int, post_type: str, stage: str, post_id: int = None,
-                   content_mix: str = None):
-    """Create content based on the specified post type and buyer journey stage. `content_mix` is the
-    post's 70/20/10 class from the plan governor (issue #618) — it steers the text-post prompt."""
+                   content_mix: str = None, day_weekday: int = None):
+    """Create content based on the specified post type and buyer journey stage.
+
+    `content_mix` is the post's 70/20/10 class from the plan governor (issue #618) — it steers the
+    text-post prompt.
+
+    `day_weekday` is the slot's LOCAL weekday (Mon=0 … Sun=6); it selects the day-type calendar's
+    archetype family for text posts (issue #621) so a Wednesday reads as a story and a Thursday as
+    a spiky POV. Carousels and videos carry their own template menus and are unaffected.
+    """
 
     video_url = None
     content = None
@@ -280,7 +332,8 @@ def create_content(user_id: int, post_type: str, stage: str, post_id: int = None
         # native PDF instead of a multi-image share (see share_document_on_linkedin).
         content = create_carousel_content(user_id, stage, post_id)
     else:
-        content = create_text_post(user_id, stage, post_id=post_id, content_mix=content_mix)
+        content = create_text_post(user_id, stage, post_id=post_id, content_mix=content_mix,
+                                   day_weekday=day_weekday)
         if content:
             content = content.strip()
 
@@ -314,12 +367,14 @@ def _fact_anchors_for(user_id: int, archetype: Optional[str]) -> list:
 
 def _select_post_blueprint(user_id: int, prefer_save_targeted: bool = False,
                            guidance: Optional[str] = None,
-                           exclude_formats: Optional[list] = None) -> dict:
+                           exclude_formats: Optional[list] = None,
+                           preferred_formats: Optional[list] = None) -> dict:
     """ONE assigned SHAPE from the shared framework core: rotate away from this user's recently used
     archetypes/hook styles (V51 history) and bias away from the ones that historically
     under-perform (#389). Chosen in code — no extra LLM call. `guidance` pins the archetype when the
     slot dictates it (the 70/20/10 promo slot needs a case study — #618); `prefer_save_targeted` only
-    biases toward one, and `exclude_formats` takes archetypes off the menu for a caller that cannot
+    biases toward one, `preferred_formats` narrows the menu to the day-type calendar's family
+    (#621), and `exclude_formats` takes archetypes off the menu for a caller that cannot
     honor their contract. Every input is best-effort: a history or performance read that fails costs
     the steering, never the post."""
     try:
@@ -339,6 +394,7 @@ def _select_post_blueprint(user_id: int, prefer_save_targeted: bool = False,
         performance=performance,
         prefer_save_targeted=prefer_save_targeted,
         exclude_formats=exclude_formats,
+        preferred_formats=preferred_formats,
         guidance=guidance)
 
 
@@ -1189,7 +1245,7 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                      refine_final_post: bool = True, blueprint: dict = None, post_id: int = None,
                      lead_magnet_cta: str = None, history_directive: str = None,
                      similarity_check: bool = True, story_directive: str = None,
-                     content_mix: str = None):
+                     content_mix: str = None, day_weekday: int = None):
     """
     Generate a text post for LinkedIn based on the user's profile, blog, or website content.
 
@@ -1198,6 +1254,7 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
     - stage: Buyer journey stage for the post.
     - content_mix: this post's 70/20/10 class from the plan governor (issue #618). 'promo' is the
       one-in-ten soft-promo slot and is forced into a case-study shape; anything else sells nothing.
+    - day_weekday: the slot's LOCAL weekday, which picks the day-type archetype family (issue #621).
 
     Returns:
     - str: Generated text post content.
@@ -1265,11 +1322,17 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
     # Close the feedback loop (issue #389 / B4): bias shape selection away from the user's
     # historically under-performing archetypes/hooks while keeping rotation + exploration.
     if blueprint is None:
-        # The promo slot's shape is not negotiable: the governor requires a case study (client as
-        # hero, real outcome number), so it is hinted into selection rather than left to rotation.
+        # The day-type calendar (issue #621) narrows the archetype menu to this slot's family;
+        # rotation, recency avoidance and performance weighting still apply WITHIN it. The promo
+        # slot's shape is not negotiable, though: the governor requires a case study (client as
+        # hero, real outcome number), and an explicit `guidance` hint wins over the day-type family.
+        day_type = day_type_for_weekday(day_weekday) if day_weekday is not None else None
         blueprint = _select_post_blueprint(
             user_id,
-            guidance="case_snapshot" if content_mix == ContentMix.PROMO.value else None)
+            guidance="case_snapshot" if content_mix == ContentMix.PROMO.value else None,
+            preferred_formats=day_type_formats(day_weekday) if day_type else None)
+        if day_type:
+            myprint(f"Day type for weekday {day_weekday}: {day_type['label']}")
     myprint(f"Post blueprint: format={blueprint.get('format')} hook={blueprint.get('hook_style')} "
             f"cta={blueprint.get('cta_style')}")
 
@@ -1984,6 +2047,23 @@ def _top_up_buffer_for_user(user_id: int, requested: bool = False) -> None:
         release_run_lock(lock_name, lock_token)
 
 
+def _slot_weekday(user_id: int, scheduled_time) -> Optional[int]:
+    """The LOCAL weekday of a stored (naive UTC) slot — the day-type calendar's key (issue #621).
+
+    Returns None when the row has no scheduled time or the user's zone can't be resolved, in which
+    case generation simply falls back to the full archetype menu.
+    """
+    if not isinstance(scheduled_time, datetime):
+        return None
+    try:
+        user_tz = pytz.timezone(get_user_timezone(user_id))
+        return pytz.utc.localize(scheduled_time.replace(tzinfo=None)).astimezone(user_tz).weekday()
+    except Exception as e:
+        log_warning(f"Could not resolve the local weekday for user {user_id} — "
+                    f"generating without a day type", exc=e, user_id=user_id)
+        return None
+
+
 def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
     """Generate, store and status one planning post. Never raises — a bad post is skipped.
 
@@ -1994,10 +2074,11 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
     post_type = post['post_type']
     stage = post['buyer_stage']
     content_mix = post.get('content_mix')
+    day_weekday = _slot_weekday(user_id, post.get('scheduled_time'))
 
     try:
         content, video_url = create_content(user_id, post_type, stage, post_id=post_id,
-                                            content_mix=content_mix)
+                                            content_mix=content_mix, day_weekday=day_weekday)
     except Exception as e:
         myprint(f"Skipping post_id {post_id}: content generation raised {type(e).__name__}: {e}")
         record_post_failed(user_id, post_id)

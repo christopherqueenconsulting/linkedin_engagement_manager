@@ -2078,7 +2078,9 @@ def get_planned_posts_within_buffer(user_id: int,
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute(
-            "SELECT user_id, id, post_type, buyer_stage, content_mix FROM posts"
+            # scheduled_time rides along so the generator can resolve the slot's day type
+            # (issue #621) — the weekday IS the calendar key.
+            "SELECT user_id, id, post_type, buyer_stage, content_mix, scheduled_time FROM posts"
             " WHERE status = 'planning' AND user_id = %s"
             " AND scheduled_time BETWEEN NOW() AND NOW() + INTERVAL %s DAY"
             " ORDER BY scheduled_time ASC, id ASC LIMIT %s",
@@ -3076,6 +3078,14 @@ def max_catchup_touches_allowed(user_id: int) -> int:
     """The highest catch-up cap this user may set — 10/day on premium plans, 5/day otherwise."""
     return CATCHUP_TOUCHES_MAX_PREMIUM if is_premium_subscriber(user_id) else CATCHUP_TOUCHES_MAX_STANDARD
 
+
+# Publishing cadence (issue #621 / G6). 2-4 high-effort posts a week beat daily volume in the 2026
+# regime — van der Blom's 1.3M-post sample puts daily posting at roughly -26% average reach per
+# post — so the default drops from one-a-day to 3/week. 7 (daily) stays reachable for users who
+# insist on it, which is why the ceiling is a full week rather than 5; the SPA warns above 4.
+POSTS_PER_WEEK_MIN, POSTS_PER_WEEK_MAX = 2, 7
+DEFAULT_POSTS_PER_WEEK = 3
+
 _ENGAGEMENT_DEFAULTS: dict = {
     # Default to MEDIUM (issue #394): 2026 LinkedIn weights substantive ≥15-word comments ~2.5× short
     # one-liners, so the out-of-the-box length produces a real, specific reply rather than a throwaway.
@@ -3107,6 +3117,7 @@ _ENGAGEMENT_DEFAULTS: dict = {
     "max_catchup_touches_per_day": CATCHUP_TOUCHES_MAX_STANDARD, "catchup_touch_mode": "pre_review",
     "catchup_event_types": list(DEFAULT_CATCHUP_EVENT_TYPES),
     "catchup_message_source": "linkedin",
+    "posts_per_week": DEFAULT_POSTS_PER_WEEK,
 }
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
                            "exclude_keywords", "include_authors", "exclude_authors", "post_types",
@@ -3126,7 +3137,7 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "reply_check_mode", "reply_sweeps_per_day", "reply_max_post_age_days",
                     "feed_fallback_when_empty", "link_in_first_comment",
                     "max_catchup_touches_per_day", "catchup_touch_mode", "catchup_event_types",
-                    "catchup_message_source")
+                    "catchup_message_source", "posts_per_week")
 
 VALID_VIDEO_QUALITIES = ("standard", "premium", "premium_top")
 VALID_REPLY_MODES = ("event", "scheduled", "off")
@@ -3172,6 +3183,10 @@ def get_engagement_preferences(user_id: int) -> dict:
             row["catchup_event_types"] = list(DEFAULT_CATCHUP_EVENT_TYPES)
         if row.get("catchup_message_source") not in VALID_CATCHUP_MESSAGE_SOURCES:
             row["catchup_message_source"] = _ENGAGEMENT_DEFAULTS["catchup_message_source"]
+        # A NULL cadence (a row written before the posts_per_week migration) means "never chosen",
+        # so the planner gets the 3/week default rather than a falsy value it would read as zero.
+        if row.get("posts_per_week") is None:
+            row["posts_per_week"] = DEFAULT_POSTS_PER_WEEK
         for f in _ENGAGEMENT_JSON_FIELDS:
             row[f] = _coerce_json_list(row.get(f))
         for f in _ENGAGEMENT_BOOL_FIELDS:
@@ -3218,6 +3233,12 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
                                              if _age is not None else 2)
     except (TypeError, ValueError):
         merged["reply_max_post_age_days"] = 2
+    _ppw = merged.get("posts_per_week")
+    try:
+        merged["posts_per_week"] = (min(POSTS_PER_WEEK_MAX, max(POSTS_PER_WEEK_MIN, int(_ppw)))
+                                    if _ppw is not None else DEFAULT_POSTS_PER_WEEK)
+    except (TypeError, ValueError):
+        merged["posts_per_week"] = DEFAULT_POSTS_PER_WEEK
     # Quality-gate thresholds (issue #421): None means "use the deploy default", anything else is
     # clamped to its valid band so an out-of-range slider can never make a gate un-passable.
     from cqc_lem.utilities.quality_gates import (AUTHENTICITY_SCORE_MIN_BOUNDS,

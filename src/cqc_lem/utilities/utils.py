@@ -1,6 +1,7 @@
 import functools
 import json
 import os
+import random
 from datetime import time, date
 from enum import Enum
 from urllib.parse import urlparse
@@ -111,12 +112,49 @@ def get_best_posting_time(selected_date: date):
     return best_time
 
 
+# Waking-hours guardrail (issue #621 / G6). A learned "best hour" drawn from thin post-stats data —
+# or an operator override — can land at 03:00 or 05:00 LOCAL, which is exactly where user 1's plan
+# was putting posts. Nobody's audience is awake then, and a machine-exact overnight slot repeated
+# daily is one of the cadence-regularity signals LinkedIn's 2026 enforcement looks for. Every
+# planned local time is clamped into this window before it is converted to UTC and stored.
+POST_HOUR_MIN = 8
+POST_HOUR_MAX = 20
+
+# Per-post schedule jitter (issue #621 / G6): posts land 15-30 minutes either side of the target
+# hour so a user's calendar never reads as a machine-exact daily time. The offset is always at
+# least SCHEDULE_JITTER_MIN_MINUTES — a "jitter" that can come out as 0 defeats the point.
+SCHEDULE_JITTER_MIN_MINUTES = 15
+SCHEDULE_JITTER_MAX_MINUTES = 30
+
+
+def clamp_to_waking_hours(post_time: time) -> time:
+    """Pull a LOCAL posting time into the waking window [POST_HOUR_MIN:00, POST_HOUR_MAX:59]."""
+    if post_time.hour < POST_HOUR_MIN:
+        return time(POST_HOUR_MIN, post_time.minute)
+    if post_time.hour > POST_HOUR_MAX:
+        return time(POST_HOUR_MAX, post_time.minute)
+    return post_time
+
+
+def apply_schedule_jitter(post_time: time, rng: random.Random = None) -> time:
+    """`post_time` moved 15-30 minutes earlier or later, kept inside the waking window. The target
+    hour still anchors the slot — this only stops every post in a plan sharing one exact minute."""
+    picker = rng or random
+    offset = picker.randint(SCHEDULE_JITTER_MIN_MINUTES, SCHEDULE_JITTER_MAX_MINUTES)
+    if picker.random() < 0.5:
+        offset = -offset
+    minutes = min(POST_HOUR_MAX * 60 + 59,
+                  max(POST_HOUR_MIN * 60, post_time.hour * 60 + post_time.minute + offset))
+    return time(minutes // 60, minutes % 60)
+
+
 def get_post_time(selected_date: date, user_id: int = None):
     """Best posting time for a date, as the user's LOCAL wall clock — callers convert it to UTC for
     storage (docs/timezone-contract.md). Prefers the user's own data-driven best hour for that
     weekday (learned by recommend_post_times, Phase 3) and falls back to the 2026 default model
-    until enough data exists. Keeps the default's minutes so times aren't all on the hour."""
-    default = get_best_posting_time(selected_date)
+    until enough data exists. Keeps the default's minutes so times aren't all on the hour, and
+    never returns an hour outside the waking window (issue #621)."""
+    default = clamp_to_waking_hours(get_best_posting_time(selected_date))
     if user_id is None:
         return default
     try:
@@ -126,7 +164,7 @@ def get_post_time(selected_date: date, user_id: int = None):
                                     tz=get_user_timezone(user_id))
         for r in recs:
             if r["weekday_num"] == selected_date.weekday():
-                return time(r["hour"], default.minute)
+                return clamp_to_waking_hours(time(r["hour"], default.minute))
     except Exception:
         pass
     return default

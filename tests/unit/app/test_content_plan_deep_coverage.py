@@ -167,6 +167,29 @@ class TestCreateTextPost:
         assert m["tl"].call_args[1]["blueprint"] == {**_BLUEPRINT, "fact_anchors": []}
         m["shape_save"].assert_called_once_with(42, "listicle", "question", topic=None)
 
+    def test_day_type_narrows_the_archetype_family(self):
+        """The slot's weekday picks the day-type family the blueprint is drawn from (issue #621)."""
+        from cqc_lem.app.run_content_plan import create_text_post
+        from cqc_lem.utilities.ai.content_framework import day_type_formats
+        with _TextPostHarness() as m:
+            create_text_post(1, "awareness", post_type="thought_leadership",
+                             user_profile=_profile(), post_id=42, day_weekday=3)
+        assert m["blueprint"].call_args.kwargs["preferred_formats"] == day_type_formats(3)
+
+    def test_no_day_type_leaves_the_menu_wide_open(self):
+        from cqc_lem.app.run_content_plan import create_text_post
+        with _TextPostHarness() as m:
+            create_text_post(1, "awareness", post_type="thought_leadership",
+                             user_profile=_profile(), post_id=42)
+        assert m["blueprint"].call_args.kwargs["preferred_formats"] is None
+
+    def test_unknown_weekday_is_ignored_rather_than_narrowing_to_nothing(self):
+        from cqc_lem.app.run_content_plan import create_text_post
+        with _TextPostHarness() as m:
+            create_text_post(1, "awareness", post_type="thought_leadership",
+                             user_profile=_profile(), post_id=42, day_weekday=99)
+        assert m["blueprint"].call_args.kwargs["preferred_formats"] is None
+
     def test_industry_news_and_personal_story_and_prompt(self):
         from cqc_lem.app.run_content_plan import create_text_post
         with _TextPostHarness() as m:

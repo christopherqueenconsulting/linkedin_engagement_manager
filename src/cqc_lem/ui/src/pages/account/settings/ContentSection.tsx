@@ -2,6 +2,7 @@ import Toggle from '../../../components/Toggle'
 import { useEngagementPrefs } from './EngagementPrefsContext'
 import { useUserPrefs } from './UserPrefsContext'
 import { Advanced, Field, SectionCard, inputClass } from './Field'
+import { CADENCE_OPTIONS } from './options'
 
 // Everything about producing and shipping a post. The content-buffer knobs (F4) and the review
 // thresholds are exposed here under Advanced — the buffer settings drive real AI spend and had no
@@ -15,6 +16,14 @@ export default function ContentSection() {
 
   return (
     <SectionCard title="Publishing" blurb="What LEM generates, and what has to clear review before it ships.">
+      <Field settingKey="posts_per_week">
+        <select value={eng.posts_per_week ?? 3}
+          onChange={(e) => setEng({ posts_per_week: Number(e.target.value) })} className={inputClass}>
+          {CADENCE_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+      </Field>
       <Field settingKey="auto_schedule_posts">
         <Toggle on={!!prefs?.auto_schedule_posts}
           onClick={() => prefs && setPrefs({ auto_schedule_posts: !prefs.auto_schedule_posts })} />

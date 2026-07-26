@@ -150,6 +150,7 @@ the on-time/resource curve that sizes it. See `docs/SELENIUM_GRID.md` and `docs/
 ### Content generation & scheduling (`app/run_content_plan.py`, `app/run_scheduler.py`, `utilities/ai/ai_helper.py`)
 - AI content by buyer-journey stage (awareness / consideration / decision): thought-leadership, industry-news commentary, personal-story, engagement-prompt posts, carousels (educational / case-study / product-demo / insights), native video, and blog summaries.
 - 30-day content plan with balanced post-type distribution; auto-scheduling around golden/peak hours.
+- **Cadence (issue #621):** the plan is NOT one post a day. It fills the `posts_per_week` slots (2–7, default 3) of a **fixed day-type calendar** (`POST_DAY_TYPES` in `content_framework.py` — Tue build-receipt / Wed story / Thu spiky POV at the default), which also supplies each post's buyer stage AND narrows its archetype family. Times are clamped to waking hours (`POST_HOUR_MIN/MAX` in `utilities/utils.py`), jittered ±15–30 min, and held ≥24h apart.
 - Self-healing carousels (stale/errored carousels re-generated into branded slides) and asset backfill.
 - `PostType` is `text` / `carousel` / `video`; `PostStatus` includes `error` for generation/posting failures needing manual fix.
 

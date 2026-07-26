@@ -171,6 +171,43 @@ class TestFeedFallbackPref:
         assert by_col["feed_fallback_when_empty"] == 0
 
 
+class TestPostsPerWeekPref:
+    """Publishing cadence (issue #621) — 3/week by default, never daily by accident."""
+
+    def _saved(self, cursor):
+        cols = list(__import__("cqc_lem.utilities.db", fromlist=["_ENGAGEMENT_COLS"])._ENGAGEMENT_COLS)
+        return dict(zip(cols, cursor.execute.call_args[0][1][1:]))
+
+    def test_default_is_three_a_week(self):
+        conn, _ = _mock_conn(fetch_row=None)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_engagement_preferences, DEFAULT_POSTS_PER_WEEK
+            assert get_engagement_preferences(1)["posts_per_week"] == DEFAULT_POSTS_PER_WEEK == 3
+
+    def test_null_column_reads_as_the_default(self):
+        conn, _ = _mock_conn(fetch_row={"posts_per_week": None})
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_engagement_preferences
+            assert get_engagement_preferences(1)["posts_per_week"] == 3
+
+    def test_saved_value_is_preserved(self):
+        conn, cursor = _mock_conn(rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_engagement_preferences
+            update_engagement_preferences(3, {"posts_per_week": 4})
+        assert self._saved(cursor)["posts_per_week"] == 4
+
+    def test_out_of_range_values_are_clamped(self):
+        from cqc_lem.utilities.db import POSTS_PER_WEEK_MIN, POSTS_PER_WEEK_MAX
+        for given, expected in ((0, POSTS_PER_WEEK_MIN), (99, POSTS_PER_WEEK_MAX),
+                                ("nonsense", 3), (None, 3)):
+            conn, cursor = _mock_conn(rowcount=1)
+            with patch(f"{_DB}.get_db_connection", return_value=conn):
+                from cqc_lem.utilities.db import update_engagement_preferences
+                update_engagement_preferences(3, {"posts_per_week": given})
+            assert self._saved(cursor)["posts_per_week"] == expected
+
+
 class TestReplyInboundToken:
     def test_returns_existing_token(self):
         conn, cursor = _mock_conn(fetch_row=("existingtoken",))
