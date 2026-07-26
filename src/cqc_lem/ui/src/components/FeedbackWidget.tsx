@@ -3,7 +3,9 @@ import { useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { useAppInfo } from '../hooks/useAppInfo'
 import api from '../api/client'
-import { EVENTS, analyticsSessionId, capture, replayEnabled } from '../utils/analytics'
+import {
+  EVENTS, analyticsSessionId, capture, ensureSessionRecorded, replayEnabled,
+} from '../utils/analytics'
 
 const TYPE_HINTS = [
   { value: 'bug', label: '🐞 Something is broken' },
@@ -100,8 +102,15 @@ export default function FeedbackWidget() {
 
   if (!isOpen) {
     return (
+      // Someone opening this is about to describe a bug, so their session is worth the quota —
+      // ensureSessionRecorded() records it even if sampling left it out, or the replay link on the
+      // filed issue would 404 for the ~90% of sessions the sample excludes.
       <button
-        onClick={() => { setIsOpen(true); capture(EVENTS.feedbackOpened, { route: location.pathname }) }}
+        onClick={() => {
+          setIsOpen(true)
+          ensureSessionRecorded()
+          capture(EVENTS.feedbackOpened, { route: location.pathname })
+        }}
         className="fixed bottom-4 right-4 z-40 bg-blue-600 text-white text-xs font-semibold px-3.5 py-2 rounded-full shadow-lg hover:bg-blue-700 transition-colors"
         aria-label="Feedback / Report a bug"
       >
@@ -171,8 +180,8 @@ export default function FeedbackWidget() {
           )}
           <p className="text-[11px] text-gray-400">
             We attach the page you're on{appInfo?.version ? ` and app v${appInfo.version}` : ''} automatically.
-            {/* Say it plainly — the report now links a recording of this session when one exists. */}
-            {replayEnabled() && ' If this session was recorded, we link that too (typed text is masked).'}
+            {/* Say it plainly — opening this panel starts a recording the report will link to. */}
+            {replayEnabled() && ' We also record this session and link it to your report (typed text is masked).'}
           </p>
           {error && <p className="text-xs text-red-600">{error}</p>}
           <button

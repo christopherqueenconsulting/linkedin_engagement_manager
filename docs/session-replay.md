@@ -45,7 +45,8 @@ The SDK owns the decision, not the project settings — one place, in code, test
 | Rule | Where | Default |
 |---|---|---|
 | Sample of ordinary sessions | `session_recording.sampleRate` | `0.1` (`VITE_POSTHOG_REPLAY_SAMPLE`) |
-| Every session that throws | `posthog.on('eventCaptured')` → `startSessionRecording({ sampling: true })` | always on |
+| Every session that throws | `posthog.on('eventCaptured')` → `ensureSessionRecorded()` | always on |
+| Every session that files feedback | `FeedbackWidget` open → `ensureSessionRecorded()` | always on |
 | Skip bounces | PostHog project setting **minimum duration** + `strictMinimumDuration: true` | 5s (see below) |
 | Kill switch | `VITE_POSTHOG_REPLAY=false` | replay on |
 
@@ -53,16 +54,30 @@ The error trigger fires on the `$exception` event itself, so it covers BOTH post
 error/rejection autocapture and anything the app catches and reports through `captureException()`.
 An errored session is recorded **even when sampling left it out** — that override is the whole point.
 
+`ensureSessionRecorded()` is that override, and it deliberately does NOT consult
+`posthog.sessionRecordingStarted()`. That method reports whether rrweb is attached, and posthog
+attaches rrweb for *every* session — the sampling decision only governs whether the buffer is ever
+sent — so it reads `true` in exactly the sampled-out case the override exists for. Instead the
+module remembers the session id it already forced, so a page throwing in a loop costs one override
+rather than a full snapshot per exception, and a new session id re-arms it.
+
 Two consequences worth knowing before you watch one:
 
-- For a sampled session the replay starts at page load. For an error-triggered one it starts **at
-  the exception** — the lead-up isn't there. If you need the lead-up for a specific flow, raise the
-  sample rate for a while rather than trying to reconstruct it.
+- For a sampled session the replay starts at page load. For a forced one it starts **at the trigger**
+  — the exception, or the moment the feedback panel opened. The lead-up isn't there: while a session
+  is sampled out posthog discards its buffer on every emit, so there is nothing to backfill. If you
+  need the lead-up for a specific flow, raise the sample rate for a while.
 - `VITE_POSTHOG_REPLAY*` are read by Vite at BUILD time (docker build-args / CI vars
   `UI_POSTHOG_REPLAY`, `UI_POSTHOG_REPLAY_SAMPLE`), exactly like `VITE_POSTHOG_KEY`. Changing them
   needs a rebuild; setting them in the running container's `.env` does nothing.
 
-### The one thing that lives in PostHog, not in code
+### What still has to be set in PostHog, not in code
+
+**Record user sessions must be ON for the project.** `disable_session_recording: false` in the SDK
+is a veto, not a switch: posthog-js only starts the recorder when the project's remote config comes
+back `enabled`. With the project toggle off, every rule above is inert and nothing is recorded — so
+turn it on under [Replay → settings](https://us.posthog.com/project/475262/settings/project-replay)
+first, then verify with step 1 below.
 
 **Minimum duration** is remote config — set it under
 [Replay → settings](https://us.posthog.com/project/475262/settings/project-replay) to **5000 ms**.
@@ -75,7 +90,8 @@ over remote config, so configuring both would just multiply into a rate nobody i
 ## Every report links its replay
 
 `ui/src/components/FeedbackWidget.tsx` already stamped `posthog_session_id` onto every report. That
-id now becomes a link, in three places:
+id now becomes a link, in three places — and opening the widget forces the recording, so the link
+resolves for every report instead of only the ~10% the sample happened to cover:
 
 | Surface | Link |
 |---|---|
@@ -104,7 +120,8 @@ is access-controlled and masks the same fields the SPA does.
 
 ## Quota
 
-The free tier is 5,000 recordings/month. At a 10% sample plus every errored session, a spike in
-errors spends quota — that is the intended trade (an error spike is exactly when you want the
-recordings). If the month runs hot, lower `UI_POSTHOG_REPLAY_SAMPLE` and rebuild; the error trigger
-is deliberately not sampled.
+The free tier is 5,000 recordings/month. At a 10% sample plus every errored session and every
+feedback report, a spike in errors spends quota — that is the intended trade (an error spike is
+exactly when you want the recordings). If the month runs hot, lower `UI_POSTHOG_REPLAY_SAMPLE` and
+rebuild; the two forced triggers are deliberately not sampled, and feedback reports are rate-limited
+per user upstream anyway.

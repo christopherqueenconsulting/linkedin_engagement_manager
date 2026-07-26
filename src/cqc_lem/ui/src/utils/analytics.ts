@@ -56,21 +56,47 @@ export function replayEnabled(): boolean {
   return !!KEY && REPLAY_ENABLED
 }
 
+// The session id we have already forced a recording for, so a page throwing in a loop costs one
+// override and not one full snapshot per exception. Deliberately NOT `sessionRecordingStarted()`:
+// posthog attaches rrweb for every session and the sampling decision only governs whether the
+// buffer is SENT, so that method reads `true` in exactly the sampled-OUT case this override exists
+// for. A new session id is a new sampling decision, so it re-arms.
+let forcedReplaySession: string | null = null
+
+function forceSessionRecording(ph: PostHog): void {
+  if (!REPLAY_ENABLED) return
+  try {
+    let sessionId = ''
+    try {
+      sessionId = ph.get_session_id?.() || ''
+    } catch {
+      // No resolvable session id — fall through and force once.
+    }
+    if (forcedReplaySession !== null && forcedReplaySession === sessionId) return
+    forcedReplaySession = sessionId
+    ph.startSessionRecording({ sampling: true })
+  } catch {
+    // A recording decision must never surface as a UI error.
+  }
+}
+
+// Record THIS session even if sampling left it out. Called for the two moments a recording is worth
+// more than the quota it spends: an exception, and a user opening the feedback widget — a report
+// whose replay link 404s is worse than no link, and only ~REPLAY_SAMPLE of sessions are recorded
+// otherwise. Recording starts HERE; the lead-up exists only for the sampled slice.
+export function ensureSessionRecorded(): void {
+  withClient(forceSessionRecording)
+}
+
 // The recording rule that matters: a session that threw is the session someone will want to watch,
 // so it is recorded even when sampling left it out. `eventCaptured` fires for BOTH posthog's own
 // unhandled-error autocapture and captureException() below, so the rule lives in exactly one place.
-// Recording starts AT the exception — the lead-up is only there for the sampled slice.
 function armErrorTriggeredReplay(ph: PostHog): void {
   if (!REPLAY_ENABLED) return
   try {
     ph.on('eventCaptured', (event: { event?: string } | undefined) => {
       if (event?.event !== '$exception') return
-      try {
-        if (ph.sessionRecordingStarted()) return
-        ph.startSessionRecording({ sampling: true })
-      } catch {
-        // A recording decision must never surface as a UI error.
-      }
+      forceSessionRecording(ph)
     })
   } catch {
     // Older/stubbed clients without the hook simply keep the sampled-only behavior.

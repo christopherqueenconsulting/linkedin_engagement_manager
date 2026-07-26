@@ -285,9 +285,13 @@ capture(EVENTS.postApproved, { post_id, post_type, archetype })
 
 The recording RULES live in the SDK, not in PostHog's project settings, so they are one testable
 place: a `VITE_POSTHOG_REPLAY_SAMPLE` slice (default 10%) of ordinary sessions, **plus every session
-that produces an `$exception`** — the error trigger overrides sampling via a single
+that produces an `$exception` or opens the feedback widget**. Both go through one
+`ensureSessionRecorded()` in `analytics.ts`; the error one is wired to a single
 `posthog.on('eventCaptured')` hook, which catches both posthog's own unhandled-error autocapture and
-`captureException()`. Leave the project's own sampling at 100%: the local `sampleRate` takes
+`captureException()`. Never gate that override on `posthog.sessionRecordingStarted()` — posthog
+attaches rrweb for EVERY session and sampling only decides whether the buffer is sent, so it reads
+`true` in exactly the sampled-out case the override is for. Leave the project's own sampling at 100%
+(and Record user sessions ON, or nothing records at all): the local `sampleRate` takes
 precedence, and configuring both multiplies them. Only **minimum duration** (the bounce filter) is
 remote config; `strictMinimumDuration: true` in code makes it measure the buffer, not session age.
 

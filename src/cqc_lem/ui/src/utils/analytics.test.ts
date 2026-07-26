@@ -220,15 +220,30 @@ describe('session replay', () => {
     expect(ph.startSessionRecording).toHaveBeenCalledWith({ sampling: true })
   })
 
-  it('leaves an already-recording session alone and ignores other events', async () => {
+  // posthog attaches rrweb for EVERY session — sampling only decides whether the buffer is sent —
+  // so sessionRecordingStarted() reads true for a sampled-OUT session and must never gate this.
+  it('still overrides when rrweb is already attached but the session was sampled out', async () => {
+    const a = await loadAnalytics('phc_test')
+    await a.initAnalytics()
+    ph.sessionRecordingStarted.mockReturnValueOnce(true)
+    onEventCaptured!({ event: '$exception' })
+    expect(ph.startSessionRecording).toHaveBeenCalledWith({ sampling: true })
+  })
+
+  it('ignores other events and overrides at most once per session', async () => {
     const a = await loadAnalytics('phc_test')
     await a.initAnalytics()
     onEventCaptured!({ event: '$pageview' })
     expect(ph.startSessionRecording).not.toHaveBeenCalled()
 
-    ph.sessionRecordingStarted.mockReturnValueOnce(true)
     onEventCaptured!({ event: '$exception' })
-    expect(ph.startSessionRecording).not.toHaveBeenCalled()
+    onEventCaptured!({ event: '$exception' })
+    expect(ph.startSessionRecording).toHaveBeenCalledTimes(1)
+
+    // A new session id is a fresh sampling decision, so the trigger re-arms.
+    ph.get_session_id.mockReturnValueOnce('sess-456')
+    onEventCaptured!({ event: '$exception' })
+    expect(ph.startSessionRecording).toHaveBeenCalledTimes(2)
   })
 
   it('never lets a recording decision throw into the page', async () => {
@@ -252,6 +267,26 @@ describe('session replay', () => {
   it('is off with analytics itself off', async () => {
     const a = await loadAnalytics()
     expect(a.replayEnabled()).toBe(false)
+  })
+
+  it('records on demand so a feedback report always has a replay to link', async () => {
+    const a = await loadAnalytics('phc_test')
+    await a.initAnalytics()
+    a.ensureSessionRecorded()
+    await Promise.resolve()
+    expect(ph.startSessionRecording).toHaveBeenCalledWith({ sampling: true })
+
+    // Shares the once-per-session budget with the error trigger.
+    onEventCaptured!({ event: '$exception' })
+    expect(ph.startSessionRecording).toHaveBeenCalledTimes(1)
+  })
+
+  it('records nothing on demand when replay is off', async () => {
+    const a = await loadAnalytics('phc_test', { VITE_POSTHOG_REPLAY: 'false' })
+    await a.initAnalytics()
+    a.ensureSessionRecorded()
+    await Promise.resolve()
+    expect(ph.startSessionRecording).not.toHaveBeenCalled()
   })
 })
 

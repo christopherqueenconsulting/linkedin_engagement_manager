@@ -403,8 +403,8 @@ def build_issue_body(classification: FeedbackClassification, feedback_id: Option
     lines = ["## Why", classification.summary or "(no summary — see the classifier verdict below)",
              "", demand, "", provenance, ""]
     if replay_url:
-        lines += [f"[Watch the session replay]({replay_url}) — what the reporter did right before "
-                  f"they filed this.", ""]
+        lines += [f"[Watch the session replay]({replay_url}) — the browser session this report was "
+                  f"filed from.", ""]
     lines += ["## Scope"]
     lines += [f"- {item}" for item in scope]
     lines += ["", "## Files",
