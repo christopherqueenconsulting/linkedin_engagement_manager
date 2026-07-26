@@ -124,6 +124,17 @@ class TestMeetingAskDetector:
         "DM me to discuss your funnel.",
         "Reach out and we can discuss the details.",
         "Booking a consult is the fastest way in.",
+        # 'an' is the ONLY article "intro"/"introductory" ever takes — an offer-verb pattern that
+        # omits it cannot match the most natural phrasing of the ask it exists to catch.
+        "Book an intro call with me this week.",
+        "Schedule an introductory call if that helps.",
+        "Grab an intro session on my calendar.",
+        # The same ask framed as the reader's interest, or as a bare headline offer with a booking
+        # marker — no offer verb, still unambiguously a meeting ask.
+        "Want a free strategy session? Comment below.",
+        "Interested in a discovery call?",
+        "Free discovery call for the first 5 people who reply.",
+        "Free strategy session — link in comments.",
     ])
     def test_flags_meeting_asks(self, text):
         from cqc_lem.utilities.ai.content_alignment import contains_meeting_ask
@@ -140,6 +151,9 @@ class TestMeetingAskDetector:
         "I ran a discovery call with them last week and it changed the scope.",
         "Our last strategy session surfaced three gaps in the funnel.",
         "The 30-minute call with their CTO was where the real problem showed up.",
+        "I book discovery calls with new clients every Friday.",
+        "I wanted a quick call but they were booked solid.",
+        "That discovery call opened my eyes to the real bottleneck.",
         "",
         None,
     ])

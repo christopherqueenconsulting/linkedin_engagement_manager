@@ -228,18 +228,33 @@ ARTIFACT_CTA_POLICY = (
 # Precision over recall, the _SOFT_OFFER_RE philosophy: each pattern needs explicit meeting intent, so
 # ordinary prose ("we scheduled the migration", "let's talk about why this matters") is never flagged.
 _MEETING_ASK_PATTERNS: tuple = (
-    r"\bbook(?:ing)?\s+(?:a|your|some|my)\s+(?:call|time|slot|demo|meeting|chat|consult\w*|session|intro\w*)",
-    r"\bschedul(?:e|ing)\s+(?:a|your|some|our)\s+(?:call|time|demo|meeting|chat|consult\w*|session|intro\w*)",
+    r"\bbook(?:ing)?\s+(?:a|an|your|some|my)\s+(?:call|time|slot|demo|meeting|chat|consult\w*|session|intro\w*)",
+    r"\bschedul(?:e|ing)\s+(?:a|an|your|some|our)\s+(?:call|time|demo|meeting|chat|consult\w*|session|intro\w*)",
     r"\b(?:hop|jump|get)\s+on\s+a\s+(?:quick\s+)?(?:call|zoom|chat|huddle)",
     r"\bset\s+up\s+(?:a|some)\s+(?:call|time|meeting|chat|demo|consult\w*)",
     r"\blet'?s\s+(?:set\s+up|schedule|book|find|grab)\s+(?:a|some)?\s*(?:call|time|chat|coffee|meeting)",
     # Offer-verb context is REQUIRED: a bare "discovery call" / "strategy session" noun phrase also
     # appears in ordinary first-person narrative ("I ran a discovery call last week" — often the
     # story-bank anecdote itself), and the repair DELETES matching sentences, so flagging the noun
-    # phrase alone would silently destroy real story content.
-    r"\b(?:grab|claim|snag|book|schedule|join|reserve|get|offer(?:ing)?)\s+(?:a|your|my|this|some)\s+"
+    # phrase alone would silently destroy real story content. 'an' belongs in every article set —
+    # "intro"/"introductory" only ever takes it, so leaving it out made "book an intro call"
+    # unmatchable.
+    r"\b(?:grab|claim|snag|book|schedule|join|reserve|get|offer(?:ing)?)\s+(?:a|an|your|my|this|some)\s+"
     r"(?:(?:free|quick|short|discovery|intro(?:ductory)?|strategy|\d{1,2}[- ]min(?:ute)?)\s+)+"
     r"(?:call|consult\w*|session|chat|demo)\b",
+    # Same offer, framed as the reader's interest instead of a verb ("Want a free strategy session?").
+    # Still explicit meeting intent — narrative uses the past tense ("I wanted a quick call"), which
+    # cannot match.
+    r"\b(?:want|interested\s+in|up\s+for|ready\s+for|keen\s+on)\s+(?:a|an|your|some)?\s*"
+    r"(?:(?:free|quick|short|discovery|intro(?:ductory)?|strategy|\d{1,2}[- ]min(?:ute)?)\s+)+"
+    r"(?:call|consult\w*|session|chat|demo)s?\b",
+    # Headline offer with no verb at all ("Free discovery call for the first 5 people") — matched
+    # ONLY when an unambiguous booking marker follows in the same sentence, so narrative that merely
+    # mentions a call ("I ran a discovery call with them last week") is still left alone.
+    r"\b(?:free|quick|short|discovery|intro(?:ductory)?|strategy|\d{1,2}[- ]min(?:ute)?)\s+"
+    r"(?:call|consult\w*|session|chat|demo)s?\b[^.?!\n]{0,40}?"
+    r"\b(?:link\s+in\s+(?:bio|comments)|sign\s+up\b|dm\s+me\b|comment\s+below\b|"
+    r"for\s+the\s+first\s+\d+|(?:slots?|spots?)\s+(?:are\s+)?(?:open|available|left)\b)",
     r"\b(?:calendly|savvycal|my\s+calendar\s+link|calendar\s+link|link\s+to\s+my\s+calendar)\b",
     r"\bdm\s+me\s+(?:to|if\s+you\s+want\s+to|and\s+we(?:'ll|\s+will|\s+can))\s+"
     r"(?:discuss|chat|talk|connect|explore|scope|walk)",
