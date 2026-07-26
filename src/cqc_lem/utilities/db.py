@@ -3205,6 +3205,160 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
         connection.close()
 
 
+# --- Target-creator engagement roster (issue #616) ---
+# A curated list of accounts to comment on FIRST, ahead of the home feed. The blend the rotation
+# aims for is 50% peers / 30% ICP / 20% large creators; the per-author weekly cap is the anti-pod
+# guard so the same account never absorbs a run's whole comment budget.
+ENGAGEMENT_TARGET_CATEGORIES = ("peer", "icp", "creator")
+ENGAGEMENT_TARGET_SOURCES = ("user", "suggested")
+ENGAGEMENT_TARGET_WEEKLY_DEFAULT = 2
+ENGAGEMENT_TARGET_WEEKLY_MAX = 14
+_ENGAGEMENT_TARGET_COLS = ("id", "profile_url", "name", "category", "max_comments_per_week",
+                           "active", "last_engaged_at", "comments_this_week", "week_start",
+                           "source")
+
+
+def engagement_week_start(today: Optional[date] = None) -> date:
+    """Monday of the week `today` falls in — the reset boundary for the per-author weekly cap."""
+    today = today or datetime.now().date()
+    return today - timedelta(days=today.weekday())
+
+
+def _clean_target_row(row: dict) -> dict:
+    """Normalize a roster row: bools as bools, and a STALE weekly counter reported as 0 so a target
+    whose cap was spent last week is immediately eligible again without a reset job."""
+    row["active"] = bool(row.get("active"))
+    if row.get("week_start") != engagement_week_start():
+        row["comments_this_week"] = 0
+    row["comments_this_week"] = int(row.get("comments_this_week") or 0)
+    row["max_comments_per_week"] = int(row.get("max_comments_per_week")
+                                       or ENGAGEMENT_TARGET_WEEKLY_DEFAULT)
+    return row
+
+
+def get_engagement_targets(user_id: int, active_only: bool = False) -> list:
+    """The user's engagement roster, newest-configured last. `comments_this_week` is already
+    week-aware (0 once the stored week_start is not the current week)."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        sql = (f"SELECT {', '.join(_ENGAGEMENT_TARGET_COLS)} FROM engagement_targets "
+               f"WHERE user_id=%s")
+        if active_only:
+            sql += " AND active=1"
+        sql += " ORDER BY category, id"
+        cursor.execute(sql, (user_id,))
+        return [_clean_target_row(r) for r in (cursor.fetchall() or [])]
+    except mysql.connector.Error as err:
+        myprint(f"Could not list engagement targets for user_id {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def upsert_engagement_targets(user_id: int, targets: list) -> bool:
+    """Upsert roster rows keyed on (user_id, profile_url). Only the editable fields are written —
+    last_engaged_at / the weekly counter belong to the automation, so an edit never resets a cap."""
+    rows = []
+    for t in targets or []:
+        url = str(t.get("profile_url") or "").strip()
+        if not url:
+            continue
+        category = t.get("category")
+        source = t.get("source")
+        cap = t.get("max_comments_per_week")
+        try:
+            cap = int(cap) if cap is not None else ENGAGEMENT_TARGET_WEEKLY_DEFAULT
+        except (TypeError, ValueError):
+            cap = ENGAGEMENT_TARGET_WEEKLY_DEFAULT
+        rows.append((
+            user_id, url, (t.get("name") or None),
+            category if category in ENGAGEMENT_TARGET_CATEGORIES else "peer",
+            max(0, min(ENGAGEMENT_TARGET_WEEKLY_MAX, cap)),
+            1 if t.get("active", True) else 0,
+            source if source in ENGAGEMENT_TARGET_SOURCES else "user"))
+    if not rows:
+        return True
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.executemany(
+            "INSERT INTO engagement_targets (user_id, profile_url, name, category, "
+            "max_comments_per_week, active, source) VALUES (%s,%s,%s,%s,%s,%s,%s) "
+            "ON DUPLICATE KEY UPDATE name=VALUES(name), category=VALUES(category), "
+            "max_comments_per_week=VALUES(max_comments_per_week), active=VALUES(active), "
+            "source=VALUES(source)", rows)
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not upsert engagement targets for user_id {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def delete_engagement_target(user_id: int, profile_url: str) -> bool:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("DELETE FROM engagement_targets WHERE user_id=%s AND profile_url=%s",
+                       (user_id, str(profile_url or "").strip()))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not delete engagement target for user_id {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def record_target_engagement(user_id: int, profile_url: str) -> bool:
+    """Count one comment against a roster author's weekly cap and stamp last_engaged_at. The
+    counter resets in the same statement when the stored week_start is not the current week, so a
+    new week always starts from 1 without a separate reset job."""
+    week = engagement_week_start()
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE engagement_targets SET "
+            "comments_this_week = IF(week_start = %s, comments_this_week + 1, 1), "
+            "week_start = %s, last_engaged_at = NOW() "
+            "WHERE user_id=%s AND profile_url=%s", (week, week, user_id, str(profile_url or "").strip()))
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not record target engagement for user_id {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def suggest_engagement_targets(user_id: int, limit: int = 20) -> list:
+    """Seed candidates for an empty roster: people who recently engaged with the user's OWN posts
+    (post_engagers), minus anyone already on the roster. Costs no scraping. Suggested as 'icp' —
+    someone reacting to your content is far likelier to be a buyer than a peer — and the operator
+    re-categorizes in the editor."""
+    existing = {str(t.get("profile_url") or "").rstrip("/").lower()
+                for t in get_engagement_targets(user_id)}
+    out = []
+    for cand in get_engager_candidates(user_id, days=60):
+        url = str(cand.get("person_profile_url") or "").strip()
+        if not url or url.rstrip("/").lower() in existing:
+            continue
+        existing.add(url.rstrip("/").lower())
+        out.append({"profile_url": url, "name": cand.get("person_name"), "category": "icp",
+                    "max_comments_per_week": ENGAGEMENT_TARGET_WEEKLY_DEFAULT,
+                    "active": True, "source": "suggested"})
+        if len(out) >= limit:
+            break
+    return out
+
+
 def get_or_create_reply_inbound_token(user_id: int) -> Optional[str]:
     """The user's PERSISTENT inbound token for the comment-notification forwarding address
     (reply+<token>@parse-domain). Minted once and stored on the users row so the Gmail forward

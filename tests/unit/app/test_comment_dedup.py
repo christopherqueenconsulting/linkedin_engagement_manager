@@ -68,6 +68,9 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
         p("_literal_relevant", return_value=True)
         p("_score_feed_post", return_value=1.0)
         p("post_matches_preferences", return_value=matches)
+        # Empty roster: the run degrades to the plain feed walk (issue #616 acceptance).
+        p("get_engagement_targets", return_value=[])
+        p("post_is_relevant", return_value=True)
         funnel_holder = {}
         p("set_feed_funnel", side_effect=lambda uid, f: funnel_holder.update(f))
         p("claim_post_for_comment", new=claim)
@@ -169,6 +172,8 @@ class TestFeedDedup:
             p("_literal_relevant", return_value=True)
             p("_score_feed_post", return_value=1.0)
             p("post_matches_preferences", return_value=True)
+            p("get_engagement_targets", return_value=[])
+            p("post_is_relevant", return_value=True)
             p("_author_is_me", return_value=False)
             p("claim_post_for_comment", return_value=True)
             p("generate_ai_response", return_value="A comment.")

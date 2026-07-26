@@ -57,6 +57,9 @@ from cqc_lem.utilities.db import (
     get_user_groups, set_groups_enabled, get_post_engagement_rows, get_post_performance_rows,
     get_lead_magnet_settings, update_lead_magnet_settings,
     get_dm_templates, upsert_dm_templates,
+    get_engagement_targets, upsert_engagement_targets, delete_engagement_target,
+    suggest_engagement_targets, ENGAGEMENT_TARGET_CATEGORIES, ENGAGEMENT_TARGET_SOURCES,
+    ENGAGEMENT_TARGET_WEEKLY_DEFAULT, ENGAGEMENT_TARGET_WEEKLY_MAX,
     update_subscription_from_stripe, update_user_linkedin_token,
     get_users_with_stripe_subscriptions,
     update_user_linkedin_password,
@@ -374,6 +377,8 @@ _VALID_VIDEO_QUALITIES = ("standard", "premium", "premium_top")  # engagement_pr
 _LEN_LM_KEYWORD = 128     # lead_magnet_settings.keyword VARCHAR(128)
 _LEN_LM_MESSAGE = 2000    # lead_magnet_settings.message (TEXT; app cap)
 _LEN_DM_TEMPLATE = 2000   # dm_templates.template_text (TEXT; app cap)
+_LEN_TARGET_PROFILE_URL = 512  # engagement_targets.profile_url VARCHAR(512)
+_LEN_TARGET_NAME = 255         # engagement_targets.name VARCHAR(255)
 _LEN_NL_TITLE = 255       # newsletter_settings.title VARCHAR(255)
 _LEN_NL_TOPIC = 512       # newsletter_settings.topic VARCHAR(512)
 _LEN_DM_RECIPIENT_URL = 512   # scheduled_dms.recipient_profile_url VARCHAR(512)
@@ -680,6 +685,42 @@ class DmTemplateItem(BaseModel):
 class DmTemplatesRequest(BaseModel):
     session_token: str
     templates: List[DmTemplateItem] = []
+
+
+class EngagementTargetItem(BaseModel):
+    profile_url: str = Field(max_length=_LEN_TARGET_PROFILE_URL)
+    name: Optional[str] = Field(default=None, max_length=_LEN_TARGET_NAME)
+    category: str = "peer"
+    max_comments_per_week: int = ENGAGEMENT_TARGET_WEEKLY_DEFAULT
+    active: bool = True
+    source: str = "user"
+
+    @field_validator("category")
+    @classmethod
+    def _valid_category(cls, v: str) -> str:
+        return v if v in ENGAGEMENT_TARGET_CATEGORIES else "peer"
+
+    @field_validator("source")
+    @classmethod
+    def _valid_source(cls, v: str) -> str:
+        return v if v in ENGAGEMENT_TARGET_SOURCES else "user"
+
+    @field_validator("max_comments_per_week")
+    @classmethod
+    def _clamp_weekly_cap(cls, v: int) -> int:
+        # Clamped, never rejected: the per-author cap is a safety rail, so an out-of-range slider
+        # must not 422 away the operator's whole roster edit.
+        return max(0, min(ENGAGEMENT_TARGET_WEEKLY_MAX, int(v)))
+
+
+class EngagementTargetsRequest(BaseModel):
+    session_token: str
+    targets: List[EngagementTargetItem] = []
+
+
+class EngagementTargetDeleteRequest(BaseModel):
+    session_token: str
+    profile_url: str = Field(max_length=_LEN_TARGET_PROFILE_URL)
 
 
 class LinkedInPasswordRequest(BaseModel):
@@ -2621,6 +2662,38 @@ def update_dm_templates_endpoint(request: DmTemplatesRequest) -> ResponseModel:
     if not upsert_dm_templates(user_id, [t.model_dump() for t in request.templates]):
         raise HTTPException(status_code=500, detail="Could not update DM templates")
     return ResponseModel(status_code=200, detail="DM templates updated")
+
+
+@router.get("/user/engagement-targets")
+def get_engagement_targets_endpoint(session_token: str) -> ResponseModel:
+    """The user's engagement roster plus seed suggestions for an empty one (issue #616)."""
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return ResponseModel(status_code=200, detail={
+        "targets": get_engagement_targets(user_id),
+        "suggestions": suggest_engagement_targets(user_id),
+    })
+
+
+@router.put("/user/engagement-targets")
+def update_engagement_targets_endpoint(request: EngagementTargetsRequest) -> ResponseModel:
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if not upsert_engagement_targets(user_id, [t.model_dump() for t in request.targets]):
+        raise HTTPException(status_code=500, detail="Could not update engagement roster")
+    return ResponseModel(status_code=200, detail="Engagement roster updated")
+
+
+@router.delete("/user/engagement-targets")
+def delete_engagement_target_endpoint(request: EngagementTargetDeleteRequest) -> ResponseModel:
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if not delete_engagement_target(user_id, request.profile_url):
+        raise HTTPException(status_code=500, detail="Could not remove roster target")
+    return ResponseModel(status_code=200, detail="Roster target removed")
 
 
 @router.put("/user/linkedin-password")
