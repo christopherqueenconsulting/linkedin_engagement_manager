@@ -52,7 +52,7 @@ left), `--probe-composer` dumps the composer's real control labels in one run �
 deck renders in-feed as a swipeable **document**, not a multi-image share. `probe_document_render`
 answers this by capturing the media anchors of a published post (§4, check 2). It needs one document
 post to exist on the account first — that publish is C1's acceptance step and is human-gated
-(`risk:live-linkedin`).
+(`risk:live-linkedin`). Tracked as **#644**.
 
 ## 2. Saves and impressions are scrapeable — on the author's analytics page only
 
@@ -85,7 +85,7 @@ correct, not a bug), and it is a Selenium read, so it rides the same 429 breaker
 version added **member post stats**. If that surface exposes impressions/saves for the authenticated
 member, it would replace this Selenium scrape with an API read that no SDUI churn or 429 can break.
 That is a token probe, not a browser session — cheap to settle, and worth settling before investing
-further in scraping. Filed as a follow-up rather than folded into this spike.
+further in scraping. Filed as **#645** rather than folded into this spike.
 
 ## 3. Selector map (with provenance)
 
@@ -135,14 +135,15 @@ what need updating.
 
 **C1 (#390) — native document posts:** implementation complete (publish path, `PostType.DOCUMENT`,
 balancer, migration). Remaining: publish one document post on the live account and run check 1 to
-confirm it renders as a document card. No code change is expected; if the verdict comes back `image`,
+confirm it renders as a document card — tracked as **#644** (`risk:live-linkedin`, `priority:high`),
+so R1 (#404) closes with this note. No code change is expected; if the verdict comes back `image`,
 the legacy fallback silently took over and the finding is an API-provisioning bug, not a format bug.
 
 **B2 (#387) — reposts/impressions/saves:** implementation complete and consistent with the live
-layout as of 2026-07-23. Remaining: none from this spike. Recommended (separate issues, not this PR):
-probe the `202506` member-post-stats API as a churn-proof replacement for the analytics scrape, and
-fold the analytics-page rows into the F2 (#403) selector-liveness sweep so drift is detected by cron
-rather than by a run of zeroes.
+layout as of 2026-07-23. Remaining: none from this spike. Split out as separate issues:
+**#645** probes the `202506` member-post-stats API as a churn-proof replacement for the analytics
+scrape, and its "keep the scrape" outcome folds the analytics-page rows into the F2 (#403)
+selector-liveness sweep so drift is detected by cron rather than by a run of zeroes.
 
 ## Sources
 

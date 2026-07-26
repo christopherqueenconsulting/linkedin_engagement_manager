@@ -122,7 +122,7 @@ def classify_media_anchor(anchor: dict) -> str:
     return "unknown"
 
 
-def media_verdict(anchors: list) -> str:
+def media_verdict(anchors: Optional[list[dict]]) -> str:
     """Overall render kind. A document post also carries image nodes (the rendered page
     thumbnails), so a single document token decides it; only the absence of one makes it an
     image share."""
@@ -134,7 +134,7 @@ def media_verdict(anchors: list) -> str:
     return "unknown"
 
 
-def find_document_affordance(labels: list) -> Optional[str]:
+def find_document_affordance(labels: Optional[list[str]]) -> Optional[str]:
     """The composer control that starts a document upload, by its visible/aria label."""
     for label in labels or []:
         if "document" in (label or "").lower():
