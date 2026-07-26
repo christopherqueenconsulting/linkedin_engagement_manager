@@ -1,8 +1,9 @@
 # Settings & Configuration — Research + IA Proposal (issue #558, Phase 1)
 
-**Status:** Phase 1 deliverable. Awaiting owner sign-off before any Phase 2 rebuild.
+**Status:** Phase 1 research + Phase 2 rebuild, both shipped. The owner signed off options
+**1A · 2A · 3A · 4A** on 2026-07-26; §8 records what those choices became in code.
 **Scope:** every user-facing configuration knob in the SPA and its backing store, how the knobs
-interact, and a proposed information architecture that makes them understandable and conflict-safe.
+interact, and the information architecture that makes them understandable and conflict-safe.
 
 Everything below is read from the code as it stands on `main` (v0.95.1), not from memory. File and
 line references are given so the reviewer can check any claim.
@@ -209,9 +210,10 @@ Recommended    — the default and when to move off it.
 "Why it matters" and "Recommended" collapse behind a `?` on narrow screens so the dense sections
 stay scannable.
 
-**Progressive disclosure.** Each section shows ≤6 primary controls; everything else sits behind one
-"Advanced" disclosure per section: review thresholds, content buffer, ICP score, reply sweep
-cadence, `reply_max_post_age_days` (F3), newsletter lead days / queued drafts.
+**Progressive disclosure.** Each *card* shows ≤6 primary controls (the two dense sections — My Voice
+and Who I Engage — split into two cards each); everything else sits behind one "Advanced" disclosure
+per section: review thresholds, content buffer, ICP score, reply sweep cadence,
+`reply_max_post_age_days` (F3).
 
 **Save model.** One `SettingsSaveProvider` wrapping the whole hub (today it wraps only the
 automation tab — F8), one Save bar, per-section dirty state. The three engagement save buttons
@@ -263,34 +265,48 @@ overwritten; the preset row shows "Custom" until they pick one.
 
 ---
 
-## 8. Phase 2 implementation sketch
+## 8. What Phase 2 shipped
 
-No database migration and no API contract change are required for the core rebuild.
+No database migration was needed, and no endpoint changed shape. All of it lives under
+`ui/src/pages/account/settings/`.
 
-1. `settings/registry.ts` — one declarative descriptor per setting (key, section, label, control
-   type, bounds, default, the three microcopy strings, `advanced: boolean`). The registry is the
-   single source of truth the sections render from, which is what keeps microcopy from drifting.
-2. `settings/conflicts.ts` — a pure `evaluate(settings, context) → Finding[]` over the merged
-   object (engagement prefs + user prefs + newsletter + lead magnet + `feed_reach` +
-   `gmail_forward_confirmation` + credit balances). Directly unit-testable; encodes §4.
-3. `settings/presets.ts` — the §7 table, plus `detectPreset(settings)`.
-4. `SettingsHub.tsx` — rail/tab nav, `?section=` routing with `?tab=` back-compat, one
-   `SettingsSaveProvider` for the whole hub, one save bar.
-5. Existing cards are re-parented into sections; `EngagementSettingsCard`'s three cards split along
-   the new section boundaries while continuing to share one state object and one mutation (the
-   comment at `EngagementSettingsCard.tsx:11` explains why that sharing is non-negotiable).
-6. Tests: the SPA currently has **no test runner** (`ui/package.json` has no vitest/jest). Phase 2
-   adds `vitest` + `@testing-library/react` and a CI step, covering `conflicts.ts` (every row of §4),
-   `presets.ts`, and the hub's nav/deep-link/save-dirty behaviour. `tsc -b` must stay clean.
+| File | Role |
+|---|---|
+| `sections.ts` | The 8 sections, the legacy `?tab=` map and `resolveSection()`. |
+| `registry.ts` | One descriptor per setting: label + the three microcopy strings + `advanced`. The single source of truth every control renders from, so microcopy can't drift. |
+| `conflicts.ts` | Pure `evaluateConflicts(ctx) → Finding[]` encoding every row of §4, plus `blockingIssues()` for values MySQL would reject. |
+| `presets.ts` | The §7 table (mapped to `brand_account.PHASE_OUTBOUND_POLICY`), `presetValues()` and `detectPreset()`. |
+| `EngagementPrefsContext.tsx` | The single `engagement_preferences` object + its one mutation, shared by the five sections that edit part of it. |
+| `UserPrefsContext.tsx` | Same for the single `/user/settings` write (inactivity · auto-schedule · content buffer · language), which the hub renders three sections apart. |
+| `ConflictsContext.tsx` | Evaluates §4 against live engagement/account state plus saved newsletter, lead-magnet, credit and timezone state. |
+| `Field.tsx` | The microcopy contract, the three-tier conflict notice with its one-click fix, the `Advanced` disclosure. |
+| `SettingsHub.tsx` | Left rail (tabs on mobile) with per-section alert badges, `?section=` routing, ONE `SettingsSaveProvider` + save bar for the whole hub. |
 
-**Compatibility guarantees:** every existing setting remains reachable; no endpoint changes shape;
-the single-row `engagement_preferences` upsert is untouched; `?tab=account|linkedin|content|automation`
-deep links redirect to the corresponding new section.
+**Decisions as implemented**
 
----
+- **1A** — the 8-section hub. `?section=` routing; `?tab=account|linkedin|content|automation` still
+  resolve (→ billing · setup · content · targeting).
+- **2A** — Conservative / Balanced / Aggressive, mapped to P0/P1/P2 with the catch-up cap clamped to
+  the plan's ceiling. A **new** account (the GET now returns `has_saved_preferences`, backed by the
+  existing `db.has_engagement_preferences`) opens on Balanced as an **unsaved** change with a banner
+  saying so — nothing is written until the user saves, so no existing user's values, and no
+  account's outbound posture, can change without an explicit save.
+- **3A** — warn, never block. Amber inline warnings with a one-click fix where one exists; the live
+  `feed_reach` funnel renders directly above the targeting controls so the C1 warning cites the
+  user's own last scan. The only hard block is a value the write itself would reject (over-length
+  `tone`/`comment_style`/goals, out-of-band numerics) — blocked client-side so the user sees *which*
+  field instead of losing the whole row (the V52 failure mode).
+- **4A** — UI-layer cleanup, no migration: the dead `reply_to_own_comments` toggle is gone (the value
+  still round-trips untouched); `post_types` and `default_buyer_stage` are now in the `EngPrefs` type
+  so a save stops silently resetting them (F2); `content_buffer_days` / `content_buffer_max_posts`
+  (F4) and `reply_max_post_age_days` (F3) are reachable under Advanced. F11 is fixed as a
+  consequence of the shared context: preferences are never written before they have loaded.
 
-## 9. Open decisions for sign-off
+**Tests.** The SPA had no test runner; Phase 2 adds `vitest` + `@testing-library/react` (`npm test`)
+and a CI step in `ui-build.yml`. 54 tests cover every row of §4 including the blocking validations,
+the presets and their ceilings, the section/deep-link routing, the registry's microcopy contract, and
+the `Field` / `ConflictNotice` / `Advanced` components. `tsc -b` and the production build stay clean.
 
-See the Decision Comment on issue #558 / the PR. In short: (1) the IA shape, (2) whether presets
-ship and whether Balanced becomes the new-user default, (3) how hard conflict enforcement should be,
-(4) what to do about the dead/orphan settings in §3 (F1–F4).
+**Compatibility.** Every setting from §2 is still reachable, the single-row
+`engagement_preferences` upsert is unchanged, and `GET /user/engagement-preferences` only gained one
+additive read-only field.

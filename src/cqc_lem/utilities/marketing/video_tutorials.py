@@ -130,10 +130,12 @@ TUTORIAL_FLOWS: dict[str, TutorialFlow] = {
         feature=("Account preferences control who LEM engages with, the voice it writes in, and how "
                  "many comments and DMs it may send per day."),
         steps=(
-            TutorialStep(caption="Open your account settings", path="/account", wait_for="main",
+            TutorialStep(caption="Open your settings", path="/account", wait_for="main",
                          seconds=5.0),
-            TutorialStep(caption="Targeting, voice and daily caps", path="/account",
-                         wait_for="main", seconds=7.0),
+            TutorialStep(caption="Who you engage with", path="/account?section=targeting",
+                         wait_for="main", seconds=6.0),
+            TutorialStep(caption="How much and how often", path="/account?section=volume",
+                         wait_for="main", seconds=6.0),
         ),
         requires_auth=True,
     ),

@@ -48,7 +48,8 @@ from cqc_lem.utilities.db import (
     get_user_subscription_info, get_user_preferences, update_user_preferences,
     DEFAULT_CONTENT_BUFFER_DAYS, DEFAULT_CONTENT_BUFFER_MAX_POSTS,
     MAX_CONTENT_BUFFER_DAYS, MAX_CONTENT_BUFFER_POSTS,
-    get_engagement_preferences, update_engagement_preferences, get_or_create_reply_inbound_token,
+    get_engagement_preferences, has_engagement_preferences, update_engagement_preferences,
+    get_or_create_reply_inbound_token,
     get_newsletter_settings, update_newsletter_settings,
     get_pending_newsletter_editions,
     get_latest_edition_scheduled_for, update_newsletter_edition, get_newsletter_edition,
@@ -1900,6 +1901,13 @@ def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel:
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     prefs = get_engagement_preferences(user_id)
+    # Read-only: has this user ever saved settings? The Settings hub starts a brand-new account on
+    # the Balanced preset and leaves every existing account's saved values alone (issue #558).
+    # Unreadable → report "configured", so a hiccup can never make a returning user look brand new.
+    try:
+        prefs["has_saved_preferences"] = has_engagement_preferences(user_id)
+    except Exception:
+        prefs["has_saved_preferences"] = True
     # Read-only: the address the user forwards LinkedIn comment-notification emails to (event mode).
     try:
         from cqc_lem.utilities.linkedin.notification_email import reply_inbound_address

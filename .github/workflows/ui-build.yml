@@ -21,6 +21,9 @@ jobs:
       - name: npm ci (strict — matches the Docker build)
         working-directory: src/cqc_lem/ui
         run: npm ci
+      - name: Unit tests (vitest)
+        working-directory: src/cqc_lem/ui
+        run: npm test
       - name: Production build
         working-directory: src/cqc_lem/ui
         run: npm run build

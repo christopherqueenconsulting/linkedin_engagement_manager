@@ -34,11 +34,23 @@ _USER = 5
 class TestGetEngagementPreferences:
     def test_returns_prefs(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.has_engagement_preferences", return_value=True), \
              patch("cqc_lem.api.main.get_engagement_preferences",
                    return_value={"tone": "warm", "comment_length": "short"}):
             resp = client.get(f"/api/user/engagement-preferences?session_token={_SESSION}")
         assert resp.status_code == 200
         assert resp.json()["detail"]["tone"] == "warm"
+        assert resp.json()["detail"]["has_saved_preferences"] is True
+
+    def test_flags_a_never_configured_account(self, client):
+        """The Settings hub starts these — and only these — on the Balanced preset (#558)."""
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.has_engagement_preferences", return_value=False), \
+             patch("cqc_lem.api.main.get_engagement_preferences",
+                   return_value={"tone": None, "comment_length": "medium"}):
+            resp = client.get(f"/api/user/engagement-preferences?session_token={_SESSION}")
+        assert resp.status_code == 200
+        assert resp.json()["detail"]["has_saved_preferences"] is False
 
     def test_401(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=None):
