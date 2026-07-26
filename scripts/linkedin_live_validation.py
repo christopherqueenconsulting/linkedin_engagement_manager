@@ -339,7 +339,10 @@ def main(argv: Optional[list] = None) -> int:
             report["post_stats"] = probe_post_stats(driver, args.post_url)
         if args.comment_outcome_url:
             from cqc_lem.app.run_automation import _profile_slug
-            slug = args.our_slug or _profile_slug(str(getattr(profile, "profile_url", "") or ""))
+            # The reader compares slugs EXACTLY, so accept either form here: a full profile URL or
+            # a bare slug typed on the command line.
+            raw = args.our_slug or str(getattr(profile, "profile_url", "") or "")
+            slug = _profile_slug(raw) or raw.strip().strip("/").lower()
             report["comment_outcome"] = probe_comment_outcome(driver, args.comment_outcome_url,
                                                               slug, args.comment_text)
         if args.probe_composer:

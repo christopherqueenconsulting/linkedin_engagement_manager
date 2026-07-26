@@ -3091,13 +3091,37 @@ _MAX_OUTCOME_CHECKS_PER_RUN = 15  # volume backstop — one post navigation each
 # "Most recent"). The default is 'Most relevant', which is the view the demotion signal is about.
 _SORT_MOST_RELEVANT = "most relevant"
 _SORT_MOST_RECENT = "most recent"
+
+# XPath 1.0 has no lower-case(), so translate() is the case fold. Every comparison against a sort
+# label goes through it: LinkedIn renders 'Most recent', and a literal case-sensitive match against
+# any other casing silently never fires — which would leave the sort flip permanently failing and
+# the demotion signal permanently NULL.
+_X_AZ_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_X_AZ_LOWER = "abcdefghijklmnopqrstuvwxyz"
+_X_LOWER_TEXT = f"translate(normalize-space(),'{_X_AZ_UPPER}','{_X_AZ_LOWER}')"
+_X_LOWER_ARIA = f"translate(@aria-label,'{_X_AZ_UPPER}','{_X_AZ_LOWER}')"
 _COMMENT_SORT_LOCATORS = [
-    (By.XPATH, "//button[contains(translate(@aria-label,'SORT','sort'),'sort') and "
-               "(contains(.,'Most relevant') or contains(.,'Most recent'))]"),
-    (By.XPATH, "//button[normalize-space()='Most relevant' or normalize-space()='Most recent']"),
-    (By.XPATH, "//button[contains(normalize-space(),'Most relevant') or "
-               "contains(normalize-space(),'Most recent')]"),
+    (By.XPATH, f"//button[contains({_X_LOWER_ARIA},'sort') and "
+               f"(contains({_X_LOWER_TEXT},'{_SORT_MOST_RELEVANT}') or "
+               f"contains({_X_LOWER_TEXT},'{_SORT_MOST_RECENT}'))]"),
+    (By.XPATH, f"//button[{_X_LOWER_TEXT}='{_SORT_MOST_RELEVANT}' or "
+               f"{_X_LOWER_TEXT}='{_SORT_MOST_RECENT}']"),
+    (By.XPATH, f"//button[contains({_X_LOWER_TEXT},'{_SORT_MOST_RELEVANT}') or "
+               f"contains({_X_LOWER_TEXT},'{_SORT_MOST_RECENT}')]"),
 ]
+
+
+def _sort_option_locators(target: str) -> list:
+    """Menu-option locators for ONE sort, compared case-insensitively against the lowercase target.
+    An exact-case literal ('Most Recent') never matches LinkedIn's 'Most recent', and a sort flip
+    that can never find its option makes every absent comment read as unfindable instead of
+    demoted — the one reading this feature exists to produce."""
+    target = (target or "").strip().lower()
+    return [
+        (By.XPATH, "//*[self::button or @role='menuitem' or @role='menuitemradio']"
+                   f"[{_X_LOWER_TEXT}='{target}']"),
+        (By.XPATH, f"//*[{_X_LOWER_TEXT}='{target}']"),
+    ]
 
 # A rendered comment is truncated behind '…more' until expanded, so our comment is matched on a
 # truncation-proof normalized PREFIX (the #474 lesson applied to comment bodies), never full text.
@@ -3145,11 +3169,8 @@ def _switch_comment_sort(driver, wait, target: str = _SORT_MOST_RECENT) -> bool:
             return False
         driver.execute_script("arguments[0].click();", btn)
         time.sleep(random.uniform(1, 2))
-        opt = find_first(driver, wait, [
-            (By.XPATH, "//*[self::button or @role='menuitem' or @role='menuitemradio']"
-                       f"[normalize-space()='{target.title()}']"),
-            (By.XPATH, f"//*[normalize-space()='{target.title()}']"),
-        ], f"{target} sort option", required=False)
+        opt = find_first(driver, wait, _sort_option_locators(target), f"{target} sort option",
+                         required=False)
         if opt is None:
             return False
         driver.execute_script("arguments[0].click();", opt)
@@ -3171,6 +3192,15 @@ def _comment_text_matches(rendered: str, logged: str) -> bool:
     return a.startswith(b) or b.startswith(a)
 
 
+def _href_is_profile(href: str, slug: str) -> bool:
+    """True when a profile href belongs to EXACTLY `slug`. A substring test — `f"/in/{slug}" in
+    href` — also matches every slug ours is a PREFIX of ('/in/chris' inside '/in/chris-queen-9b1'),
+    which would let a stranger's comment be read as ours and their reply be discounted as our own."""
+    if not slug:
+        return False
+    return _profile_slug(href or "") == str(slug).strip().lower()
+
+
 def _find_our_comment(items: list, our_slug: str, comment_text: str):
     """Our comment's container within a rendered thread, or None.
 
@@ -3180,7 +3210,7 @@ def _find_our_comment(items: list, our_slug: str, comment_text: str):
     match. With several of ours present (a manual comment, a reply) the text has to decide."""
     if not our_slug:
         return None
-    ours = [(tb, cont) for (tb, cont, author) in items if f"/in/{our_slug}" in (author or "")]
+    ours = [(tb, cont) for (tb, cont, author) in items if _href_is_profile(author, our_slug)]
     if not ours:
         return None
     for tb, cont in ours:
@@ -3272,10 +3302,10 @@ def _read_comment_outcome(driver, wait, user_id: int, post_url: str, our_slug: s
     author_href = _post_author_href(driver)
     author_slug = _profile_slug(author_href)
     outcome["like_count"] = _comment_like_count(driver, ours)
-    outcome["reply_count"] = sum(1 for _c, a in replies if f"/in/{our_slug}" not in a)
-    outcome["our_reply_sent"] = any(f"/in/{our_slug}" in a for _c, a in replies)
+    outcome["reply_count"] = sum(1 for _c, a in replies if not _href_is_profile(a, our_slug))
+    outcome["our_reply_sent"] = any(_href_is_profile(a, our_slug) for _c, a in replies)
     outcome["author_replied"] = bool(author_slug) and any(
-        f"/in/{author_slug}" in a for _c, a in replies if f"/in/{our_slug}" not in a)
+        _href_is_profile(a, author_slug) for _c, a in replies if not _href_is_profile(a, our_slug))
     return outcome
 
 

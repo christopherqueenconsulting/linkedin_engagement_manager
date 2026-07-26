@@ -125,6 +125,46 @@ class TestFindOurComment:
     def test_none_without_a_slug(self):
         assert _fn("_find_our_comment")([_item("x", "y")], "", "x") is None
 
+    def test_a_slug_we_are_merely_a_prefix_of_is_not_us(self):
+        # '/in/chris' is a substring of '/in/chris-queen-9b1' — matching on containment would read
+        # a stranger's comment as ours and record their thread as our outcome.
+        items = [_item("their comment", "https://www.linkedin.com/in/chris-queen-9b1/")]
+        assert _fn("_find_our_comment")(items, "chris", "their comment") is None
+
+    def test_matching_is_case_insensitive_on_the_href(self):
+        items = [_item("ours", "https://www.linkedin.com/in/Chris-Queen-9b1/")]
+        assert _fn("_find_our_comment")(items, "chris-queen-9b1", "ours") is items[0][1]
+
+
+class TestHrefIsProfile:
+    def test_exact_slug_only(self):
+        f = _fn("_href_is_profile")
+        assert f("https://www.linkedin.com/in/chris-queen-9b1/", "chris-queen-9b1") is True
+        assert f("https://www.linkedin.com/in/chris-queen-9b1/", "chris") is False
+        assert f("https://www.linkedin.com/in/chris/", "chris-queen-9b1") is False
+
+    def test_empty_inputs_never_match(self):
+        f = _fn("_href_is_profile")
+        assert f("", "chris") is False
+        assert f("https://www.linkedin.com/in/chris/", "") is False
+        assert f(None, None) is False
+
+
+class TestSortOptionLocators:
+    def test_compares_case_insensitively_against_the_lowercase_label(self):
+        # LinkedIn renders 'Most recent'. A title-cased literal ('Most Recent') never matches in
+        # XPath, which would leave the flip permanently failing and every demotion unseen.
+        for _by, xpath in _fn("_sort_option_locators")("most recent"):
+            assert "'most recent'" in xpath
+            assert "Most Recent" not in xpath and "Most recent" not in xpath
+            assert "translate(normalize-space()" in xpath
+
+    def test_sort_control_locators_are_case_folded_too(self):
+        import importlib
+        for _by, xpath in getattr(importlib.import_module(RA), "_COMMENT_SORT_LOCATORS"):
+            assert "Most relevant" not in xpath and "Most recent" not in xpath
+            assert "translate(" in xpath
+
 
 class TestCommentLikeCount:
     def test_parses_the_reactions_control(self):
@@ -192,6 +232,23 @@ class TestReadCommentOutcome:
             out = _fn("_read_comment_outcome")(driver, MagicMock(), 1, "https://post", "me",
                                               "Latency is the tell here")
         assert out["reply_count"] == 0 and out["our_reply_sent"] is True
+        assert out["author_replied"] is False
+
+    def test_a_replier_whose_slug_starts_with_ours_is_still_a_reply(self):
+        # '/in/me' is a prefix of '/in/me-too-9b1' and '/in/authorperson' of
+        # '/in/authorperson-2': containment matching would swallow a real reply as our own and
+        # credit a stranger as the post author replying.
+        our_tb = MagicMock(); our_tb.text = "Latency is the tell here"
+        items = [(our_tb, MagicMock(name="ours"), "https://www.linkedin.com/in/me/")]
+        with ExitStack() as es:
+            driver = _outcome_env(es, items)
+            _p(es, "_thread_replies",
+               return_value=[(MagicMock(), "https://www.linkedin.com/in/me-too-9b1/"),
+                             (MagicMock(), "https://www.linkedin.com/in/authorperson-2/")])
+            out = _fn("_read_comment_outcome")(driver, MagicMock(), 1, "https://post", "me",
+                                              "Latency is the tell here")
+        assert out["reply_count"] == 2
+        assert out["our_reply_sent"] is False
         assert out["author_replied"] is False
 
     def test_absent_from_relevant_but_present_in_recent_is_a_demotion(self):
