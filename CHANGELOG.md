@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.97.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.97.0...v0.97.1) (2026-07-26)
+
+
+### Bug Fixes
+
+* **scripts:** address review threads on the live-validation probe ([9a2720b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9a2720bf200802bd172e08aa7b23602634156d3d))
+
+
+### Documentation
+
+* **format:** link the split-out follow-ups ([#644](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/644), [#645](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/645)) from the R1 note ([5ada4a4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5ada4a40ec73812a4efee94519b7183d996de0fa))
+* **format:** live-validation findings — document post path + saves/impressions scraping (closes [#404](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/404)) ([12a3a6c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/12a3a6c80c1c5c832b737163e8ec729754dcb4dd))
+* **format:** live-validation findings for document posts + saves/impressions (closes [#404](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/404)) ([c57f931](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c57f93153e2930fb4a3ed84e7b5cc3d826928203))
+
 ## [0.97.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.96.0...v0.97.0) (2026-07-26)
 
 
