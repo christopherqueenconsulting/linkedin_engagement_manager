@@ -56,7 +56,10 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     get_engager_candidates, get_profile_facts, count_invites_sent_today, ConnectionRequestStatus, \
     CatchupTouchStatus, insert_catchup_touch, has_catchup_touch, get_catchup_touch, \
     update_catchup_touch_status, count_catchup_touches_sent_today, max_catchup_touches_allowed, \
-    get_engagement_targets, record_target_engagement, ENGAGEMENT_TARGET_WEEKLY_DEFAULT
+    get_engagement_targets, record_target_engagement, ENGAGEMENT_TARGET_WEEKLY_DEFAULT, \
+    record_follower_stat, get_linkedin_profile_url_by_user_id
+from cqc_lem.utilities.audience_stats import parse_follower_count, parse_connection_count, \
+    parse_profile_views, parse_search_appearances
 from cqc_lem.utilities.engagement_window import record_pre_post_run
 from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
@@ -68,8 +71,8 @@ from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited, _redis_cl
     acquire_run_lock, release_run_lock
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
 from cqc_lem.utilities.logger import myprint, log_error, log_info, log_warning
-from cqc_lem.utilities.observability import track_post_outcome, attribute_llm_cost, llm_attribution, \
-    FEATURE_COMMENT, FEATURE_CONTENT, FEATURE_DM
+from cqc_lem.utilities.observability import track_post_outcome, track_audience_snapshot, \
+    attribute_llm_cost, llm_attribution, FEATURE_COMMENT, FEATURE_CONTENT, FEATURE_DM
 from cqc_lem.utilities.selenium_util import click_element_wait_retry, \
     get_element_wait_retry, get_elements_as_list_wait_stale, getText, close_tab, get_driver_wait_pair, quit_gracefully, \
     wait_for_ajax, find_first, click_first, find_all_first
@@ -2027,6 +2030,94 @@ def auto_scrape_post_stats(self, user_id: int):
                                saves=counts.get("saves") or 0, user_id=user_id)
             scraped += 1
         return f"Scraped stats for {scraped} post(s)"
+    finally:
+        quit_gracefully(driver)
+
+
+# The author's OWN analytics surface. Profile views and search appearances are rendered as summary
+# cards on the profile-views page, so that one load usually yields both; the search-appearances page
+# is only opened when it didn't.
+_PROFILE_VIEWS_URL = "https://www.linkedin.com/analytics/profile-views/"
+_SEARCH_APPEARANCES_URL = "https://www.linkedin.com/analytics/search-appearances/"
+
+
+def _read_page_text(driver, url: str) -> str:
+    """Navigate and return the page's visible text (prefers <main>, falls back to <body>). Empty
+    string when the page can't be read — never raises."""
+    try:
+        driver.get(url)
+    except Exception as e:
+        log_warning("Could not open page for audience capture", exc=e, task_name="capture_follower_stats")
+        return ""
+    time.sleep(random.uniform(4, 6))
+    for tag in ("main", "body"):
+        try:
+            text = driver.find_element(By.TAG_NAME, tag).text or ""
+        except Exception:
+            continue
+        # An EMPTY <main> is as unread as a missing one (LinkedIn renders parts of the analytics
+        # surface outside it, and a half-hydrated shell reads blank), so keep falling back.
+        if text.strip():
+            return text
+    return ""
+
+
+def capture_audience_snapshot(driver, profile_url: "str | None") -> dict:
+    """Read the user's follower/connection counts off their own profile and their profile-view /
+    search-appearance counts off their own analytics surface (issue #627).
+
+    Best-effort PER SIGNAL and fail-closed: a missing anchor leaves that key None (recorded as SQL
+    NULL = "not measured"), never 0, and never raises — a LinkedIn DOM change must not take the
+    daily capture, or anything downstream of it, down with it."""
+    counts = {"follower_count": None, "connection_count": None,
+              "profile_views": None, "search_appearances": None}
+    if profile_url:
+        text = _read_page_text(driver, profile_url)
+        counts["follower_count"] = parse_follower_count(text)
+        counts["connection_count"] = parse_connection_count(text)
+    else:
+        log_warning("No LinkedIn profile URL — skipping follower capture",
+                    task_name="capture_follower_stats")
+    analytics_text = _read_page_text(driver, _PROFILE_VIEWS_URL)
+    counts["profile_views"] = parse_profile_views(analytics_text)
+    counts["search_appearances"] = parse_search_appearances(analytics_text)
+    if counts["search_appearances"] is None:
+        counts["search_appearances"] = parse_search_appearances(
+            _read_page_text(driver, _SEARCH_APPEARANCES_URL))
+    return counts
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
+                  queue='se_content')
+def capture_follower_stats(self, user_id: int):
+    """Daily audience telemetry: snapshot the user's follower/connection counts and (when the
+    surface is reachable) their profile views + search appearances (issue #627). Audience growth is
+    the outcome the whole system exists to produce and was previously untracked. One row per run
+    feeds the growth panel's 7/30-day deltas; unreadable signals are stored as NULL."""
+    try:
+        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id,
+                                                                  session_name="Audience Stats")
+    except Exception as e:
+        log_error("Error getting profile for audience capture", exc=e, user_id=user_id,
+                  task_name="capture_follower_stats")
+        return f"Failed: {e}"
+    try:
+        profile_url = get_linkedin_profile_url_by_user_id(user_id)
+        if not profile_url:
+            candidate = getattr(my_profile, "profile_url", None)
+            profile_url = str(candidate) if candidate else None
+        counts = capture_audience_snapshot(driver, profile_url)
+        if not record_follower_stat(user_id, **counts):
+            log_warning("No audience signal readable — snapshot skipped", user_id=user_id,
+                        task_name="capture_follower_stats")
+            return "No audience signals readable"
+        track_audience_snapshot(user_id=user_id, **counts)
+        log_info("Audience snapshot captured", user_id=user_id, task_name="capture_follower_stats")
+        return (f"Followers: {counts['follower_count'] if counts['follower_count'] is not None else 'unknown'}; "
+                f"profile views: {counts['profile_views'] if counts['profile_views'] is not None else 'unknown'}")
+    except Exception as e:
+        log_error("Audience capture error", exc=e, user_id=user_id, task_name="capture_follower_stats")
+        return f"Audience capture error: {e}"
     finally:
         quit_gracefully(driver)
 

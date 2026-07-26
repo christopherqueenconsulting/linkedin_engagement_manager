@@ -64,6 +64,45 @@ interface Analytics {
   content_mix?: ContentMix
 }
 
+// Follower & audience telemetry (#627). Every count is nullable: a capture that could not read a
+// number stores NULL ("not measured"), never 0.
+interface AudiencePoint {
+  date: string
+  follower_count: number | null
+  connection_count: number | null
+  profile_views: number | null
+  search_appearances: number | null
+}
+
+interface AudienceDelta {
+  delta: number
+  from: number
+  to: number
+  from_date: string
+  pct: number | null
+}
+
+interface ActivityPoint {
+  date: string
+  posts: number
+  comments: number
+  replies: number
+  dms: number
+}
+
+interface AudienceGrowth {
+  series: AudiencePoint[]
+  activity: ActivityPoint[]
+  follower_count: number | null
+  captured_at: string | null
+  connection_count: number | null
+  profile_views: number | null
+  search_appearances: number | null
+  deltas: Record<string, AudienceDelta | null>
+  samples: number
+  days: number
+}
+
 const MIX_LABELS: Record<string, string> = {
   value: 'Audience value',
   authority: 'Authority education',
@@ -72,6 +111,25 @@ const MIX_LABELS: Record<string, string> = {
 
 function formatPct(ratio: number | null | undefined): string {
   return ratio == null ? '—' : `${Math.round(ratio * 100)}%`
+}
+
+// A follower delta is null until there is a baseline snapshot old enough to measure against —
+// show "—" rather than inventing growth from a two-day history.
+function formatDelta(d: AudienceDelta | null | undefined): string {
+  if (!d) return '—'
+  return `${d.delta > 0 ? '+' : ''}${d.delta.toLocaleString()}`
+}
+
+function deltaColor(d: AudienceDelta | null | undefined): string {
+  if (!d || d.delta === 0) return 'text-gray-800'
+  return d.delta > 0 ? 'text-green-600' : 'text-red-600'
+}
+
+// The baseline is the newest capture on or BEFORE the window edge, so after a run of failed
+// captures a "7-day change" can really span longer. Name the date it was measured from rather than
+// letting the tile imply a window it didn't cover.
+function deltaSince(d: AudienceDelta | null | undefined): string {
+  return d ? `since ${shortDate(d.from_date)}` : 'not enough history'
 }
 
 // "2026-07-20" → "Jul 20" for compact chart/table axes (dates are tz-agnostic calendar days).
@@ -170,6 +228,17 @@ export default function Dashboard() {
     staleTime: 5 * 60 * 1000,
   })
 
+  // Follower growth / profile views, overlaid with what we actually did each day (#627).
+  const { data: audience } = useQuery({
+    queryKey: ['audience-growth', sessionToken],
+    queryFn: () =>
+      api
+        .get(`/user/audience-growth?session_token=${encodeURIComponent(sessionToken!)}&days=90`)
+        .then((r) => r.data.detail as AudienceGrowth),
+    enabled: !!sessionToken,
+    staleTime: 5 * 60 * 1000,
+  })
+
   const { data: statsData } = useQuery<{ detail: DashboardStats }>({
     queryKey: ['dashboard-stats', email],
     queryFn: () => api.get(`/dashboard/stats/?email=${encodeURIComponent(email)}`).then((r) => r.data),
@@ -222,6 +291,25 @@ export default function Dashboard() {
   const rateTrend: LinePoint[] = trend.map((t) => ({ x: shortDate(t.date), y: t.engagement_rate }))
   const impressionTrend: LinePoint[] = trend.map((t) => ({ x: shortDate(t.date), y: t.impressions }))
 
+  // Audience growth panel. The follower line and the activity line share the same day window so
+  // growth reads next to the work that drove it (two single-series charts, never a dual axis).
+  const audienceSeries = audience?.series ?? []
+  const activitySeries = audience?.activity ?? []
+  const hasAudience = audienceSeries.length > 0
+  // Both charts run over the UNION of days so they line up point-for-point; a day with no capture
+  // is a gap in the follower line (null), not a zero.
+  const audienceByDate = new Map(audienceSeries.map((p) => [p.date, p]))
+  const activityByDate = new Map(activitySeries.map((a) => [a.date, a]))
+  const audienceDays = [...new Set([...audienceByDate.keys(), ...activityByDate.keys()])].sort()
+  const followerTrend: LinePoint[] = audienceDays.map((d) => ({
+    x: shortDate(d),
+    y: audienceByDate.get(d)?.follower_count ?? null,
+  }))
+  const activityTrend: LinePoint[] = audienceDays.map((d) => {
+    const a = activityByDate.get(d)
+    return { x: shortDate(d), y: a ? a.posts + a.comments + a.replies + a.dms : 0 }
+  })
+
   const formatBoard = postStats?.rankings?.format ?? []
   const hookBoard = postStats?.rankings?.hook_style ?? []
 
@@ -260,6 +348,78 @@ export default function Dashboard() {
         <StatCard label="Pending review" value={stats.pending_review} color="border-yellow-500" />
         <StatCard label="Total posted" value={stats.posted_total} color="border-green-500" />
       </div>
+
+      {/* Audience growth — follower/profile-view telemetry next to the activity that drove it (#627) */}
+      {sessionToken && (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-6">
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-lg font-semibold text-gray-700">Audience Growth</h2>
+            <span className="text-xs text-gray-400">Last {audience?.days ?? 90} days</span>
+          </div>
+
+          {!hasAudience ? (
+            <p className="text-sm text-gray-400 py-4 text-center">
+              Gathering data — follower and profile-view tracking captures once a night from your
+              LinkedIn session.
+            </p>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
+                <div>
+                  <p className="text-2xl font-bold text-gray-800">
+                    {audience?.follower_count != null ? compactNumber(audience.follower_count) : '—'}
+                  </p>
+                  <p className="text-xs text-gray-500 mt-0.5">Followers</p>
+                </div>
+                {['7', '30'].map((w) => (
+                  <div key={w}>
+                    <p className={`text-2xl font-bold ${deltaColor(audience?.deltas?.[w])}`}>
+                      {formatDelta(audience?.deltas?.[w])}
+                    </p>
+                    <p className="text-xs text-gray-500 mt-0.5">{w}-day change</p>
+                    <p className="text-[10px] text-gray-400">{deltaSince(audience?.deltas?.[w])}</p>
+                  </div>
+                ))}
+                <div>
+                  <p className="text-2xl font-bold text-gray-800">
+                    {audience?.profile_views != null ? compactNumber(audience.profile_views) : '—'}
+                  </p>
+                  <p className="text-xs text-gray-500 mt-0.5">Profile views</p>
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-gray-800">
+                    {audience?.connection_count != null ? compactNumber(audience.connection_count) : '—'}
+                  </p>
+                  <p className="text-xs text-gray-500 mt-0.5">Connections</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <LineChart
+                  title="Followers"
+                  subtitle="Captured nightly from your own profile"
+                  points={followerTrend}
+                  format={compactNumber}
+                  valueLabel="Followers"
+                  emptyMessage="No follower count captured yet."
+                />
+                <LineChart
+                  title="Engagement activity"
+                  subtitle="Posts, comments, replies and DMs sent, by day"
+                  points={activityTrend}
+                  format={compactNumber}
+                  valueLabel="Actions"
+                  emptyMessage="No automation activity in this window."
+                />
+              </div>
+              <p className="text-xs text-gray-400">
+                Profile views and search appearances come from LinkedIn's own analytics surface — a
+                blank means the capture couldn't read that number, not that it was zero.
+              </p>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Engagement analytics — trends, leaderboards, and per-post drill-down from post_stats (#395) */}
       {sessionToken && (

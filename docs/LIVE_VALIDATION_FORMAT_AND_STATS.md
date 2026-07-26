@@ -99,6 +99,8 @@ Nothing below is a guess; the provenance column says where each came from.
 | Reactions/comments/reposts/saves rows | line pair `<Label>` → `<count>` (label-first) | `_stacked_counts` / `_STACKED_LABEL_FIRST` | live grab 2026-07-23 |
 | Social-bar counts (detail view) | regex `<count> <label>` on the card text | `_COMMENTS_RE` … `_SAVES_RE` | in-repo, live-used |
 | Post permalink on a feed card | `a[href*='/feed/update/']` | `_post_permalink_from_card` | in-repo, live-used |
+| Follower / connection counts | page text of `main` on the user's own profile → `parse_follower_count` / `parse_connection_count` | `capture_audience_snapshot` (#627) | in-repo, **best-effort / unvalidated** — first real run should be supervised |
+| Profile views / search appearances | `https://www.linkedin.com/analytics/profile-views/` (falls back to `/analytics/search-appearances/`), value-first line pair | `capture_audience_snapshot` (#627) | in-repo, **best-effort / unvalidated** |
 | Feed composer trigger | `//button[contains(normalize-space(),'Start a post') or contains(@aria-label,'Start a post') or contains(@aria-label,'Create a post')]` | `auto_post_to_group`, `probe_composer` | in-repo, **best-effort / unvalidated** (F2 #403) |
 | Document upload control | — | — | **unmapped by design** (§1); `--probe-composer` captures it |
 | Document media card | — | — | **unmapped**; `probe_document_render` captures it |

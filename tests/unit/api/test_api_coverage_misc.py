@@ -429,6 +429,52 @@ class TestEngagementAnalytics:
         assert resp.status_code == 401
 
 
+class TestAudienceGrowth:
+    """Follower & audience telemetry endpoint (issue #627)."""
+
+    def _rows(self):
+        from datetime import datetime, timedelta, timezone
+        today = datetime.now(timezone.utc).replace(tzinfo=None)
+        return [
+            {"id": 2, "captured_at": today, "follower_count": 1100, "connection_count": 500,
+             "profile_views": 48, "search_appearances": 12},
+            {"id": 1, "captured_at": today - timedelta(days=10), "follower_count": 1000,
+             "connection_count": 480, "profile_views": None, "search_appearances": None},
+        ]
+
+    def test_returns_series_deltas_and_activity(self, client):
+        from datetime import datetime, timezone
+        activity = [{"date": datetime.now(timezone.utc).date(), "action_type": "comment", "count": 6}]
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.get_follower_stats", return_value=self._rows()) as fetch, \
+             patch(f"{_M}.get_daily_action_counts", return_value=activity) as acts:
+            resp = client.get(f"/api/user/audience-growth?session_token={_TOK}&days=30")
+        assert resp.status_code == 200
+        detail = resp.json()["detail"]
+        assert detail["follower_count"] == 1100 and detail["profile_views"] == 48
+        assert detail["deltas"]["7"]["delta"] == 100
+        assert detail["activity"][0]["comments"] == 6
+        assert detail["days"] == 30
+        # The 7/30-day deltas need a baseline older than the charted window, so the read reaches
+        # further back than `days`.
+        assert fetch.call_args[1]["days"] == 60
+        assert acts.call_args[1]["days"] == 30
+
+    def test_days_clamped(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.get_follower_stats", return_value=[]) as fetch, \
+             patch(f"{_M}.get_daily_action_counts", return_value=[]):
+            resp = client.get(f"/api/user/audience-growth?session_token={_TOK}&days=9999")
+        assert resp.status_code == 200
+        assert fetch.call_args[1]["days"] == 395           # 365 clamp + the 30-day baseline reach
+        assert resp.json()["detail"]["series"] == []
+
+    def test_401_without_session(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=None):
+            resp = client.get("/api/user/audience-growth?session_token=bad")
+        assert resp.status_code == 401
+
+
 class TestLeadMagnetAndPassword:
     def test_get_lead_magnet(self, client):
         settings = {"enabled": True, "keyword": "GUIDE", "message": "here you go"}
