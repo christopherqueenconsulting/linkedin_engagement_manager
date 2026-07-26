@@ -2,6 +2,7 @@ import json
 import os
 import threading
 import uuid
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Any, Optional, Union
@@ -39,11 +40,21 @@ MYSQL_PORT = os.getenv('MYSQL_PORT')
 
 DbConnection = Union[PooledMySQLConnection, MySQLConnectionAbstract]
 
+@dataclass
+class _PoolState:
+    """Per-process pool bookkeeping, held on one mutable object rather than several module globals.
+
+    Rebinding module globals across calls reads as a dead store to static analysis (CodeQL
+    py/unused-global-variable) because each assignment is only consumed by a LATER invocation."""
+
+    pool: Optional[MySQLConnectionPool] = None
+    pid: Optional[int] = None
+    config: Optional[dict[str, Any]] = None
+    opened: int = 0
+
+
 _POOL_LOCK = threading.Lock()
-_POOL: Optional[MySQLConnectionPool] = None
-_POOL_PID: Optional[int] = None
-_POOL_CONFIG: Optional[dict[str, Any]] = None
-_POOL_OPENED = 0
+_POOL_STATE = _PoolState()
 
 
 def _get_mysql_config() -> dict[str, Any]:
@@ -79,22 +90,20 @@ def _get_connection_pool(config: dict[str, Any]) -> MySQLConnectionPool:
     every app process would otherwise pre-open MYSQL_POOL_SIZE sockets at first use and the sum
     across ~20 processes would blow past MySQL's max_connections."""
 
-    global _POOL, _POOL_PID, _POOL_CONFIG, _POOL_OPENED
-
     pid = os.getpid()
-    if _POOL is None or _POOL_PID != pid:
+    if _POOL_STATE.pool is None or _POOL_STATE.pid != pid:
         pool_size = max(1, min(MYSQL_POOL_SIZE, CNX_POOL_MAXSIZE))
-        _POOL = MySQLConnectionPool(pool_name=f"cqc-lem-{pid}", pool_size=pool_size)
-        _POOL.set_config(**config)
-        _POOL_PID = pid
-        _POOL_CONFIG = config
-        _POOL_OPENED = 0
-    elif config != _POOL_CONFIG:
+        _POOL_STATE.pool = MySQLConnectionPool(pool_name=f"cqc-lem-{pid}", pool_size=pool_size)
+        _POOL_STATE.pool.set_config(**config)
+        _POOL_STATE.pid = pid
+        _POOL_STATE.config = config
+        _POOL_STATE.opened = 0
+    elif config != _POOL_STATE.config:
         # e.g. a rotated AWS secret — pooled connections reconnect with the new config on checkout
-        _POOL.set_config(**config)
-        _POOL_CONFIG = config
+        _POOL_STATE.pool.set_config(**config)
+        _POOL_STATE.config = config
 
-    return _POOL
+    return _POOL_STATE.pool
 
 
 def _get_pooled_connection(config: dict[str, Any]) -> Optional[DbConnection]:
@@ -103,20 +112,18 @@ def _get_pooled_connection(config: dict[str, Any]) -> Optional[DbConnection]:
     Returns None when the pool is at capacity so the caller can fall back to an unpooled
     connection instead of failing a task during a fan-out burst."""
 
-    global _POOL_OPENED
-
     with _POOL_LOCK:
         pool = _get_connection_pool(config)
         try:
             return pool.get_connection()
         except mysql.connector.Error:
             # pool exhausted: every connection it has opened is checked out
-            if _POOL_OPENED >= pool.pool_size:
+            if _POOL_STATE.opened >= pool.pool_size:
                 log_debug(f"MySQL pool {pool.pool_name} at capacity ({pool.pool_size}) - "
                           f"opening a direct connection for this call")
                 return None
             pool.add_connection()
-            _POOL_OPENED += 1
+            _POOL_STATE.opened += 1
             return pool.get_connection()
 
 
@@ -126,13 +133,11 @@ def reset_connection_pool() -> None:
     Deliberately does NOT close the pooled connections: after a fork those sockets belong to the
     parent process, and closing them there would break the parent's in-flight queries."""
 
-    global _POOL, _POOL_PID, _POOL_CONFIG, _POOL_OPENED
-
     with _POOL_LOCK:
-        _POOL = None
-        _POOL_PID = None
-        _POOL_CONFIG = None
-        _POOL_OPENED = 0
+        _POOL_STATE.pool = None
+        _POOL_STATE.pid = None
+        _POOL_STATE.config = None
+        _POOL_STATE.opened = 0
 
 
 def get_db_connection() -> DbConnection:
@@ -370,7 +375,7 @@ class LogResultType(StrEnum):
 CONNECTION_REQUEST_SENT_MESSAGE = "Connection Request Sent Successfully"
 
 
-def store_cookies(user_email: str, cookies: list[dict]):
+def store_cookies(user_email: str, cookies: list[dict]) -> None:
     connection = get_db_connection()
     cursor = connection.cursor()
 
