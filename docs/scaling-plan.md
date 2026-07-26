@@ -297,7 +297,31 @@ nodes can be added on a second box without touching the app tier — the same
 512 MB; each node = 1 Chrome ≈ 1 vCPU / 1.5 GB + 2 GB shm. Budget **~2 GB + ~1 vCPU
 per additional concurrent session**.
 
+> **BUILT, not enabled (issue #556).** Option C now exists as `docker-compose.grid.yml`
+> (hub + N single-session nodes, standalone parked behind a `standalone` profile for instant
+> rollback) plus `docker-compose.grid-node.yml` for nodes on a second box. It defaults to **8
+> nodes** — capacity-neutral with today's standalone, so the cutover and the capacity change are
+> separate decisions. The invariant travels with it: node count × 1 session == summed lane
+> concurrency, enforced by the same `tests/unit/app/test_selenium_capacity.py`. Prod stays on the
+> standalone until §5e says the cap is the operating point. Runbook, the second-box setup, the
+> **16 vCPU / 64 GB vs second-box decision table** (held open pending the hosted-grid costing in
+> #633), and the cutover checklist: **`docs/SELENIUM_GRID.md`**.
+
 ### 5c. Resource plan by scale
+
+> **Measured by the load test (issue #556), 2026-07-26.** The table below was the estimate; running
+> `python -m cqc_lem.utilities.selenium_load_test --users 10,50,100` against today's topology
+> (8 slots, lanes 3/2/2/1) gives the on-time curve behind it: **10 users 100% on time, 50 users
+> 57.7%, 100 users 17.7%**, needing **5 / 14 / 27** sessions respectively to hold 95% on-time.
+> Two corrections to the estimate: the "concurrent Chrome sessions" column below **under-counts at
+> 50+** because it modelled only the commenting loops, not the once-a-day batch fan-outs or the
+> `se_prepost` lane #553 added afterwards; and **`se_prepost` is the first lane to break** (7 slots
+> of its own at 100 users — a 15-minute warm-up with a 5-minute window cannot absorb posts arriving
+> every 2.4 minutes). Staggering (§5d) was the cheapest fix and has since shipped (#554): the model
+> puts 50 users at 57.7% → 84.0% on-time and 14 → 11 sessions with no new hardware. That is still a
+> **prediction** — the model fans users out at one 13:00 UTC minute, not at #554's per-user local
+> slots, so re-running the curve against the shipped stagger is #634. Full curve, both modes and the
+> reading guide: `docs/SELENIUM_GRID.md` §3–§4.
 
 | Active users | Concurrent Chrome sessions | vCPU | RAM | Topology | Verdict on current VPS (8 vCPU / 31 GB) |
 |---|---|---|---|---|---|
@@ -405,10 +429,23 @@ have stopped holding:
 - All fits the current 8 vCPU / 31 GB box.
 
 **Phase 2 — ~50 users:**
-- Move Chrome to **Selenium Grid** (hub + 2–3 nodes); nodes can go on a **2nd VPS**.
+- ✅ **Selenium Grid built** (#556): `docker-compose.grid.yml` (hub + N nodes) and
+  `docker-compose.grid-node.yml` (nodes on a **2nd VPS**). Not enabled — cut over at the same 8
+  nodes first (capacity-neutral, buys fault isolation), then change the numbers. See
+  `docs/SELENIUM_GRID.md`.
+- ✅ **Load test built** (#556): `python -m cqc_lem.utilities.selenium_load_test` — simulated
+  on-time/resource curve at any scale, plus a `--live` mode that opens real concurrent sessions
+  against a deployed Grid. Run it before onboarding the cohort; it exits 2 when a scale exceeds
+  one VPS.
+- ✅ **Stagger the golden-hour fan-out** (§5d, #554) — the load test's biggest free on-time win, taken
+  first. Verifying it against the harness (which still models the pre-#554 single fan-out) is #634.
 - Lane concurrency 3–4 each; per-user 429 breaker keys; per-user rate pacing.
-- Upgrade to **16 vCPU / 64 GB** or split app-tier / Chrome-tier across two boxes.
-- Load-test the topology (see issue) before onboarding the cohort.
+- **Hardware/topology: deliberately undecided** (owner call on #556). Upgrading to **16 vCPU / 64 GB**
+  and splitting the Chrome tier onto a second box are compared in `docs/SELENIUM_GRID.md` §5 (short
+  version: upgrade covers ~16 sessions ≈ 50–60 staggered users at far lower ops cost; second box past
+  ~16 sessions, i.e. at 100 users) — but nothing is bought until §5e files a breach, and **#633**
+  first prices hosted/cloud grids (AWS, BrowserStack/Sauce/LambdaTest/Browserless/Browserbase/Steel)
+  beside both, against this curve and against our residential-proxy egress requirement.
 
 **Phase 3 — ~100 users:**
 - Grid nodes across 2+ hosts; dedicated Chrome host(s).

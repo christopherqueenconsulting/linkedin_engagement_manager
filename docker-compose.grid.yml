@@ -1,0 +1,187 @@
+# Selenium Grid overlay — Phase 2 of docs/scaling-plan.md (issue #556).
+#
+# The base file runs ONE `selenium/standalone-chrome` with 8 session slots. That is the top of this
+# box's Chrome budget (§4): the next capacity increase has to be horizontal, not a bigger number.
+# This overlay swaps that single container for a **hub + N single-session nodes**, so sessions scale
+# with node count and nodes can be moved to a second VPS without touching the app tier —
+# `get_docker_driver()` already targets `${SELENIUM_HUB_HOST}:${SELENIUM_HUB_PORT}/wd/hub`, which is
+# the hub's address as much as it was the standalone's.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.grid.yml up -d
+#
+# NOT enabled by default. Prod runs the standalone until the capacity monitor (§5e) says the cap is
+# the operating point; see docs/SELENIUM_GRID.md for the cutover runbook and the load-test evidence
+# that should precede it.
+#
+# INVARIANT (same one the standalone carries): total session slots == the sum of every lane
+# worker's SELENIUM_CONCURRENCY. Here total slots = SELENIUM_GRID_NODES x SE_NODE_MAX_SESSIONS(=1),
+# so the default node count IS the cap: 8 nodes = se_engage 3 + se_prepost 2 + se_outreach 2 +
+# se_content 1. Raising the node count without raising the lanes buys idle nodes; raising the lanes
+# without the nodes makes tasks queue on session creation and miss their window. Change both in the
+# same commit — tests/unit/app/test_selenium_capacity.py fails the build if they drift.
+services:
+  selenium-hub:
+    image: selenium/hub:latest
+    container_name: selenium-hub
+    hostname: selenium-hub
+    ports:
+      # Same port as the standalone, so SELENIUM_HUB_PORT and every tool that speaks to it
+      # (tools/selenium_mcp_server.py, the capacity monitor's /status poll) are unchanged. Bound to
+      # LOOPBACK by default because this overlay composes after docker-compose.prod.yml, whose whole
+      # point for `ports` is that 4444 is not publicly reachable — a default of "all interfaces"
+      # here would silently undo that hardening on the cutover.
+      # NOTE: there is no 7900 on a hub. noVNC lives on the NODES, and replicas cannot publish the
+      # same host port, so "watch the live browser" is lost on a Grid — attach to one node instead:
+      #   docker compose port <node-container> 7900   (or run one node with an explicit mapping).
+      - "${SELENIUM_GRID_HUB_BIND:-127.0.0.1}:${SELENIUM_HUB_PORT}:4444"
+      # Event bus. Only nodes speak these, and node-on-the-same-box reaches them over the compose
+      # network without any publishing at all — so the default bind is loopback. Set
+      # SELENIUM_GRID_BUS_BIND to the box's PRIVATE (WireGuard/VPC) address, never 0.0.0.0, when
+      # nodes live on a second host: an internet-reachable event bus is an unauthenticated way to
+      # register a node into the Grid. See docs/SELENIUM_GRID.md.
+      - "${SELENIUM_GRID_BUS_BIND:-127.0.0.1}:4442:4442"
+      - "${SELENIUM_GRID_BUS_BIND:-127.0.0.1}:4443:4443"
+    environment:
+      - SE_LOG_LEVEL=WARN
+      # How long a new-session request may sit in the hub's queue before it is rejected. The
+      # standalone had no queue — a request either got a slot or blocked in the client. Keep this
+      # comfortably longer than a Chrome startup burst but shorter than the 15-minute windows the
+      # lanes are trying to hit, so a starved Grid surfaces as an error, not as a silent 10-minute stall.
+      - SE_SESSION_REQUEST_TIMEOUT=300
+      - SE_SESSION_RETRY_INTERVAL=5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          # The hub only routes — it runs no browser (§5b: ~0.5 vCPU / 512 MB).
+          cpus: '0.5'
+          memory: 512m
+    healthcheck:
+      # Same MEANING as the standalone's check — a hub that answers but has zero nodes registered has
+      # zero capacity, so "UP" must mean "a browser can actually start" — but pure shell rather than
+      # the standalone's `python3 -c`: selenium/hub is a JRE image and carries no Python, so a check
+      # that shelled out to it would make the hub permanently unhealthy and strand every service that
+      # depends on it. `tr -d` first so the probe doesn't depend on how the hub spaces its JSON.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4444/status | tr -d ' \\n' | grep -q '\"availability\":\"UP\"'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  selenium-node-chrome:
+    image: selenium/node-chrome:latest
+    # No container_name: this service is replicated, and Compose refuses to scale a named service.
+    # Nodes are addressed by the hub over the event bus, never by us, so they need no stable name.
+    # No chrome-profile volume either — a named volume shared by N replicas is one profile
+    # directory with N Chromes writing into it, which corrupts it. Each node gets its own.
+    shm_size: 2g
+    depends_on:
+      # service_started, NOT service_healthy: the hub is only "healthy" once a node has registered,
+      # so waiting for health here would deadlock the pair. Nodes retry the bus on their own.
+      selenium-hub:
+        condition: service_started
+    environment:
+      - SE_EVENT_BUS_HOST=selenium-hub
+      - SE_EVENT_BUS_PUBLISH_PORT=4442
+      - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
+      # ONE session per node is the whole point of the horizontal path: a crashed Chrome takes down
+      # one session instead of all of them, and capacity is added by adding nodes (here or on a
+      # second box), not by raising a number inside a single container.
+      - SE_NODE_MAX_SESSIONS=1
+      - SE_NODE_OVERRIDE_MAX_SESSIONS=true
+      - SE_NODE_SESSION_TIMEOUT=600
+      - SE_LOG_LEVEL=WARN
+    restart: unless-stopped
+    deploy:
+      # Total slots = replicas x SE_NODE_MAX_SESSIONS. 8 == the summed lane concurrency (see the
+      # invariant at the top) and is drop-in parity with the standalone it replaces.
+      # `deploy.replicas` is honoured by `docker compose up` in Compose **v2** (v1 ignored the whole
+      # `deploy` key outside Swarm — as it also would for the resource limits the base compose file
+      # already relies on). Because a wrong node count is a silent capacity regression, not an error,
+      # the cutover VERIFIES the slot count against /status before trusting it, and
+      # `--scale selenium-node-chrome=$SELENIUM_GRID_NODES` is the explicit override if a host ever
+      # disagrees. See docs/SELENIUM_GRID.md §2.
+      replicas: ${SELENIUM_GRID_NODES:-8}
+      resources:
+        limits:
+          # §5b's budget: ~1 vCPU / 1.5 GB + 2 GB shm per additional concurrent session. Note this
+          # costs MORE RAM than the standalone for the same 8 sessions (8 x 1.5 GB + 8 node JVMs
+          # vs one 8 GB container) — that extra is what buys fault isolation and the second box.
+          cpus: '1.0'
+          memory: 1536m
+
+  # The standalone is retired by this overlay, not deleted: `profiles` keeps it defined (so
+  # `docker compose -f ... -f docker-compose.grid.yml --profile standalone up selenium-chrome` can
+  # still bring it back for an instant rollback) while excluding it from a normal `up`.
+  selenium-chrome:
+    profiles: ["standalone"]
+
+  # Every service that waited on the standalone now waits on the hub, and points at it. `!override`
+  # replaces the whole depends_on map rather than merging into it — a merged map would still name
+  # selenium-chrome, which this overlay has profiled out. SELENIUM_HUB_HOST is set per-service
+  # because `environment` beats `env_file`, so .env's `selenium-chrome` default needs no edit.
+  celery_worker:
+    environment:
+      - SELENIUM_HUB_HOST=selenium-hub
+    depends_on: !override
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      selenium-hub:
+        condition: service_healthy
+
+  celery_worker_selenium:
+    environment:
+      - SELENIUM_HUB_HOST=selenium-hub
+    depends_on: !override
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      selenium-hub:
+        condition: service_healthy
+
+  celery_worker_selenium_prepost:
+    environment:
+      - SELENIUM_HUB_HOST=selenium-hub
+    depends_on: !override
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      selenium-hub:
+        condition: service_healthy
+
+  celery_worker_selenium_outreach:
+    environment:
+      - SELENIUM_HUB_HOST=selenium-hub
+    depends_on: !override
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      selenium-hub:
+        condition: service_healthy
+
+  celery_worker_selenium_content:
+    environment:
+      - SELENIUM_HUB_HOST=selenium-hub
+    depends_on: !override
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      selenium-hub:
+        condition: service_healthy
+
+  celery_beat:
+    environment:
+      - SELENIUM_HUB_HOST=selenium-hub
+    depends_on: !override
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      selenium-hub:
+        condition: service_healthy

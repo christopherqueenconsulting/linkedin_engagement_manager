@@ -1,0 +1,81 @@
+# Selenium Grid NODES ONLY — for a second box (issue #556, docs/scaling-plan.md §5b/§5c).
+#
+# A standalone compose project you run on a SECOND VPS. No app, no database, no hub: just Chrome
+# nodes that register into the hub on the primary box. That is the whole reason Phase 2 is a Grid —
+# past ~8 concurrent sessions the primary box is out of Chrome budget (§4), and the next sessions
+# have to come from somewhere else without the app tier changing at all.
+#
+#   # on the second box, in a directory holding this file and a .env with the vars below:
+#   docker compose -f docker-compose.grid-node.yml up -d
+#
+# Required in that .env:
+#   SELENIUM_GRID_HUB_HOST=10.10.0.1     # PRIVATE address of the primary box (WireGuard/VPC)
+#   SELENIUM_GRID_NODE_HOST=10.10.0.2    # PRIVATE address of THIS box, as the hub must reach it
+#
+# The primary box must publish the event bus on its private address (SELENIUM_GRID_BUS_BIND in
+# docker-compose.grid.yml) and firewall it to this box only: registering a node needs no
+# credentials, so an internet-reachable bus is an open door into the Grid.
+#
+# Why four explicit services instead of `deploy.replicas`: the hub calls each node back on
+# SE_NODE_HOST:SE_NODE_PORT, so every node needs its OWN fixed port that is reachable from the
+# other box. Replicas would all advertise the same port and only one of them would ever be
+# routable. `network_mode: host` keeps the advertised port and the listening port identical.
+# Add nodes by copying a block with the next port; remove them by deleting one.
+#
+# CAPACITY INVARIANT: the lanes' summed SELENIUM_CONCURRENCY must equal TOTAL slots across BOTH
+# boxes (primary SELENIUM_GRID_NODES + the nodes here). The unit test can only see the primary's
+# default, so adding this box is a deliberate change to the lane concurrencies too —
+# see docs/SELENIUM_GRID.md.
+x-grid-node: &grid-node
+  image: selenium/node-chrome:latest
+  # Host networking, deliberately: the node must advertise an address the HUB can dial, and a
+  # bridge-network container's IP is private to this box.
+  network_mode: host
+  shm_size: 2g
+  environment: &grid-node-env
+    SE_EVENT_BUS_HOST: ${SELENIUM_GRID_HUB_HOST}
+    SE_EVENT_BUS_PUBLISH_PORT: 4442
+    SE_EVENT_BUS_SUBSCRIBE_PORT: 4443
+    SE_NODE_HOST: ${SELENIUM_GRID_NODE_HOST}
+    # One session per node: a crashed Chrome costs one session, and capacity is added by adding
+    # nodes rather than by raising a number inside one container.
+    SE_NODE_MAX_SESSIONS: 1
+    SE_NODE_OVERRIDE_MAX_SESSIONS: true
+    SE_NODE_SESSION_TIMEOUT: 600
+    SE_LOG_LEVEL: WARN
+  restart: unless-stopped
+  deploy:
+    resources:
+      limits:
+        # Same per-session budget as the primary box's nodes (§5b): ~1 vCPU / 1.5 GB + 2 GB shm.
+        cpus: '1.0'
+        memory: 1536m
+
+services:
+  selenium-node-1:
+    <<: *grid-node
+    container_name: selenium-node-1
+    environment:
+      <<: *grid-node-env
+      SE_NODE_PORT: 5561
+
+  selenium-node-2:
+    <<: *grid-node
+    container_name: selenium-node-2
+    environment:
+      <<: *grid-node-env
+      SE_NODE_PORT: 5562
+
+  selenium-node-3:
+    <<: *grid-node
+    container_name: selenium-node-3
+    environment:
+      <<: *grid-node-env
+      SE_NODE_PORT: 5563
+
+  selenium-node-4:
+    <<: *grid-node
+    container_name: selenium-node-4
+    environment:
+      <<: *grid-node-env
+      SE_NODE_PORT: 5564

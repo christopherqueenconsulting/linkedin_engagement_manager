@@ -137,6 +137,13 @@ Always use `get_docker_driver()` from `selenium_util.py`. It connects to `seleni
 
 Use `click_element_wait_retry()` for all click interactions — it handles transient DOM timing issues.
 
+Browser capacity is a **fixed pool of Chrome session slots shared by the Celery Selenium lanes**, and
+`SE_NODE_MAX_SESSIONS` must always equal the summed `SELENIUM_CONCURRENCY` of those lanes —
+`tests/unit/app/test_selenium_capacity.py` fails the build if they drift. The Phase-2 horizontal path
+(`docker-compose.grid.yml`: hub + N single-session nodes, optionally on a 2nd VPS) carries the same
+invariant with node count as the cap, and `python -m cqc_lem.utilities.selenium_load_test` produces
+the on-time/resource curve that sizes it. See `docs/SELENIUM_GRID.md` and `docs/scaling-plan.md`.
+
 ## Feature Areas
 
 ### Content generation & scheduling (`app/run_content_plan.py`, `app/run_scheduler.py`, `utilities/ai/ai_helper.py`)
