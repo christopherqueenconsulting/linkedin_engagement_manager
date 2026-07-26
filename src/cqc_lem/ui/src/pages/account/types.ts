@@ -168,9 +168,17 @@ export type NewsletterSubscriberStat = {
   captured_at: string
 }
 
+export type ArtifactCtaAttribution = {
+  window_days: number
+  lead_magnet_dms: number
+  // null (not 0) when no subscribe URL is configured — there was nothing to carry.
+  newsletter_links: number | null
+}
+
 export type NewsletterSubscribers = {
   latest: number | null
   history: NewsletterSubscriberStat[]
+  attribution?: ArtifactCtaAttribution
 }
 
 export type NewsletterEdition = {

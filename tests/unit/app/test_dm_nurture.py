@@ -80,6 +80,28 @@ class TestNurtureAfterReply:
         mocks["generate_nurture_dm"].assert_not_called()
         mocks["insert_scheduled_dm"].assert_not_called()
 
+    def test_an_open_artifact_draft_also_blocks_a_nurture_draft(self):
+        """Issue #624: the owned-asset delivery writes to the SAME thread, so the one-open-draft
+        rule has to hold across both mechanics — otherwise the person gets two pending messages."""
+        from cqc_lem.app.run_automation import _nurture_after_reply
+        from cqc_lem.utilities.db import SCHEDULED_DM_SOURCE_ARTIFACT
+
+        def _open(user_id, url, source=None):
+            return source == SCHEDULED_DM_SOURCE_ARTIFACT
+
+        patches = _nurture_patches()
+        started = {name: p.start() for name, p in patches.items()}
+        patch(f"{_RA}.enqueue_followup").start()
+        started["has_open_scheduled_dm"].side_effect = _open
+        try:
+            got = _nurture_after_reply(1, _followup(), "Sounds good", MagicMock(), prefs={},
+                                       profile_synthesis="voice")
+        finally:
+            patch.stopall()
+        assert got is None
+        started["insert_scheduled_dm"].assert_not_called()
+        started["generate_nurture_dm"].assert_not_called()
+
     def test_daily_cap_stops_drafting(self, monkeypatch):
         monkeypatch.setenv("DM_NURTURE_MAX_PER_DAY", "2")
         got, mocks, _enq = _run_nurture(count_scheduled_dms_created_today=2)

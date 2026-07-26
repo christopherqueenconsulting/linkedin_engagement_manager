@@ -293,21 +293,64 @@ def contains_meeting_ask(content: Optional[str]) -> bool:
     return bool(content) and bool(_MEETING_ASK_RE.search(content))
 
 
+# --- CTA -> owned-asset delivery map (issue #624) -------------------------------------------------
+# G3 made every promo CTA an artifact ask; this is the map that makes the ask DELIVER something. It
+# is the ONE place a CTA is resolved to the asset behind it, and it names the CHANNEL because the
+# two assets arrive completely differently: the lead magnet is the comment-keyword mechanic whose
+# payload is an APPROVAL-GATED DM (run_automation._queue_artifact_delivery — never an auto-send),
+# while the newsletter is a subscribe LINK the reader clicks, which is why its URL has to ride the
+# first comment (#392's split) instead of the body.
+ARTIFACT_KIND_LEAD_MAGNET = "lead_magnet"
+ARTIFACT_KIND_NEWSLETTER = "newsletter"
+ARTIFACT_KIND_NONE = "none"
+ARTIFACT_CHANNEL_DM = "dm"
+ARTIFACT_CHANNEL_LINK = "link"
+
+
+def resolve_artifact_delivery(lead_magnet: Optional[dict] = None,
+                              newsletter: Optional[dict] = None) -> dict:
+    """Resolve an artifact CTA to the asset that actually delivers it: the user's configured lead
+    magnet first (it is the mechanic the automation already listens for), else their newsletter.
+
+    `deliverable` is the honest half — a newsletter the user enabled but never saved a URL for can
+    still be NAMED in a CTA, but nothing arrives from it, so the delivery path must not pretend
+    otherwise. A generated resource (the build-receipt checklist as a PDF) is deliberately NOT a
+    kind here: LEM has no public asset host to link one from, so there is nothing to route to."""
+    if lead_magnet_enabled(lead_magnet):
+        return {"kind": ARTIFACT_KIND_LEAD_MAGNET, "channel": ARTIFACT_CHANNEL_DM,
+                "label": _resource_label(lead_magnet),
+                "keyword": str(lead_magnet.get("keyword")).strip(),
+                "message": str(lead_magnet.get("message") or "").strip(),
+                "url": "", "deliverable": True}
+    if newsletter and newsletter.get("enabled"):
+        url = str(newsletter.get("newsletter_url") or "").strip()
+        return {"kind": ARTIFACT_KIND_NEWSLETTER, "channel": ARTIFACT_CHANNEL_LINK,
+                "label": str(newsletter.get("title") or "").strip(),
+                "keyword": "", "message": "", "url": url, "deliverable": bool(url)}
+    return {"kind": ARTIFACT_KIND_NONE, "channel": None, "label": "", "keyword": "",
+            "message": "", "url": "", "deliverable": False}
+
+
 def artifact_cta_line(lead_magnet: Optional[dict] = None, newsletter: Optional[dict] = None,
                       post_id: Optional[int] = None, use_emojis: bool = False) -> str:
-    """The replacement CTA, routed to an asset the user ACTUALLY has: their configured lead magnet
-    first (the comment-keyword mechanic the automation already delivers on), else their newsletter.
+    """The replacement CTA, routed by resolve_artifact_delivery to an asset the user ACTUALLY has.
     Returns "" when the user has neither — we drop the banned ask rather than invent an asset."""
-    if lead_magnet_enabled(lead_magnet):
+    delivery = resolve_artifact_delivery(lead_magnet, newsletter)
+    if delivery["kind"] == ARTIFACT_KIND_LEAD_MAGNET:
         idx = (int(post_id or 0)) % len(LEAD_MAGNET_CTA_REPAIR_MENU)
         line = LEAD_MAGNET_CTA_REPAIR_MENU[idx].format(
-            keyword=str(lead_magnet.get("keyword")).strip(), resource=_resource_label(lead_magnet))
+            keyword=delivery["keyword"], resource=delivery["label"])
         return line + (" " + _CTA_REPAIR_EMOJI if use_emojis else "")
-    if newsletter and newsletter.get("enabled"):
-        title = str(newsletter.get("title") or "").strip()
-        named = f"my newsletter, {title}," if title else "my newsletter"
-        return (f"I break this kind of thing down in more depth in {named} "
+    if delivery["kind"] == ARTIFACT_KIND_NEWSLETTER:
+        named = f"my newsletter, {delivery['label']}," if delivery["label"] else "my newsletter"
+        line = (f"I break this kind of thing down in more depth in {named} "
                 "— subscribe if it would help.")
+        # The subscribe URL is the whole deliverable: without it the CTA asks the reader to go find
+        # the thing themselves. Writing it into the body is safe either way — an OFF-platform
+        # newsletter link is moved into the first comment by post_to_linkedin's split (#392), and a
+        # linkedin.com newsletter (what mark_newsletter_published records) is deliberately left in
+        # the body by that same split, because the reach penalty only applies off-platform.
+        return f"{line} {delivery['url']}" if delivery["url"] else line
     return ""
 
 
