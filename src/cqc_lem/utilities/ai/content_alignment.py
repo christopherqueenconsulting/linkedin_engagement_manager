@@ -10,6 +10,7 @@ import json
 import math
 import os
 import re
+from enum import StrEnum
 from typing import TYPE_CHECKING, Optional
 
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
@@ -83,6 +84,223 @@ def promo_policy(content_type: str) -> str:
     """The self-promo policy line for a content type — the HARD guardrail everywhere except the
     author's own newsletter, which gets the light soft-promo allowance."""
     return NEWSLETTER_SOFT_PROMO_NOTE if content_type == "newsletter" else NO_SELF_PROMO_GUARDRAIL
+
+
+# --- 70/20/10 content mix governor (issue #618) ---------------------------------------------------
+# The July 2026 audit found nearly every planned post selling the diagnostic conversation, and 2026
+# demotes salesy content by up to -70% reach. Winning creators run the Hills 70/20/10 split, so the
+# content plan now CLASSIFIES every post and the classification steers generation:
+#   value     (70%) — audience-value/awareness content, zero selling
+#   authority (20%) — teach the author's expertise, still zero selling
+#   promo     (10%) — the ONE in ten soft-promo slot, case-study shaped and no-pressure framed
+# The class is assigned in code (no LLM), persisted on posts.content_mix, and reported back as the
+# mix-compliance ratio on the analytics dashboard. Defined HERE (not db.py) because it is the
+# structural half of the promo policy above — db.py just stores the string, as it does buyer_stage.
+class ContentMix(StrEnum):
+    VALUE = "value"
+    AUTHORITY = "authority"
+    PROMO = "promo"
+
+
+CONTENT_MIX_TARGET: dict = {
+    ContentMix.VALUE.value: 0.70,
+    ContentMix.AUTHORITY.value: 0.20,
+    ContentMix.PROMO.value: 0.10,
+}
+
+# The ceiling compliance is measured against — a plan is out of policy the moment promo posts pass it.
+PROMO_MAX_RATIO = 0.10
+
+# One promo post per N planned posts. The audit's band is "≤1 per 7-10 posts"; we take the SPARSE end
+# as the floor (1-in-10 = exactly PROMO_MAX_RATIO) because a 1-in-7 cadence would put promo at ~14% —
+# over the ceiling the same audit sets. Ops can only make promo RARER, never denser.
+PROMO_EVERY_N_POSTS_DEFAULT = 10
+PROMO_EVERY_N_POSTS_MIN = 10
+PROMO_EVERY_N_POSTS_MAX = 30
+
+# Authority education lands on 1-in-5 posts (20%), phased so it can never collide with the 1-in-10
+# promo slot (promo indices are ≡9 mod 10, authority ≡2 and ≡7) — leaving 70% value by construction.
+_AUTHORITY_EVERY_N = 5
+_AUTHORITY_PHASE = 2
+
+
+def promo_every_n(every_n: Optional[int] = None) -> int:
+    """The promo cadence actually used, clamped so the governor can never exceed PROMO_MAX_RATIO.
+    Read at call time (the POST_SIMILARITY_MAX live-env pattern) so ops can dial promo down without
+    a restart."""
+    raw = every_n if every_n is not None else os.getenv("PROMO_EVERY_N_POSTS")
+    try:
+        n = int(raw) if raw not in (None, "") else PROMO_EVERY_N_POSTS_DEFAULT
+    except (TypeError, ValueError):
+        return PROMO_EVERY_N_POSTS_DEFAULT
+    return min(PROMO_EVERY_N_POSTS_MAX, max(PROMO_EVERY_N_POSTS_MIN, n))
+
+
+def normalize_content_mix(value) -> Optional[str]:
+    """Coerce a stored/supplied mix class to a known value; None for anything unrecognized (a legacy
+    post with no class must never be treated as promo)."""
+    key = str(value or "").strip().lower()
+    return key if key in CONTENT_MIX_TARGET else None
+
+
+def assign_content_mix(count: int, offset: int = 0, every_n: Optional[int] = None) -> list:
+    """The GOVERNOR: deterministic 70/20/10 class for each of `count` consecutively planned posts.
+    `offset` continues the rotation across plans (pass the user's existing post count) so a new plan
+    can't restart the cadence and land two promo posts back to back. Promo wins any collision, so the
+    promo cadence is exact and authority absorbs the rounding."""
+    n = promo_every_n(every_n)
+    out = []
+    for i in range(max(0, int(count or 0))):
+        seq = int(offset or 0) + i
+        if seq % n == n - 1:
+            out.append(ContentMix.PROMO.value)
+        elif seq % _AUTHORITY_EVERY_N == _AUTHORITY_PHASE:
+            out.append(ContentMix.AUTHORITY.value)
+        else:
+            out.append(ContentMix.VALUE.value)
+    return out
+
+
+_CONTENT_MIX_GUIDANCE: dict = {
+    ContentMix.VALUE.value: (
+        "MIX CLASS: AUDIENCE VALUE (70% of this author's plan). This post exists to be genuinely "
+        "useful or worth talking about for the reader ALONE. Sell nothing: no offer, no services, no "
+        "availability, no 'here's how I help', no pitch of any kind — not even a soft one."),
+    ContentMix.AUTHORITY.value: (
+        "MIX CLASS: AUTHORITY EDUCATION (20% of this author's plan). Teach one thing the author knows "
+        "from doing the work, in enough depth that the reader could act on it. Expertise is shown by "
+        "the TEACHING — still sell nothing: no offer, no services, no availability, no pitch."),
+    ContentMix.PROMO.value: (
+        "MIX CLASS: SOFT PROMO (the single allowed promo slot in ten posts). Shape it as a CASE STUDY, "
+        "never an ad: the client/project is the hero, the author is the guide — problem, what was "
+        "actually done, and the outcome with one specific real number or observable result (never an "
+        "invented figure). Frame it explicitly NO-PRESSURE (e.g. it may not be a fit for everyone, "
+        "and the reader is welcome to just take the takeaway). No urgency, no scarcity, no hard sell, "
+        "and no meeting ask of any kind."),
+}
+
+
+def mix_directive(content_mix) -> str:
+    """The mix-class rules injected into a POST prompt, plus the artifact-CTA policy the promo slot
+    makes load-bearing. Returns "" for an unclassified post so callers can append unconditionally
+    (behavior for legacy/manual posts is unchanged)."""
+    mix = normalize_content_mix(content_mix)
+    if not mix:
+        return ""
+    return ("\n\nContent mix (70/20/10 governor — this post's role in the author's plan):\n- "
+            + _CONTENT_MIX_GUIDANCE[mix] + "\n- " + ARTIFACT_CTA_POLICY + "\n")
+
+
+def content_mix_compliance(counts: Optional[dict]) -> dict:
+    """Mix-compliance summary for the analytics dashboard (issue #395 surface): the classified counts,
+    their ratios, the 70/20/10 target, and whether promo is inside the ceiling. Unclassified posts are
+    reported but kept OUT of the ratios so legacy posts don't dilute the measurement."""
+    counts = counts or {}
+    classified = {k: int(counts.get(k) or 0) for k in CONTENT_MIX_TARGET}
+    unclassified = int(counts.get("unclassified") or 0)
+    total = sum(classified.values())
+    ratios = {k: (v / total if total else None) for k, v in classified.items()}
+    promo_ratio = ratios[ContentMix.PROMO.value]
+    return {
+        "counts": {**classified, "unclassified": unclassified},
+        "total": total,
+        "ratios": ratios,
+        "target": dict(CONTENT_MIX_TARGET),
+        "promo_max_ratio": PROMO_MAX_RATIO,
+        "promo_every_n": promo_every_n(),
+        # No classified posts yet = nothing out of policy (an empty plan is not a violation).
+        "compliant": True if promo_ratio is None else promo_ratio <= PROMO_MAX_RATIO + 1e-9,
+    }
+
+
+# --- Artifact CTAs, never a meeting ask (issue #618) ----------------------------------------------
+# The audit's other half: every promo CTA in the wild was a meeting ask ("book a call", "DM me to
+# discuss"), which is exactly what 2026 demotes. A compliant offer is always an ARTIFACT the reader
+# gets without talking to anyone — the user's configured lead magnet or their newsletter. This is the
+# ONE definition of that policy: the prompt-side ban, the detector, and the deterministic repair.
+ARTIFACT_CTA_POLICY = (
+    "NEVER ask for a meeting: no 'book a call', 'schedule a call/demo/consult', 'let's set up time', "
+    "'hop on a quick call', calendar links, and no 'DM me to discuss'. If this post offers anything at "
+    "all it must be an ARTIFACT the reader can get without talking to anyone (a guide, template, "
+    "checklist, or the author's newsletter). Otherwise close on the assigned conversation CTA."
+)
+
+# Precision over recall, the _SOFT_OFFER_RE philosophy: each pattern needs explicit meeting intent, so
+# ordinary prose ("we scheduled the migration", "let's talk about why this matters") is never flagged.
+_MEETING_ASK_PATTERNS: tuple = (
+    r"\bbook(?:ing)?\s+(?:a|your|some|my)\s+(?:call|time|slot|demo|meeting|chat|consult\w*|session|intro\w*)",
+    r"\bschedul(?:e|ing)\s+(?:a|your|some|our)\s+(?:call|time|demo|meeting|chat|consult\w*|session|intro\w*)",
+    r"\b(?:hop|jump|get)\s+on\s+a\s+(?:quick\s+)?(?:call|zoom|chat|huddle)",
+    r"\bset\s+up\s+(?:a|some)\s+(?:call|time|meeting|chat|demo|consult\w*)",
+    r"\blet'?s\s+(?:set\s+up|schedule|book|find|grab)\s+(?:a|some)?\s*(?:call|time|chat|coffee|meeting)",
+    r"\b(?:free|quick|short|discovery|intro(?:ductory)?|strategy|\d{1,2}[- ]min(?:ute)?)\s+"
+    r"(?:call|consult\w*|session|chat|demo)\b",
+    r"\b(?:calendly|savvycal|my\s+calendar\s+link|calendar\s+link|link\s+to\s+my\s+calendar)\b",
+    r"\bdm\s+me\s+(?:to|if\s+you\s+want\s+to|and\s+we(?:'ll|\s+will|\s+can))\s+"
+    r"(?:discuss|chat|talk|connect|explore|scope|walk)",
+    r"\breach\s+out\s+(?:to\s+me\s+)?(?:to|and\s+we\s+can)\s+(?:discuss|chat|talk|book|schedule|scope)",
+    r"\bslots?\s+(?:open|available)\s+(?:this|next)\s+\w+",
+)
+_MEETING_ASK_RE = re.compile("|".join(_MEETING_ASK_PATTERNS), re.IGNORECASE)
+
+
+def meeting_ask_excerpts(content: Optional[str]) -> list:
+    """The literal meeting-ask phrases found, for the review-queue finding's details."""
+    if not content:
+        return []
+    seen = []
+    for match in _MEETING_ASK_RE.findall(content):
+        phrase = (match if isinstance(match, str) else next((m for m in match if m), "")).strip()
+        if phrase and phrase.lower() not in [s.lower() for s in seen]:
+            seen.append(phrase)
+    return seen
+
+
+def contains_meeting_ask(content: Optional[str]) -> bool:
+    """True when the content closes on a meeting/call ask — the CTA shape the 70/20/10 policy bans."""
+    return bool(content) and bool(_MEETING_ASK_RE.search(content))
+
+
+def artifact_cta_line(lead_magnet: Optional[dict] = None, newsletter: Optional[dict] = None,
+                      post_id: Optional[int] = None, use_emojis: bool = False) -> str:
+    """The replacement CTA, routed to an asset the user ACTUALLY has: their configured lead magnet
+    first (the comment-keyword mechanic the automation already delivers on), else their newsletter.
+    Returns "" when the user has neither — we drop the banned ask rather than invent an asset."""
+    if lead_magnet_enabled(lead_magnet):
+        idx = (int(post_id or 0)) % len(LEAD_MAGNET_CTA_REPAIR_MENU)
+        line = LEAD_MAGNET_CTA_REPAIR_MENU[idx].format(
+            keyword=str(lead_magnet.get("keyword")).strip(), resource=_resource_label(lead_magnet))
+        return line + (" " + _CTA_REPAIR_EMOJI if use_emojis else "")
+    if newsletter and newsletter.get("enabled"):
+        title = str(newsletter.get("title") or "").strip()
+        named = f"my newsletter, {title}," if title else "my newsletter"
+        return (f"I break this kind of thing down in more depth in {named} "
+                "— subscribe if it would help.")
+    return ""
+
+
+def replace_meeting_ask_cta(content: Optional[str], lead_magnet: Optional[dict] = None,
+                            newsletter: Optional[dict] = None, post_id: Optional[int] = None,
+                            use_emojis: bool = False) -> Optional[str]:
+    """Deterministic repair (no LLM) for a draft that came back with a banned meeting ask: drop the
+    sentences carrying it and, when the user has a real artifact to point at, close on that instead.
+    Returns the content byte-identical when there was no meeting ask to remove."""
+    if not contains_meeting_ask(content):
+        return content
+    out_lines = []
+    for raw_line in content.split("\n"):
+        kept = [s for s in _SENTENCE_SPLIT_RE.split(raw_line)
+                if not s.strip() or not _MEETING_ASK_RE.search(s)]
+        line = " ".join(s for s in kept if s).rstrip()
+        if line or not raw_line.strip():
+            out_lines.append(line if raw_line.strip() else raw_line)
+    stripped = re.sub(r"\n{3,}", "\n\n", "\n".join(out_lines)).rstrip()
+    replacement = artifact_cta_line(lead_magnet, newsletter, post_id, use_emojis)
+    # An already-working keyword ask means the artifact CTA is present — appending would double it.
+    if replacement and not has_lead_magnet_cta_mechanic(
+            stripped, (lead_magnet or {}).get("keyword")):
+        stripped = stripped + "\n\n" + replacement
+    return normalize_public_text(stripped)
 
 
 def style_directive(prefs: dict = None, content_type: str = "comment") -> str:
@@ -312,14 +530,18 @@ def intention_directive(prefs: dict = None) -> str:
     return directive
 
 
-def alignment_directive(prefs: dict = None, lead_magnet_cta: str = "") -> str:
+def alignment_directive(prefs: dict = None, lead_magnet_cta: str = "",
+                        content_mix=None) -> str:
     """Anti-self-promo guardrail + focus/goal steering, appended to POST prompts so generated posts
     stay aligned to the user's real business/personal goals instead of drifting into promoting
     whatever the user happens to be building right now. `lead_magnet_cta` (built by
     lead_magnet_cta_directive) is the ONE sanctioned exception to the guardrail and is appended
-    only for the posts the rotation selects — see should_include_lead_magnet_cta."""
+    only for the posts the rotation selects — see should_include_lead_magnet_cta. `content_mix` is
+    this post's 70/20/10 class from the content-plan governor (issue #618); unclassified posts add
+    nothing."""
     return ("\n\nContent alignment rules:\n- " + NO_SELF_PROMO_GUARDRAIL
             + "\n- " + engagement_purpose("post") + focus_directive(prefs)
+            + mix_directive(content_mix)
             + (lead_magnet_cta or ""))
 
 

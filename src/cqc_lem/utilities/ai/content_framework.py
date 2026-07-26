@@ -219,12 +219,14 @@ ENGAGEMENT_BAIT_EXAMPLES: tuple = (
 
 def cta_policy_directive() -> str:
     """The invariant CTA rule injected wherever a CTA style is assigned: earn a real reply, never
-    farm a reflex."""
+    farm a reflex — and never a meeting ask (the artifact-CTA half lives in content_alignment, which
+    also owns the detector and the deterministic repair)."""
+    from cqc_lem.utilities.ai.content_alignment import ARTIFACT_CTA_POLICY
     bait = ", ".join(f"'{e}'" for e in ENGAGEMENT_BAIT_EXAMPLES[:4])
     return ("CTA RULE: the close must invite a genuine, specific response the reader has to think "
             f"about. NEVER engagement bait — no {bait}, and never ask for likes, follows, reposts, "
             "tags, or one-word replies. LinkedIn demotes bait in 2026; only a question worth "
-            "answering earns the comment.")
+            "answering earns the comment. " + ARTIFACT_CTA_POLICY)
 
 
 def hashtag_directive(prefs: Optional[dict] = None) -> str:

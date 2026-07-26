@@ -387,7 +387,9 @@ class TestEngagementAnalytics:
              "comments": 10, "reposts": 5, "saves": 3, "impressions": 1000, "archetype": "how_to",
              "hook_style": "question", "format": "carousel", "topic": "AI", "buyer_stage": "aware"},
         ]
+        mix_counts = {"value": 7, "authority": 2, "promo": 1, "unclassified": 3}
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.get_content_mix_counts", return_value=mix_counts) as mix, \
              patch(f"{_M}.get_post_performance_rows", return_value=rows) as fetch:
             resp = client.get(f"/api/user/engagement-analytics?session_token={_TOK}&days=30")
         assert resp.status_code == 200
@@ -398,9 +400,24 @@ class TestEngagementAnalytics:
         assert post["post_id"] == 9 and post["engagement"] == 50
         assert post["engagement_rate"] == pytest.approx(0.05)
         assert detail["trend"][0]["date"] == "2026-07-20"
+        # 70/20/10 mix compliance for the same window (#618) — reported off the plan, not the stats.
+        assert mix.call_args[1]["days"] == 30
+        assert detail["content_mix"]["compliant"] is True
+        assert detail["content_mix"]["total"] == 10
+        assert detail["content_mix"]["ratios"]["promo"] == pytest.approx(0.1)
+        assert detail["content_mix"]["counts"]["unclassified"] == 3
+
+    def test_flags_a_plan_over_the_promo_ceiling(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.get_post_performance_rows", return_value=[]), \
+             patch(f"{_M}.get_content_mix_counts",
+                   return_value={"value": 4, "authority": 1, "promo": 3}):
+            resp = client.get(f"/api/user/engagement-analytics?session_token={_TOK}")
+        assert resp.json()["detail"]["content_mix"]["compliant"] is False
 
     def test_days_clamped_to_valid_window(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.get_content_mix_counts", return_value={}), \
              patch(f"{_M}.get_post_performance_rows", return_value=[]) as fetch:
             resp = client.get(f"/api/user/engagement-analytics?session_token={_TOK}&days=9999")
         assert resp.status_code == 200

@@ -55,6 +55,7 @@ from cqc_lem.utilities.db import (
     get_latest_edition_scheduled_for, update_newsletter_edition, get_newsletter_edition,
     get_user_timezone,
     get_user_groups, set_groups_enabled, get_post_engagement_rows, get_post_performance_rows,
+    get_content_mix_counts,
     get_lead_magnet_settings, update_lead_magnet_settings,
     get_dm_templates, upsert_dm_templates,
     get_engagement_targets, upsert_engagement_targets, delete_engagement_target,
@@ -2626,8 +2627,10 @@ def get_post_stats_endpoint(session_token: str) -> ResponseModel:
 @router.get("/user/engagement-analytics")
 def get_engagement_analytics_endpoint(session_token: str, days: int = 90) -> ResponseModel:
     """Per-post performance table + a daily engagement-rate / impression trend for the analytics
-    dashboard (issue #395), derived from the user's captured post_stats. The hook/format
-    leaderboard is served by /user/post-stats (rankings)."""
+    dashboard (issue #395), derived from the user's captured post_stats, plus the 70/20/10
+    content-mix compliance ratio for the same window (issue #618). The hook/format leaderboard is
+    served by /user/post-stats (rankings)."""
+    from cqc_lem.utilities.ai.content_alignment import content_mix_compliance
     from cqc_lem.utilities.post_stats import build_engagement_trend, build_performance_table
     user_id = get_session_user_id(session_token)
     if not user_id:
@@ -2639,6 +2642,9 @@ def get_engagement_analytics_endpoint(session_token: str, days: int = 90) -> Res
         "trend": build_engagement_trend(rows),
         "sample_size": len(rows),
         "days": days,
+        # Mix compliance is a property of the PLAN, not of captured stats — it reports even when no
+        # post has engagement data yet.
+        "content_mix": content_mix_compliance(get_content_mix_counts(user_id, days=days)),
     })
 
 
