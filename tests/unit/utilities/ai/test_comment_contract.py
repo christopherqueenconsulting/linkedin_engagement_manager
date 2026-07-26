@@ -336,8 +336,7 @@ class TestEngageCardWiring:
              patch(f"cqc_lem.app.run_automation.mark_post_reacted"), \
              patch(f"cqc_lem.app.run_automation.insert_new_log"), \
              patch(f"cqc_lem.app.run_automation._author_is_me", return_value=False), \
-             patch(f"cqc_lem.app.run_automation.simulate_reading_time", return_value=0), \
-             patch(f"cqc_lem.app.run_automation.simulate_thinking_time", return_value=0), \
+             patch(f"cqc_lem.app.run_automation.pace_read", return_value=0.0), \
              patch(f"cqc_lem.app.run_automation.time.sleep"):
             ok = ra._engage_card(MagicMock(), MagicMock(), MagicMock(), 1, MagicMock(),
                                  "feedurn://x", _POST, "Jane", {}, "synthesis", [], recent)
@@ -372,8 +371,7 @@ class TestPermalinkCommentPathSkips:
              patch(f"cqc_lem.app.run_automation.get_engagement_preferences", return_value={}), \
              patch(f"cqc_lem.app.run_automation.get_recent_comment_texts",
                    return_value=["an older comment"]) as history, \
-             patch(f"cqc_lem.app.run_automation.simulate_reading_time", return_value=0), \
-             patch(f"cqc_lem.app.run_automation.simulate_thinking_time", return_value=0), \
+             patch(f"cqc_lem.app.run_automation.pace_read", return_value=0.0), \
              patch(f"cqc_lem.app.run_automation.time.sleep"), \
              patch(f"cqc_lem.app.run_automation.generate_ai_response", return_value=None) as gen, \
              patch.object(ra.comment_on_post, "apply_async") as queued:

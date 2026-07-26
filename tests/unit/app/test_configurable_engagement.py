@@ -67,8 +67,7 @@ class TestProfileViewerCommentPrefs:
              patch(f"{_RA}.check_commented", return_value=False), \
              patch(f"{_RA}.get_element_wait_retry", return_value=el), \
              patch(f"{_RA}.getText", return_value="A post about supply chains."), \
-             patch(f"{_RA}.simulate_reading_time", return_value=0), \
-             patch(f"{_RA}.simulate_thinking_time", return_value=0), \
+             patch(f"{_RA}.pace_read", return_value=0.0), \
              patch(f"{_RA}.get_engagement_preferences", return_value=prefs) as get_prefs, \
              patch(f"{_RA}.generate_ai_response", return_value="Nice point.") as gen, \
              patch.object(ra.comment_on_post, "apply_async"):
@@ -91,8 +90,7 @@ class TestProfileViewerCommentPrefs:
              patch(f"{_RA}.check_commented", return_value=False), \
              patch(f"{_RA}.get_element_wait_retry", return_value=el), \
              patch(f"{_RA}.getText", return_value="A post."), \
-             patch(f"{_RA}.simulate_reading_time", return_value=0), \
-             patch(f"{_RA}.simulate_thinking_time", return_value=0), \
+             patch(f"{_RA}.pace_read", return_value=0.0), \
              patch(f"{_RA}.get_engagement_preferences", side_effect=RuntimeError("db down")), \
              patch(f"{_RA}.generate_ai_response", return_value="Nice point.") as gen, \
              patch.object(ra.comment_on_post, "apply_async"):

@@ -35,6 +35,10 @@ from cqc_lem.utilities.engagement_window import (
 )
 from cqc_lem.utilities.env_constants import SELENIUM_KEEP_VIDEOS_X_DAYS, CQC_LEM_POST_TIME_DELTA_MINUTES, \
     COST_ROUTING_WINDOW_DAYS
+from cqc_lem.utilities.human_pacing import (
+    dispatch_jitter_seconds, engagement_caps_from_prefs, remaining_actions,
+    ACTION_INVITE, PACE_RESPONSIVE,
+)
 from cqc_lem.utilities.logger import myprint, log_info, log_debug, log_warning
 from cqc_lem.utilities.linkedin.rate_limit import is_automation_paused, automation_pause_remaining, \
     rate_limit_cooldown_remaining
@@ -240,13 +244,19 @@ def auto_check_connection_requests(self):
         if user_id not in budgets:
             prefs = get_engagement_preferences(user_id)
             cap = int(prefs.get("max_invites_per_day") or 0)
-            budgets[user_id] = max(0, cap - count_invites_sent_today(user_id))
+            # Paced budget + account governor (issue #626) instead of the flat cap, so invite volume
+            # varies day to day and shares one envelope with commenting and DMs.
+            budgets[user_id] = remaining_actions(user_id, ACTION_INVITE, cap,
+                                                 count_invites_sent_today(user_id),
+                                                 caps=engagement_caps_from_prefs(prefs))
         if budgets[user_id] <= 0:
-            continue  # daily cap already met for this user — leave the rest 'approved' for tomorrow
+            continue  # daily budget already spent for this user — leave the rest 'approved' for tomorrow
         budgets[user_id] -= 1
-        # Mark 'sending' so it isn't re-dispatched on the next scan, then send.
+        # Mark 'sending' so it isn't re-dispatched on the next scan, then send. The countdown spreads
+        # the day's invites instead of firing the whole approved batch on one 5-minute beat tick.
         update_connection_request_status(request_id, ConnectionRequestStatus.SENDING)
-        send_connection_request.apply_async(kwargs={'request_id': request_id})
+        send_connection_request.apply_async(kwargs={'request_id': request_id},
+                                            countdown=dispatch_jitter_seconds())
         log_info(f"Connection request {request_id} dispatched",
                  user_id=user_id, task_name="auto_check_connection_requests")
         dispatched += 1
@@ -287,6 +297,7 @@ def auto_appreciate_dms():
 
         # No need to worry as this task is rate limited to 2 per minute
         automate_appreciation_dms_for_user.apply_async(kwargs=kwargs, retry=True,
+                                                       countdown=dispatch_jitter_seconds(),
                                                        retry_policy={
                                                            'max_retries': 3,
                                                            'interval_start': 60,
@@ -322,7 +333,11 @@ def auto_daily_engagement():
         # anyway must not burn theirs — connecting later in the day still earns a run.
         if not _stagger_due(user_id, STAGGER_GOLDEN_HOUR, "auto_daily_engagement"):
             continue  # not this user's slot yet (or already dispatched today)
-        automate_commenting.apply_async(kwargs={'user_id': user_id, 'loop_for_duration': 60 * 15})
+        # Human pacing (issue #626): the staggered slot is stable per user, so without this the run
+        # would start at the same clock minute every single day. A countdown of tens of minutes
+        # moves the actual start; the worker is never blocked (this is eta scheduling, not a sleep).
+        automate_commenting.apply_async(kwargs={'user_id': user_id, 'loop_for_duration': 60 * 15},
+                                        countdown=dispatch_jitter_seconds())
         dispatched += 1
     return f"Golden-hour engagement dispatched for {dispatched}/{len(users)} active user(s)"
 
@@ -355,7 +370,11 @@ def dispatch_scheduled_reply_sweeps():
             except Exception:
                 due = True
         if due:
-            sweep_reply_comments.apply_async(kwargs={'user_id': user_id})
+            # Replying to comments on the user's OWN post is the one engagement a human really does
+            # fast, so it keeps the RESPONSIVE profile (issue #626): the exact minute moves, the
+            # response stays timely.
+            sweep_reply_comments.apply_async(kwargs={'user_id': user_id},
+                                             countdown=dispatch_jitter_seconds(PACE_RESPONSIVE))
             dispatched += 1
     return f"Scheduled reply sweeps dispatched for {dispatched}/{len(users)} user(s)"
 
@@ -385,7 +404,8 @@ def dispatch_comment_followups():
             except Exception:
                 due = True
         if due:
-            sweep_comment_followups.apply_async(kwargs={'user_id': user_id})
+            sweep_comment_followups.apply_async(kwargs={'user_id': user_id},
+                                                countdown=dispatch_jitter_seconds())
             dispatched += 1
     return f"Comment follow-up sweeps dispatched for {dispatched}/{len(users)} user(s)"
 

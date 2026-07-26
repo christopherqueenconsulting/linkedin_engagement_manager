@@ -83,8 +83,7 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
         p("release_post_claim", new=release)
         p("log_warning")
         p("insert_new_log")
-        p("simulate_reading_time", return_value=0)
-        p("simulate_thinking_time", return_value=0)
+        p("pace_read", return_value=0.0)
         posted = ra.comment_on_feed_inline(driver, wait, MagicMock(), user_id=1, max_posts=max_posts)
 
     return {"posted": posted, "claim": claim, "post_inline": post_inline, "react": react,
@@ -186,8 +185,7 @@ class TestFeedDedup:
             p("log_warning")
             release = es.enter_context(patch(f"{_RA}.release_post_claim"))
             p("insert_new_log")
-            p("simulate_reading_time", return_value=0)
-            p("simulate_thinking_time", return_value=0)
+            p("pace_read", return_value=0.0)
             posted = ra.comment_on_feed_inline(driver, MagicMock(), MagicMock(), user_id=1, max_posts=1)
         assert posted == 0
         release.assert_called_with(1, "feedpost://fail")

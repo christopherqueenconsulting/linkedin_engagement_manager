@@ -52,6 +52,7 @@ src/cqc_lem/
 │   │   └── helper.py, profile.py, token_refresh.py
 │   ├── marketing/ Outbound production
 │   │   └── video_tutorials.py  automated SPA tutorial videos (capture→script→TTS→ffmpeg→YouTube)
+│   ├── human_pacing.py  ONE cadence engine (read delays, schedule jitter, variable daily volume, account governor)
 │   ├── db.py      All database access (no raw SQL outside this file)
 │   ├── proxy.py   Per-user static residential proxy resolution
 │   ├── geocoding.py  Login Location city/state geocoding
@@ -160,6 +161,7 @@ the on-time/resource curve that sizes it. See `docs/SELENIUM_GRID.md` and `docs/
 - **Reciprocity tracking** via the `post_engagers` table — boosts commenting back on people who engaged with us (`get_recent_engagers`).
 - **DMs**: appreciation (connection / recommendation / collaboration), profile-viewer outreach, and **multi-touch follow-up sequences** — all templated and voice-aligned (`build_dm_from_template`, `dm_templates`, `dm_followups`, `process_user_followups`).
 - **DM conversation auto-nurture** (`_nurture_after_reply`, `utilities/ai/dm_nurture.py`): a reply used to END a sequence — now it's classified (interested / objection / not-now / disinterest / neutral) and becomes an **approval-gated** context-aware next message queued as a `pending` row in `scheduled_dms` (`source='nurture'`), one open draft per thread, per-day draft cap, explicit disinterest stops the thread for good.
+- **Human pacing** (`utilities/human_pacing.py`, issue #626): the ONE place cadence is decided, consumed by commenting, replies, DMs and invites. Read-time delay before any comment (`pace_read` — length-scaled, floored at `PACING_READ_MIN_SECONDS`, ceilinged below `MAX_INLINE_SLEEP_SECONDS` so no worker ever parks >5 min); `dispatch_jitter_seconds` countdowns on every beat-dispatched engagement task (own-post replies use `PACE_RESPONSIVE` — jittered by seconds, not delayed by an hour); and `daily_budget`/`remaining_actions`, which turn each per-day cap into a stable random draw (weekend asymmetry + occasional account-wide rest days) under one account-level envelope, so the lanes can't each spend a full cap on the same day. Seeded on (user, action, date) and persisted in Redis, so a retry never re-rolls the day's budget. Fails open — no Redis, or `HUMAN_PACING_ENABLED=false`, restores the pre-#626 behaviour. Pacing only ever slows us down; the 429 breaker in `rate_limit.py` is the separate, harder gate.
 - Monthly **company-page invitations** (`utilities/linkedin/company_page_inviter.py`).
 
 ### Engagement configuration (`engagement_preferences` table, API in `api/main.py`, SPA in `ui/.../Account.tsx`)
