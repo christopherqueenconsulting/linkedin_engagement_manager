@@ -298,6 +298,27 @@ class TestCarouselDrawsFromThePostMenu:
             rcp._select_carousel_blueprint(1)
         assert select.call_args[1]["prefer_save_targeted"] is False
 
+    def test_without_verified_facts_a_carousel_can_never_draw_a_fact_anchored_archetype(self):
+        # Un-preferring them is not enough: plain rotation would still hand ~1-in-5 carousels a
+        # build receipt, and its placeholders would be rendered into the slide images for good.
+        from cqc_lem.app import run_content_plan as rcp
+        from cqc_lem.utilities.ai.content_framework import fact_anchored_formats
+        with patch(f"{_RCP}.get_recent_post_shape_history", return_value=[]), \
+             patch(f"{_RCP}.get_shape_performance", return_value=None), \
+             patch(f"{_RCP}.get_story_bank_entries", return_value=[]):
+            picks = {rcp._select_carousel_blueprint(1)["format"] for _ in range(200)}
+        assert picks
+        assert not picks & set(fact_anchored_formats("post"))
+
+    def test_with_verified_facts_the_fact_anchored_archetypes_are_back_on_the_menu(self):
+        from cqc_lem.app import run_content_plan as rcp
+        with patch(f"{_RCP}.get_recent_post_shape_history", return_value=[]), \
+             patch(f"{_RCP}.get_shape_performance", return_value=None), \
+             patch(f"{_RCP}._fact_anchors", return_value=["Rendered 40 slides in one pass"]), \
+             patch(f"{_RCP}.select_blueprint", return_value={}) as select:
+            rcp._select_carousel_blueprint(1)
+        assert select.call_args[1]["exclude_formats"] is None
+
     def test_the_carousel_writer_gets_the_same_verified_facts(self):
         from cqc_lem.app.run_content_plan import create_carousel_content
         with patch(f"{_RCP}.get_engagement_preferences", return_value={}), \

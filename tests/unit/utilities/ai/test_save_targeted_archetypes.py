@@ -91,6 +91,20 @@ class TestSelectionAndRotation:
         out = fw.enforce_variety("post", [{"format": "how_to", "hook_style": "question"}])
         assert out[0]["hook_style"] == "question"
 
+    def test_excluded_formats_are_off_the_menu_entirely(self):
+        excluded = fw.fact_anchored_formats("post")
+        assert sorted(excluded) == sorted(SAVE_TARGETED)
+        for _ in range(200):
+            bp = fw.select_blueprint("post", prefer_save_targeted=True, exclude_formats=excluded)
+            assert bp["format"] not in excluded
+        # Even an explicit hint cannot pull an excluded archetype back in.
+        assert fw.select_blueprint("post", guidance="build receipt",
+                                   exclude_formats=excluded)["format"] not in excluded
+
+    def test_excluding_everything_falls_back_to_the_full_menu(self):
+        bp = fw.select_blueprint("post", exclude_formats=list(fw.POST_FORMATS))
+        assert bp["format"] in fw.POST_FORMATS
+
     def test_allowed_hooks_narrows_only_for_the_new_archetypes(self):
         assert set(fw.allowed_hooks("post", "build_receipt")) == set(fw.NUMBER_LED_HOOK_STYLES)
         assert fw.allowed_hooks("post", "how_to") == fw.HOOK_STYLES
@@ -181,6 +195,33 @@ class TestNoFabricationGuard:
 
     def test_a_bare_year_is_a_public_fact_not_a_fabrication(self):
         assert fw.fact_grounding_report("Everything changed in 2026 for this stack.")["passes"]
+
+    def test_a_named_stack_is_not_a_pile_of_invented_numbers(self):
+        # The build receipt's structure REQUIRES naming the exact stack, so model/version numbers
+        # must not read as fabricated metrics — otherwise every honest receipt burns its one
+        # regeneration on a directive that mangles the tool names, then gets held anyway.
+        draft = ("The stack: GPT-4o for extraction, Claude 3.5 Sonnet for review, Python 3.12, "
+                 "Postgres 16, and n8n to glue it together.")
+        assert fw.fact_grounding_report(draft)["passes"]
+
+    def test_a_version_number_is_exempt_but_a_metric_beside_it_is_not(self):
+        report = fw.fact_grounding_report("Claude 3.5 Sonnet cut review time 40%.")
+        assert report["unverified_values"] == ["40%"]
+
+    def test_a_magnitude_suffix_is_a_metric_not_a_build_number(self):
+        report = fw.fact_grounding_report("It saved 10k hours of manual triage.")
+        assert report["unverified_values"] == ["10"]
+
+    def test_a_money_amount_after_a_product_name_is_still_a_claim(self):
+        # Only BARE numbers can be version-like; a unit ($, %, x) makes it a metric regardless.
+        assert not fw.fact_grounding_report("Zapier cost us $4,000 last quarter.")["passes"]
+
+    def test_a_trailing_comma_is_not_part_of_the_number(self):
+        report = fw.fact_grounding_report("We ran 16, then stopped.")
+        assert report["unverified_values"] == ["16"]
+
+    def test_a_year_shaped_price_is_still_a_claim(self):
+        assert not fw.fact_grounding_report("The whole build cost $2,024.")["passes"]
 
     def test_money_and_multipliers_are_graded_as_specifics(self):
         report = fw.fact_grounding_report("It cost $4,000 and ran 2.5x faster.")

@@ -37,7 +37,8 @@ from cqc_lem.utilities.quality_gates import (authenticity_finding, similarity_fi
                                              demoting_findings)
 from cqc_lem.utilities.ai.content_framework import select_blueprint, history_avoidance_directive, \
     find_most_similar, post_similarity_max, has_first_person_proof, shape_for_dwell, dwell_report, \
-    dwell_score_min, requires_fact_anchor, fact_grounding_report, fact_retry_directive
+    dwell_score_min, requires_fact_anchor, fact_grounding_report, fact_retry_directive, \
+    fact_anchored_formats
 from cqc_lem.utilities.ai.content_alignment import (
     should_include_lead_magnet_cta, lead_magnet_cta_directive, ensure_lead_magnet_cta,
     personal_proof_directive, topic_authority_score, topic_authority_min, profile_topic_dna,
@@ -312,13 +313,15 @@ def _fact_anchors_for(user_id: int, archetype: Optional[str]) -> list:
 
 
 def _select_post_blueprint(user_id: int, prefer_save_targeted: bool = False,
-                           guidance: Optional[str] = None) -> dict:
+                           guidance: Optional[str] = None,
+                           exclude_formats: Optional[list] = None) -> dict:
     """ONE assigned SHAPE from the shared framework core: rotate away from this user's recently used
     archetypes/hook styles (V51 history) and bias away from the ones that historically
     under-perform (#389). Chosen in code — no extra LLM call. `guidance` pins the archetype when the
     slot dictates it (the 70/20/10 promo slot needs a case study — #618); `prefer_save_targeted` only
-    biases toward one. Every input is best-effort: a history or performance read that fails costs the
-    steering, never the post."""
+    biases toward one, and `exclude_formats` takes archetypes off the menu for a caller that cannot
+    honor their contract. Every input is best-effort: a history or performance read that fails costs
+    the steering, never the post."""
     try:
         shape_history = get_recent_post_shape_history(user_id)
     except Exception as e:
@@ -335,19 +338,24 @@ def _select_post_blueprint(user_id: int, prefer_save_targeted: bool = False,
         recent_hook_styles=[h.get("hook_style") for h in shape_history if h.get("hook_style")],
         performance=performance,
         prefer_save_targeted=prefer_save_targeted,
+        exclude_formats=exclude_formats,
         guidance=guidance)
 
 
 def _select_carousel_blueprint(user_id: int, fact_anchors: Optional[list] = None) -> Optional[dict]:
     """The carousel's shape — the same post menu, biased toward the save-targeted archetypes since a
-    document post is where a saved reference actually lives. That bias is held back until verified
-    facts exist: without them a build-receipt carousel would bake placeholder text into the rendered
-    slide images. The caller passes the anchors it already read so the bank is read once per
+    document post is where a saved reference actually lives. Both halves of that hang on having
+    verified facts: with none, the fact-anchored archetypes are taken OFF the carousel menu entirely
+    (not merely un-preferred), because their no-fabrication contract ships every specific as a
+    `[[…]]` placeholder — and a carousel bakes its text into rendered slide IMAGES, which no edit or
+    re-score can ever fix. The caller passes the anchors it already read so the bank is read once per
     carousel. Never raises — a carousel that loses its archetype still generates from the
     generic slide guidance."""
     try:
         anchors = _fact_anchors(user_id) if fact_anchors is None else fact_anchors
-        return _select_post_blueprint(user_id, prefer_save_targeted=bool(anchors))
+        return _select_post_blueprint(
+            user_id, prefer_save_targeted=bool(anchors),
+            exclude_formats=None if anchors else fact_anchored_formats("post"))
     except Exception as e:
         myprint(f"Could not select a carousel archetype (using generic slide guidance): {e}")
         return None

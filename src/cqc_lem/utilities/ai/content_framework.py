@@ -625,6 +625,13 @@ def save_targeted_formats(content_type: str) -> list:
     return [k for k, m in _menu(content_type)["formats"].items() if m.get("save_targeted")]
 
 
+def fact_anchored_formats(content_type: str) -> list:
+    """Every fact-anchored format key for a content type, in menu order — the archetypes a caller
+    that has NO verified facts may need to keep out of the rotation (a carousel bakes its text into
+    rendered slide images, so a placeholder there can never be edited away)."""
+    return [k for k, m in _menu(content_type)["formats"].items() if m.get("fact_anchored")]
+
+
 def requires_fact_anchor(content_type: str, format_key) -> bool:
     """True for archetypes whose whole value IS the specifics (build receipt, compendium). Their
     drafts run through the no-fabrication guard: a number that no verified fact backs must be a
@@ -807,7 +814,8 @@ def enforce_variety(content_type: str, blueprints: list, recent_formats: list = 
 def select_blueprint(content_type: str, subject: str = None, angle: str = None,
                      recent_formats: list = None, recent_hook_styles: list = None,
                      guidance: str = None, performance: Optional[dict] = None,
-                     prefer_save_targeted: bool = False) -> dict:
+                     prefer_save_targeted: bool = False,
+                     exclude_formats: Optional[list] = None) -> dict:
     """A fresh blueprint for ONE piece of any content type, chosen in code (no LLM call): rotate
     away from the recent formats/hooks — including the piece's own previous shape — so consecutive
     pieces change form, not just words. Free-text `guidance` may name a format (e.g. 'make it a
@@ -815,9 +823,15 @@ def select_blueprint(content_type: str, subject: str = None, angle: str = None,
     'format'/'hook') closes the feedback loop — under-performing shapes are surfaced less often
     while rotation and exploration are preserved (issue #389 / B4). `prefer_save_targeted` biases
     the tie-break toward the save-optimized archetypes (issue #619 / G4) — a bias, never a
-    forced pick, so rotation and variety still hold."""
+    forced pick, so rotation and variety still hold. `exclude_formats` takes archetypes OFF the menu
+    entirely (guidance included) for callers that cannot honor their contract — see
+    `fact_anchored_formats`; excluding every format falls back to the full menu rather than to
+    nothing."""
     menu = _menu(content_type)
     formats, hooks, ctas = menu["formats"], menu["hooks"], menu["ctas"]
+    if exclude_formats:
+        dropped = {_normalize(x, formats) for x in exclude_formats}
+        formats = {k: v for k, v in formats.items() if k not in dropped} or formats
     hinted = _normalize(guidance, formats) if guidance else None
     if not hinted and guidance:
         low = guidance.lower()
@@ -1723,13 +1737,32 @@ FACT_PLACEHOLDER_EXAMPLE = "[[METRIC: hours saved per week]]"
 _FACT_PLACEHOLDER_RE = re.compile(r"\[\[\s*([^\[\]]+?)\s*\]\]")
 
 # A numeric specific: 20, 8%, $4,000, 2.5x. The lookbehind keeps the tail of a version string or a
-# decimal from being counted a second time.
-_NUMBER_TOKEN_RE = re.compile(r"(?<![\w.$])\$?\d[\d,]*(?:\.\d+)?\s*(?:%|percent|x)?", re.IGNORECASE)
+# decimal from being counted a second time; the thousands group must be a real one (so "Postgres 16,
+# and n8n" yields "16", not "16,").
+_NUMBER_TOKEN_RE = re.compile(r"(?<![\w.$])\$?\d+(?:,\d{3})*(?:\.\d+)?\s*(?:%|percent|x)?",
+                              re.IGNORECASE)
 # A bare year is a public, checkable fact, not a project specific — a build receipt saying "in 2026"
 # is not fabricating anything, so years never trip the guard.
 _YEAR_RE = re.compile(r"^(?:19|20)\d{2}$")
 # List/step numbering is structure, not a claim.
 _LEADING_ENUM_RE = re.compile(r"^\s*(?:\d+[.)]\s*|step\s+\d+\s*[:.)]?\s*)", re.IGNORECASE)
+# A number that is part of a PRODUCT NAME is not a claim the author has to stand behind: the build
+# receipt's structure explicitly asks for the exact stack, so "GPT-4o", "Claude 3.5", "Python 3.12"
+# and "Postgres 16" must not read as invented metrics (they would burn the one regeneration AND hold
+# the post, with a retry directive that mangles the tool names). Only BARE numbers qualify — anything
+# carrying a unit ($, %, x) is a metric no matter what precedes it.
+_VERSION_AFTER_NAME_RE = re.compile(r"(?:[A-Za-z0-9]-|\b([A-Z][A-Za-z0-9.+#]*)\s)$")
+# Capitalized words that routinely OPEN a sentence — they are not product names, so a number after
+# one ("The 9 checks I run") stays a claim.
+_NON_NAME_CAPITALS = frozenset((
+    "a", "an", "the", "this", "that", "these", "those", "it", "i", "we", "you", "they", "my", "our",
+    "your", "their", "his", "her", "its", "in", "on", "at", "of", "for", "to", "by", "with", "from",
+    "over", "under", "about", "after", "before", "and", "but", "so", "then", "now", "today",
+    "yesterday", "here", "there", "all", "some", "each", "every", "only", "just", "last", "next",
+    "first", "nearly", "almost", "roughly", "around", "within", "one", "two", "three", "no", "not",
+))
+# "10k", "3m", "2bn" — a magnitude suffix, i.e. a metric, not a build number.
+_MAGNITUDE_SUFFIXES = frozenset(("k", "m", "b", "bn", "mm"))
 
 
 def hook_constraint_directive() -> str:
@@ -1822,9 +1855,31 @@ def _self_evident_counts(text: Optional[str]) -> set:
     return {str(count)} if count else set()
 
 
+def _is_product_version(sentence: str, start: int, raw: str) -> bool:
+    """True when a bare number is part of a TOOL/MODEL NAME rather than a claim — 'GPT-4o',
+    'Claude 3.5', 'Postgres 16'. A number carrying a unit ($, %, x) is always a metric, and a
+    capitalized word that merely opens the sentence ('The 9 checks') is not a product name."""
+    if re.search(r"[$%x]|percent", raw, re.IGNORECASE):
+        return False
+    end = start + len(raw)  # raw is stripped, so this excludes whitespace the token regex ate
+    tail = re.match(r"[A-Za-z]+", sentence[end:])
+    # Letters welded to the number mean a build ("GPT-4o") — EXCEPT a magnitude suffix, which is
+    # exactly how a metric gets written ("saved 10k hours").
+    if tail and tail.group(0).lower() not in _MAGNITUDE_SUFFIXES:
+        return True
+    match = _VERSION_AFTER_NAME_RE.search(sentence[:start])
+    if not match:
+        return False
+    name = match.group(1)
+    if name is None:  # hyphen-attached to a word/number: "gpt-4", "llama-3"
+        return True
+    return name.lower() not in _NON_NAME_CAPITALS
+
+
 def numeric_claims(text: Optional[str]) -> list:
     """Every numeric specific a draft ASSERTS, as {value, raw, context} dicts. Placeholders, list/step
-    numbering, and bare years are excluded — none of them is a claim the author has to stand behind."""
+    numbering, bare years, and tool/model version numbers are excluded — none of them is a claim the
+    author has to stand behind."""
     body = _FACT_PLACEHOLDER_RE.sub(" ", text or "")
     body = "\n".join(_LEADING_ENUM_RE.sub("", line) for line in body.splitlines())
     claims = []
@@ -1835,7 +1890,9 @@ def numeric_claims(text: Optional[str]) -> list:
         for match in _NUMBER_TOKEN_RE.finditer(stripped):
             raw = match.group(0).strip()
             value = _normalize_number(raw)
-            if not value or _YEAR_RE.match(value):
+            if not value or _YEAR_RE.match(value) and not re.search(r"[$%]", raw):
+                continue
+            if _is_product_version(stripped, match.start(), raw):
                 continue
             claims.append({"value": value, "raw": raw, "context": stripped})
     return claims
