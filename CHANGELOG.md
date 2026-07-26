@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.98.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.97.1...v0.98.0) (2026-07-26)
+
+
+### Features
+
+* **engagement:** comment quality contract v2 + comment-side similarity gate (closes [#617](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/617)) ([d91a93b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d91a93bfd11717a8a903451cde49825f45724584))
+* **infra:** zero-downtime blue/green deploys + 4x-daily batched releases ([e13d1b9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e13d1b9b20da325b7ef7246b15c4f177bef32d21))
+
+
+### Documentation
+
+* ground the restored marketing plan in the current repo layout ([069b912](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/069b912f290f13fea8abe78e7013a5a013e0799c))
+* restore launch & marketing plan (deleted by adjacent branch cleanup) ([a68aa6d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a68aa6d078ff30ebeb2d0c5f8ef4ae3dc3003186))
+* restore launch & marketing plan accidentally deleted by cost-plan branch cleanup ([23cc708](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/23cc708be556ff17a32fc18fb95640539ed46e6c))
+
 ## [0.97.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.97.0...v0.97.1) (2026-07-26)
 
 
