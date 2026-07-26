@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.97.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.96.0...v0.97.0) (2026-07-26)
+
+
+### Features
+
+* **engagement:** target-creator roster (50/30/20) + on-topic-only commenting (closes [#616](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/616)) ([10d870f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/10d870f572805c9f0e81c714bacc072c736f7308))
+
+
+### Bug Fixes
+
+* **engagement:** address Copilot review on the roster PR ([1e82d48](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1e82d48a7564735c5b7dd01c5774e29ccb0ad856))
+
 ## [0.96.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.95.5...v0.96.0) (2026-07-26)
 
 
