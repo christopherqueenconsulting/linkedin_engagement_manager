@@ -121,27 +121,10 @@ def navigate_to_feed(driver, wait):
         driver.get("https://www.linkedin.com/feed/")
         wait_for_ajax(driver)
 
-    try:
-        # Find and click the "Sort by" dropdown
-        click_element_wait_retry(driver, wait, '//button/hr',
-                                 "Clicking Sort By Dropdown", use_action_chain=True)
-
-        # time.sleep(1)
-        wait_for_ajax(driver)
-
-        # Select "Recent" from the dropdown
-        click_element_wait_retry(driver, wait, '//div[contains(@class,"artdeco-dropdown")]/ul/li[2]',
-                                 "Selecting Recent Option", max_retry=0, use_action_chain=True)
-
-        wait_for_ajax(driver)
-        time.sleep(3)  # Wait for the page to refresh with recent posts
-
-        myprint("Feed Sorted By Recent Items First")
-
-    except Exception as e:
-        log_error("Error during feed sort", exc=e)
-
-    # are_you_satisfied()
+    # SDUI removed the '//button/hr' sort control this used to click, so the legacy sort block here
+    # raised (and paged) on every run. _switch_feed_to_recent owns the sort now: resilient selectors,
+    # best-effort, warns instead of erroring when the control isn't there.
+    _switch_feed_to_recent(driver, wait)
 
 
 def get_feed_posts(driver, wait, num_posts=10):
@@ -999,6 +982,10 @@ def _switch_feed_to_recent(driver, wait) -> None:
         btn = find_first(driver, wait, [(By.XPATH, "//button[contains(normalize-space(),'Sort by')]")],
                          "Feed sort control", required=False)
         if btn is None:
+            return
+        # The control reads "Sort by: Recent" once flipped — skip re-opening the menu so the second
+        # caller in a run (navigate_to_feed then comment_on_feed_inline) is a cheap no-op.
+        if "recent" in (btn.text or "").lower():
             return
         driver.execute_script("arguments[0].click();", btn)
         time.sleep(random.uniform(1, 2))
