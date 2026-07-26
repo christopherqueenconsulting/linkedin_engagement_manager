@@ -60,6 +60,8 @@ from cqc_lem.utilities.db import (
     get_engagement_targets, upsert_engagement_targets, delete_engagement_target,
     suggest_engagement_targets, ENGAGEMENT_TARGET_CATEGORIES, ENGAGEMENT_TARGET_SOURCES,
     ENGAGEMENT_TARGET_WEEKLY_DEFAULT, ENGAGEMENT_TARGET_WEEKLY_MAX,
+    get_story_bank_entries, upsert_story_bank_entries, delete_story_bank_entry,
+    STORY_BANK_KINDS, STORY_BANK_TARGET_ENTRIES,
     update_subscription_from_stripe, update_user_linkedin_token,
     get_users_with_stripe_subscriptions,
     update_user_linkedin_password,
@@ -379,6 +381,8 @@ _LEN_LM_MESSAGE = 2000    # lead_magnet_settings.message (TEXT; app cap)
 _LEN_DM_TEMPLATE = 2000   # dm_templates.template_text (TEXT; app cap)
 _LEN_TARGET_PROFILE_URL = 512  # engagement_targets.profile_url VARCHAR(512)
 _LEN_TARGET_NAME = 255         # engagement_targets.name VARCHAR(255)
+_LEN_STORY_TITLE = 255         # story_bank.title VARCHAR(255)
+_LEN_STORY_BODY = 5000         # story_bank.body (TEXT; app cap)
 _LEN_NL_TITLE = 255       # newsletter_settings.title VARCHAR(255)
 _LEN_NL_TOPIC = 512       # newsletter_settings.topic VARCHAR(512)
 _LEN_DM_RECIPIENT_URL = 512   # scheduled_dms.recipient_profile_url VARCHAR(512)
@@ -721,6 +725,32 @@ class EngagementTargetsRequest(BaseModel):
 class EngagementTargetDeleteRequest(BaseModel):
     session_token: str
     profile_url: str = Field(max_length=_LEN_TARGET_PROFILE_URL)
+
+
+class StoryBankItem(BaseModel):
+    """One piece of the user's own raw material (issue #620). `body` is the only required field —
+    quick capture is a textarea, not a form wizard, so the title defaults from the body."""
+    id: Optional[int] = None
+    kind: str = "anecdote"
+    title: Optional[str] = Field(default=None, max_length=_LEN_STORY_TITLE)
+    body: str = Field(max_length=_LEN_STORY_BODY)
+    happened_at: Optional[str] = None
+    active: bool = True
+
+    @field_validator("kind")
+    @classmethod
+    def _valid_kind(cls, v: str) -> str:
+        return v if v in STORY_BANK_KINDS else "anecdote"
+
+
+class StoryBankRequest(BaseModel):
+    session_token: str
+    entries: List[StoryBankItem] = []
+
+
+class StoryBankDeleteRequest(BaseModel):
+    session_token: str
+    entry_id: int
 
 
 class LinkedInPasswordRequest(BaseModel):
@@ -2694,6 +2724,40 @@ def delete_engagement_target_endpoint(request: EngagementTargetDeleteRequest) ->
     if not delete_engagement_target(user_id, request.profile_url):
         raise HTTPException(status_code=500, detail="Could not remove roster target")
     return ResponseModel(status_code=200, detail="Roster target removed")
+
+
+@router.get("/user/story-bank")
+def get_story_bank_endpoint(session_token: str) -> ResponseModel:
+    """The user's story bank plus how many entries a usable bank needs (issue #620)."""
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    entries = get_story_bank_entries(user_id)
+    return ResponseModel(status_code=200, detail={
+        "entries": entries,
+        "kinds": list(STORY_BANK_KINDS),
+        "target_entries": STORY_BANK_TARGET_ENTRIES,
+    })
+
+
+@router.put("/user/story-bank")
+def update_story_bank_endpoint(request: StoryBankRequest) -> ResponseModel:
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if not upsert_story_bank_entries(user_id, [e.model_dump() for e in request.entries]):
+        raise HTTPException(status_code=500, detail="Could not update story bank")
+    return ResponseModel(status_code=200, detail="Story bank updated")
+
+
+@router.delete("/user/story-bank")
+def delete_story_bank_endpoint(request: StoryBankDeleteRequest) -> ResponseModel:
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if not delete_story_bank_entry(user_id, request.entry_id):
+        raise HTTPException(status_code=500, detail="Could not remove story bank entry")
+    return ResponseModel(status_code=200, detail="Story bank entry removed")
 
 
 @router.put("/user/linkedin-password")

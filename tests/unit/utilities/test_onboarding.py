@@ -91,6 +91,62 @@ class TestSelectNudge:
         assert select_nudge(_steps(), started_at=None, now=NOW) is None
 
 
+class TestStoryBankNudge:
+    """The story-bank seeding nudge (issue #620) — fires once the voice is set and the bank is
+    still under the target, behind the blocking setup steps but ahead of the trial warning."""
+
+    _DONE = dict(linkedin_connected=True, voice_set=True, first_post_approved=True,
+                 caps_enabled=True)
+
+    def test_fires_for_an_empty_bank_after_the_grace_period(self):
+        from cqc_lem.utilities.onboarding import select_nudge, NUDGE_STORY_BANK
+        nudge = select_nudge(_steps(**self._DONE), started_at=NOW - timedelta(hours=49),
+                             story_bank_count=0, now=NOW)
+        assert nudge["key"] == NUDGE_STORY_BANK
+        assert nudge["cta_path"] == "/account?section=content"
+
+    def test_waits_out_the_grace_period(self):
+        from cqc_lem.utilities.onboarding import select_nudge
+        assert select_nudge(_steps(**self._DONE), started_at=NOW - timedelta(hours=47),
+                            story_bank_count=0, now=NOW) is None
+
+    def test_a_seeded_bank_is_not_nudged(self):
+        from cqc_lem.utilities.onboarding import select_nudge, STORY_BANK_TARGET_ENTRIES
+        assert select_nudge(_steps(**self._DONE), started_at=NOW - timedelta(days=5),
+                            story_bank_count=STORY_BANK_TARGET_ENTRIES, now=NOW) is None
+
+    def test_unknown_count_never_nudges(self):
+        from cqc_lem.utilities.onboarding import select_nudge
+        assert select_nudge(_steps(**self._DONE), started_at=NOW - timedelta(days=5),
+                            story_bank_count=None, now=NOW) is None
+
+    def test_waits_until_the_voice_is_set(self):
+        from cqc_lem.utilities.onboarding import select_nudge, NUDGE_CONNECT, NUDGE_VOICE
+        # Voice still unset: the voice STEP nudge wins, and once that has been sent the story bank
+        # still waits rather than jumping the queue.
+        steps = _steps(linkedin_connected=True)
+        assert select_nudge(steps, started_at=NOW - timedelta(days=5), story_bank_count=0,
+                            now=NOW)["key"] == NUDGE_VOICE
+        assert select_nudge(steps, started_at=NOW - timedelta(days=5), story_bank_count=0,
+                            sent_keys={NUDGE_CONNECT, NUDGE_VOICE}, now=NOW) is None
+
+    def test_sends_only_once(self):
+        from cqc_lem.utilities.onboarding import select_nudge, NUDGE_STORY_BANK
+        assert select_nudge(_steps(**self._DONE), started_at=NOW - timedelta(days=5),
+                            story_bank_count=0, sent_keys={NUDGE_STORY_BANK}, now=NOW) is None
+
+    def test_ranks_ahead_of_the_trial_warning(self):
+        from cqc_lem.utilities.onboarding import select_nudge, NUDGE_STORY_BANK
+        nudge = select_nudge(_steps(**self._DONE), started_at=NOW - timedelta(days=5),
+                             trial_ends_at=NOW + timedelta(days=1), story_bank_count=0, now=NOW)
+        assert nudge["key"] == NUDGE_STORY_BANK
+
+    def test_activated_user_is_still_never_nudged(self):
+        from cqc_lem.utilities.onboarding import select_nudge
+        assert select_nudge(_steps(activated=True, voice_set=True),
+                            started_at=NOW - timedelta(days=5), story_bank_count=0, now=NOW) is None
+
+
 def _eval_patches(*, session=True, prefs=None, configured=True, approved=True, posted=True,
                   engaged=True):
     base_prefs = {"tone": "friendly", "comment_style": None, "focus_topics": [],

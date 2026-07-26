@@ -1522,7 +1522,8 @@ def _subject_anchor_line(trends: dict) -> str:
 def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, buyer_stage: str,
                                         prefs: dict = None, profile_synthesis: str = None,
                                         blueprint: dict = None, lead_magnet_cta: str = None,
-                                        post_id: int = None, history_directive: str = None):
+                                        post_id: int = None, history_directive: str = None,
+                                        story_directive: str = None):
     """
         Generate a thought leadership post based on user's expertise and industry.
         Uses the user's profile (e.g., job title, industry) and intended buyer_stage to form an insightful post.
@@ -1569,6 +1570,10 @@ def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, bu
     prompt += _framework.post_writing_directive()
     prompt += _style_directive(prefs, "post")
     prompt += history_directive or ""
+    # Story bank (issue #620): the author's OWN anecdote/number/win this post is anchored to — the
+    # only personal specifics the writer may state. Empty when the caller has no bank entry, in
+    # which case run_content_plan passes the explicit no-fabrication fallback instead.
+    prompt += story_directive or ""
 
     content = [{"type": "text", "text": prompt}]
 
@@ -1726,7 +1731,8 @@ def get_industry_trend_analysis_based_on_user_profile(linked_in_profile: LinkedI
 def get_industry_news_post_from_ai(linked_user_profile: LinkedInProfile, buyer_stage: str,
                                    prefs: dict = None, profile_synthesis: str = None,
                                    blueprint: dict = None, lead_magnet_cta: str = None,
-                                   post_id: int = None, history_directive: str = None):
+                                   post_id: int = None, history_directive: str = None,
+                                   story_directive: str = None):
     """
        Generate a post sharing industry news based on the LinkedIn user's profile and the intended buyer stage, along with the user's commentary.
     """
@@ -1772,6 +1778,10 @@ def get_industry_news_post_from_ai(linked_user_profile: LinkedInProfile, buyer_s
     prompt += _framework.post_writing_directive()
     prompt += _style_directive(prefs, "post")
     prompt += history_directive or ""
+    # Story bank (issue #620): the author's OWN anecdote/number/win this post is anchored to — the
+    # only personal specifics the writer may state. Empty when the caller has no bank entry, in
+    # which case run_content_plan passes the explicit no-fabrication fallback instead.
+    prompt += story_directive or ""
 
     content = [{"type": "text", "text": prompt}]
 
@@ -1916,7 +1926,8 @@ def get_industry_trend_from_ai(industry: str, articles: list):
 def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage: str,
                                     prefs: dict = None, profile_synthesis: str = None,
                                     blueprint: dict = None, lead_magnet_cta: str = None,
-                                    post_id: int = None, history_directive: str = None):
+                                    post_id: int = None, history_directive: str = None,
+                                    story_directive: str = None):
     """
     Generate a post sharing a personal or professional story, based on the user's profile.
     """
@@ -1966,6 +1977,10 @@ def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage:
     prompt += _framework.post_writing_directive()
     prompt += _style_directive(prefs, "post")
     prompt += history_directive or ""
+    # Story bank (issue #620): the author's OWN anecdote/number/win this post is anchored to — the
+    # only personal specifics the writer may state. Empty when the caller has no bank entry, in
+    # which case run_content_plan passes the explicit no-fabrication fallback instead.
+    prompt += story_directive or ""
 
     content = [{"type": "text", "text": prompt}]
 
@@ -2035,7 +2050,8 @@ def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage:
 def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage: str,
                                     prefs: dict = None, profile_synthesis: str = None,
                                     blueprint: dict = None, lead_magnet_cta: str = None,
-                                    post_id: int = None, history_directive: str = None):
+                                    post_id: int = None, history_directive: str = None,
+                                    story_directive: str = None):
     """
     Generate a question or prompt that encourages engagement from followers.
     """
@@ -2083,6 +2099,10 @@ def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage:
     prompt += _framework.post_writing_directive()
     prompt += _style_directive(prefs, "post")
     prompt += history_directive or ""
+    # Story bank (issue #620): the author's OWN anecdote/number/win this post is anchored to — the
+    # only personal specifics the writer may state. Empty when the caller has no bank entry, in
+    # which case run_content_plan passes the explicit no-fabrication fallback instead.
+    prompt += story_directive or ""
 
     content = [{"type": "text", "text": prompt}]
 
@@ -2150,7 +2170,8 @@ def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage:
 def get_blog_summary_post_from_ai(blog_post_url: str, blog_post_content: str, linked_user_profile: LinkedInProfile,
                                   stage: str, prefs: dict = None, profile_synthesis: str = None,
                                   blueprint: dict = None, lead_magnet_cta: str = None,
-                                  history_directive: str = None):
+                                  history_directive: str = None,
+                                  story_directive: str = None):
     """
     Generate a summary post for a blog article using the provide post url and post content from user to create interest using relevance to the provided LinkedIn Profile.
     """
@@ -2192,6 +2213,10 @@ def get_blog_summary_post_from_ai(blog_post_url: str, blog_post_content: str, li
     prompt += _framework.post_writing_directive()
     prompt += _style_directive(prefs, "post")
     prompt += history_directive or ""
+    # Story bank (issue #620): the author's OWN anecdote/number/win this post is anchored to — the
+    # only personal specifics the writer may state. Empty when the caller has no bank entry, in
+    # which case run_content_plan passes the explicit no-fabrication fallback instead.
+    prompt += story_directive or ""
 
     content = [{"type": "text", "text": prompt}]
 
@@ -2268,7 +2293,8 @@ def get_blog_summary_post_from_ai(blog_post_url: str, blog_post_content: str, li
 def get_website_content_post_from_ai(content: str, url: str, linked_user_profile: LinkedInProfile, stage: str,
                                      prefs: dict = None, profile_synthesis: str = None,
                                      blueprint: dict = None, lead_magnet_cta: str = None,
-                                     history_directive: str = None):
+                                     history_directive: str = None,
+                                     story_directive: str = None):
     """
         Generate a summary post for a blog article using the provide post url and post content from user to create interest using relevance to the provided LinkedIn Profile.
         """
@@ -2309,6 +2335,10 @@ def get_website_content_post_from_ai(content: str, url: str, linked_user_profile
     prompt += _framework.post_writing_directive()
     prompt += _style_directive(prefs, "post")
     prompt += history_directive or ""
+    # Story bank (issue #620): the author's OWN anecdote/number/win this post is anchored to — the
+    # only personal specifics the writer may state. Empty when the caller has no bank entry, in
+    # which case run_content_plan passes the explicit no-fabrication fallback instead.
+    prompt += story_directive or ""
 
     content = [{"type": "text", "text": prompt}]
 

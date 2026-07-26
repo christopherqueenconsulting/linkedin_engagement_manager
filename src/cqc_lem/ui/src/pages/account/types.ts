@@ -108,6 +108,36 @@ export const TARGET_CATEGORIES: { key: EngagementTargetCategory; label: string; 
   { key: 'creator', label: 'Large creator', hint: 'Big audiences you borrow reach from — ~20%' },
 ]
 
+export type StoryKind =
+  | 'anecdote'
+  | 'number'
+  | 'opinion'
+  | 'client_win'
+  | 'mistake'
+  | 'artifact'
+
+// One piece of the user's own raw material (issue #620). used_count / last_used_at are the rotation
+// counters written by generation and are read-only here.
+export type StoryEntry = {
+  id?: number
+  kind: StoryKind
+  title: string | null
+  body: string
+  happened_at: string | null
+  active: boolean
+  used_count?: number
+  last_used_at?: string | null
+}
+
+export const STORY_KINDS: { key: StoryKind; label: string; hint: string }[] = [
+  { key: 'anecdote', label: 'Anecdote', hint: 'Something that actually happened to you' },
+  { key: 'number', label: 'Number', hint: 'A real figure from your own work' },
+  { key: 'opinion', label: 'Opinion', hint: 'A view you actually hold, ideally an unpopular one' },
+  { key: 'client_win', label: 'Client win', hint: 'A real outcome you delivered' },
+  { key: 'mistake', label: 'Mistake', hint: "Something you got wrong and what it cost" },
+  { key: 'artifact', label: 'Artifact', hint: 'Something you built, shipped or wrote' },
+]
+
 export type DmTemplate = {
   event_type: string
   step: number

@@ -6,6 +6,7 @@ import LoginLocationCard from '../LoginLocationCard'
 import LinkedInLoginCard from '../LinkedInLoginCard'
 import CompanyPageCard from '../CompanyPageCard'
 import ContentProfileCard from '../ContentProfileCard'
+import StoryBankCard from '../StoryBankCard'
 import NewsletterCard from '../NewsletterCard'
 import GroupsCard from '../GroupsCard'
 import DmTemplatesCard from '../DmTemplatesCard'
@@ -30,7 +31,7 @@ function SectionBody({ section }: { section: SectionKey }) {
     case 'voice':
       return <VoiceSection />
     case 'content':
-      return <><ContentProfileCard /><ContentSection /></>
+      return <><ContentProfileCard /><StoryBankCard /><ContentSection /></>
     case 'targeting':
       return <><EngagementRosterCard /><TargetingSection /><GroupsCard /></>
     case 'volume':
