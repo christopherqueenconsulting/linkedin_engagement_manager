@@ -167,6 +167,27 @@ def notify_content_generation_ready(user_id: int, ready_count: int, failed_count
         return False
 
 
+def notify_suppression_tripwire(user_id: int, reason: str) -> bool:
+    """Email the user that the suppression tripwire paused their engagement automation (issue #629).
+    No throttling ledger: the trip itself is one-shot per user until a human re-enables, so the task
+    only ever calls this on the transition into a tripped state. Non-fatal — a failed send must not
+    undo the pause, which is the part that actually protects the account."""
+    try:
+        email = get_user_email(user_id)
+        if not email:
+            return False
+        from cqc_lem.utilities.email import send_suppression_tripwire_email
+        sent = send_suppression_tripwire_email(email, reason)
+        if sent:
+            log_info("Sent suppression-tripwire notice", user_id=user_id,
+                     action_type="rate_limit")
+        return sent
+    except Exception as e:
+        log_warning("Could not send suppression-tripwire notice", exc=e, user_id=user_id,
+                    action_type="rate_limit")
+        return False
+
+
 def notify_newsletter_draft_ready(user_id: int, edition_title: str, scheduled_for) -> bool:
     """Email the user that their newsletter draft is ready to review and when it auto-publishes.
     Non-fatal — returns True only if an email was actually sent."""

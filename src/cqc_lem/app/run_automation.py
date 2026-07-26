@@ -2005,7 +2005,8 @@ def auto_scrape_post_stats(self, user_id: int):
     if not post_ids:
         return "No recent posts to scrape"
     try:
-        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Post Stats")
+        driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Post Stats",
+                                                                   measurement_only=True)
     except Exception as e:
         log_error("Error getting profile for post stats", exc=e, user_id=user_id, task_name="auto_scrape_post_stats")
         return f"Failed: {e}"
@@ -2103,7 +2104,8 @@ def capture_follower_stats(self, user_id: int):
     feeds the growth panel's 7/30-day deltas; unreadable signals are stored as NULL."""
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id,
-                                                                  session_name="Audience Stats")
+                                                                  session_name="Audience Stats",
+                                                                  measurement_only=True)
     except Exception as e:
         log_error("Error getting profile for audience capture", exc=e, user_id=user_id,
                   task_name="capture_follower_stats")
@@ -5849,9 +5851,14 @@ def update_stale_profile(self, user_id: int):
     return "Profile Updated Successfully"
 
 
-def get_current_profile(user_id: int, session_name: str = "Get Current Profile") -> Tuple[
+def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
+                        measurement_only: bool = False) -> Tuple[
     WebDriver, WebDriverWait, str, LinkedInProfile]:
-    """Update the profile of the user"""
+    """Update the profile of the user.
+
+    `measurement_only` marks a read-only stat-capture session, which keeps running under the
+    suppression tripwire's own pause (and only that one) so recovery stays measurable — see
+    rate_limit.is_measurement_paused."""
 
     myprint(f"Getting Updated Profile")
 
@@ -5862,7 +5869,8 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile")
     # Login first — a failure here (e.g. HTTP 429 rate-limit, expired cookie) is fatal
     # for this run; abort cleanly so the caller backs off instead of hammering LinkedIn.
     try:
-        login_to_linkedin(driver, wait, user_email, user_password)
+        login_to_linkedin(driver, wait, user_email, user_password,
+                          measurement_only=measurement_only)
     except Exception as e:
         log_error("LinkedIn login failed (possibly rate-limited)", exc=e, user_id=user_id)
         quit_gracefully(driver)

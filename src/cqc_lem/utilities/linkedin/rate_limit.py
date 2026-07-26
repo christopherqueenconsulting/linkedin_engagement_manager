@@ -9,7 +9,9 @@ until it expires. Fails open: if Redis is unavailable the breaker no-ops and cal
 behave as before.
 """
 
+import json
 import os
+from datetime import datetime, timezone
 
 from cqc_lem.utilities.logger import log_warning
 
@@ -270,6 +272,96 @@ def commenting_hold_reason(user_id: int) -> "str | None":
 
 def is_commenting_held(user_id: int) -> bool:
     return commenting_hold_remaining(user_id) > 0
+
+
+# --- suppression tripwire state -------------------------------------------------
+# The record of WHY engagement was auto-paused for silent-suppression (issue #629). The pause itself
+# is the global `pause_automation` breaker above — this is the per-user evidence beside it, so the
+# Account banner can explain the stop in plain language and the daily check can tell its own trip
+# apart from a manual/maintenance pause. Deliberately has NO TTL: the tripwire never auto-resumes, a
+# human clears it via clear_suppression_trip. Fails open (no Redis -> not tripped) like the rest.
+
+_SUPPRESSION_KEY = "linkedin:suppression_trip:{user_id}"
+SUPPRESSION_PAUSE_REASON_PREFIX = "suppression"
+
+
+def suppression_pause_reason(user_id: int) -> str:
+    """The `pause_automation` reason string this tripwire writes, tagged with the user whose signals
+    tripped it so a later run can tell its own pause apart from a manual or maintenance one."""
+    return f"{SUPPRESSION_PAUSE_REASON_PREFIX}:{int(user_id)}"
+
+
+def is_suppression_pause(reason: "str | None") -> bool:
+    return bool(reason) and str(reason).startswith(SUPPRESSION_PAUSE_REASON_PREFIX)
+
+
+def is_measurement_paused() -> bool:
+    """Whether the standing pause also stops READ-ONLY measurement (post-stat / follower capture).
+
+    Every pause does — except the suppression tripwire's own, which must not. The daily stats scrape
+    is what produces the very readings the tripwire re-evaluates: freeze it and the engagement trend
+    stays stuck at the collapsed numbers forever, so a recovered account can never be seen to have
+    recovered and the daily re-arm extends the pause indefinitely. It would also make the notice the
+    user is sent ("your scheduled posts still publish and we keep collecting your analytics")
+    untrue. The 429 breaker still gates these lanes separately — this only narrows OUR pause.
+    """
+    if not is_automation_paused():
+        return False
+    return not is_suppression_pause(automation_pause_reason())
+
+
+def record_suppression_trip(user_id: int, reason: str, detail: "dict | None" = None,
+                            tripped_at: "str | None" = None) -> bool:
+    """Persist the trip. Returns True if it was stored."""
+    client = _redis_client()
+    if client is None:
+        return False
+    payload = {"user_id": int(user_id), "reason": reason or "suppression",
+               "tripped_at": tripped_at or datetime.now(timezone.utc).isoformat(),
+               "detail": detail or {}}
+    try:
+        client.set(_SUPPRESSION_KEY.format(user_id=int(user_id)), json.dumps(payload, default=str))
+        return True
+    except Exception as e:
+        log_warning("Failed to record suppression trip", exc=e, user_id=int(user_id),
+                    action_type="rate_limit")
+        return False
+
+
+def clear_suppression_trip(user_id: int) -> bool:
+    """Human re-enable: forget the trip. Lifting the automation pause is the caller's separate,
+    explicit step — clearing the record must never be what silently restarts engagement."""
+    client = _redis_client()
+    if client is None:
+        return False
+    try:
+        client.delete(_SUPPRESSION_KEY.format(user_id=int(user_id)))
+        return True
+    except Exception:
+        return False
+
+
+def suppression_trip_state(user_id: int) -> "dict | None":
+    """The stored trip for this user, or None when the tripwire has not fired (or Redis is down)."""
+    client = _redis_client()
+    if client is None:
+        return None
+    try:
+        raw = client.get(_SUPPRESSION_KEY.format(user_id=int(user_id)))
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    text = raw.decode("utf-8", "ignore") if isinstance(raw, bytes) else str(raw)
+    try:
+        state = json.loads(text)
+    except ValueError:
+        return {"user_id": int(user_id), "reason": text, "tripped_at": None, "detail": {}}
+    return state if isinstance(state, dict) else None
+
+
+def is_suppression_tripped(user_id: int) -> bool:
+    return suppression_trip_state(user_id) is not None
 
 
 # --- single-flight task locks -------------------------------------------------

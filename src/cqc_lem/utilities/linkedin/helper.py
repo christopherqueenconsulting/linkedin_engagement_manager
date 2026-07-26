@@ -9,7 +9,8 @@ from cqc_lem.utilities.db import get_cookies, store_cookies, get_linked_in_profi
     get_linked_in_profile_by_url, get_linked_in_profile_by_user_id
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited, clear_rate_limit, \
-    mark_rate_limited, rate_limit_cooldown_remaining, is_automation_paused, automation_pause_remaining
+    mark_rate_limited, rate_limit_cooldown_remaining, is_automation_paused, \
+    automation_pause_remaining, is_measurement_paused
 from cqc_lem.utilities.linkedin.scrapper import returnProfileInfo
 from cqc_lem.utilities.logger import myprint, log_warning, log_error
 from cqc_lem.utilities.selenium_util import load_cookies, get_element_wait_retry, \
@@ -340,7 +341,8 @@ def drive_email_pin_challenge(driver, user_email: str, is_logged_in) -> bool:
     return is_logged_in(driver.current_url)
 
 
-def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, user_password: str):
+def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, user_password: str,
+                      measurement_only: bool = False):
     linked_url = "https://www.linkedin.com"
     feed_url = "https://www.linkedin.com/feed/"
     login_url = "https://www.linkedin.com/login"
@@ -451,7 +453,9 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
 
     # Manual global pause: a kill-switch to let a rate-limited account recover. Central gate —
     # every Selenium task logs in through here, so a pause halts all of them without navigating.
-    if is_automation_paused():
+    # `measurement_only` callers (read-only stat capture) still stop for every pause EXCEPT the
+    # suppression tripwire's own — that one has to keep measuring or recovery is never visible.
+    if is_measurement_paused() if measurement_only else is_automation_paused():
         raise LinkedInRateLimited(
             f"Automation is paused for ~{automation_pause_remaining()}s — skipping login.")
 

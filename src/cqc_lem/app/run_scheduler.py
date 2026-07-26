@@ -41,19 +41,23 @@ from cqc_lem.utilities.human_pacing import (
 )
 from cqc_lem.utilities.logger import myprint, log_info, log_debug, log_warning
 from cqc_lem.utilities.linkedin.rate_limit import is_automation_paused, automation_pause_remaining, \
-    rate_limit_cooldown_remaining
+    rate_limit_cooldown_remaining, is_measurement_paused
 from cqc_lem.utilities.notifications import notify_linkedin_session
 from cqc_lem.utilities.observability import attribute_llm_cost, llm_attribution, FEATURE_NEWSLETTER
 
 
-def _skip_if_throttled(name: str, **context) -> bool:
+def _skip_if_throttled(name: str, measurement_only: bool = False, **context) -> bool:
     """True when Selenium engagement should NOT fan out — either a manual automation pause OR an open
     429 circuit breaker cooldown is active. Beat dispatchers short-circuit on both so a rate-limited
     account isn't hammered: login_to_linkedin gates centrally too, but skipping at dispatch avoids
     spinning up Chrome sessions that would only fail AND — critically — stops tasks from probing the
     feed the instant the cooldown expires, which is what re-tripped the breaker into a doom loop.
-    POSTING is API-driven and deliberately NOT gated."""
-    if is_automation_paused():
+    POSTING is API-driven and deliberately NOT gated.
+
+    `measurement_only` lanes (read-only stat capture) skip for every pause EXCEPT the suppression
+    tripwire's own, which must keep measuring or the collapse it detected can never be seen to
+    recover (issue #629)."""
+    if is_measurement_paused() if measurement_only else is_automation_paused():
         log_info(f"{name} skipped — automation paused (~{automation_pause_remaining()}s left)", **context)
         return True
     cooldown = rate_limit_cooldown_remaining()
@@ -505,6 +509,74 @@ def auto_weekly_comment_quality(self, days: int = 7):
     return f"Comment quality reported for {reported}/{len(users)} user(s); {held} held"
 
 
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_suppression_tripwire(self):
+    """Daily silent-suppression check per user (issue #629). LinkedIn never announces a penalty — a
+    flagged account just sees its reach step-collapse and stays collapsed for 60-90 days. A day of
+    automation is worth far less than a month of suppressed reach, so a sustained collapse against
+    the user's OWN trailing median (or the D4 comment-demotion verdict) auto-pauses engagement,
+    emails the user in plain language, and escalates as CRITICAL.
+
+    Scheduled posts, stats capture and analytics are untouched: posting is API-driven and never
+    gated, and the read-only capture lanes opt out of THIS pause (`is_measurement_paused`) so the
+    trend keeps updating — otherwise the readings would freeze at the collapsed values and recovery
+    could never be seen. The pause deliberately never self-resumes: while the trip stands this task
+    re-arms it, so only a human clearing it in the UI restarts commenting/DMs."""
+    from cqc_lem.utilities.comment_outcomes import comment_quality_report
+    from cqc_lem.utilities.db import get_comment_outcomes, get_post_performance_rows
+    from cqc_lem.utilities.linkedin.rate_limit import (
+        automation_pause_reason, is_suppression_pause, is_automation_paused, pause_automation,
+        record_suppression_trip, suppression_pause_reason, suppression_trip_state)
+    from cqc_lem.utilities.logger import log_critical
+    from cqc_lem.utilities.notifications import notify_suppression_tripwire
+    from cqc_lem.utilities.observability import track_suppression_check
+    from cqc_lem.utilities.post_stats import build_engagement_trend
+    from cqc_lem.utilities.suppression import (comment_history_days, evaluate_suppression,
+                                               history_days, pause_seconds, tripwire_enabled)
+
+    if not tripwire_enabled():
+        return "Suppression tripwire disabled"
+    users = get_active_user_ids()
+    if not users:
+        return "No active users"
+    window = history_days()
+    comment_window = comment_history_days()
+    checked = tripped = rearmed = 0
+    for user_id in users:
+        trend = build_engagement_trend(get_post_performance_rows(user_id, days=window))
+        quality = comment_quality_report(get_comment_outcomes(user_id, days=comment_window),
+                                         days=comment_window)
+        verdict = evaluate_suppression(trend, comment_quality=quality)
+        checked += 1
+        already = suppression_trip_state(user_id)
+        if not verdict.get("tripped"):
+            # A recovered reading is REPORTED, never auto-cleared: the whole point is that only a
+            # human decides the account is safe to automate again.
+            track_suppression_check(user_id, verdict, paused=bool(already))
+            continue
+        seconds = pause_seconds()
+        if already:
+            # Still tripped and nobody has cleared it — refresh the pause so the TTL can't expire
+            # engagement back on, but only when the standing pause is OURS (a maintenance or manual
+            # pause has its own lifecycle and must not be extended by 90 days).
+            if not is_automation_paused() or is_suppression_pause(automation_pause_reason()):
+                pause_automation(seconds, reason=suppression_pause_reason(user_id))
+                rearmed += 1
+            track_suppression_check(user_id, verdict, paused=True, rearmed=True)
+            continue
+        pause_automation(seconds, reason=suppression_pause_reason(user_id))
+        record_suppression_trip(user_id, verdict.get("reason") or "reach collapse", detail=verdict)
+        notify_suppression_tripwire(user_id, verdict.get("reason") or "")
+        track_suppression_check(user_id, verdict, paused=True)
+        # CRITICAL forwards to PostHog automatically — this is the needs-human flag.
+        log_critical(f"Suppression tripwire fired for user {user_id} — {verdict.get('reason')}",
+                     user_id=user_id, action_type="rate_limit",
+                     task_name="auto_suppression_tripwire")
+        tripped += 1
+    return (f"Suppression checked for {checked}/{len(users)} user(s); "
+            f"{tripped} newly tripped, {rearmed} re-armed")
+
+
 def _max_dt(*dts):
     """Max of the given datetimes, ignoring None (returns None if all are None)."""
     present = [d for d in dts if d is not None]
@@ -904,7 +976,7 @@ def auto_group_posts():
 @shared_task.task
 def auto_scrape_stats():
     """Daily: capture engagement stats on each active user's recent posts (powers post-time recs)."""
-    if _skip_if_throttled("auto_scrape_stats"):
+    if _skip_if_throttled("auto_scrape_stats", measurement_only=True):
         return "Automation throttled"
     from cqc_lem.app.run_automation import auto_scrape_post_stats
     users = get_active_user_ids()
@@ -921,7 +993,7 @@ def auto_capture_follower_stats():
     """Daily: snapshot each active user's follower/connection counts and profile views (issue #627).
     Selenium-backed, so it respects the global throttle breaker, and it only dispatches for users
     who actually have a LinkedIn session to read the numbers with."""
-    if _skip_if_throttled("auto_capture_follower_stats"):
+    if _skip_if_throttled("auto_capture_follower_stats", measurement_only=True):
         return "Automation throttled"
     from cqc_lem.app.run_automation import capture_follower_stats
     users = get_active_user_ids()

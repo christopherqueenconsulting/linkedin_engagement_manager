@@ -390,6 +390,37 @@ def send_content_generation_ready_email(to_email: str, ready_count: int,
                   f"ready to review", html)
 
 
+def send_suppression_tripwire_email(to_email: str, reason: str) -> bool:
+    """Tell the user their engagement automation stopped itself because their reach collapsed
+    (issue #629). LinkedIn never says it has suppressed an account, so this email IS the notice —
+    it has to be plain language, not a metric dump, and it has to say what happens next."""
+    import os
+    base = (os.getenv("LEM_APP_URL") or "https://lem.christopherqueenconsulting.com").rstrip("/")
+    url = f"{base}/account"
+    safe_reason = html_escape(reason or "a sustained drop in your reach")
+    html = f"""
+    <html><body style="font-family:Arial,Helvetica,sans-serif;color:#222;">
+    <h2>We paused your LinkedIn engagement automation</h2>
+    <p>Your recent posts are reaching far fewer people than they normally do. That pattern usually
+    means LinkedIn has quietly limited the account — it never sends a notification when it does.</p>
+    <p style="background:#fff4e5;border-left:4px solid #f5a623;padding:10px 14px;">
+    <strong>What we measured:</strong> {safe_reason}</p>
+    <p>So we stopped commenting, replying and messaging on your behalf. <strong>Your scheduled posts
+    still publish and we keep collecting your analytics</strong> — only the automated engagement is
+    paused.</p>
+    <p>Accounts typically recover after a few weeks of normal, human activity. Keep posting, engage
+    by hand for a while, and re-enable automation from your account page when your reach comes back
+    — we keep measuring it every day, so your account page will tell you when it has.</p>
+    <p><a href="{url}" style="background:#0a66c2;color:#fff;padding:10px 16px;border-radius:6px;
+    text-decoration:none;">Review and re-enable</a></p>
+    <p style="color:#888;font-size:12px;">This pause will not lift on its own — you decide when to
+    turn engagement back on.</p>
+    </body></html>
+    """
+    return _dispatch_email(to_email, "⚠️ We paused your LinkedIn engagement — your reach dropped",
+                           html, high_priority=True)
+
+
 def send_onboarding_nudge_email(to_email: str, subject: str, headline: str, body: str,
                                 cta_label: str, cta_path: str = "/account") -> bool:
     """Nudge a user who stalled part-way through activation (issue #500). Copy is supplied by the
