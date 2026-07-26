@@ -348,12 +348,19 @@ compare against are each None and excluded from their own denominator, so every 
 OWN sample size. ER is impression-WEIGHTED, so a post seen by 50 people can't outvote one seen by
 5,000. A regression is measured against the account's own prior period (the ER floor is the one
 absolute, set deliberately below the ~3.6% B2B benchmark so it catches a collapse rather than firing
-forever on a below-average account) and needs `CONTENT_QUALITY_MIN_SAMPLE` on BOTH sides. The nightly
+forever on a below-average account) and needs `CONTENT_QUALITY_MIN_SAMPLE` on BOTH sides — except the
+ER floor, which counts against the smaller `CONTENT_QUALITY_MIN_ER_SAMPLE` (default 3, the weekly
+posting cadence) because impressions come from POSTS alone and a piece-count threshold would gate it
+on comment volume it can never reach. The nightly
 window is 2 days, not 1: a missed night self-heals AND a post scored the night it shipped gets its ER
 once the 23:00 scrape lands — the write is an upsert. Self-similarity is batched into ONE
-`lem-embedding` call per surface and graded WITHIN that surface (a post compared against the user's
-comments looks unique no matter how templated it is), with the item's own text excluded from its
-history and a token-overlap fallback when embeddings are unavailable. The optional external
+`lem-embedding` call per surface (under an `llm_attribution(user_id=…)` scope — the task loops over
+users rather than taking a `user_id` kwarg, so without it the spend bills to `system`) and graded
+WITHIN that surface (a post compared against the user's comments looks unique no matter how templated
+it is), with the item's own text excluded from its history and a token-overlap fallback when
+embeddings are unavailable. Because each surface embeds in its own batch, one failed call can leave a
+lexical minority inside a cosine period, so `similarity_avg` is taken over the DOMINANT measure only —
+the two scales are never averaged together, within a period or across two. The optional external
 AI-detector (`AI_DETECTOR_*`) is OFF by default, sampled on a stable per-item draw, capped per run,
 and a REGRESSION SIGNAL ONLY per the #416 policy — it never rewrites or holds anything, and a missing
 key is a silent no-op.

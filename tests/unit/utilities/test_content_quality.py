@@ -239,6 +239,27 @@ class TestSummarizeScores:
         assert summary["similarity_measure"] == cq.MEASURE_EMBEDDING
         assert summary["similarity_measures"] == {cq.MEASURE_EMBEDDING: 2, cq.MEASURE_LEXICAL: 1}
 
+    def test_the_mean_never_mixes_two_similarity_scales(self):
+        # Each surface embeds in its own batch, so ONE failed lem-embedding call leaves a lexical
+        # minority inside an otherwise-cosine period. Folding it into the mean would move
+        # similarity_avg by the gap between the scales while the dominant LABEL stayed 'embedding' —
+        # which is exactly the move the cross-period guard would then wave through.
+        summary = cq.summarize_scores([
+            _row(similarity=0.2, similarity_measure=cq.MEASURE_EMBEDDING),
+            _row(similarity=0.3, similarity_measure=cq.MEASURE_EMBEDDING),
+            _row(similarity=0.9, similarity_measure=cq.MEASURE_LEXICAL)])
+        assert summary["similarity_measure"] == cq.MEASURE_EMBEDDING
+        assert summary["similarity_sample"] == 2
+        assert summary["similarity_avg"] == 0.25
+        assert summary["similarity_max"] == 0.3
+
+    def test_a_wholly_lexical_period_is_summarized_on_its_own_scale(self):
+        summary = cq.summarize_scores([
+            _row(similarity=0.5, similarity_measure=cq.MEASURE_LEXICAL),
+            _row(similarity=0.7, similarity_measure=cq.MEASURE_LEXICAL)])
+        assert summary["similarity_measure"] == cq.MEASURE_LEXICAL
+        assert summary["similarity_sample"] == 2 and summary["similarity_avg"] == 0.6
+
     def test_no_measured_similarity_has_no_measure(self):
         assert cq.summarize_scores([_row(similarity=None)])["similarity_measure"] is None
 
@@ -328,6 +349,19 @@ class TestEvaluateAlerts:
         assert cq.evaluate_alerts(self._summary(engagement_rate=0.001, engagement_rate_sample=1),
                                   self._summary()) == []
 
+    def test_engagement_floor_is_reachable_at_the_default_posting_cadence(self):
+        # Only POSTS carry impressions and DEFAULT_POSTS_PER_WEEK is 3, so gating this on the
+        # piece-count minimum (5) would make the floor unreachable for every default-plan account —
+        # an alert that can never fire reads as "engagement is fine".
+        alerts = cq.evaluate_alerts(
+            self._summary(engagement_rate=0.001, engagement_rate_sample=3), {})
+        assert [a["name"] for a in alerts] == [cq.ALERT_ENGAGEMENT_FLOOR]
+        assert alerts[0]["sample"] == 3
+
+    def test_a_week_short_of_the_engagement_minimum_stays_quiet(self):
+        assert cq.evaluate_alerts(self._summary(engagement_rate=0.001, engagement_rate_sample=2),
+                                  {}) == []
+
     def test_an_unmeasured_engagement_rate_never_trips_the_floor(self):
         assert cq.evaluate_alerts(self._summary(engagement_rate=None), self._summary()) == []
 
@@ -403,6 +437,20 @@ class TestConfig:
 
     def test_nightly_window_looks_back_two_days(self):
         assert cq.window_days() == cq.DEFAULT_WINDOW_DAYS == 2
+
+    def test_the_engagement_minimum_tracks_the_posting_cadence(self):
+        assert cq.min_engagement_sample() == cq.DEFAULT_MIN_ENGAGEMENT_SAMPLE == 3
+        assert cq.min_engagement_sample() < cq.min_alert_sample()
+
+    def test_the_engagement_minimum_never_exceeds_the_general_one(self):
+        # Lowering the general minimum must lower this too; it is a floor on a subset of the same
+        # content, so it can never be the stricter of the two.
+        with patch.dict("os.environ", {"CONTENT_QUALITY_MIN_SAMPLE": "1"}):
+            assert cq.min_engagement_sample() == 1
+
+    def test_the_engagement_minimum_can_be_set_explicitly(self):
+        with patch.dict("os.environ", {"CONTENT_QUALITY_MIN_ER_SAMPLE": "6"}):
+            assert cq.min_engagement_sample() == 6
 
     def test_garbage_env_values_fall_back_to_defaults(self):
         with patch.dict("os.environ", {"CONTENT_QUALITY_MIN_SAMPLE": "abc",

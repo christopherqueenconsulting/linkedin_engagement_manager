@@ -43,7 +43,8 @@ from cqc_lem.utilities.logger import myprint, log_info, log_debug, log_warning
 from cqc_lem.utilities.linkedin.rate_limit import is_automation_paused, automation_pause_remaining, \
     rate_limit_cooldown_remaining, is_measurement_paused
 from cqc_lem.utilities.notifications import notify_linkedin_session
-from cqc_lem.utilities.observability import attribute_llm_cost, llm_attribution, FEATURE_NEWSLETTER
+from cqc_lem.utilities.observability import attribute_llm_cost, llm_attribution, FEATURE_CONTENT, \
+    FEATURE_NEWSLETTER
 
 
 def _skip_if_throttled(name: str, measurement_only: bool = False, **context) -> bool:
@@ -629,13 +630,18 @@ def auto_nightly_content_quality(self, days: int = None):
             SURFACE_COMMENT: get_recent_comment_texts(user_id, limit=COMMENT_HISTORY_LIMIT),
         }
         similarity: dict = {}
-        for surface, history in histories.items():
-            group = [item for item in items if item.get("surface") == surface]
-            if not group:
-                continue
-            reports = similarity_reports([item.get("text") for item in group], history)
-            for item, report in zip(group, reports):
-                similarity[(surface, item.get("ref_id"))] = report
+        # similarity_reports is the ONLY LLM spend in this pass (one lem-embedding call per surface),
+        # and this task loops over users rather than taking a user_id kwarg — so without an explicit
+        # scope current_llm_attribution() has nobody to bill and every embedding lands on the "system"
+        # sentinel instead of the account whose content it scored.
+        with llm_attribution(user_id=user_id, feature=FEATURE_CONTENT):
+            for surface, history in histories.items():
+                group = [item for item in items if item.get("surface") == surface]
+                if not group:
+                    continue
+                reports = similarity_reports([item.get("text") for item in group], history)
+                for item, report in zip(group, reports):
+                    similarity[(surface, item.get("ref_id"))] = report
 
         keyword = (get_lead_magnet_settings(user_id) or {}).get("keyword")
         detector_budget = detector_daily_max()

@@ -67,6 +67,12 @@ DEFAULT_ENGAGEMENT_FLOOR = 0.02
 DEFAULT_SIMILARITY_REGRESSION_DELTA = 0.05
 # No alert fires off a handful of pieces — a week with two posts in it has no trend.
 DEFAULT_MIN_ALERT_SAMPLE = 5
+# The ENGAGEMENT floor needs its own, smaller minimum, and the reason is arithmetic rather than
+# taste: only POSTS carry impressions, and the default cadence is DEFAULT_POSTS_PER_WEEK = 3 a week.
+# Requiring 5 posts-with-impressions in a 7-day period would make the floor alert unreachable for
+# every account on the default plan — an alert that can never fire is worse than no alert, because it
+# reads as "engagement is fine". Three is the default cadence, i.e. a full week of posting.
+DEFAULT_MIN_ENGAGEMENT_SAMPLE = 3
 DEFAULT_ROLLUP_DAYS = 7
 # The nightly pass looks back TWO days, not one. Consecutive nightly runs would tile a 24h window
 # perfectly, but two days buys both things a 24h window cannot: a missed night self-heals, and a post
@@ -149,6 +155,17 @@ def similarity_regression_delta() -> float:
 
 def min_alert_sample() -> int:
     return max(1, _env_int("CONTENT_QUALITY_MIN_SAMPLE", DEFAULT_MIN_ALERT_SAMPLE))
+
+
+def min_engagement_sample() -> int:
+    """Minimum posts-with-impressions before the ER floor may fire. Defaults to the weekly posting
+    cadence rather than to `min_alert_sample()`, which counts every scored PIECE (posts + comments +
+    editions) and is therefore unreachable for a dimension only posts can contribute to. Never
+    higher than the general minimum, so lowering `CONTENT_QUALITY_MIN_SAMPLE` still lowers this."""
+    raw = (os.environ.get("CONTENT_QUALITY_MIN_ER_SAMPLE") or "").strip()
+    if raw:
+        return max(1, _env_int("CONTENT_QUALITY_MIN_ER_SAMPLE", DEFAULT_MIN_ENGAGEMENT_SAMPLE))
+    return max(1, min(DEFAULT_MIN_ENGAGEMENT_SAMPLE, min_alert_sample()))
 
 
 def detector_enabled() -> bool:
@@ -408,8 +425,7 @@ def summarize_scores(rows: Optional[Iterable[Mapping[str, Any]]]) -> dict:
     hard_hits = sum(1 for row in slop_rows if float(row.get("slop_hard") or 0) > 0)
     warn_hits = sum(1 for row in slop_rows if float(row.get("slop_warn") or 0) > 0)
 
-    sim_scores = _floats(rows, "similarity")
-    # Which measure produced those scores, because the two are NOT the same scale — cosine and
+    # Which measure produced each score, because the two are NOT the same scale — cosine and
     # token-overlap ceilings differ by a wide margin (0.82 vs 0.55), so a week that fell back to
     # lexical is not comparable to an embedding week and must not be read as a move.
     measures: dict = {}
@@ -419,6 +435,14 @@ def summarize_scores(rows: Optional[Iterable[Mapping[str, Any]]]) -> dict:
         measure = str(row.get("similarity_measure") or MEASURE_NONE)
         measures[measure] = measures.get(measure, 0) + 1
     dominant = max(measures, key=lambda key: measures[key]) if measures else None
+    # The mean is taken over the dominant measure ONLY. Mixing is not just a cross-period risk: each
+    # surface embeds in its own batch, so one failed `lem-embedding` call drops that surface to
+    # lexical while the rest of the period stays cosine. Averaging both would move `similarity_avg`
+    # by the gap between the scales — a swing the cross-period guard would then wave through, because
+    # both periods still report the same dominant label.
+    sim_scores = _floats([row for row in rows
+                          if str(row.get("similarity_measure") or MEASURE_NONE) == dominant],
+                         "similarity") if dominant else []
 
     auth_scores = _floats(rows, "authenticity_score")
     detector_scores = _floats(rows, "detector_score")
@@ -517,8 +541,9 @@ def evaluate_alerts(current: Mapping[str, Any], prior: Mapping[str, Any]) -> lis
 
     Each needs a real sample on BOTH sides before it can fire (`min_alert_sample`) — a week with two
     posts in it has no trend, and a false alert that pauses nobody still trains the owner to ignore
-    the next one. The engagement floor is the exception that needs no prior period: an account below
-    the floor is below it regardless of last week.
+    the next one. The engagement floor is the exception twice over: it needs no prior period (an
+    account below the floor is below it regardless of last week) and it counts against
+    `min_engagement_sample`, because impressions come from posts alone.
     """
     current, prior = dict(current or {}), dict(prior or {})
     minimum = min_alert_sample()
@@ -545,8 +570,11 @@ def evaluate_alerts(current: Mapping[str, Any], prior: Mapping[str, Any]) -> lis
 
     floor = engagement_floor()
     rate = current.get("engagement_rate")
+    # Its OWN minimum: `minimum` counts scored PIECES, and only posts carry impressions, so a
+    # piece-count threshold would gate a post-only dimension on comment volume it can never reach.
+    er_minimum = min_engagement_sample()
     if (rate is not None and rate < floor
-            and int(current.get("engagement_rate_sample") or 0) >= minimum):
+            and int(current.get("engagement_rate_sample") or 0) >= er_minimum):
         alerts.append({
             "name": ALERT_ENGAGEMENT_FLOOR,
             "metric": "engagement_rate",
@@ -612,5 +640,6 @@ def quality_rollup(rows: Optional[Iterable[Mapping[str, Any]]], days: Optional[i
             "slop_regression_delta": slop_regression_delta(),
             "similarity_delta": similarity_regression_delta(),
             "min_sample": min_alert_sample(),
+            "min_engagement_sample": min_engagement_sample(),
         },
     }

@@ -86,6 +86,25 @@ class TestNightlyContentQuality:
         histories = [call.args[1] for call in sim.call_args_list]
         assert ["older post"] in histories and ["older comment"] in histories
 
+    def test_the_embedding_spend_is_billed_to_the_user_it_scored(self):
+        # similarity_reports is the only LLM spend here, and this task loops over users instead of
+        # taking a user_id kwarg — with no explicit scope, current_llm_attribution() has nobody to
+        # bill and every embedding lands on the "system" sentinel.
+        from cqc_lem.utilities.observability import current_llm_attribution
+        seen = []
+
+        def _capture(texts, history=None):
+            seen.append(current_llm_attribution())
+            return [{"score": 0.2, "measure": "lexical", "match": "m"} for _ in texts]
+
+        with ExitStack() as es:
+            es.enter_context(patch(f"{CQ}.similarity_reports", side_effect=_capture))
+            self._run(es, [_post(), _comment()], users=(7,), post_history=["older post"],
+                      comment_history=["older comment"])
+        assert seen and all(scope == (7, "content") for scope in seen)
+        # The scope must not leak past the user it was opened for.
+        assert current_llm_attribution() == (None, None)
+
     def test_a_surface_with_nothing_shipped_is_not_scored_for_similarity(self):
         with ExitStack() as es:
             sim = es.enter_context(patch(f"{CQ}.similarity_reports",
