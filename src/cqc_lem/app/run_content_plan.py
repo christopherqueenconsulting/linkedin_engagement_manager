@@ -3,7 +3,7 @@ import json
 import os
 import random
 from datetime import datetime, timedelta
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 from urllib.parse import urlparse
 from xml.etree import ElementTree
 
@@ -701,10 +701,13 @@ def _score_and_persist_authenticity(user_id: int, post_id: int, content: str,
         myprint(f"Authenticity scoring skipped for post {post_id}: {e}")
 
 
-def evaluate_post_gates(post_id: int, content: str, post_type, video_url=None,
-                        engagement_prefs: dict = None, authenticity_score: Optional[int] = None,
-                        recent_texts: list = None, user_profile: LinkedInProfile = None,
-                        profile_synthesis: str = None) -> list:
+def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, str, None],
+                        video_url: Optional[str] = None,
+                        engagement_prefs: Optional[dict] = None,
+                        authenticity_score: Optional[int] = None,
+                        recent_texts: Optional[list[str]] = None,
+                        user_profile: Optional[LinkedInProfile] = None,
+                        profile_synthesis: Optional[str] = None) -> list[dict]:
     """Run the quality gates over a FINISHED post and return their structured findings (issue #421).
 
     One evaluator for both callers: the content-plan status-setter (which knows the freshly persisted
@@ -741,8 +744,9 @@ def evaluate_post_gates(post_id: int, content: str, post_type, video_url=None,
     return findings
 
 
-def _gate_findings_for_post(user_id: int, post_id: int, content: str, post_type,
-                            video_url=None) -> list:
+def _gate_findings_for_post(user_id: int, post_id: int, content: str,
+                            post_type: Union[PostType, str, None],
+                            video_url: Optional[str] = None) -> list[dict]:
     """The generation-time gate pass: the gates that can hold a fresh draft (media + authenticity),
     evaluated against the user's own thresholds. Best-effort — the reason is review UX, so a prefs
     or score read that fails costs the explanation, never the post."""
@@ -764,7 +768,7 @@ def _gate_findings_for_post(user_id: int, post_id: int, content: str, post_type,
         return []
 
 
-def _persist_gate_findings(user_id: int, post_id: int, findings: list) -> None:
+def _persist_gate_findings(user_id: int, post_id: int, findings: list[dict]) -> None:
     """Best-effort write of the gate findings onto the post (issue #421). The reason is review UX —
     losing it must never fail generation or a re-score."""
     try:

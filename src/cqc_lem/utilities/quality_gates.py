@@ -11,7 +11,7 @@ build/parse the same shape, and so the copy is unit-testable on its own.
 """
 
 import json
-from typing import Optional
+from typing import Any, Optional
 
 GATE_AUTHENTICITY = "authenticity"
 GATE_SIMILARITY = "similarity"
@@ -32,7 +32,7 @@ AUTHENTICITY_SCORE_MIN_BOUNDS = (0, 100)
 SIMILARITY_MAX_PCT_BOUNDS = (10, 100)
 
 
-def clamp_threshold(value, low: int, high: int) -> Optional[int]:
+def clamp_threshold(value: Any, low: int, high: int) -> Optional[int]:
     """Clamp a user-supplied threshold into [low, high]. None (and anything unparseable) stays None,
     which every reader treats as 'use the deploy default'."""
     if value is None or value == "":
@@ -43,7 +43,8 @@ def clamp_threshold(value, low: int, high: int) -> Optional[int]:
         return None
 
 
-def build_finding(gate: str, explanation: str, remediation: str, score=None, threshold=None,
+def build_finding(gate: str, explanation: str, remediation: str,
+                  score: Optional[float] = None, threshold: Optional[float] = None,
                   demoted: bool = True, details: Optional[list] = None) -> dict:
     """One gate result in the shape the SPA renders. `demoted` marks the findings that actually
     held the post at PENDING — the others are advisory notes shown alongside them."""
@@ -72,7 +73,8 @@ def authenticity_finding(score: int, threshold: int, reasons: Optional[list] = N
         score=score, threshold=threshold, details=reasons)
 
 
-def similarity_finding(score: float, threshold: float, matched_excerpt: str = None) -> dict:
+def similarity_finding(score: float, threshold: float,
+                       matched_excerpt: Optional[str] = None) -> dict:
     """Deterministic near-duplicate check against the user's own recent posts."""
     excerpt = (matched_excerpt or "").strip().replace("\n", " ")
     if len(excerpt) > 160:
@@ -114,7 +116,7 @@ def missing_asset_finding(post_type: str) -> dict:
         score=None, threshold=None)
 
 
-def parse_gate_findings(raw) -> list:
+def parse_gate_findings(raw: Any) -> list[dict]:
     """Coerce a persisted `posts.gate_reason` value (JSON string, bytes, or already-decoded list)
     into a list of findings. Anything unusable reads as 'no findings' — a malformed reason must
     never break the review queue."""
@@ -134,6 +136,6 @@ def parse_gate_findings(raw) -> list:
     return [f for f in raw if isinstance(f, dict) and f.get("gate")]
 
 
-def demoting_findings(findings: Optional[list]) -> list:
+def demoting_findings(findings: Optional[list[dict]]) -> list[dict]:
     """The findings that hold a post at PENDING (vs. the advisory notes)."""
     return [f for f in (findings or []) if isinstance(f, dict) and f.get("demoted")]
