@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
+import { maskProps } from '../../utils/analytics'
 
 // Comment-first outreach funnel (issue #399): a sequenced, APPROVAL-GATED value-comment -> connect
 // -> DM funnel keyed to a target list. Every stage is drafted as 'pending' and only fires once a
@@ -135,7 +136,7 @@ export default function OutreachFunnel() {
           className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
         <textarea value={draft} onChange={(e) => setDraft(e.target.value)} rows={3} maxLength={DRAFT_MAX}
           placeholder="Your value-adding comment…"
-          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+          {...maskProps('w-full border border-gray-300 rounded-lg px-3 py-2 text-sm')} />
         <div className="flex flex-wrap items-center gap-3">
           <button onClick={() => createMutation.mutate('pending')} disabled={!canSubmit || createMutation.isPending}
             className="px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50">
@@ -197,7 +198,7 @@ export default function OutreachFunnel() {
                     onChange={(e) => setEdits((prev) => ({ ...prev, [t.id]: e.target.value }))}
                     rows={3} maxLength={DRAFT_MAX}
                     placeholder={t.stage === 'comment' ? 'Comment text…' : t.stage === 'connect' ? 'Connection note…' : 'DM message…'}
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+                    {...maskProps('w-full border border-gray-300 rounded-lg px-3 py-2 text-sm')} />
                   <div className="flex gap-2 flex-wrap">
                     <button onClick={() => saveMutation.mutate({ id: t.id, draft_text: draftValue })}
                       disabled={!editing || saveMutation.isPending}

@@ -4,7 +4,7 @@ import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
 import { DM_EVENTS } from './types'
 import type { DmTemplate } from './types'
-import { useRegisterSaveSection } from './SettingsSaveContext'
+import { useRegisterSaveSection, sectionSaveCallbacks } from './SettingsSaveContext'
 import PlaceholderChips from './PlaceholderChips'
 import { FIELD_LIMITS } from './fieldLimits'
 import { EVENTS, capture, maskProps } from '../../utils/analytics'
@@ -129,7 +129,8 @@ export default function DmTemplatesCard() {
       {dmMsg && (
         <p className={`text-sm font-medium ${dmMsg.ok ? 'text-green-600' : 'text-red-600'}`}>{dmMsg.text}</p>
       )}
-      <button type="button" onClick={() => dmMutation.mutate()} disabled={dmMutation.isPending}
+      <button type="button" onClick={() => dmMutation.mutate(undefined, sectionSaveCallbacks('dm-templates'))}
+        disabled={dmMutation.isPending}
         className="w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
         {dmMutation.isPending ? 'Saving…' : 'Save DM Templates'}
       </button>

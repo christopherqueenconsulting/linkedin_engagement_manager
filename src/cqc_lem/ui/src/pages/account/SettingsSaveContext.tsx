@@ -96,6 +96,18 @@ export function useRegisterSaveSection(
   }, [id, label, isDirty, register, unregister])
 }
 
+// Most cards ALSO keep their own Save button, which calls their mutation directly and never goes
+// through saveAll — so without this, prefs_saved would only ever count the users who happen to use
+// Save All and every rate built on it would be wrong. Spread onto the card's own mutate() call:
+//   onClick={() => groupsMutation.mutate(undefined, sectionSaveCallbacks('groups'))}
+// `section` must be the SAME id the card registers, or the two doors report different sections.
+export function sectionSaveCallbacks(section: string): { onSuccess: () => void; onError: () => void } {
+  return {
+    onSuccess: () => capture(EVENTS.prefsSaved, { section, ok: true }),
+    onError: () => capture(EVENTS.prefsSaved, { section, ok: false }),
+  }
+}
+
 // beforeunload (tab close / refresh) + capture-phase interception of in-app <a> navigation.
 // BrowserRouter (not a data router) can't use useBlocker, so we intercept link clicks before
 // React Router handles them and confirm before allowing a route change away from this page.

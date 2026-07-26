@@ -4,9 +4,10 @@ import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
 import Toggle from '../../components/Toggle'
 import type { LeadMagnet } from './types'
-import { useRegisterSaveSection } from './SettingsSaveContext'
+import { useRegisterSaveSection, sectionSaveCallbacks } from './SettingsSaveContext'
 import PlaceholderChips from './PlaceholderChips'
 import { FIELD_LIMITS } from './fieldLimits'
+import { maskProps } from '../../utils/analytics'
 
 export default function LeadMagnetCard() {
   const { sessionToken } = useAuth()
@@ -63,7 +64,8 @@ export default function LeadMagnetCard() {
             <label className="block text-sm font-medium text-gray-700 mb-1">DM message (may include your link)</label>
             <textarea value={leadMagnet.message || ''} onChange={(e) => setLm({ message: e.target.value })} rows={3}
               maxLength={FIELD_LIMITS.lm_message}
-              placeholder="Thanks for the interest! Here's the resource: …" className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+              placeholder="Thanks for the interest! Here's the resource: …"
+              {...maskProps('w-full border border-gray-300 rounded-lg px-3 py-2 text-sm')} />
             <div className="mt-1.5">
               <PlaceholderChips placeholders={[
                 { token: '{first_name}', desc: "The commenter's first name" },
@@ -73,7 +75,8 @@ export default function LeadMagnetCard() {
         </>
       )}
       {lmMsg && <p className={`text-sm font-medium ${lmMsg.ok ? 'text-green-600' : 'text-red-600'}`}>{lmMsg.text}</p>}
-      <button type="button" onClick={() => lmMutation.mutate()} disabled={lmMutation.isPending}
+      <button type="button" onClick={() => lmMutation.mutate(undefined, sectionSaveCallbacks('lead-magnet'))}
+        disabled={lmMutation.isPending}
         className="w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
         {lmMutation.isPending ? 'Saving…' : 'Save Lead Magnet'}
       </button>

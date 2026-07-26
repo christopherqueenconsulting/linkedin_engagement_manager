@@ -1,6 +1,8 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { SettingsSaveProvider, SaveAllBar, useRegisterSaveSection } from './SettingsSaveContext'
+import {
+  SettingsSaveProvider, SaveAllBar, useRegisterSaveSection, sectionSaveCallbacks,
+} from './SettingsSaveContext'
 
 const capture = vi.fn()
 vi.mock('../../utils/analytics', () => ({
@@ -46,5 +48,14 @@ describe('prefs_saved instrumentation (issue #646)', () => {
     await waitFor(() => expect(capture).toHaveBeenCalledTimes(2))
     expect(capture).toHaveBeenCalledWith('prefs_saved', { section: 'voice', ok: false })
     expect(capture).toHaveBeenCalledWith('prefs_saved', { section: 'volume', ok: false })
+  })
+
+  // A card's own Save button never goes through saveAll, so it has to report the same event or
+  // prefs_saved silently counts only the Save All users.
+  it('reports the same event from a card own save button', () => {
+    sectionSaveCallbacks('groups').onSuccess()
+    expect(capture).toHaveBeenCalledWith('prefs_saved', { section: 'groups', ok: true })
+    sectionSaveCallbacks('lead-magnet').onError()
+    expect(capture).toHaveBeenCalledWith('prefs_saved', { section: 'lead-magnet', ok: false })
   })
 })
