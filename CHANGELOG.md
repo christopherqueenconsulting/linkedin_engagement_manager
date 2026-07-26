@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.99.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.98.0...v0.99.0) (2026-07-26)
+
+
+### Features
+
+* **analytics:** follower & audience telemetry with daily capture (closes [#627](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/627)) ([219ebcc](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/219ebccf5f82e11332584289282e393378e3e1c4))
+* **analytics:** follower & audience telemetry with daily capture (closes [#627](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/627)) ([481cfec](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/481cfec890842c227ebe1f7ffd44b19a6f101dda))
+* **content:** 70/20/10 content mix governor + artifact CTAs (closes [#618](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/618)) ([be6b4ed](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/be6b4ed6cb857e0838061abd4234eb5d544c601b))
+* **content:** 70/20/10 content mix governor + artifact CTAs (closes [#618](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/618)) ([6bf2de3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6bf2de33e2189fef53e4804695045bb907beed6d))
+* **content:** cadence reset — 2-4 posts/week on a fixed day-type calendar, sane hours (closes [#621](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/621)) ([b4484a9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b4484a902c20787cdf6dd3d112ed5a1263e5e5d6))
+* **content:** cadence reset — 2-4 posts/week on a fixed day-type calendar, sane hours (closes [#621](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/621)) ([78a6c35](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/78a6c35b45e38bfb9f42fc1d1de9e5b0a5782b70))
+* **content:** deterministic AI-slop lint across posts, comments, DMs, newsletter (closes [#625](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/625)) ([bfbe62f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bfbe62f2bdec6f53394d05c5c459ef06169325ae))
+* **content:** deterministic AI-slop lint across posts, comments, DMs, newsletter (closes [#625](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/625)) ([dc46677](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/dc466773717f72f8bbc2887c1ed399fd576e4f58))
+* **content:** save-optimized build-receipt & compendium archetypes with a no-fabrication guard (closes [#619](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/619)) ([6515688](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6515688d28265c152ee29da8d47db187208bd5d0))
+* **content:** save-optimized build-receipt & compendium archetypes with a no-fabrication guard (closes [#619](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/619)) ([3b9360a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3b9360ad93c49cf9b07a2a906d61576581fb54a2))
+* **content:** story bank & fact intake — human-sourced specifics as the content anchor (closes [#620](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/620)) ([9fd4f60](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9fd4f6044427466b677e0ecd30e018338cac12cf))
+* **engagement:** human-pacing engine — read-time delays, schedule jitter, variable daily volumes (closes [#626](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/626)) ([a334ee5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a334ee524ecc40af588e58d336723b81af0f2054))
+* **engagement:** human-pacing engine — read-time delays, schedule jitter, variable daily volumes (closes [#626](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/626)) ([dab8223](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/dab822355bd1a9ff7d508e2f38ff072adadf8907))
+
+
+### Bug Fixes
+
+* **analytics:** stop stacked LinkedIn cards handing one number to every metric ([4eabe17](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4eabe17423c73dbd53a227a8fc0c1e5d5c6ba094))
+* **content:** drop two AI-slop lint false positives; lint group posts too ([704b32b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/704b32b974909ab0dacb9d748742ddce56b0a09b))
+* **content:** hold the 24h post floor across planning runs ([3596db8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3596db8e18beaeb649dbf7f77d50c67bb99dac3b))
+* **content:** stop the no-fabrication guard flagging stack version numbers, and keep fact-anchored archetypes off an anchorless carousel ([9691acb](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9691acb1955362fd2469bfbf39ae3fd01487f601))
+* **engagement:** adversarial review of the human-pacing engine ([#626](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/626)) ([6bb372a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6bb372a96261d1f88791fadbb8e36e0077cf8ea0))
+* **outreach:** activate the network flywheel — clean names, skip 1st-degree, source the funnel, unblock DM nurture (closes [#623](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/623)) ([21ec617](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/21ec6178933e50d2d6141199b636e99eac75f546))
+* **review:** anchor the verb-less meeting-ask patterns so they can't delete narrative ([32ee36c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/32ee36ce5f5fca8bbc8635606f942e05312bed3d))
+* **review:** post-merge adversarial review of [#661](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/661)/[#662](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/662)/[#665](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/665) (closes [#670](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/670)) ([2d59e9c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2d59e9c8eca62cecb12a4df3e55e4ae945aa8edf))
+* **review:** post-merge adversarial review of [#661](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/661)/[#662](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/662)/[#665](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/665) (closes [#670](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/670)) ([d8c6a0d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d8c6a0dd59493fcd9b51a9c04d4d4f8b0e1ab815))
+* **review:** restore meeting-ask recall lost to the offer-verb narrowing ([60f0769](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/60f0769aa8299a9ace02beaef6806d3a32137dda))
+
 ## [0.98.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.97.1...v0.98.0) (2026-07-26)
 
 
