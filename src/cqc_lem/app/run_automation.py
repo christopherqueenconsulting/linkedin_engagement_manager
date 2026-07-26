@@ -2852,7 +2852,7 @@ def accept_connection_request(user_id: int) -> dict[str, str]:
     return invitation_data
 
 
-def _next_pending_invitation(driver: WebDriver, accepted_urls: set) -> "Tuple[str, str, WebElement] | None":
+def _next_pending_invitation(driver: WebDriver, accepted_urls: set[str]) -> tuple[str, str, WebElement] | None:
     """The next (profile_url, name, accept_button) still awaiting acceptance, read from a FRESH card
     query. Cards we already accepted are skipped by URL because LinkedIn sometimes leaves the accepted
     card in place instead of removing it."""
