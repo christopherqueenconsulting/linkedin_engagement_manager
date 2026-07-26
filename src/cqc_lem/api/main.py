@@ -56,7 +56,7 @@ from cqc_lem.utilities.db import (
     get_latest_edition_scheduled_for, update_newsletter_edition, get_newsletter_edition,
     get_user_timezone,
     get_user_groups, set_groups_enabled, get_post_engagement_rows, get_post_performance_rows,
-    get_content_mix_counts,
+    get_content_mix_counts, get_comment_outcomes,
     get_follower_stats, get_daily_action_counts,
     get_lead_magnet_settings, update_lead_magnet_settings,
     get_dm_templates, upsert_dm_templates,
@@ -2640,15 +2640,25 @@ def get_post_stats_endpoint(session_token: str) -> ResponseModel:
 def get_engagement_analytics_endpoint(session_token: str, days: int = 90) -> ResponseModel:
     """Per-post performance table + a daily engagement-rate / impression trend for the analytics
     dashboard (issue #395), derived from the user's captured post_stats, plus the 70/20/10
-    content-mix compliance ratio for the same window (issue #618). The hook/format leaderboard is
-    served by /user/post-stats (rankings)."""
+    content-mix compliance ratio for the same window (issue #618) and the comment-outcome quality
+    score (issue #628). The hook/format leaderboard is served by /user/post-stats (rankings)."""
     from cqc_lem.utilities.ai.content_alignment import content_mix_compliance
+    from cqc_lem.utilities.comment_outcomes import comment_quality_report
+    from cqc_lem.utilities.linkedin.rate_limit import commenting_hold_reason, commenting_hold_remaining
     from cqc_lem.utilities.post_stats import build_engagement_trend, build_performance_table
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     days = max(1, min(int(days), 365))
     rows = get_post_performance_rows(user_id, days=days)
+    # Comment outcomes are a per-COMMENT signal on a much shorter cadence than post stats, so they
+    # are scored over the analytics window but reported with their own sample size — a user with no
+    # readings yet sees an empty score, not a fabricated 0% reply rate.
+    comment_quality = comment_quality_report(get_comment_outcomes(user_id, days=days), days=days)
+    hold_remaining = commenting_hold_remaining(user_id)
+    comment_quality["hold"] = {"active": hold_remaining > 0,
+                               "reason": commenting_hold_reason(user_id) if hold_remaining else None,
+                               "seconds_remaining": hold_remaining}
     return ResponseModel(status_code=200, detail={
         "per_post": build_performance_table(rows),
         "trend": build_engagement_trend(rows),
@@ -2657,6 +2667,7 @@ def get_engagement_analytics_endpoint(session_token: str, days: int = 90) -> Res
         # Mix compliance is a property of the PLAN, not of captured stats — it reports even when no
         # post has engagement data yet.
         "content_mix": content_mix_compliance(get_content_mix_counts(user_id, days=days)),
+        "comment_quality": comment_quality,
     })
 
 

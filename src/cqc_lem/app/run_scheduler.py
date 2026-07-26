@@ -11,7 +11,7 @@ from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.app.run_automation import automate_commenting, automate_profile_viewer_engagement, \
     automate_appreciation_dms_for_user, clean_stale_invites, update_stale_profile, post_to_linkedin, \
     automate_invites_to_company_page_for_user, send_scheduled_dm, send_connection_request, \
-    sweep_reply_comments, sweep_comment_followups, send_catchup_touch
+    sweep_reply_comments, sweep_comment_followups, sweep_comment_outcomes, send_catchup_touch
 from cqc_lem.utilities.db import (
     get_ready_to_post_posts, get_orphaned_scheduled_posts, update_db_post_status,
     get_active_user_ids, PostStatus, has_linkedin_session, has_scheduled_post_today,
@@ -437,6 +437,72 @@ def dispatch_comment_followups():
                                                 countdown=dispatch_jitter_seconds())
             dispatched += 1
     return f"Comment follow-up sweeps dispatched for {dispatched}/{len(users)} user(s)"
+
+
+@shared_task.task
+def dispatch_comment_outcome_sweeps():
+    """Beat: read back what each user's ~24h-old comments actually earned — author replies, likes,
+    and whether they survived in LinkedIn's default 'Most relevant' view (issue #628). One sweep per
+    active user with a LinkedIn session, per-user interval-gated to once a day; the work list is
+    already at-most-once per comment, so an extra dispatch just finds nothing to do."""
+    if _skip_if_throttled("dispatch_comment_outcome_sweeps"):
+        return "Automation throttled"
+    from cqc_lem.utilities.linkedin.rate_limit import _redis_client
+    users = get_active_user_ids()
+    if not users:
+        return "No active users"
+    client = _redis_client()
+    dispatched = 0
+    for user_id in users:
+        if not has_linkedin_session(user_id):
+            continue
+        due = True
+        if client is not None:
+            try:
+                due = bool(client.set(f"linkedin:last_comment_outcome:{user_id}", "1",
+                                      nx=True, ex=20 * 60 * 60))  # ~once a day
+            except Exception:
+                due = True
+        if due:
+            sweep_comment_outcomes.apply_async(kwargs={'user_id': user_id},
+                                               countdown=dispatch_jitter_seconds())
+            dispatched += 1
+    return f"Comment outcome sweeps dispatched for {dispatched}/{len(users)} user(s)"
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_weekly_comment_quality(self, days: int = 7):
+    """Weekly comment-quality scorecard per user (issue #628): author-reply rate, like rate and the
+    'Most relevant' demotion rate over the last `days` of outcome readings → PostHog, and the G2
+    feedback loop — a demotion rate over threshold on a real sample HOLDS that user's feed
+    commenting and escalates, because continuing to spend the day's cap on comments nobody can see
+    is the expensive failure this feature exists to catch."""
+    from cqc_lem.utilities.comment_outcomes import VERDICT_HOLD, comment_quality_report, hold_seconds
+    from cqc_lem.utilities.db import get_comment_outcomes
+    from cqc_lem.utilities.linkedin.rate_limit import hold_commenting
+    from cqc_lem.utilities.logger import log_critical
+    from cqc_lem.utilities.observability import track_comment_quality
+
+    users = get_active_user_ids()
+    if not users:
+        return "No active users"
+    reported = held = 0
+    for user_id in users:
+        report = comment_quality_report(get_comment_outcomes(user_id, days=days), days=days)
+        if not report.get("sample_size"):
+            continue  # no readings this window — nothing to score or act on
+        track_comment_quality(user_id, report)
+        reported += 1
+        verdict = report.get("verdict") or {}
+        if verdict.get("status") == VERDICT_HOLD:
+            hold_commenting(user_id, hold_seconds(), reason=verdict.get("reason") or "comment quality")
+            # CRITICAL forwards to PostHog automatically — this is the needs-human flag: a human has
+            # to fix the comments (or lift the hold), the system deliberately does not self-resume.
+            log_critical(f"Feed commenting held for user {user_id} — {verdict.get('reason')}",
+                         user_id=user_id, action_type="comment",
+                         task_name="auto_weekly_comment_quality")
+            held += 1
+    return f"Comment quality reported for {reported}/{len(users)} user(s); {held} held"
 
 
 def _max_dt(*dts):

@@ -4905,6 +4905,101 @@ def update_commented_post_key(user_id: int, old_key: str, new_key: str) -> bool:
         connection.close()
 
 
+def get_comment_outcome_targets(user_id: int, min_age_hours: int = 24, max_age_hours: int = 168,
+                                limit: int = 15) -> list:
+    """Comments we posted that are old enough to have earned a reply and have never been checked —
+    the T+24h outcome sweep's work list (issue #628).
+
+    Only NAVIGABLE ledger keys qualify: a pre-#474 'feedpost://' content hash cannot be revisited,
+    so it could never be checked and would sit at the head of the queue forever. The upper bound is
+    a week (not the nominal 48h) so a sweep missed for a couple of days still records the sample
+    instead of silently dropping it, and the LEFT JOIN is what makes the check at-most-once —
+    including for a comment whose check was SKIPPED (that row exists too).
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT l.id AS log_id, l.post_url, l.message, l.created_at "
+            "FROM logs l LEFT JOIN comment_outcomes co "
+            "  ON co.log_id = l.id AND co.user_id = l.user_id "
+            "WHERE l.user_id=%s AND l.action_type=%s AND l.result=%s "
+            "  AND l.post_url LIKE 'feedurn://%%' "
+            "  AND l.created_at <= (NOW() - INTERVAL %s HOUR) "
+            "  AND l.created_at >= (NOW() - INTERVAL %s HOUR) "
+            "  AND co.id IS NULL "
+            "ORDER BY l.created_at ASC LIMIT %s",
+            (user_id, LogActionType.COMMENT.value, LogResultType.SUCCESS.value,
+             int(min_age_hours), int(max_age_hours), max(1, int(limit))))
+        return list(cursor.fetchall() or [])
+    except mysql.connector.Error as err:
+        myprint(f"Could not get comment outcome targets for user {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def record_comment_outcome(user_id: int, log_id: int, post_key: str = None,
+                           author_replied: bool = False, reply_count: int = 0,
+                           like_count: int = 0, visible_most_relevant: "bool | None" = None,
+                           our_reply_sent: bool = False, status: str = "checked",
+                           skip_reason: str = None) -> bool:
+    """Persist one comment's outcome reading (issue #628). Upsert on (user_id, log_id) so a re-run
+    refreshes rather than duplicating; a skipped check writes a row too (status='skipped' with the
+    reason), which is what stops an unfindable comment being re-walked every night.
+
+    `visible_most_relevant` stays NULL when the read was ambiguous — never coerced to a boolean,
+    because a guess would feed the demotion rate that gates commenting."""
+    if not log_id:
+        return False
+    visible = None if visible_most_relevant is None else int(bool(visible_most_relevant))
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO comment_outcomes (user_id, log_id, post_key, author_replied, reply_count, "
+            "  like_count, visible_most_relevant, our_reply_sent, status, skip_reason) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE "
+            "  post_key=VALUES(post_key), checked_at=CURRENT_TIMESTAMP, "
+            "  author_replied=VALUES(author_replied), reply_count=VALUES(reply_count), "
+            "  like_count=VALUES(like_count), visible_most_relevant=VALUES(visible_most_relevant), "
+            "  our_reply_sent=VALUES(our_reply_sent), status=VALUES(status), "
+            "  skip_reason=VALUES(skip_reason)",
+            (user_id, int(log_id), (str(post_key)[:255] if post_key else None),
+             int(bool(author_replied)), max(0, int(reply_count or 0)), max(0, int(like_count or 0)),
+             visible, int(bool(our_reply_sent)), str(status or "checked")[:20],
+             (str(skip_reason)[:255] if skip_reason else None)))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not record comment outcome for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_comment_outcomes(user_id: int, days: int = 7) -> list:
+    """Comment-outcome rows checked in the last `days`, newest first — the input to the weekly
+    quality score (`utilities/comment_outcomes.py`)."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT log_id, post_key, checked_at, author_replied, reply_count, like_count, "
+            "  visible_most_relevant, our_reply_sent, status, skip_reason "
+            "FROM comment_outcomes WHERE user_id=%s AND checked_at >= (NOW() - INTERVAL %s DAY) "
+            "ORDER BY checked_at DESC",
+            (user_id, max(1, int(days))))
+        return list(cursor.fetchall() or [])
+    except mysql.connector.Error:
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_duplicate_comment_posts(user_id: int, hours: int = 24):
     """Read-only report: posts the user commented on MORE THAN ONCE in the last `hours`, from the
     SUCCESS comment logs. Returns list of (post_url, comment_count, first_at, last_at) ordered by

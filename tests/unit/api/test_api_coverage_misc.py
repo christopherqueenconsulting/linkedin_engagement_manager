@@ -380,6 +380,13 @@ class TestUserSettingsAndGroups:
 
 
 class TestEngagementAnalytics:
+    @pytest.fixture(autouse=True)
+    def _no_comment_outcomes(self):
+        # The endpoint also scores comment outcomes (#628); default to an empty window so the
+        # post-stats assertions below stay about post stats.
+        with patch(f"{_M}.get_comment_outcomes", return_value=[]):
+            yield
+
     def test_returns_per_post_table_and_trend(self, client):
         from datetime import datetime
         rows = [
@@ -427,6 +434,42 @@ class TestEngagementAnalytics:
         with patch(f"{_M}.get_session_user_id", return_value=None):
             resp = client.get(f"/api/user/engagement-analytics?session_token=bad")
         assert resp.status_code == 401
+
+    def test_comment_quality_block_reports_outcomes_and_hold(self, client):
+        rows = [{"status": "checked", "author_replied": 1, "reply_count": 2, "like_count": 1,
+                 "visible_most_relevant": 0, "our_reply_sent": 0},
+                {"status": "checked", "author_replied": 0, "reply_count": 0, "like_count": 0,
+                 "visible_most_relevant": 1, "our_reply_sent": 0},
+                {"status": "skipped", "skip_reason": "comment-not-found"}]
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.get_content_mix_counts", return_value={}), \
+             patch(f"{_M}.get_post_performance_rows", return_value=[]), \
+             patch(f"{_M}.get_comment_outcomes", return_value=rows), \
+             patch("cqc_lem.utilities.linkedin.rate_limit.commenting_hold_remaining",
+                   return_value=3600), \
+             patch("cqc_lem.utilities.linkedin.rate_limit.commenting_hold_reason",
+                   return_value="80% demoted"):
+            resp = client.get(f"/api/user/engagement-analytics?session_token={_TOK}")
+        quality = resp.json()["detail"]["comment_quality"]
+        assert quality["checked"] == 2 and quality["skipped"] == 1
+        assert quality["author_reply_rate"] == 0.5 and quality["reply_rate"] == 0.5
+        assert quality["demotion_rate"] == 0.5 and quality["visibility_sample"] == 2
+        assert quality["hold"] == {"active": True, "reason": "80% demoted",
+                                   "seconds_remaining": 3600}
+
+    def test_comment_quality_is_empty_not_zero_without_readings(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.get_content_mix_counts", return_value={}), \
+             patch(f"{_M}.get_post_performance_rows", return_value=[]), \
+             patch(f"{_M}.get_comment_outcomes", return_value=[]), \
+             patch("cqc_lem.utilities.linkedin.rate_limit.commenting_hold_remaining",
+                   return_value=0):
+            resp = client.get(f"/api/user/engagement-analytics?session_token={_TOK}")
+        quality = resp.json()["detail"]["comment_quality"]
+        assert quality["sample_size"] == 0
+        assert quality["reply_rate"] is None and quality["demotion_rate"] is None
+        assert quality["verdict"]["status"] == "unknown"
+        assert quality["hold"] == {"active": False, "reason": None, "seconds_remaining": 0}
 
 
 class TestAudienceGrowth:

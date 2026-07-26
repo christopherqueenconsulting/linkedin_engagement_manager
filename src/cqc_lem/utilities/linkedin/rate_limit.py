@@ -205,6 +205,73 @@ def is_automation_paused() -> bool:
     return automation_pause_remaining() > 0
 
 
+# --- per-user commenting quality hold -------------------------------------------------
+# Narrower than the global pause above: this stops ONE user's feed commenting when their comments
+# are measurably being demoted out of LinkedIn's 'Most relevant' view (issue #628), while leaving
+# their posting, replies and DMs alone — the problem is the comments, not the account. Redis-backed
+# with a TTL and fails OPEN (no Redis -> not held), like everything else in this module.
+
+_COMMENT_HOLD_KEY = "linkedin:comment_quality_hold:{user_id}"
+
+
+def hold_commenting(user_id: int, seconds: int, reason: str = "comment quality") -> bool:
+    """Hold this user's feed commenting for `seconds`. Returns True if the hold was stored."""
+    client = _redis_client()
+    if client is None:
+        return False
+    try:
+        client.set(_COMMENT_HOLD_KEY.format(user_id=int(user_id)), reason or "comment quality",
+                   ex=max(1, int(seconds)))
+        log_warning(f"Feed commenting HELD for user {user_id} for {int(seconds)}s "
+                    f"(reason: {reason})", action_type="comment", user_id=int(user_id))
+        return True
+    except Exception as e:
+        log_warning("Failed to set commenting hold", exc=e, action_type="comment")
+        return False
+
+
+def release_commenting_hold(user_id: int) -> bool:
+    """Lift a commenting hold immediately (owner action once the comments are fixed)."""
+    client = _redis_client()
+    if client is None:
+        return False
+    try:
+        client.delete(_COMMENT_HOLD_KEY.format(user_id=int(user_id)))
+        return True
+    except Exception:
+        return False
+
+
+def commenting_hold_remaining(user_id: int) -> int:
+    """Seconds left on this user's commenting hold, or 0 when not held / Redis unavailable."""
+    client = _redis_client()
+    if client is None:
+        return 0
+    try:
+        ttl = client.ttl(_COMMENT_HOLD_KEY.format(user_id=int(user_id)))
+    except Exception:
+        return 0
+    return ttl if ttl and ttl > 0 else 0
+
+
+def commenting_hold_reason(user_id: int) -> "str | None":
+    """The reason stored with this user's commenting hold, or None when nothing is held."""
+    client = _redis_client()
+    if client is None:
+        return None
+    try:
+        value = client.get(_COMMENT_HOLD_KEY.format(user_id=int(user_id)))
+    except Exception:
+        return None
+    if value is None:
+        return None
+    return value.decode("utf-8", "ignore") if isinstance(value, bytes) else str(value)
+
+
+def is_commenting_held(user_id: int) -> bool:
+    return commenting_hold_remaining(user_id) > 0
+
+
 # --- single-flight task locks -------------------------------------------------
 # A per-user run lock so overlapping schedules of the SAME Selenium task (e.g. feed commenting
 # fired by the pre-post trigger, the golden-hour beat, and its own self-requeue) can't run
