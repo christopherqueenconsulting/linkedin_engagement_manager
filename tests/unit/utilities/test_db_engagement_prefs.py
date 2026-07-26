@@ -91,6 +91,96 @@ class TestUpdateEngagementPreferences:
         assert "5 calls/mo" in params and "thought leader" in params
 
 
+class TestPartialUpdateKeepsTheRest:
+    """Issue #639 — the upsert writes EVERY column, so a partial dict must merge over the user's
+    SAVED row. Merging over `_ENGAGEMENT_DEFAULTS` let one sparse caller wipe the whole row."""
+
+    # What a fully-customized row looks like coming back out of MySQL (JSON columns as text,
+    # booleans as tinyints), keyed by column, plus what it must decode to in the upsert params.
+    _STORED = {
+        "tone": "wry", "comment_length": "long", "comment_style": "socratic",
+        "use_emojis": 0, "use_hashtags": 1,
+        "include_topics": '["AI"]', "exclude_topics": '["crypto"]',
+        "include_keywords": '["rag"]', "exclude_keywords": '["nft"]',
+        "include_authors": '["https://x/in/a"]', "exclude_authors": '["https://x/in/b"]',
+        "post_types": '["text"]', "focus_topics": '["B2B sales"]',
+        "business_goals": "5 calls/mo", "personal_goals": "thought leader",
+        "authenticity_score_min": 80, "post_similarity_max_pct": 40,
+        "min_reactions": 7, "max_post_age_hours": 12, "reply_to_own_comments": 0,
+        "max_comments_per_day": 9, "max_dms_per_day": 4, "max_invites_per_day": 3,
+        "connection_request_mode": "pre_review", "connection_targeting_mode": "auto_queue",
+        "connection_target_authors": '["https://x/in/guru"]', "min_connection_icp_score": 70,
+        "default_buyer_stage": "consideration", "default_video_quality": "standard",
+        "reply_check_mode": "scheduled", "reply_sweeps_per_day": 6, "reply_max_post_age_days": 5,
+        "feed_fallback_when_empty": 0, "link_in_first_comment": 0,
+        "max_catchup_touches_per_day": 4, "catchup_touch_mode": "auto_approve",
+        "catchup_event_types": '["promotion"]', "catchup_message_source": "ai",
+        "posts_per_week": 5,
+    }
+    # Round-tripped through the upsert, every column persists back exactly as it was stored.
+    _EXPECTED = dict(_STORED)
+
+    def test_stored_row_covers_every_column(self):
+        from cqc_lem.utilities.db import _ENGAGEMENT_COLS
+        assert set(self._STORED) == set(_ENGAGEMENT_COLS)
+
+    def _upsert(self, call):
+        conn, cursor = _mock_conn(fetch_row=dict(self._STORED), rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn), \
+             patch(f"{_DB}.max_catchup_touches_allowed", return_value=10):
+            call()
+        cols = list(__import__("cqc_lem.utilities.db", fromlist=["_ENGAGEMENT_COLS"])._ENGAGEMENT_COLS)
+        return dict(zip(cols, cursor.execute.call_args[0][1][1:]))
+
+    def test_set_default_video_quality_preserves_every_other_field(self):
+        from cqc_lem.utilities.db import set_default_video_quality
+        saved = self._upsert(lambda: set_default_video_quality(1, "premium_top"))
+        assert saved["default_video_quality"] == "premium_top"
+        for col, expected in self._EXPECTED.items():
+            if col == "default_video_quality":
+                continue
+            assert saved[col] == expected, f"{col} was reset by a partial update"
+
+    def test_single_key_update_preserves_every_other_field(self):
+        from cqc_lem.utilities.db import update_engagement_preferences
+        saved = self._upsert(lambda: update_engagement_preferences(1, {"tone": "blunt"}))
+        assert saved["tone"] == "blunt"
+        for col, expected in self._EXPECTED.items():
+            if col == "tone":
+                continue
+            assert saved[col] == expected, f"{col} was reset by a partial update"
+
+    def test_explicit_values_still_win_over_the_saved_row(self):
+        from cqc_lem.utilities.db import update_engagement_preferences
+        saved = self._upsert(lambda: update_engagement_preferences(
+            1, {"include_topics": [], "tone": None, "use_hashtags": False}))
+        assert saved["include_topics"] == "[]" and saved["tone"] is None
+        assert saved["use_hashtags"] == 0
+        assert saved["max_comments_per_day"] == 9  # untouched neighbour survives
+
+    def test_new_row_still_gets_the_code_defaults(self):
+        conn, cursor = _mock_conn(fetch_row=None, rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn), \
+             patch(f"{_DB}.max_catchup_touches_allowed", return_value=5):
+            from cqc_lem.utilities.db import set_default_video_quality
+            set_default_video_quality(2, "premium")
+        cols = list(__import__("cqc_lem.utilities.db", fromlist=["_ENGAGEMENT_COLS"])._ENGAGEMENT_COLS)
+        saved = dict(zip(cols, cursor.execute.call_args[0][1][1:]))
+        assert saved["default_video_quality"] == "premium"
+        assert saved["comment_length"] == "medium" and saved["max_comments_per_day"] == 20
+
+    def test_unreadable_row_aborts_instead_of_overwriting(self):
+        """A failed SELECT must not become "write all 39 columns as defaults"."""
+        import mysql.connector
+        conn, cursor = _mock_conn(rowcount=1)
+        cursor.execute.side_effect = mysql.connector.Error(msg="db down")
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_engagement_preferences
+            assert update_engagement_preferences(1, {"tone": "warm"}) is False
+        assert not any("INSERT INTO engagement_preferences" in (c.args[0] if c.args else "")
+                       for c in cursor.execute.call_args_list)
+
+
 class TestReplyCheckConfig:
     def test_defaults_include_reply_config(self):
         conn, _ = _mock_conn(fetch_row=None)
