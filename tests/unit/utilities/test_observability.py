@@ -691,6 +691,37 @@ class TestTrackCapacityAlert:
         assert mock_ph.capture.call_args[1]["properties"] == {"generated_at": None}
 
 
+class TestTrackRateLimitTrip:
+    """Issue #650: the 429 breaker's own event, so the Health dashboard and its spike alert have a
+    signal — the trip's WARNING log never reaches PostHog at the default POSTHOG_LOG_LEVEL."""
+
+    def test_captures_the_trip_system_scoped(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_rate_limit_trip
+            track_rate_limit_trip(1800, 3, "auth wall")
+
+        mock_ph.capture.assert_called_once()
+        _, kwargs = mock_ph.capture.call_args
+        assert kwargs["event"] == "rate_limit_trip"
+        # LinkedIn throttles by egress IP — a trip is account-wide, not one user's.
+        assert kwargs["distinct_id"] == "system"
+        props = kwargs["properties"]
+        assert props["cooldown_seconds"] == 1800 and props["consecutive_trips"] == 3
+        assert props["reason"] == "auth wall"
+
+    def test_defaults_the_reason(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_rate_limit_trip
+            track_rate_limit_trip(60, 1, "")
+        assert mock_ph.capture.call_args[1]["properties"]["reason"] == "429"
+
+    def test_never_raises(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            mock_ph.capture.side_effect = RuntimeError("posthog down")
+            from cqc_lem.utilities.observability import track_rate_limit_trip
+            track_rate_limit_trip(60, 1)  # the breaker must still open
+
+
 class TestTrackCommentOutcome:
     """Issue #628: one event per comment we read back, and one weekly scorecard per user."""
 
