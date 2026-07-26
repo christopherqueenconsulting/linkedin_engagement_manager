@@ -44,9 +44,10 @@ from cqc_lem.utilities.env_constants import (API_URL_FINAL, ELEVENLABS_API_KEY,
                                              TUTORIAL_THUMBNAIL_ENABLED,
                                              TUTORIAL_TTS_COST_PER_1K_CHARS, TUTORIAL_TTS_MODEL,
                                              TUTORIAL_TTS_PROVIDER, TUTORIAL_TTS_VOICE,
-                                             TUTORIAL_VIDEOS_ENABLED, WAIT_DEFAULT_TIMEOUT,
+                                             WAIT_DEFAULT_TIMEOUT,
                                              YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET,
                                              YOUTUBE_PRIVACY_STATUS, YOUTUBE_REFRESH_TOKEN)
+from cqc_lem.utilities.flags import TUTORIAL_VIDEOS, flag_enabled
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.observability import FEATURE_MARKETING, track_media_cost
@@ -696,8 +697,12 @@ def produce_tutorial(flow_key: Optional[str] = None, driver=None) -> Optional[di
     """Produce (and publish) ONE tutorial end to end. Returns the manifest record, or None when
     the pipeline is disabled or there is nothing due. Raises on capture/guardrail/render failure —
     a broken tutorial must never reach YouTube."""
-    if not TUTORIAL_VIDEOS_ENABLED:
-        log_info("Tutorial production skipped — TUTORIAL_VIDEOS_ENABLED is off", task_name=TASK_NAME)
+    # Runtime toggle (issue #651): the `tutorial-videos-enabled` flag, falling back to
+    # TUTORIAL_VIDEOS_ENABLED whenever PostHog has no answer. Checked HERE rather than read at
+    # import so a flip lands on the next beat instead of the next deploy.
+    if not flag_enabled(TUTORIAL_VIDEOS):
+        log_info("Tutorial production skipped — the tutorial-videos-enabled flag is off",
+                 task_name=TASK_NAME)
         return None
 
     manifest = load_manifest()

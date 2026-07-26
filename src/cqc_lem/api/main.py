@@ -1074,6 +1074,22 @@ def shipped_notices_endpoint(session_token: str) -> ResponseModel:
     })
 
 
+@router.get("/flags")
+def get_feature_flags(session_token: Optional[str] = None) -> ResponseModel:
+    """Server-evaluated feature flags for the SPA (issue #651, docs/feature-flags.md).
+
+    This is the SPA's flag BOOTSTRAP: values are resolved server-side with PostHog local evaluation
+    (or the env fallback) and shipped in one payload, so the browser renders the right thing on the
+    FIRST paint instead of flickering while a client-side flag request lands — and so the SPA, the
+    API and the Celery workers can never disagree about a flag's value.
+
+    An invalid or absent session resolves the SAME flags for the `"system"` identity rather than
+    401ing: the landing page is logged out and still needs to know what to render."""
+    from cqc_lem.utilities.flags import bootstrap_payload
+    user_id = get_session_user_id(session_token) if session_token else None
+    return ResponseModel(status_code=200, detail=bootstrap_payload(user_id))
+
+
 @router.get("/faq")
 def faq_endpoint() -> ResponseModel:
     """Public: the front-page FAQ (issue #506). Serves only the published entries, in display

@@ -26,7 +26,9 @@ def _isolated_assets(tmp_path, monkeypatch):
     monkeypatch.setattr(vt, "TUTORIAL_SPA_BASE_URL", "https://lem.test")
     monkeypatch.setattr(vt, "API_URL_FINAL", "https://lem.test")
     monkeypatch.setattr(vt, "TUTORIAL_DEMO_SESSION_TOKEN", "")
-    monkeypatch.setattr(vt, "TUTORIAL_VIDEOS_ENABLED", True)
+    # The producer is gated by the `tutorial-videos-enabled` FLAG now (issue #651); with the
+    # unit lane pinned to env-only flags, setting the env var IS setting the flag.
+    monkeypatch.setenv("TUTORIAL_VIDEOS_ENABLED", "true")
     monkeypatch.setattr(vt, "TUTORIAL_THUMBNAIL_ENABLED", False)
     monkeypatch.setattr(vt, "YOUTUBE_CLIENT_ID", "")
     monkeypatch.setattr(vt, "YOUTUBE_CLIENT_SECRET", "")
@@ -486,7 +488,7 @@ class TestProduceTutorial:
         return element
 
     def test_disabled_pipeline_produces_nothing(self, monkeypatch):
-        monkeypatch.setattr(vt, "TUTORIAL_VIDEOS_ENABLED", False)
+        monkeypatch.setenv("TUTORIAL_VIDEOS_ENABLED", "false")
         assert vt.produce_tutorial() is None
 
     def test_unknown_flow_key_raises(self):

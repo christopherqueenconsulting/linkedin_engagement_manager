@@ -247,8 +247,9 @@ COST_ALERT_EMAIL          = get_constant_from_env('COST_ALERT_EMAIL', default_va
 # Cost-aware down-routing (docs/cost-performance-margin-plan.md §D.1(1)). OFF by default: this can
 # change which model writes a user's content, so it ships flag-gated and cohort-scoped. The LiteLLM
 # proxy has its own switch (COST_AWARE_ROUTING_ENABLED) — BOTH must be on for a call to down-route.
-COST_ROUTING_ENABLED      = (get_constant_from_env('COST_ROUTING_ENABLED', default_value='false')
-                             or '').strip().lower() in ('1', 'true', 'yes', 'on')
+# The app-side switch itself is NOT read here: `COST_ROUTING_ENABLED` is a runtime feature flag
+# (utilities/flags.py, issue #651) whose fallback is that same env var, resolved at CALL time so a
+# flip doesn't need a deploy. Reading it here too would freeze a second copy at import.
 # Days of post outcomes each weekly evaluation reads.
 COST_ROUTING_WINDOW_DAYS  = int(get_constant_from_env('COST_ROUTING_WINDOW_DAYS', default_value='28'))
 # Posts required PER ARM before a bucket is judged at all — below this the experiment just runs on.
@@ -307,8 +308,9 @@ API_ACCESS_TOKENS = get_constant_from_env('API_ACCESS_TOKENS', default_value='')
 # --- Marketing video tutorials (issue #505) ---
 # Fully-automated SPA how-to videos: headless capture -> grounded script -> TTS -> ffmpeg MP4 ->
 # YouTube. OFF by default: it renders + uploads public marketing assets, so it only runs where
-# someone deliberately turned it on.
-TUTORIAL_VIDEOS_ENABLED = isTrue(get_constant_from_env('TUTORIAL_VIDEOS_ENABLED', default_value='False'))
+# someone deliberately turned it on. The switch itself is a runtime feature flag
+# (`tutorial-videos-enabled`, utilities/flags.py) whose fallback is TUTORIAL_VIDEOS_ENABLED — not
+# read here, because a value frozen at import can't be flipped without a deploy.
 # Where the capture browser points. Defaults to this deployment's own public URL.
 TUTORIAL_SPA_BASE_URL = get_constant_from_env('TUTORIAL_SPA_BASE_URL', default_value='')
 # A real LEM session token (+ its email) for the demo account whose screens the authenticated

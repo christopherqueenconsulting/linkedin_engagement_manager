@@ -16,10 +16,13 @@ The loop, once a week:
    `utilities/routing_policy.py` is the single shared decision core, so router and optimizer can
    never disagree about which bucket a call belongs to.
 
-Two independent flags gate it: `COST_ROUTING_ENABLED` (this side — writes `enabled` into the policy)
-and `COST_AWARE_ROUTING_ENABLED` (the proxy side). Either one off means the router routes exactly as
-it did before this existed. Only features with a real quality signal (`MEASURABLE_FEATURES`) can be
-auto-experimented; everything else is reported as a human-gated recommendation, per §D.3.
+Two independent flags gate it: the `cost-routing-enabled` feature flag (this side — writes `enabled`
+into the policy; falls back to `COST_ROUTING_ENABLED`, see utilities/flags.py) and
+`COST_AWARE_ROUTING_ENABLED` (the proxy side, deliberately still an env var — `routing_policy.py` is
+mounted into the LiteLLM container and must stay stdlib-only). Either one off means the router routes
+exactly as it did before this existed. Only features with a real quality signal
+(`MEASURABLE_FEATURES`) can be auto-experimented; everything else is reported as a human-gated
+recommendation, per §D.3.
 """
 from __future__ import annotations
 
@@ -37,7 +40,6 @@ from cqc_lem.utilities.env_constants import (
     COST_ROUTING_AUTH_MAX_DROP,
     COST_ROUTING_CONFIDENCE_Z,
     COST_ROUTING_COOLDOWN_DAYS,
-    COST_ROUTING_ENABLED,
     COST_ROUTING_INITIAL_COHORT,
     COST_ROUTING_MAX_EXPERIMENTS,
     COST_ROUTING_MAX_QUALITY_DROP,
@@ -45,6 +47,7 @@ from cqc_lem.utilities.env_constants import (
     COST_ROUTING_WINDOW_DAYS,
     MARGIN_REPORT_EMAIL,
 )
+from cqc_lem.utilities.flags import COST_ROUTING, flag_enabled
 from cqc_lem.utilities.logger import log_error, log_info, log_warning
 from cqc_lem.utilities.routing_policy import (
     ARM_CONTROL,
@@ -93,6 +96,13 @@ CANDIDATE_TIERS = (TIER_COMPLEX, TIER_MEDIUM)
 # revocable — the permanent holdout is what keeps auto-rollback (§D.3) alive after full rollout.
 ADOPTED_COHORT_PCT = 0.9
 COHORT_RAMP_TAIL = (0.5, ADOPTED_COHORT_PCT)
+
+
+def routing_enabled() -> bool:
+    """Is the app side of cost-aware routing on RIGHT NOW? Runtime flag first, `COST_ROUTING_ENABLED`
+    as its default and fallback (issue #651). System-scoped: this is a fleet-wide experiment
+    governor, not a per-user setting."""
+    return flag_enabled(COST_ROUTING)
 
 
 def default_thresholds() -> dict:
@@ -346,12 +356,15 @@ def propose_buckets(observations: Optional[Sequence[Mapping]], existing: Mapping
 def build_routing_policy(previous: Optional[Mapping], observations: Optional[Sequence[Mapping]],
                          today: date, spend_by_feature: Optional[Mapping] = None,
                          thresholds: Optional[Mapping] = None,
-                         enabled: bool = COST_ROUTING_ENABLED) -> dict:
+                         enabled: Optional[bool] = None) -> dict:
     """Evaluate every live bucket, then open new experiments in whatever slots are left, and return
     `{"policy": ..., "changes": [...], "recommendations": [...]}`.
 
-    `enabled` is written INTO the document, so flipping `COST_ROUTING_ENABLED` off parks every bucket
-    at once without erasing the experiment state the next run needs."""
+    `enabled` is written INTO the document, so flipping the `cost-routing-enabled` flag off parks
+    every bucket at once without erasing the experiment state the next run needs. `None` resolves it
+    at CALL time (flag, else COST_ROUTING_ENABLED) rather than at import, which is what makes a flip
+    land on the next weekly run instead of the next deploy."""
+    enabled = routing_enabled() if enabled is None else bool(enabled)
     limits = {**default_thresholds(), **(thresholds or {})}
     policy = normalize_policy(previous)
     buckets = dict(policy.get("buckets") or {})
@@ -521,17 +534,18 @@ def collect_quality_observations(days: int = COST_ROUTING_WINDOW_DAYS,
 
 def collect_routing_report(days: int = COST_ROUTING_WINDOW_DAYS, today: Optional[date] = None,
                            thresholds: Optional[Mapping] = None,
-                           enabled: bool = COST_ROUTING_ENABLED) -> dict:
+                           enabled: Optional[bool] = None) -> dict:
     """Read the live policy, the window's quality observations and (when the ledger is capturing) the
     per-feature spend, then build the next policy.
 
-    While `COST_ROUTING_ENABLED` is off nothing is being routed, so the window is not scanned at all —
+    While cost routing is off nothing is being routed, so the window is not scanned at all —
     the weekly run costs one Redis read/write instead of a cross-user posts+post_stats scan. It still
     republishes the parked (`enabled: false`) document so the proxy sees the flag flip, and any bucket
     left in it is judged on no data, which can only HOLD: turning the flag back on resumes exactly
     where the loop left off, and no experiment can open while it is off."""
     from cqc_lem.utilities.db import cost_ledger_available, get_cost_rollup
 
+    enabled = routing_enabled() if enabled is None else bool(enabled)
     today = today or _today()
     observations = collect_quality_observations(days, end=today) if enabled else []
     spend = (get_cost_rollup(today - timedelta(days=max(int(days), 1)), today, group_by="feature")
