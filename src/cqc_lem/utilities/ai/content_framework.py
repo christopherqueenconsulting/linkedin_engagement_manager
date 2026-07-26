@@ -859,9 +859,17 @@ def has_first_person_proof(text: Optional[str]) -> bool:
 POST_SIMILARITY_MAX_DEFAULT = 0.55
 
 
-def post_similarity_max() -> float:
-    """The similarity ceiling, read at call time (same live-env pattern as the research toggles in
-    content_research) so ops/tests can tune POST_SIMILARITY_MAX without a restart."""
+def post_similarity_max(prefs: dict = None) -> float:
+    """The similarity ceiling. The user's own setting (engagement_preferences.post_similarity_max_pct,
+    a whole percent — issue #421) wins when set; otherwise read at call time (same live-env pattern as
+    the research toggles in content_research) so ops/tests can tune POST_SIMILARITY_MAX without a
+    restart."""
+    override = (prefs or {}).get("post_similarity_max_pct")
+    if override is not None:
+        try:
+            return min(100, max(10, int(override))) / 100.0
+        except (TypeError, ValueError):
+            pass
     raw = (os.environ.get("POST_SIMILARITY_MAX") or "").strip()
     try:
         return float(raw) if raw else POST_SIMILARITY_MAX_DEFAULT

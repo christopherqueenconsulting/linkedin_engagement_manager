@@ -57,6 +57,10 @@ export default function EngagementSettingsCard() {
   // Server-provided ceiling for the catch-up cap — 10/day on Professional/Enterprise, 5/day otherwise.
   const catchupCapMax = engPrefs.max_catchup_touches_allowed ?? 5
 
+  // Server-provided defaults for the quality gates, shown as placeholders when the user hasn't
+  // overridden them (issue #421).
+  const gateDefaults = engPrefs.gate_defaults ?? { authenticity_score_min: 60, post_similarity_max_pct: 55 }
+
   // Every engagement section edits ONE shared object saved by ONE mutation, so a failure in any
   // field (e.g. an over-long value) fails the whole save. Show the result under whichever button
   // the user clicked — previously the message only rendered in the Targeting card, hiding errors
@@ -157,6 +161,49 @@ export default function EngagementSettingsCard() {
             onChange={(e) => setEng({ personal_goals: e.target.value })}
             placeholder="e.g. Build a reputation as a thoughtful voice in supply-chain tech"
             className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+        </div>
+        {/* Quality gates (issue #421) — the thresholds that decide whether a generated post is
+            auto-scheduled or held for your review. Blank = keep LEM's default. */}
+        <div className="border-t border-gray-100 pt-4 space-y-3">
+          <h3 className="text-sm font-semibold text-gray-700">Review thresholds</h3>
+          <p className="text-xs text-gray-500">
+            A draft that fails one of these is held as PENDING with the reason shown in Content
+            Studio, instead of being scheduled automatically. Leave blank to use the default.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Min. authenticity score
+              </label>
+              <input type="number" min={0} max={100}
+                value={engPrefs.authenticity_score_min ?? ''}
+                placeholder={`Default ${gateDefaults.authenticity_score_min}`}
+                onChange={(e) => setEng({
+                  authenticity_score_min: e.target.value === '' ? null : Number(e.target.value),
+                })}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+              <p className="text-xs text-gray-400 mt-1">
+                0-100 — how human/specific a draft must read before it can auto-schedule. Higher
+                holds more posts for review; lower ships more of them unreviewed.
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Max. overlap with your recent posts
+              </label>
+              <input type="number" min={10} max={100}
+                value={engPrefs.post_similarity_max_pct ?? ''}
+                placeholder={`Default ${gateDefaults.post_similarity_max_pct}%`}
+                onChange={(e) => setEng({
+                  post_similarity_max_pct: e.target.value === '' ? null : Number(e.target.value),
+                })}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+              <p className="text-xs text-gray-400 mt-1">
+                10-100% word overlap against your own recent posts. Lower is stricter about
+                near-duplicates.
+              </p>
+            </div>
+          </div>
         </div>
         {saveBtn('Save Focus & Goals')}
       </div>

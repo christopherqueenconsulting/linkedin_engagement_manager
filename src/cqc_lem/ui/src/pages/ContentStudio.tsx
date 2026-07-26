@@ -3,6 +3,9 @@ import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '../api/client'
 import LinkedInPostPreview from '../components/LinkedInPostPreview'
+import PostGateReason from '../components/PostGateReason'
+import { gateHold } from '../utils/gateFindings'
+import type { GateFinding } from '../utils/gateFindings'
 import NewsletterQueue from './review/NewsletterQueue'
 import ScheduledDMs from './review/ScheduledDMs'
 import ConnectionRequests from './review/ConnectionRequests'
@@ -76,6 +79,18 @@ interface Post {
   status: string
   carousel_slides: string[] | null
   post_url?: string | null
+  // Quality-gate verdict (issue #421) — why a PENDING post is being held, and its A1 score.
+  authenticity_score?: number | null
+  gate_reason?: GateFinding[] | null
+}
+
+// What POST /user/post/rescore returns after re-running the gates on the saved content.
+interface RescoreResult {
+  passed: boolean
+  status: string | null
+  authenticity_score: number | null
+  findings: GateFinding[]
+  detail: string
 }
 
 interface PostsResponse {
@@ -157,6 +172,13 @@ export default function ContentStudio() {
   const [regenGuidance, setRegenGuidance] = useState('')
   const [regenNotice, setRegenNotice] = useState<string | null>(null)
 
+  // Verdict of the last "Save & re-score" run on the open post (issue #421).
+  const [rescoreResult, setRescoreResult] = useState<string | null>(null)
+
+  // The re-score verdict belongs to one post — drop it when a different one is opened.
+  const editingPostId = editingPost?.post_id ?? null
+  useEffect(() => { setRescoreResult(null) }, [editingPostId])
+
   const queryKey = ['posts', email, page, pageSize, sortOrder, sortBy, filterStatus, filterPostType, searchQuery]
 
   const { data, isLoading } = useQuery<{ detail: PostsResponse }>({
@@ -195,6 +217,36 @@ export default function ContentStudio() {
       qc.invalidateQueries({ queryKey: ['posts', email] })
       setEditingPost(null)
     },
+  })
+
+  // Save the edit, then re-run the quality gates on it (issue #421). Scoring the STORED content
+  // keeps the verdict honest — the gates judge exactly what would publish. A draft that now clears
+  // every gate is promoted back to APPROVED server-side, with no full regenerate.
+  const rescoreMutation = useMutation({
+    mutationFn: async (post: Post) => {
+      if (!sessionToken) throw new Error('No active session')
+      await api.post(`/update_post/?post_id=${post.post_id}`, {
+        content: post.content,
+        video_url: post.video_url,
+        post_type: post.post_type,
+        scheduled_datetime: post.scheduled_time,
+        email,
+        status: post.status,
+      })
+      const r = await api.post('/user/post/rescore', {
+        session_token: sessionToken,
+        post_id: post.post_id,
+      })
+      return r.data.detail as RescoreResult
+    },
+    onSuccess: (result) => {
+      setRescoreResult(result.detail)
+      setEditingPost((p) =>
+        p ? { ...p, status: result.status ?? p.status, gate_reason: result.findings,
+              authenticity_score: result.authenticity_score } : p)
+      qc.invalidateQueries({ queryKey: ['posts', email] })
+    },
+    onError: () => setRescoreResult('Could not re-score this post — please try again.'),
   })
 
   const bulkUpdateMutation = useMutation({
@@ -706,6 +758,12 @@ export default function ContentStudio() {
                     </div>
                   </div>
                   <p className="text-sm text-gray-700 line-clamp-2">{post.content}</p>
+                  {/* One-line "why" for a gate-held draft — the full reason + fix is in the editor. */}
+                  {post.status === 'pending' && gateHold(post.gate_reason).length > 0 && (
+                    <p className="text-xs text-amber-700 mt-1 truncate">
+                      ⏸ {gateHold(post.gate_reason).map((f) => f.label).join(' · ')} — click to see why
+                    </p>
+                  )}
                   {isDeckType(post.post_type) && post.carousel_slides && (
                     <p className="text-xs text-gray-400 mt-1">{post.carousel_slides.length} slides</p>
                   )}
@@ -789,6 +847,15 @@ export default function ContentStudio() {
               /* Editable form for non-posted statuses */
               <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-5 space-y-4">
                 <h3 className="font-semibold text-gray-700">Edit Post #{editingPost.post_id}</h3>
+
+                {/* Why this draft is pending + how to clear it (issue #421). */}
+                <PostGateReason
+                  findings={editingPost.gate_reason ?? []}
+                  status={editingPost.status}
+                  onRescore={() => rescoreMutation.mutate(editingPost)}
+                  rescoring={rescoreMutation.isPending}
+                  rescoreResult={rescoreResult}
+                />
 
                 <textarea
                   rows={6}

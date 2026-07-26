@@ -3,7 +3,7 @@ import json
 import os
 import random
 from datetime import datetime, timedelta
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 from urllib.parse import urlparse
 from xml.etree import ElementTree
 
@@ -29,7 +29,10 @@ from cqc_lem.utilities.db import count_ready_posts_within_buffer, get_planned_po
 from cqc_lem.utilities.db import get_recent_post_shape_history, update_db_post_shape, get_lead_magnet_settings, \
     get_shape_performance
 from cqc_lem.utilities.db import get_recent_post_texts, update_db_post_authenticity_score, \
-    get_post_authenticity_score, update_db_post_dwell_score
+    get_post_authenticity_score, update_db_post_dwell_score, update_db_post_gate_reason
+from cqc_lem.utilities.quality_gates import (authenticity_finding, similarity_finding,
+                                             focus_finding, missing_asset_finding,
+                                             demoting_findings)
 from cqc_lem.utilities.ai.content_framework import select_blueprint, history_avoidance_directive, \
     find_most_similar, post_similarity_max, has_first_person_proof, shape_for_dwell, dwell_report, \
     dwell_score_min
@@ -617,6 +620,10 @@ def regenerate_post(post_id: int, guidance: str = None) -> Optional[str]:
     # Re-score dwell for the regenerated body so the stored score never describes the old draft.
     _score_and_persist_dwell(user_id, post_id, content)
     update_db_post_content(post_id, content)
+    # Same for the gate findings (issue #421) — a reason left over from the previous draft would
+    # explain a hold that no longer exists. create_text_post already re-judged authenticity above.
+    _persist_gate_findings(user_id, post_id,
+                           _gate_findings_for_post(user_id, post_id, content, PostType.TEXT.value))
     update_db_post_status(post_id, PostStatus.PENDING)
     myprint(f"regenerate_post: post {post_id} regenerated → pending")
     return content
@@ -684,7 +691,7 @@ def _score_and_persist_authenticity(user_id: int, post_id: int, content: str,
         if result.get("flagged"):
             log_warning(
                 f"Post flagged as low-authenticity (score {result.get('score')} < "
-                f"{authenticity_score_min()}) — will hold for review: "
+                f"{authenticity_score_min(prefs)}) — will hold for review: "
                 f"{'; '.join(result.get('reasons') or []) or 'no reasons given'}",
                 user_id=user_id, post_id=post_id, task_name="create_text_post")
         else:
@@ -692,6 +699,152 @@ def _score_and_persist_authenticity(user_id: int, post_id: int, content: str,
                      user_id=user_id, post_id=post_id, task_name="create_text_post")
     except Exception as e:
         myprint(f"Authenticity scoring skipped for post {post_id}: {e}")
+
+
+def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, str, None],
+                        video_url: Optional[str] = None,
+                        engagement_prefs: Optional[dict] = None,
+                        authenticity_score: Optional[int] = None,
+                        recent_texts: Optional[list[str]] = None,
+                        user_profile: Optional[LinkedInProfile] = None,
+                        profile_synthesis: Optional[str] = None) -> list[dict]:
+    """Run the quality gates over a FINISHED post and return their structured findings (issue #421).
+
+    One evaluator for both callers: the content-plan status-setter (which knows the freshly persisted
+    authenticity score) and the re-score endpoint (which additionally supplies the user's post history
+    and profile, so the near-duplicate and focus-alignment gates can run against an edited draft).
+    A gate whose inputs are absent is skipped, never guessed. Every finding carries the score it
+    failed on, the threshold it failed against, and what the user can do about it.
+    """
+    findings = []
+    prefs = engagement_prefs or {}
+
+    if _post_missing_required_asset(post_id, post_type, video_url):
+        findings.append(missing_asset_finding(post_type))
+
+    if authenticity_score is not None and authenticity_gate_enabled():
+        threshold = authenticity_score_min(prefs)
+        if authenticity_score < threshold:
+            findings.append(authenticity_finding(authenticity_score, threshold))
+
+    if content and recent_texts:
+        threshold = post_similarity_max(prefs)
+        score, match = find_most_similar(content, recent_texts)
+        if score > threshold:
+            findings.append(similarity_finding(score, threshold, match))
+
+    topics = [str(t).strip() for t in (prefs.get("focus_topics") or []) if str(t).strip()]
+    if content and topics:
+        headline, about = profile_topic_dna(user_profile, profile_synthesis)
+        threshold = topic_authority_min()
+        score = topic_authority_score(content, topics, headline, about)
+        if score < threshold:
+            findings.append(focus_finding(score, threshold, topics))
+
+    return findings
+
+
+def _gate_findings_for_post(user_id: int, post_id: int, content: str,
+                            post_type: Union[PostType, str, None],
+                            video_url: Optional[str] = None) -> list[dict]:
+    """The generation-time gate pass: the gates that can hold a fresh draft (media + authenticity),
+    evaluated against the user's own thresholds. Best-effort — the reason is review UX, so a prefs
+    or score read that fails costs the explanation, never the post."""
+    try:
+        score = get_post_authenticity_score(post_id)
+    except Exception as e:
+        # An unreadable score only silences THAT gate — the media check still has to run, or a
+        # DB hiccup would let an assetless video post auto-approve.
+        myprint(f"Could not read the authenticity score for post {post_id}: {e}")
+        score = None
+    try:
+        return evaluate_post_gates(
+            post_id, content, post_type, video_url,
+            engagement_prefs=_engagement_prefs_or_empty(user_id),
+            authenticity_score=score)
+    except Exception as e:
+        log_warning("Could not evaluate the quality gates for this post", exc=e,
+                    user_id=user_id, post_id=post_id, task_name="create_content")
+        return []
+
+
+def _persist_gate_findings(user_id: int, post_id: int, findings: list[dict]) -> None:
+    """Best-effort write of the gate findings onto the post (issue #421). The reason is review UX —
+    losing it must never fail generation or a re-score."""
+    try:
+        update_db_post_gate_reason(post_id, findings)
+    except Exception as e:
+        myprint(f"Could not persist gate findings for post {post_id}: {e}")
+
+
+def _engagement_prefs_or_empty(user_id: int) -> dict:
+    """Engagement preferences for threshold resolution, never raising — a prefs read that fails just
+    means the gates fall back to the deploy-wide defaults."""
+    try:
+        return get_engagement_preferences(user_id) or {}
+    except Exception as e:
+        myprint(f"Could not load engagement preferences for user {user_id}: {e}")
+        return {}
+
+
+def rescore_post(post_id: int) -> dict:
+    """Re-run the quality gates on a post's CURRENT (possibly user-edited) content and update its
+    hold (issue #421). This is the 'edit & re-score' half of the review flow: a draft that now passes
+    every gate is promoted PENDING -> APPROVED without a full regenerate, and one that still fails
+    keeps a fresh, specific reason. Honors the user's auto-schedule preference — when they review
+    every post by hand, a passing re-score clears the reason but leaves the post PENDING for them.
+
+    Returns {passed, status, authenticity_score, findings, detail} — never raises for a missing post,
+    the caller turns that into a 404.
+    """
+    from cqc_lem.utilities.db import (get_post_type, get_post_video_url, get_post_user_id,
+                                      get_post_status)
+
+    user_id = get_post_user_id(post_id)
+    content = get_post_content(post_id)
+    if not user_id or not content:
+        return {"passed": False, "status": None, "authenticity_score": None, "findings": [],
+                "detail": "Post has no content to score"}
+
+    post_type = get_post_type(post_id)
+    post_type = post_type.value if isinstance(post_type, PostType) else post_type
+    prefs = _engagement_prefs_or_empty(user_id)
+    user_profile = load_profile_for_user(user_id)
+    try:
+        profile_synthesis = get_or_create_profile_synthesis(user_id, user_profile)
+    except Exception as e:
+        myprint(f"rescore_post: no profile synthesis for user {user_id}: {e}")
+        profile_synthesis = None
+
+    # Re-judge authenticity against the edited text — a stale score would let an unchanged hold
+    # survive a genuine rewrite (and vice versa).
+    _score_and_persist_authenticity(user_id, post_id, content, user_profile, profile_synthesis, prefs)
+    score = get_post_authenticity_score(post_id)
+
+    findings = evaluate_post_gates(
+        post_id, content, post_type, get_post_video_url(post_id), engagement_prefs=prefs,
+        authenticity_score=score,
+        # The post is already saved, so it would match ITSELF at 100% without this exclusion.
+        recent_texts=get_recent_post_texts(user_id, exclude_post_id=post_id),
+        user_profile=user_profile, profile_synthesis=profile_synthesis)
+    _persist_gate_findings(user_id, post_id, findings)
+
+    passed = not demoting_findings(findings)
+    status = get_post_status(post_id)
+    detail = "Still held for review" if not passed else "Passed every quality gate"
+    if passed and status == PostStatus.PENDING.value:
+        auto_schedule = bool((get_user_preferences(user_id) or {}).get("auto_schedule_posts", True))
+        if auto_schedule:
+            update_db_post_status(post_id, PostStatus.APPROVED)
+            status = PostStatus.APPROVED.value
+            detail = "Passed every quality gate — approved and queued"
+        else:
+            detail = ("Passed every quality gate — approve it when you're ready "
+                      "(auto-scheduling is off)")
+    log_info(f"Re-scored post {post_id}: {detail}", user_id=user_id, post_id=post_id,
+             task_name="rescore_post")
+    return {"passed": passed, "status": status, "authenticity_score": score,
+            "findings": findings, "detail": detail}
 
 
 def _score_and_persist_dwell(user_id: int, post_id: int, content: str) -> Optional[int]:
@@ -733,7 +886,7 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
     avoid/proof directive; still failing → log a structured warning and keep the second attempt
     (never loop, never hard-block). Also runs the cheap focus-alignment check on whatever content
     ships."""
-    threshold = post_similarity_max()
+    threshold = post_similarity_max(prefs)
     score, match = find_most_similar(content, recent_texts)
     too_similar = score > threshold
     missing_proof = not has_first_person_proof(content)
@@ -1583,24 +1736,19 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
         auto_schedule = bool((prefs or {}).get("auto_schedule_posts", True))
         new_status = PostStatus.APPROVED if auto_schedule else PostStatus.PENDING
 
-        # Never auto-approve a video/carousel post whose media failed to generate — hold it
-        # PENDING so the backfill task (or manual review) can complete the asset before it
-        # can be scheduled/posted. Prevents assetless posts going out.
-        if _post_missing_required_asset(post_id, post_type, video_url):
+        # Quality gates (issues #382 / #421): a video/carousel post whose media failed to generate,
+        # or a draft the authenticity judge scored below the user's minimum, is held PENDING for
+        # human review instead of auto-approved — and the REASON is recorded on the post so the
+        # review queue can explain the hold and what to do about it. Only downgrades an APPROVED;
+        # never upgrades a PENDING, never blocks when unscored.
+        gate_findings = _gate_findings_for_post(user_id, post_id, content, post_type, video_url)
+        held_by = demoting_findings(gate_findings)
+        if held_by and new_status == PostStatus.APPROVED:
             new_status = PostStatus.PENDING
-            myprint(f"post_id {post_id}: required media asset missing — holding PENDING")
-
-        # Authenticity gate (issue #382): demote an auto-approve to PENDING when the persisted
-        # LLM-judged authenticity score (set by create_text_post's scoring step) is below threshold,
-        # so a generic-AI-flagged draft gets human review before it can post. Only downgrades an
-        # APPROVED — never upgrades a PENDING, and never blocks when unscored (score None).
-        if new_status == PostStatus.APPROVED and authenticity_gate_enabled():
-            score = get_post_authenticity_score(post_id)
-            if score is not None and score < authenticity_score_min():
-                new_status = PostStatus.PENDING
-                log_warning(f"post_id {post_id}: authenticity score {score} < "
-                            f"{authenticity_score_min()} — holding PENDING for review",
-                            user_id=user_id, post_id=post_id, task_name="create_content")
+            log_warning(f"post_id {post_id}: held PENDING for review — "
+                        f"{'; '.join(f['explanation'] for f in held_by)}",
+                        user_id=user_id, post_id=post_id, task_name="create_content")
+        _persist_gate_findings(user_id, post_id, gate_findings)
 
         myprint(f"Updating post_id: {post_id} Status={new_status}")
         update_db_post_status(post_id, new_status)

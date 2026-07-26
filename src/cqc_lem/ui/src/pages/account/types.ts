@@ -13,6 +13,9 @@ export type EngPrefs = {
   focus_topics: string[]
   business_goals: string | null
   personal_goals: string | null
+  // Quality-gate sensitivity (issue #421). null = use the deploy default in gate_defaults.
+  authenticity_score_min: number | null
+  post_similarity_max_pct: number | null
   min_reactions: number | null
   max_post_age_hours: number | null
   reply_to_own_comments: boolean
@@ -37,6 +40,8 @@ export type EngPrefs = {
   catchup_message_source: string
   // Read-only: the highest catch-up cap this plan allows (10/day is premium-only).
   max_catchup_touches_allowed?: number
+  // Read-only: the deploy-wide gate thresholds used when the user hasn't set their own.
+  gate_defaults?: { authenticity_score_min: number; post_similarity_max_pct: number }
   feed_reach?: FeedReach | null
 }
 
