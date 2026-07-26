@@ -35,6 +35,10 @@ WARMTH_WEIGHT = 0.4
 # Default ICP floor for people we have facts on. Mirrors the DB default (min_connection_icp_score).
 MIN_ICP_DEFAULT = 55
 
+# Connection-degree badges that make a connection request pointless: we are already connected, so
+# LinkedIn shows Message where Connect would be and the invite can only fail (issue #623).
+EXCLUDED_DEGREES = ("1st",)
+
 # LinkedIn caps a connection-request note at 300 characters.
 CONNECT_NOTE_LIMIT = 300
 
@@ -48,6 +52,7 @@ class CandidateSignal:
     context_url: str = ""       # the post they engaged with
     context_author: str = ""    # whose post it was ('' for our own)
     occurred_at: Optional[datetime] = None
+    connection_degree: Optional[str] = None  # '1st'/'2nd'/'3rd+' badge, None when unrendered
 
 
 @dataclass
@@ -65,6 +70,7 @@ class ScoredCandidate:
     context_url: str = ""
     context_author: str = ""
     reasons: str = ""
+    connection_degree: Optional[str] = None
     last_seen_at: Optional[datetime] = None
     signals: list = field(default_factory=list)
 
@@ -95,7 +101,8 @@ def _primary_source(signals: Iterable[CandidateSignal]) -> str:
             else SOURCE_ADJACENT_POST)
 
 
-def _describe(candidate_signals: list, icp: int, known_fit: bool, now: datetime) -> str:
+def _describe(candidate_signals: list, icp: int, known_fit: bool, now: datetime,
+              degree: str = None) -> str:
     """Plain-language WHY, for the operator approving the request."""
     own = sum(1 for s in candidate_signals if s.source == SOURCE_OWN_POST)
     adjacent = [s for s in candidate_signals if s.source == SOURCE_ADJACENT_POST]
@@ -111,6 +118,9 @@ def _describe(candidate_signals: list, icp: int, known_fit: bool, now: datetime)
     if stamps:
         days = max(0, int((now - _align(max(stamps), now)).total_seconds() // 86400))
         parts.append("engaged today" if days == 0 else f"last engaged {days}d ago")
+
+    if degree:
+        parts.append(f"{degree}-degree")
 
     if not known_fit:
         parts.append("ICP fit unknown (profile not scraped)")
@@ -158,6 +168,8 @@ def score_candidate(signals: list, now: datetime, facts: dict = None,
     stamps = [s.occurred_at for s in signals if s.occurred_at]
     name = next((s.person_name for s in signals if s.person_name), None)
     url = next((s.person_profile_url for s in signals if s.person_profile_url), None)
+    # Any sighting that DID render a badge settles the degree; the rest simply didn't show one.
+    degree = next((s.connection_degree for s in signals if s.connection_degree), None)
     return ScoredCandidate(
         person_key=person_key(name, url),
         person_name=name,
@@ -170,7 +182,8 @@ def score_candidate(signals: list, now: datetime, facts: dict = None,
         known_fit=known_fit,
         context_url=lead_signal.context_url or "",
         context_author=lead_signal.context_author or "",
-        reasons=_describe(list(signals), icp, known_fit, now),
+        reasons=_describe(list(signals), icp, known_fit, now, degree=degree),
+        connection_degree=degree,
         last_seen_at=max(stamps) if stamps else None,
         signals=list(signals),
     )
@@ -179,21 +192,28 @@ def score_candidate(signals: list, now: datetime, facts: dict = None,
 def rank_candidates(signals: Iterable[CandidateSignal], now: datetime, facts_by_url: dict = None,
                     target_terms: Iterable[str] = None, min_icp: int = MIN_ICP_DEFAULT,
                     exclude_keys: Iterable[str] = None, require_profile_url: bool = True,
-                    limit: int = None) -> list:
+                    exclude_degrees: Iterable[str] = EXCLUDED_DEGREES, limit: int = None) -> list:
     """Rank connection candidates, best first.
 
     `exclude_keys` are person_keys we already asked (any connection_requests row, any status) — the
     dedup that keeps a nightly re-scan from re-inviting the same person.
 
+    `exclude_degrees` drops people whose scraped badge SAYS we're already connected (issue #623:
+    the only connection request production ever filed went to a 1st-degree connection and could
+    only fail). A candidate with NO badge is unknown, not connected — it is kept, because LinkedIn
+    doesn't render the badge on every surface and failing closed here would stop outreach entirely.
+
     The `min_icp` floor applies ONLY to people we have profile facts for. Most engagers have never
     been scraped, so they score ICP_UNKNOWN; rejecting them would reject nearly everyone and throw
     away the warm-engager signal this whole feature exists to use. They're kept, ranked on warmth,
-    and their `reasons` says the fit is unverified so the approver can see it.
+    and their `reasons` says the fit is unverified so the approver can see it — and the request row
+    stores NO icp_score for them, so nothing is ever filed that reads as below the user's floor.
 
     `require_profile_url` drops name-only sightings: without a /in/ URL there is nobody to invite.
     """
     facts_by_slug = {profile_slug(k): v for k, v in (facts_by_url or {}).items() if profile_slug(k)}
     excluded = {str(k) for k in (exclude_keys or []) if k}
+    blocked_degrees = {str(d).lower() for d in (exclude_degrees or []) if d}
     out: list = []
     for key, person_signals in group_signals(signals).items():
         if key in excluded:
@@ -204,6 +224,8 @@ def rank_candidates(signals: Iterable[CandidateSignal], now: datetime, facts_by_
                                               if s.person_profile_url), "")), {}),
                                     target_terms=target_terms)
         if require_profile_url and not candidate.person_profile_url:
+            continue
+        if str(candidate.connection_degree or "").lower() in blocked_degrees:
             continue
         if candidate.known_fit and candidate.icp_score < int(min_icp or 0):
             continue

@@ -374,6 +374,10 @@ class LogResultType(StrEnum):
 # combined daily invite budget is counted from these log rows (see count_invites_sent_today).
 CONNECTION_REQUEST_SENT_MESSAGE = "Connection Request Sent Successfully"
 
+# Why a proactive invite was abandoned before it was attempted (issue #623). Stored as the request's
+# failure_reason so the Connections review UI explains a FAILED row instead of just colouring it red.
+ALREADY_CONNECTED_MESSAGE = "Already connected (1st-degree) — no invite to send"
+
 
 def store_cookies(user_email: str, cookies: list[dict]) -> None:
     connection = get_db_connection()
@@ -3835,7 +3839,8 @@ def count_invites_sent_today(user_id: int) -> int:
 # source/icp_score/reasons carry issue #486's targeting provenance (which engagement surfaced this
 # person, how well they fit) so the operator approving a request can see why it exists.
 _CONN_REQ_COLS = ("id", "user_id", "recipient_profile_url", "recipient_name", "message",
-                  "source", "icp_score", "reasons", "status", "created_at", "updated_at")
+                  "source", "icp_score", "reasons", "failure_reason", "status",
+                  "created_at", "updated_at")
 
 
 def insert_connection_request(user_id: int, recipient_profile_url: str, message: str = None,
@@ -3953,12 +3958,17 @@ def get_orphaned_connection_requests(lookback_hours: int = 2) -> list:
         connection.close()
 
 
-def update_connection_request_status(request_id: int, status: "ConnectionRequestStatus") -> bool:
+def update_connection_request_status(request_id: int, status: "ConnectionRequestStatus",
+                                     failure_reason: str = None) -> bool:
+    """Move a request to `status`. `failure_reason` records WHY a send failed (issue #623) — it is
+    written on every call, so a request that later succeeds or is deferred clears the stale reason
+    instead of showing yesterday's failure next to today's status."""
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
-        cursor.execute("UPDATE connection_requests SET status = %s WHERE id = %s",
-                       (str(status), request_id))
+        cursor.execute("UPDATE connection_requests SET status = %s, failure_reason = %s WHERE id = %s",
+                       (str(status), (str(failure_reason)[:512] if failure_reason else None),
+                        request_id))
         connection.commit()
         return cursor.rowcount > 0
     except mysql.connector.Error as err:
@@ -4047,14 +4057,15 @@ def get_requested_person_keys(user_id: int) -> set:
 
 def get_engager_candidates(user_id: int, days: int = 30) -> list:
     """People who recently engaged with the user's OWN posts, as connection-targeting candidates:
-    [{'person_name', 'person_profile_url', 'occurred_at'}]. Only rows with a profile URL — without
-    one there is nobody to invite. Read from post_engagers, so this costs no scraping."""
+    [{'person_name', 'person_profile_url', 'connection_degree', 'occurred_at'}]. Only rows with a
+    profile URL — without one there is nobody to invite. Read from post_engagers, so this costs no
+    scraping. `connection_degree` lets the caller drop people we're already connected to (#623)."""
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute(
             "SELECT engager_name AS person_name, engager_profile_url AS person_profile_url, "
-            "last_engaged_at AS occurred_at FROM post_engagers "
+            "connection_degree, last_engaged_at AS occurred_at FROM post_engagers "
             "WHERE user_id=%s AND engager_profile_url IS NOT NULL "
             "AND last_engaged_at >= (NOW() - INTERVAL %s DAY) ORDER BY last_engaged_at DESC",
             (user_id, days))
@@ -4179,6 +4190,26 @@ def get_approved_outreach_targets(user_id: int) -> list:
     except mysql.connector.Error as err:
         myprint(f"Could not get approved outreach targets for user_id {user_id} | Error: {err}")
         return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def count_open_outreach_targets(user_id: int) -> int:
+    """Funnel targets still awaiting a human or a stage fire (pending / approved, not completed).
+    The sourcing scan (issue #623) stops adding once this backlog is deep enough — a review queue
+    nobody works through is the same as no queue at all."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM outreach_funnel_targets WHERE user_id=%s "
+            "AND status IN ('pending','approved') AND stage <> 'completed'", (user_id,))
+        r = cursor.fetchone()
+        return int(r[0]) if r else 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not count open outreach targets for user {user_id} | Error: {err}")
+        return 0
     finally:
         cursor.close()
         connection.close()
@@ -4472,20 +4503,25 @@ def has_scheduled_post_today(user_id: int) -> bool:
         connection.close()
 
 
-def upsert_engager(user_id: int, engager_name: str, engager_profile_url: str = None) -> bool:
+def upsert_engager(user_id: int, engager_name: str, engager_profile_url: str = None,
+                   connection_degree: str = None) -> bool:
     """Record that `engager_name` engaged with the user's post (or refresh their last-engaged
-    time). No-op on a blank name or if the table isn't present yet."""
+    time). No-op on a blank name or if the table isn't present yet. `connection_degree` is the
+    scraped badge ('1st'/'2nd'/'3rd+', issue #623) — COALESCEd, so a later sighting that rendered no
+    badge never erases a degree we already know."""
     if not engager_name or not engager_name.strip():
         return False
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
         cursor.execute(
-            "INSERT INTO post_engagers (user_id, engager_name, engager_profile_url, last_engaged_at) "
-            "VALUES (%s,%s,%s,NOW()) ON DUPLICATE KEY UPDATE "
+            "INSERT INTO post_engagers (user_id, engager_name, engager_profile_url, "
+            "connection_degree, last_engaged_at) VALUES (%s,%s,%s,%s,NOW()) ON DUPLICATE KEY UPDATE "
             "engager_profile_url=COALESCE(VALUES(engager_profile_url), engager_profile_url), "
+            "connection_degree=COALESCE(VALUES(connection_degree), connection_degree), "
             "last_engaged_at=NOW()",
-            (user_id, engager_name.strip()[:255], (engager_profile_url or None)))
+            (user_id, engager_name.strip()[:255], (engager_profile_url or None),
+             (connection_degree or None)))
         connection.commit()
         return True
     except mysql.connector.Error as err:

@@ -1,5 +1,6 @@
 import os
 import random
+import re
 import time
 from typing import Optional
 
@@ -26,6 +27,71 @@ def _human_pause(min_seconds: float, max_seconds: float) -> None:
     if os.getenv("LINKEDIN_HUMANIZE_DELAYS", "true").lower() == "false":
         return
     time.sleep(random.uniform(min_seconds, max_seconds))
+
+
+# --- Scraped display-name hygiene (issue #623) --------------------------------------------------
+# LinkedIn's SDUI renders badge and status text INSIDE the same <a> as the person's name, so a naive
+# `link.text` read stores things like "Harshal Karanpuriya Verified Profile 1st" as somebody's name.
+# That name then goes out in a connection note and poisons every name-keyed dedup we have. Every
+# place we scrape a person's name runs it through clean_person_name(); connection_degree() reads the
+# badge we just stripped, so callers can skip people we are ALREADY connected to instead of burning
+# an invite slot on them.
+
+# aria-labels wrap the name in a sentence ("View Jane Doe's profile") — the name is inside it.
+_NAME_FROM_ARIA_RE = re.compile(r"view\s+(.+?)['’]s\s+(?:profile|graphic)", re.IGNORECASE)
+_DEGREE_RE = re.compile(r"(?<!\w)(1st|2nd|3rd\+?)(?!\w)", re.IGNORECASE)
+# Badge / status / degree text LinkedIn renders alongside the name. Deliberately does NOT include
+# button words (Connect / Message / Follow): those live in sibling elements, and stripping them
+# would mangle a real name that happens to contain one.
+_NAME_NOISE_RE = re.compile(
+    r"(?:\bview\s+.+?['’]s\s+(?:profile|graphic)\b"
+    r"|\b(?:1st|2nd|3rd)\+?(?:\s*degree)?(?:\s*connection)?\b"
+    r"|\bverified\s+profile\b|\bverified\b|\bpremium(?:\s+member)?\b|\binfluencer\b"
+    r"|\bopen\s+to\s+work\b|\b(?:is\s+)?hiring\b"
+    r"|\bstatus\s+is\s+(?:online|offline|reachable)\b)",
+    re.IGNORECASE)
+# SDUI stacks name / badge / degree as separate lines or bullet-separated spans.
+_NAME_SEGMENT_RE = re.compile(r"[\n\r•·|]+")
+
+
+def _collapse_repeated_name(name: str) -> str:
+    """LinkedIn renders the name twice (visible + screen-reader copy) inside one link, which
+    `.text` flattens to "Jane Doe Jane Doe". Fold an exact doubling back to one."""
+    parts = name.split()
+    half = len(parts) // 2
+    if half and len(parts) % 2 == 0 and parts[:half] == parts[half:]:
+        return " ".join(parts[:half])
+    return name
+
+
+def clean_person_name(raw: str) -> str:
+    """A scraped display name with LinkedIn's badge/status/degree text removed. Returns '' when
+    nothing name-like survives (a link whose text was only a status badge)."""
+    text = str(raw or "").replace("\u00a0", " ")
+    aria = _NAME_FROM_ARIA_RE.search(text)
+    if aria:
+        text = aria.group(1)
+    for segment in _NAME_SEGMENT_RE.split(text):
+        candidate = " ".join(_NAME_NOISE_RE.sub(" ", segment).split()).strip(" ,-–—")
+        if candidate:
+            return _collapse_repeated_name(candidate)[:255]
+    return ""
+
+
+def connection_degree(raw: str) -> Optional[str]:
+    """The connection-degree badge ('1st' / '2nd' / '3rd+') carried in scraped name text, or None
+    when LinkedIn didn't render one (it omits the badge on your own card and on some SDUI surfaces)."""
+    match = _DEGREE_RE.search(str(raw or ""))
+    if not match:
+        return None
+    degree = match.group(1).lower()
+    return "3rd+" if degree.startswith("3rd") else degree
+
+
+def is_first_degree(raw: str) -> bool:
+    """True only when the badge SAYS 1st. A missing badge is unknown, not 'not connected' — callers
+    that skip on this must fail open, or a selector drift silently stops all outreach."""
+    return connection_degree(raw) == "1st"
 
 
 def _text_is_transport_error(body: str) -> bool:

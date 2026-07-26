@@ -19,12 +19,12 @@ class TestSendConnectionRequest:
         with patch("cqc_lem.utilities.db.get_connection_request", return_value=self._req()), \
              patch("cqc_lem.utilities.db.count_invites_sent_today", return_value=0), \
              patch(f"{_RA}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
-             patch(f"{_RA}.invite_to_connect_now", return_value=True) as send, \
+             patch(f"{_RA}.invite_to_connect_now", return_value=(True, "Connection Request Sent Successfully")) as send, \
              patch("cqc_lem.utilities.db.update_connection_request_status") as upd:
             out = ra.send_connection_request(3)
         send.assert_called_once_with(1, "https://x/in/jane", "hi jane")
         from cqc_lem.utilities.db import ConnectionRequestStatus
-        upd.assert_called_once_with(3, ConnectionRequestStatus.SENT)
+        upd.assert_called_once_with(3, ConnectionRequestStatus.SENT, failure_reason=None)
         assert "sent" in out
 
     def test_failed_send_marks_failed(self):
@@ -32,11 +32,12 @@ class TestSendConnectionRequest:
         with patch("cqc_lem.utilities.db.get_connection_request", return_value=self._req()), \
              patch("cqc_lem.utilities.db.count_invites_sent_today", return_value=0), \
              patch(f"{_RA}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
-             patch(f"{_RA}.invite_to_connect_now", return_value=False), \
+             patch(f"{_RA}.invite_to_connect_now", return_value=(False, "Failed to find more or connect button")), \
              patch("cqc_lem.utilities.db.update_connection_request_status") as upd:
             ra.send_connection_request(3)
         from cqc_lem.utilities.db import ConnectionRequestStatus
-        upd.assert_called_once_with(3, ConnectionRequestStatus.FAILED)
+        upd.assert_called_once_with(3, ConnectionRequestStatus.FAILED,
+                                   failure_reason="Failed to find more or connect button")
 
     def test_defers_when_cap_reached(self):
         from cqc_lem.app import run_automation as ra
@@ -84,7 +85,7 @@ class TestInviteToConnectWrapper:
 
     def test_returns_success_string(self):
         from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}.invite_to_connect_now", return_value=True):
+        with patch(f"{_RA}.invite_to_connect_now", return_value=(True, "ok")):
             out = ra.invite_to_connect(1, "https://x/in/jane")
         assert out == "Connection Request Sent Successfully"
 
