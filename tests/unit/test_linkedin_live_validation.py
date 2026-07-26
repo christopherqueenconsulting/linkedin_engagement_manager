@@ -162,6 +162,20 @@ class TestProbeComposer:
         assert report["opened"] is True
         assert report["document_affordance"] == "Add a document"
 
+    def test_a_stale_control_mid_enumeration_still_reports_what_was_captured(self, monkeypatch):
+        driver = MagicMock()
+        dialog = MagicMock()
+        dialog.find_elements.side_effect = Exception("stale element")
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.click_first",
+                            lambda *a, **k: MagicMock())
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.find_first",
+                            lambda *a, **k: dialog)
+
+        report = llv.probe_composer(driver, sleep=lambda s: None)
+        assert report["opened"] is True
+        assert report["controls"] == ["<enumeration stopped: Exception>"]
+        assert report["document_affordance"] is None
+
     def test_reports_a_composer_that_never_opened(self, monkeypatch):
         monkeypatch.setattr("cqc_lem.utilities.selenium_util.click_first", lambda *a, **k: None)
         report = llv.probe_composer(MagicMock(), sleep=lambda s: None)

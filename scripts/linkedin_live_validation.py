@@ -72,7 +72,7 @@ return out;
 """
 
 
-def label_lines(text: str) -> list:
+def label_lines(text: Optional[str]) -> list[str]:
     """Every recognized count label with its neighbouring lines, as 'prev | line | next'.
 
     This is the drift check: the parser pairs a label with an adjacent bare count, so the raw
@@ -134,7 +134,7 @@ def media_verdict(anchors: Optional[list[dict]]) -> str:
     return "unknown"
 
 
-def find_document_affordance(labels: Optional[list[str]]) -> Optional[str]:
+def find_document_affordance(labels: Optional[list[Optional[str]]]) -> Optional[str]:
     """The composer control that starts a document upload, by its visible/aria label."""
     for label in labels or []:
         if "document" in (label or "").lower():
@@ -227,12 +227,16 @@ def probe_composer(driver, sleep=time.sleep) -> dict:
             label = (button.get_attribute("aria-label") or button.text or "").strip()
             if label:
                 controls.append(label)
-    except Exception:
-        pass
+    except Exception as e:
+        # Best-effort capture: the composer re-renders while we enumerate, so a stale element
+        # mid-loop is expected. Report whatever we collected instead of losing the whole probe.
+        controls.append(f"<enumeration stopped: {type(e).__name__}>")
 
     try:
         ActionChains(driver).send_keys(Keys.ESCAPE).perform()
     except Exception:
+        # Closing the composer is courtesy only — the driver is quit right after in main(), and
+        # a failed Escape must not mask the anchors this probe exists to report.
         pass
     return {"opened": True, "controls": controls,
             "document_affordance": find_document_affordance(controls)}
