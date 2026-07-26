@@ -154,6 +154,8 @@ export default function EngagementRosterCard() {
                 On
               </label>
               <button type="button" onClick={() => removeRow(idx)}
+                aria-label={`Remove ${t.name || t.profile_url || 'account'}`}
+                title="Remove account"
                 className="text-red-500 hover:text-red-600">×</button>
             </div>
           </div>

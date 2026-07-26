@@ -3237,8 +3237,9 @@ def _clean_target_row(row: dict) -> dict:
 
 
 def get_engagement_targets(user_id: int, active_only: bool = False) -> list:
-    """The user's engagement roster, newest-configured last. `comments_this_week` is already
-    week-aware (0 once the stored week_start is not the current week)."""
+    """The user's engagement roster, grouped by category and oldest-configured first within each
+    category. `comments_this_week` is already week-aware (0 once the stored week_start is not the
+    current week)."""
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -3250,7 +3251,7 @@ def get_engagement_targets(user_id: int, active_only: bool = False) -> list:
         cursor.execute(sql, (user_id,))
         return [_clean_target_row(r) for r in (cursor.fetchall() or [])]
     except mysql.connector.Error as err:
-        myprint(f"Could not list engagement targets for user_id {user_id} | Error: {err}")
+        log_error("Could not list engagement targets", exc=err, user_id=user_id)
         return []
     finally:
         cursor.close()
@@ -3292,7 +3293,7 @@ def upsert_engagement_targets(user_id: int, targets: list) -> bool:
         connection.commit()
         return True
     except mysql.connector.Error as err:
-        myprint(f"Could not upsert engagement targets for user_id {user_id} | Error: {err}")
+        log_error("Could not upsert engagement targets", exc=err, user_id=user_id)
         return False
     finally:
         cursor.close()
@@ -3308,7 +3309,7 @@ def delete_engagement_target(user_id: int, profile_url: str) -> bool:
         connection.commit()
         return True
     except mysql.connector.Error as err:
-        myprint(f"Could not delete engagement target for user_id {user_id} | Error: {err}")
+        log_error("Could not delete engagement target", exc=err, user_id=user_id)
         return False
     finally:
         cursor.close()
@@ -3331,7 +3332,7 @@ def record_target_engagement(user_id: int, profile_url: str) -> bool:
         connection.commit()
         return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        myprint(f"Could not record target engagement for user_id {user_id} | Error: {err}")
+        log_error("Could not record target engagement", exc=err, user_id=user_id)
         return False
     finally:
         cursor.close()
@@ -3343,6 +3344,8 @@ def suggest_engagement_targets(user_id: int, limit: int = 20) -> list:
     (post_engagers), minus anyone already on the roster. Costs no scraping. Suggested as 'icp' —
     someone reacting to your content is far likelier to be a buyer than a peer — and the operator
     re-categorizes in the editor."""
+    if limit <= 0:
+        return []
     existing = {str(t.get("profile_url") or "").rstrip("/").lower()
                 for t in get_engagement_targets(user_id)}
     out = []

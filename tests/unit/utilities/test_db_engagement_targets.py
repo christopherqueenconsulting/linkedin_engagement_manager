@@ -151,3 +151,12 @@ class TestSuggestEngagementTargets:
             from cqc_lem.utilities.db import suggest_engagement_targets
             out = suggest_engagement_targets(1, limit=2)
         assert [s["profile_url"] for s in out] == ["https://x/in/a", "https://x/in/b"]
+
+    def test_non_positive_limit_returns_nothing_without_querying(self):
+        with patch(f"{_DB}.get_engagement_targets") as roster, \
+             patch(f"{_DB}.get_engager_candidates") as candidates:
+            from cqc_lem.utilities.db import suggest_engagement_targets
+            assert suggest_engagement_targets(1, limit=0) == []
+            assert suggest_engagement_targets(1, limit=-3) == []
+        roster.assert_not_called()
+        candidates.assert_not_called()

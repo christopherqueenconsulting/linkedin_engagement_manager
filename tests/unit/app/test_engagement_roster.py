@@ -95,6 +95,20 @@ class TestTopicGate:
                                      {"focus_topics": ["RevOps"]}) is True
         classifier.assert_not_called()
 
+    def test_short_topic_inside_another_word_does_not_short_circuit(self):
+        from cqc_lem.app.run_automation import passes_topic_gate
+        with patch(f"{_RA}.post_is_relevant", return_value=False) as classifier:
+            assert passes_topic_gate("How we thrive on shorter sprints",
+                                     {"focus_topics": ["HR"]}) is False
+        classifier.assert_called_once()  # "thrive" is not an HR mention — the classifier decides
+
+    def test_multi_word_topic_matches_on_a_word_boundary(self):
+        from cqc_lem.app.run_automation import passes_topic_gate
+        with patch(f"{_RA}.post_is_relevant") as classifier:
+            assert passes_topic_gate("Notes on our RevOps tooling stack.",
+                                     {"focus_topics": ["revops tooling"]}) is True
+        classifier.assert_not_called()
+
     def test_off_topic_post_is_rejected(self):
         from cqc_lem.app.run_automation import passes_topic_gate
         with patch(f"{_RA}.post_is_relevant", return_value=False):

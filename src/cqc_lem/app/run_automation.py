@@ -998,9 +998,19 @@ def passes_topic_gate(content: str, prefs: dict) -> bool:
     if not topics:
         return True
     text = (content or "").lower()
-    if any(str(t).lower() in text for t in topics):
+    if any(_mentions_topic(text, t) for t in topics):
         return True
     return post_is_relevant(content, topics)
+
+
+def _mentions_topic(text: str, topic: str) -> bool:
+    """Whole-term match for the gate's literal short-circuit. Substring matching would let a short
+    topic ("HR") fire on an unrelated word ("thrive") and skip the classifier entirely, so the term
+    has to be bounded by non-word characters on both sides."""
+    term = str(topic or "").strip().lower()
+    if not term:
+        return False
+    return re.search(rf"(?<!\w){re.escape(term)}(?!\w)", text) is not None
 
 
 # Roster blend (issue #616): the mix every fast-growing native creator studied engaged on —
