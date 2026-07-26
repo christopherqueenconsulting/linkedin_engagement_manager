@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.95.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.94.0...v0.95.0) (2026-07-26)
+
+
+### Features
+
+* **review:** surface PENDING gate reasons + remediation and let users tune the thresholds ([56465bd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/56465bdc261a7c81289f09622d5865667a930cdf)), closes [#421](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/421)
+* **review:** surface PENDING gate reasons + remediation in Content Studio (closes [#421](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/421)) ([bf07237](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bf07237d30e516e9b27c64e071f306706a38cf6c))
+
 ## [0.94.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.93.1...v0.94.0) (2026-07-25)
 
 
