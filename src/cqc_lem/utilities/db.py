@@ -2320,7 +2320,10 @@ def insert_new_log(user_id: int, action_type: LogActionType, result: LogResultTy
     return success
 
 
-def has_user_commented_on_post_url(user_id: int, post_url: str):
+def count_user_comments_on_post_url(user_id: int, post_url: str) -> int:
+    """How many top-level comments WE have successfully left on this post URL. Replies
+    (LogActionType.REPLY) are deliberately not counted — the self-comment cap (issue #622) is about
+    seeding our own thread, not about answering the people in it."""
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -2330,13 +2333,47 @@ def has_user_commented_on_post_url(user_id: int, post_url: str):
             (user_id, post_url, LogActionType.COMMENT.value, LogResultType.SUCCESS.value))
         count = cursor.fetchone()[0]
     except mysql.connector.Error as err:
-        myprint(f"Could not determine if user commented on post url | Error: {err}")
+        myprint(f"Could not count user comments on post url | Error: {err}")
         count = 0
     finally:
         cursor.close()
         connection.close()
 
-    return count > 0
+    return int(count or 0)
+
+
+def has_user_commented_on_post_url(user_id: int, post_url: str):
+    return count_user_comments_on_post_url(user_id, post_url) > 0
+
+
+def get_post_age_minutes(user_id: int, post_id: int):
+    """Minutes since this post actually went live, or None when it never published.
+
+    Measured from the successful POST log row — not `posts.scheduled_time`, because a post that
+    published late (queue backlog, retry) would otherwise make an on-time golden-hour sweep look
+    late (issue #622). The subtraction is done in SQL against the server's own NOW() so the reading
+    never depends on the app and the database agreeing about the timezone: `logs.created_at` is
+    written in the DB session's zone (`TZ`, not UTC), so comparing it to a Python UTC clock would
+    skew every latency by the offset."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+
+    try:
+        cursor.execute("""SELECT TIMESTAMPDIFF(SECOND, created_at, NOW()) FROM logs
+            WHERE user_id = %s AND post_id = %s AND action_type = %s AND result = %s
+            ORDER BY created_at DESC
+            LIMIT 1""",
+                       (user_id, post_id, LogActionType.POST.value, LogResultType.SUCCESS.value))
+        row = cursor.fetchone()
+        seconds = row[0] if row else None
+    except mysql.connector.Error as err:
+        myprint(f"Could not get post age from log for user | Error: {err}")
+        seconds = None
+    finally:
+        cursor.close()
+        connection.close()
+
+    return None if seconds is None else max(0.0, float(seconds) / 60.0)
 
 
 def get_post_url_from_log_for_user(user_id: int, post_id: int):

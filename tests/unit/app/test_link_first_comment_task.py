@@ -25,6 +25,7 @@ def _post_patches(stack, content, prefs=None, share_urn="urn:li:ugcPost:1"):
         "update_db_post_status": {},
         "sweep_reply_comments": {},
         "auto_seed_comment_on_post": {},
+        "auto_second_wave_comment": {},
     }
     return {name: stack.enter_context(patch(f"{_RA}.{name}", **kw)) for name, kw in targets.items()}
 

@@ -427,12 +427,23 @@ def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=No
         return lint_repaired(_draft(), "comment", _draft,
                              user_id=user_id, action_type="comment")
 
-    # The quality contract + similarity gate + slop lint run on the FINAL text (post-humanization) —
-    # what would actually ship — so nothing downstream can reintroduce a banned opener or a tell.
+    return _gated_comment(_draft, post_content, recent_comments=recent_comments, user_id=user_id)
+
+
+def _gated_comment(draft, post_content, recent_comments: list = None,
+                   user_id: int = None) -> "str | None":
+    """Run a comment `draft(fix_directive)` callable through the quality contract, the similarity
+    gate and the slop lint until it passes, and return None when it never does.
+
+    The checks run on the FINAL text (post-humanization) — what would actually ship — so nothing
+    downstream can reintroduce a banned opener or a tell. Shared by every self-authored comment
+    surface (feed comments #617, the golden-hour second wave #622) so a new surface can never ship
+    with a weaker contract than the one it copied."""
     fix_directive = ""
+    failures = []
     attempts = _framework.comment_gate_max_attempts()
     for attempt in range(1, attempts + 1):
-        candidate = _draft(fix_directive)
+        candidate = draft(fix_directive)
         if candidate is None:
             return None
         report = _framework.comment_contract_report(candidate, str(post_content or ""))
@@ -868,6 +879,62 @@ def generate_seed_comment(post_content, profile: "LinkedInProfile", prefs: dict 
                               profile_synthesis=profile_synthesis, prefs=prefs)
 
     return lint_repaired(_draft(), "comment", _draft, action_type="comment")
+
+
+def generate_second_wave_comment(post_content, profile: "LinkedInProfile", prefs: dict = None,
+                                 profile_synthesis: str = None, story_directive: str = None,
+                                 recent_comments: list = None,
+                                 user_id: int = None) -> "str | None":
+    """The SECOND WAVE (issue #622 / G7): the author's own comment 6–8 hours after publishing, when
+    LinkedIn re-surfaces a post that is still earning engagement. Its whole job is to ADD something
+    the post did not have — the specific caveat, the number, the thing that went wrong — so a
+    returning reader gets new value, not "thanks for reading".
+
+    Unlike the #344 seed comment (which opens the thread with a question minutes after publish),
+    this one must carry substance, so it runs through the SAME quality contract, similarity gate and
+    slop lint every feed comment does (`_gated_comment`) and returns None rather than shipping a
+    draft that fails — an empty second wave costs nothing, a filler one costs reach.
+
+    `story_directive` is the story-bank injection (issue #620): its facts are the ONLY personal
+    specifics the model may state, so the added insight is the user's own material, never invented."""
+    system_prompt = {
+        "role": "system",
+        "content": """You are the AUTHOR of the LinkedIn post below, adding a follow-up comment on
+        your OWN post several hours after publishing it. People are still finding the post, so this
+        comment must EARN its place by adding something new.
+
+        Write ONE comment that gives readers a piece of substance the post itself did not contain:
+        the caveat you left out, the specific number behind a claim, what you tried first that
+        failed, or the practical next step someone would take. Then invite the thread onward with a
+        genuine question.
+
+        HARD RULES: never thank people for reading, never summarize or restate the post, never
+        promote yourself or anything you sell, no links, no hashtags. Write for the post's READERS
+        — someone scrolling the thread should learn something even if they skipped the post.
+        Sound like a real person in your own voice. """ + _NO_SELF_PROMO_GUARDRAIL + """
+        Output ONLY the comment text.""" + _framework.comment_contract_directive(),
+    }
+    user_prompt = {
+        "role": "user",
+        "content": f"My LinkedIn profile:\n{_voice_reference(profile, profile_synthesis)}\n\n"
+                   f"My post (published earlier today):\n<content>{post_content}</content>\n"
+                   f"{story_directive or ''}{_intention_directive(prefs)}{_style_directive(prefs)}",
+    }
+    temperature = round(random.uniform(0.5, 0.7), 2)
+
+    def _draft(fix: str = "") -> "str | None":
+        response = _call_llm(model="lem-medium",
+                             messages=[{"role": "system", "content": system_prompt["content"] + fix},
+                                       user_prompt],
+                             temperature=temperature)
+        content = response.choices[0].message.content
+        if content is None:
+            return None
+        # Humanization pass (issue #416 — A5) before the gate, so the contract grades what ships.
+        return _humanize_text(content.strip(), content_type="comment",
+                              profile_synthesis=profile_synthesis, prefs=prefs)
+
+    return _gated_comment(_draft, post_content, recent_comments=recent_comments, user_id=user_id)
 
 
 def generate_thread_reply(post_content: str, comment_text: str, profile: "LinkedInProfile",
