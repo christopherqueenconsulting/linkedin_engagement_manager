@@ -44,6 +44,17 @@ def _humanize_disabled_by_default(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _human_pacing_disabled_by_default(monkeypatch):
+    """Issue #626: the human-pacing engine is default-ON in production, where a comment costs a
+    45s–4min read delay and the day's volume is a random draw seeded on (user, action, TODAY'S
+    DATE). Both are poison for a test suite — real sleeps, and a budget that silently becomes 0 on
+    whichever calendar day the rest-day draw comes up. Default it OFF so unrelated tests keep the
+    pre-#626 behaviour (full cap, no delay, no jitter); the pacing tests turn it back on with
+    HUMAN_PACING_ENABLED=true and pin the day/RNG explicitly."""
+    monkeypatch.setenv("HUMAN_PACING_ENABLED", "false")
+
+
+@pytest.fixture(autouse=True)
 def _db_pool_disabled_by_default(monkeypatch):
     """Issue #555: get_db_connection() checks connections out of a per-process pool in production.
     The pool opens its connections through mysql-connector's own internal connect(), which the

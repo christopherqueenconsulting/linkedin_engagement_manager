@@ -35,21 +35,25 @@ class TestAutoDailyEngagement:
         with patch(f"{_RS}.get_active_user_ids", return_value=[1, 2, 3]), \
              patch(f"{_RS}.has_linkedin_session", side_effect=lambda u: u != 3), \
              patch(f"{_RS}._stagger_due", return_value=True), \
-             patch(f"{_RS}.automate_commenting") as ac:
+             patch(f"{_RS}.dispatch_golden_hour_engagement") as shim:
             result = auto_daily_engagement()
-        assert ac.apply_async.call_count == 2                 # users 1 & 2 (3 has no session)
+        assert shim.apply_async.call_count == 2               # users 1 & 2 (3 has no session)
         assert "2/3" in result
 
     def test_golden_hour_stays_on_the_engage_lane(self):
         """Issue #553 gave the pre-post warm-up its own se_prepost lane by overriding queue= at
         that dispatch site only — the daily loop must keep falling through to the task's own
-        se_engage queue, or it would crowd out the deadline-bound warm-ups."""
-        from cqc_lem.app.run_scheduler import auto_daily_engagement
+        se_engage queue, or it would crowd out the deadline-bound warm-ups. The #626 jitter shim
+        sits in front of the dispatch, so check the hop that actually queues the Selenium run."""
+        from cqc_lem.app.run_scheduler import auto_daily_engagement, dispatch_golden_hour_engagement
         with patch(f"{_RS}.get_active_user_ids", return_value=[1]), \
              patch(f"{_RS}.has_linkedin_session", return_value=True), \
              patch(f"{_RS}._stagger_due", return_value=True), \
-             patch(f"{_RS}.automate_commenting") as ac:
+             patch(f"{_RS}.dispatch_golden_hour_engagement") as shim:
             auto_daily_engagement()
+        assert "queue" not in shim.apply_async.call_args[1]
+        with patch(f"{_RS}.automate_commenting") as ac:
+            dispatch_golden_hour_engagement(user_id=1)
         assert "queue" not in ac.apply_async.call_args[1]
 
     def test_only_users_whose_slot_is_due_are_dispatched(self):
@@ -59,10 +63,10 @@ class TestAutoDailyEngagement:
         with patch(f"{_RS}.get_active_user_ids", return_value=[1, 2, 3]), \
              patch(f"{_RS}.has_linkedin_session", return_value=True), \
              patch(f"{_RS}._stagger_due", side_effect=lambda u, *_: u == 2) as due, \
-             patch(f"{_RS}.automate_commenting") as ac:
+             patch(f"{_RS}.dispatch_golden_hour_engagement") as shim:
             result = auto_daily_engagement()
-        assert ac.apply_async.call_count == 1
-        assert ac.apply_async.call_args[1]["kwargs"]["user_id"] == 2
+        assert shim.apply_async.call_count == 1
+        assert shim.apply_async.call_args[1]["kwargs"]["user_id"] == 2
         assert due.call_args[0][1] is STAGGER_GOLDEN_HOUR
         assert "1/3" in result
 

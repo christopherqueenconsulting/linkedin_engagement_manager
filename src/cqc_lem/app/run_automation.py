@@ -61,6 +61,9 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
 from cqc_lem.utilities.audience_stats import parse_follower_count, parse_connection_count, \
     parse_profile_views, parse_search_appearances
 from cqc_lem.utilities.engagement_window import record_pre_post_run
+from cqc_lem.utilities.human_pacing import pace_read, record_action, remaining_actions, \
+    engagement_caps_from_prefs, dispatch_jitter_seconds, PACE_RESPONSIVE, \
+    ACTION_COMMENT, ACTION_DM, ACTION_INVITE, ACTION_REPLY
 from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
     load_profile_for_user, clean_person_name, connection_degree, is_first_degree
@@ -172,17 +175,8 @@ def get_feed_posts(driver, wait, num_posts=10):
     return posts
 
 
-def simulate_reading_time(content):
-    # Estimate reading time based on the number of words (average human reads 200-300 words per minute)
-    words = len(content.split())
-    read_time = words / 250 * 60  # Convert to seconds
-    # Round to integer
-    return round(read_time)
-
-
-def simulate_thinking_time():
-    # Random thinking time between 2 and 5 seconds
-    return round(random.uniform(2, 5))
+# Reading/thinking delays now come from utilities/human_pacing.py (issue #626) — one engine, with a
+# floor no human beats and a ceiling that keeps the sleep inline-safe.
 
 
 def simulate_writing_time(content):
@@ -1160,7 +1154,11 @@ def _engage_card(driver, wait, my_profile: LinkedInProfile, user_id: int, card, 
         release_post_claim(user_id, key)  # no comment generated (or none cleared the quality gate)
         return False
     driver.execute_script("arguments[0].scrollIntoView({block:'center'});", card)
-    time.sleep(simulate_reading_time(content) / 2 + simulate_thinking_time())
+    # Read-time-realistic delay (issue #626): scaled to the post's length and floored well above
+    # "instant", so we never comment faster than a human could have read the thing. The old
+    # half-reading-time + thinking-time pair could clear a short post in ~3s, which is the loudest
+    # cadence tell there is.
+    pace_read(content, user_id=user_id)
     # React BEFORE submitting the comment: posting re-renders the card and staled the element, so
     # the old post-comment reaction attempt silently failed. Skip our OWN posts. Non-fatal — a
     # missed reaction never blocks the comment.
@@ -1176,6 +1174,7 @@ def _engage_card(driver, wait, my_profile: LinkedInProfile, user_id: int, card, 
     mark_post_commented(user_id, key)
     insert_new_log(user_id=user_id, action_type=LogActionType.COMMENT,
                    result=LogResultType.SUCCESS, post_url=key, message=comment_text)
+    record_action(user_id, ACTION_COMMENT)  # account-level governor (issue #626)
     if recent_comments is not None:
         recent_comments.insert(0, comment_text)
     time.sleep(random.uniform(6, 14))  # human pacing between comments
@@ -1278,9 +1277,15 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     if engagers is None:
         engagers = get_recent_engagers(user_id)
     daily_cap = prefs.get("max_comments_per_day") or 20
-    remaining_today = max(0, daily_cap - count_comments_today(user_id))
+    # Human pacing (issue #626): today's allowance is a stable random draw from the cap (with
+    # weekend asymmetry and occasional rest days), and the account-level governor also caps the
+    # COMBINED comment/DM/invite traffic — so a flat "cap comments every day" volume signature
+    # never shows up, and the lanes can't each spend a full cap on the same day.
+    remaining_today = remaining_actions(user_id, ACTION_COMMENT, daily_cap,
+                                        count_comments_today(user_id),
+                                        caps=engagement_caps_from_prefs(prefs))
     if remaining_today <= 0:
-        myprint(f"Daily comment cap reached ({daily_cap}) — skipping")
+        myprint(f"Daily comment budget spent (cap {daily_cap}) — skipping")
         return 0
     max_posts = min(max_posts, remaining_today)
     max_age_min = (prefs.get("max_post_age_hours") or 24) * 60
@@ -2341,10 +2346,19 @@ def _golden_hour_sweep_countdowns(sweeps: int = _GOLDEN_HOUR_REPLY_SWEEPS,
     """Countdown seconds (from publish) for the golden-hour reply sweeps, spread evenly across the
     window so a comment left at any point in the golden hour is answered within window/sweeps minutes.
     e.g. 3 sweeps over 60 min → [1200, 2400, 3600] (20, 40, 60 min in). Sweep count is floored to 1
-    and capped at _GOLDEN_HOUR_MAX_SWEEPS so misconfiguration can't schedule an unbounded burst."""
+    and capped at _GOLDEN_HOUR_MAX_SWEEPS so misconfiguration can't schedule an unbounded burst.
+
+    Each slot carries a small RESPONSIVE jitter (issue #626): replying quickly to comments on your
+    OWN post is human, so these are exempt from the tens-of-minutes engagement jitter — but landing
+    on 20:00/40:00/60:00 after every single publish is a machine signature, so the exact minute
+    still moves. Jitter is additive (never earlier), so the last sweep still covers the window."""
     n = max(1, min(_GOLDEN_HOUR_MAX_SWEEPS, int(sweeps)))
     step = (window_minutes * 60) / n
-    return [int(round(step * i)) for i in range(1, n + 1)]
+    # Half a step is the hard jitter ceiling: even a misconfigured PACING_RESPONSIVE_JITTER_MAX_SECONDS
+    # can then never reorder two sweeps or collapse them onto the same minute.
+    jitter_cap = int(step // 2)
+    return [int(round(step * i)) + min(jitter_cap, dispatch_jitter_seconds(PACE_RESPONSIVE))
+            for i in range(1, n + 1)]
 
 
 # --- inbound hot-lead detection (issue #483) ---------------------------------------------------
@@ -2521,6 +2535,7 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
         if response and _reply_to_comment_inline(driver, wait, comment, response, user_id=user_id):
             insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.REPLY,
                            result=LogResultType.SUCCESS, post_url=post_url, message=response)
+            record_action(user_id, ACTION_REPLY)  # tracked, but outside the outbound envelope (#626)
             comments_replied_count += 1
             time.sleep(random.uniform(5, 12))
         else:
@@ -2863,6 +2878,7 @@ def _followup_on_post_comment_replies(driver, wait, user_id: int, post_url: str,
                 record_comment_followup(user_id, post_key, reply_key, reacted=did_react, replied=True)
                 insert_new_log(user_id=user_id, action_type=LogActionType.REPLY,
                                result=LogResultType.SUCCESS, post_url=post_url, message=response)
+                record_action(user_id, ACTION_REPLY)  # tracked, outside the outbound envelope (#626)
                 time.sleep(random.uniform(5, 12))
     return result
 
@@ -3711,15 +3727,10 @@ def generate_and_post_comment(driver, wait, post_link, my_profile: LinkedInProfi
     # click_element_wait_retry(driver, wait, '//button[contains(@class, "see-more")]', "Clicking Read More Button",
     #                         parent_element=post['element'], max_try=0, element_always_expected=False)
 
-    # Simulate reading the post
-    read_time = simulate_reading_time(content) / 2
-    myprint(f"Simulated Reading... for {read_time} seconds")
-    time.sleep(read_time)
-
-    # Simulate thinking time
-    thinking_time = simulate_thinking_time()
-    myprint(f"Simulated Thinking... for {thinking_time} seconds")
-    time.sleep(thinking_time)
+    # Read-time-realistic delay before engaging (issue #626) — same floor/ceiling as the feed walk,
+    # so the permalink path can't be the fast one that gives the account away.
+    read_time = pace_read(content, user_id=user_id)
+    myprint(f"Simulated Reading... for {read_time:.0f} seconds")
 
     # Generate AI response — pass the user's engagement preferences so this path honors
     # tone/comment_length/style/emoji/hashtag settings exactly like the feed-commenting path
@@ -4133,6 +4144,8 @@ def send_dm_now(user_id: int, profile_url: str, message: str) -> bool:
         insert_new_log(user_id=user_id, action_type=LogActionType.DM,
                        result=LogResultType.SUCCESS if dm_sent else LogResultType.FAILURE,
                        post_url=profile_url, message=message)
+        if dm_sent:
+            record_action(user_id, ACTION_DM)  # account-level governor (issue #626)
 
         quit_gracefully(driver)  # Close the driver
 
@@ -4162,8 +4175,10 @@ def send_scheduled_dm(self, dm_id: int):
 
     user_id = dm["user_id"]
     prefs = get_engagement_preferences(user_id)
-    if count_dms_sent_today(user_id) >= int(prefs.get("max_dms_per_day") or 0):
-        myprint(f"send_scheduled_dm: daily DM cap reached for user {user_id}; deferring DM {dm_id}")
+    if remaining_actions(user_id, ACTION_DM, int(prefs.get("max_dms_per_day") or 0),
+                         count_dms_sent_today(user_id),
+                         caps=engagement_caps_from_prefs(prefs)) <= 0:
+        myprint(f"send_scheduled_dm: daily DM budget spent for user {user_id}; deferring DM {dm_id}")
         update_scheduled_dm_status(dm_id, ScheduledDmStatus.APPROVED)  # retry on the next scan
         return f"Scheduled DM {dm_id} deferred (daily DM cap reached)"
 
@@ -4415,6 +4430,8 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -
         insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
                        result=LogResultType.SUCCESS if invite_sent else LogResultType.FAILURE,
                        post_url=profile_url, message=result)
+        if invite_sent:
+            record_action(user_id, ACTION_INVITE)  # account-level governor (issue #626)
     finally:
         quit_gracefully(driver)  # Close the driver
 
@@ -4739,7 +4756,11 @@ def _fire_funnel_stage(user_id: int, target: dict) -> str:
         return f"target {target_id}: skipped {stage} (no draft)"
 
     if stage == OutreachStage.COMMENT:
-        if count_comments_today(user_id) >= int(prefs.get("max_comments_per_day") or 0):
+        # Same paced budget + account governor the feed walk spends against (issue #626), so the
+        # funnel can't quietly push the day past the account envelope.
+        if remaining_actions(user_id, ACTION_COMMENT, int(prefs.get("max_comments_per_day") or 0),
+                             count_comments_today(user_id),
+                             caps=engagement_caps_from_prefs(prefs)) <= 0:
             return f"target {target_id}: comment deferred (daily comment cap)"
         context_url = target.get("context_url")
         if not context_url:
@@ -4755,7 +4776,9 @@ def _fire_funnel_stage(user_id: int, target: dict) -> str:
                                               "message": draft})
         next_stage = OutreachStage.DM
     elif stage == OutreachStage.DM:
-        if count_dms_sent_today(user_id) >= int(prefs.get("max_dms_per_day") or 0):
+        if remaining_actions(user_id, ACTION_DM, int(prefs.get("max_dms_per_day") or 0),
+                             count_dms_sent_today(user_id),
+                             caps=engagement_caps_from_prefs(prefs)) <= 0:
             return f"target {target_id}: DM deferred (daily DM cap)"
         send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": profile_url,
                                             "message": draft})
