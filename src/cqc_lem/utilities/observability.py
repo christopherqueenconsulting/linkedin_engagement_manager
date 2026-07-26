@@ -473,6 +473,31 @@ def track_post_outcome(
     )
 
 
+def track_audience_snapshot(
+    user_id: Optional[int],
+    follower_count: Optional[int] = None,
+    connection_count: Optional[int] = None,
+    profile_views: Optional[int] = None,
+    search_appearances: Optional[int] = None,
+    **extra,
+) -> None:
+    """Emit one audience-telemetry snapshot (issue #627) so follower growth and profile views are
+    queryable in PostHog next to the content outcomes that drove them. Unreadable counts stay None
+    (not 0) — a zero would read as a real collapse in a growth chart."""
+    posthog.capture(
+        distinct_id=str(user_id or "system"),
+        event="audience_snapshot",
+        properties={
+            "user_id": user_id,
+            "follower_count": follower_count,
+            "connection_count": connection_count,
+            "profile_views": profile_views,
+            "search_appearances": search_appearances,
+            **extra,
+        },
+    )
+
+
 def track_pre_post_engagement(post_id: int, user_id: Optional[int], status: str, **extra) -> None:
     """Emit the per-post pre-post engagement-window marker (issue #547) — dispatched, skipped (with
     the reason) or ran (with the comment count) — so a report can confirm the warm-up before a post

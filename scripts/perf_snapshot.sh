@@ -33,7 +33,11 @@ q(){ sudo -n docker exec --env-file "$PWF" mysql_db mysql -u"$DBU" -N -B -e "$1"
 U=1
 DAY="SELECT COUNT(*) FROM $DBN.logs WHERE user_id=$U AND result='success' AND created_at>=NOW()-INTERVAL 1 DAY AND action_type="
 c1d=$(q "${DAY}'comment';"); r1d=$(q "${DAY}'reply';"); d1d=$(q "${DAY}'dm';"); e1d=$(q "${DAY}'engaged';"); p1d=$(q "${DAY}'post';")
-ps=$(q "SELECT CONCAT_WS(',',COUNT(DISTINCT post_id),COALESCE(SUM(reactions),0),COALESCE(SUM(comments),0),COALESCE(SUM(impressions),0)) FROM $DBN.post_stats WHERE user_id=$U;")
+# LATEST stat row per post only. post_stats is append-only — the nightly scrape writes a fresh
+# CUMULATIVE row per post every run, so summing every row multiplied each post's reactions /
+# impressions by how many times it had been scraped (issue #627). MAX(id) GROUP BY post_id is the
+# same latest-row-per-post pattern db.py uses for every analytics read.
+ps=$(q "SELECT CONCAT_WS(',',COUNT(DISTINCT post_id),COALESCE(SUM(reactions),0),COALESCE(SUM(comments),0),COALESCE(SUM(impressions),0)) FROM $DBN.post_stats WHERE user_id=$U AND id IN (SELECT MAX(id) FROM $DBN.post_stats WHERE user_id=$U GROUP BY post_id);")
 eng=$(q "SELECT COUNT(*) FROM $DBN.post_engagers WHERE user_id=$U;")
 fu=$(q "SELECT COUNT(*) FROM $DBN.comment_followups WHERE user_id=$U;")
 cp=$(q "SELECT COUNT(*) FROM $DBN.commented_posts WHERE user_id=$U;")

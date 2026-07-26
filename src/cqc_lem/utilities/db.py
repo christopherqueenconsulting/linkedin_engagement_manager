@@ -5887,6 +5887,83 @@ def get_latest_newsletter_subscriber_count(user_id: int) -> "int | None":
         connection.close()
 
 
+def record_follower_stat(user_id: int, follower_count: Optional[int] = None,
+                         connection_count: Optional[int] = None,
+                         profile_views: Optional[int] = None,
+                         search_appearances: Optional[int] = None) -> bool:
+    """Append one audience snapshot for the user (issue #627). Every count is optional: a value the
+    capture could not read is stored as NULL, never 0, so the growth deltas can tell "not measured"
+    apart from "the audience really is that size". Returns False when NOTHING was readable — there
+    is no point writing an all-NULL row that only adds noise to the series."""
+    if all(v is None for v in (follower_count, connection_count, profile_views, search_appearances)):
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO follower_stats (user_id, follower_count, connection_count, profile_views, "
+            "search_appearances) VALUES (%s, %s, %s, %s, %s)",
+            (user_id, follower_count, connection_count, profile_views, search_appearances))
+        connection.commit()
+        return cursor.rowcount == 1
+    except mysql.connector.Error as err:
+        myprint(f"Could not record follower stat for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_follower_stats(user_id: int, days: Optional[int] = None, limit: int = 400) -> list:
+    """The user's audience snapshots, most recent first (issue #627). `days` optionally windows to
+    captures within the last N days. Each item:
+    id, follower_count, connection_count, profile_views, search_appearances, captured_at."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        window = "AND captured_at >= (NOW() - INTERVAL %s DAY) " if days is not None else ""
+        params = (user_id, days, limit) if days is not None else (user_id, limit)
+        cursor.execute(
+            "SELECT id, follower_count, connection_count, profile_views, search_appearances, "
+            "captured_at FROM follower_stats WHERE user_id = %s " + window +
+            "ORDER BY captured_at DESC, id DESC LIMIT %s", params)
+        return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        myprint(f"Could not get follower stats for user {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_daily_action_counts(user_id: int, days: int = 90,
+                            action_types: Optional[list] = None) -> list:
+    """Daily count of the user's SUCCESSFUL automation actions, for overlaying what we DID on the
+    audience-growth chart (issue #627). Defaults to the outbound actions a follower can react to:
+    posts, feed comments, replies and DMs. Returns dicts of {date, action_type, count}."""
+    types = [LogActionType.POST.value, LogActionType.COMMENT.value, LogActionType.REPLY.value,
+             LogActionType.DM.value] if action_types is None else list(action_types)
+    if not types:
+        return []
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        placeholders = ",".join(["%s"] * len(types))
+        cursor.execute(
+            "SELECT DATE(created_at) AS `date`, action_type, COUNT(*) AS `count` FROM logs "
+            f"WHERE user_id = %s AND result = %s AND action_type IN ({placeholders}) "
+            "AND created_at >= (NOW() - INTERVAL %s DAY) "
+            "GROUP BY DATE(created_at), action_type ORDER BY `date` ASC",
+            (user_id, LogResultType.SUCCESS.value, *types, days))
+        return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        myprint(f"Could not get daily action counts for user {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_newsletter_due_user_ids(now) -> list:
     """User IDs whose newsletter is enabled and due per its cadence (weekly/biweekly/monthly)."""
     connection = get_db_connection()

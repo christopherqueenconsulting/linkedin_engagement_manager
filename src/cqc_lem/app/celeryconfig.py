@@ -161,6 +161,7 @@ task_routes = {
     # --- se_content: seeding, stats, group + newsletter publishing --------
     'cqc_lem.app.run_automation.auto_seed_comment_on_post': {'queue': 'se_content'},
     'cqc_lem.app.run_automation.auto_scrape_post_stats': {'queue': 'se_content'},
+    'cqc_lem.app.run_automation.capture_follower_stats': {'queue': 'se_content'},
     'cqc_lem.app.run_automation.auto_sync_user_groups': {'queue': 'se_content'},
     'cqc_lem.app.run_automation.auto_post_to_group': {'queue': 'se_content'},
     'cqc_lem.app.run_automation.auto_publish_newsletter_edition': {'queue': 'se_content'},

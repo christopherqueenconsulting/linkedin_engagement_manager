@@ -175,6 +175,12 @@ app.conf.update(
             'task': 'cqc_lem.app.run_scheduler.auto_scrape_stats',
             'schedule': crontab(hour='23', minute='0')  # Nightly: capture post engagement for time recs
         },
+        'capture-follower-stats': {
+            'task': 'cqc_lem.app.run_scheduler.auto_capture_follower_stats',
+            # Nightly at 23:40 — after the 23:00 post-stats scrape, so a day's audience snapshot and
+            # its content outcomes land in the same night and the growth panel can overlay them.
+            'schedule': crontab(hour='23', minute='40')
+        },
         'rebuild-lead-scores': {
             'task': 'cqc_lem.app.run_scheduler.rebuild_lead_scores',
             # Nightly at 3:30 AM — after the 11 PM stats scrape, so the morning hot-leads list

@@ -802,6 +802,23 @@ def auto_scrape_stats():
 
 
 @shared_task.task
+def auto_capture_follower_stats():
+    """Daily: snapshot each active user's follower/connection counts and profile views (issue #627).
+    Selenium-backed, so it respects the global throttle breaker, and it only dispatches for users
+    who actually have a LinkedIn session to read the numbers with."""
+    if _skip_if_throttled("auto_capture_follower_stats"):
+        return "Automation throttled"
+    from cqc_lem.app.run_automation import capture_follower_stats
+    users = get_active_user_ids()
+    n = 0
+    for uid in users:
+        if has_linkedin_session(uid):
+            capture_follower_stats.apply_async(kwargs={'user_id': uid})
+            n += 1
+    return f"Audience capture dispatched for {n}/{len(users)} user(s)"
+
+
+@shared_task.task
 def auto_send_due_followups():
     """Dispatch a per-user Selenium task to send due DM follow-ups (each gated by reply-detection)."""
     if _skip_if_throttled("auto_send_due_followups"):

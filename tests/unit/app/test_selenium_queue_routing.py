@@ -45,6 +45,7 @@ SELENIUM_TASK_LANES = {
     # se_content
     "auto_seed_comment_on_post": "se_content",
     "auto_scrape_post_stats": "se_content",
+    "capture_follower_stats": "se_content",
     "auto_sync_user_groups": "se_content",
     "auto_post_to_group": "se_content",
     "auto_publish_newsletter_edition": "se_content",

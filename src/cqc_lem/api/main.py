@@ -57,6 +57,7 @@ from cqc_lem.utilities.db import (
     get_user_timezone,
     get_user_groups, set_groups_enabled, get_post_engagement_rows, get_post_performance_rows,
     get_content_mix_counts,
+    get_follower_stats, get_daily_action_counts,
     get_lead_magnet_settings, update_lead_magnet_settings,
     get_dm_templates, upsert_dm_templates,
     get_engagement_targets, upsert_engagement_targets, delete_engagement_target,
@@ -2657,6 +2658,34 @@ def get_engagement_analytics_endpoint(session_token: str, days: int = 90) -> Res
         # post has engagement data yet.
         "content_mix": content_mix_compliance(get_content_mix_counts(user_id, days=days)),
     })
+
+
+@router.get("/user/audience-growth")
+def get_audience_growth_endpoint(session_token: str, days: int = 90) -> ResponseModel:
+    """Follower/audience telemetry for the analytics dashboard's growth panel (issue #627): the
+    daily follower series with 7/30-day deltas, the latest profile-view and search-appearance
+    readings, and the user's daily posting/commenting activity to overlay on the same window.
+    Audience growth is the system's primary outcome — post engagement is the leading indicator."""
+    from cqc_lem.utilities.audience_stats import (GROWTH_WINDOWS, build_activity_series,
+                                                  follower_growth)
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    days = max(1, min(int(days), 365))
+    # The 7/30-day deltas need a baseline that predates the window being charted, so read enough
+    # history to cover the longest growth window on top of it.
+    history_days = days + max(GROWTH_WINDOWS)
+    growth = follower_growth(get_follower_stats(user_id, days=history_days))
+    growth["series"] = [p for p in growth["series"] if p["date"] >= _window_start(days)]
+    return ResponseModel(status_code=200, detail={
+        **growth,
+        "activity": build_activity_series(get_daily_action_counts(user_id, days=days)),
+        "days": days,
+    })
+
+
+def _window_start(days: int) -> str:
+    return (datetime.now(timezone.utc).date() - timedelta(days=int(days))).isoformat()
 
 
 class LeadMagnetRequest(BaseModel):
