@@ -1292,7 +1292,8 @@ COMMENT_HISTORY_LIMIT = 50
 COMMENT_POST_REFERENCE_TOKENS = 3
 # Total generation attempts before the post is skipped (initial draft + regenerations).
 COMMENT_GATE_MAX_ATTEMPTS_DEFAULT = 3
-# Embedding cosine at-or-above which two comments are "the same comment again". Deliberately NOT
+# Embedding cosine ABOVE which two comments are "the same comment again" (the gate rejects on
+# `score > threshold`, matching the post gate's strictly-greater comparison). Deliberately NOT
 # the POST_SIMILARITY_MAX value: that ceiling grades TOKEN-SET OVERLAP, where two unrelated texts
 # score ~0.2-0.4, while two unrelated professional comments still embed at cosine ~0.4-0.6. 0.82 is
 # the same "same underlying text" cosine bar the feedback-dedup uses, and it is what the lexical
@@ -1547,9 +1548,10 @@ def comment_contract_directive() -> str:
         "1. REFERENCE A SPECIFIC CLAIM from the post — quote or paraphrase the actual sentence, "
         "number, or example you are responding to. A comment that could sit unchanged under any "
         "other post has already failed.\n"
-        "2. ADD exactly ONE thing the post did not have: a first-hand experience of your own, a "
+        "2. ADD AT LEAST ONE thing the post did not have: a first-hand experience of your own, a "
         "concrete data point you actually know, a respectful disagreement, or a genuinely curious "
-        "question the post leaves open. Never invent a statistic to satisfy this.\n"
+        "question the post leaves open. One done well beats a checklist of all four, and never "
+        "invent a statistic to satisfy this.\n"
         f"3. AT LEAST {COMMENT_MIN_SENTENCES} sentences. A one-liner reads as a bot.\n"
         f"4. NEVER open with validation filler — banned openers include {banned}. Open on the "
         "substance: the specific claim you are engaging with.\n"
