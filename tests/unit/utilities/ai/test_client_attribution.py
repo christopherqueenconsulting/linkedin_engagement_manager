@@ -107,6 +107,32 @@ class TestAttributionMetadata:
         assert recorder.bodies[-1]["metadata"] == {"feature": "comment", "user_id": 5}
 
 
+class TestTheSharedClient:
+    """The tests above build their own AttributedOpenAI, so they all still pass if the module-level
+    `client` — the ONE instance every AI helper imports — is ever rebuilt as a plain `OpenAI()`.
+    That regression would silently strip distinct_id + feature off every proxy event and leave no
+    other trace, which is exactly the failure this design exists to prevent. Pin it here."""
+
+    def test_the_shared_client_is_the_attributed_one(self):
+        from cqc_lem.utilities.ai.client import AttributedOpenAI, client
+        assert isinstance(client, AttributedOpenAI)
+
+    def test_the_shared_client_stamps_the_request_it_actually_builds(self):
+        """Driven through the real singleton's own request builder — no network, no substitute
+        client — so the assertion covers the object production uses."""
+        from openai._models import FinalRequestOptions
+
+        from cqc_lem.utilities.ai.client import client
+        options = FinalRequestOptions.construct(
+            method="post", url="/chat/completions",
+            json_data={"model": "lem-medium", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        with patch("cqc_lem.utilities.observability.current_llm_attribution",
+                   return_value=(11, "newsletter")):
+            request = client._build_request(options)
+        assert json.loads(request.content)["metadata"] == {"feature": "newsletter", "user_id": 11}
+
+
 class TestAttributionMetadataShape:
     def test_zero_is_a_user_id_not_a_missing_one(self):
         from cqc_lem.utilities.ai.client import attribution_metadata
