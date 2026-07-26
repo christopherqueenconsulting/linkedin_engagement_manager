@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.95.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.95.2...v0.95.3) (2026-07-26)
+
+
+### Bug Fixes
+
+* **automation:** stop paging on empty invitation manager (closes [#570](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/570)) ([ef98815](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ef988151abca8ccc5c39e01cf124f9f7da6bb033))
+* **automation:** stop paging on empty invitation manager (closes [#570](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/570)) ([782b3eb](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/782b3eb2d544fbe64e61da6bdffb02d61f110059))
+* **scheduler:** scope the daily slot claim to its local date, gate DMs on session ([3522d30](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3522d30eaa91fa5e17b7450a5bc409b2d527c687))
+
+
+### Performance Improvements
+
+* **scheduler:** stagger the fixed-time engagement fan-outs per user (closes [#554](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/554)) ([5aea4a9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5aea4a90c6b38970bd8c8eb48748c2fb2442500e))
+
 ## [0.95.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.95.1...v0.95.2) (2026-07-26)
 
 
