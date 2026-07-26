@@ -266,6 +266,7 @@ def _run_feed(boxes, *, prefs=None, relevant=True, roster_stats=None, matches=Tr
         p = lambda name, **kw: es.enter_context(patch(f"{_RA}.{name}", **kw))
         p("get_engagement_preferences", return_value=prefs or {"max_comments_per_day": 20})
         p("get_recent_engagers", return_value=set())
+        p("get_recent_comment_texts", return_value=[])
         p("count_comments_today", return_value=0)
         p("get_or_create_profile_synthesis", return_value="synthesis")
         p("comment_on_roster_posts", return_value=roster_stats or empty_roster)

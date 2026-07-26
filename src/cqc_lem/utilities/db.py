@@ -4674,6 +4674,29 @@ def get_duplicate_comment_posts(user_id: int, hours: int = 24):
         connection.close()
 
 
+def get_recent_comment_texts(user_id: int, limit: int = 50) -> list:
+    """The bodies of the user's most recently POSTED comments, newest first — the history the
+    comment-side similarity gate dedups a fresh draft against (issue #617). No new column and no
+    stored embeddings: `logs.message` already holds the exact text of every successful comment, so
+    the gate recomputes from the log."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT message FROM logs "
+            "WHERE user_id=%s AND action_type=%s AND result=%s "
+            "AND message IS NOT NULL AND message <> '' "
+            "ORDER BY id DESC LIMIT %s",
+            (user_id, LogActionType.COMMENT.value, LogResultType.SUCCESS.value, int(limit)))
+        return [r[0] for r in cursor.fetchall()]
+    except mysql.connector.Error as err:
+        myprint(f"Could not get recent comment texts for user {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def upsert_user_group(user_id: int, group_id: str, group_name: str = None) -> bool:
     """Record a joined group (new groups default to enabled=1). Refreshes name + last_synced_at
     without clobbering the user's enabled choice on an existing row."""

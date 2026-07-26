@@ -34,6 +34,7 @@ def _no_real_llm_calls():
 
     with patch.object(client.chat.completions, "create",
                       side_effect=_blocked_llm_call), \
+         patch.object(client.embeddings, "create", side_effect=_blocked_llm_call), \
          patch.object(client.images, "generate", side_effect=_blocked_llm_call):
         yield
 

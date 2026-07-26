@@ -76,11 +76,14 @@ class TestAlignmentDirective:
 class TestGenerateAiResponseGrounding:
     def test_grounds_in_target_post_and_blocks_self_promo(self):
         from cqc_lem.utilities.ai import ai_helper
-        with patch(f"{_AI}._call_llm", return_value=_resp("Nice — what changed your mind?")) as m:
+        draft = ("Your line about warehouse robotics changing pick paths is where I'd push back. "
+                 "We ran that pilot last year and throughput only moved 8% until the aisles were "
+                 "re-mapped. What did month three look like for you?")
+        with patch(f"{_AI}._call_llm", return_value=_resp(draft)) as m:
             out = ai_helper.generate_ai_response(
                 "POST ABOUT WAREHOUSE ROBOTICS", _profile(),
                 prefs={"focus_topics": ["logistics"], "business_goals": "book calls"})
-        assert out == "Nice — what changed your mind?"
+        assert out == draft
         msgs = _messages(m)
         system = msgs[0]["content"]
         user_text = msgs[1]["content"][0]["text"]

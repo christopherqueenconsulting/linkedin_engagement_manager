@@ -40,7 +40,7 @@ import json
 import os
 from typing import Optional
 
-from cqc_lem.utilities.ai.content_framework import text_similarity
+from cqc_lem.utilities.ai.content_framework import as_vector, cosine_similarity, text_similarity
 from cqc_lem.utilities.db import (
     FeedbackStatus, count_feedback_filed_by_user, get_open_feedback_clusters,
     get_unprocessed_feedback, update_feedback_triage,
@@ -238,38 +238,9 @@ def max_issues_per_user_per_day() -> int:
 
 
 # --- Similarity ---------------------------------------------------------------------------------
-
-def cosine_similarity(a: Optional[list], b: Optional[list]) -> float:
-    """Cosine of two equal-length vectors, clamped to 0.0-1.0. Mismatched lengths, empties, and
-    zero-norm vectors are 0.0 (not an error) so a half-written embedding can never claim a match.
-    Negative cosines are clamped to 0.0 — "less than unrelated" is still just unrelated here."""
-    if not a or not b or len(a) != len(b):
-        return 0.0
-    try:
-        dot = sum(float(x) * float(y) for x, y in zip(a, b))
-        norm_a = sum(float(x) * float(x) for x in a) ** 0.5
-        norm_b = sum(float(y) * float(y) for y in b) ** 0.5
-    except (TypeError, ValueError):
-        return 0.0
-    if norm_a <= 0 or norm_b <= 0:
-        return 0.0
-    return max(0.0, min(1.0, dot / (norm_a * norm_b)))
-
-
-def as_vector(raw: object) -> Optional[list]:
-    """A stored embedding as a list of floats. `feedback.embedding` is a JSON column, which MySQL
-    hands back as a str on some connector versions and a list on others; junk becomes None."""
-    if isinstance(raw, str):
-        try:
-            raw = json.loads(raw)
-        except ValueError:
-            return None
-    if not isinstance(raw, list) or not raw:
-        return None
-    try:
-        return [float(x) for x in raw]
-    except (TypeError, ValueError):
-        return None
+# `cosine_similarity` / `as_vector` live in content_framework alongside `text_similarity` — the ONE
+# similarity toolbox every dedup gate shares (the comment gate uses the same pair, issue #617). They
+# are re-exported here because this module's public API has always carried them.
 
 
 def similarity(text_a: str, text_b: str, vector_a: object = None,

@@ -129,9 +129,13 @@ class TestPostResearchUnified:
 class TestCommentsUseUnifiedFramework:
     def test_comment_gets_an_assigned_angle_by_default(self):
         from cqc_lem.utilities.ai import ai_helper
-        with patch(f"{_AI}._call_llm", return_value=_resp("Sharp take — what changed?")) as m:
+        # Contract-clearing draft (issue #617): grounded in the post, 2+ sentences, a lived
+        # value-add, no validation-filler opener.
+        draft = ("Your post about robots on the night shift is the part I'd push on. We ran that "
+                 "setup last year and the handoff broke twice in the first week.")
+        with patch(f"{_AI}._call_llm", return_value=_resp(draft)) as m:
             out = ai_helper.generate_ai_response("POST ABOUT ROBOTS", _profile())
-        assert out == "Sharp take — what changed?"
+        assert out == draft
         system = _messages(m)[0]["content"]
         assert "THIS COMMENT'S ASSIGNED BLUEPRINT" in system
         assert any(meta["label"] in system for meta in fw.COMMENT_FORMATS.values())
