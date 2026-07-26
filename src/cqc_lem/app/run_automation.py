@@ -29,7 +29,7 @@ from cqc_lem.utilities.ai.content_alignment import humanize_text, split_link_for
     append_link_to_comment
 from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, insert_new_log, LogActionType, \
-    CONNECTION_REQUEST_SENT_MESSAGE, \
+    CONNECTION_REQUEST_SENT_MESSAGE, ALREADY_CONNECTED_MESSAGE, \
     get_engagement_preferences, count_comments_today, get_recent_engagers, upsert_engager, \
     get_newsletter_settings, mark_newsletter_published, record_newsletter_subscriber_stat, \
     get_newsletter_edition, mark_edition_published, mark_edition_failed, \
@@ -58,7 +58,7 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
 from cqc_lem.utilities.engagement_window import record_pre_post_run
 from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
-    load_profile_for_user
+    load_profile_for_user, clean_person_name, connection_degree, is_first_degree
 from cqc_lem.utilities.linkedin.poster import share_on_linkedin, share_carousel_on_linkedin, \
     share_document_on_linkedin, comment_on_linkedin_post, object_urn_from_post_url
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
@@ -2378,10 +2378,14 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
         # (if enabled) DM them the resource when their comment contains the trigger keyword.
         try:
             _link = comment.find_element(By.CSS_SELECTOR, "a[href*='/in/']")
-            _ename = ((_link.text or "") or (_link.get_attribute("aria-label") or "")).strip().split("\n")[0]
+            # SDUI packs "Name Verified Profile 1st" into one link — keep the name, keep the badge
+            # separately (it tells the connection scan who we're already connected to, issue #623).
+            _eraw = (_link.text or "") or (_link.get_attribute("aria-label") or "")
+            _ename = clean_person_name(_eraw)
+            _edegree = connection_degree(_eraw)
             _eprofile = (_link.get_attribute("href") or "").split("?")[0]
             if _ename and _ename.lower() != (my_profile.full_name or "").lower():
-                upsert_engager(user_id, _ename, _eprofile)
+                upsert_engager(user_id, _ename, _eprofile, connection_degree=_edegree)
                 # Inbound intent (#483): this commenter may be raising their hand — flag + draft.
                 if leads_flagged < _MAX_LEAD_FLAGS_PER_SWEEP and _flag_lead_signal(
                         user_id, comment_text, LeadSignalSource.POST_COMMENT, f"post:{post_id}",
@@ -4092,12 +4096,36 @@ def _send_lead_response(signal_id: int) -> str:
         quit_gracefully(driver)
 
 
-def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -> bool:
+# The connection-degree badge on a profile page. Only used to ABORT a pointless invite, so a
+# selector that stops matching costs nothing but the old behaviour (issue #623).
+_PROFILE_DEGREE_LOCATORS = [
+    (By.CSS_SELECTOR, "main span.dist-value"),
+    (By.CSS_SELECTOR, "main span.distance-badge"),
+    (By.XPATH, "//main//span[contains(@class,'distance-badge')]"),
+]
+
+
+def _profile_is_first_degree(driver) -> bool:
+    """True only when the profile page SAYS 1st degree. Fails open (False) on any read problem —
+    a missed badge just means we try the invite, which is the old behaviour."""
+    try:
+        for by, selector in _PROFILE_DEGREE_LOCATORS:
+            for element in driver.find_elements(by, selector):
+                if is_first_degree(element.text or ""):
+                    return True
+    except Exception as e:
+        log_warning("Could not read the connection-degree badge; attempting the invite anyway",
+                    exc=e, action_type="invite_connect")
+    return False
+
+
+def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -> "tuple[bool, str]":
     """Core connect-invite send: open the profile, click Connect (+ optional note), log the result.
-    Returns True on success. Shared by invite_to_connect (reactive profile-viewer flow) and
-    send_connection_request (issue #398 approval-gated proactive flow) so both use the same send +
-    log path (mirrors send_dm_now). Re-raises LinkedInRateLimited when the kill-switch / 429 breaker
-    is open so callers can defer rather than record a false failure."""
+    Returns (sent, result_message) — the message is the failure reason when `sent` is False, which
+    the proactive flow stores on the request row (issue #623). Shared by invite_to_connect (reactive
+    profile-viewer flow) and send_connection_request (issue #398 approval-gated proactive flow) so
+    both use the same send + log path (mirrors send_dm_now). Re-raises LinkedInRateLimited when the
+    kill-switch / 429 breaker is open so callers can defer rather than record a false failure."""
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
     driver, wait = get_driver_wait_pair(session_name='Invite to Connect', user_id=user_id)
@@ -4114,6 +4142,16 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -
             driver.get(profile_url)
 
         myprint(f"Inviting to connect: {profile_url}")
+
+        # Already connected? There is no Connect button to find — bail with a reason instead of
+        # burning a session hunting for one and recording an opaque failure.
+        if _profile_is_first_degree(driver):
+            log_info("Skipping invite: already a 1st-degree connection", user_id=user_id,
+                     action_type="invite_connect")
+            insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
+                           result=LogResultType.FAILURE, post_url=profile_url,
+                           message=ALREADY_CONNECTED_MESSAGE)
+            return False, ALREADY_CONNECTED_MESSAGE
 
         # Locate the connect button
         try:
@@ -4221,7 +4259,7 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -
     finally:
         quit_gracefully(driver)  # Close the driver
 
-    return invite_sent
+    return invite_sent, result
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['user_id', 'profile_url']},
@@ -4230,11 +4268,14 @@ def invite_to_connect(self, user_id: int, profile_url: str, message: str = None)
     """Send a LinkedIn connection request (reactive profile-viewer flow). Thin wrapper over
     invite_to_connect_now; a throttle / kill-switch defers silently."""
     try:
-        sent = invite_to_connect_now(user_id, profile_url, message)
+        sent, reason = invite_to_connect_now(user_id, profile_url, message)
     except LinkedInRateLimited as e:
         myprint(f"invite_to_connect deferred (throttled): {e}")
         return "Invitation deferred (LinkedIn throttled)"
-    return CONNECTION_REQUEST_SENT_MESSAGE if sent else "Connection Request Failed"
+    if sent:
+        return CONNECTION_REQUEST_SENT_MESSAGE
+    log_warning(f"Connection request failed: {reason}", user_id=user_id, action_type="invite_connect")
+    return f"Connection Request Failed: {reason}"
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['request_id']},
@@ -4258,13 +4299,17 @@ def send_connection_request(self, request_id: int):
         return f"Connection request {request_id} deferred (daily invite cap reached)"
 
     try:
-        sent = invite_to_connect_now(user_id, req["recipient_profile_url"], req["message"])
+        sent, reason = invite_to_connect_now(user_id, req["recipient_profile_url"], req["message"])
     except LinkedInRateLimited as e:
         myprint(f"send_connection_request: throttled, deferring {request_id}: {e}")
         update_connection_request_status(request_id, ConnectionRequestStatus.APPROVED)  # retry on next scan
         return f"Connection request {request_id} deferred (LinkedIn throttled)"
+    if not sent:
+        log_warning(f"Connection request {request_id} failed: {reason}", user_id=user_id,
+                    action_type="invite_connect")
     update_connection_request_status(
-        request_id, ConnectionRequestStatus.SENT if sent else ConnectionRequestStatus.FAILED)
+        request_id, ConnectionRequestStatus.SENT if sent else ConnectionRequestStatus.FAILED,
+        failure_reason=(None if sent else reason))
     return f"Connection request {request_id} -> {'sent' if sent else 'failed'}"
 
 
@@ -4308,7 +4353,8 @@ def _harvest_post_commenters(driver, post_url: str, author_name: str, now: datet
     for comment in _comment_items_from_thread(driver)[:limit]:
         try:
             link = comment.find_element(By.CSS_SELECTOR, "a[href*='/in/']")
-            name = ((link.text or "") or (link.get_attribute("aria-label") or "")).strip().split("\n")[0]
+            raw = (link.text or "") or (link.get_attribute("aria-label") or "")
+            name = clean_person_name(raw)
             url = (link.get_attribute("href") or "").split("?")[0]
         except Exception:
             continue
@@ -4316,7 +4362,8 @@ def _harvest_post_commenters(driver, post_url: str, author_name: str, now: datet
             continue
         signals.append(CandidateSignal(person_name=name, person_profile_url=url,
                                        source=SOURCE_ADJACENT_POST, context_url=post_url,
-                                       context_author=author_name, occurred_at=now))
+                                       context_author=author_name, occurred_at=now,
+                                       connection_degree=connection_degree(raw)))
     return signals
 
 
@@ -4398,16 +4445,22 @@ def scan_connection_candidates(self, user_id: int, max_new: int = None):
     prefs = get_engagement_preferences(user_id)
     mode = str(prefs.get("connection_targeting_mode") or "suggest")
     if mode == "off":
+        log_info("Connection targeting is off for this user", user_id=user_id,
+                 task_name="scan_connection_candidates", action_type="connection_targeting")
         return f"Connection targeting off for user {user_id}"
 
     budget = _connect_target_budget(user_id, prefs, max_new)
     if budget <= 0:
+        log_warning("Connection targeting filed nothing: no invite budget left (daily cap already "
+                    "spent or fully queued)", user_id=user_id,
+                    task_name="scan_connection_candidates", action_type="connection_targeting")
         return f"No invite budget left for user {user_id}"
 
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     signals = [CandidateSignal(person_name=row.get("person_name"),
                                person_profile_url=row.get("person_profile_url"),
-                               source=SOURCE_OWN_POST, occurred_at=row.get("occurred_at"))
+                               source=SOURCE_OWN_POST, occurred_at=row.get("occurred_at"),
+                               connection_degree=row.get("connection_degree"))
                for row in get_engager_candidates(user_id, days=_CONNECT_ENGAGER_LOOKBACK_DAYS)]
 
     authors = [str(a).strip() for a in (prefs.get("connection_target_authors") or []) if str(a or "").strip()]
@@ -4427,27 +4480,50 @@ def scan_connection_candidates(self, user_id: int, max_new: int = None):
                 quit_gracefully(driver)
 
     if not signals:
+        log_warning("Connection targeting filed nothing: nobody has engaged with this user's "
+                    "content in the lookback window and no adjacent authors are configured",
+                    user_id=user_id, task_name="scan_connection_candidates",
+                    action_type="connection_targeting")
         return f"No connection candidates found for user {user_id}"
 
     terms = target_terms_from_prefs(prefs)
     urls = sorted({s.person_profile_url for s in signals if s.person_profile_url})
+    min_icp = int(prefs.get("min_connection_icp_score") or 0)
     candidates = rank_candidates(signals, now, facts_by_url=get_profile_facts(urls),
-                                 target_terms=terms,
-                                 min_icp=int(prefs.get("min_connection_icp_score") or 0),
+                                 target_terms=terms, min_icp=min_icp,
                                  exclude_keys=get_requested_person_keys(user_id),
                                  limit=budget)
     if not candidates:
+        log_warning("Connection targeting filed nothing: every candidate was already requested, "
+                    "already a 1st-degree connection, or below the ICP floor", user_id=user_id,
+                    task_name="scan_connection_candidates", action_type="connection_targeting")
         return f"No new connection candidates for user {user_id} (all deduped or below ICP floor)"
 
     status = _target_status_for_mode(mode, prefs)
     topic = terms[0] if terms else None
     filed = 0
     for candidate in candidates:
+        # Belt and braces on the two gates that produced the only request production ever filed —
+        # an invite to an existing connection, scored below the user's own floor (issue #623).
+        if is_first_degree(candidate.connection_degree or ""):
+            log_info(f"Skipping {candidate.person_name or candidate.person_profile_url}: already a "
+                     f"1st-degree connection", user_id=user_id,
+                     task_name="scan_connection_candidates", action_type="connection_targeting")
+            continue
+        if candidate.known_fit and candidate.icp_score < min_icp:
+            log_info(f"Skipping {candidate.person_name or candidate.person_profile_url}: ICP "
+                     f"{candidate.icp_score} below the floor of {min_icp}", user_id=user_id,
+                     task_name="scan_connection_candidates", action_type="connection_targeting")
+            continue
         note = _draft_connect_note(user_id, candidate, topic=topic)
         request_id = insert_connection_request(
             user_id, candidate.person_profile_url, message=note,
             recipient_name=candidate.person_name, status=status,
-            source=candidate.source, icp_score=candidate.icp_score, reasons=candidate.reasons)
+            source=candidate.source,
+            # No facts to score against means no score. Storing ICP_UNKNOWN here filed rows that
+            # read as "below your floor" to whoever approves them; `reasons` says fit is unverified.
+            icp_score=(candidate.icp_score if candidate.known_fit else None),
+            reasons=candidate.reasons)
         if not request_id:
             continue
         filed += 1
