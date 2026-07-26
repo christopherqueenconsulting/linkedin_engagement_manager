@@ -1,4 +1,5 @@
-import { BrowserRouter, Routes, Route, Navigate, useSearchParams } from 'react-router-dom'
+import { useEffect } from 'react'
+import { BrowserRouter, Routes, Route, Navigate, useSearchParams, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import Layout from './components/Layout'
@@ -9,6 +10,7 @@ import Account from './pages/Account'
 import Avatars from './pages/Avatars'
 import ContentStudio from './pages/ContentStudio'
 import Landing from './pages/Landing'
+import { capturePageview } from './utils/analytics'
 
 const queryClient = new QueryClient()
 
@@ -22,8 +24,16 @@ function LegacyReviewRedirect() {
   return <Navigate to={`/content?tab=${target}`} replace />
 }
 
+// posthog's own pageview listener only fires on a full page load, so a SPA route change would be
+// invisible. The search string is part of the key — /content?tab=dms is a different screen.
+function usePageviews() {
+  const { pathname, search } = useLocation()
+  useEffect(() => { capturePageview() }, [pathname, search])
+}
+
 function AppRoutes() {
   const { user, isLoginModalOpen } = useAuth()
+  usePageviews()
 
   return (
     <>

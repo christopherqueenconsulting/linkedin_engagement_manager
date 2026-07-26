@@ -33,6 +33,12 @@ WORKDIR /ui
 # Empty by default so dev images stay tokenless; CI passes the prod token.
 ARG VITE_API_TOKEN=""
 ENV VITE_API_TOKEN=${VITE_API_TOKEN}
+# Browser-side PostHog (issue #646). Empty key = the SPA ships with analytics fully disabled and
+# never fetches the posthog-js chunk.
+ARG VITE_POSTHOG_KEY=""
+ENV VITE_POSTHOG_KEY=${VITE_POSTHOG_KEY}
+ARG VITE_POSTHOG_HOST=""
+ENV VITE_POSTHOG_HOST=${VITE_POSTHOG_HOST}
 COPY ./src/cqc_lem/ui/package.json ./src/cqc_lem/ui/package-lock.json ./
 RUN npm ci
 COPY ./src/cqc_lem/ui ./

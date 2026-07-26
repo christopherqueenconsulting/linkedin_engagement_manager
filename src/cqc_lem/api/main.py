@@ -42,7 +42,8 @@ from cqc_lem.utilities.db import (
     max_catchup_touches_allowed,
     create_pin_for_email, verify_pin_for_email, delete_pin_for_email,
     create_session, get_session_user_id, delete_session,
-    add_user_by_email, get_user_email, get_user_token_info, store_linkedin_li_at,
+    add_user_by_email, get_user_email, get_user_analytics_profile, get_user_token_info,
+    store_linkedin_li_at,
     has_linkedin_session, get_user_password_pair_by_id,
     get_company_linked_in_url_for_user, update_company_linked_in_url_for_user,
     get_user_subscription_info, get_user_preferences, update_user_preferences,
@@ -1539,6 +1540,9 @@ def get_posts_for_email(
             "post_type": post["post_type"],
             "status": post["status"],
             "carousel_slides": _parse_slides(post.get("carousel_slides")),
+            # The SHAPE this draft was written to (V51 posts.archetype) — the review UI reports it
+            # on post_approved / post_rejected so approval rate can be broken down by archetype.
+            "archetype": post.get("archetype"),
             # Why a draft is being held, and what to do about it (issue #421).
             "authenticity_score": post.get("authenticity_score"),
             "gate_reason": parse_gate_findings(post.get("gate_reason")),
@@ -1779,7 +1783,18 @@ def auth_check_session(session_token: str) -> ResponseModel:
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     email = get_user_email(user_id)
-    return ResponseModel(status_code=200, detail={"user_id": user_id, "email": email})
+    # Person facts the SPA sets on the PostHog person at $identify (issue #646). Plan/timezone/
+    # signup only — never credentials — and the session check is the one call every authenticated
+    # page already makes, so identify needs no extra round trip.
+    profile = get_user_analytics_profile(user_id)
+    return ResponseModel(status_code=200, detail={
+        "user_id": user_id,
+        "email": email,
+        "plan": profile.get("subscription_tier"),
+        "plan_status": profile.get("subscription_status"),
+        "timezone": profile.get("timezone"),
+        "created_at": _utc_iso(profile.get("created_at")),
+    })
 
 
 @router.get("/user/token_status")

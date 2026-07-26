@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
 import { formatInTimezone } from '../../utils/datetime'
+import { maskProps } from '../../utils/analytics'
 
 // Proactive, human-approved connection requests (issue #398). Add ICP-targeted prospects, approve
 // them, and LEM sends the invite (reusing invite_to_connect) on a slow, daily-capped drip that honors
@@ -119,7 +120,7 @@ export default function ConnectionRequests({ userTimezone }: { userTimezone: str
         </div>
         <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} maxLength={NOTE_MAX}
           placeholder="Connection note (optional, ≤300 chars)"
-          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+          {...maskProps('w-full border border-gray-300 rounded-lg px-3 py-2 text-sm')} />
         <div className="flex flex-wrap items-center gap-3">
           <button onClick={() => createMutation.mutate()} disabled={!canSubmit || createMutation.isPending}
             className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50">

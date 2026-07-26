@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
 import { formatInTimezone } from '../../utils/datetime'
+import { maskProps } from '../../utils/analytics'
 
 // Inbound hot leads (issue #483): buying signals ("how much?", "can you help with X?", "DM me")
 // caught in comments, replies, and DMs the automation already reads. Nothing is ever sent
@@ -159,7 +160,7 @@ export default function LeadsInbox({ userTimezone }: { userTimezone: string }) {
                 <textarea value={draftFor(s)} rows={3} maxLength={DRAFT_MAX}
                   onChange={(e) => setDrafts({ ...drafts, [s.id]: e.target.value })}
                   placeholder="Your response…"
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+                  {...maskProps('w-full border border-gray-300 rounded-lg px-3 py-2 text-sm')} />
                 <div className="flex gap-2">
                   <button
                     onClick={() => actionMutation.mutate({ id: s.id, action: 'approve', draft_response: draftFor(s) })}

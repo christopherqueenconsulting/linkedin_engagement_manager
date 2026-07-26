@@ -4,7 +4,7 @@ import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
 import { TARGET_CATEGORIES } from './types'
 import type { EngagementTarget, EngagementTargetCategory } from './types'
-import { useRegisterSaveSection } from './SettingsSaveContext'
+import { useRegisterSaveSection, sectionSaveCallbacks } from './SettingsSaveContext'
 
 type RosterResponse = { targets: EngagementTarget[]; suggestions: EngagementTarget[] }
 
@@ -183,7 +183,8 @@ export default function EngagementRosterCard() {
       )}
 
       {msg && <p className={`text-sm font-medium ${msg.ok ? 'text-green-600' : 'text-red-600'}`}>{msg.text}</p>}
-      <button type="button" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}
+      <button type="button" onClick={() => saveMutation.mutate(undefined, sectionSaveCallbacks('engagement-roster'))}
+        disabled={saveMutation.isPending}
         className="w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
         {saveMutation.isPending ? 'Saving…' : 'Save Roster'}
       </button>

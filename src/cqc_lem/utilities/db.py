@@ -1024,7 +1024,7 @@ def get_posts(user_id: int, limit: int = 10, offset: int = 0,
 
         cursor.execute(
             f"SELECT id, content, video_url, scheduled_time, post_type, status, carousel_slides, "
-            f"authenticity_score, gate_reason "
+            f"authenticity_score, gate_reason, archetype "
             f"FROM posts {where} ORDER BY {sort_col} {order}, id {order} LIMIT %s OFFSET %s",
             params + [limit, offset]
         )
@@ -2738,6 +2738,29 @@ def get_user_email(user_id: int) -> Optional[str]:
     except mysql.connector.Error as err:
         myprint(f"Could not get email for user_id {user_id} | Error: {err}")
         return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_user_analytics_profile(user_id: int) -> dict:
+    """The non-sensitive person facts the SPA sets on the PostHog person at $identify (issue #646):
+    plan tier/status, timezone and the signup timestamp. `users` has no created_at column, so the
+    signup time is trial_started_at falling back to updated_at — the same convention the cohort
+    query uses. Never returns credentials; the SPA already knows the email."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT subscription_tier, subscription_status, timezone, "
+            "COALESCE(trial_started_at, updated_at) AS created_at "
+            "FROM users WHERE id = %s",
+            (user_id,))
+        row = cursor.fetchone()
+        return row or {}
+    except mysql.connector.Error as err:
+        myprint(f"Could not get analytics profile for user_id {user_id} | Error: {err}")
+        return {}
     finally:
         cursor.close()
         connection.close()

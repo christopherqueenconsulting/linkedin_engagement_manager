@@ -4,7 +4,7 @@ import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
 import Toggle from '../../components/Toggle'
 import type { UserGroup } from './types'
-import { useRegisterSaveSection } from './SettingsSaveContext'
+import { useRegisterSaveSection, sectionSaveCallbacks } from './SettingsSaveContext'
 
 export default function GroupsCard() {
   const { sessionToken } = useAuth()
@@ -71,7 +71,8 @@ export default function GroupsCard() {
         ))}
       </div>
       {groupsMsg && <p className={`text-sm font-medium ${groupsMsg.ok ? 'text-green-600' : 'text-red-600'}`}>{groupsMsg.text}</p>}
-      <button type="button" onClick={() => groupsMutation.mutate()} disabled={groupsMutation.isPending}
+      <button type="button" onClick={() => groupsMutation.mutate(undefined, sectionSaveCallbacks('groups'))}
+        disabled={groupsMutation.isPending}
         className="w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
         {groupsMutation.isPending ? 'Saving…' : 'Save Group Settings'}
       </button>

@@ -4,6 +4,7 @@ import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
 import { formatInTimezone } from '../../utils/datetime'
 import { CATCHUP_EVENTS } from '../account/types'
+import { maskProps } from '../../utils/analytics'
 
 // LinkedIn Catch-up congratulations (issue #482). LEM scans your Catch-up feed daily, scores each
 // milestone against your targeting, and queues LinkedIn's own suggested congratulations (or an
@@ -152,7 +153,7 @@ export default function CatchupTouches({ userTimezone }: { userTimezone: string 
                   <textarea value={messageValue} rows={3} maxLength={MESSAGE_MAX}
                     onChange={(e) => setEdits((prev) => ({ ...prev, [t.id]: e.target.value }))}
                     placeholder="Your congratulations message…"
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+                    {...maskProps('w-full border border-gray-300 rounded-lg px-3 py-2 text-sm')} />
                   <div className="flex gap-2 flex-wrap">
                     <button onClick={() => saveMutation.mutate({ id: t.id, message: messageValue })}
                       disabled={!editing || saveMutation.isPending}

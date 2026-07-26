@@ -2,6 +2,7 @@ import {
   createContext, useCallback, useContext, useEffect, useMemo, useRef, useState,
   type ReactNode,
 } from 'react'
+import { EVENTS, capture } from '../../utils/analytics'
 
 // One shared registry so every settings section exposes the SAME save it already uses (single
 // source of truth). "Save All" saves only the DIRTY sections (never clobbering untouched ones),
@@ -50,12 +51,14 @@ export function SettingsSaveProvider({ children }: { children: ReactNode }) {
     setSavingAll(true)
     setSummary(null)
     const results: { label: string; ok: boolean }[] = []
-    for (const [, s] of dirty) {
+    for (const [id, s] of dirty) {
       try {
         const ok = await s.save()
         results.push({ label: s.label, ok: ok !== false })
+        capture(EVENTS.prefsSaved, { section: id, ok: ok !== false })
       } catch {
         results.push({ label: s.label, ok: false })
+        capture(EVENTS.prefsSaved, { section: id, ok: false })
       }
     }
     setSavingAll(false)
@@ -91,6 +94,18 @@ export function useRegisterSaveSection(
     register(id, { label, isDirty, save: () => saveRef.current() })
     return () => unregister(id)
   }, [id, label, isDirty, register, unregister])
+}
+
+// Most cards ALSO keep their own Save button, which calls their mutation directly and never goes
+// through saveAll — so without this, prefs_saved would only ever count the users who happen to use
+// Save All and every rate built on it would be wrong. Spread onto the card's own mutate() call:
+//   onClick={() => groupsMutation.mutate(undefined, sectionSaveCallbacks('groups'))}
+// `section` must be the SAME id the card registers, or the two doors report different sections.
+export function sectionSaveCallbacks(section: string): { onSuccess: () => void; onError: () => void } {
+  return {
+    onSuccess: () => capture(EVENTS.prefsSaved, { section, ok: true }),
+    onError: () => capture(EVENTS.prefsSaved, { section, ok: false }),
+  }
 }
 
 // beforeunload (tab close / refresh) + capture-phase interception of in-app <a> navigation.

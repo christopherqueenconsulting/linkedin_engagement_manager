@@ -204,6 +204,37 @@ from cqc_lem.utilities.observability import track_llm_call, track_task, track_ap
 
 PostHog receives LLM usage (model, tokens, latency, cost) and Celery task metrics for fine-tuning decisions.
 
+### Browser-side analytics (SPA, issue #646)
+
+The SPA has ONE PostHog surface — `ui/src/utils/analytics.ts`. Never call `posthog` directly from a
+component; import from there so the key, the privacy defaults and the distinct_id convention stay
+in one place.
+
+```ts
+import { EVENTS, capture, maskProps } from '../utils/analytics'
+
+capture(EVENTS.postApproved, { post_id, post_type, archetype })
+
+// Any editor holding the user's own content (DM, story, draft post):
+<textarea {...maskProps('w-full border rounded-lg px-3 py-2 text-sm')} />
+```
+
+- **distinct_id is `String(user_id)`** — identical to `observability.py`'s server-side convention,
+  so a user's browser and Celery/API events land on ONE PostHog person. `$identify` fires from
+  `AuthContext` off `GET /auth/session` (plan, plan_status, timezone; `created_at` as `$set_once`)
+  and `posthog.reset()` fires on logout. Never put credentials or LinkedIn data on the person.
+- **Env-gated at BUILD time.** `VITE_POSTHOG_KEY` / `VITE_POSTHOG_HOST` are baked into the bundle by
+  Vite (docker build-arg / CI secret `UI_POSTHOG_KEY`), not read from the running container. With no
+  key, `posthog-js` is never imported — it is a lazy chunk the browser never fetches — and every
+  `capture`/`identify` is a no-op.
+- **Autocapture is on**, with `mask_all_element_attributes` and pageviews owned by the router
+  (`capture_pageview: false` + a `usePageviews()` hook, so in-app navigation is counted). Web vitals
+  ride on `capture_performance`. Replay is off here — that's PH4.
+- `maskProps()` adds BOTH the `ph-no-capture` class (autocapture skips the element) and
+  `data-ph-mask` (replay's `maskTextSelector`). Use it on every new content editor.
+- New product events go in `EVENTS` — that vocabulary is what PostHog insights key off, so add to it
+  rather than passing a bare string.
+
 ## CI Gates
 
 Before merging any PR, all of the following must pass:

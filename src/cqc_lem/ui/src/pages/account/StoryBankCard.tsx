@@ -4,7 +4,8 @@ import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
 import { STORY_KINDS } from './types'
 import type { StoryEntry, StoryKind } from './types'
-import { useRegisterSaveSection } from './SettingsSaveContext'
+import { useRegisterSaveSection, sectionSaveCallbacks } from './SettingsSaveContext'
+import { EVENTS, capture, maskProps } from '../../utils/analytics'
 
 type StoryBankResponse = { entries: StoryEntry[]; kinds: StoryKind[]; target_entries: number }
 
@@ -70,6 +71,16 @@ export default function StoryBankCard() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['story-bank'] })
       setSavedSig(JSON.stringify(entries))
+      // Fired on the SAVE, not on "+ Add entry" — a blank row the user abandons never became an
+      // entry. Counts and kinds only; the entry text is the user's own material.
+      const added = entries.filter((e) => !e.id && e.body.trim())
+      if (added.length) {
+        capture(EVENTS.storyBankEntryAdded, {
+          added: added.length,
+          total: entries.filter((e) => e.body.trim()).length,
+          kinds: [...new Set(added.map((e) => e.kind))],
+        })
+      }
       setMsg({ ok: true, text: 'Story bank saved.' })
       setTimeout(() => setMsg(null), 3000)
     },
@@ -140,7 +151,7 @@ export default function StoryBankCard() {
               onChange={(ev) => update(idx, { body: ev.target.value })}
               aria-label="What actually happened"
               placeholder="What actually happened — the real numbers, names, dates and outcome. Write it how you'd tell a colleague."
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+              {...maskProps('w-full border border-gray-300 rounded-lg px-3 py-2 text-sm')} />
             {typeof e.used_count === 'number' && e.used_count > 0 && (
               <p className="text-[11px] text-gray-400">
                 Used in {e.used_count} post{e.used_count === 1 ? '' : 's'} — LEM rotates to your
@@ -155,7 +166,8 @@ export default function StoryBankCard() {
         className="text-xs text-blue-600 font-medium hover:text-blue-700">+ Add entry</button>
 
       {msg && <p className={`text-sm font-medium ${msg.ok ? 'text-green-600' : 'text-red-600'}`}>{msg.text}</p>}
-      <button type="button" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}
+      <button type="button" onClick={() => saveMutation.mutate(undefined, sectionSaveCallbacks('story-bank'))}
+        disabled={saveMutation.isPending}
         className="w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
         {saveMutation.isPending ? 'Saving…' : 'Save Story Bank'}
       </button>

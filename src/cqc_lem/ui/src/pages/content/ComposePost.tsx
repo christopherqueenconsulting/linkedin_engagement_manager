@@ -7,6 +7,7 @@ import TopicAuthorityMeter from '../../components/TopicAuthorityMeter'
 import { useAuth } from '../../contexts/AuthContext'
 import { useUserTimezone } from '../../hooks/useUserTimezone'
 import { zonedInputToUtcIso } from '../../utils/datetime'
+import { maskProps } from '../../utils/analytics'
 
 const POST_TYPES = ['TEXT', 'VIDEO', 'CAROUSEL'] as const
 type PostType = typeof POST_TYPES[number]
@@ -267,7 +268,7 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
               onChange={(e) => setContent(e.target.value)}
               rows={postType === 'CAROUSEL' ? 3 : 8}
               maxLength={MAX_CHARS}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+              {...maskProps('w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none')}
               placeholder={postType === 'CAROUSEL' ? 'Optional intro text for the carousel post… (auto-filled after generation)' : 'What would you like to share?'}
             />
           </div>
@@ -470,7 +471,7 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
                         rows={2}
                         value={slide}
                         onChange={(e) => updateSlide(idx, e.target.value)}
-                        className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                        {...maskProps('flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none')}
                         placeholder={`Slide ${idx + 1} text…`}
                       />
                       {slides.length > 1 && (
