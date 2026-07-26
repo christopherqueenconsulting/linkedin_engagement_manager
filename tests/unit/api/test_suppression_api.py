@@ -129,6 +129,18 @@ class TestResumeEndpoint:
         assert clear.called and not resume.called
         assert detail["resumed"] is False
 
+    def test_never_lifts_another_users_suppression_pause(self, client):
+        # `pause_automation` is ONE global breaker. User 42 pressing their own re-enable button must
+        # not restart engagement while user 7's trip is the thing holding it down.
+        with ExitStack() as es:
+            _stack(es, user_id=42, trip=_TRIP, pause_reason="suppression:7", pause_remaining=600)
+            es.enter_context(patch(f"{_RL}.clear_suppression_trip", return_value=True))
+            resume = es.enter_context(patch(f"{_RL}.resume_automation", return_value=True))
+            detail = client.post("/api/user/automation-resume",
+                                 json={"session_token": "t"}).json()["detail"]
+        assert not resume.called
+        assert detail["resumed"] is False
+
     def test_is_idempotent_when_nothing_is_paused(self, client):
         with ExitStack() as es:
             _stack(es)

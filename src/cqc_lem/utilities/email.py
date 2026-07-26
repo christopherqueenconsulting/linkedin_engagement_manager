@@ -409,7 +409,8 @@ def send_suppression_tripwire_email(to_email: str, reason: str) -> bool:
     still publish and we keep collecting your analytics</strong> — only the automated engagement is
     paused.</p>
     <p>Accounts typically recover after a few weeks of normal, human activity. Keep posting, engage
-    by hand for a while, and re-enable automation from your account page when your reach comes back.</p>
+    by hand for a while, and re-enable automation from your account page when your reach comes back
+    — we keep measuring it every day, so your account page will tell you when it has.</p>
     <p><a href="{url}" style="background:#0a66c2;color:#fff;padding:10px 16px;border-radius:6px;
     text-decoration:none;">Review and re-enable</a></p>
     <p style="color:#888;font-size:12px;">This pause will not lift on its own — you decide when to

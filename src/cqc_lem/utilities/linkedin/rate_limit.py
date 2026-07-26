@@ -295,6 +295,21 @@ def is_suppression_pause(reason: "str | None") -> bool:
     return bool(reason) and str(reason).startswith(SUPPRESSION_PAUSE_REASON_PREFIX)
 
 
+def is_measurement_paused() -> bool:
+    """Whether the standing pause also stops READ-ONLY measurement (post-stat / follower capture).
+
+    Every pause does — except the suppression tripwire's own, which must not. The daily stats scrape
+    is what produces the very readings the tripwire re-evaluates: freeze it and the engagement trend
+    stays stuck at the collapsed numbers forever, so a recovered account can never be seen to have
+    recovered and the daily re-arm extends the pause indefinitely. It would also make the notice the
+    user is sent ("your scheduled posts still publish and we keep collecting your analytics")
+    untrue. The 429 breaker still gates these lanes separately — this only narrows OUR pause.
+    """
+    if not is_automation_paused():
+        return False
+    return not is_suppression_pause(automation_pause_reason())
+
+
 def record_suppression_trip(user_id: int, reason: str, detail: "dict | None" = None,
                             tripped_at: "str | None" = None) -> bool:
     """Persist the trip. Returns True if it was stored."""

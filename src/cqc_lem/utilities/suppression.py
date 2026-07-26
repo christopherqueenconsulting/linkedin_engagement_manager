@@ -40,6 +40,9 @@ DEFAULT_MIN_BASELINE_POSTS = 3
 # clean behaviour, and the daily check RE-ARMS this while the tripwire is still set, so in practice
 # it never lapses on its own — a human clears it.
 DEFAULT_PAUSE_SECONDS = 90 * 24 * 60 * 60
+# The comment-demotion signal reads a ROLLING WEEK, matching #628's own scoring window — see
+# comment_history_days().
+DEFAULT_COMMENT_DAYS = 7
 
 STATUS_OK = "ok"
 STATUS_WATCH = "watch"
@@ -100,6 +103,16 @@ def history_days() -> int:
     """How far back the caller must read so a full baseline still exists behind the recent run.
     The recent run is counted in POSTING days, so allow generous calendar room for a sparse poster."""
     return baseline_days() + consecutive_days() * 7
+
+
+def comment_history_days() -> int:
+    """How far back the COMMENT-demotion signal reads — deliberately NOT `history_days()`.
+
+    #628 scores comment visibility over a rolling week and its own hold expires in one, so a
+    demotion episode that has since been remediated still sits in a 35-day window for weeks. Reading
+    the reach baseline's window here would let a month-old, already-fixed episode trip a 90-day
+    engagement pause today."""
+    return max(1, _env_int("SUPPRESSION_COMMENT_DAYS", DEFAULT_COMMENT_DAYS))
 
 
 def _posts(day: Mapping[str, Any]) -> int:

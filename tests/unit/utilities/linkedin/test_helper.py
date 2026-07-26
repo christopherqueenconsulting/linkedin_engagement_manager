@@ -504,6 +504,32 @@ class TestRateLimitCircuitBreaker:
         driver.get.assert_not_called()
         mock_cookies.assert_not_called()
 
+    def test_measurement_session_survives_the_suppression_pause(self):
+        """Read-only stat capture keeps logging in under the suppression tripwire's OWN pause — it
+        produces the readings the tripwire re-evaluates, so freezing it would make recovery
+        permanently undetectable (issue #629). Every other pause still stops it."""
+        driver = _make_driver("https://www.linkedin.com/feed/")
+        wait = _make_wait()
+        from cqc_lem.utilities.linkedin.helper import login_to_linkedin
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+
+        with patch(f"{_MODULE}.is_measurement_paused", return_value=False), \
+             patch(f"{_MODULE}.is_automation_paused", return_value=True), \
+             patch(f"{_MODULE}.get_cookies", return_value=None), \
+             patch(f"{_MODULE}.store_cookies"), \
+             patch(f"{_MODULE}.load_cookies"):
+            login_to_linkedin(driver, wait, "u@e.com", "pw", measurement_only=True)
+        assert driver.get.called
+
+        driver = _make_driver("https://www.linkedin.com/feed/")
+        with patch(f"{_MODULE}.is_measurement_paused", return_value=True), \
+             patch(f"{_MODULE}.automation_pause_remaining", return_value=3600), \
+             patch(f"{_MODULE}.get_cookies") as mock_cookies, \
+             pytest.raises(LinkedInRateLimited, match="paused"):
+            login_to_linkedin(driver, wait, "u@e.com", "pw", measurement_only=True)
+        driver.get.assert_not_called()
+        mock_cookies.assert_not_called()
+
     def test_rate_limited_feed_no_cookies_opens_breaker(self):
         """A 429 body at /feed/ with NO stored cookies (nothing to drop) opens the breaker."""
         driver = _make_driver("https://www.linkedin.com/feed/")

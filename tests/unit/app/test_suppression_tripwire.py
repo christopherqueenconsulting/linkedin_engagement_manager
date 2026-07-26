@@ -63,7 +63,8 @@ class _Harness:
 def _default_thresholds(monkeypatch):
     for name in ("SUPPRESSION_TRIPWIRE_ENABLED", "SUPPRESSION_DROP_RATIO",
                  "SUPPRESSION_CONSECUTIVE_DAYS", "SUPPRESSION_BASELINE_DAYS",
-                 "SUPPRESSION_MIN_BASELINE_POSTS", "SUPPRESSION_PAUSE_SECONDS"):
+                 "SUPPRESSION_MIN_BASELINE_POSTS", "SUPPRESSION_PAUSE_SECONDS",
+                 "SUPPRESSION_COMMENT_DAYS"):
         monkeypatch.delenv(name, raising=False)
     yield
 
@@ -175,6 +176,48 @@ class TestFleet:
         with patch(f"{RS}.get_active_user_ids") as users:
             assert auto_suppression_tripwire() == "Suppression tripwire disabled"
         assert not users.called
+
+
+class TestMeasurementKeepsRunning:
+    """The trip must not blind the tripwire. Stat capture is read-only and is the ONLY source of the
+    readings the next day's check re-evaluates, so it survives OUR pause — and nothing else's."""
+
+    def _dispatch(self, task_name, pause_reason):
+        from cqc_lem.app import run_scheduler as rs
+        paused = pause_reason is not None
+        with ExitStack() as es:
+            es.enter_context(patch(f"{RL}.automation_pause_remaining",
+                                   return_value=600 if paused else 0))
+            es.enter_context(patch(f"{RL}.automation_pause_reason", return_value=pause_reason))
+            es.enter_context(patch(f"{RL}.rate_limit_cooldown_remaining", return_value=0))
+            es.enter_context(patch(f"{RS}.get_active_user_ids", return_value=[1]))
+            es.enter_context(patch(f"{RS}.has_linkedin_session", return_value=True))
+            dispatched = es.enter_context(
+                patch(f"cqc_lem.app.run_automation.{task_name}"))
+            result = (rs.auto_scrape_stats() if task_name == "auto_scrape_post_stats"
+                      else rs.auto_capture_follower_stats())
+        return result, dispatched
+
+    @pytest.mark.parametrize("task_name", ["auto_scrape_post_stats", "capture_follower_stats"])
+    def test_capture_still_runs_under_a_suppression_pause(self, task_name):
+        result, dispatched = self._dispatch(task_name, "suppression:1")
+        assert "throttled" not in result
+        assert dispatched.apply_async.called
+
+    @pytest.mark.parametrize("task_name", ["auto_scrape_post_stats", "capture_follower_stats"])
+    def test_capture_still_stops_for_a_maintenance_pause(self, task_name):
+        result, dispatched = self._dispatch(task_name, "maintenance")
+        assert result == "Automation throttled"
+        assert not dispatched.apply_async.called
+
+    def test_engagement_lanes_are_not_exempted(self):
+        from cqc_lem.app import run_scheduler as rs
+        with patch(f"{RS}.is_automation_paused", return_value=True), \
+             patch(f"{RL}.automation_pause_remaining", return_value=600), \
+             patch(f"{RL}.automation_pause_reason", return_value="suppression:1"), \
+             patch(f"{RL}.rate_limit_cooldown_remaining", return_value=0):
+            assert rs._skip_if_throttled("auto_daily_engagement") is True
+            assert rs._skip_if_throttled("auto_scrape_stats", measurement_only=True) is False
 
 
 class TestBeatSchedule:

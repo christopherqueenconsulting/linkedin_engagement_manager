@@ -41,7 +41,8 @@ def _trend(baseline_values, recent_values, *, engagement=False, step=1, posts=1)
 def _default_thresholds(monkeypatch):
     for name in ("SUPPRESSION_TRIPWIRE_ENABLED", "SUPPRESSION_DROP_RATIO",
                  "SUPPRESSION_CONSECUTIVE_DAYS", "SUPPRESSION_BASELINE_DAYS",
-                 "SUPPRESSION_MIN_BASELINE_POSTS", "SUPPRESSION_PAUSE_SECONDS"):
+                 "SUPPRESSION_MIN_BASELINE_POSTS", "SUPPRESSION_PAUSE_SECONDS",
+                 "SUPPRESSION_COMMENT_DAYS"):
         monkeypatch.delenv(name, raising=False)
     yield
 
@@ -293,3 +294,46 @@ class TestTripRecord:
         assert rl.is_suppression_pause("suppression:7") is True
         assert rl.is_suppression_pause("maintenance") is False
         assert rl.is_suppression_pause(None) is False
+
+
+class TestMeasurementExemption:
+    """Read-only stat capture has to survive OUR pause — it produces the very readings the tripwire
+    re-evaluates, so freezing it would leave the trend stuck at the collapsed numbers and make
+    recovery permanently undetectable (and the user's "we keep collecting your analytics" untrue)."""
+
+    def _paused(self, reason):
+        return patch(f"{_RL}.automation_pause_remaining", return_value=600 if reason else 0), \
+            patch(f"{_RL}.automation_pause_reason", return_value=reason)
+
+    def test_our_own_pause_does_not_stop_measurement(self):
+        from cqc_lem.utilities.linkedin import rate_limit as rl
+        remaining, reason = self._paused("suppression:7")
+        with remaining, reason:
+            assert rl.is_automation_paused() is True
+            assert rl.is_measurement_paused() is False
+
+    def test_every_other_pause_still_stops_measurement(self):
+        from cqc_lem.utilities.linkedin import rate_limit as rl
+        for standing in ("maintenance", "manual", "429 cooldown"):
+            remaining, reason = self._paused(standing)
+            with remaining, reason:
+                assert rl.is_measurement_paused() is True, standing
+
+    def test_nothing_paused_stops_nothing(self):
+        from cqc_lem.utilities.linkedin import rate_limit as rl
+        remaining, reason = self._paused(None)
+        with remaining, reason:
+            assert rl.is_measurement_paused() is False
+
+
+class TestCommentWindow:
+    def test_the_comment_signal_reads_a_week_not_the_reach_baseline_window(self):
+        # A month-old demotion episode #628 has already remediated must not trip a 90-day pause.
+        assert sup.comment_history_days() == 7
+        assert sup.comment_history_days() < sup.history_days()
+
+    def test_the_comment_window_is_configurable(self, monkeypatch):
+        monkeypatch.setenv("SUPPRESSION_COMMENT_DAYS", "14")
+        assert sup.comment_history_days() == 14
+        monkeypatch.setenv("SUPPRESSION_COMMENT_DAYS", "0")
+        assert sup.comment_history_days() == 1

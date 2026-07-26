@@ -2681,11 +2681,14 @@ def _suppression_status(user_id: int) -> dict:
         automation_pause_reason, automation_pause_remaining, is_suppression_pause,
         rate_limit_cooldown_remaining, suppression_trip_state)
     from cqc_lem.utilities.post_stats import build_engagement_trend
-    from cqc_lem.utilities.suppression import evaluate_suppression, history_days, tripwire_enabled
+    from cqc_lem.utilities.suppression import (comment_history_days, evaluate_suppression,
+                                               history_days, tripwire_enabled)
 
     window = history_days()
+    comment_window = comment_history_days()
     trend = build_engagement_trend(get_post_performance_rows(user_id, days=window))
-    quality = comment_quality_report(get_comment_outcomes(user_id, days=window), days=window)
+    quality = comment_quality_report(get_comment_outcomes(user_id, days=comment_window),
+                                     days=comment_window)
     verdict = evaluate_suppression(trend, comment_quality=quality)
     trip = suppression_trip_state(user_id)
     pause_remaining = automation_pause_remaining()
@@ -2721,17 +2724,18 @@ class AutomationResumeRequest(BaseModel):
 def resume_automation_endpoint(request: AutomationResumeRequest) -> ResponseModel:
     """The manual re-enable path for a suppression trip (issue #629). The tripwire NEVER resumes on
     its own, so this endpoint is the only way back: it clears the stored trip and lifts the pause —
-    but only when the pause is the tripwire's own, so re-enabling here can never stomp a 429
-    cooldown, a maintenance window or an admin kill-switch."""
+    but only when the pause is the tripwire's own trip for THIS user, so re-enabling here can never
+    stomp a 429 cooldown, a maintenance window, an admin kill-switch — or another user's standing
+    trip, since `pause_automation` is one global breaker shared by the whole fleet."""
     from cqc_lem.utilities.linkedin.rate_limit import (
         automation_pause_reason, automation_pause_remaining, clear_suppression_trip,
-        is_suppression_pause, resume_automation)
+        resume_automation, suppression_pause_reason)
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     cleared = clear_suppression_trip(user_id)
     reason = automation_pause_reason() if automation_pause_remaining() else None
-    resumed = resume_automation() if is_suppression_pause(reason) else False
+    resumed = resume_automation() if reason == suppression_pause_reason(user_id) else False
     log_info("User re-enabled engagement after a suppression trip", user_id=user_id,
              action_type="rate_limit")
     return ResponseModel(status_code=200, detail={
