@@ -2779,44 +2779,97 @@ def automate_reply_commenting(self, user_id: int, post_id: int, loop_for_duratio
     return result
 
 
-def accept_connection_request(user_id: int):
-    """Accept connection requests for the given user."""
+# Ordered fallback chain for the invitation-manager cards. The pre-SDUI `invitation-card__container`
+# class is gone, so prefer data-view-name, then the semantic list item, then any card that actually
+# carries an Accept button.
+_INVITATION_CARD_LOCATORS = [
+    (By.CSS_SELECTOR, "div[data-view-name='invitation-card']"),
+    (By.CSS_SELECTOR, "li[data-view-name='invitation-card']"),
+    (By.XPATH, "//div[contains(@class,'invitation-card')]"),
+    (By.XPATH, "//main//li[.//button[contains(@aria-label,'Accept')]]"),
+]
+_INVITATION_PROFILE_LINK_LOCATORS = [
+    (By.CSS_SELECTOR, "a[data-view-name='invitation-card-profile-link']"),
+    (By.CSS_SELECTOR, "a[href*='/in/']"),
+]
+_INVITATION_ACCEPT_LOCATORS = [
+    (By.XPATH, ".//button[contains(@aria-label,'Accept')]"),
+    (By.XPATH, ".//button[normalize-space()='Accept']"),
+]
+
+
+def accept_connection_request(user_id: int) -> dict[str, str]:
+    """Accept pending connection requests and return {profile_url: name} for the ones we accepted.
+
+    Zero pending invitations is the normal steady state, so an empty invitation manager returns an
+    empty dict quietly — it is not an error. Each accept is paired with its own card so we only DM
+    people whose click actually landed, and the cards are re-queried after every click because
+    accepting re-renders the list (holding the original list went stale after the first accept).
+    """
 
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
     driver, wait = get_driver_wait_pair(session_name='Accept Connection Requests', user_id=user_id)
 
-    login_to_linkedin(driver, wait, user_email, user_password)
-
-    # Navigate to the invitations manager page
-    driver.get("https://www.linkedin.com/mynetwork/invitation-manager/")
+    invitation_data: dict[str, str] = {}
 
     try:
+        login_to_linkedin(driver, wait, user_email, user_password)
 
-        # Get all the invitation use the href and text (invitee name) to send a DM
-        invitations = get_elements_as_list_wait_stale(wait,
-                                                      "(//div[contains(@class,'invitation-card__container')]//div[contains(@class,'details')]//a)[2]",
-                                                      "Finding Invitation Names and Urls")
+        driver.get("https://www.linkedin.com/mynetwork/invitation-manager/")
+        wait_for_ajax(driver)
+        time.sleep(random.uniform(2, 4))
 
-        # For each invitation store the url and name to a dict using url as the key
-        invitation_data = {invitation.get_attribute('href'): getText(invitation) for invitation in invitations}
+        pending = find_all_first(driver, _INVITATION_CARD_LOCATORS)
+        if not pending:
+            log_info("No pending connection invitations", user_id=user_id, action_type="accept_connection")
+            return {}
 
-        # Find and click all the accept buttons
-        accept_buttons = get_elements_as_list_wait_stale(wait, '//button[contains(@aria-label,"Accept")]',
-                                                         "Finding Accept Buttons")
-
-        for accept_button in accept_buttons:
-            accept_button.click()
-            time.sleep(2)  # Wait for 2 seconds
+        for _ in range(len(pending)):
+            target = _next_pending_invitation(driver, set(invitation_data))
+            if target is None:
+                break
+            profile_url, name, accept_button = target
+            try:
+                accept_button.click()
+            except (StaleElementReferenceException, ElementNotInteractableException,
+                    NoSuchElementException, WebDriverException) as e:
+                log_warning("Could not accept a connection invitation", exc=e, user_id=user_id,
+                            action_type="accept_connection")
+                break
+            if profile_url:
+                invitation_data[profile_url] = name
+            time.sleep(random.uniform(2, 4))
 
     except Exception as e:
-        log_error("Error while accepting connection requests", exc=e, user_id=user_id, action_type="accept_connection")
-        invitation_data = {}
+        # Best-effort surface: a miss here costs us appreciation DMs for a cycle, nothing more.
+        log_warning("Error while accepting connection requests", exc=e, user_id=user_id,
+                    action_type="accept_connection")
     finally:
         quit_gracefully(driver)
 
     # Return the invitations list
     return invitation_data
+
+
+def _next_pending_invitation(driver: WebDriver, accepted_urls: set[str]) -> tuple[str, str, WebElement] | None:
+    """The next (profile_url, name, accept_button) still awaiting acceptance, read from a FRESH card
+    query. Cards we already accepted are skipped by URL because LinkedIn sometimes leaves the accepted
+    card in place instead of removing it."""
+    for card in find_all_first(driver, _INVITATION_CARD_LOCATORS):
+        link = _first_in_card(card, _INVITATION_PROFILE_LINK_LOCATORS)
+        try:
+            profile_url = _normalize_profile_url(link.get_attribute("href") or "") if link is not None else ""
+            name = (getText(link) or "").strip().split("\n")[0] if link is not None else ""
+        except (StaleElementReferenceException, NoSuchElementException):
+            continue
+        if profile_url and profile_url in accepted_urls:
+            continue
+        accept_button = _first_in_card(card, _INVITATION_ACCEPT_LOCATORS)
+        if accept_button is None:
+            continue
+        return profile_url, name, accept_button
+    return None
 
 
 def get_recent_recommendations(driver, wait) -> dict[str, str]:
@@ -3154,10 +3207,12 @@ def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: in
 
         result = "Appreciation DMs Sent"
 
+        my_profile = load_profile_for_user(user_id)  # cached DB read — only supplies {headline}
+
         # After Accepting a Connection Request:
         invitations_accepted = accept_connection_request(user_id)
         for profile_url, name in invitations_accepted.items():
-            first_name = name.split(" ")[0]
+            first_name = (name or "").strip().split(" ")[0] or "there"
             message = build_dm_from_template(user_id, "connection_accepted", first_name, my_profile)
             if message:
                 send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": profile_url, "message": message})
