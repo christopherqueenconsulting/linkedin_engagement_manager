@@ -40,6 +40,15 @@ class TestRoutingMetadata:
         # The tracking kwargs are still popped — they must never reach the proxy as request fields.
         assert "_track_user_id" not in sent and "_track_feature" not in sent
 
+    def test_unattributed_calls_carry_the_system_sentinel(self):
+        """LiteLLM's PostHog logger uses metadata.user_id as the $ai_generation distinct_id, so an
+        unattributed call must still name one — otherwise every housekeeping call mints its own
+        anonymous person (issue #647)."""
+        with patch("cqc_lem.utilities.observability.current_llm_attribution",
+                   return_value=(None, None)):
+            sent = _call("lem-simple")
+        assert sent["extra_body"]["metadata"] == {"feature": "system", "user_id": "system"}
+
     def test_raw_provider_models_are_not_tagged(self):
         """Only tier aliases are routable, so nothing is attached to a raw provider model."""
         assert "extra_body" not in _call("gpt-4o-mini")

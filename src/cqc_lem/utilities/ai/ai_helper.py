@@ -6,7 +6,7 @@ from datetime import datetime
 import openai
 import replicate
 from cqc_lem import assets_dir
-from cqc_lem.utilities.ai.client import client
+from cqc_lem.utilities.ai.client import client, attribution_metadata
 from cqc_lem.utilities.ai import content_framework as _framework
 # The ONE alignment core (voice + prefs + LEM purpose + promo policy) shared by newsletters,
 # posts, and comments. The underscore aliases keep this module's long-standing internal API
@@ -48,17 +48,21 @@ load_dotenv()
 
 
 def _attach_routing_metadata(kwargs: dict, user_id, feature) -> None:
-    """Send this call's (user, feature) to the LiteLLM proxy as request `metadata`, so the
-    complexity router can look the call's cost-aware routing bucket up (issue #494). Same two
-    dimensions cost is attributed by — the experiment bucket and the spend bucket must mean the
-    same thing. Only tier aliases are routable, so nothing is attached to raw provider models.
-    Best-effort: an existing `extra_body` from the caller wins over ours."""
+    """Send this call's (user, feature) to the LiteLLM proxy as request `metadata`, so the complexity
+    router can look the call's cost-aware routing bucket up (issue #494) and PostHog can attribute
+    the `$ai_generation` the proxy emits (issue #647). Same two dimensions cost is attributed by —
+    the experiment bucket, the spend bucket and the analytics person must mean the same thing.
+
+    The client attaches this from the ambient scope for every request already; doing it here is what
+    lets `_call_llm`'s explicit `_track_user_id`/`_track_feature` beat that scope. Only tier aliases
+    are routable, so nothing is attached to raw provider models. Best-effort: an existing
+    `extra_body` from the caller wins over ours."""
     if not str(kwargs.get("model") or "").startswith("lem-"):
         return
     extra_body = kwargs.setdefault("extra_body", {})
     if not isinstance(extra_body, dict) or "metadata" in extra_body:
         return
-    extra_body["metadata"] = {"feature": feature, "user_id": user_id}
+    extra_body["metadata"] = attribution_metadata(user_id, feature)
 
 
 def _call_llm(**kwargs):

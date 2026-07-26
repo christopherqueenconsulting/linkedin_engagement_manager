@@ -102,6 +102,20 @@ def test_assign_arm_without_user_is_control():
     assert rp.assign_arm(1, _bucket(cohort_pct="junk")) == rp.ARM_CONTROL
 
 
+def test_assign_arm_treats_the_analytics_sentinel_as_no_user():
+    """Requests carry user_id="system" so PostHog has a distinct_id (issue #647). It is not a user,
+    so hashing it would drop ALL unattributed traffic into one arm instead of control."""
+    assert rp.assign_arm(rp.SYSTEM_USER_ID, _bucket(cohort_pct=1.0)) == rp.ARM_CONTROL
+    assert rp.assign_arm("System", _bucket(cohort_pct=1.0)) == rp.ARM_CONTROL
+
+
+def test_a_user_id_is_bucketed_the_same_as_an_int_or_a_string():
+    """client.py may send the id as an int; the sentinel forces the field's type to vary. Cohort
+    assignment must not flip when it does, or a user changes arm mid-experiment."""
+    bucket = _bucket(cohort_pct=0.5)
+    assert all(rp.assign_arm(u, bucket) == rp.assign_arm(str(u), bucket) for u in range(50))
+
+
 # ── the routing decision itself ──
 
 def test_resolve_tier_downroutes_treatment_cohort():
