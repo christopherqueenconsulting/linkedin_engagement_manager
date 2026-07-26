@@ -1,6 +1,7 @@
 import os
 import shutil
 from datetime import timedelta, datetime, timezone
+from typing import Tuple
 
 from celery_once import QueueOnce
 
@@ -22,12 +23,15 @@ from cqc_lem.utilities.db import (
     get_users_with_reply_mode, get_engagement_preferences,
     get_approved_catchup_touches, get_orphaned_catchup_touches, update_catchup_touch_status,
     count_catchup_touches_sent_today, CatchupTouchStatus, max_catchup_touches_allowed,
+    get_user_timezone,
 )
 from cqc_lem.utilities.engagement_window import (
     plan_pre_post_window, record_pre_post_scheduled, record_pre_post_skipped,
     PRE_POST_COMMENT_LEAD_MINUTES, PRE_POST_VIEWER_LEAD_MINUTES,
     PRE_POST_SKIP_PAST_WINDOW, PRE_POST_SKIP_THROTTLED, PRE_POST_SKIP_USER_INACTIVE,
     PRE_POST_TASK_VIEWER,
+    claim_daily_slot, plan_daily_slot, stagger_config,
+    STAGGER_APPRECIATION_DM, STAGGER_GOLDEN_HOUR, STAGGER_GROUP_ENGAGEMENT,
 )
 from cqc_lem.utilities.env_constants import SELENIUM_KEEP_VIDEOS_X_DAYS, CQC_LEM_POST_TIME_DELTA_MINUTES, \
     COST_ROUTING_WINDOW_DAYS
@@ -54,6 +58,26 @@ def _skip_if_throttled(name: str, **context) -> bool:
         return True
     return False
 
+
+def _stagger_due(user_id: int, fanout: Tuple[str, int, int], task_name: str) -> bool:
+    """True when THIS beat tick owns the user's staggered slot for `fanout` today (issue #554).
+
+    The fan-out beats run every STAGGER_TICK_MINUTES and dispatch only the users whose slot has
+    come up, so N users spread across the window instead of landing on one lane in one minute.
+    Redis holds the once-a-day claim, which also buys a catch-up: a slot missed because the beat
+    (or the 429 breaker) was down fires at the next tick instead of being lost for the day. With
+    no Redis the strict one-tick window keeps it to a single dispatch."""
+    config = stagger_config(fanout)
+    tz_name = get_user_timezone(user_id) if config.local else "UTC"
+    slot = plan_daily_slot(user_id, config, tz_name)
+    if not slot.reached:
+        return False
+    claimed = claim_daily_slot(user_id, config.name)
+    due = slot.in_tick_window if claimed is None else claimed
+    if due:
+        log_debug(f"{task_name} slot due (local {slot.local_at:%H:%M}, +{slot.offset_minutes}m)",
+                  user_id=user_id, task_name=task_name)
+    return due
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, }, reject_on_worker_lost=True)
@@ -244,10 +268,14 @@ def auto_check_connection_requests(self):
 def auto_appreciate_dms():
     if _skip_if_throttled("auto_appreciate_dms"):
         return "Automation throttled"
-    # For each user schedule appreciate DMS
+    # For each user schedule appreciate DMS — at that user's staggered slot, so the single
+    # se_outreach lane isn't handed the whole fleet in one minute (issue #554).
     users = get_active_user_ids()
+    dispatched = 0
 
     for user_id in users:
+        if not _stagger_due(user_id, STAGGER_APPRECIATION_DM, "auto_appreciate_dms"):
+            continue
         # Send appreciation DM for 5 minutes
         kwargs = {
             'user_id': user_id,
@@ -261,20 +289,25 @@ def auto_appreciate_dms():
                                                            'interval_start': 60,
                                                            'interval_step': 30
                                                        })
+        dispatched += 1
     if len(users) == 0:
         return f"No Active Users"
     else:
-        return f"Started Appreciate DM Process for {len(users)} user(s)"
+        return f"Started Appreciate DM Process for {dispatched}/{len(users)} user(s)"
 
 
 @shared_task.task
 def auto_daily_engagement():
-    """Daily golden-hour feed-commenting run — fires EVERY day at a peak engagement window, on
-    top of the pre-post commenting that already runs around each scheduled post. This gives a
-    consistent daily reciprocity burst even when a post is (or isn't) scheduled. Volume stays safe
-    because both this run and the pre-post runs share the per-day comment cap (enforced in
-    comment_on_feed_inline), and QueueOnce (keys=['user_id']) prevents overlapping double-runs for
-    the same user."""
+    """Daily golden-hour feed-commenting run — fires EVERY day inside each user's own peak
+    engagement window, on top of the pre-post commenting that already runs around each scheduled
+    post. This gives a consistent daily reciprocity burst even when a post is (or isn't) scheduled.
+
+    The beat ticks every STAGGER_TICK_MINUTES and dispatches only the users whose staggered slot
+    has come up (issue #554): `se_engage` drains ~8 of these 15-minute loops an hour, so fanning
+    the whole fleet out at one crontab pushed later users hours past the window they were meant
+    for. Volume stays safe because this run and the pre-post runs share the per-day comment cap
+    (enforced in comment_on_feed_inline), and QueueOnce (keys=['user_id']) prevents overlapping
+    double-runs for the same user."""
     if _skip_if_throttled("auto_daily_engagement"):
         return "Automation throttled"
     users = get_active_user_ids()
@@ -282,6 +315,10 @@ def auto_daily_engagement():
     for user_id in users:
         if not has_linkedin_session(user_id):
             continue  # no session → the Selenium task would just fail and waste a Chrome slot
+        # Session check first: the slot claim is consumed for the day, so a user who couldn't run
+        # anyway must not burn theirs — connecting later in the day still earns a run.
+        if not _stagger_due(user_id, STAGGER_GOLDEN_HOUR, "auto_daily_engagement"):
+            continue  # not this user's slot yet (or already dispatched today)
         automate_commenting.apply_async(kwargs={'user_id': user_id, 'loop_for_duration': 60 * 15})
         dispatched += 1
     return f"Golden-hour engagement dispatched for {dispatched}/{len(users)} active user(s)"
@@ -714,14 +751,16 @@ def auto_sync_groups():
 
 @shared_task.task
 def auto_group_engagement():
-    """Daily value-add commenting in each active user's ENABLED groups (shares the per-day cap)."""
+    """Daily value-add commenting in each active user's ENABLED groups (shares the per-day cap),
+    at that user's staggered slot so the single se_content lane drains evenly (issue #554)."""
     if _skip_if_throttled("auto_group_engagement"):
         return "Automation throttled"
     from cqc_lem.app.run_automation import auto_comment_in_groups
     users = get_active_user_ids()
     n = 0
     for uid in users:
-        if has_linkedin_session(uid):
+        if has_linkedin_session(uid) and _stagger_due(uid, STAGGER_GROUP_ENGAGEMENT,
+                                                      "auto_group_engagement"):
             auto_comment_in_groups.apply_async(kwargs={'user_id': uid})
             n += 1
     return f"Group commenting dispatched for {n}/{len(users)} user(s)"

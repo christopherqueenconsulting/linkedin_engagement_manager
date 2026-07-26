@@ -68,7 +68,21 @@ class TestGroupDispatchers:
         from cqc_lem.app.run_scheduler import auto_group_engagement
         with patch(f"{_RS}.get_active_user_ids", return_value=[1, 2]), \
              patch(f"{_RS}.has_linkedin_session", side_effect=lambda u: u == 1), \
+             patch(f"{_RS}._stagger_due", return_value=True), \
              patch("cqc_lem.app.run_automation.auto_comment_in_groups") as t:
             result = auto_group_engagement()
         t.apply_async.assert_called_once()
+        assert "1/2" in result
+
+    def test_group_engagement_waits_for_each_users_slot(self):
+        """Issue #554: the beat ticks every 15 min, so a connected user still only runs when
+        their staggered slot on the single se_content lane comes up."""
+        from cqc_lem.app.run_scheduler import auto_group_engagement, STAGGER_GROUP_ENGAGEMENT
+        with patch(f"{_RS}.get_active_user_ids", return_value=[1, 2]), \
+             patch(f"{_RS}.has_linkedin_session", return_value=True), \
+             patch(f"{_RS}._stagger_due", side_effect=lambda u, *_: u == 2) as due, \
+             patch("cqc_lem.app.run_automation.auto_comment_in_groups") as t:
+            result = auto_group_engagement()
+        t.apply_async.assert_called_once_with(kwargs={'user_id': 2})
+        assert due.call_args[0][1] is STAGGER_GROUP_ENGAGEMENT
         assert "1/2" in result

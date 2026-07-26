@@ -9,6 +9,7 @@ from celery.app.control import Inspect
 
 from cqc_lem.app import celeryconfig
 from cqc_lem.app.celeryconfig import broker_url
+from cqc_lem.utilities.engagement_window import STAGGER_TICK_MINUTES
 from cqc_lem.utilities.env_constants import CODE_TRACING, AWS_REGION
 from cqc_lem.utilities.jaeger_tracer_helper import get_jaeger_tracer
 from cqc_lem.utilities.logger import myprint, logger
@@ -122,7 +123,10 @@ app.conf.update(
         },
         'daily-golden-hour-engagement': {
             'task': 'cqc_lem.app.run_scheduler.auto_daily_engagement',
-            'schedule': crontab(hour='13', minute='0')  # Daily peak-hour feed commenting (~9am ET), on top of pre-post
+            # Ticks every STAGGER_TICK_MINUTES; the task itself dispatches only the users whose
+            # staggered slot has come up, spreading peak-hour feed commenting across each user's
+            # local window instead of handing se_engage the whole fleet at once (issue #554).
+            'schedule': crontab(minute=f'*/{STAGGER_TICK_MINUTES}')
         },
         'dispatch-comment-followups': {
             'task': 'cqc_lem.app.run_scheduler.dispatch_comment_followups',
@@ -160,7 +164,8 @@ app.conf.update(
         },
         'group-engagement': {
             'task': 'cqc_lem.app.run_scheduler.auto_group_engagement',
-            'schedule': crontab(hour='16', minute='0')  # Daily value-add commenting in enabled groups
+            # Daily value-add commenting in enabled groups, at each user's staggered slot (#554)
+            'schedule': crontab(minute=f'*/{STAGGER_TICK_MINUTES}')
         },
         'group-posts': {
             'task': 'cqc_lem.app.run_scheduler.auto_group_posts',
@@ -212,7 +217,7 @@ app.conf.update(
         },
         'send-appreciation-dms': {
             'task': 'cqc_lem.app.run_scheduler.auto_appreciate_dms',
-            'schedule': crontab(hour='8', minute='0')  # Run every day at 8:00 AM
+            'schedule': crontab(minute=f'*/{STAGGER_TICK_MINUTES}')  # per-user staggered slot (#554)
         },
         'rollup-llm-costs': {
             'task': 'cqc_lem.app.run_scheduler.auto_rollup_llm_costs',

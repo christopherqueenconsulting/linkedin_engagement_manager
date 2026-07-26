@@ -25,6 +25,7 @@ _PATCH_GET_ORPHANED = f"{_MOD}.get_orphaned_scheduled_posts"
 _PATCH_UPDATE_POST_STATUS = f"{_MOD}.update_db_post_status"
 _PATCH_POST_TO_LINKEDIN = f"{_MOD}.post_to_linkedin"
 _PATCH_APPRECIATE = f"{_MOD}.automate_appreciation_dms_for_user"
+_PATCH_STAGGER_DUE = f"{_MOD}._stagger_due"
 _PATCH_CLEAN_INVITES = f"{_MOD}.clean_stale_invites"
 _PATCH_UPDATE_STALE = f"{_MOD}.update_stale_profile"
 _PATCH_AUTOMATE_COMMENTING = f"{_MOD}.automate_commenting"
@@ -675,6 +676,7 @@ class TestAutoAppreciateDms:
         mock_task = _async_task_mock()
 
         with patch(_PATCH_GET_ACTIVE, return_value=[42]), \
+             patch(_PATCH_STAGGER_DUE, return_value=True), \
              patch(_PATCH_APPRECIATE, mock_task):
             from cqc_lem.app.run_scheduler import auto_appreciate_dms
             result = auto_appreciate_dms.run()
@@ -683,24 +685,42 @@ class TestAutoAppreciateDms:
         call_kwargs = mock_task.apply_async.call_args[1]
         assert call_kwargs["kwargs"]["user_id"] == 42
         assert call_kwargs["kwargs"]["loop_for_duration"] == 60 * 5
-        assert "1 user" in result
+        assert "1/1 user" in result
 
     def test_multiple_users_calls_apply_async_for_each(self):
         mock_task = _async_task_mock()
         users = [1, 2, 3]
 
         with patch(_PATCH_GET_ACTIVE, return_value=users), \
+             patch(_PATCH_STAGGER_DUE, return_value=True), \
              patch(_PATCH_APPRECIATE, mock_task):
             from cqc_lem.app.run_scheduler import auto_appreciate_dms
             result = auto_appreciate_dms.run()
 
         assert mock_task.apply_async.call_count == 3
-        assert "3 user" in result
+        assert "3/3 user" in result
+
+    def test_only_users_whose_slot_is_due_are_dispatched(self):
+        """Issue #554: the beat ticks every 15 min and the single se_outreach lane gets only the
+        users whose staggered slot came up — not every active user at once."""
+        mock_task = _async_task_mock()
+
+        with patch(_PATCH_GET_ACTIVE, return_value=[1, 2, 3]), \
+             patch(_PATCH_STAGGER_DUE, side_effect=lambda u, *_: u == 3) as due, \
+             patch(_PATCH_APPRECIATE, mock_task):
+            from cqc_lem.app.run_scheduler import auto_appreciate_dms, STAGGER_APPRECIATION_DM
+            result = auto_appreciate_dms.run()
+
+        mock_task.apply_async.assert_called_once()
+        assert mock_task.apply_async.call_args[1]["kwargs"]["user_id"] == 3
+        assert due.call_args[0][1] is STAGGER_APPRECIATION_DM
+        assert "1/3 user" in result
 
     def test_apply_async_includes_retry_policy(self):
         mock_task = _async_task_mock()
 
         with patch(_PATCH_GET_ACTIVE, return_value=[10]), \
+             patch(_PATCH_STAGGER_DUE, return_value=True), \
              patch(_PATCH_APPRECIATE, mock_task):
             from cqc_lem.app.run_scheduler import auto_appreciate_dms
             auto_appreciate_dms.run()
