@@ -505,6 +505,70 @@ def auto_weekly_comment_quality(self, days: int = 7):
     return f"Comment quality reported for {reported}/{len(users)} user(s); {held} held"
 
 
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_suppression_tripwire(self):
+    """Daily silent-suppression check per user (issue #629). LinkedIn never announces a penalty — a
+    flagged account just sees its reach step-collapse and stays collapsed for 60-90 days. A day of
+    automation is worth far less than a month of suppressed reach, so a sustained collapse against
+    the user's OWN trailing median (or the D4 comment-demotion verdict) auto-pauses engagement,
+    emails the user in plain language, and escalates as CRITICAL.
+
+    Scheduled posts, stats capture and analytics are untouched — `pause_automation` gates Selenium
+    ENGAGEMENT only. The pause deliberately never self-resumes: while the trip stands this task
+    re-arms it, so only a human clearing it in the UI restarts commenting/DMs."""
+    from cqc_lem.utilities.comment_outcomes import comment_quality_report
+    from cqc_lem.utilities.db import get_comment_outcomes, get_post_performance_rows
+    from cqc_lem.utilities.linkedin.rate_limit import (
+        automation_pause_reason, is_suppression_pause, is_automation_paused, pause_automation,
+        record_suppression_trip, suppression_pause_reason, suppression_trip_state)
+    from cqc_lem.utilities.logger import log_critical
+    from cqc_lem.utilities.notifications import notify_suppression_tripwire
+    from cqc_lem.utilities.observability import track_suppression_check
+    from cqc_lem.utilities.post_stats import build_engagement_trend
+    from cqc_lem.utilities.suppression import (evaluate_suppression, history_days, pause_seconds,
+                                               tripwire_enabled)
+
+    if not tripwire_enabled():
+        return "Suppression tripwire disabled"
+    users = get_active_user_ids()
+    if not users:
+        return "No active users"
+    window = history_days()
+    checked = tripped = rearmed = 0
+    for user_id in users:
+        trend = build_engagement_trend(get_post_performance_rows(user_id, days=window))
+        quality = comment_quality_report(get_comment_outcomes(user_id, days=window), days=window)
+        verdict = evaluate_suppression(trend, comment_quality=quality)
+        checked += 1
+        already = suppression_trip_state(user_id)
+        if not verdict.get("tripped"):
+            # A recovered reading is REPORTED, never auto-cleared: the whole point is that only a
+            # human decides the account is safe to automate again.
+            track_suppression_check(user_id, verdict, paused=bool(already))
+            continue
+        seconds = pause_seconds()
+        if already:
+            # Still tripped and nobody has cleared it — refresh the pause so the TTL can't expire
+            # engagement back on, but only when the standing pause is OURS (a maintenance or manual
+            # pause has its own lifecycle and must not be extended by 90 days).
+            if not is_automation_paused() or is_suppression_pause(automation_pause_reason()):
+                pause_automation(seconds, reason=suppression_pause_reason(user_id))
+                rearmed += 1
+            track_suppression_check(user_id, verdict, paused=True, rearmed=True)
+            continue
+        pause_automation(seconds, reason=suppression_pause_reason(user_id))
+        record_suppression_trip(user_id, verdict.get("reason") or "reach collapse", detail=verdict)
+        notify_suppression_tripwire(user_id, verdict.get("reason") or "")
+        track_suppression_check(user_id, verdict, paused=True)
+        # CRITICAL forwards to PostHog automatically — this is the needs-human flag.
+        log_critical(f"Suppression tripwire fired for user {user_id} — {verdict.get('reason')}",
+                     user_id=user_id, action_type="rate_limit",
+                     task_name="auto_suppression_tripwire")
+        tripped += 1
+    return (f"Suppression checked for {checked}/{len(users)} user(s); "
+            f"{tripped} newly tripped, {rearmed} re-armed")
+
+
 def _max_dt(*dts):
     """Max of the given datetimes, ignoring None (returns None if all are None)."""
     present = [d for d in dts if d is not None]

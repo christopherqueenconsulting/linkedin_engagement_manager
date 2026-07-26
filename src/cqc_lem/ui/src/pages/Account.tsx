@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useAccountReadiness } from '../hooks/useAccountReadiness'
+import SuppressionBanner from '../components/SuppressionBanner'
 import SettingsHub from './account/settings/SettingsHub'
 
 export default function Account() {
@@ -37,6 +38,9 @@ export default function Account() {
           {oauthMsg.text}
         </p>
       )}
+
+      {/* Silent-suppression tripwire (issue #629) — the only notice a limited account ever gets */}
+      <SuppressionBanner />
 
       {/* Account setup checklist — exactly what automation needs, from the readiness API */}
       {readiness && !readiness.ready && (

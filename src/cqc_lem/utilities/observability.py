@@ -527,6 +527,37 @@ def track_comment_outcome(
     )
 
 
+def track_suppression_check(user_id: Optional[int], verdict: Optional[dict] = None,
+                            paused: bool = False, **extra) -> None:
+    """Emit one daily suppression-tripwire reading (issue #629). Every check is emitted, not just
+    the trips: the whole point is to see the reach curve BEFORE the step-collapse, and a series that
+    only has trips in it cannot show the run-up."""
+    verdict = dict(verdict or {})
+    signals = {s.get("name"): s for s in (verdict.get("signals") or []) if isinstance(s, dict)}
+    reach = signals.get("reach_collapse") or {}
+    comments = signals.get("comment_demotion") or {}
+    posthog.capture(
+        distinct_id=str(user_id or "system"),
+        event="suppression_check",
+        properties={
+            "user_id": user_id,
+            "status": verdict.get("status"),
+            "tripped": bool(verdict.get("tripped")),
+            "reason": verdict.get("reason"),
+            "paused": bool(paused),
+            "reach_status": reach.get("status"),
+            "reach_metric": reach.get("metric"),
+            "reach_baseline": reach.get("baseline"),
+            "reach_max_drop": reach.get("max_drop"),
+            "baseline_posts": reach.get("baseline_posts"),
+            "posting_days": reach.get("posting_days"),
+            "comment_status": comments.get("status"),
+            "comment_demotion_rate": comments.get("demotion_rate"),
+            **extra,
+        },
+    )
+
+
 def track_comment_quality(user_id: Optional[int], report: Optional[dict] = None, **extra) -> None:
     """Emit the weekly per-user comment-quality scorecard (issue #628) — reply/like rates plus the
     demotion rate and the verdict that gates commenting — as one `comment_quality` event, so a hold

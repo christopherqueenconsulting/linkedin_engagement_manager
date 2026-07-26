@@ -148,6 +148,14 @@ app.conf.update(
             # demoted out of 'Most relevant' (issue #628).
             'schedule': crontab(hour='8', minute='45', day_of_week='monday')
         },
+        'suppression-tripwire': {
+            'task': 'cqc_lem.app.run_scheduler.auto_suppression_tripwire',
+            # Daily 09:15 UTC — after the 08:00 comment-outcome sweep (so the demotion signal is
+            # fresh) and the previous night's 23:00 post-stats scrape, and between the 09:00
+            # missing-session email and the 09:30 onboarding nudge so a user never gets two
+            # automated emails in the same minute. Auto-pauses engagement on a reach collapse (#629).
+            'schedule': crontab(hour='9', minute='15')
+        },
         'generate-newsletter-drafts': {
             'task': 'cqc_lem.app.run_scheduler.auto_generate_newsletter_drafts',
             'schedule': crontab(hour='10', minute='0')  # Daily: top up each user's newsletter draft queue for review

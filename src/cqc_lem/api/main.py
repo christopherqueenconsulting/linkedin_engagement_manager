@@ -2671,6 +2671,75 @@ def get_engagement_analytics_endpoint(session_token: str, days: int = 90) -> Res
     })
 
 
+def _suppression_status(user_id: int) -> dict:
+    """Current suppression-tripwire picture for one user (issue #629): the standing trip (if any)
+    plus a FRESH evaluation of the same signals. Both are returned on purpose — the trip is what
+    paused engagement and never self-clears, while the live verdict is how the user can see their
+    reach has recovered and decide to re-enable."""
+    from cqc_lem.utilities.comment_outcomes import comment_quality_report
+    from cqc_lem.utilities.linkedin.rate_limit import (
+        automation_pause_reason, automation_pause_remaining, is_suppression_pause,
+        rate_limit_cooldown_remaining, suppression_trip_state)
+    from cqc_lem.utilities.post_stats import build_engagement_trend
+    from cqc_lem.utilities.suppression import evaluate_suppression, history_days, tripwire_enabled
+
+    window = history_days()
+    trend = build_engagement_trend(get_post_performance_rows(user_id, days=window))
+    quality = comment_quality_report(get_comment_outcomes(user_id, days=window), days=window)
+    verdict = evaluate_suppression(trend, comment_quality=quality)
+    trip = suppression_trip_state(user_id)
+    pause_remaining = automation_pause_remaining()
+    pause_reason = automation_pause_reason() if pause_remaining else None
+    return {
+        "enabled": tripwire_enabled(),
+        "tripped": trip is not None,
+        "trip": trip,
+        "current": verdict,
+        "recovered": trip is not None and not verdict.get("tripped"),
+        "engagement_paused": pause_remaining > 0,
+        "pause_reason": pause_reason,
+        "pause_by_tripwire": is_suppression_pause(pause_reason),
+        "pause_remaining_s": pause_remaining,
+        "breaker_remaining_s": rate_limit_cooldown_remaining(),
+    }
+
+
+@router.get("/user/automation-status")
+def get_automation_status_endpoint(session_token: str) -> ResponseModel:
+    """Suppression-tripwire + automation-pause state for the Account banner (issue #629)."""
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return ResponseModel(status_code=200, detail=_suppression_status(user_id))
+
+
+class AutomationResumeRequest(BaseModel):
+    session_token: str
+
+
+@router.post("/user/automation-resume")
+def resume_automation_endpoint(request: AutomationResumeRequest) -> ResponseModel:
+    """The manual re-enable path for a suppression trip (issue #629). The tripwire NEVER resumes on
+    its own, so this endpoint is the only way back: it clears the stored trip and lifts the pause —
+    but only when the pause is the tripwire's own, so re-enabling here can never stomp a 429
+    cooldown, a maintenance window or an admin kill-switch."""
+    from cqc_lem.utilities.linkedin.rate_limit import (
+        automation_pause_reason, automation_pause_remaining, clear_suppression_trip,
+        is_suppression_pause, resume_automation)
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    cleared = clear_suppression_trip(user_id)
+    reason = automation_pause_reason() if automation_pause_remaining() else None
+    resumed = resume_automation() if is_suppression_pause(reason) else False
+    log_info("User re-enabled engagement after a suppression trip", user_id=user_id,
+             action_type="rate_limit")
+    return ResponseModel(status_code=200, detail={
+        "cleared": cleared, "resumed": resumed,
+        **_suppression_status(user_id),
+    })
+
+
 @router.get("/user/audience-growth")
 def get_audience_growth_endpoint(session_token: str, days: int = 90) -> ResponseModel:
     """Follower/audience telemetry for the analytics dashboard's growth panel (issue #627): the
