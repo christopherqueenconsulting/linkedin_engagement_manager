@@ -13,25 +13,58 @@
 # VPS .env (IMAGE_TAG is overridden per-deploy by scripts/deploy.sh).
 
 services:
+  # Zero-downtime edge: in prod, `web_app` is a tiny nginx that KEEPS THE NAME the Cloudflare
+  # tunnel targets (http://web_app:8000, dashboard-managed) while the actual FastAPI app runs in
+  # web_api_blue / web_api_green behind it. scripts/deploy.sh starts the new color, health-checks
+  # it, renders deploy/nginx/default.conf to point at it, and does a graceful `nginx -s reload` —
+  # so a deploy never takes the site down. The rendered conf lives in the git-ignored ./deploy/
+  # dir so a release checkout can't clobber the live routing state.
   web_app:
     build: !reset null
+    image: nginx:1.27-alpine
+    command: ["nginx", "-g", "daemon off;"]
+    restart: unless-stopped
+    # No hard dependency on the colors: per-request DNS in the conf tolerates a briefly-absent
+    # backend, and a green-only failure must never block the edge from starting.
+    depends_on: !reset []
+    env_file: !reset []
+    volumes: !override
+      - ./deploy/nginx:/etc/nginx/conf.d:ro
+    ports: !reset []
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+
+  web_api_blue: &web_api
     image: "${DOCKER_IMAGE_NAME}:${IMAGE_TAG:-latest}"
+    container_name: web_api_blue
     command: /start-fastapi-cloud
     restart: unless-stopped
-    # Ship code in the image — drop the dev source/test bind-mounts.
-    # !override REPLACES the base volume list (a plain key would MERGE, leaving
-    # the dev ./src:/app/src mount which masks the image's built SPA at
-    # /app/src/cqc_lem/ui/dist and makes FastAPI 404 "/").
-    volumes: !override
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    # Ship code in the image — no dev source/test bind-mounts (see the note that used to live on
+    # web_app: a ./src mount would mask the image's built SPA and 404 "/").
+    volumes:
       - ./logs:/app/logs
       # Shared, persistent generated-media store (served at /api/assets).
       - assets:/app/src/cqc_lem/assets
-    ports: !reset []
     deploy:
       resources:
         limits:
           cpus: '2'
           memory: 2g
+
+  # Both colors run at all times (the inactive one is a warm standby on ~0 traffic), which keeps
+  # the compose model simple: `up -d` converges everything, and only deploy.sh decides routing.
+  web_api_green:
+    <<: *web_api
+    container_name: web_api_green
 
   redis:
     restart: unless-stopped

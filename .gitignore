@@ -200,3 +200,9 @@ src/cqc_lem/ui/dist/
 .qodo
 .vscode/mcp.json
 .mcp.json
+
+# VPS deploy runtime state (written by scripts/deploy.sh on the box; never tracked so a release
+# checkout can't clobber live blue/green routing)
+.last_good_tag
+.active_color
+deploy/
