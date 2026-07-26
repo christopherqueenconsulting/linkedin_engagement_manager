@@ -64,15 +64,16 @@ def _stagger_due(user_id: int, fanout: Tuple[str, int, int], task_name: str) -> 
 
     The fan-out beats run every STAGGER_TICK_MINUTES and dispatch only the users whose slot has
     come up, so N users spread across the window instead of landing on one lane in one minute.
-    Redis holds the once-a-day claim, which also buys a catch-up: a slot missed because the beat
-    (or the 429 breaker) was down fires at the next tick instead of being lost for the day. With
-    no Redis the strict one-tick window keeps it to a single dispatch."""
+    Redis holds the claim, keyed by the slot's local date, which also buys a catch-up: a slot
+    missed because the beat (or the 429 breaker) was down fires at the next tick instead of being
+    lost for the day, and a claim written that late still can't reach tomorrow's slot. With no
+    Redis the strict one-tick window keeps it to a single dispatch."""
     config = stagger_config(fanout)
     tz_name = get_user_timezone(user_id) if config.local else "UTC"
     slot = plan_daily_slot(user_id, config, tz_name)
     if not slot.reached:
         return False
-    claimed = claim_daily_slot(user_id, config.name)
+    claimed = claim_daily_slot(user_id, config.name, slot.local_at.date().isoformat())
     due = slot.in_tick_window if claimed is None else claimed
     if due:
         log_debug(f"{task_name} slot due (local {slot.local_at:%H:%M}, +{slot.offset_minutes}m)",
@@ -274,6 +275,8 @@ def auto_appreciate_dms():
     dispatched = 0
 
     for user_id in users:
+        if not has_linkedin_session(user_id):
+            continue  # no session → the Selenium DM run would fail, and it must not spend the slot
         if not _stagger_due(user_id, STAGGER_APPRECIATION_DM, "auto_appreciate_dms"):
             continue
         # Send appreciation DM for 5 minutes

@@ -391,26 +391,37 @@ class TestClaimDailySlot:
     def test_returns_none_without_redis(self):
         from cqc_lem.utilities.engagement_window import claim_daily_slot
         with patch(f"{_MOD}.shared_redis_client", return_value=None):
-            assert claim_daily_slot(7, "GOLDEN_HOUR") is None
+            assert claim_daily_slot(7, "GOLDEN_HOUR", "2026-07-25") is None
 
-    def test_claims_once_per_day_with_a_sub_day_ttl(self):
+    def test_claims_once_per_day(self):
         from cqc_lem.utilities.engagement_window import claim_daily_slot
         client = MagicMock()
         client.set.side_effect = [True, None]                  # nx=True: second caller loses
         with patch(f"{_MOD}.shared_redis_client", return_value=client):
-            assert claim_daily_slot(7, "GOLDEN_HOUR") is True
-            assert claim_daily_slot(7, "GOLDEN_HOUR") is False
+            assert claim_daily_slot(7, "GOLDEN_HOUR", "2026-07-25") is True
+            assert claim_daily_slot(7, "GOLDEN_HOUR", "2026-07-25") is False
         key, value = client.set.call_args[0]
-        assert key == "engagement:slot:GOLDEN_HOUR:7"
+        assert key == "engagement:slot:GOLDEN_HOUR:7:2026-07-25"
         assert client.set.call_args[1]["nx"] is True
-        assert 0 < client.set.call_args[1]["ex"] < 24 * 60 * 60
+        assert client.set.call_args[1]["ex"] > 24 * 60 * 60    # outlasts the day it was claimed on
+
+    def test_a_late_claim_cannot_block_the_next_days_slot(self):
+        """A catch-up dispatched late in the day writes a claim that would still be alive at
+        tomorrow's slot under a flat TTL — the local date in the key is what prevents that."""
+        from cqc_lem.utilities.engagement_window import claim_daily_slot
+        client = MagicMock()
+        client.set.return_value = True
+        with patch(f"{_MOD}.shared_redis_client", return_value=client):
+            claim_daily_slot(7, "GOLDEN_HOUR", "2026-07-25")
+            claim_daily_slot(7, "GOLDEN_HOUR", "2026-07-26")
+        assert client.set.call_args_list[0][0][0] != client.set.call_args_list[1][0][0]
 
     def test_redis_error_degrades_to_unknown(self):
         from cqc_lem.utilities.engagement_window import claim_daily_slot
         client = MagicMock()
         client.set.side_effect = RuntimeError("redis down")
         with patch(f"{_MOD}.shared_redis_client", return_value=client):
-            assert claim_daily_slot(7, "GOLDEN_HOUR") is None
+            assert claim_daily_slot(7, "GOLDEN_HOUR", "2026-07-25") is None
 
 
 class TestApprovedFanoutDefaults:

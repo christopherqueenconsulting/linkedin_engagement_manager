@@ -104,6 +104,12 @@ class TestStaggerDue:
         assert result is True
         claim.assert_called_once()
 
+    def test_the_claim_is_keyed_to_the_slots_local_date(self):
+        """A catch-up claimed late in the day must not still be held at tomorrow's slot — the
+        claim carries the local date rather than relying on a flat sub-day TTL."""
+        _, _, _, claim = self._run(self._slot(), True)
+        assert claim.call_args[0][2] == "2026-07-25"
+
     def test_already_dispatched_today_is_not_due_again(self):
         result, _, _, _ = self._run(self._slot(in_tick_window=True), False)
         assert result is False

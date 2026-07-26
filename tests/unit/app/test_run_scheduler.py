@@ -26,6 +26,7 @@ _PATCH_UPDATE_POST_STATUS = f"{_MOD}.update_db_post_status"
 _PATCH_POST_TO_LINKEDIN = f"{_MOD}.post_to_linkedin"
 _PATCH_APPRECIATE = f"{_MOD}.automate_appreciation_dms_for_user"
 _PATCH_STAGGER_DUE = f"{_MOD}._stagger_due"
+_PATCH_HAS_SESSION = f"{_MOD}.has_linkedin_session"
 _PATCH_CLEAN_INVITES = f"{_MOD}.clean_stale_invites"
 _PATCH_UPDATE_STALE = f"{_MOD}.update_stale_profile"
 _PATCH_AUTOMATE_COMMENTING = f"{_MOD}.automate_commenting"
@@ -676,6 +677,7 @@ class TestAutoAppreciateDms:
         mock_task = _async_task_mock()
 
         with patch(_PATCH_GET_ACTIVE, return_value=[42]), \
+             patch(_PATCH_HAS_SESSION, return_value=True), \
              patch(_PATCH_STAGGER_DUE, return_value=True), \
              patch(_PATCH_APPRECIATE, mock_task):
             from cqc_lem.app.run_scheduler import auto_appreciate_dms
@@ -692,6 +694,7 @@ class TestAutoAppreciateDms:
         users = [1, 2, 3]
 
         with patch(_PATCH_GET_ACTIVE, return_value=users), \
+             patch(_PATCH_HAS_SESSION, return_value=True), \
              patch(_PATCH_STAGGER_DUE, return_value=True), \
              patch(_PATCH_APPRECIATE, mock_task):
             from cqc_lem.app.run_scheduler import auto_appreciate_dms
@@ -706,6 +709,7 @@ class TestAutoAppreciateDms:
         mock_task = _async_task_mock()
 
         with patch(_PATCH_GET_ACTIVE, return_value=[1, 2, 3]), \
+             patch(_PATCH_HAS_SESSION, return_value=True), \
              patch(_PATCH_STAGGER_DUE, side_effect=lambda u, *_: u == 3) as due, \
              patch(_PATCH_APPRECIATE, mock_task):
             from cqc_lem.app.run_scheduler import auto_appreciate_dms, STAGGER_APPRECIATION_DM
@@ -716,10 +720,27 @@ class TestAutoAppreciateDms:
         assert due.call_args[0][1] is STAGGER_APPRECIATION_DM
         assert "1/3 user" in result
 
+    def test_a_user_without_a_session_does_not_burn_their_slot(self):
+        """The DM run is a Selenium login too, so a user with no stored session must be dropped
+        BEFORE the once-a-day claim — reconnecting later still earns that day's outreach."""
+        mock_task = _async_task_mock()
+
+        with patch(_PATCH_GET_ACTIVE, return_value=[9]), \
+             patch(_PATCH_HAS_SESSION, return_value=False), \
+             patch(_PATCH_STAGGER_DUE, return_value=True) as due, \
+             patch(_PATCH_APPRECIATE, mock_task):
+            from cqc_lem.app.run_scheduler import auto_appreciate_dms
+            result = auto_appreciate_dms.run()
+
+        due.assert_not_called()
+        mock_task.apply_async.assert_not_called()
+        assert "0/1 user" in result
+
     def test_apply_async_includes_retry_policy(self):
         mock_task = _async_task_mock()
 
         with patch(_PATCH_GET_ACTIVE, return_value=[10]), \
+             patch(_PATCH_HAS_SESSION, return_value=True), \
              patch(_PATCH_STAGGER_DUE, return_value=True), \
              patch(_PATCH_APPRECIATE, mock_task):
             from cqc_lem.app.run_scheduler import auto_appreciate_dms

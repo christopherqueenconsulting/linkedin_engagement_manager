@@ -338,9 +338,11 @@ concurrency rises:
   that opens at an anchor hour **in that user's own timezone** (golden hour 09:00 local
   +0–180 min, appreciation DMs 08:00 local +0–120, groups 12:00 local +0–120; all three
   retunable with `<NAME>_ANCHOR_HOUR` / `<NAME>_WINDOW_MINUTES` / `<NAME>_ANCHOR_TZ`, and a
-  window of `1` restores "everyone at once"). A Redis claim (`engagement:slot:<NAME>:<user>`)
-  keeps it to one run per user per day and lets a slot missed by a beat outage — or by an
-  open 429 breaker — catch up on a later tick instead of being lost for the day. Per-user
+  window of `1` restores "everyone at once"). A Redis claim
+  (`engagement:slot:<NAME>:<user>:<local date>`) keeps it to one run per user per local day
+  and lets a slot missed by a beat outage — or by an open 429 breaker — catch up on a later
+  tick instead of being lost for the day; keying the claim by the slot's own date is what
+  keeps such a late catch-up from still being held at the next day's slot. Per-user
   `QueueOnce` and the per-day caps are untouched. With a 3-hour window, `se_engage` sees
   ~1 golden-hour loop per 15-min tick at 12 users instead of 12 at once — the table in §4
   reads off the staggered rows now.

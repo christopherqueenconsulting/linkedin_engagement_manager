@@ -215,9 +215,11 @@ STAGGER_APPRECIATION_DM = ("APPRECIATION_DM", 8, 120)
 STAGGER_GROUP_ENGAGEMENT = ("GROUP_ENGAGEMENT", 12, 120)
 
 _SLOT_CLAIM_PREFIX = "engagement:slot:"
-# Shorter than a day so today's claim can never block tomorrow's slot, longer than any plausible
-# beat outage so a claimed slot isn't re-dispatched later the same day.
-_SLOT_CLAIM_TTL_SECONDS = 20 * 60 * 60
+# The claim key carries the slot's local DATE, so "once per user per day" holds no matter when the
+# claim was written: a late catch-up (beat or 429 breaker down until the evening) claims THAT day's
+# key and leaves tomorrow's untouched. The TTL is then only garbage collection — it just has to
+# outlast the rest of the day it was claimed on.
+_SLOT_CLAIM_TTL_SECONDS = 26 * 60 * 60
 
 _MINUTES_PER_DAY = 24 * 60
 
@@ -308,16 +310,20 @@ def plan_daily_slot(user_id: int, config: StaggerConfig, tz_name: Optional[str] 
     )
 
 
-def claim_daily_slot(user_id: int, name: str,
+def claim_daily_slot(user_id: int, name: str, day: str,
                      ttl_seconds: int = _SLOT_CLAIM_TTL_SECONDS) -> Optional[bool]:
-    """Claim today's slot for this user/fan-out: True when this caller won it, False when it was
-    already taken today, None when Redis can't answer (the caller then falls back to the strict
-    one-tick window instead of dispatching blind)."""
+    """Claim one day's slot for this user/fan-out: True when this caller won it, False when it was
+    already taken for that day, None when Redis can't answer (the caller then falls back to the
+    strict one-tick window instead of dispatching blind).
+
+    `day` is the slot's date on the anchor clock (`DailySlot.local_at`) — keying by it is what
+    keeps a late catch-up claim from spilling into the next local day's slot.
+    """
     client = shared_redis_client()
     if client is None:
         return None
     try:
-        return bool(client.set(f"{_SLOT_CLAIM_PREFIX}{name}:{int(user_id)}", "1",
+        return bool(client.set(f"{_SLOT_CLAIM_PREFIX}{name}:{int(user_id)}:{day}", "1",
                                nx=True, ex=int(ttl_seconds)))
     except Exception as e:
         log_warning("Could not claim daily engagement slot", exc=e, user_id=user_id)
