@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.96.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.95.5...v0.96.0) (2026-07-26)
+
+
+### Features
+
+* **infra:** Selenium Grid horizontal path + concurrency/scale load test (closes [#556](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/556)) ([438be82](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/438be823e36d76ae25539babe18e3923fe32a952))
+
+
+### Bug Fixes
+
+* **infra:** pure-shell hub healthcheck, honest unreachable SLO rows, decision status ([d2eb724](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d2eb7244757ece320ec1e557f97a9cbc2194808f))
+
 ## [0.95.5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.95.4...v0.95.5) (2026-07-26)
 
 
