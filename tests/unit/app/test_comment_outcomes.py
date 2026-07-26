@@ -446,6 +446,31 @@ class TestOutcomeDispatcher:
         assert apply.call_count == 1  # user 1 due, user 2 already swept, user 3 has no session
         assert "1/3" in result
 
+    def test_no_active_users(self):
+        from cqc_lem.app.run_scheduler import dispatch_comment_outcome_sweeps
+        with ExitStack() as es:
+            es.enter_context(patch(f"{RS}._skip_if_throttled", return_value=False))
+            es.enter_context(patch(f"{RS}.get_active_user_ids", return_value=[]))
+            apply = es.enter_context(patch(f"{RS}.sweep_comment_outcomes.apply_async"))
+            assert dispatch_comment_outcome_sweeps() == "No active users"
+        assert not apply.called
+
+    def test_a_redis_error_on_the_interval_gate_still_dispatches(self):
+        # The gate is a nicety; losing it must not cost the sweep — the work list is already
+        # at-most-once per comment, so an extra dispatch just finds nothing to do.
+        from cqc_lem.app.run_scheduler import dispatch_comment_outcome_sweeps
+        client = MagicMock(); client.set.side_effect = RuntimeError("boom")
+        with ExitStack() as es:
+            es.enter_context(patch(f"{RS}._skip_if_throttled", return_value=False))
+            es.enter_context(patch(f"{RS}.get_active_user_ids", return_value=[1]))
+            es.enter_context(patch(f"{RS}.has_linkedin_session", return_value=True))
+            es.enter_context(patch("cqc_lem.utilities.linkedin.rate_limit._redis_client",
+                                   return_value=client))
+            es.enter_context(patch(f"{RS}.dispatch_jitter_seconds", return_value=5))
+            apply = es.enter_context(patch(f"{RS}.sweep_comment_outcomes.apply_async"))
+            dispatch_comment_outcome_sweeps()
+        assert apply.call_count == 1
+
     def test_no_redis_still_dispatches(self):
         from cqc_lem.app.run_scheduler import dispatch_comment_outcome_sweeps
         with ExitStack() as es:

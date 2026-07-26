@@ -19,14 +19,24 @@ pytestmark = pytest.mark.integration
 _EMAIL = "comment-outcomes-628@example.test"
 
 
-def _server_available() -> bool:
+def _schema_available() -> bool:
+    """A reachable server is not enough — these tests need the migrated schema. An un-migrated DB
+    (a bare local server) skips instead of erroring; CI provisions it before the suite runs."""
     try:
         config = db._get_mysql_config()
         connection = mysql.connector.connect(connect_timeout=3, **config)
     except Exception:  # noqa: BLE001 - unset/incomplete DB env means "no server here", so skip
         return False
-    connection.close()
-    return True
+    try:
+        cursor = connection.cursor()
+        cursor.execute("SHOW TABLES LIKE 'comment_outcomes'")
+        present = bool(cursor.fetchone())
+        cursor.close()
+        return present
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        connection.close()
 
 
 def _exec(sql: str, params=(), fetch: bool = False):
@@ -52,8 +62,8 @@ def _add_comment_log(user_id: int, post_url: str, message: str, hours_ago: int) 
 
 @pytest.fixture
 def user_id():
-    if not _server_available():
-        pytest.skip("no MySQL server available for the comment-outcomes integration test")
+    if not _schema_available():
+        pytest.skip("no migrated MySQL schema available for the comment-outcomes integration test")
     _exec("DELETE FROM users WHERE email=%s", (_EMAIL,))  # CASCADE clears logs + outcomes
     db.add_user(_EMAIL, "x")
     uid = db.get_user_id(_EMAIL)

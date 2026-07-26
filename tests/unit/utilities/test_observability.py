@@ -660,3 +660,69 @@ class TestTrackCapacityAlert:
             track_capacity_alert(None)
 
         assert mock_ph.capture.call_args[1]["properties"] == {"generated_at": None}
+
+
+class TestTrackCommentOutcome:
+    """Issue #628: one event per comment we read back, and one weekly scorecard per user."""
+
+    def test_emits_the_reading(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_comment_outcome
+            track_comment_outcome(4, 99, {"status": "checked", "author_replied": True,
+                                          "reply_count": 2, "like_count": 5,
+                                          "visible_most_relevant": False, "our_reply_sent": 1},
+                                  post_key="feedurn://urn:li:activity:1")
+
+        _, kwargs = mock_ph.capture.call_args
+        assert kwargs["event"] == "comment_outcome" and kwargs["distinct_id"] == "4"
+        props = kwargs["properties"]
+        assert props["log_id"] == 99 and props["author_replied"] is True
+        assert props["reply_count"] == 2 and props["like_count"] == 5
+        assert props["our_reply_sent"] is True
+        assert props["visible_most_relevant"] is False
+        assert props["post_key"] == "feedurn://urn:li:activity:1"
+
+    def test_ambiguous_visibility_is_not_coerced(self):
+        # None must survive as None — a False here would read as a confirmed demotion.
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_comment_outcome
+            track_comment_outcome(None, None, {"status": "skipped", "skip_reason": "not-found"})
+
+        _, kwargs = mock_ph.capture.call_args
+        assert kwargs["distinct_id"] == "system"
+        props = kwargs["properties"]
+        assert props["visible_most_relevant"] is None
+        assert props["status"] == "skipped" and props["skip_reason"] == "not-found"
+        assert props["reply_count"] == 0 and props["author_replied"] is False
+
+    def test_tolerates_an_empty_outcome(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_comment_outcome
+            track_comment_outcome(4, 99, None)
+
+        assert mock_ph.capture.call_args[1]["properties"]["status"] is None
+
+
+class TestTrackCommentQuality:
+    def test_emits_the_rates_and_the_verdict(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_comment_quality
+            track_comment_quality(4, {"days": 7, "sample_size": 20, "checked": 18, "skipped": 2,
+                                      "author_reply_rate": 0.2, "reply_rate": 0.4,
+                                      "like_rate": 0.6, "demotion_rate": 0.5,
+                                      "visibility_sample": 12,
+                                      "verdict": {"status": "hold", "reason": "demoted"}})
+
+        _, kwargs = mock_ph.capture.call_args
+        assert kwargs["event"] == "comment_quality" and kwargs["distinct_id"] == "4"
+        props = kwargs["properties"]
+        assert props["demotion_rate"] == 0.5 and props["visibility_sample"] == 12
+        assert props["verdict"] == "hold" and props["verdict_reason"] == "demoted"
+
+    def test_tolerates_an_empty_report(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_comment_quality
+            track_comment_quality(None, None)
+
+        props = mock_ph.capture.call_args[1]["properties"]
+        assert props["verdict"] is None and props["sample_size"] is None
