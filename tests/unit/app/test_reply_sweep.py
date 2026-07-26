@@ -331,7 +331,8 @@ class TestReplyToCommentsOnOpenPost:
         gen.assert_not_called()   # our own reply already present → skip
         rep.assert_not_called()
 
-    def test_lead_magnet_dm_on_keyword(self):
+    def test_lead_magnet_delivery_is_queued_for_approval_never_sent(self):
+        """Issue #624: the comment-keyword artifact goes to the approval queue, not out the door."""
         from cqc_lem.app.run_automation import _reply_to_comments_on_open_post
         driver = MagicMock(); driver.current_url = "x"
         with patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
@@ -342,17 +343,21 @@ class TestReplyToCommentsOnOpenPost:
                    return_value={"enabled": True, "keyword": "GUIDE", "message": "Here: {blog_url}"}), \
              patch(f"{_RA}.get_user_blog_url", return_value="https://blog"), \
              patch(f"{_RA}.has_received_lead_magnet", return_value=False), \
+             patch(f"{_RA}.has_open_scheduled_dm", return_value=False), \
+             patch(f"{_RA}.count_scheduled_dms_created_today", return_value=0), \
              patch(f"{_RA}.render_dm_placeholders", return_value="Here: https://blog"), \
+             patch(f"{_RA}.insert_scheduled_dm", return_value=77) as ins, \
              patch(f"{_RA}.send_private_dm") as dm, \
              patch(f"{_RA}.record_lead_magnet_sent") as rec, \
              patch(f"{_RA}.upsert_engager"), \
              patch(f"{_RA}.generate_thread_reply", return_value="reply"), \
-             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
+             patch(f"{_RA}.get_engagement_preferences", return_value={"max_dms_per_day": 5}), \
              patch(f"{_RA}._flag_lead_signal", return_value=None), \
              patch(f"{_RA}._reply_to_comment_inline", return_value=True), \
              patch(f"{_RA}.insert_new_log"):
             _reply_to_comments_on_open_post(driver, MagicMock(), 1, 9, self._profile(), "synth")
-        dm.apply_async.assert_called_once()
+        dm.apply_async.assert_not_called()          # no unapproved outbound DM path
+        ins.assert_called_once()
         rec.assert_called_once()
 
     def test_bails_when_profile_slug_unresolvable(self):

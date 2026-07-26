@@ -3759,6 +3759,10 @@ _SCHED_DM_COLS = ("id", "user_id", "recipient_profile_url", "recipient_name", "m
 # scheduled_dms.source for an auto-drafted DM-nurture reply (issue #485). NULL/absent means an
 # operator wrote it by hand, which is what every pre-#485 row is.
 SCHEDULED_DM_SOURCE_NURTURE = 'nurture'
+# scheduled_dms.source for an approval-gated owned-asset delivery (issue #624) — the lead magnet a
+# commenter asked for by keyword. Kept distinct from 'nurture' so each mechanic gets its own
+# one-open-draft rule, its own daily draft cap, and its own delivery count.
+SCHEDULED_DM_SOURCE_ARTIFACT = 'artifact'
 # Statuses where a drafted nurture DM is still "live" for its thread — a second draft to the same
 # person while one of these is open would be two messages queued for one reply.
 _OPEN_SCHED_DM_STATUSES = (ScheduledDmStatus.PENDING, ScheduledDmStatus.APPROVED,
@@ -6063,6 +6067,44 @@ def get_latest_newsletter_subscriber_count(user_id: int) -> "int | None":
     except mysql.connector.Error as err:
         myprint(f"Could not get latest newsletter subscriber count for user {user_id} | Error: {err}")
         return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def count_artifact_cta_deliveries(user_id: int, days: int = 90,
+                                  newsletter_url: Optional[str] = None) -> dict:
+    """Owned-asset CTA deliveries in the last `days` (issue #624) — the attribution half of the loop,
+    so subscriber growth can be read against the CTAs that were actually delivered.
+
+    The two mechanics are counted SEPARATELY because they deliver differently and one of them is not
+    a send at all: `lead_magnet_dms` counts the approval-gated DM drafts this automation queued, and
+    `newsletter_links` counts the published posts that carried the subscribe URL into their first
+    comment. `newsletter_links` is None — not 0 — when the user has no newsletter URL configured:
+    there was nothing to carry, which is a different fact from "carried nothing"."""
+    window = max(1, int(days or 1))
+    out: dict = {"window_days": window, "lead_magnet_dms": 0, "newsletter_links": None}
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM scheduled_dms WHERE user_id = %s AND source = %s "
+            "AND created_at >= (NOW() - INTERVAL %s DAY)",
+            (user_id, SCHEDULED_DM_SOURCE_ARTIFACT, window))
+        row = cursor.fetchone()
+        out["lead_magnet_dms"] = int(row[0]) if row and row[0] else 0
+        url = str(newsletter_url or "").strip()
+        if url:
+            cursor.execute(
+                "SELECT COUNT(*) FROM posts WHERE user_id = %s AND status = %s "
+                "AND first_comment_link LIKE %s AND updated_at >= (NOW() - INTERVAL %s DAY)",
+                (user_id, PostStatus.POSTED.value, f"%{url}%", window))
+            row = cursor.fetchone()
+            out["newsletter_links"] = int(row[0]) if row and row[0] else 0
+        return out
+    except mysql.connector.Error as err:
+        myprint(f"Could not count artifact CTA deliveries for user {user_id} | Error: {err}")
+        return out
     finally:
         cursor.close()
         connection.close()

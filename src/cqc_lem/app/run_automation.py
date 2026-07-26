@@ -27,7 +27,7 @@ from cqc_lem.utilities.connection_targeting import CandidateSignal, ScoredCandid
     rank_candidates, target_terms_from_prefs
 from cqc_lem.utilities.lead_scoring import person_key
 from cqc_lem.utilities.ai.content_alignment import humanize_text, split_link_for_first_comment, \
-    append_link_to_comment
+    append_link_to_comment, resolve_artifact_delivery, ARTIFACT_KIND_LEAD_MAGNET
 from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, insert_new_log, LogActionType, \
     CONNECTION_REQUEST_SENT_MESSAGE, ALREADY_CONNECTED_MESSAGE, \
@@ -51,7 +51,7 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     insert_lead_signal, has_lead_signal, get_lead_signal, update_lead_signal, \
     LeadSignalSource, LeadSignalChannel, LeadSignalStatus, \
     insert_scheduled_dm, has_open_scheduled_dm, count_scheduled_dms_created_today, \
-    ScheduledDmStatus, SCHEDULED_DM_SOURCE_NURTURE, \
+    ScheduledDmStatus, SCHEDULED_DM_SOURCE_NURTURE, SCHEDULED_DM_SOURCE_ARTIFACT, \
     insert_connection_request, count_open_connection_requests, get_requested_person_keys, \
     get_engager_candidates, get_profile_facts, count_invites_sent_today, ConnectionRequestStatus, \
     CatchupTouchStatus, insert_catchup_touch, has_catchup_touch, get_catchup_touch, \
@@ -2542,6 +2542,71 @@ def _reply_outcome(status: str, summary: str, comments_found: int = 0,
             "replies_sent": int(replies_sent)}
 
 
+def _queue_artifact_delivery(user_id: int, profile_url: str, first_name: str, comment_text: str,
+                             lead_magnet: dict, prefs: dict, post_id: int = None,
+                             blog_url: str = "") -> "int | None":
+    """Deliver the owned asset a commenter asked for by keyword — as an APPROVAL-GATED draft in the
+    operator's existing scheduled_dms queue, never as a direct send (issue #624).
+
+    Comment-gated delivery ("comment X and I'll send it") is the mechanic that makes an artifact CTA
+    worth writing, but DM-ing every commenter at volume is a spam surface, so the payload goes
+    through the same queue the #485 nurture drafts use: one open draft per thread, a per-day drafting
+    cap, and a human approval before anything leaves. `send_scheduled_dm` then re-checks the user's
+    max_dms_per_day at send time, so the cap is enforced on delivery too.
+
+    Returns the scheduled_dms id, or None when nothing was queued. Best-effort and NON-FATAL — a
+    delivery that can't be drafted must never break the reply sweep it rides on."""
+    try:
+        delivery = resolve_artifact_delivery(lead_magnet)
+        if delivery["kind"] != ARTIFACT_KIND_LEAD_MAGNET or not delivery["deliverable"]:
+            return None
+        if delivery["keyword"].lower() not in (comment_text or "").lower():
+            return None
+        if not profile_url or has_received_lead_magnet(user_id, profile_url):
+            return None
+        # One open draft per person, across BOTH mechanics: a commenter who is already mid-nurture
+        # must not also get an artifact draft stacked on the same thread.
+        if (has_open_scheduled_dm(user_id, profile_url, source=SCHEDULED_DM_SOURCE_ARTIFACT)
+                or has_open_scheduled_dm(user_id, profile_url, source=SCHEDULED_DM_SOURCE_NURTURE)):
+            log_info(f"Artifact delivery: {first_name or profile_url} already has a queued draft; "
+                     f"skipping", user_id=user_id, action_type="dm")
+            return None
+        cap = int((prefs or {}).get("max_dms_per_day") or 0)
+        if count_scheduled_dms_created_today(user_id, source=SCHEDULED_DM_SOURCE_ARTIFACT) >= cap:
+            log_info(f"Artifact delivery: daily draft cap ({cap}) reached", user_id=user_id,
+                     action_type="dm")
+            return None
+
+        message = render_dm_placeholders(delivery["message"], first_name=(first_name or "").split(" ")[0],
+                                         blog_url=blog_url or "")
+        if not str(message or "").strip():
+            log_warning("Artifact delivery: the lead-magnet message rendered empty — nothing to send",
+                        user_id=user_id, post_id=post_id, action_type="dm")
+            return None
+        # Due now: the operator's approval is the only gate on timing, and a resource someone just
+        # asked for is worthless a day late.
+        due = datetime.now(timezone.utc).replace(tzinfo=None)
+        dm_id = insert_scheduled_dm(user_id, profile_url, message, due,
+                                    recipient_name=first_name or None,
+                                    status=ScheduledDmStatus.PENDING,
+                                    source=SCHEDULED_DM_SOURCE_ARTIFACT)
+        if not dm_id:
+            log_warning(f"Artifact delivery: drafted the lead magnet for {first_name or profile_url} "
+                        f"but the scheduled_dms insert failed", user_id=user_id, action_type="dm")
+            return None
+        # Recorded on QUEUE, not on send: the row's job is to stop us drafting the same resource for
+        # the same person on every sweep, and the draft already exists once it is in the queue.
+        record_lead_magnet_sent(user_id, profile_url, post_id)
+        log_info(f"Artifact delivery queued for approval to {first_name or profile_url} "
+                 f"(keyword '{delivery['keyword']}')", user_id=user_id, post_id=post_id,
+                 action_type="dm")
+        return dm_id
+    except Exception as e:
+        log_warning("Artifact delivery could not be queued", exc=e, user_id=user_id, post_id=post_id,
+                    action_type="dm")
+        return None
+
+
 def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my_profile,
                                     profile_synthesis: str) -> dict:
     """Navigate to the user's own post and reply to comments on it (thread-builder replies, plus
@@ -2621,17 +2686,9 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
                         context_text=post_message, my_profile=my_profile, prefs=prefs,
                         profile_synthesis=profile_synthesis):
                     leads_flagged += 1
-                if (lead_magnet.get("enabled") and lead_magnet.get("keyword") and lead_magnet.get("message")
-                        and lead_magnet["keyword"].lower() in comment_text.lower()
-                        and _eprofile and not has_received_lead_magnet(user_id, _eprofile)):
-                    lm_message = render_dm_placeholders(
-                        lead_magnet["message"],
-                        first_name=(_ename or "").split(" ")[0],
-                        blog_url=lead_magnet_blog_url or "")
-                    send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": _eprofile,
-                                                        "message": lm_message})
-                    record_lead_magnet_sent(user_id, _eprofile, post_id)
-                    myprint(f"Lead magnet DM queued to {_ename} (keyword '{lead_magnet['keyword']}')")
+                # Comment-gated artifact delivery (#624): approval-gated draft, never a direct send.
+                _queue_artifact_delivery(user_id, _eprofile, _ename, comment_text, lead_magnet,
+                                         prefs, post_id=post_id, blog_url=lead_magnet_blog_url)
         except Exception:
             pass
         # Already replied if our own profile link already appears in this comment's replies.

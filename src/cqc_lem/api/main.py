@@ -2065,14 +2065,22 @@ def get_newsletter_settings_endpoint(session_token: str) -> ResponseModel:
 @router.get("/user/newsletter-subscribers")
 def get_newsletter_subscribers_endpoint(session_token: str) -> ResponseModel:
     """Subscriber-growth time-series for the current user (issue #400): the recorded snapshots plus
-    the latest known subscriber count, for charting growth over time."""
+    the latest known subscriber count, for charting growth over time.
+
+    `attribution` (issue #624) is what that growth can be read against: the owned-asset CTAs that
+    actually delivered something in the same window — approval-gated lead-magnet DMs, and posts that
+    carried the subscribe link into their first comment."""
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
-    from cqc_lem.utilities.db import get_newsletter_subscriber_stats, get_latest_newsletter_subscriber_count
+    from cqc_lem.utilities.db import (get_newsletter_subscriber_stats,
+                                      get_latest_newsletter_subscriber_count,
+                                      count_artifact_cta_deliveries)
+    newsletter_url = (get_newsletter_settings(user_id) or {}).get("newsletter_url")
     return ResponseModel(status_code=200, detail={
         "latest": get_latest_newsletter_subscriber_count(user_id),
         "history": get_newsletter_subscriber_stats(user_id),
+        "attribution": count_artifact_cta_deliveries(user_id, newsletter_url=newsletter_url),
     })
 
 

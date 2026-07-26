@@ -147,6 +147,15 @@ export default function NewsletterCard() {
                 {subs.history[0].invites_sent} connection{subs.history[0].invites_sent === 1 ? '' : 's'}.
               </p>
             )}
+            {subs?.attribution && (
+              <p className="text-xs text-gray-400">
+                Owned-asset CTAs in the last {subs.attribution.window_days} days:{' '}
+                {subs.attribution.newsletter_links ?? '—'} post
+                {subs.attribution.newsletter_links === 1 ? '' : 's'} carried your subscribe link,{' '}
+                {subs.attribution.lead_magnet_dms} lead-magnet DM
+                {subs.attribution.lead_magnet_dms === 1 ? '' : 's'} queued for your approval.
+              </p>
+            )}
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-gray-700">Invite my connections to subscribe</p>

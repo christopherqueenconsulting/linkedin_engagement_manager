@@ -124,12 +124,32 @@ class TestNewsletterSubscribers:
     def test_get_returns_history_and_latest(self, client):
         history = [{"subscriber_count": 130, "invites_sent": 0, "captured_at": "2026-07-20T00:00:00"}]
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_newsletter_settings",
+                   return_value={"enabled": True, "newsletter_url": "https://li/news"}), \
+             patch("cqc_lem.utilities.db.count_artifact_cta_deliveries",
+                   return_value={"window_days": 90, "lead_magnet_dms": 2, "newsletter_links": 3}), \
              patch("cqc_lem.utilities.db.get_latest_newsletter_subscriber_count", return_value=130), \
              patch("cqc_lem.utilities.db.get_newsletter_subscriber_stats", return_value=history):
             resp = client.get(f"/api/user/newsletter-subscribers?session_token={_SESSION}")
         assert resp.status_code == 200
         detail = resp.json()["detail"]
         assert detail["latest"] == 130 and detail["history"][0]["subscriber_count"] == 130
+
+    def test_get_includes_owned_asset_delivery_attribution(self, client):
+        """Issue #624: growth is only readable against the CTAs that actually delivered."""
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_newsletter_settings",
+                   return_value={"enabled": True, "newsletter_url": "https://li/news"}), \
+             patch("cqc_lem.utilities.db.count_artifact_cta_deliveries",
+                   return_value={"window_days": 90, "lead_magnet_dms": 2,
+                                 "newsletter_links": 3}) as counts, \
+             patch("cqc_lem.utilities.db.get_latest_newsletter_subscriber_count", return_value=130), \
+             patch("cqc_lem.utilities.db.get_newsletter_subscriber_stats", return_value=[]):
+            resp = client.get(f"/api/user/newsletter-subscribers?session_token={_SESSION}")
+        assert resp.json()["detail"]["attribution"] == {
+            "window_days": 90, "lead_magnet_dms": 2, "newsletter_links": 3}
+        # The subscribe URL is what makes the link side countable — it must be passed through.
+        assert counts.call_args.kwargs["newsletter_url"] == "https://li/news"
 
     def test_401(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=None):
