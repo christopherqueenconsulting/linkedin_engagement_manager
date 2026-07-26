@@ -147,7 +147,15 @@ class TestGridOverlay:
 
     def test_the_hub_is_not_healthy_until_a_node_can_actually_serve(self):
         # A hub with zero registered nodes answers /status but has no capacity.
-        assert "availability')=='UP'" in _service_block(GRID_OVERLAY, "selenium-hub")
+        hub = _config_only(_service_block(GRID_OVERLAY, "selenium-hub"))
+        assert r'\"availability\":\"UP\"' in hub
+
+    def test_the_hub_healthcheck_needs_no_interpreter_in_the_image(self):
+        # selenium/hub is a JRE image with no Python — the standalone's `python3 -c` probe would
+        # never pass there, leaving the hub permanently unhealthy and every dependant stranded.
+        hub = _config_only(_service_block(GRID_OVERLAY, "selenium-hub"))
+        healthcheck = hub.split("healthcheck:")[1]
+        assert "python" not in healthcheck
 
     def test_nodes_wait_only_for_the_hub_to_start(self):
         # service_healthy here would deadlock: the hub is healthy only once a node registers.

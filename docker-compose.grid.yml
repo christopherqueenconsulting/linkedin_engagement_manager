@@ -57,9 +57,12 @@ services:
           cpus: '0.5'
           memory: 512m
     healthcheck:
-      # Same shape as the standalone's check, and for the same reason: a hub that answers but has
-      # zero nodes registered has zero capacity, so "UP" must mean "a browser can actually start".
-      test: ["CMD-SHELL", "curl -fsS http://localhost:4444/status | python3 -c \"import sys,json; d=json.load(sys.stdin); sys.exit(0 if any(n.get('availability')=='UP' for n in d['value']['nodes']) else 1)\""]
+      # Same MEANING as the standalone's check — a hub that answers but has zero nodes registered has
+      # zero capacity, so "UP" must mean "a browser can actually start" — but pure shell rather than
+      # the standalone's `python3 -c`: selenium/hub is a JRE image and carries no Python, so a check
+      # that shelled out to it would make the hub permanently unhealthy and strand every service that
+      # depends on it. `tr -d` first so the probe doesn't depend on how the hub spaces its JSON.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4444/status | tr -d ' \\n' | grep -q '\"availability\":\"UP\"'"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -92,6 +95,12 @@ services:
     deploy:
       # Total slots = replicas x SE_NODE_MAX_SESSIONS. 8 == the summed lane concurrency (see the
       # invariant at the top) and is drop-in parity with the standalone it replaces.
+      # `deploy.replicas` is honoured by `docker compose up` in Compose **v2** (v1 ignored the whole
+      # `deploy` key outside Swarm — as it also would for the resource limits the base compose file
+      # already relies on). Because a wrong node count is a silent capacity regression, not an error,
+      # the cutover VERIFIES the slot count against /status before trusting it, and
+      # `--scale selenium-node-chrome=$SELENIUM_GRID_NODES` is the explicit override if a host ever
+      # disagrees. See docs/SELENIUM_GRID.md §2.
       replicas: ${SELENIUM_GRID_NODES:-8}
       resources:
         limits:

@@ -25,6 +25,15 @@ def _topology(lanes: dict, cap: int = None) -> slt.Topology:
     return slt.Topology(lanes=lanes, session_cap=cap if cap is not None else sum(lanes.values()))
 
 
+# A 15-minute loop that must start within a minute of the fan-out: more users than browsers can ever
+# start at once, so no session count reaches 100% on-time and the search has no answer to give.
+IMPOSSIBLE = slt.JobSpec("j", "se_engage", 15.0, 1.0, starts=(0,))
+
+
+def _unreachable_row() -> dict:
+    return slt.run_scale(70, slt.default_topology(), specs=(IMPOSSIBLE,), target_on_time_pct=100)
+
+
 class TestBuildWorkload:
     def test_every_user_gets_every_occurrence_of_every_job(self):
         occurrences = sum(max(1, len(spec.starts)) for spec in slt.WORKLOAD)
@@ -222,6 +231,18 @@ class TestSummarizeAndCurve:
         # ...and NOT for the starving one it is currently running on.
         assert row["sessions_needed"] > row["session_cap"]
 
+    def test_an_unreachable_slo_reports_no_sessions_needed_instead_of_a_number(self):
+        # The search found no session count that works. Falling back to the simulated peak here
+        # would read as "provision this many and you're fine" — the opposite of what it found.
+        row = _unreachable_row()
+        assert row["sessions_needed"] is None
+        assert row["unreachable_lane"] == "se_engage"
+
+    def test_an_unreachable_row_still_prices_what_it_actually_ran(self):
+        row = _unreachable_row()
+        assert row["projected_sessions"] == row["peak_sessions"]
+        assert row["chrome_mem_gb"] == pytest.approx(row["peak_sessions"] * slt.MEM_PER_SESSION_GB)
+
     def test_the_row_records_whether_the_simulated_topology_holds_the_invariant(self):
         assert slt.run_scale(10, slt.default_topology())["cap_matches_lanes"] is True
         starved = slt.Topology(lanes=dict(slt.DEFAULT_LANES), session_cap=4)
@@ -243,6 +264,13 @@ class TestRender:
         text = slt.render_curve(slt.run_curve([10, 50], slt.default_topology()))
         assert "| 10 |" in text and "| 50 |" in text
         assert "Sessions needed" in text
+
+    def test_an_unreachable_slo_renders_as_a_marker_not_a_number(self):
+        # Operators read the "Sessions needed" column as a target to provision to. When there is no
+        # such number, the cell has to say so — and there is no lane split to hang off it either.
+        text = slt.render_curve([_unreachable_row()])
+        assert "unreachable (se_engage)" in text
+        assert "| None |" not in text
 
     def test_a_broken_invariant_is_called_out_in_the_header(self):
         starved = slt.Topology(lanes=dict(slt.DEFAULT_LANES), session_cap=4)

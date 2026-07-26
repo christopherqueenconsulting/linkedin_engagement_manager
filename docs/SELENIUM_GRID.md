@@ -44,6 +44,17 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compos
 `SELENIUM_GRID_NODES` in `/opt/lem/.env` sets the node count (default 8). **Raising it requires
 raising the lane concurrencies in the same commit** — the unit test fails the build otherwise.
 
+Node count is declared as `deploy.replicas`, which **Compose v2 applies on a plain `up`** (Compose v1
+ignored the whole `deploy:` key outside Swarm — as it would also ignore the resource limits the base
+compose file already depends on, so v2 is a prerequisite of this stack, not just of this overlay).
+Getting it wrong is silent — you get *fewer browsers*, not an error — so **verify the slot count
+below before running an engagement cycle on it**, and if a host ever disagrees, say it explicitly:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.grid.yml \
+  up -d --scale selenium-node-chrome="${SELENIUM_GRID_NODES:-8}"
+```
+
 Rollback is one flag, because the overlay parks the standalone rather than deleting it:
 
 ```sh
@@ -79,9 +90,16 @@ documented, deliberate two-file change.
 ### Verify
 
 ```sh
+# node count AND slot count — both must equal SELENIUM_GRID_NODES (one session per node)
 curl -s localhost:4444/status | jq '.value.nodes | length, [.[].slots[]] | length'
+docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.grid.yml \
+  ps selenium-node-chrome | tail -n +2 | wc -l
 docker exec celery_worker_selenium python -m cqc_lem.utilities.capacity_alerts
 ```
+
+Fewer slots than lanes is the one failure this cutover can produce quietly: the stack comes up, the
+hub is healthy, and time-sensitive tasks simply start queueing on session creation. Check it here,
+not from the logs.
 
 The capacity monitor (`auto_capacity_watch`, §5e) reads the same `/status` endpoint and needs no
 change: a hub reports slots exactly like the standalone did.
@@ -158,7 +176,9 @@ cohort onboarding without parsing the table. `--json` emits the whole thing mach
 | 50 | **57.7%** | 148 | 320 min | 14 (engage 6, prepost 4, outreach 2, content 2) | 16.8 GB | 15.5 vCPU (194%) | at ceiling |
 | 100 | **17.7%** | 576 | 640 min | 27 (engage 12, prepost 7, outreach 4, content 4) | 32.4 GB | 28.5 vCPU (356%) | exceeds one VPS |
 
-With `--stagger-hours 4` (§5d's per-user golden-hour offset, **not yet implemented**):
+With `--stagger-hours 4` (§5d's per-user golden-hour offset — **shipped in #554** while this harness
+was in review, so these rows are now a *prediction to be checked*, not a proposal; the re-run that
+confirms or refutes them is **#634**):
 
 | Users | On-time % | Sessions needed | Host CPU | Verdict |
 |---|---|---|---|---|
@@ -171,9 +191,12 @@ Three things fall out of this:
 1. **Today's 8 slots are right for ~10 users and nothing more.** On-time collapses to 58% at 50
    users and 18% at 100 — the §2 prediction ("tasks miss their window, the box does not fall over"),
    quantified.
-2. **Staggering is the cheapest win and it is still unimplemented.** It cuts the sessions needed at
-   50 users from 14 to 11 and lifts on-time from 58% → 84% *with no new hardware*. Do it before
-   buying anything.
+2. **Staggering is the cheapest win, and it has now shipped (#554).** The model says it cuts the
+   sessions needed at 50 users from 14 to 11 and lifts on-time from 58% → 84% *with no new hardware* —
+   which is why it went first, before any spend. What is NOT yet done is proving it: the model still
+   fans every user out at one 13:00 UTC minute at `--stagger-hours 0`, whereas #554 gives each user a
+   hashed slot inside a 3-hour window **in their own timezone**. Teaching the workload model that
+   shape and re-running the curve is **#634**, and until it lands these two tables are a prediction.
 3. **`se_prepost` is the lane §4 never modelled.** At 100 users it needs 7 slots on its own, because
    a 15-minute warm-up with a 5-minute tolerance cannot absorb posts arriving every 2.4 minutes. It
    is the first lane to break and the least forgiving.
@@ -185,9 +208,19 @@ Three things fall out of this:
 
 ---
 
-## 5. The decision point: 16 vCPU / 64 GB, or a second box
+## 5. The decision point: 16 vCPU / 64 GB, a second box — or someone else's grid
 
-Both are real options at ~50 users, and the load test picks between them by what has to scale.
+**Status: deliberately undecided (owner call on #556, 2026-07-26).** Nothing is bought until the
+capacity monitor (§5e) says the cap is the operating point, and the option set is widened first:
+**#633** prices hosted/cloud grids (AWS Fargate/EC2 nodes, Device Farm, BrowserStack, Sauce Labs,
+LambdaTest, Browserless, Browserbase, Steel) against the two self-managed baselines below, keyed to
+this section's sessions-needed curve. That comparison is a spike, not a foregone conclusion: most of
+that market is *test* infrastructure and may disqualify itself on datacenter egress IPs (we route
+per-user residential proxies on purpose), per-minute billing against long-lived logged-in sessions,
+ToS clauses on social automation, and whether the MV3 proxy-auth extension can load at all.
+
+The two self-managed options are both real at ~50 users, and the load test picks between them by what
+has to scale.
 
 | | **A. Upgrade to 16 vCPU / 64 GB** | **B. Second VPS running Grid nodes** |
 |---|---|---|
@@ -198,12 +231,17 @@ Both are real options at ~50 users, and the load test picks between them by what
 | Egress | unchanged (per-user proxies do the egress, `EGRESS_AT_SCALE.md`) | unchanged — nodes egress through the same per-user proxies |
 | Ceiling | ~16 sessions ≈ **50–60 users staggered**; then this decision repeats | none in practice |
 
-**Recommendation:** **stagger first, then A, then B.** Staggering costs nothing and moves 50 users
-from 58% to 84% on-time. A single 16 vCPU / 64 GB box covers the ~14 sessions that 50 users need
-(16.8 GB Chrome + ~6 GB app tier fits 64 GB with room) at a fraction of the operational cost of a
-second host, and B's fault isolation only starts paying when Chrome and the app tier are genuinely
-competing — which is the 100-user row, not the 50-user one. Take B when the load test says **more
-than ~16 sessions** are needed, which is 100 users at any stagger.
+**Where this stands:** staggering went first and has shipped (#554) — it was the only free move.
+Between A and B, A is the cheaper answer *if* the choice were made today: one 16 vCPU / 64 GB box
+covers the ~14 sessions that 50 users need (16.8 GB Chrome + ~6 GB app tier fits 64 GB with room) at
+a fraction of the operational cost of a second host, and B's fault isolation only starts paying when
+Chrome and the app tier genuinely compete — the 100-user row, not the 50-user one. B is the answer
+past **~16 sessions**, i.e. 100 users at any stagger.
+
+But the choice is **not** being made today. The sequence the owner set is: bank the stagger (done) →
+re-measure it (#634) → price hosted alternatives beside A and B (#633) → decide when §5e files a
+breach. Buying either box now would pay for capacity the curve cannot yet prove is needed, and would
+foreclose an option that has not been costed.
 
 The Grid is worth cutting over to **before** either, at the same 8 nodes: it is capacity-neutral,
 it makes a crashed Chrome cost one session instead of all of them, and it is the thing that makes B
@@ -216,9 +254,10 @@ a config change rather than a migration.
 1. Capacity monitor (§5e) has filed a `session_saturation` or `lane_backlog` breach — i.e. the cap
    is the operating point, not a busy afternoon.
 2. Run the load test at the target cohort size; record the curve in the issue.
-3. Implement the golden-hour stagger (§5d) and re-run. If it clears the SLO, stop here.
+3. ✅ Golden-hour stagger shipped (#554). Re-run the curve against the staggered arrivals (#634) —
+   if it clears the SLO, stop here.
 4. Cut over to the Grid at the SAME node count as today's cap (8). Verify `/status` shows 8 slots
-   and a full engagement cycle runs green.
+   (see §2 — a short node count is silent) and a full engagement cycle runs green.
 5. Only then change the numbers: raise `SELENIUM_GRID_NODES` **and** the lane concurrencies in one
    commit, sized by the load test's "sessions needed" column, on a box (or boxes) that §5c says can
    pay for them.

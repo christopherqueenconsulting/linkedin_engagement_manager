@@ -108,8 +108,11 @@ WORKLOAD: tuple[JobSpec, ...] = (
     # before the post goes live, so a few minutes late means it did nothing — the tightest window here.
     JobSpec("prepost_commenting", "se_prepost", 15.0, 5.0,
             arrival=ARRIVAL_POST, post_offset_minutes=-15.0, staggerable=False),
-    # The single 13:00 UTC fan-out (§3). Tolerance = the 2-hour golden window §4's C ≥ N ÷ (W×4)
-    # formula assumes — this is the spike --stagger-hours exists to flatten.
+    # The single 13:00 UTC fan-out (§3) — i.e. arrivals as they were BEFORE #554 staggered them, which
+    # is what makes `--stagger-hours 0` vs `3` a before/after comparison rather than two guesses.
+    # Modelling the shipped per-user slots (a hashed minute inside a 3 h window in the user's OWN
+    # timezone) is issue #634, together with the post-stagger re-run of this curve.
+    # Tolerance = the 2-hour golden window §4's C ≥ N ÷ (W×4) formula assumes.
     JobSpec("golden_hour_commenting", "se_engage", 15.0, 120.0, starts=(13 * 60,)),
     # Dispatched every 30 min and Redis-gated to the user's cadence, so a sweep that starts within
     # the next dispatch interval is indistinguishable from one that started on its own tick.
@@ -398,9 +401,14 @@ def summarize(results: Sequence[JobResult], topology: Topology, users: int,
     on_time = [result for result in results if result.on_time]
     peak = concurrency_peak(results)
     required = dict(required or {})
+    # `cap` travels as-is, including None: the search returning None means NO session count reaches
+    # the target (some lane is late no matter how many browsers it gets), and reporting the simulated
+    # peak there would read as a real sizing answer to a cohort decision. `unreachable_lane` says why.
+    cap = required.get("cap")
     # Resources are projected for the topology that would MEET the SLO, not the one that is starving:
-    # "what would it cost to serve these users" is the question a cohort decision turns on.
-    needed = required.get("cap") or peak
+    # "what would it cost to serve these users" is the question a cohort decision turns on. With no
+    # such topology, the peak is the only honest thing left to price — the row is marked unreachable.
+    projected = peak if cap is None else cap
     per_lane: dict[str, dict] = {}
     for lane in topology.lanes:
         lane_results = [result for result in results if result.job.lane == lane]
@@ -427,13 +435,17 @@ def summarize(results: Sequence[JobResult], topology: Topology, users: int,
         "session_wait_p95_minutes": _round(_percentile(waits, 0.95)),
         "session_wait_max_minutes": _round(max(waits)) if waits else None,
         "peak_sessions": peak,
-        "sessions_needed": needed,
+        "sessions_needed": cap,
+        "unreachable_lane": required.get("unreachable_lane"),
+        # What the resource columns below were priced for — equal to sessions_needed unless the SLO
+        # is unreachable, in which case it is the simulated peak.
+        "projected_sessions": projected,
         "required_lanes": required.get("lanes") or {},
         "required_on_time_pct": required.get("on_time_pct"),
         "target_on_time_pct": required.get("target_on_time_pct"),
         "session_utilisation_pct": _round(100.0 * peak / topology.session_cap) if topology.session_cap else None,
         "per_lane": per_lane,
-        **project_resources(needed, topology.label),
+        **project_resources(projected, topology.label),
     }
 
 
@@ -469,16 +481,24 @@ def render_curve(rows: Sequence[Mapping]) -> str:
         header += "  ⚠️ cap != summed lane concurrency (scaling-plan.md §5a invariant)"
     target = first.get("target_on_time_pct")
     lines = [header, "",
-             "| Users | On-time % (today) | Late jobs | Delay p95 | Worst delay | Sessions needed | "
-             "Chrome mem | Host CPU | Verdict |",
+             ("| Users | On-time % (today) | Late jobs | Delay p95 | Worst delay | Sessions needed | "
+              + "Chrome mem | Host CPU | Verdict |"),
              "|---|---|---|---|---|---|---|---|---|"]
     for row in rows:
         needed = row.get("sessions_needed")
         lanes_needed = ", ".join(f"{lane} {count}" for lane, count in (row.get("required_lanes") or {}).items())
+        if needed is None:
+            # No session count reaches the target on some lane. Printing the fallback number here
+            # would be read as a capacity target; say plainly that there isn't one, and drop the
+            # lane split — the search returned no lanes to show.
+            lane = row.get("unreachable_lane")
+            needed_cell = f"unreachable ({lane})" if lane else "unreachable"
+        else:
+            needed_cell = f"{needed}{f' ({lanes_needed})' if lanes_needed else ''}"
         lines.append(
             f"| {row.get('users')} | {row.get('on_time_pct')}% | {row.get('late_jobs')} | "
             f"{row.get('queue_delay_p95_minutes')} min | {row.get('worst_delay_minutes')} min | "
-            f"{needed}{f' ({lanes_needed})' if lanes_needed else ''} | {row.get('chrome_mem_gb')} GB | "
+            f"{needed_cell} | {row.get('chrome_mem_gb')} GB | "
             f"{row.get('host_cpu')} vCPU ({row.get('host_cpu_pct')}%) | {row.get('verdict')} |")
     worst = min(rows, key=lambda row: row.get("on_time_pct") if row.get("on_time_pct") is not None else 100)
     lines += ["", f"Per-lane on-time at the worst scale ({worst.get('users')} users):"]
@@ -487,15 +507,17 @@ def render_curve(rows: Sequence[Mapping]) -> str:
                      f"p95 delay {stats.get('p95_delay_minutes')} min")
     lines += [
         "",
-        f"\"Sessions needed\" = the smallest per-lane concurrency (and therefore cap) that starts "
-        f"{target}% of the day's work inside its window; the lane split is shown beside it.",
-        "Simulated session wait is 0 whenever the cap covers the lanes: with the §5a invariant held "
-        "(cap == summed lane concurrency) work queues on its LANE, never on a browser. A non-zero "
-        "p95 means the cap is under-provisioned. For the real acquisition wait on a deployed Grid, "
-        "use --live.",
-        f"Projections assume {MEM_PER_SESSION_GB} GB and {CPU_PER_SESSION} vCPU per Chrome session, "
-        f"plus a {BASELINE_CPU} vCPU / {BASELINE_MEM_GB:g} GB app tier, on a {HOST_CPUS} vCPU / "
-        f"{HOST_MEM_GB:g} GB host (docs/scaling-plan.md §1/§4).",
+        (f"\"Sessions needed\" = the smallest per-lane concurrency (and therefore cap) that starts "
+         + f"{target}% of the day's work inside its window; the lane split is shown beside it. "
+         + "\"unreachable (lane)\" means no session count reaches it on that lane — that row's "
+         + "resource columns are priced off the SIMULATED PEAK instead, and are not a sizing target."),
+        ("Simulated session wait is 0 whenever the cap covers the lanes: with the §5a invariant held "
+         + "(cap == summed lane concurrency) work queues on its LANE, never on a browser. A non-zero "
+         + "p95 means the cap is under-provisioned. For the real acquisition wait on a deployed Grid, "
+         + "use --live."),
+        (f"Projections assume {MEM_PER_SESSION_GB} GB and {CPU_PER_SESSION} vCPU per Chrome session, "
+         + f"plus a {BASELINE_CPU} vCPU / {BASELINE_MEM_GB:g} GB app tier, on a {HOST_CPUS} vCPU / "
+         + f"{HOST_MEM_GB:g} GB host (docs/scaling-plan.md §1/§4)."),
     ]
     return "\n".join(lines)
 
