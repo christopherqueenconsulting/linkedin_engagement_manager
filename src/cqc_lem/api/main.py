@@ -89,6 +89,9 @@ from cqc_lem.utilities.env_constants import LI_CLIENT_ID, LI_CLIENT_SECRET, LI_R
 import requests
 from cqc_lem.utilities.logger import myprint, log_warning, log_info, log_error
 from cqc_lem.utilities.mime_type_helper import get_file_mime_type
+from cqc_lem.utilities.quality_gates import (parse_gate_findings, clamp_threshold,
+                                             AUTHENTICITY_SCORE_MIN_BOUNDS,
+                                             SIMILARITY_MAX_PCT_BOUNDS)
 from cqc_lem.utilities.observability import (
     track_api_call, track_funnel_event, anonymous_distinct_id,
     FUNNEL_SIGNUP_STARTED, FUNNEL_SIGNUP_COMPLETED, FUNNEL_TRIAL_STARTED,
@@ -435,6 +438,11 @@ class PostRegenerateRequest(BaseModel):
     guidance: Optional[str] = None  # free-text "Added Guidance"; empty => fresh take honoring settings
 
 
+class PostRescoreRequest(BaseModel):
+    session_token: str
+    post_id: int
+
+
 class ScheduleDmRequest(BaseModel):
     session_token: str
     recipient_profile_url: str = Field(max_length=_LEN_DM_RECIPIENT_URL)
@@ -547,6 +555,9 @@ class EngagementPreferencesRequest(BaseModel):
     focus_topics: List[str] = []
     business_goals: Optional[str] = Field(default=None, max_length=_LEN_GOALS)
     personal_goals: Optional[str] = Field(default=None, max_length=_LEN_GOALS)
+    # Quality-gate sensitivity (issue #421). None = keep the deploy default.
+    authenticity_score_min: Optional[int] = None
+    post_similarity_max_pct: Optional[int] = None
     min_reactions: Optional[int] = None
     max_post_age_hours: Optional[int] = 24
     reply_to_own_comments: bool = True
@@ -619,6 +630,16 @@ class EngagementPreferencesRequest(BaseModel):
             return min(14, max(1, int(v)))
         except (TypeError, ValueError):
             return 2
+
+    @field_validator("authenticity_score_min")
+    @classmethod
+    def _clamp_authenticity_min(cls, v: Optional[int]) -> Optional[int]:
+        return clamp_threshold(v, *AUTHENTICITY_SCORE_MIN_BOUNDS)
+
+    @field_validator("post_similarity_max_pct")
+    @classmethod
+    def _clamp_similarity_max(cls, v: Optional[int]) -> Optional[int]:
+        return clamp_threshold(v, *SIMILARITY_MAX_PCT_BOUNDS)
 
     @field_validator("catchup_touch_mode")
     @classmethod
@@ -1433,6 +1454,9 @@ def get_posts_for_email(
             "post_type": post["post_type"],
             "status": post["status"],
             "carousel_slides": _parse_slides(post.get("carousel_slides")),
+            # Why a draft is being held, and what to do about it (issue #421).
+            "authenticity_score": post.get("authenticity_score"),
+            "gate_reason": parse_gate_findings(post.get("gate_reason")),
         }
         for post in posts
     ]
@@ -1888,6 +1912,14 @@ def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel:
     # Read-only: the highest catch-up cap this plan allows, so the UI can bound the input and show
     # what upgrading unlocks (10/day is premium-only).
     prefs["max_catchup_touches_allowed"] = max_catchup_touches_allowed(user_id)
+    # Read-only: the deploy-wide gate thresholds, so the UI can show what "default" actually means
+    # for a user who hasn't overridden them (issue #421).
+    from cqc_lem.utilities.ai.content_alignment import authenticity_score_min
+    from cqc_lem.utilities.ai.content_framework import post_similarity_max
+    prefs["gate_defaults"] = {
+        "authenticity_score_min": authenticity_score_min(),
+        "post_similarity_max_pct": round(post_similarity_max() * 100),
+    }
     # Read-only: the last feed scan's reach funnel so the user can see when their targeting is too
     # strict (posts examined -> matched their filters -> commented).
     try:
@@ -2041,6 +2073,32 @@ def regenerate_post_endpoint(request: PostRegenerateRequest) -> ResponseModel:
     guidance = (request.guidance or "").strip() or None
     regenerate_post_task.apply_async(kwargs={"post_id": request.post_id, "guidance": guidance})
     return ResponseModel(status_code=200, detail="Regeneration started")
+
+
+@router.post("/user/post/rescore")
+def rescore_post_endpoint(request: PostRescoreRequest) -> ResponseModel:
+    """Re-run the quality gates on a pending/approved post's CURRENT content (issue #421) — the
+    'edit & re-score' half of the review flow. Save the edit first, then call this: a draft that now
+    clears every gate is promoted PENDING -> APPROVED without a full regenerate, and one that still
+    fails comes back with a fresh reason + remediation. Runs inline (one judge call) so the UI can
+    show the verdict immediately."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if get_post_user_id(request.post_id) != user_id:
+        raise HTTPException(status_code=404, detail="Post not found")
+    post_status = get_post_status(request.post_id)
+    if post_status not in (PostStatus.PENDING.value, PostStatus.APPROVED.value):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Post is '{post_status}' — only pending or approved posts can be re-scored")
+    from cqc_lem.app.run_content_plan import rescore_post
+    try:
+        result = rescore_post(request.post_id)
+    except Exception as e:
+        log_error("Could not re-score post", exc=e, user_id=user_id, post_id=request.post_id)
+        raise HTTPException(status_code=500, detail="Could not re-score this post")
+    return ResponseModel(status_code=200, detail=result)
 
 
 # --- Scheduled 1:1 DMs (issue #306) — mirrors the post scheduler endpoints ---

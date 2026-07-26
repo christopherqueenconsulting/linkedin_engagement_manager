@@ -712,9 +712,17 @@ def voice_reference(profile, profile_synthesis: Optional[str] = None) -> str:
 AUTHENTICITY_SCORE_MIN_DEFAULT = 60
 
 
-def authenticity_score_min() -> int:
-    """Score below which a draft is demoted APPROVED -> PENDING. Read live (like post_similarity_max)
-    so ops/tests can tune AUTHENTICITY_SCORE_MIN without a restart. Clamped to 0-100."""
+def authenticity_score_min(prefs: dict = None) -> int:
+    """Score below which a draft is demoted APPROVED -> PENDING. The user's own setting
+    (engagement_preferences.authenticity_score_min, issue #421) wins when set; otherwise read live
+    (like post_similarity_max) so ops/tests can tune AUTHENTICITY_SCORE_MIN without a restart.
+    Clamped to 0-100."""
+    override = (prefs or {}).get("authenticity_score_min")
+    if override is not None:
+        try:
+            return max(0, min(100, int(override)))
+        except (TypeError, ValueError):
+            pass
     raw = (os.environ.get("AUTHENTICITY_SCORE_MIN") or "").strip()
     try:
         value = int(raw) if raw else AUTHENTICITY_SCORE_MIN_DEFAULT
@@ -1147,7 +1155,7 @@ def score_authenticity(content: str, profile=None, profile_synthesis: Optional[s
         parsed = _coerce_authenticity_result(resp.choices[0].message.content or "")
         if parsed is None:
             return passing
-        parsed["flagged"] = parsed["score"] < authenticity_score_min()
+        parsed["flagged"] = parsed["score"] < authenticity_score_min(prefs)
         return parsed
     except Exception:
         return passing

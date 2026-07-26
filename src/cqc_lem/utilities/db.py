@@ -908,7 +908,8 @@ def get_posts(user_id: int, limit: int = 10, offset: int = 0,
         total = cursor.fetchone()['total']
 
         cursor.execute(
-            f"SELECT id, content, video_url, scheduled_time, post_type, status, carousel_slides "
+            f"SELECT id, content, video_url, scheduled_time, post_type, status, carousel_slides, "
+            f"authenticity_score, gate_reason "
             f"FROM posts {where} ORDER BY {sort_col} {order}, id {order} LIMIT %s OFFSET %s",
             params + [limit, offset]
         )
@@ -1333,6 +1334,45 @@ def get_post_authenticity_score(post_id: int) -> Optional[int]:
         connection.close()
 
 
+def update_db_post_gate_reason(post_id: int, findings: Optional[list]) -> bool:
+    """Persist WHY a post is held for review (issue #421): the quality gates' structured findings
+    (see utilities/quality_gates.py) as a JSON array on posts.gate_reason. An empty/None list clears
+    the column, so a post that passes on re-score stops showing a stale reason."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE posts SET gate_reason = %s WHERE id = %s",
+            (json.dumps(findings) if findings else None, post_id)
+        )
+        connection.commit()
+        success = cursor.rowcount == 1
+    except mysql.connector.Error as e:
+        success = False
+        myprint(f"Could not update gate reason for post {post_id}. Error: {e}")
+    finally:
+        cursor.close()
+        connection.close()
+    return success
+
+
+def get_post_gate_reason(post_id: int) -> list:
+    """The persisted quality-gate findings for a post (issue #421), or [] when it has none."""
+    from cqc_lem.utilities.quality_gates import parse_gate_findings
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT gate_reason FROM posts WHERE id = %s", (post_id,))
+        row = cursor.fetchone()
+        return parse_gate_findings(row[0] if row else None)
+    except mysql.connector.Error as err:
+        myprint(f"Could not get gate reason for post {post_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def update_db_post_dwell_score(post_id: int, score: Optional[int]) -> bool:
     """Persist the deterministic 0-100 dwell-proxy score for a post (issue #391, dwell_score column).
     Advisory metric stored next to authenticity_score — it is never read back to gate a status, so a
@@ -1429,19 +1469,26 @@ def get_recent_post_shape_history(user_id: int, limit: int = 10) -> list:
         connection.close()
 
 
-def get_recent_post_texts(user_id: int, limit: int = 20) -> list:
+def get_recent_post_texts(user_id: int, limit: int = 20,
+                          exclude_post_id: Optional[int] = None) -> list:
     """Recent post CONTENT (pending/approved/posted, most-recent first) — the post-side dedup
     history (the newsletter's V49 subject dedup applied to posts). Feeds the opener/subject
     avoidance steering and the pre-persist similarity gate in create_text_post. Openers/subjects
-    are derived from content on demand, so no new column is needed."""
+    are derived from content on demand, so no new column is needed. `exclude_post_id` drops one post
+    from the history — needed when re-scoring an ALREADY-SAVED post (issue #421), which would
+    otherwise match itself at 100%."""
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
+        exclude_sql = " AND id <> %s" if exclude_post_id is not None else ""
+        params = ((user_id, exclude_post_id, int(limit)) if exclude_post_id is not None
+                  else (user_id, int(limit)))
         cursor.execute(
             "SELECT content FROM posts "
             "WHERE user_id = %s AND content IS NOT NULL AND content <> '' "
-            "AND status IN ('pending', 'approved', 'posted') "
-            "ORDER BY id DESC LIMIT %s", (user_id, int(limit)))
+            "AND status IN ('pending', 'approved', 'posted')"
+            f"{exclude_sql} "
+            "ORDER BY id DESC LIMIT %s", params)
         return [r[0] for r in cursor.fetchall()]
     except mysql.connector.Error as err:
         myprint(f"Could not get recent post texts for user {user_id} | Error: {err}")
@@ -2863,6 +2910,10 @@ _ENGAGEMENT_DEFAULTS: dict = {
     "include_topics": [], "exclude_topics": [], "include_keywords": [], "exclude_keywords": [],
     "include_authors": [], "exclude_authors": [], "post_types": [],
     "focus_topics": [], "business_goals": None, "personal_goals": None,
+    # Quality-gate thresholds (issue #421). None = follow the deploy default
+    # (AUTHENTICITY_SCORE_MIN / POST_SIMILARITY_MAX), so the gates behave exactly as before until
+    # the user tunes them.
+    "authenticity_score_min": None, "post_similarity_max_pct": None,
     "min_reactions": None, "max_post_age_hours": 24, "reply_to_own_comments": True,
     "max_comments_per_day": 20, "max_dms_per_day": 20, "max_invites_per_day": 10,
     "connection_request_mode": "auto_approve",
@@ -2889,7 +2940,8 @@ _ENGAGEMENT_BOOL_FIELDS = ("use_emojis", "use_hashtags", "reply_to_own_comments"
 _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "use_hashtags",
                     "include_topics", "exclude_topics", "include_keywords", "exclude_keywords",
                     "include_authors", "exclude_authors", "post_types", "focus_topics",
-                    "business_goals", "personal_goals", "min_reactions",
+                    "business_goals", "personal_goals",
+                    "authenticity_score_min", "post_similarity_max_pct", "min_reactions",
                     "max_post_age_hours", "reply_to_own_comments", "max_comments_per_day",
                     "max_dms_per_day", "max_invites_per_day", "connection_request_mode",
                     "connection_targeting_mode", "connection_target_authors",
@@ -2990,6 +3042,14 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
                                              if _age is not None else 2)
     except (TypeError, ValueError):
         merged["reply_max_post_age_days"] = 2
+    # Quality-gate thresholds (issue #421): None means "use the deploy default", anything else is
+    # clamped to its valid band so an out-of-range slider can never make a gate un-passable.
+    from cqc_lem.utilities.quality_gates import (AUTHENTICITY_SCORE_MIN_BOUNDS,
+                                                 SIMILARITY_MAX_PCT_BOUNDS, clamp_threshold)
+    merged["authenticity_score_min"] = clamp_threshold(
+        merged.get("authenticity_score_min"), *AUTHENTICITY_SCORE_MIN_BOUNDS)
+    merged["post_similarity_max_pct"] = clamp_threshold(
+        merged.get("post_similarity_max_pct"), *SIMILARITY_MAX_PCT_BOUNDS)
     if merged.get("catchup_touch_mode") not in VALID_CATCHUP_TOUCH_MODES:
         merged["catchup_touch_mode"] = "pre_review"
     if merged.get("catchup_message_source") not in VALID_CATCHUP_MESSAGE_SOURCES:
