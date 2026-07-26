@@ -120,6 +120,13 @@ AWS_ENV_TAG=get_constant_from_env('AWS_ENV_TAG', default_value='dev')
 AWS_REGION=get_constant_from_env('AWS_REGION')
 AWS_MYSQL_SECRET_NAME=get_constant_from_env('AWS_MYSQL_SECRET_NAME')
 
+# MySQL connection pool (see get_db_connection in utilities/db.py). The pool is per PROCESS and
+# grows lazily, so MYSQL_POOL_SIZE is a per-process CEILING, not a count of connections opened at
+# startup: total worst case is roughly (app processes x MYSQL_POOL_SIZE) against MySQL's
+# max_connections (151 today). mysql-connector caps pool size at 32.
+MYSQL_POOL_ENABLED = isTrue(get_constant_from_env('MYSQL_POOL_ENABLED', default_value='True'))
+MYSQL_POOL_SIZE = int(get_constant_from_env('MYSQL_POOL_SIZE', default_value='16'))
+
 NGROK_CUSTOM_DOMAIN=get_constant_from_env('NGROK_CUSTOM_DOMAIN')
 NGROK_FREE_DOMAIN=get_constant_from_env('NGROK_FREE_DOMAIN')
 NGROK_API_PREFIX=get_constant_from_env('NGROK_API_PREFIX')

@@ -1,22 +1,28 @@
 import json
 import os
+import threading
 import uuid
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from enum import StrEnum
-from typing import Optional
+from typing import Any, Optional, Union
 
 import mysql.connector
 from cqc_lem.utilities.env_constants import (
     AWS_MYSQL_SECRET_NAME,
     AWS_REGION,
+    MYSQL_POOL_ENABLED,
+    MYSQL_POOL_SIZE,
     SESSION_ABSOLUTE_MAX_DAYS,
     SESSION_IDLE_HOURS,
 )
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
-from cqc_lem.utilities.logger import myprint, log_error, log_info
+from cqc_lem.utilities.logger import myprint, log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.utils import get_top_level_domain, get_aws_ssm_secret
 from dotenv import load_dotenv
 from mysql.connector import errorcode
+from mysql.connector.abstracts import MySQLConnectionAbstract, MySQLCursorAbstract
+from mysql.connector.pooling import CNX_POOL_MAXSIZE, MySQLConnectionPool, PooledMySQLConnection
 
 # Load .env file
 load_dotenv()
@@ -32,12 +38,27 @@ MYSQL_DATABASE = os.getenv('MYSQL_DATABASE')
 MYSQL_PORT = os.getenv('MYSQL_PORT')
 
 
-def get_db_connection():
-    """Establishes a connection to the MySQL database and returns the connection object.
+DbConnection = Union[PooledMySQLConnection, MySQLConnectionAbstract]
 
-    Raises:
-        mysql.connector.Error: If there is an error connecting to the database.
-    """
+@dataclass
+class _PoolState:
+    """Per-process pool bookkeeping, held on one mutable object rather than several module globals.
+
+    Rebinding module globals across calls reads as a dead store to static analysis (CodeQL
+    py/unused-global-variable) because each assignment is only consumed by a LATER invocation."""
+
+    pool: Optional[MySQLConnectionPool] = None
+    pid: Optional[int] = None
+    config: Optional[dict[str, Any]] = None
+    opened: int = 0
+
+
+_POOL_LOCK = threading.Lock()
+_POOL_STATE = _PoolState()
+
+
+def _get_mysql_config() -> dict[str, Any]:
+    """Resolves the MySQL connection arguments, preferring the AWS secret when one is configured."""
 
     global MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE, MYSQL_PORT
 
@@ -50,14 +71,96 @@ def get_db_connection():
         MYSQL_DATABASE = secret_dict['dbname']
         MYSQL_PORT = secret_dict['port']
 
-    return mysql.connector.connect(
-        host=MYSQL_HOST,
-        user=MYSQL_USER,
-        password=MYSQL_PASSWORD,
-        database=MYSQL_DATABASE,
-        port=MYSQL_PORT,
-        time_zone='+00:00',
-    )
+    return {
+        'host': MYSQL_HOST,
+        'user': MYSQL_USER,
+        'password': MYSQL_PASSWORD,
+        'database': MYSQL_DATABASE,
+        'port': MYSQL_PORT,
+        'time_zone': '+00:00',
+    }
+
+
+def _get_connection_pool(config: dict[str, Any]) -> MySQLConnectionPool:
+    """Returns this PROCESS's pool, (re)building it when the pid or the DB config changed.
+
+    Keyed on pid because Celery prefork forks its workers: a pool built before the fork would hand
+    the same live socket to parent and child. The pool is created WITHOUT connection kwargs so it
+    opens nothing up front — connections are added on demand in _get_pooled_connection() — because
+    every app process would otherwise pre-open MYSQL_POOL_SIZE sockets at first use and the sum
+    across ~20 processes would blow past MySQL's max_connections."""
+
+    pid = os.getpid()
+    if _POOL_STATE.pool is None or _POOL_STATE.pid != pid:
+        pool_size = max(1, min(MYSQL_POOL_SIZE, CNX_POOL_MAXSIZE))
+        _POOL_STATE.pool = MySQLConnectionPool(pool_name=f"cqc-lem-{pid}", pool_size=pool_size)
+        _POOL_STATE.pool.set_config(**config)
+        _POOL_STATE.pid = pid
+        _POOL_STATE.config = config
+        _POOL_STATE.opened = 0
+    elif config != _POOL_STATE.config:
+        # e.g. a rotated AWS secret — pooled connections reconnect with the new config on checkout
+        _POOL_STATE.pool.set_config(**config)
+        _POOL_STATE.config = config
+
+    return _POOL_STATE.pool
+
+
+def _get_pooled_connection(config: dict[str, Any]) -> Optional[DbConnection]:
+    """Checks a connection out of the process pool, growing it lazily up to its size.
+
+    Returns None when the pool is at capacity so the caller can fall back to an unpooled
+    connection instead of failing a task during a fan-out burst."""
+
+    with _POOL_LOCK:
+        pool = _get_connection_pool(config)
+        try:
+            return pool.get_connection()
+        except mysql.connector.Error:
+            # pool exhausted: every connection it has opened is checked out
+            if _POOL_STATE.opened >= pool.pool_size:
+                log_debug(f"MySQL pool {pool.pool_name} at capacity ({pool.pool_size}) - "
+                          f"opening a direct connection for this call")
+                return None
+            pool.add_connection()
+            _POOL_STATE.opened += 1
+            return pool.get_connection()
+
+
+def reset_connection_pool() -> None:
+    """Drops this process's pool reference so the next call builds a fresh one (tests/diagnostics).
+
+    Deliberately does NOT close the pooled connections: after a fork those sockets belong to the
+    parent process, and closing them there would break the parent's in-flight queries."""
+
+    with _POOL_LOCK:
+        _POOL_STATE.pool = None
+        _POOL_STATE.pid = None
+        _POOL_STATE.config = None
+        _POOL_STATE.opened = 0
+
+
+def get_db_connection() -> DbConnection:
+    """Establishes a connection to the MySQL database and returns the connection object.
+
+    Connections come from a per-process pool when MYSQL_POOL_ENABLED (the default); calling
+    .close() on the returned object returns it to the pool rather than dropping the socket.
+
+    Raises:
+        mysql.connector.Error: If there is an error connecting to the database.
+    """
+
+    config = _get_mysql_config()
+
+    if MYSQL_POOL_ENABLED:
+        try:
+            connection = _get_pooled_connection(config)
+            if connection is not None:
+                return connection
+        except mysql.connector.Error as e:
+            log_warning("MySQL connection pool unavailable - using a direct connection", exc=e)
+
+    return mysql.connector.connect(**config)
 
 
 def to_naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
@@ -272,12 +375,25 @@ class LogResultType(StrEnum):
 CONNECTION_REQUEST_SENT_MESSAGE = "Connection Request Sent Successfully"
 
 
-def store_cookies(user_email: str, cookies: list[dict]):
+def store_cookies(user_email: str, cookies: list[dict]) -> None:
     connection = get_db_connection()
     cursor = connection.cursor()
 
     user_id = get_user_id(user_email)
 
+    try:
+        _store_cookie_rows(cursor, cookies, user_id)
+        connection.commit()
+    finally:
+        cursor.close()
+        connection.close()
+
+    if user_id is not None:
+        prune_superseded_cookies(user_id)
+
+
+def _store_cookie_rows(cursor: MySQLCursorAbstract, cookies: list[dict],
+                       user_id: Optional[int]) -> None:
     for cookie in cookies:
         try:
             cursor.execute("""
@@ -303,13 +419,6 @@ def store_cookies(user_email: str, cookies: list[dict]):
             ))
         except mysql.connector.Error as err:
             myprint(f"Could not add cookie to database | Error: {err}")
-
-    connection.commit()
-    cursor.close()
-    connection.close()
-
-    if user_id is not None:
-        prune_superseded_cookies(user_id)
 
 
 def prune_superseded_cookies(user_id: int) -> int:

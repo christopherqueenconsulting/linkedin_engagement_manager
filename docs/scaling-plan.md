@@ -86,10 +86,13 @@ not the bottleneck at current load. The tightest container by ratio is `litellm`
 (64% of a 1 GB cap) — bump it before LLM concurrency rises.
 
 **MySQL:** `@@max_connections = 151`, `Max_used_connections = 8`, currently 1
-connected. `users` table: **1 row**. `db.py` opens a **fresh connection per call
-with no pool** (`get_db_connection()` → `mysql.connector.connect(...)`), so
-connection count scales with task concurrency, not user count — still far under 151
-today, but see §6 for the pooling recommendation.
+connected. `users` table: **1 row**. `db.py` used to open a **fresh connection per
+call with no pool**, so connection count scaled with task concurrency, not user
+count. Issue #555 put a **per-process pool** behind `get_db_connection()`
+(`MYSQL_POOL_ENABLED`, `MYSQL_POOL_SIZE=16`): it opens nothing at startup, grows
+lazily to its size as concurrent checkouts demand, reuses connections on `.close()`,
+and falls back to a direct connection when a burst outruns the pool. Raise
+`max_connections` only if `Max_used_connections` approaches ~120.
 
 ---
 
@@ -227,9 +230,10 @@ post-time ±15 min. The relevant formula for "runs on time" is:
    Chrome budget realistically holds **~6–8 healthy concurrent sessions**; the 8-core
    host caps useful Chrome concurrency around **8–10** before CPU contention slows
    every session (and slow sessions trip LinkedIn's bot heuristics).
-3. **MySQL connections** — only at high fan-out with no pooling (fresh connect per
-   call). 151-connection ceiling is comfortable to ~50 concurrent tasks; add pooling
-   before that.
+3. **MySQL connections** — only at high fan-out. Pooling shipped in #555, so a
+   connection is reused rather than re-opened per call; the 151-connection ceiling is
+   the sum of every process's pool, so watch `Max_used_connections` if lane
+   concurrency or `MYSQL_POOL_SIZE` goes up.
 4. **LLM cost / provider rate limits** — scales with users × posts/comments, not the
    VPS. Becomes a budget and RPM concern (litellm mem + upstream rate limits) around
    50–100 users.
@@ -300,9 +304,11 @@ per additional concurrent session**.
 | **50** | 8–10 | ~12–14 peak | ~20–24 GB peak | Grid hub + 2–3 nodes; lane concurrency 3–4; MySQL pooling; stagger fan-outs | **At/over the ceiling** — Chrome RAM + 8 vCPU become the limit; move Grid nodes to a **2nd VPS** or upgrade to **16 vCPU / 64 GB** |
 | **100** | 12–16 | ~20+ | ~40+ GB | Grid across **2+ boxes**; dedicated Chrome host(s); LLM cost/RPM budget; MySQL pooling mandatory | **Exceeds one VPS** — horizontal (separate app tier + Chrome tier) |
 
-- **MySQL:** add a small connection pool in `get_db_connection()` (e.g.
-  `mysql.connector.pooling`, pool size ~16–32) before 50 users so fan-out bursts
-  don't churn connections; raise `max_connections` only if `Max_used_connections`
+- **MySQL:** ✅ done (#555) — `get_db_connection()` checks out of a
+  `mysql.connector.pooling.MySQLConnectionPool` per process (`MYSQL_POOL_SIZE`,
+  default 16, connector max 32) so fan-out bursts don't churn connections. The pool
+  is keyed on pid (Celery prefork forks its workers) and grown lazily, so idle
+  processes hold no sockets. Raise `max_connections` only if `Max_used_connections`
   approaches ~120.
 - **Redis:** fine to 100 users; keep the 1 GB cap, watch `used_memory` if reply-sweep
   / breaker keys grow.

@@ -43,6 +43,17 @@ def _humanize_disabled_by_default(monkeypatch):
     monkeypatch.setenv("HUMANIZE_ENABLED", "off")
 
 
+@pytest.fixture(autouse=True)
+def _db_pool_disabled_by_default(monkeypatch):
+    """Issue #555: get_db_connection() checks connections out of a per-process pool in production.
+    The pool opens its connections through mysql-connector's own internal connect(), which the
+    mock_database_connection fixture (it patches mysql.connector.connect) does NOT intercept — so a
+    pooled unit test would try to open a REAL socket. Default the pool OFF for the suite so tests
+    exercise the mocked direct-connect path; the pooling tests turn it back on explicitly."""
+    from cqc_lem.utilities import db
+    monkeypatch.setattr(db, "MYSQL_POOL_ENABLED", False)
+
+
 @pytest.fixture
 def mock_openai_client():
     """Mock OpenAI client for testing AI-related functions."""
