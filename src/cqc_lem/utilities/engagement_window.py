@@ -1,4 +1,7 @@
-"""Pre-post engagement window (issue #547).
+"""Engagement windows — when engagement fires (issues #547, #554).
+
+Two windows live here: the pre-post warm-up around each scheduled post (#547), and the daily
+per-user slot that spreads a fleet-wide beat across a window instead of one minute (#554).
 
 The engagement-hacking intent behind the pre-post feed-commenting run is to be *active on the feed
 right before your own post publishes*. Two things kept that from being true in practice:
@@ -16,9 +19,12 @@ Every marker helper fails OPEN: no Redis (or a Redis error) degrades to logging 
 failed dispatch.
 """
 
+import hashlib
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Tuple
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from cqc_lem.utilities.linkedin.rate_limit import shared_redis_client
 from cqc_lem.utilities.logger import log_info, log_warning
@@ -190,3 +196,145 @@ def get_pre_post_window_stat(post_id: int, task_name: str = PRE_POST_TASK_COMMEN
     stat.setdefault("runs", 0)
     stat.setdefault("comments", 0)
     return stat
+
+
+# --- Daily fan-out staggering (issue #554) ---------------------------------------------------
+#
+# A single crontab that hands every active user a 15-minute Selenium loop at the same minute makes
+# the whole fleet queue on one lane: `se_engage` drains ~8 users/hour, so at 50 users the last
+# "golden hour" run lands ~6 hours after the window it was meant for (docs/scaling-plan.md §3).
+# Instead every user gets a stable minute inside a window that opens at an anchor hour in THEIR
+# timezone, and the beat runs every STAGGER_TICK_MINUTES to dispatch whoever has come due.
+
+STAGGER_TICK_MINUTES = 15  # beat cadence for the staggered fan-outs; also one slot's width
+
+# Per-fan-out defaults. Each is overridable at runtime with <NAME>_ANCHOR_HOUR /
+# <NAME>_WINDOW_MINUTES / <NAME>_ANCHOR_TZ, read at call time so ops can retune without a restart.
+STAGGER_GOLDEN_HOUR = ("GOLDEN_HOUR", 9, 180)
+STAGGER_APPRECIATION_DM = ("APPRECIATION_DM", 8, 120)
+STAGGER_GROUP_ENGAGEMENT = ("GROUP_ENGAGEMENT", 12, 120)
+
+_SLOT_CLAIM_PREFIX = "engagement:slot:"
+# The claim key carries the slot's local DATE, so "once per user per day" holds no matter when the
+# claim was written: a late catch-up (beat or 429 breaker down until the evening) claims THAT day's
+# key and leaves tomorrow's untouched. The TTL is then only garbage collection — it just has to
+# outlast the rest of the day it was claimed on.
+_SLOT_CLAIM_TTL_SECONDS = 26 * 60 * 60
+
+_MINUTES_PER_DAY = 24 * 60
+
+
+@dataclass(frozen=True)
+class StaggerConfig:
+    """Where a fan-out's window opens, how wide it is, and whose clock it opens on."""
+
+    name: str
+    anchor_hour: int
+    window_minutes: int
+    local: bool  # anchor in each user's own timezone (True) or in UTC (False)
+
+
+@dataclass(frozen=True)
+class DailySlot:
+    """One user's dispatch minute for one fan-out, today."""
+
+    at: datetime           # the slot in UTC (logging / observability)
+    local_at: datetime     # the same minute on the anchor clock
+    offset_minutes: int    # spread from the anchor hour
+    reached: bool          # the slot has arrived (stays True for the rest of the local day)
+    in_tick_window: bool   # ...and this is the first beat tick after it
+
+
+def _env_int(key: str, default: int, low: int, high: int) -> int:
+    raw = (os.environ.get(key) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        log_warning(f"{key} ignored (not an integer: {raw!r})")
+        return default
+    if not low <= value <= high:
+        log_warning(f"{key} ignored (outside {low}-{high}: {value})")
+        return default
+    return value
+
+
+def stagger_config(fanout: Tuple[str, int, int]) -> StaggerConfig:
+    """Resolve one of the STAGGER_* fan-out defaults against the environment."""
+    name, anchor_hour, window_minutes = fanout
+    return StaggerConfig(
+        name=name,
+        anchor_hour=_env_int(f"{name}_ANCHOR_HOUR", anchor_hour, 0, 23),
+        # A 1-minute window is the escape hatch: every user lands on the anchor minute, i.e. the
+        # pre-#554 "everyone at once" behavior, without a code change.
+        window_minutes=_env_int(f"{name}_WINDOW_MINUTES", window_minutes, 1, _MINUTES_PER_DAY),
+        local=(os.environ.get(f"{name}_ANCHOR_TZ") or "local").strip().lower() != "utc",
+    )
+
+
+def stagger_offset_minutes(user_id: int, window_minutes: int, salt: str = "") -> int:
+    """A user's stable minute inside the window. Hashed (not user_id % window) so ids that were
+    created together don't clump, and salted per fan-out so the same user isn't first — or last —
+    in every window of the day."""
+    window = max(1, int(window_minutes))
+    digest = hashlib.sha256(f"{salt}:{int(user_id)}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") % window
+
+
+def plan_daily_slot(user_id: int, config: StaggerConfig, tz_name: Optional[str] = None,
+                    now: Optional[datetime] = None,
+                    tick_minutes: int = STAGGER_TICK_MINUTES) -> DailySlot:
+    """Today's dispatch slot for this user/fan-out, and whether it is due now.
+
+    The comparison is pure wall clock on the anchor timezone, so a user keeps the same local
+    minute across DST changes, and a window that runs past midnight wraps into the small hours
+    rather than falling off the end of the day (which would never fire).
+    """
+    now_utc = _as_utc(now if now is not None else datetime.now(timezone.utc))
+    zone = _zone(tz_name) if config.local else timezone.utc
+    local_now = now_utc.astimezone(zone)
+
+    offset = stagger_offset_minutes(user_id, config.window_minutes, config.name)
+    minute_of_day = (config.anchor_hour * 60 + offset) % _MINUTES_PER_DAY
+    midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    slot_local = midnight + timedelta(minutes=minute_of_day)
+
+    elapsed = (local_now.replace(tzinfo=None) - slot_local.replace(tzinfo=None)).total_seconds() / 60
+    return DailySlot(
+        at=slot_local.astimezone(timezone.utc),
+        local_at=slot_local,
+        offset_minutes=offset,
+        reached=elapsed >= 0,
+        in_tick_window=0 <= elapsed < max(1, int(tick_minutes)),
+    )
+
+
+def claim_daily_slot(user_id: int, name: str, day: str,
+                     ttl_seconds: int = _SLOT_CLAIM_TTL_SECONDS) -> Optional[bool]:
+    """Claim one day's slot for this user/fan-out: True when this caller won it, False when it was
+    already taken for that day, None when Redis can't answer (the caller then falls back to the
+    strict one-tick window instead of dispatching blind).
+
+    `day` is the slot's date on the anchor clock (`DailySlot.local_at`) — keying by it is what
+    keeps a late catch-up claim from spilling into the next local day's slot.
+    """
+    client = shared_redis_client()
+    if client is None:
+        return None
+    try:
+        return bool(client.set(f"{_SLOT_CLAIM_PREFIX}{name}:{int(user_id)}:{day}", "1",
+                               nx=True, ex=int(ttl_seconds)))
+    except Exception as e:
+        log_warning("Could not claim daily engagement slot", exc=e, user_id=user_id)
+        return None
+
+
+def _zone(tz_name: Optional[str]):
+    if not tz_name:
+        return timezone.utc
+    try:
+        return ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        log_warning(f"Unknown timezone {tz_name!r} for engagement slot — anchoring in UTC")
+        return timezone.utc

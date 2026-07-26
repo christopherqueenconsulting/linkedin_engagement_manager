@@ -238,3 +238,222 @@ class TestGetPrePostWindowStat:
         mock_redis.hgetall.side_effect = RuntimeError("redis down")
 
         assert get_pre_post_window_stat(26) == {}
+
+
+# ---------------------------------------------------------------------------
+# Daily fan-out staggering (issue #554)
+# ---------------------------------------------------------------------------
+
+_FANOUT = ("GOLDEN_HOUR", 9, 180)
+
+
+def _config(**overrides):
+    from cqc_lem.utilities.engagement_window import StaggerConfig
+    fields = {"name": "GOLDEN_HOUR", "anchor_hour": 9, "window_minutes": 180, "local": True}
+    fields.update(overrides)
+    return StaggerConfig(**fields)
+
+
+class TestStaggerOffsetMinutes:
+    def test_offset_is_stable_and_inside_the_window(self):
+        from cqc_lem.utilities.engagement_window import stagger_offset_minutes
+        for user_id in range(1, 60):
+            first = stagger_offset_minutes(user_id, 180, "GOLDEN_HOUR")
+            assert 0 <= first < 180
+            assert stagger_offset_minutes(user_id, 180, "GOLDEN_HOUR") == first
+
+    def test_consecutive_users_do_not_clump(self):
+        """user_id % window would put ids 1..50 on 50 consecutive minutes AND on the same minute in
+        every window; the salted hash has to spread them instead."""
+        from cqc_lem.utilities.engagement_window import stagger_offset_minutes
+        offsets = [stagger_offset_minutes(u, 180, "GOLDEN_HOUR") for u in range(1, 51)]
+        assert len(set(offsets)) > 30                          # spread, not a 50-minute run
+        assert offsets != [stagger_offset_minutes(u, 180, "APPRECIATION_DM") for u in range(1, 51)]
+
+    def test_window_of_one_puts_everyone_on_the_anchor_minute(self):
+        from cqc_lem.utilities.engagement_window import stagger_offset_minutes
+        assert {stagger_offset_minutes(u, 1, "GOLDEN_HOUR") for u in range(1, 30)} == {0}
+
+
+class TestStaggerConfig:
+    def test_defaults_when_env_is_unset(self, monkeypatch):
+        from cqc_lem.utilities.engagement_window import stagger_config
+        for key in ("GOLDEN_HOUR_ANCHOR_HOUR", "GOLDEN_HOUR_WINDOW_MINUTES", "GOLDEN_HOUR_ANCHOR_TZ"):
+            monkeypatch.delenv(key, raising=False)
+        config = stagger_config(_FANOUT)
+        assert (config.anchor_hour, config.window_minutes, config.local) == (9, 180, True)
+
+    def test_env_overrides_are_read_at_call_time(self, monkeypatch):
+        from cqc_lem.utilities.engagement_window import stagger_config
+        monkeypatch.setenv("GOLDEN_HOUR_ANCHOR_HOUR", "14")
+        monkeypatch.setenv("GOLDEN_HOUR_WINDOW_MINUTES", "60")
+        monkeypatch.setenv("GOLDEN_HOUR_ANCHOR_TZ", "UTC")
+        config = stagger_config(_FANOUT)
+        assert (config.anchor_hour, config.window_minutes, config.local) == (14, 60, False)
+
+    @pytest.mark.parametrize("bad", ["nine", "24", "-1", ""])
+    def test_invalid_anchor_hour_falls_back_to_the_default(self, monkeypatch, bad):
+        from cqc_lem.utilities.engagement_window import stagger_config
+        monkeypatch.setenv("GOLDEN_HOUR_ANCHOR_HOUR", bad)
+        assert stagger_config(_FANOUT).anchor_hour == 9
+
+    def test_invalid_window_falls_back_to_the_default(self, monkeypatch):
+        from cqc_lem.utilities.engagement_window import stagger_config
+        monkeypatch.setenv("GOLDEN_HOUR_WINDOW_MINUTES", "0")
+        assert stagger_config(_FANOUT).window_minutes == 180
+
+
+class TestPlanDailySlot:
+    def test_slot_sits_between_the_anchor_and_the_window_close(self):
+        from cqc_lem.utilities.engagement_window import plan_daily_slot
+        for user_id in range(1, 40):
+            slot = plan_daily_slot(user_id, _config(), "UTC", now=_NOW)
+            assert slot.local_at.hour * 60 + slot.local_at.minute >= 9 * 60
+            assert slot.local_at.hour * 60 + slot.local_at.minute < 9 * 60 + 180
+
+    def test_not_reached_before_the_anchor(self):
+        from cqc_lem.utilities.engagement_window import plan_daily_slot
+        before = datetime(2026, 7, 25, 8, 0, tzinfo=timezone.utc)
+        slot = plan_daily_slot(7, _config(), "UTC", now=before)
+        assert slot.reached is False and slot.in_tick_window is False
+
+    def test_due_on_the_first_tick_after_the_slot_only(self):
+        from cqc_lem.utilities.engagement_window import plan_daily_slot
+        config = _config()
+        slot = plan_daily_slot(7, config, "UTC", now=_NOW)
+        at = slot.local_at.replace(tzinfo=timezone.utc)
+
+        assert plan_daily_slot(7, config, "UTC", now=at).in_tick_window is True
+        assert plan_daily_slot(7, config, "UTC", now=at + timedelta(minutes=14)).in_tick_window is True
+        assert plan_daily_slot(7, config, "UTC", now=at + timedelta(minutes=15)).in_tick_window is False
+        assert plan_daily_slot(7, config, "UTC", now=at - timedelta(minutes=1)).in_tick_window is False
+
+    def test_reached_stays_true_after_the_tick_for_catch_up(self):
+        from cqc_lem.utilities.engagement_window import plan_daily_slot
+        config = _config()
+        at = plan_daily_slot(7, config, "UTC", now=_NOW).local_at.replace(tzinfo=timezone.utc)
+        late = plan_daily_slot(7, config, "UTC", now=at + timedelta(hours=5))
+        assert late.reached is True and late.in_tick_window is False
+
+    def test_local_anchor_uses_the_users_timezone(self):
+        """Anchor 9 with a 1-minute window = 09:00 local, which is 13:00 UTC in New York and
+        16:00 UTC in Los Angeles — the whole point of anchoring per user."""
+        from cqc_lem.utilities.engagement_window import plan_daily_slot
+        config = _config(window_minutes=1)
+        east = plan_daily_slot(7, config, "America/New_York", now=_NOW)
+        west = plan_daily_slot(7, config, "America/Los_Angeles", now=_NOW)
+        assert east.at.hour == 13 and west.at.hour == 16
+        assert east.local_at.hour == west.local_at.hour == 9
+
+    def test_utc_anchor_ignores_the_user_timezone(self):
+        from cqc_lem.utilities.engagement_window import plan_daily_slot
+        slot = plan_daily_slot(7, _config(local=False, window_minutes=1), "America/Los_Angeles",
+                               now=_NOW)
+        assert slot.at.hour == 9
+
+    def test_unknown_timezone_falls_back_to_utc(self):
+        from cqc_lem.utilities.engagement_window import plan_daily_slot
+        slot = plan_daily_slot(7, _config(window_minutes=1), "Mars/Olympus_Mons", now=_NOW)
+        assert slot.at.hour == 9
+
+    def test_window_past_midnight_wraps_instead_of_never_firing(self):
+        from cqc_lem.utilities.engagement_window import plan_daily_slot
+        config = _config(anchor_hour=23, window_minutes=180)
+        late_night = datetime(2026, 7, 25, 23, 59, tzinfo=timezone.utc)
+        slots = [plan_daily_slot(u, config, "UTC", now=late_night) for u in range(1, 40)]
+        assert any(s.local_at.hour < 2 for s in slots)         # wrapped into the small hours
+        assert all(s.local_at.date() == late_night.date() for s in slots)
+
+    def test_every_user_gets_exactly_one_tick_per_day(self):
+        """The property the whole design rests on: with the beat ticking every 15 minutes, each
+        user's slot matches exactly one tick — no misses, no doubles."""
+        from cqc_lem.utilities.engagement_window import plan_daily_slot
+        config = _config()
+        start = datetime(2026, 7, 25, 0, 0, tzinfo=timezone.utc)
+        ticks = [start + timedelta(minutes=15 * i) for i in range(96)]
+        for user_id in range(1, 25):
+            due = [t for t in ticks if plan_daily_slot(user_id, config, "UTC", now=t).in_tick_window]
+            assert len(due) == 1
+
+    def test_dst_change_keeps_the_same_local_minute(self):
+        from cqc_lem.utilities.engagement_window import plan_daily_slot
+        config = _config()
+        winter = plan_daily_slot(7, config, "America/New_York",
+                                 now=datetime(2026, 1, 15, 18, 0, tzinfo=timezone.utc))
+        summer = plan_daily_slot(7, config, "America/New_York",
+                                 now=datetime(2026, 7, 15, 18, 0, tzinfo=timezone.utc))
+        assert (winter.local_at.hour, winter.local_at.minute) == (summer.local_at.hour,
+                                                                  summer.local_at.minute)
+        assert winter.at.hour == summer.at.hour + 1            # ...which is a different UTC hour
+
+
+class TestClaimDailySlot:
+    def test_returns_none_without_redis(self):
+        from cqc_lem.utilities.engagement_window import claim_daily_slot
+        with patch(f"{_MOD}.shared_redis_client", return_value=None):
+            assert claim_daily_slot(7, "GOLDEN_HOUR", "2026-07-25") is None
+
+    def test_claims_once_per_day(self):
+        from cqc_lem.utilities.engagement_window import claim_daily_slot
+        client = MagicMock()
+        client.set.side_effect = [True, None]                  # nx=True: second caller loses
+        with patch(f"{_MOD}.shared_redis_client", return_value=client):
+            assert claim_daily_slot(7, "GOLDEN_HOUR", "2026-07-25") is True
+            assert claim_daily_slot(7, "GOLDEN_HOUR", "2026-07-25") is False
+        key, value = client.set.call_args[0]
+        assert key == "engagement:slot:GOLDEN_HOUR:7:2026-07-25"
+        assert client.set.call_args[1]["nx"] is True
+        assert client.set.call_args[1]["ex"] > 24 * 60 * 60    # outlasts the day it was claimed on
+
+    def test_a_late_claim_cannot_block_the_next_days_slot(self):
+        """A catch-up dispatched late in the day writes a claim that would still be alive at
+        tomorrow's slot under a flat TTL — the local date in the key is what prevents that."""
+        from cqc_lem.utilities.engagement_window import claim_daily_slot
+        client = MagicMock()
+        client.set.return_value = True
+        with patch(f"{_MOD}.shared_redis_client", return_value=client):
+            claim_daily_slot(7, "GOLDEN_HOUR", "2026-07-25")
+            claim_daily_slot(7, "GOLDEN_HOUR", "2026-07-26")
+        assert client.set.call_args_list[0][0][0] != client.set.call_args_list[1][0][0]
+
+    def test_redis_error_degrades_to_unknown(self):
+        from cqc_lem.utilities.engagement_window import claim_daily_slot
+        client = MagicMock()
+        client.set.side_effect = RuntimeError("redis down")
+        with patch(f"{_MOD}.shared_redis_client", return_value=client):
+            assert claim_daily_slot(7, "GOLDEN_HOUR", "2026-07-25") is None
+
+
+class TestApprovedFanoutDefaults:
+    """The three shipped windows are a product decision the owner signed off on in PR #607
+    (`1A 2A 3A`): golden hour 09:00 + 3h, appreciation DMs 08:00 + 2h, groups 12:00 + 2h — each
+    anchored on the USER's clock, not UTC. The rest of the suite exercises a local literal, so
+    without this the constants could drift away from the approved values silently. Retuning is an
+    env change (`<NAME>_ANCHOR_HOUR` / `_WINDOW_MINUTES` / `_ANCHOR_TZ`); changing these numbers is
+    changing the default every deployment inherits, so it needs the same sign-off again.
+    """
+
+    @pytest.mark.parametrize("fanout,expected", [
+        ("STAGGER_GOLDEN_HOUR", ("GOLDEN_HOUR", 9, 180)),
+        ("STAGGER_APPRECIATION_DM", ("APPRECIATION_DM", 8, 120)),
+        ("STAGGER_GROUP_ENGAGEMENT", ("GROUP_ENGAGEMENT", 12, 120)),
+    ])
+    def test_anchor_hour_and_window_match_the_approved_decision(self, fanout, expected):
+        import cqc_lem.utilities.engagement_window as mod
+        assert getattr(mod, fanout) == expected
+
+    @pytest.mark.parametrize("fanout", ["STAGGER_GOLDEN_HOUR", "STAGGER_APPRECIATION_DM",
+                                        "STAGGER_GROUP_ENGAGEMENT"])
+    def test_each_fanout_anchors_on_the_users_own_clock(self, monkeypatch, fanout):
+        import cqc_lem.utilities.engagement_window as mod
+        name = getattr(mod, fanout)[0]
+        for suffix in ("_ANCHOR_HOUR", "_WINDOW_MINUTES", "_ANCHOR_TZ"):
+            monkeypatch.delenv(f"{name}{suffix}", raising=False)
+        assert mod.stagger_config(getattr(mod, fanout)).local is True
+
+    def test_every_window_is_wide_enough_to_stagger(self):
+        """A window narrower than the beat cadence would put the whole fleet back on one tick."""
+        import cqc_lem.utilities.engagement_window as mod
+        for fanout in (mod.STAGGER_GOLDEN_HOUR, mod.STAGGER_APPRECIATION_DM,
+                       mod.STAGGER_GROUP_ENGAGEMENT):
+            assert fanout[2] >= mod.STAGGER_TICK_MINUTES

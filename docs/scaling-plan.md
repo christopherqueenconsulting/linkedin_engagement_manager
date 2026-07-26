@@ -150,15 +150,15 @@ lane, no browser):
 |---|---|---|---|
 | `check-scheduled-posts` | `*/10 min` | `post_to_linkedin` (ETA=post time) + **`automate_commenting` ETA = post − 15 min** + `automate_profile_viewer_engagement` ETA = post − 10 min + `auto_seed_comment_on_post` ETA = post + 3 min | celery / **se_engage** / se_outreach / se_content |
 | `check-scheduled-dms` | `*/10 min` | `send_scheduled_dm` (ETA) | se_outreach |
-| `daily-golden-hour-engagement` | **`13:00` (all users at once)** | `automate_commenting` (15-min loop) per active user | **se_engage** |
+| `daily-golden-hour-engagement` | `*/15 min` tick; each user dispatched at their own slot (#554) | `automate_commenting` (15-min loop) per active user | **se_engage** |
 | `dispatch-scheduled-reply-sweeps` | `*/30 min` | `sweep_reply_comments` per scheduled-mode user (Redis-gated to cadence) | se_engage |
 | `send-due-dm-followups` | `*/30 min` | `process_user_followups` per user | se_outreach |
 | `publish-scheduled-newsletters` | `:05 hourly` | `auto_publish_edition` per due edition | se_content |
 
 ### Fixed off-peak batch (all single crontabs, fan out over active users)
 
-`generate-newsletter-drafts` 10:00 · `send-appreciation-dms` 08:00 ·
-`group-engagement` 16:00 · `group-posts` Tue 15:00 · `scrape-post-stats` 23:00 ·
+`generate-newsletter-drafts` 10:00 · `send-appreciation-dms` 08:00 local (staggered, #554) ·
+`group-engagement` 12:00 local (staggered, #554) · `group-posts` Tue 15:00 · `scrape-post-stats` 23:00 ·
 `sync-user-groups` Mon 07:00 · `refresh-profile-syntheses` Mon 04:30 ·
 `invite_to_company_pages` 1st 05:00 · `backfill-missing-assets` `*/3h` ·
 content-plan 01:00 / 01:30 · Stripe sync 06:00 · cleanups 02:00/03:00.
@@ -176,12 +176,13 @@ latency/cost, not the browser.
    (concurrency 2). If ≥3 users have posts within the same ~15-minute span, the 3rd+
    task waits behind a running 15-minute loop and fires **after** its window — the
    pre-post comment burst lands late or after the post is already live.
-2. **The single `13:00` golden-hour fan-out.** `auto_daily_engagement` dispatches
-   one 15-minute `automate_commenting` loop per active user, all at once, onto
-   `se_engage`. Throughput = 2 slots ÷ 15 min = **~8 users/hour**. At 50 users the
-   queue takes **~6 hours** to drain; the last users' "golden-hour" engagement runs
-   in the afternoon. `QueueOnce(keys=['user_id'])` prevents double-runs but does not
-   add throughput.
+2. **The single `13:00` golden-hour fan-out — FIXED by #554.** `auto_daily_engagement`
+   used to dispatch one 15-minute `automate_commenting` loop per active user, all at
+   once, onto `se_engage`. Throughput = 2 slots ÷ 15 min = **~8 users/hour**, so at 50
+   users the queue took **~6 hours** to drain and the last users' "golden hour" ran in
+   the afternoon. `QueueOnce(keys=['user_id'])` prevented double-runs but added no
+   throughput. It is now a `*/15 min` tick that dispatches only the users whose staggered
+   per-user slot has come up (§5d), so arrivals match what the lane can drain.
 3. **`se_content` / `se_outreach` single-slot lanes.** Newsletter publishing, stats
    scrape, group sync/posts all share one `se_content` slot; DMs, followups, invites,
    profile-viewer engagement share one `se_outreach` slot. Fine for 1 user, serial
@@ -335,10 +336,22 @@ concurrency rises:
   user** — otherwise one user trips the breaker for everyone. **Key the breaker per
   user/proxy** before onboarding many users on distinct IPs (today's global key is
   correct only while everyone shares one IP). See `AUTOMATION_COOLDOWN.md`.
-- **Stagger fixed-time fan-outs.** Replace the single `13:00` golden-hour crontab
-  with a per-user offset (spread across the user's local peak window) so N users don't
-  hit `se_engage` in the same minute. This flattens the concurrency spike and is the
-  single highest-leverage change for "on-time" behavior at low cost.
+- **Stagger fixed-time fan-outs. APPLIED (issue #554).** The single `13:00` golden-hour
+  crontab is gone. `daily-golden-hour-engagement`, `send-appreciation-dms` and
+  `group-engagement` now tick every 15 min (`STAGGER_TICK_MINUTES`) and each dispatches
+  only the users whose slot has come up: `plan_daily_slot` in
+  `utilities/engagement_window.py` gives every user a stable hashed minute inside a window
+  that opens at an anchor hour **in that user's own timezone** (golden hour 09:00 local
+  +0–180 min, appreciation DMs 08:00 local +0–120, groups 12:00 local +0–120; all three
+  retunable with `<NAME>_ANCHOR_HOUR` / `<NAME>_WINDOW_MINUTES` / `<NAME>_ANCHOR_TZ`, and a
+  window of `1` restores "everyone at once"). A Redis claim
+  (`engagement:slot:<NAME>:<user>:<local date>`) keeps it to one run per user per local day
+  and lets a slot missed by a beat outage — or by an open 429 breaker — catch up on a later
+  tick instead of being lost for the day; keying the claim by the slot's own date is what
+  keeps such a late catch-up from still being held at the next day's slot. Per-user
+  `QueueOnce` and the per-day caps are untouched. With a 3-hour window, `se_engage` sees
+  ~1 golden-hour loop per 15-min tick at 12 users instead of 12 at once — the table in §4
+  reads off the staggered rows now.
 - **Human pacing per session** (already present via loop durations + jitter) must not
   be shortened to gain throughput — add sessions, not speed.
 
@@ -387,7 +400,8 @@ have stopped holding:
 - ✅ `SE_NODE_MAX_SESSIONS → 8`, `shm → 8g`, Chrome cpus `4 → 8` (#552) — the four lanes
   now sum to 8, the top of this box's Chrome budget (§4).
 - ✅ Capacity monitor (§5e) to detect when these numbers stop holding (#552).
-- **Stagger `auto_daily_engagement`** by per-user offset.
+- ✅ **Stagger the fixed-time fan-outs** by per-user offset (#554) — `auto_daily_engagement`,
+  `auto_appreciate_dms`, `auto_group_engagement`.
 - All fits the current 8 vCPU / 31 GB box.
 
 **Phase 2 — ~50 users:**
