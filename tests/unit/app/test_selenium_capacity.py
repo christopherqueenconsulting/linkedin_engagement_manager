@@ -17,6 +17,7 @@ pytestmark = pytest.mark.unit
 REPO_ROOT = Path(__file__).resolve().parents[3]
 COMPOSE = (REPO_ROOT / "docker-compose.yml").read_text()
 PROD_OVERLAY = (REPO_ROOT / "docker-compose.prod.yml").read_text()
+GRID_OVERLAY = (REPO_ROOT / "docker-compose.grid.yml").read_text()
 
 
 def _service_block(compose: str, name: str) -> str:
@@ -94,3 +95,87 @@ class TestChromeResourceBudget:
         memory = int(re.search(r"memory: (\d+)g", chrome).group(1))
         # ~1-1.5g per LinkedIn session; 8g is the agreed ceiling on the 31 GiB box.
         assert _max_sessions(COMPOSE) <= memory <= 8
+
+
+class TestGridOverlay:
+    """docker-compose.grid.yml is the Phase-2 horizontal path (issue #556). It replaces the
+    standalone with hub + N single-session nodes, so the SAME cap == Σ-lanes invariant has to hold
+    there — only now the cap is the node count. See docs/SELENIUM_GRID.md."""
+
+    @staticmethod
+    def _node_block() -> str:
+        return _service_block(GRID_OVERLAY, "selenium-node-chrome")
+
+    def test_default_node_count_equals_the_summed_lane_concurrency(self):
+        # One session per node, so replicas IS the session cap. A Grid that starts with fewer slots
+        # than the lanes request would make the cutover itself a capacity regression.
+        replicas = int(re.search(r"replicas: \$\{SELENIUM_GRID_NODES:-(\d+)\}", self._node_block()).group(1))
+        sessions_per_node = int(re.search(r"SE_NODE_MAX_SESSIONS=(\d+)", self._node_block()).group(1))
+        assert sessions_per_node == 1
+        assert replicas * sessions_per_node == sum(_lane_concurrencies(COMPOSE).values())
+
+    def test_the_overlay_does_not_restate_lane_concurrency(self):
+        # The lanes stay defined in one place; the overlay only moves where the browsers live.
+        # Comments are stripped first — the invariant is explained there, not redefined.
+        assert "SELENIUM_CONCURRENCY" not in _config_only(GRID_OVERLAY)
+
+    def test_node_resources_match_the_documented_per_session_budget(self):
+        # scaling-plan.md §5b budgets ~1 vCPU / 1.5 GB + 2 GB shm per additional session. Nodes
+        # sized below that are the "slow session looks non-human to LinkedIn" failure, one per node.
+        node = self._node_block()
+        assert re.search(r"cpus: '1\.0'", node)
+        assert re.search(r"memory: 1536m", node)
+        assert re.search(r"shm_size: 2g", node)
+
+    def test_the_standalone_is_parked_behind_a_profile_not_deleted(self):
+        # Keeping it defined is the rollback: --profile standalone brings the old browser pool back
+        # without reverting the overlay.
+        assert 'profiles: ["standalone"]' in _service_block(GRID_OVERLAY, "selenium-chrome")
+
+    def test_every_service_that_waited_on_the_standalone_now_waits_on_the_hub(self):
+        waiters = [name for name in re.findall(r"\n  ([\w-]+):\n", COMPOSE)
+                   if "selenium-chrome:\n        condition" in _service_block(COMPOSE, name)]
+        assert waiters, "no service depends on selenium-chrome — did the base compose change?"
+        for name in waiters:
+            block = _service_block(GRID_OVERLAY, name)
+            # `!override` (not a merge) so the replaced map cannot still name the profiled-out
+            # standalone, which would make the whole stack wait on a container that never starts.
+            assert "depends_on: !override" in block, name
+            assert "selenium-chrome" not in block, name
+            assert "selenium-hub" in block, name
+            assert "SELENIUM_HUB_HOST=selenium-hub" in block, name
+
+    def test_the_hub_is_not_healthy_until_a_node_can_actually_serve(self):
+        # A hub with zero registered nodes answers /status but has no capacity.
+        assert "availability')=='UP'" in _service_block(GRID_OVERLAY, "selenium-hub")
+
+    def test_nodes_wait_only_for_the_hub_to_start(self):
+        # service_healthy here would deadlock: the hub is healthy only once a node registers.
+        assert "condition: service_started" in self._node_block()
+
+    def test_the_event_bus_is_not_published_to_the_world_by_default(self):
+        # Registering a node needs no credentials, so a reachable bus is an open door into the Grid.
+        hub = _service_block(GRID_OVERLAY, "selenium-hub")
+        for port in ("4442", "4443"):
+            assert f'"${{SELENIUM_GRID_BUS_BIND:-127.0.0.1}}:{port}:{port}"' in hub
+
+    def test_the_hub_port_defaults_to_loopback_like_the_standalone_does_in_prod(self):
+        # This overlay composes AFTER docker-compose.prod.yml, which binds the standalone's 4444 to
+        # loopback on purpose. A hub published on all interfaces would undo that on the cutover.
+        hub = _service_block(GRID_OVERLAY, "selenium-hub")
+        assert '"${SELENIUM_GRID_HUB_BIND:-127.0.0.1}:${SELENIUM_HUB_PORT}:4444"' in hub
+
+
+class TestLoadTestMirrorsTheDeployedTopology:
+    """The load-test harness projects a VPS/second-box decision from these numbers, so they must be
+    the numbers actually deployed — not a snapshot of them (issue #556)."""
+
+    def test_default_lanes_match_compose(self):
+        from cqc_lem.utilities.selenium_load_test import DEFAULT_LANES
+
+        assert DEFAULT_LANES == _lane_concurrencies(COMPOSE)
+
+    def test_default_session_cap_matches_compose(self):
+        from cqc_lem.utilities.selenium_load_test import DEFAULT_SESSION_CAP
+
+        assert DEFAULT_SESSION_CAP == _max_sessions(COMPOSE)
