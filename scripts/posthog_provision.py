@@ -259,7 +259,7 @@ ORDER BY day ASC
             "user's FIRST reading has no previous day and is dropped — counting it would draw the "
             "whole existing audience as one day's growth.",
             _hogql(f"""
-SELECT day, sum(followers - prev) AS follower_delta, sum(followers) AS followers
+SELECT day, sum(followers - prev) AS follower_delta, sum(followers) AS total_followers
 FROM (
     SELECT day, user_key, followers,
            lagInFrame(followers) OVER (PARTITION BY user_key ORDER BY day
@@ -522,8 +522,14 @@ def plan_alerts(specs: list, existing_alerts: dict, insight_ids: dict,
                 subscribed_users: Optional[list] = None) -> list:
     """Diff the alert spec. An alert whose insight does not exist yet is `blocked` rather than
     created — PostHog needs the insight id, and reporting it as creatable would make a dry-run lie
-    about what a follow-up `--apply` can do in one pass."""
+    about what a follow-up `--apply` can do in one pass.
+
+    Subscribers are part of the diff: an alert PostHog created with an empty `subscribed_users`
+    (the key lacked `user:read` on the run that made it) emails nobody, and matching only on bounds
+    would call that alert healthy forever. A run that DOES know the owner repairs it. A run that
+    does not (`subscribed_users` empty) never reports drift it couldn't fix."""
     actions: list = []
+    wanted_subscribers = set(subscribed_users or [])
     for spec in specs:
         insight_id = insight_ids.get(spec["insight"])
         found = existing_alerts.get(spec["name"])
@@ -531,16 +537,23 @@ def plan_alerts(specs: list, existing_alerts: dict, insight_ids: dict,
             actions.append({"action": "blocked_alert", "alert": spec["name"],
                             "reason": f"insight '{spec['insight']}' does not exist yet"})
             continue
-        payload = alert_payload(spec, insight_id, subscribed_users)
         if found is None:
-            actions.append({"action": "create_alert", "alert": spec["name"], "payload": payload})
-        elif (found.get("bounds") == spec["bounds"] and found.get("insight_id") == insight_id
-                and found.get("enabled", True)):
+            actions.append({"action": "create_alert", "alert": spec["name"],
+                            "payload": alert_payload(spec, insight_id, subscribed_users)})
+            continue
+        current_subscribers = set(found.get("subscribed_users") or [])
+        if (found.get("bounds") == spec["bounds"] and found.get("insight_id") == insight_id
+                and found.get("enabled", True)
+                and wanted_subscribers <= current_subscribers):
             actions.append({"action": "unchanged_alert", "alert": spec["name"],
                             "alert_id": found["id"]})
         else:
+            # Union, not replace — a recipient the owner added in the UI is not ours to drop.
             actions.append({"action": "update_alert", "alert": spec["name"],
-                            "alert_id": found["id"], "payload": payload})
+                            "alert_id": found["id"],
+                            "payload": alert_payload(
+                                spec, insight_id,
+                                sorted(wanted_subscribers | current_subscribers, key=str))})
     return actions
 
 
@@ -666,6 +679,8 @@ class PostHogClient:
                 "bounds": {k: v for k, v in (configuration.get("bounds") or {}).items()
                            if v is not None},
                 "enabled": item.get("enabled", True),
+                "subscribed_users": [_user_id_of(u) for u in (item.get("subscribed_users") or [])
+                                     if _user_id_of(u) is not None],
             }
         return alerts
 
@@ -702,6 +717,14 @@ def _insight_id_of(insight) -> Optional[int]:
     if isinstance(insight, dict):
         return insight.get("id")
     return insight
+
+
+def _user_id_of(user) -> Optional[int]:
+    """An alert's subscriber, which PostHog serializes as a nested user object on read and a bare id
+    on write — the same two shapes as `insight`."""
+    if isinstance(user, dict):
+        return user.get("id")
+    return user
 
 
 def apply_actions(client: PostHogClient, actions: list, dry_run: bool = True) -> list:

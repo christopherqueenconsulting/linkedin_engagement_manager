@@ -136,10 +136,16 @@ class TestTripTelemetry:
     def test_tracking_failure_never_breaks_the_breaker(self, fake_redis):
         fake_redis.incr.return_value = 1
         with patch("cqc_lem.utilities.observability.track_rate_limit_trip",
-                   side_effect=RuntimeError("posthog down")):
+                   side_effect=RuntimeError("posthog down")), \
+                patch(f"{_MOD}.log_warning") as warned:
             from cqc_lem.utilities.linkedin.rate_limit import mark_rate_limited
             mark_rate_limited("x")  # must not raise
         fake_redis.set.assert_called_once()  # the cooldown was still written
+        # ...and the failure must not be reported as a breaker failure: the breaker IS open, and
+        # that message would send whoever is debugging a doom loop after the wrong thing.
+        messages = [call.args[0] for call in warned.call_args_list]
+        assert not any("Failed to set" in message for message in messages)
+        assert any("Failed to track" in message for message in messages)
 
 
 class TestCooldownRemaining:

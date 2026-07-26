@@ -116,8 +116,15 @@ def mark_rate_limited(reason: str = "") -> None:
         # The warning above stops at the log; PostHog only forwards ERROR and up by default. Emit
         # the trip as its own event so the 429 dashboard tile and its spike alert have a signal
         # (issue #650). Imported here — observability reaches back into this module for Redis.
-        from cqc_lem.utilities.observability import track_rate_limit_trip
-        track_rate_limit_trip(seconds, trips, reason or "429")
+        # In its own try: the breaker is already OPEN by this point, so a telemetry failure must not
+        # fall into the handler below and log "Failed to set the circuit breaker" — that would send
+        # whoever is debugging a doom loop looking for a breaker that is in fact working.
+        try:
+            from cqc_lem.utilities.observability import track_rate_limit_trip
+            track_rate_limit_trip(seconds, trips, reason or "429")
+        except Exception as e:
+            log_warning("Failed to track LinkedIn 429 trip (breaker is open regardless)", exc=e,
+                        action_type="rate_limit")
     except Exception as e:
         log_warning("Failed to set LinkedIn 429 circuit breaker", exc=e, action_type="rate_limit")
 

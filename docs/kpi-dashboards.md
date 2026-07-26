@@ -83,6 +83,11 @@ Three details that are not arbitrary:
   filter that silently matches nothing produces an alert that never fires, which is worse than no
   alert at all.
 
+Alerts are diffed on bounds, insight, enabled state **and subscribers**. An alert created by a run
+whose key lacked `user:read` has an empty `subscribed_users` and therefore emails nobody; matching
+on bounds alone would call that alert healthy forever, so a later run that can name the owner
+repairs it (adding to, never replacing, whoever is already subscribed).
+
 `--simulate 'NAME=VALUE'` runs the same comparison PostHog runs server-side, so a breach can be
 proven without waiting for one. A non-numeric/missing reading is deliberately NOT a breach: an
 ingest gap is not an incident.

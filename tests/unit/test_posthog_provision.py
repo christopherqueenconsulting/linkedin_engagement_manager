@@ -89,6 +89,16 @@ class TestSpecs:
             events = {s["event"] for s in tile["query"]["source"]["series"]}
             assert events <= set(php.SOURCE_EVENTS), f"{dashboard}/{tile['name']}"
 
+    def test_no_aggregate_is_aliased_to_a_column_it_reads(self):
+        # ClickHouse rejects `sum(followers) AS followers` outright ("aggregate function is found
+        # inside another aggregate function") — the alias re-binds the name the other aggregates in
+        # the same SELECT read, so the whole tile renders an error, not a wrong number.
+        for dashboard, tile in _hogql_tiles():
+            collisions = [(fn, col) for fn, col, alias in re.findall(
+                r"\b(sum|count|avg|min|max|median|uniq|uniqExact|any)\s*\(\s*(\w+)\s*\)\s+AS\s+(\w+)",
+                _sql(tile)) if col == alias]
+            assert not collisions, f"{dashboard}/{tile['name']} self-aliases {collisions}"
+
     def test_hogql_tiles_start_with_a_select(self):
         for _, tile in _hogql_tiles():
             assert _sql(tile).startswith(("SELECT", "WITH"))
@@ -308,6 +318,37 @@ class TestPlanAlerts:
         actions = php.plan_alerts(php.alert_specs(), existing, ids)
         assert {a["action"] for a in actions} == {"unchanged_alert"}
 
+    def test_a_subscriberless_alert_is_repaired(self):
+        # An alert PostHog created with no subscribed_users emails nobody. Matching only on bounds
+        # would call it healthy forever, so the run that CAN name the owner adds them.
+        ids = self._insight_ids()
+        spec = php.alert_specs()[0]
+        existing = {spec["name"]: {"id": 1, "insight_id": ids[spec["insight"]],
+                                   "bounds": spec["bounds"], "enabled": True,
+                                   "subscribed_users": []}}
+        action = php.plan_alerts([spec], existing, ids, [7])[0]
+        assert action["action"] == "update_alert"
+        assert action["payload"]["subscribed_users"] == [7]
+
+    def test_an_extra_subscriber_added_in_the_ui_is_not_dropped(self):
+        ids = self._insight_ids()
+        spec = php.alert_specs()[0]
+        existing = {spec["name"]: {"id": 1, "insight_id": ids[spec["insight"]],
+                                   "bounds": {"lower": 999}, "enabled": True,
+                                   "subscribed_users": [9]}}
+        action = php.plan_alerts([spec], existing, ids, [7])[0]
+        assert action["payload"]["subscribed_users"] == [7, 9]
+
+    def test_an_unknown_owner_never_reports_subscriber_drift(self):
+        # whoami failed, so there is no one to add — reporting drift we can't fix would make every
+        # dry run exit 2 forever.
+        ids = self._insight_ids()
+        spec = php.alert_specs()[0]
+        existing = {spec["name"]: {"id": 1, "insight_id": ids[spec["insight"]],
+                                   "bounds": spec["bounds"], "enabled": True,
+                                   "subscribed_users": []}}
+        assert php.plan_alerts([spec], existing, ids, [])[0]["action"] == "unchanged_alert"
+
     def test_threshold_drift_is_updated(self):
         ids = self._insight_ids()
         spec = php.alert_specs()[0]
@@ -430,6 +471,12 @@ class TestClientNormalization:
         assert php._insight_id_of(7) == 7
         assert php._insight_id_of({"id": 7, "name": "x"}) == 7
         assert php._insight_id_of(None) is None
+
+    def test_subscriber_id_accepts_both_api_shapes(self):
+        # PostHog serializes subscribed_users as nested user objects on read, bare ids on write.
+        assert php._user_id_of(7) == 7
+        assert php._user_id_of({"id": 7, "email": "owner@example.com"}) == 7
+        assert php._user_id_of(None) is None
 
 
 class TestMain:
