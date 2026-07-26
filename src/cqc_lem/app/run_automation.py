@@ -25,6 +25,7 @@ from cqc_lem.utilities.ai.dm_nurture import classify_reply_intent, is_stop_inten
 from cqc_lem.utilities.connection_targeting import CandidateSignal, ScoredCandidate, \
     CONNECT_NOTE_LIMIT, SOURCE_ADJACENT_POST, SOURCE_OWN_POST, default_connect_note, \
     rank_candidates, target_terms_from_prefs
+from cqc_lem.utilities.lead_scoring import person_key
 from cqc_lem.utilities.ai.content_alignment import humanize_text, split_link_for_first_comment, \
     append_link_to_comment
 from cqc_lem.utilities.date import convert_viewed_on_to_date
@@ -46,6 +47,7 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     set_profile_synthesis, get_duplicate_comment_posts, get_recent_comment_texts, count_dms_sent_today, \
     get_approved_outreach_targets, update_outreach_target, update_outreach_target_status, \
     OutreachStage, OutreachStatus, insert_outreach_target, get_outreach_target_by_url, \
+    count_open_outreach_targets, \
     insert_lead_signal, has_lead_signal, get_lead_signal, update_lead_signal, \
     LeadSignalSource, LeadSignalChannel, LeadSignalStatus, \
     insert_scheduled_dm, has_open_scheduled_dm, count_scheduled_dms_created_today, \
@@ -3188,15 +3190,50 @@ def build_dm_from_template(user_id: int, event_type: str, first_name: str,
         return rendered.strip()
 
 
+# How long after an outbound DM we come back to look for a reply when the user has configured no
+# further step in that sequence. Long enough that a same-day reply has landed, short enough that the
+# thread is still warm when we draft the next message.
+_REPLY_CHECK_DEFAULT_DELAY_HOURS = 48
+
+
+def _reply_check_delay_hours() -> int:
+    try:
+        return max(1, int(os.environ.get("DM_REPLY_CHECK_DELAY_HOURS")
+                          or _REPLY_CHECK_DEFAULT_DELAY_HOURS))
+    except ValueError:
+        return _REPLY_CHECK_DEFAULT_DELAY_HOURS
+
+
 def enqueue_next_followup(user_id: int, profile_url: str, first_name: str, event_type: str, current_step: int) -> None:
     """If a follow-up template exists for the next step, schedule it at now + its delay_hours.
-    due_at is stored as naive UTC to match the rest of the system (see get_due_followups)."""
+    due_at is stored as naive UTC to match the rest of the system (see get_due_followups).
+
+    When there is NO next step, schedule a REPLY CHECK at that same step anyway (issue #623). The
+    stock templates are step-0 only, so this branch used to end the thread the moment the first DM
+    went out: nothing was ever queued in dm_followups, process_user_followups therefore never ran,
+    nobody's reply was ever read, and the #485 auto-nurture that turns a reply into an approval-gated
+    next message could not fire — scheduled_dms had zero rows in production from V53 to now. The
+    check costs one thread open: a reply becomes a nurture draft, and silence hits the existing
+    "no template for this step" branch in process_user_followups and stops the sequence. This is the
+    same shape _schedule_catchup_followup already used for catch-up touches (#482), generalized to
+    every sequence."""
     try:
         nxt = get_dm_template(user_id, event_type, current_step + 1)
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
         if nxt:
-            now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
             due = now_utc + timedelta(hours=int(nxt.get("delay_hours", 24) or 24))
             enqueue_followup(user_id, profile_url, first_name, event_type, current_step + 1, due)
+            return
+        if not _nurture_enabled() or str(event_type) == NURTURE_EVENT_TYPE:
+            # Nurture schedules its own re-check; with nurture off there is nothing to check for.
+            log_info(f"No step {current_step + 1} template for '{event_type}' — sequence ends here",
+                     user_id=user_id, action_type="followup")
+            return
+        due = now_utc + timedelta(hours=_reply_check_delay_hours())
+        enqueue_followup(user_id, profile_url, first_name, event_type, current_step + 1, due)
+        log_info(f"No step {current_step + 1} template for '{event_type}' — queued a reply check "
+                 f"in {_reply_check_delay_hours()}h so a reply can become a nurture draft",
+                 user_id=user_id, action_type="followup")
     except Exception as e:
         log_warning("Failed to enqueue next follow-up", exc=e, action_type="followup", user_id=user_id)
 
@@ -3306,7 +3343,14 @@ def _nurture_after_reply(user_id: int, followup: dict, their_message: str,
     profile_url = followup.get("profile_url") or ""
     first_name = followup.get("first_name") or ""
     try:
-        if not _nurture_enabled() or not str(their_message or "").strip():
+        if not _nurture_enabled():
+            log_warning("DM nurture is disabled (DM_NURTURE_ENABLED) — a reply was read but no next "
+                        "message will be drafted", user_id=user_id, action_type="dm")
+            return None
+        if not str(their_message or "").strip():
+            log_warning(f"DM nurture: a reply from {first_name or profile_url} was detected but its "
+                        f"text could not be read — nothing to draft against",
+                        user_id=user_id, action_type="dm")
             return None
 
         verdict = classify_reply_intent(their_message)
@@ -3347,6 +3391,9 @@ def _nurture_after_reply(user_id: int, followup: dict, their_message: str,
         if not message:
             message = build_dm_from_template(user_id, NURTURE_EVENT_TYPE, first_name, my_profile, step=step)
         if not message:
+            log_warning(f"DM nurture: no draft could be produced for {first_name or profile_url} "
+                        f"(step {step}) — the LLM returned nothing and no 'nurture' template exists "
+                        f"for that step", user_id=user_id, action_type="dm")
             return None
 
         due = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=nurture_delay_hours(intent))
@@ -3355,6 +3402,8 @@ def _nurture_after_reply(user_id: int, followup: dict, their_message: str,
                                     recipient_name=first_name or None, status=status,
                                     source=SCHEDULED_DM_SOURCE_NURTURE)
         if not dm_id:
+            log_warning(f"DM nurture: drafted a next message for {first_name or profile_url} but "
+                        f"the scheduled_dms insert failed", user_id=user_id, action_type="dm")
             return None
         log_info(f"DM nurture: drafted a '{intent}' next message for {first_name or profile_url} "
                  f"(step {step}, {status})", user_id=user_id, action_type="dm")
@@ -3378,6 +3427,12 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
     due = [f for f in get_due_followups(datetime.now(timezone.utc).replace(tzinfo=None))
            if f["user_id"] == user_id]
     if not due:
+        # Not routine: this task is only dispatched for users who HAVE due rows, so an empty list
+        # means the row was consumed between dispatch and run — or nothing is being enqueued at all,
+        # which is exactly how the nurture queue stayed empty for months (issue #623).
+        log_warning("Follow-up run found nothing due — no reply will be read and no nurture draft "
+                    "will be queued for this user", user_id=user_id,
+                    task_name="process_user_followups", action_type="followup")
         return "No due follow-ups"
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Follow-ups")
@@ -3435,6 +3490,27 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
     return f"Sent {sent} follow-up(s); drafted {nurtured} nurture reply(ies)"
 
 
+def _dispatch_appreciation_dms(user_id: int, my_profile: LinkedInProfile, event_type: str,
+                               recipients: dict) -> int:
+    """Send the step-0 appreciation DM for one trigger event to everyone it fired for, and put each
+    thread on the follow-up sequencer. Returns how many were dispatched. A missing template used to
+    drop the recipient in silence — now it says so, because a template gap here is the difference
+    between a nurture pipeline and an empty one (issue #623)."""
+    sent = 0
+    for profile_url, name in (recipients or {}).items():
+        first_name = clean_person_name(name).split(" ")[0] or "there"
+        message = build_dm_from_template(user_id, event_type, first_name, my_profile)
+        if not message:
+            log_warning(f"No '{event_type}' DM template for step 0 — skipping the appreciation DM "
+                        f"to {first_name}", user_id=user_id, action_type="dm")
+            continue
+        send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": profile_url,
+                                            "message": message})
+        enqueue_next_followup(user_id, profile_url, first_name, event_type, 0)
+        sent += 1
+    return sent
+
+
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
                   reject_on_worker_lost=True, rate_limit='2/m', queue='se_outreach')
 def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: int = None, future_forward: int = 60):
@@ -3455,30 +3531,15 @@ def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: in
 
         # After Accepting a Connection Request:
         invitations_accepted = accept_connection_request(user_id)
-        for profile_url, name in invitations_accepted.items():
-            first_name = (name or "").strip().split(" ")[0] or "there"
-            message = build_dm_from_template(user_id, "connection_accepted", first_name, my_profile)
-            if message:
-                send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": profile_url, "message": message})
-                enqueue_next_followup(user_id, profile_url, first_name, "connection_accepted", 0)
+        _dispatch_appreciation_dms(user_id, my_profile, "connection_accepted", invitations_accepted)
 
         # After Receiving a Recommendation — thank the recommender
-        recommendations_received = get_recent_recommendations(driver, wait)
-        for profile_url, name in recommendations_received.items():
-            first_name = name.split(" ")[0]
-            message = build_dm_from_template(user_id, "recommendation_received", first_name, my_profile)
-            if message:
-                send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": profile_url, "message": message})
-                enqueue_next_followup(user_id, profile_url, first_name, "recommendation_received", 0)
+        _dispatch_appreciation_dms(user_id, my_profile, "recommendation_received",
+                                   get_recent_recommendations(driver, wait))
 
         # After a Successful Collaboration — express gratitude and offer to connect further
-        recent_collaborators = get_recent_collaborators(driver, wait)
-        for profile_url, name in recent_collaborators.items():
-            first_name = name.split(" ")[0]
-            message = build_dm_from_template(user_id, "collaboration", first_name, my_profile)
-            if message:
-                send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": profile_url, "message": message})
-                enqueue_next_followup(user_id, profile_url, first_name, "collaboration", 0)
+        _dispatch_appreciation_dms(user_id, my_profile, "collaboration",
+                                   get_recent_collaborators(driver, wait))
 
         # Re-schedule the task in the queue for the future
         if loop_for_duration:
@@ -3831,7 +3892,7 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
                     if not able_to_comment:
                         myprint("No activities, unable to or already left comment")
 
-                        first_name = viewer_name.split(" ")[0]
+                        first_name = clean_person_name(viewer_name).split(" ")[0] or "there"
                         profile_url_str = str(profile.profile_url)
                         acting_user_id = get_user_id(my_profile.email)
 
@@ -4633,6 +4694,185 @@ def process_outreach_funnel(self, user_id: int, max_per_run: int = 25):
             update_outreach_target_status(target["id"], OutreachStatus.FAILED)
             results.append(f"target {target['id']}: error")
     return "; ".join(results)
+
+
+# --- Outreach funnel sourcing (issue #623) — the funnel had a processor but no input -------------
+# outreach_funnel_targets had ZERO rows in production since the table shipped: the only way in was
+# the API, and nothing ever called it. These are the three warm surfaces we already track, drained
+# into the SAME approval-gated funnel #399 built. Nothing here sends: every target lands as a draft
+# whose first stage still needs approval (or the user's auto-approve mode), and each fired stage
+# still drops back to 'pending' for a fresh one.
+_MAX_NEW_FUNNEL_TARGETS_PER_SCAN = _connect_env_int("MAX_NEW_FUNNEL_TARGETS_PER_SCAN", 5)
+# Depth at which sourcing stops: an approval queue nobody works through is the same as no queue.
+_MAX_OPEN_FUNNEL_TARGETS = _connect_env_int("MAX_OPEN_FUNNEL_TARGETS", 25)
+_MAX_ROSTER_AUTHORS_PER_FUNNEL_SCAN = 5
+_FUNNEL_ENGAGER_LOOKBACK_DAYS = 14
+
+
+def _funnel_prospects_from_roster(driver, user_id: int, roster: list, my_name: str,
+                                  now: datetime) -> list:
+    """The engagement roster (G1, issue #616) and the people commenting on its posts, each paired
+    with the post that put them on our radar — the comment stage needs something to comment ON.
+    Each roster author is best-effort: one unreachable profile must not lose the others."""
+    from cqc_lem.utilities.linkedin.scrapper import get_profile_recent_activity
+
+    prospects: list = []
+    for target in roster[:_MAX_ROSTER_AUTHORS_PER_FUNNEL_SCAN]:
+        author_url = str(target.get("profile_url") or "").strip()
+        if not author_url:
+            continue
+        try:
+            activity = get_profile_recent_activity(driver, author_url) or []
+        except Exception as e:
+            log_warning("Could not read a roster author's recent activity", exc=e, user_id=user_id,
+                        action_type="outreach_funnel")
+            continue
+        post = next((p for p in activity if (p or {}).get("link")), None)
+        if not post:
+            log_warning(f"Roster author {author_url} has no recent post to comment on — skipping",
+                        user_id=user_id, action_type="outreach_funnel")
+            continue
+        author_name = clean_person_name(target.get("name") or "") or _author_display_name(author_url)
+        post_text = str(post.get("text") or "")
+        prospects.append({"profile_url": author_url, "name": author_name,
+                          "context_url": post["link"], "context_text": post_text,
+                          "stage": OutreachStage.COMMENT})
+        try:
+            commenters = _harvest_post_commenters(driver, post["link"], author_name, now)
+        except Exception as e:
+            log_warning("Could not harvest commenters from a roster post", exc=e, user_id=user_id,
+                        action_type="outreach_funnel")
+            continue
+        for signal in commenters:
+            prospects.append({"profile_url": signal.person_profile_url, "name": signal.person_name,
+                              "context_url": post["link"], "context_text": post_text,
+                              "stage": OutreachStage.COMMENT})
+    me = (my_name or "").strip().lower()
+    return [p for p in prospects if (p["name"] or "").strip().lower() != me]
+
+
+def _funnel_prospects_from_engagers(user_id: int) -> list:
+    """People who engaged with the user's OWN posts. They start at the CONNECT stage: they already
+    engaged with us, so there is no third-party post to comment on first — and anyone the badge says
+    we're already connected to is dropped, since connecting is the only thing this funnel adds."""
+    prospects: list = []
+    for row in get_engager_candidates(user_id, days=_FUNNEL_ENGAGER_LOOKBACK_DAYS):
+        if is_first_degree(row.get("connection_degree") or ""):
+            continue
+        prospects.append({"profile_url": row.get("person_profile_url"),
+                          "name": clean_person_name(row.get("person_name") or ""),
+                          "context_url": None, "context_text": "",
+                          "stage": OutreachStage.CONNECT})
+    return prospects
+
+
+def _draft_funnel_comment(user_id: int, prospect: dict, my_profile: LinkedInProfile,
+                          prefs: dict = None, profile_synthesis: str = None) -> str:
+    """Pre-draft the comment-stage text from the post itself, using the same grounded generator the
+    feed uses (so the quality contract and similarity gate apply). Returns '' when the post text is
+    unreadable or the gate rejects every attempt — the operator writes it themselves rather than a
+    template comment going out under their name."""
+    content = (prospect.get("context_text") or "").strip()
+    if not content or my_profile is None:
+        return ""
+    try:
+        return (generate_ai_response(content, my_profile, None, prefs=prefs,
+                                     profile_synthesis=profile_synthesis, user_id=user_id) or "").strip()
+    except Exception as e:
+        log_warning("Funnel comment draft failed; leaving it for the operator", exc=e,
+                    user_id=user_id, action_type="outreach_funnel")
+        return ""
+
+
+@shared_task.task(bind=True, base=QueueOnce,
+                  once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
+                  reject_on_worker_lost=True, rate_limit='1/m', queue='se_outreach')
+def scan_outreach_funnel_targets(self, user_id: int, max_new: int = None):
+    """Populate the comment-first outreach funnel from the roster, roster-post commenters, and the
+    user's own post engagers (issue #623). Files drafts only — the approval gate, the per-stage
+    re-approval, and the daily comment/DM caps in process_outreach_funnel all still apply."""
+    prefs = get_engagement_preferences(user_id)
+    if str(prefs.get("connection_targeting_mode") or "suggest") == "off":
+        log_info("Outreach sourcing is off for this user (connection_targeting_mode=off)",
+                 user_id=user_id, task_name="scan_outreach_funnel_targets",
+                 action_type="outreach_funnel")
+        return f"Outreach funnel sourcing off for user {user_id}"
+
+    open_targets = count_open_outreach_targets(user_id)
+    ceiling = _MAX_NEW_FUNNEL_TARGETS_PER_SCAN if max_new is None else int(max_new)
+    budget = max(0, min(ceiling, _MAX_OPEN_FUNNEL_TARGETS - open_targets))
+    if budget <= 0:
+        log_warning(f"Outreach funnel sourcing filed nothing: {open_targets} target(s) are already "
+                    f"waiting for approval", user_id=user_id,
+                    task_name="scan_outreach_funnel_targets", action_type="outreach_funnel")
+        return f"Outreach funnel backlog full for user {user_id}"
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    roster = [t for t in get_engagement_targets(user_id, active_only=True) if t.get("profile_url")]
+    prospects: list = []
+    my_profile = None
+    synthesis = None
+    if roster:
+        driver = None
+        try:
+            driver, _wait, _user_email, my_profile = get_current_profile(
+                user_id=user_id, session_name="Outreach Funnel Sourcing")
+            synthesis = get_or_create_profile_synthesis(user_id, my_profile)
+            prospects.extend(_funnel_prospects_from_roster(driver, user_id, roster,
+                                                           my_profile.full_name, now))
+        except Exception as e:
+            # Own-post engagers stand on their own — degrade, don't abort the whole scan.
+            log_warning("Roster sourcing for the outreach funnel failed; using post engagers only",
+                        exc=e, user_id=user_id, task_name="scan_outreach_funnel_targets",
+                        action_type="outreach_funnel")
+        finally:
+            if driver is not None:
+                quit_gracefully(driver)
+    else:
+        log_warning("No active engagement-roster targets — the funnel can only source from post "
+                    "engagers until a roster is configured", user_id=user_id,
+                    task_name="scan_outreach_funnel_targets", action_type="outreach_funnel")
+    prospects.extend(_funnel_prospects_from_engagers(user_id))
+
+    if not prospects:
+        log_warning("Outreach funnel sourcing filed nothing: the engagement roster produced no "
+                    "posts and nobody has engaged with this user's content in the lookback window",
+                    user_id=user_id, task_name="scan_outreach_funnel_targets",
+                    action_type="outreach_funnel")
+        return f"No outreach funnel prospects for user {user_id}"
+
+    # A target already in connection_requests is being worked by the #398/#486 path — two outbound
+    # tracks aimed at one person is exactly the over-automation this stays gated against.
+    requested = get_requested_person_keys(user_id)
+    status = _target_status_for_mode("auto_queue", prefs)
+    seen: set = set()
+    filed = 0
+    for prospect in prospects:
+        if filed >= budget:
+            break
+        url = str(prospect.get("profile_url") or "").strip()
+        if not url:
+            continue
+        key = person_key(prospect.get("name"), url)
+        if key in seen or key in requested:
+            continue
+        seen.add(key)
+        if get_outreach_target_by_url(user_id, url):
+            continue
+        stage = prospect["stage"]
+        draft = (_draft_funnel_comment(user_id, prospect, my_profile, prefs=prefs,
+                                       profile_synthesis=synthesis)
+                 if stage == OutreachStage.COMMENT
+                 else _draft_funnel_stage(user_id, stage, {"target_name": prospect.get("name")}))
+        target_id = insert_outreach_target(user_id, url, target_name=prospect.get("name") or None,
+                                           context_url=prospect.get("context_url"),
+                                           draft_text=(draft or None), stage=stage, status=status)
+        if not target_id:
+            continue
+        filed += 1
+        log_info(f"Outreach funnel target filed at the {stage} stage", user_id=user_id,
+                 task_name="scan_outreach_funnel_targets", action_type="outreach_funnel")
+    return f"Filed {filed} outreach funnel target(s) as '{status}' for user {user_id}"
 
 
 # --- LinkedIn Catch-up automation (issue #482) — trigger-event congratulations, approval-gated ---

@@ -18,12 +18,44 @@ class TestEnqueueNextFollowup:
         enq.assert_called_once()
         assert enq.call_args[0][4] == 1  # next_step
 
-    def test_no_enqueue_when_no_next_template(self):
+    def test_queues_a_reply_check_when_no_next_template(self, monkeypatch):
+        # Issue #623: the stock templates are step-0 only, so this branch used to end every thread
+        # the moment the first DM went out — dm_followups stayed empty and the nurture flywheel
+        # never turned. Now it schedules a reply check at the same (template-less) step.
         from cqc_lem.app.run_automation import enqueue_next_followup
+        monkeypatch.delenv("DM_NURTURE_ENABLED", raising=False)
+        with patch(f"{_RA}.get_dm_template", return_value=None), \
+             patch(f"{_RA}.enqueue_followup") as enq:
+            enqueue_next_followup(1, "p", "Jane", "connection_accepted", 0)
+        enq.assert_called_once()
+        assert enq.call_args[0][3] == "connection_accepted"  # NOT the nurture sequence
+        assert enq.call_args[0][4] == 1
+
+    def test_no_reply_check_when_nurture_is_disabled(self, monkeypatch):
+        from cqc_lem.app.run_automation import enqueue_next_followup
+        monkeypatch.setenv("DM_NURTURE_ENABLED", "false")
         with patch(f"{_RA}.get_dm_template", return_value=None), \
              patch(f"{_RA}.enqueue_followup") as enq:
             enqueue_next_followup(1, "p", "Jane", "connection_accepted", 0)
         enq.assert_not_called()
+
+    def test_nurture_sequence_does_not_get_a_second_reply_check(self, monkeypatch):
+        # _nurture_after_reply enqueues its own re-check; a second one here would double the walk.
+        from cqc_lem.app.run_automation import enqueue_next_followup
+        monkeypatch.delenv("DM_NURTURE_ENABLED", raising=False)
+        with patch(f"{_RA}.get_dm_template", return_value=None), \
+             patch(f"{_RA}.enqueue_followup") as enq:
+            enqueue_next_followup(1, "p", "Jane", "nurture", 0)
+        enq.assert_not_called()
+
+    def test_reply_check_delay_is_configurable(self, monkeypatch):
+        from cqc_lem.app import run_automation as ra
+        monkeypatch.setenv("DM_REPLY_CHECK_DELAY_HOURS", "6")
+        assert ra._reply_check_delay_hours() == 6
+        monkeypatch.setenv("DM_REPLY_CHECK_DELAY_HOURS", "not-a-number")
+        assert ra._reply_check_delay_hours() == ra._REPLY_CHECK_DEFAULT_DELAY_HOURS
+        monkeypatch.delenv("DM_REPLY_CHECK_DELAY_HOURS")
+        assert ra._reply_check_delay_hours() == ra._REPLY_CHECK_DEFAULT_DELAY_HOURS
 
 
 def _due(**kw):

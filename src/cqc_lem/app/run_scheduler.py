@@ -846,6 +846,21 @@ def auto_scan_connection_candidates():
     return f"Dispatched connection targeting for {len(user_ids)} user(s)"
 
 
+@shared_task.task
+def auto_scan_outreach_funnel_targets():
+    """Dispatch per-user sourcing for the comment-first outreach funnel (issue #623). The funnel
+    processor (#399) has always existed; nothing ever fed it, so outreach_funnel_targets had zero
+    rows in production. Sourcing scrapes the roster's recent posts, so it IS gated on the 429
+    breaker / manual pause. It only FILES drafts — approval and the daily caps still gate sends."""
+    if _skip_if_throttled("auto_scan_outreach_funnel_targets"):
+        return "Automation throttled"
+    from cqc_lem.app.run_automation import scan_outreach_funnel_targets
+    user_ids = get_active_user_ids()
+    for uid in user_ids:
+        scan_outreach_funnel_targets.apply_async(kwargs={"user_id": uid})
+    return f"Dispatched outreach funnel sourcing for {len(user_ids)} user(s)"
+
+
 # Lead scoring & CRM-lite pipeline (issue #484). Nothing here touches LinkedIn — it re-reads
 # engagement we already stored — so it is deliberately NOT gated on the 429 breaker / pause: a
 # rate-limited account still deserves an accurate hot-leads list.

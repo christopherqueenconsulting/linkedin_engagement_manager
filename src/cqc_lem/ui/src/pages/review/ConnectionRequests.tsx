@@ -17,10 +17,13 @@ interface ConnectionRequest {
   message: string | null
   status: string
   created_at: string
-  // Targeting provenance (issue #486) — null for hand-added targets.
+  // Targeting provenance (issue #486) — null for hand-added targets. icp_score is null when we have
+  // no profile facts to score fit against (issue #623), which is most engagers.
   source: string | null
   icp_score: number | null
   reasons: string | null
+  // Why a send failed (issue #623) — e.g. already connected, or no Connect button on the profile.
+  failure_reason: string | null
 }
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -166,11 +169,16 @@ export default function ConnectionRequests({ userTimezone }: { userTimezone: str
                     {SOURCE_LABELS[req.source] ?? req.source}
                   </span>
                 )}
-                {req.icp_score != null && (
+                {req.icp_score != null ? (
                   <span className="text-xs text-gray-500">ICP fit {req.icp_score}/100</span>
+                ) : (
+                  req.source && <span className="text-xs text-gray-400">ICP fit unverified</span>
                 )}
                 {req.reasons && <span className="text-xs text-gray-500 truncate">· {req.reasons}</span>}
               </div>
+            )}
+            {req.status === 'failed' && req.failure_reason && (
+              <p className="text-xs text-red-600 mb-1">Why it failed: {req.failure_reason}</p>
             )}
             {req.message && <p className="text-sm text-gray-700 whitespace-pre-wrap line-clamp-3">{req.message}</p>}
             {['pending', 'approved', 'sending'].includes(req.status) && (

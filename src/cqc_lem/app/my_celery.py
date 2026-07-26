@@ -187,6 +187,12 @@ app.conf.update(
             # is actually engaging. Files a few targets a day; sending stays daily-capped + approved.
             'schedule': crontab(hour='4', minute='0')
         },
+        'scan-outreach-funnel-targets': {
+            'task': 'cqc_lem.app.run_scheduler.auto_scan_outreach_funnel_targets',
+            # Daily at 4:20 AM — after the 4:00 connection-candidate scan, so anyone already filed
+            # as a connection request that run is excluded from the funnel rather than worked twice.
+            'schedule': crontab(hour='4', minute='20')
+        },
         'clen-up-stale-profiles': {
             'task': 'cqc_lem.app.run_scheduler.auto_clean_stale_profiles',
             'schedule': crontab(hour='3', minute='0', )  # Run every day at 3:00 AM

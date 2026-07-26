@@ -4062,6 +4062,26 @@ def get_approved_outreach_targets(user_id: int) -> list:
         connection.close()
 
 
+def count_open_outreach_targets(user_id: int) -> int:
+    """Funnel targets still awaiting a human or a stage fire (pending / approved, not completed).
+    The sourcing scan (issue #623) stops adding once this backlog is deep enough — a review queue
+    nobody works through is the same as no queue at all."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM outreach_funnel_targets WHERE user_id=%s "
+            "AND status IN ('pending','approved') AND stage <> 'completed'", (user_id,))
+        r = cursor.fetchone()
+        return int(r[0]) if r else 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not count open outreach targets for user {user_id} | Error: {err}")
+        return 0
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_users_with_approved_outreach() -> list:
     """Distinct user_ids that have at least one approved, non-completed funnel target (dispatcher)."""
     connection = get_db_connection()
