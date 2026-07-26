@@ -35,7 +35,7 @@ from cqc_lem.utilities.db import get_story_bank_entries, record_story_bank_use
 from cqc_lem.utilities.quality_gates import (authenticity_finding, similarity_finding,
                                              focus_finding, missing_asset_finding,
                                              meeting_cta_finding, fact_grounding_finding,
-                                             demoting_findings)
+                                             slop_finding, demoting_findings)
 from cqc_lem.utilities.ai.content_framework import select_blueprint, history_avoidance_directive, \
     find_most_similar, post_similarity_max, has_first_person_proof, shape_for_dwell, dwell_report, \
     dwell_score_min, requires_fact_anchor, fact_grounding_report, fact_retry_directive, \
@@ -47,6 +47,8 @@ from cqc_lem.utilities.ai.content_alignment import (
     humanize_text, ContentMix, assign_content_mix, contains_meeting_ask, meeting_ask_excerpts,
     normalize_content_mix, replace_meeting_ask_cta)
 from cqc_lem.utilities.ai import story_bank as _story_bank
+from cqc_lem.utilities.ai.slop_lint import (lint_report as slop_lint_report,
+                                            slop_retry_directive, violation_reasons)
 from cqc_lem.utilities.content_generation_status import mark_in_progress, mark_finished, \
     record_post_generated, record_post_failed
 from cqc_lem.utilities.notifications import notify_content_generation_ready
@@ -934,7 +936,8 @@ def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, s
                         profile_synthesis: Optional[str] = None,
                         archetype: Optional[str] = None,
                         fact_anchors: Optional[list] = None,
-                        author_edited: bool = False) -> list[dict]:
+                        author_edited: bool = False,
+                        cta_keyword: Optional[str] = None) -> list[dict]:
     """Run the quality gates over a FINISHED post and return their structured findings (issue #421).
 
     One evaluator for both callers: the content-plan status-setter (which knows the freshly persisted
@@ -958,6 +961,15 @@ def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, s
     # create_text_post only covers text posts, and a user can edit a meeting ask back in.
     if content and contains_meeting_ask(content):
         findings.append(meeting_cta_finding(meeting_ask_excerpts(content)))
+
+    # Deterministic AI-slop lint (issue #625 / D1): the regeneration in `_review_generated_post`
+    # gets first crack at these; anything still standing here HOLDS the post, with the exact
+    # constructions named. Warn-severity checks ride along as advisory detail and never demote.
+    if content:
+        slop = slop_lint_report(content, "post", exempt_keyword=cta_keyword)
+        if not slop["passes"]:
+            findings.append(slop_finding(violation_reasons(slop["hard"]),
+                                         violation_reasons(slop["warnings"])))
 
     if content and recent_texts:
         threshold = post_similarity_max(prefs)
@@ -1008,11 +1020,26 @@ def _gate_findings_for_post(user_id: int, post_id: int, content: str,
             engagement_prefs=_engagement_prefs_or_empty(user_id),
             authenticity_score=score,
             archetype=archetype,
-            fact_anchors=_fact_anchors_for(user_id, archetype))
+            fact_anchors=_fact_anchors_for(user_id, archetype),
+            cta_keyword=_cta_keyword_for(user_id, post_id))
     except Exception as e:
         log_warning("Could not evaluate the quality gates for this post", exc=e,
                     user_id=user_id, post_id=post_id, task_name="create_content")
         return []
+
+
+def _cta_keyword_for(user_id: int, post_id: int) -> Optional[str]:
+    """The lead-magnet trigger word this post is allowed to ask for, so the slop lint's bait check
+    exempts a sanctioned "Comment KEYWORD" CTA (the same exemption `strip_engagement_bait` makes at
+    generation time). Never raises — an unreadable setting just means no exemption."""
+    try:
+        lead_magnet = get_lead_magnet_settings(user_id)
+    except Exception as e:
+        myprint(f"Could not read lead-magnet settings for user {user_id}: {e}")
+        return None
+    if not lead_magnet or not should_include_lead_magnet_cta(lead_magnet, post_id):
+        return None
+    return str(lead_magnet.get("keyword") or "").strip() or None
 
 
 def _post_archetype_or_none(post_id: int) -> Optional[str]:
@@ -1089,7 +1116,7 @@ def rescore_post(post_id: int) -> dict:
         # Re-runs the no-fabrication guard against the EDITED text, so filling the placeholders in
         # with real numbers is what clears the hold.
         archetype=archetype, fact_anchors=_fact_anchors_for(user_id, archetype),
-        author_edited=True)
+        author_edited=True, cta_keyword=_cta_keyword_for(user_id, post_id))
     _persist_gate_findings(user_id, post_id, findings)
 
     passed = not demoting_findings(findings)
@@ -1159,7 +1186,8 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
                            profile_synthesis: Optional[str] = None,
                            story: Optional[dict] = None,
                            story_directive: Optional[str] = None,
-                           content_mix: Optional[str] = None) -> str:
+                           content_mix: Optional[str] = None,
+                           cta_keyword: Optional[str] = None) -> str:
     """The post-generation REVIEW GATE (the newsletter's dedup maturity applied to posts): compare
     the finished post against the user's recent posts with the deterministic token-set overlap in
     content_framework, check the A2 personal-proof slot (a concrete first-person lived detail), AND
@@ -1186,8 +1214,13 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
     anchors = _fact_anchors(user_id) if fact_anchored else []
     fact_report = fact_grounding_report(content, anchors) if fact_anchored else None
     unverified = bool(fact_report and fact_report["unverified"])
+    # Deterministic slop lint (issue #625 / D1) — one regeneration here, then the `ai_slop` gate
+    # holds whatever still trips it. Only HARD violations are worth a retry; the warn-severity
+    # signals (burstiness, rule-of-three) are advisory and reported by the gate.
+    slop = slop_lint_report(content, "post", exempt_keyword=cta_keyword)
+    slopped = not slop["passes"]
 
-    if not too_similar and not proof_regen and not fabrication_regen and not unverified:
+    if not too_similar and not proof_regen and not fabrication_regen and not unverified and not slopped:
         if missing_proof:
             log_warning("Generated post lacks a concrete first-person lived detail (A2 proof slot)",
                         user_id=user_id, post_id=post_id, task_name="create_text_post")
@@ -1208,6 +1241,8 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
     if unverified:
         reasons.append("states specifics no verified fact backs ("
                        + ", ".join(fact_report["unverified_values"][:5]) + ")")
+    if slopped:
+        reasons.append("trips the AI-slop lint (" + "; ".join(violation_reasons(slop["hard"])) + ")")
     myprint(f"Post {'; '.join(reasons)} — retrying once with an explicit avoid/proof directive")
 
     retry_directive = history_avoidance_directive(
@@ -1218,6 +1253,8 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
         retry_directive += _story_bank.fabrication_repair_directive(fabricated)
     if unverified:
         retry_directive += fact_retry_directive(fact_report)
+    if slopped:
+        retry_directive += slop_retry_directive(slop["hard"])
     try:
         second = create_text_post(user_id, stage, post_type, user_profile, refine_final_post=True,
                                   blueprint=blueprint, post_id=post_id,
@@ -1249,6 +1286,11 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
     if fact_report is not None and fact_grounding_report(second, anchors)["unverified"]:
         log_warning("Post still states unverified specifics after retry — the fact-grounding gate "
                     "will hold it for review",
+                    user_id=user_id, post_id=post_id, task_name="create_text_post")
+    second_slop = slop_lint_report(second, "post", exempt_keyword=cta_keyword)
+    if not second_slop["passes"]:
+        log_warning("Post still trips the AI-slop lint after retry — the ai_slop gate will hold it "
+                    "for review: " + "; ".join(violation_reasons(second_slop["hard"])),
                     user_id=user_id, post_id=post_id, task_name="create_text_post")
     _check_post_alignment(second, prefs, user_id, post_id, user_profile, profile_synthesis)
     return second
@@ -1500,13 +1542,14 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                                                         story_directive=story_directive,
                                                         content_mix=content_mix)
 
+    # The sanctioned 'comment KEYWORD' ask for THIS post: the refinement passes preserve it, the
+    # bait strip exempts it, and the slop lint's bait check must not read it as engagement bait.
+    _cta_kw = (str(lead_magnet.get("keyword")).strip()
+               if include_cta and lead_magnet else None) or None
+
     if refine_final_post:
         # Both refinement passes get the user's prefs so the LLM rewrites can't re-introduce
-        # emojis/hashtags the user turned off (or flatten a configured tone). CTA-selected posts
-        # also pass the keyword so the passes' own anti-bait rules don't paraphrase the sanctioned
-        # 'comment KEYWORD' ask into 'reach out for...'.
-        _cta_kw = (str(lead_magnet.get("keyword")).strip()
-                   if include_cta and lead_magnet else None)
+        # emojis/hashtags the user turned off (or flatten a configured tone).
         final_content = get_ai_linked_post_refinement(final_content, prefs=prefs,
                                                       preserve_cta_keyword=_cta_kw)
         # Hook + save-worthy pass: strong first line before the '…more' fold; save-worthy framing.
@@ -1545,7 +1588,7 @@ def create_text_post(user_id: int, stage: str, post_type: str = None, user_profi
                                                post_id, lead_magnet_cta, final_content,
                                                recent_texts, prefs, profile_synthesis,
                                                story=story, story_directive=story_directive,
-                                               content_mix=content_mix)
+                                               content_mix=content_mix, cta_keyword=_cta_kw)
 
         # Dwell shaping (issue #391 — C2): deterministic, no-LLM repair of the structural dwell
         # killer every LLM rewrite above can re-introduce — wall-of-text paragraphs. Runs on

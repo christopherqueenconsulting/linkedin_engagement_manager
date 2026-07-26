@@ -26,6 +26,7 @@ from cqc_lem.utilities.ai.content_alignment import (
     humanize_text as _humanize_text,
     humanize_title as _humanize_title,
 )
+from cqc_lem.utilities.ai import slop_lint as _slop
 from cqc_lem.utilities.ai.content_research import research_topic
 from cqc_lem.utilities.ai.tools import search_recent_news, search_with_perplexity
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
@@ -267,6 +268,34 @@ def get_or_create_profile_synthesis(user_id: int, profile: "LinkedInProfile" = N
     return text
 
 
+def lint_repaired(draft: "str | None", content_type: str, redraft, **log_ctx) -> "str | None":
+    """Deterministic slop lint + bounded regeneration for the short-form surfaces (issue #625 / D1).
+
+    `redraft(directive)` produces a fresh draft with the lint's constraints appended to the writer's
+    system prompt; it is called at most `slop_max_attempts() - 1` times. Returns the best draft we
+    got — these surfaces (seed comments, thread replies, DMs) have no review queue to hold a draft
+    in, so a still-slopped one ships with a structured warning rather than nothing at all. The feed
+    comment path and the post gate are the two that actually block; see `generate_ai_response` and
+    `evaluate_post_gates`."""
+    current = draft
+    if not current:
+        return current
+    for _ in range(max(0, _slop.slop_max_attempts() - 1)):
+        report = _slop.lint_report(current, content_type)
+        if report["passes"]:
+            return current
+        nxt = redraft(_slop.slop_retry_directive(report["hard"]))
+        if not nxt:
+            break
+        current = nxt
+    final = _slop.lint_report(current, content_type)
+    if not final["passes"]:
+        log_warning(f"{content_type} still trips the AI-slop lint after "
+                    f"{_slop.slop_max_attempts()} attempt(s); sending anyway: "
+                    + "; ".join(_slop.violation_reasons(final["hard"])), **log_ctx)
+    return current
+
+
 def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=None, post_comment: str = None,
                          prefs: dict = None, profile_synthesis: str = None,
                          blueprint: dict = None, research: dict = None,
@@ -391,10 +420,11 @@ def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=No
                               profile_synthesis=profile_synthesis, prefs=prefs)
 
     if post_comment is not None:
-        return _draft()
+        return lint_repaired(_draft(), "comment", _draft,
+                             user_id=user_id, action_type="comment")
 
-    # The quality contract + similarity gate run on the FINAL text (post-humanization) — what would
-    # actually ship — so nothing downstream can reintroduce a banned opener.
+    # The quality contract + similarity gate + slop lint run on the FINAL text (post-humanization) —
+    # what would actually ship — so nothing downstream can reintroduce a banned opener or a tell.
     fix_directive = ""
     attempts = _framework.comment_gate_max_attempts()
     for attempt in range(1, attempts + 1):
@@ -403,12 +433,16 @@ def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=No
             return None
         report = _framework.comment_contract_report(candidate, str(post_content or ""))
         similar = _framework.comment_similarity_report(candidate, recent_comments)
-        if report["passes"] and not similar["too_similar"]:
+        slop = _slop.lint_report(candidate, "comment")
+        if report["passes"] and not similar["too_similar"] and slop["passes"]:
             return candidate
         failures = list(report["failures"])
         if similar["too_similar"]:
             failures.append(f"near-duplicate of a recent comment ({similar['measure']} similarity "
                             f"{similar['score']:.2f} > max {similar['threshold']:.2f})")
+        # Slop violations join the SAME retry budget as the contract failures: a comment that keeps
+        # tripping either one is skipped rather than posted (issue #625).
+        failures += _slop.violation_reasons(slop["hard"])
         log_debug(f"Comment draft rejected (attempt {attempt}/{attempts}): {'; '.join(failures)}",
                   user_id=user_id, action_type="comment")
         if attempt < attempts:
@@ -690,11 +724,6 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
                               f"{topic_line}{subject_line}{avoid_line}{openers_line}{guidance_line}{src}"
                               f"{research_block}"
                               f"{_focus_directive(prefs)}{_style_directive(prefs, 'newsletter')}"}
-    response = _call_llm(model="lem-complex", messages=[system_prompt, user_prompt],
-                         temperature=round(random.uniform(0.5, 0.7), 2))
-    content = response.choices[0].message.content
-    if not content:
-        return None
     _default_subject = (subject or topic or "").strip()[:500]
     # The edition's shape is persisted alongside it so the planner/regenerator can rotate away from
     # recently used formats, hook styles, AND actual opening lines — not just subjects.
@@ -705,36 +734,67 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
     def _opening_line(text: str) -> str:
         return next((ln.strip() for ln in text.splitlines() if ln.strip()), "")[:500]
 
-    try:
-        data = _json.loads(content)
-        if data.get("title") and data.get("body"):
-            # Titles get the title-specific de-hype pass (issue #439), not the prose rewrite — a
-            # headline must keep its hook while losing the wordbank/clickbait tells.
-            title = normalize_public_text(_humanize_title(
-                str(data["title"]).strip(), content_type="newsletter",
-                profile_synthesis=profile_synthesis, prefs=prefs, max_chars=255))[:255]
-            # Humanization pass (issue #416 — A5): de-slop the edition body before it's persisted/reviewed.
-            body = _clean_newsletter_body(_humanize_text(
-                str(data["body"]).strip(), content_type="newsletter",
-                profile_synthesis=profile_synthesis, prefs=prefs))
-            subtitle = normalize_public_text(str(data.get("subtitle") or "").strip())[:150]
-            if not subtitle:
-                subtitle = (subject or topic or title).strip()[:150]
-            out_subject = str(data.get("subject") or "").strip()[:500] or _default_subject or title[:500]
-            return {"title": title, "subtitle": subtitle, "subject": out_subject, "body": body,
-                    "opening_line": _opening_line(body), **shape}
-    except (ValueError, TypeError, AttributeError):
-        pass
-    parts = content.strip().split("\n", 1)   # fallback: first line = title, remainder = body
-    title = normalize_public_text(_humanize_title(
-        parts[0].strip(), content_type="newsletter",
-        profile_synthesis=profile_synthesis, prefs=prefs, max_chars=255))[:255]
-    body = _clean_newsletter_body(_humanize_text(
-        parts[1].strip() if len(parts) > 1 else content.strip(),
-        content_type="newsletter", profile_synthesis=profile_synthesis, prefs=prefs))
-    return {"title": title, "subtitle": (subject or topic or title).strip()[:150],
-            "subject": _default_subject or title[:500], "body": body,
-            "opening_line": _opening_line(body), **shape}
+    def _edition(fix_directive: str = "") -> "dict | None":
+        response = _call_llm(model="lem-complex",
+                             messages=[{"role": "system",
+                                        "content": system_prompt["content"] + fix_directive},
+                                       user_prompt],
+                             temperature=round(random.uniform(0.5, 0.7), 2))
+        content = response.choices[0].message.content
+        if not content:
+            return None
+        try:
+            data = _json.loads(content)
+            if data.get("title") and data.get("body"):
+                # Titles get the title-specific de-hype pass (issue #439), not the prose rewrite — a
+                # headline must keep its hook while losing the wordbank/clickbait tells.
+                title = normalize_public_text(_humanize_title(
+                    str(data["title"]).strip(), content_type="newsletter",
+                    profile_synthesis=profile_synthesis, prefs=prefs, max_chars=255))[:255]
+                # Humanization pass (issue #416 — A5): de-slop the edition body before it's persisted/reviewed.
+                body = _clean_newsletter_body(_humanize_text(
+                    str(data["body"]).strip(), content_type="newsletter",
+                    profile_synthesis=profile_synthesis, prefs=prefs))
+                subtitle = normalize_public_text(str(data.get("subtitle") or "").strip())[:150]
+                if not subtitle:
+                    subtitle = (subject or topic or title).strip()[:150]
+                out_subject = str(data.get("subject") or "").strip()[:500] or _default_subject or title[:500]
+                return {"title": title, "subtitle": subtitle, "subject": out_subject, "body": body,
+                        "opening_line": _opening_line(body), **shape}
+        except (ValueError, TypeError, AttributeError):
+            pass
+        parts = content.strip().split("\n", 1)   # fallback: first line = title, remainder = body
+        title = normalize_public_text(_humanize_title(
+            parts[0].strip(), content_type="newsletter",
+            profile_synthesis=profile_synthesis, prefs=prefs, max_chars=255))[:255]
+        body = _clean_newsletter_body(_humanize_text(
+            parts[1].strip() if len(parts) > 1 else content.strip(),
+            content_type="newsletter", profile_synthesis=profile_synthesis, prefs=prefs))
+        return {"title": title, "subtitle": (subject or topic or title).strip()[:150],
+                "subject": _default_subject or title[:500], "body": body,
+                "opening_line": _opening_line(body), **shape}
+
+    # Deterministic slop lint over the finished BODY (issue #625 / D1), with the same bounded
+    # regeneration the other surfaces get. The WHOLE edition is regenerated, not just its body —
+    # title, subject, and opening_line are derived from it and would go stale otherwise. An edition
+    # that still trips the lint is returned anyway (a newsletter is drafted for human review before
+    # it publishes) with the patterns named in the log.
+    edition = _edition()
+    if not edition:
+        return None
+    for _ in range(max(0, _slop.slop_max_attempts() - 1)):
+        report = _slop.lint_report(edition["body"], "newsletter")
+        if report["passes"]:
+            return edition
+        retry = _edition(_slop.slop_retry_directive(report["hard"]))
+        if not retry:
+            break
+        edition = retry
+    final = _slop.lint_report(edition["body"], "newsletter")
+    if not final["passes"]:
+        log_warning("Newsletter edition still trips the AI-slop lint; keeping it for review: "
+                    + "; ".join(_slop.violation_reasons(final["hard"])))
+    return edition
 
 
 def generate_group_post(profile: "LinkedInProfile", group_name: str = None, prefs: dict = None,
@@ -751,10 +811,20 @@ def generate_group_post(profile: "LinkedInProfile", group_name: str = None, pref
     }
     user_prompt = {"role": "user",
                    "content": f"Author profile:\n{_voice_reference(profile, profile_synthesis)}\n{_focus_directive(prefs)}{_style_directive(prefs)}"}
-    response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt],
-                         temperature=round(random.uniform(0.5, 0.7), 2))
-    content = response.choices[0].message.content
-    return content.strip() if content is not None else None
+    temperature = round(random.uniform(0.5, 0.7), 2)
+
+    def _draft(fix: str = "") -> "str | None":
+        response = _call_llm(model="lem-medium",
+                             messages=[{"role": "system", "content": system_prompt["content"] + fix},
+                                       user_prompt],
+                             temperature=temperature)
+        content = response.choices[0].message.content
+        return content.strip() if content is not None else None
+
+    # A group post publishes straight from here — it never reaches the content-plan review queue the
+    # `ai_slop` gate holds a draft in, so it gets the same bounded re-draft the other queue-less
+    # surfaces do (issue #625 / D1).
+    return lint_repaired(_draft(), "post", _draft, action_type="post")
 
 
 def generate_seed_comment(post_content, profile: "LinkedInProfile", prefs: dict = None,
@@ -779,14 +849,21 @@ def generate_seed_comment(post_content, profile: "LinkedInProfile", prefs: dict 
         "content": f"My LinkedIn profile:\n{_voice_reference(profile, profile_synthesis)}\n\n"
                    f"My post:\n<content>{post_content}</content>\n{_intention_directive(prefs)}{_style_directive(prefs)}",
     }
-    response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt],
-                         temperature=round(random.uniform(0.5, 0.7), 2))
-    content = response.choices[0].message.content
-    if content is None:
-        return None
-    # Humanization pass (issue #416 — A5): de-slop the seed comment before it's posted.
-    return _humanize_text(content.strip(), content_type="comment",
-                          profile_synthesis=profile_synthesis, prefs=prefs)
+    temperature = round(random.uniform(0.5, 0.7), 2)
+
+    def _draft(fix: str = "") -> "str | None":
+        response = _call_llm(model="lem-medium",
+                             messages=[{"role": "system", "content": system_prompt["content"] + fix},
+                                       user_prompt],
+                             temperature=temperature)
+        content = response.choices[0].message.content
+        if content is None:
+            return None
+        # Humanization pass (issue #416 — A5): de-slop the seed comment before it's posted.
+        return _humanize_text(content.strip(), content_type="comment",
+                              profile_synthesis=profile_synthesis, prefs=prefs)
+
+    return lint_repaired(_draft(), "comment", _draft, action_type="comment")
 
 
 def generate_thread_reply(post_content: str, comment_text: str, profile: "LinkedInProfile",
@@ -805,14 +882,21 @@ def generate_thread_reply(post_content: str, comment_text: str, profile: "Linked
     user_prompt = {"role": "user", "content":
         f"Author profile:\n{_voice_reference(profile, profile_synthesis)}\n\nMy post:\n{post_content}\n\n"
         f"Their comment:\n{comment_text}\n{_intention_directive(prefs)}{_style_directive(prefs)}"}
-    response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt],
-                         temperature=round(random.uniform(0.5, 0.7), 2))
-    content = response.choices[0].message.content
-    if content is None:
-        return None
-    # Humanization pass (issue #416 — A5): de-slop the reply before it's posted.
-    return _humanize_text(content.strip(), content_type="comment",
-                          profile_synthesis=profile_synthesis, prefs=prefs)
+    temperature = round(random.uniform(0.5, 0.7), 2)
+
+    def _draft(fix: str = "") -> "str | None":
+        response = _call_llm(model="lem-medium",
+                             messages=[{"role": "system", "content": system_prompt["content"] + fix},
+                                       user_prompt],
+                             temperature=temperature)
+        content = response.choices[0].message.content
+        if content is None:
+            return None
+        # Humanization pass (issue #416 — A5): de-slop the reply before it's posted.
+        return _humanize_text(content.strip(), content_type="comment",
+                              profile_synthesis=profile_synthesis, prefs=prefs)
+
+    return lint_repaired(_draft(), "comment", _draft, action_type="comment")
 
 
 def generate_comment_reply_followup(their_reply: str, profile: "LinkedInProfile",
@@ -838,13 +922,20 @@ def generate_comment_reply_followup(their_reply: str, profile: "LinkedInProfile"
     user_prompt = {"role": "user", "content":
         f"My voice:\n{_voice_reference(profile, profile_synthesis)}\n\n{ctx}"
         f"Their reply to me:\n{their_reply}\n{_intention_directive(prefs)}{_style_directive(prefs)}"}
-    response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt],
-                         temperature=round(random.uniform(0.5, 0.7), 2))
-    content = response.choices[0].message.content
-    if content is None:
-        return None
-    return _humanize_text(content.strip(), content_type="comment",
-                          profile_synthesis=profile_synthesis, prefs=prefs)
+    temperature = round(random.uniform(0.5, 0.7), 2)
+
+    def _draft(fix: str = "") -> "str | None":
+        response = _call_llm(model="lem-medium",
+                             messages=[{"role": "system", "content": system_prompt["content"] + fix},
+                                       user_prompt],
+                             temperature=temperature)
+        content = response.choices[0].message.content
+        if content is None:
+            return None
+        return _humanize_text(content.strip(), content_type="comment",
+                              profile_synthesis=profile_synthesis, prefs=prefs)
+
+    return lint_repaired(_draft(), "comment", _draft, action_type="comment")
 
 
 def generate_lead_response(their_message: str, profile: "LinkedInProfile", channel: str = "reply",
@@ -874,13 +965,21 @@ def generate_lead_response(their_message: str, profile: "LinkedInProfile", chann
     user_prompt = {"role": "user", "content":
         f"My voice:\n{_voice_reference(profile, profile_synthesis)}\n\n{ctx}"
         f"What they said:\n{their_message}\n{_style_directive(prefs)}"}
-    response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt],
-                         temperature=round(random.uniform(0.4, 0.6), 2))
-    content = response.choices[0].message.content
-    if content is None:
-        return None
-    return _humanize_text(content.strip(), content_type="dm" if is_dm else "comment",
-                          profile_synthesis=profile_synthesis, prefs=prefs, max_chars=limit)
+    temperature = round(random.uniform(0.4, 0.6), 2)
+    surface = "dm" if is_dm else "comment"
+
+    def _draft(fix: str = "") -> "str | None":
+        response = _call_llm(model="lem-medium",
+                             messages=[{"role": "system", "content": system_prompt["content"] + fix},
+                                       user_prompt],
+                             temperature=temperature)
+        content = response.choices[0].message.content
+        if content is None:
+            return None
+        return _humanize_text(content.strip(), content_type=surface,
+                              profile_synthesis=profile_synthesis, prefs=prefs, max_chars=limit)
+
+    return lint_repaired(_draft(), surface, _draft, action_type="dm" if is_dm else "comment")
 
 
 def generate_nurture_dm(their_message: str, intent: str, profile: "LinkedInProfile",
@@ -921,13 +1020,20 @@ def generate_nurture_dm(their_message: str, intent: str, profile: "LinkedInProfi
     user_prompt = {"role": "user", "content":
         f"My voice:\n{_voice_reference(profile, profile_synthesis)}\n\n{ctx}"
         f"Their reply to me:\n{their_message}\n{_style_directive(prefs)}"}
-    response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt],
-                         temperature=round(random.uniform(0.4, 0.6), 2))
-    content = response.choices[0].message.content
-    if content is None:
-        return None
-    return _humanize_text(content.strip(), content_type="dm",
-                          profile_synthesis=profile_synthesis, prefs=prefs, max_chars=300)
+    temperature = round(random.uniform(0.4, 0.6), 2)
+
+    def _draft(fix: str = "") -> "str | None":
+        response = _call_llm(model="lem-medium",
+                             messages=[{"role": "system", "content": system_prompt["content"] + fix},
+                                       user_prompt],
+                             temperature=temperature)
+        content = response.choices[0].message.content
+        if content is None:
+            return None
+        return _humanize_text(content.strip(), content_type="dm",
+                              profile_synthesis=profile_synthesis, prefs=prefs, max_chars=300)
+
+    return lint_repaired(_draft(), "dm", _draft, action_type="dm")
 
 
 def optimize_post_hook(post_content: str, prefs: dict = None,
@@ -1266,7 +1372,10 @@ Return ONLY the revised post text — no preamble, no explanation.
     return revised or post_content
 
 
-def get_ai_message_refinement(original_message: str, character_limit: int = 300):
+def get_ai_message_refinement(original_message: str, character_limit: int = 300,
+                              extra_directive: str = ""):
+    """`extra_directive` is appended to the editor's system prompt — the DM path uses it to feed the
+    slop lint's violations back in on a re-refine (issue #625)."""
     character_limit_string = f"\nThe refined message needs to be less than or equal to {character_limit} characters including white spaces and punctuations. You may use symbols, abbreviations, and other and short-hand\n\n " if character_limit > 0 else ""
 
     prompt = f"""Please review and refine the following message. {character_limit_string} Message: {original_message}
@@ -1299,7 +1408,7 @@ def get_ai_message_refinement(original_message: str, character_limit: int = 300)
             ---
             
             Take a deep breath and work on this problem step-by-step.
-            """
+            """ + (extra_directive or "")
     }
 
     # User prompt to be sent with each API call
