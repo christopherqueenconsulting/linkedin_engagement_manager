@@ -259,7 +259,18 @@ def plan_content_for_user(self, user_id: int):
     # shape is steered in the text-post prompt) and the rest stay audience-value/authority content.
     mix_classes = assign_content_mix(target_posts, offset=existing_post_count)
 
+    # The 24h floor also has to hold ACROSS planning runs. `slots` only knows about this run, so a
+    # plan that starts the day after the previous plan's last post — a 7/week calendar rolling into
+    # a new month, or a user raising their cadence mid-month — would otherwise stack two posts
+    # inside one 24h window. Seed the floor with the user's last already-scheduled post while it is
+    # still ahead of us; get_last_planned_post_date_for_user returns the stored naive-UTC instant,
+    # which is exactly the clock the floor is measured on.
     previous_utc = None
+    try:
+        if last_planned_date is not None and last_planned_date > datetime.now():
+            previous_utc = last_planned_date
+    except TypeError:  # a date (not a datetime) row — fall back to spacing within this run only
+        previous_utc = None
     for day, post_date in enumerate(slots):
         content_mix = mix_classes[day]
 

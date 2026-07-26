@@ -14,16 +14,19 @@ pytestmark = pytest.mark.unit
 _RCP = "cqc_lem.app.run_content_plan"
 
 
-def _plan(posts_per_week=3, tz="UTC", window_days=27, post_hour=16):
+def _plan(posts_per_week=3, tz="UTC", window_days=27, post_hour=16, last_planned=None):
     """Run plan_content_for_user with everything external mocked, and return the saved plan.
 
     Both ends of the planning window are pinned — the start via
     `get_last_planned_post_date_for_user` and the end via `_plan_window_end` — so a run that
-    happens to land near a month boundary still sees a full window's worth of slots.
+    happens to land near a month boundary still sees a full window's worth of slots. The default
+    `last_planned` sits at midnight so it never itself trips the cross-run 24h floor, whatever
+    time of day the suite happens to run at; pass one to exercise that floor.
     """
     from cqc_lem.app.run_content_plan import plan_content_for_user
 
-    last_planned = dt.datetime.now() + dt.timedelta(days=1)
+    last_planned = last_planned or (dt.datetime.now() + dt.timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0)
     window_end = last_planned + dt.timedelta(days=window_days)
     saved = {}
 
@@ -128,6 +131,35 @@ class TestOnePostPer24Hours:
         times = sorted(p["scheduled_datetime"] for p in plan)
         for earlier, later in zip(times, times[1:]):
             assert later - earlier >= dt.timedelta(hours=24)
+
+    def test_floor_holds_across_planning_runs(self):
+        """A new plan must clear the PREVIOUS plan's last post, not just its own first slot.
+
+        The planner starts the day after the last already-scheduled post, so a 7/week calendar
+        rolling into a new month (or a mid-month cadence raise) would otherwise put tomorrow 19:30
+        and the next day 16:00 — 20h apart — into the same 24h window.
+        """
+        last_planned = (dt.datetime.now() + dt.timedelta(days=1)).replace(
+            hour=19, minute=30, second=0, microsecond=0)
+        plan = _plan(posts_per_week=7, post_hour=16, last_planned=last_planned)
+        assert plan
+        first = min(p["scheduled_datetime"] for p in plan)
+        assert first - last_planned >= dt.timedelta(hours=24)
+
+    def test_a_stale_last_post_does_not_push_the_plan(self):
+        """Only a post still AHEAD of us seeds the floor — an old one must not shift the plan."""
+        stale = dt.datetime.now() - dt.timedelta(days=400)
+        with patch(f"{_RCP}.get_user_timezone", return_value="UTC"), \
+             patch(f"{_RCP}.get_post_time", return_value=dt.time(16, 0)), \
+             patch(f"{_RCP}.get_last_planned_post_date_for_user", return_value=stale), \
+             patch(f"{_RCP}.get_post_type_counts", return_value={"text": 1}), \
+             patch(f"{_RCP}.get_engagement_preferences", return_value={"posts_per_week": 7}), \
+             patch(f"{_RCP}.save_content_plan") as save:
+            from cqc_lem.app.run_content_plan import plan_content_for_user
+            plan_content_for_user.run(user_id=1)
+        plan = save.call_args[0][1] if save.call_args else []
+        assert plan
+        assert plan[0]["scheduled_datetime"].hour in (15, 16)
 
     def test_holds_even_when_the_peak_hour_drops_across_days(self):
         """Thu 17:00 → Fri 11:00 is only 18h; the floor must push the later slot out."""
