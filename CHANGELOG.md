@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.95.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.95.0...v0.95.1) (2026-07-26)
+
+
+### Performance Improvements
+
+* **db:** MySQL connection pooling in get_db_connection (closes [#555](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/555)) ([1a77eb2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1a77eb2617fe269fc490f3d0bd64c1044c7f0b5c))
+* **db:** pool MySQL connections per process in get_db_connection (closes [#555](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/555)) ([569676a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/569676a1d20fe9d7fc02b8cb30394eb2991abf59))
+
 ## [0.95.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.94.0...v0.95.0) (2026-07-26)
 
 
