@@ -114,11 +114,21 @@ class TestContrastiveFrame:
     def test_the_named_frame_fires(self, text):
         assert _fired(text, sl.CHECK_CONTRASTIVE)
 
+    def test_the_frame_fires_without_the_contraction(self):
+        assert _fired("It is not just a tool, it is a philosophy we live by.", sl.CHECK_CONTRASTIVE)
+
     @pytest.mark.parametrize("text", [
         _CLEAN,
         "We did not ship on Friday. The rule held.",
         "It's a staffing problem and we treated it as one.",
         "That is not the number I expected from the migration.",
+        # A negation followed by a clause that is NOT the frame — no copula after the pronoun.
+        "I did not just read the docs, we ran the migration twice.",
+        "We are not only hiring engineers, we opened three roles in support.",
+        "The rule is not about blame; we log every incident anyway.",
+        # The possessive "its" is not the contraction "it's".
+        "The bottleneck isn't the database, its connection pool was capped at 5.",
+        "This was not just about speed, its impact on trust mattered more.",
     ])
     def test_ordinary_negation_is_left_alone(self, text):
         assert not _fired(text, sl.CHECK_CONTRASTIVE)
@@ -129,6 +139,8 @@ class TestTadaTransitions:
         "We cut build time by 40%. Here's the kicker: nobody noticed.",
         "We rewrote the importer. Plot twist, it got slower.",
         "We halved the bill. The result? Nobody asked for it back.",
+        "We shipped it. The bottom line? Customers stopped churning.",
+        "The kicker?\nWe never shipped.",
         "Let that sink in for a second.",
     ])
     def test_manufactured_beats_fire(self, text):
@@ -138,6 +150,11 @@ class TestTadaTransitions:
         _CLEAN,
         "The result was a 40% drop in build time, measured over two weeks.",
         "Here is the migration plan we actually used.",
+        # A real interrogative that happens to end on the same noun is a question a human asks —
+        # only the standalone two-word beat is the tell.
+        "We cut p99 from 800ms to 120ms. So what's the takeaway? Measure before you rewrite.",
+        "I ran the migration on a Friday. What was the result? Six hours of on-call.",
+        "I asked the team what the outcome would be. Nobody knew.",
     ])
     def test_ordinary_prose_is_left_alone(self, text):
         assert not _fired(text, sl.CHECK_TADA)
@@ -584,3 +601,31 @@ class TestDmWiring:
             out = rau.build_dm_from_template(1, "connection", "Ana", _profile())
         # Dropping it would silently break the outreach sequence.
         assert out == slopped
+
+
+class TestGroupPostWiring:
+    """A group post publishes straight from the generator — it never reaches the `ai_slop` gate's
+    review queue, so it gets the queue-less surfaces' bounded re-draft instead."""
+
+    def test_a_slopped_group_post_is_regenerated(self):
+        from cqc_lem.utilities.ai import ai_helper
+        slopped = "It's not just tooling, it's a mindset. Thoughts?"
+        with patch(f"{_AI}._call_llm", side_effect=[_resp(slopped), _resp(_CLEAN)]) as m:
+            out = ai_helper.generate_group_post(_profile(), group_name="Ops Leaders")
+        assert out == _CLEAN and m.call_count == 2
+        assert "AI-SLOP LINT" in m.call_args_list[1].kwargs["messages"][0]["content"]
+
+    def test_a_clean_group_post_costs_one_call(self):
+        from cqc_lem.utilities.ai import ai_helper
+        with patch(f"{_AI}._call_llm", return_value=_resp(_CLEAN)) as m:
+            assert ai_helper.generate_group_post(_profile()) == _CLEAN
+        assert m.call_count == 1
+
+    def test_a_still_slopped_group_post_ships_with_a_warning(self):
+        from cqc_lem.utilities.ai import ai_helper
+        slopped = "It's not just tooling, it's a mindset. Thoughts?"
+        with patch(f"{_AI}._call_llm", return_value=_resp(slopped)), \
+             patch(f"{_AI}.log_warning") as warn:
+            out = ai_helper.generate_group_post(_profile())
+        assert out == slopped
+        assert "AI-slop lint" in warn.call_args.args[0]

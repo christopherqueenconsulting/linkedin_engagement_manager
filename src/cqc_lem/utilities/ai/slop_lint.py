@@ -1,5 +1,5 @@
 """Deterministic AI-slop linter (issue #625 / D1) — ONE cheap, explainable lint layer that runs on
-EVERY surface LEM publishes: posts, comments, DMs, and newsletter editions.
+EVERY surface LEM publishes: posts, comments, DMs, newsletter editions, and group posts.
 
 WHY THIS EXISTS (the #416 policy, restated so nobody re-reads it as something else): this linter is
 here to make the writing genuinely BETTER. LinkedIn's May 2026 update names the patterns below as
@@ -101,18 +101,28 @@ TADA_TRANSITIONS: tuple = (
     "let that sink in", "and that changed everything", "the crazy part",
 )
 
-# The same beat as a one-word rhetorical fragment ("The result? ...").
+# The same beat as a one-word rhetorical fragment ("The result? ..."). Matched against a WHOLE
+# sentence, never mid-sentence: the tell is the manufactured two-word beat standing on its own, and
+# an ordinary interrogative that happens to end on the same noun ("So what's the takeaway?",
+# "What was the result?") is a real question a human asks.
 _TADA_FRAGMENT_RE = re.compile(
-    r"\b(?:the\s+)?(?:result|kicker|catch|twist|payoff|punchline|takeaway|outcome|best\s+part|"
-    r"bottom\s+line)\s*\?", re.IGNORECASE)
+    r"^[\s\-–—•*\"'“”]*(?:(?:and|but|so)\s+)?(?:the\s+)?"
+    r"(?:result|kicker|catch|twist|payoff|punchline|takeaway|outcome|best\s+part|"
+    r"bottom\s+line)\s*\?[\s\"'”]*$", re.IGNORECASE)
 
 # The contrastive-negation frame LinkedIn's May 2026 crackdown names by hand. Three shapes:
 # "not just X, it's Y", "X isn't Y. It's Z.", and "not only X but also Y".
+#
+# Both pronoun shapes require an explicit copula — the apostrophe-s contraction or is/are/was/were.
+# Without it the pattern swallows ordinary prose: "I did not just read the docs, we ran the
+# migration twice" is not the frame, and the possessive "its" ("the issue wasn't the API, its rate
+# limiter fired at 100 rps") is not "it's".
 _CONTRASTIVE_RES: tuple = (
     re.compile(r"\bnot\s+(?:just|only|merely|simply|about)\s+[^.!?\n;]{2,70}[,;:]\s*"
-               r"(?:it|this|that|they|we)\s*(?:'|’)?s?\s+(?:is\s+)?\w", re.IGNORECASE),
+               r"(?:it|this|that|they|we)(?:\s*(?:'|’)s|\s+(?:is|are|was|were))\s+\w",
+               re.IGNORECASE),
     re.compile(r"\b(?:is|are|was|were)\s?n(?:'|’)?t\s+(?:just\s+|only\s+|about\s+)?"
-               r"[^.!?\n;]{2,70}[.,;:]\s*(?:it|this|that|they|we)\s*(?:'|’)?s\b", re.IGNORECASE),
+               r"[^.!?\n;]{2,70}[.,;:]\s*(?:it|this|that|they|we)\s*(?:'|’)s\b", re.IGNORECASE),
     re.compile(r"\bnot\s+only\b[^.!?\n]{2,80}\bbut\s+also\b", re.IGNORECASE),
 )
 
@@ -295,7 +305,7 @@ def _check_contrastive(text: str, sents: list, ctx: dict) -> Optional[dict]:
 def _check_tada(text: str, sents: list, ctx: dict) -> Optional[dict]:
     plain = _plain(text)
     hits = [p for p in TADA_TRANSITIONS if p in plain]
-    hits += [_excerpt(m.group(0)) for m in _TADA_FRAGMENT_RE.finditer(text or "")]
+    hits += [_excerpt(s, 60) for s in sents if _TADA_FRAGMENT_RE.match(s)]
     if not hits:
         return None
     return {"detail": ("uses manufactured \"ta-da\" transitions that promise a payoff: "

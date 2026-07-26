@@ -811,10 +811,20 @@ def generate_group_post(profile: "LinkedInProfile", group_name: str = None, pref
     }
     user_prompt = {"role": "user",
                    "content": f"Author profile:\n{_voice_reference(profile, profile_synthesis)}\n{_focus_directive(prefs)}{_style_directive(prefs)}"}
-    response = _call_llm(model="lem-medium", messages=[system_prompt, user_prompt],
-                         temperature=round(random.uniform(0.5, 0.7), 2))
-    content = response.choices[0].message.content
-    return content.strip() if content is not None else None
+    temperature = round(random.uniform(0.5, 0.7), 2)
+
+    def _draft(fix: str = "") -> "str | None":
+        response = _call_llm(model="lem-medium",
+                             messages=[{"role": "system", "content": system_prompt["content"] + fix},
+                                       user_prompt],
+                             temperature=temperature)
+        content = response.choices[0].message.content
+        return content.strip() if content is not None else None
+
+    # A group post publishes straight from here — it never reaches the content-plan review queue the
+    # `ai_slop` gate holds a draft in, so it gets the same bounded re-draft the other queue-less
+    # surfaces do (issue #625 / D1).
+    return lint_repaired(_draft(), "post", _draft, action_type="post")
 
 
 def generate_seed_comment(post_content, profile: "LinkedInProfile", prefs: dict = None,
@@ -1366,7 +1376,7 @@ def get_ai_message_refinement(original_message: str, character_limit: int = 300,
                               extra_directive: str = ""):
     """`extra_directive` is appended to the editor's system prompt — the DM path uses it to feed the
     slop lint's violations back in on a re-refine (issue #625)."""
-    character_limit_string =f"\nThe refined message needs to be less than or equal to {character_limit} characters including white spaces and punctuations. You may use symbols, abbreviations, and other and short-hand\n\n " if character_limit > 0 else ""
+    character_limit_string = f"\nThe refined message needs to be less than or equal to {character_limit} characters including white spaces and punctuations. You may use symbols, abbreviations, and other and short-hand\n\n " if character_limit > 0 else ""
 
     prompt = f"""Please review and refine the following message. {character_limit_string} Message: {original_message}
             """
