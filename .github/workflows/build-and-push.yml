@@ -77,6 +77,9 @@ jobs:
     env:
       CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
       CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+      POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
+      POSTHOG_PROJECT_ID: ${{ vars.POSTHOG_PROJECT_ID }}
+      POSTHOG_APP_HOST: ${{ vars.POSTHOG_APP_HOST }}
     steps:
       # SSH to the VPS can intermittently time out ("dial tcp :22 i/o timeout") — the block is
       # upstream of the box (Hostinger network / anti-abuse); on-box sshd + ufw are fine. Ride it
@@ -214,3 +217,19 @@ jobs:
           echo "$resp" | grep -q '"success":true' \
             && echo "Cloudflare cache purged" \
             || { echo "Cloudflare purge failed"; exit 1; }
+
+      # Marks every PostHog insight graph with "vX.Y.Z deployed" at the tagged version this job
+      # just shipped — issue #654. continue-on-error because deploy.sh's own health check already
+      # passed by this point; a PostHog hiccup here must not fail an otherwise-successful release.
+      # The script itself degrades gracefully (exits 0) when POSTHOG_PERSONAL_API_KEY isn't set.
+      - name: Checkout (for the annotation script)
+        continue-on-error: true
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.build-and-push.outputs.tag }}
+
+      - name: Post release annotation to PostHog
+        continue-on-error: true
+        run: |
+          pip install --quiet requests
+          python scripts/posthog_annotate.py --tag "${{ needs.build-and-push.outputs.tag }}"

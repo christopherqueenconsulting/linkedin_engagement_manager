@@ -2780,6 +2780,21 @@ def get_engagement_analytics_endpoint(session_token: str, days: int = 90) -> Res
     })
 
 
+@router.get("/user/posthog-stats")
+def get_posthog_stats_endpoint(session_token: str) -> ResponseModel:
+    """The in-SPA 'your stats' panel (issue #654), backed by PostHog HogQL Endpoints
+    (scripts/posthog_provision.py) instead of a bespoke MySQL reporting layer. A thin server-side
+    proxy: the personal API key lives here and never reaches the browser, and every read is scoped
+    to THIS user's own distinct_id — PostHog is one project shared by every LEM account. Degrades
+    per-panel (`available: false`) rather than failing the whole response when a key is unset, an
+    endpoint isn't provisioned yet, or PostHog is unreachable."""
+    from cqc_lem.utilities.posthog_endpoints import get_user_stats_panel
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return ResponseModel(status_code=200, detail=get_user_stats_panel(user_id))
+
+
 def _suppression_status(user_id: int) -> dict:
     """Current suppression-tripwire picture for one user (issue #629): the standing trip (if any)
     plus a FRESH evaluation of the same signals. Both are returned on purpose — the trip is what

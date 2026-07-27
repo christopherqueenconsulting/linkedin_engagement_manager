@@ -6,6 +6,7 @@ import { useUserTimezone } from '../hooks/useUserTimezone'
 import { formatInTimezone } from '../utils/datetime'
 import { isHttpUrl, commentsActivityUrl } from '../utils/links'
 import OnboardingChecklist from '../components/OnboardingChecklist'
+import PostHogStatsPanel from '../components/PostHogStatsPanel'
 import LineChart, { type LinePoint } from '../components/charts/LineChart'
 import Leaderboard, { type RankEntry } from '../components/charts/Leaderboard'
 import { compactNumber, formatRate } from '../components/charts/palette'
@@ -424,6 +425,9 @@ export default function Dashboard() {
         <StatCard label="Pending review" value={stats.pending_review} color="border-yellow-500" />
         <StatCard label="Total posted" value={stats.posted_total} color="border-green-500" />
       </div>
+
+      {/* Live stats (PostHog Endpoints, #654) — renders nothing until provisioned/configured */}
+      <PostHogStatsPanel />
 
       {/* Audience growth — follower/profile-view telemetry next to the activity that drove it (#627) */}
       {sessionToken && (

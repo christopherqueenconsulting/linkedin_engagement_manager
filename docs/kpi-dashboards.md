@@ -128,3 +128,35 @@ comments-floor alert to fire on its first evaluation.
 `$ai_generation` (the proxy's own `response_cost`) — never `llm_call`, and never both summed. See
 `docs/llm-analytics.md` for the split: `llm_call` is LEM's estimate keyed by the tier alias asked
 for, `$ai_generation` is what actually served it. A unit test asserts no tile here reads `llm_call`.
+
+## Endpoints — the in-SPA "your stats" panel (issue #654)
+
+The same `--apply` also provisions three PostHog **Endpoints** (beta) — HogQL queries published as
+versioned, cached HTTP routes — behind the Dashboard's own "Live stats" card: weekly posts +
+engagement, weekly comment activity, and 30-day LLM cost by feature (reading `llm_call`, same
+money-question rule as everywhere else here). Endpoints were the fast path to that panel instead of
+a bespoke MySQL reporting layer — PostHog already caches and versions the query.
+
+Every query is scoped with `distinct_id = {variables.distinct_id}` and NOTHING is un-scoped:
+PostHog is one project shared by every LEM account, so a project-wide read would leak one
+customer's numbers into another's Dashboard. The placeholder resolves against a single provisioned
+`InsightVariable` (`distinct_id`); an endpoint is reported `blocked_endpoint`, not creatable, until
+that variable exists — the same shape `plan_alerts` already uses for a missing insight, so a dry
+run never claims it can create something an apply pass actually can't yet.
+
+`src/cqc_lem/utilities/posthog_endpoints.py` is the runtime half: `GET /user/posthog-stats` calls
+each endpoint's `/run` with the CALLER's own `str(user_id)` bound to `distinct_id`, server-side
+only — the personal API key never reaches the browser. Every failure mode (no key, endpoint not
+yet provisioned, PostHog unreachable) degrades to `available: false` for that one panel rather than
+breaking the response or the page; `PostHogStatsPanel.tsx` renders nothing at all once loaded if
+every panel came back unavailable.
+
+## Release annotations (issue #654)
+
+`scripts/posthog_annotate.py`, called from `build-and-push.yml`'s deploy job right after
+`deploy.sh`'s own health check passes, posts one project-scoped annotation — `"vX.Y.Z deployed"` —
+so every insight graph shows exactly when a release shipped. It needs its own GH Actions secret,
+`POSTHOG_PERSONAL_API_KEY` (scope: `annotation` read+write) — distinct from the env var of the same
+name used locally by the provisioning scripts. Absent, the script prints why and exits 0; the step
+also runs with `continue-on-error: true`, so a PostHog outage can never fail a release that already
+shipped.
