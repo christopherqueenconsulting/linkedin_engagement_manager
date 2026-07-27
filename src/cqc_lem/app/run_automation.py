@@ -89,7 +89,7 @@ from cqc_lem.utilities.selenium_util import click_element_wait_retry, \
     wait_for_ajax, find_first, click_first, find_all_first
 from dotenv import load_dotenv
 from selenium.common import NoSuchElementException, JavascriptException, StaleElementReferenceException, \
-    ElementNotInteractableException, WebDriverException
+    ElementNotInteractableException, WebDriverException, TimeoutException
 from selenium.webdriver import ActionChains, Keys
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
@@ -4395,31 +4395,46 @@ def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: in
 
         viewed_on_xpath = './/div[contains(@class,"artdeco-entity-lockup__caption ember-view")]'
 
+        viewer_elements: list[WebElement] = []
+
         while True:  # Keep looping until we find a viewed on date out of range
             # Get Each Viewer within the last day (or time of dm run via database log)
-            viewer_elements = get_elements_as_list_wait_stale(wait,
-                                                              '//ul[@aria-label="List of Entities"]//a[contains(@href,"linkedin.com/in") and not(contains(@aria-label,"Update"))]',
-                                                              "Finding Profile Viewers")
+            try:
+                viewer_elements = get_elements_as_list_wait_stale(wait,
+                                                                  '//ul[@aria-label="List of Entities"]//a[contains(@href,"linkedin.com/in") and not(contains(@aria-label,"Update"))]',
+                                                                  "Finding Profile Viewers")
+            except (TimeoutException, StaleElementReferenceException) as e:
+                # An empty analytics page never resolves the wait — find_elements returns [] and the
+                # helper polls to a timeout. Nobody viewed the profile (or the list didn't render) is
+                # nothing to do, not a task failure, so it must not page the error cron.
+                log_warning("No profile viewers found to engage with",
+                            exc=e, user_id=user_id, task_name="automate_profile_viewer_engagement")
+                break
 
             # myprint(f"Viewers count: {len(viewer_elements)}")
 
             if len(viewer_elements) > 0:
-                # myprint("Here 1")
-                # Get the last viewer
-                last_viewer = viewer_elements[-1]
-                # myprint("Here 2")
-                # Extract the viewer's name
-                name_element = last_viewer.find_element(By.XPATH,
-                                                        './/div[contains(@class,"artdeco-entity-lockup__title")]/span/span[1]')
-                # myprint("Here 3")
-                if name_element:
-                    last_viewer_name = getText(name_element)
-                    # myprint(f"Last Viewer Name: {last_viewer_name}")
-                else:
-                    last_viewer_name = random.choice(["John", "Jane"]) + " Doe"
-                    myprint("Could not find name of last viewer")
+                # The list re-renders under us as we scroll it, so an unreadable last row means we
+                # can't tell whether to keep walking — stop with what we have rather than failing.
+                try:
+                    # Get the last viewer
+                    last_viewer = viewer_elements[-1]
+                    # Extract the viewer's name
+                    name_element = last_viewer.find_element(By.XPATH,
+                                                            './/div[contains(@class,"artdeco-entity-lockup__title")]/span/span[1]')
+                    if name_element:
+                        last_viewer_name = getText(name_element)
+                        # myprint(f"Last Viewer Name: {last_viewer_name}")
+                    else:
+                        last_viewer_name = random.choice(["John", "Jane"]) + " Doe"
+                        myprint("Could not find name of last viewer")
 
-                last_viewed_on_element = last_viewer.find_element(By.XPATH, viewed_on_xpath)
+                    last_viewed_on_element = last_viewer.find_element(By.XPATH, viewed_on_xpath)
+                except (StaleElementReferenceException, NoSuchElementException) as e:
+                    log_warning("Could not read the last profile viewer row — stopping the walk",
+                                exc=e, user_id=user_id, task_name="automate_profile_viewer_engagement")
+                    break
+
                 if last_viewed_on_element:
                     last_viewed_on = getText(last_viewed_on_element).strip()
                     # myprint(f"Last Viewed on: {last_viewed_on}")
@@ -4458,14 +4473,21 @@ def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: in
         current_tab = driver.current_window_handle
         handles = driver.window_handles
 
-        # Get all the viewer names and urls into list so that elements don't go stale
-        viewer_names = [
-            getText(e.find_element(By.XPATH, './/div[contains(@class,"artdeco-entity-lockup__title")]/span/span[1]'))
-            for e
-            in viewer_elements]
-        viewer_urls = [e.get_attribute('href') for e in viewer_elements]
-        # Merge them into a dictionary to iterate over
-        viewer_data = dict(zip(viewer_names, viewer_urls))
+        # Get all the viewer names and urls into a dict so that elements don't go stale. One
+        # unreadable row must not lose the whole batch — the list re-renders while we scroll it.
+        viewer_data: dict[str, str] = {}
+        for e in viewer_elements:
+            try:
+                viewer_name = getText(
+                    e.find_element(By.XPATH,
+                                   './/div[contains(@class,"artdeco-entity-lockup__title")]/span/span[1]'))
+                viewer_url = e.get_attribute('href')
+            except (StaleElementReferenceException, NoSuchElementException) as ex:
+                log_warning("Skipping unreadable profile viewer row", exc=ex, user_id=user_id,
+                            task_name="automate_profile_viewer_engagement")
+                continue
+            if viewer_url:
+                viewer_data[viewer_name] = viewer_url
 
         # Get the viewed data from each element and filter by a day ago or specific date
         for viewer_name, viewer_url in viewer_data.items():
