@@ -49,8 +49,9 @@ changes, auth/security surface, anything needing a live LinkedIn session, or spe
 - **`review:copilot`** — add to any PR (or rely on `risk:*`, which implies it) to also get a GitHub
   Copilot review. Copilot credits are metered ($) — the runner requests it once, after CI is green.
   Never request Copilot review by hand on routine PRs.
-- `agent:model:sonnet` / `agent:model:haiku` / `agent:model:opus` — owner's cost dial: forces the
-  model for all agent runs on that issue. No label = default (best) model. Agents never touch these.
+- `agent:model:sonnet` / `agent:model:haiku` / `agent:model:opus` — owner's cost dial, read off the
+  **issue** (not the PR): forces the model for that issue's build, CI-fix and review runs. No label
+  = default (best) model. Agents never touch these.
 
 ### Topical labels
 `bug`, `feature`, `ui`, `infrastructure`, `analytics`, `observability`, `authenticity`, `outbound`,
@@ -82,7 +83,11 @@ Conventions agents follow (so don't fight them in the issue): migrations are tim
 
 When an agent parks work, it posts a comment titled **“🧑‍⚖️ Human decision needed — reply with
 option letters”** with numbered questions and lettered options. The runner watches **both** the PR
-and the issue thread for your reply, so answer on either. Accepted reply shapes:
+and the issue thread for your reply, so answer on either — but only a reply by the repo owner
+(**@gitchrisqueen**) posted **after** the newest Decision Comment counts. A contributor's reply is
+ignored silently, so if you're not the owner, say your piece and ping them.
+
+Accepted reply shapes:
 
 | You write | What happens |
 |---|---|
@@ -93,16 +98,24 @@ and the issue thread for your reply, so answer on either. Accepted reply shapes:
 | Anything containing “hold off” / “don’t merge yet” / “not yet” / “wait until …” | Stays parked (even if it starts with letters) |
 | A free-form question ending in `?` | Stays parked; nothing builds off a question |
 
-Plain prose that doesn't match these shapes is **not** detected — either start it with `@claude`,
-or add the `agent:revise` label (PR) / re-add `agent:ready` (issue) yourself after commenting.
+Plain prose that doesn't match these shapes is **not** detected. Either start it with `@claude`, or
+re-label by hand after commenting — and note that re-adding `agent:ready` alone does **nothing**,
+because the queue skips anything still carrying `needs-human`/`agent:blocked`:
+
+```bash
+gh pr edit <N>    --add-label agent:revise --remove-label needs-human --remove-label agent:blocked
+gh issue edit <N> --add-label agent:ready  --remove-label needs-human --remove-label agent:blocked
+```
 
 ## PR rules
 
 - Agent PRs carry `agent:working`. **Never enable GitHub auto-merge** — merge is runner-controlled:
   CI green + one fresh review (adversarial marker or Copilot) + zero unresolved Copilot threads.
-- Human contributors: normal fork/branch PRs are fine and reviewed by humans as usual. To hand your
-  PR to the runner's merge loop instead, label it `agent:working` (it will be adversarially
-  reviewed and auto-merged when green).
+- Human contributors: normal fork/branch PRs are fine and reviewed by humans as usual. You can hand
+  a PR to the runner's merge loop (adversarial review, then auto-merge when green) by labeling it
+  `agent:working` — but **only if the branch lives in this repo**. The runner resolves a PR's branch
+  as `origin/<branch>`, so a **fork** PR labeled `agent:working` has no branch it can check out or
+  push fixes to. Fork PRs stay on human review.
 - Merged PRs batch into a release-please PR that auto-merges at the next window (05/11/17/23 UTC)
   → tag → image build → zero-downtime blue/green deploy. Ship a batch early:
   `gh workflow run release-auto-merge.yml`. Redeploy/rollback a tag:
@@ -116,10 +129,11 @@ gh issue list --label needs-human --state open
 gh pr list --label needs-human --state open
 
 # What will agents pick up next? (jumps first: critical/high, then milestone order)
-gh issue list --label agent:ready --state open
+gh issue list --label agent:ready --state open --limit 200
 
-# Issues invisible to the pipeline (no flow label) — triage these
-gh issue list --state open --json number,title,labels \
+# Issues invisible to the pipeline (no flow label) — triage these.
+# --limit matters: gh returns only 30 rows by default, so a bare list silently misses the tail.
+gh issue list --state open --limit 200 --json number,title,labels \
   --jq '.[] | select((.labels|map(.name)) as $l | ([$l[] | select(startswith("agent:") or . == "needs-human")] | length) == 0) | "#\(.number) \(.title)"'
 
 # Put an issue into the flow
