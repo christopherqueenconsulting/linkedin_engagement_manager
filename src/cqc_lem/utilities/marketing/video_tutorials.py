@@ -50,6 +50,9 @@ from cqc_lem.utilities.env_constants import (API_URL_FINAL, ELEVENLABS_API_KEY,
 from cqc_lem.utilities.flags import TUTORIAL_VIDEOS, flag_enabled
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
+from cqc_lem.utilities.marketing.attribution import (MEDIUM_VIDEO, PLACEMENT_VIDEO_DESCRIPTION,
+                                                     SOURCE_YOUTUBE, campaign_for_tutorial,
+                                                     signup_url, tag_links_in_text)
 from cqc_lem.utilities.observability import FEATURE_MARKETING, track_media_cost
 from cqc_lem.utilities.utils import create_folder_if_not_exists
 
@@ -421,7 +424,37 @@ def generate_script(flow: TutorialFlow, capture: dict) -> dict:
     # The description is read, not spoken, so it gets the full READER-mode de-slop pass.
     description = humanize_text(data["youtube_description"], content_type="post") or flow.feature
     return {"segments": segments, "narration": narration, "title": title[:100],
-            "description": description[:4500]}
+            "description": description_with_cta(description, flow)}
+
+
+DESCRIPTION_MAX_CHARS = 4500
+_DESCRIPTION_CTA_PREFIX = "\n\nTry it on your own account: "
+
+
+def description_with_cta(description: str, flow: TutorialFlow,
+                         max_chars: int = DESCRIPTION_MAX_CHARS) -> str:
+    """The YouTube description plus ONE tagged trial link (issue #658).
+
+    A tutorial is an acquisition surface, and YouTube passes no referrer we can read — without the
+    UTMs on this link every signup a video drives is indistinguishable from direct traffic. Any
+    owned link the model already wrote into the description is tagged in place under the same
+    campaign; the CTA is only appended when there is a signup URL configured AND the description
+    does not already carry it, so re-running never stacks two.
+
+    The cap is applied to the PROSE, never to the finished string: truncating afterwards would chop
+    a long description's CTA mid-URL and publish a broken link, which is worse than shipping none."""
+    campaign = campaign_for_tutorial(flow.key)
+    body = tag_links_in_text(description or "", SOURCE_YOUTUBE, MEDIUM_VIDEO, campaign,
+                             content=PLACEMENT_VIDEO_DESCRIPTION)
+    link = signup_url(SOURCE_YOUTUBE, MEDIUM_VIDEO, campaign,
+                      content=PLACEMENT_VIDEO_DESCRIPTION)
+    if not link or link.split("?")[0] in body:
+        return body[:max_chars]
+    cta = f"{_DESCRIPTION_CTA_PREFIX}{link}"
+    # A CTA that cannot fit at all is dropped whole rather than published half-written.
+    if len(cta) > max_chars:
+        return body[:max_chars]
+    return f"{body[:max_chars - len(cta)].rstrip()}{cta}".strip()
 
 
 def _coerce_script(raw: str, step_count: int) -> Optional[dict]:

@@ -12,8 +12,10 @@ quietly run hotter than the owner signed off on.
 from typing import Optional
 
 from cqc_lem.utilities.env_constants import (BRAND_ACCOUNT_EMAIL, BRAND_ACCOUNT_ENABLED,
-                                             BRAND_SIGNUP_URL, LAUNCH_PHASE)
+                                             LAUNCH_PHASE)
 from cqc_lem.utilities.logger import log_debug, log_warning
+from cqc_lem.utilities.marketing.attribution import (CAMPAIGN_BRAND_PROFILE, MEDIUM_PROFILE,
+                                                     SOURCE_LINKEDIN, signup_url)
 
 # Rollout phases from the launch plan (docs/launch-and-marketing-plan.md §A.1): P0 private
 # early-adopter, P1 open beta, P2 GA. Advancing a phase is the owner's call.
@@ -101,9 +103,11 @@ def brand_preference_overrides(existing: Optional[dict] = None, phase: Optional[
     current = existing or {}
     if not [t for t in (current.get("focus_topics") or []) if str(t).strip()]:
         overrides["focus_topics"] = list(BRAND_FOCUS_TOPICS)
-    signup_url = (BRAND_SIGNUP_URL or "").strip()
-    if signup_url and not (current.get("business_goals") or "").strip():
-        overrides["business_goals"] = f"Drive free-trial signups at {signup_url}"
+    # The goal line is read by the content prompts, so the URL in it is the one the brand's posts
+    # and DMs echo — it has to arrive UTM-tagged or every signup it drives reads as `direct` (#658).
+    tagged_signup = signup_url(SOURCE_LINKEDIN, MEDIUM_PROFILE, CAMPAIGN_BRAND_PROFILE)
+    if tagged_signup and not (current.get("business_goals") or "").strip():
+        overrides["business_goals"] = f"Drive free-trial signups at {tagged_signup}"
     return overrides
 
 

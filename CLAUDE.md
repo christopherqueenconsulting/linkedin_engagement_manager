@@ -372,6 +372,40 @@ re-cohort a live experiment. Read a readout honestly — at current volume every
 underpowered by design (the small-sample caveat is in the doc), and never re-roll a running
 experiment's variants: that re-cohorts people and invalidates the attribution already collected.
 
+### Marketing attribution — UTMs at the source (issue #658)
+
+`utilities/marketing/attribution.py` is the ONE place an outbound LEM link gets its UTMs. #503 built
+the CAPTURE half (funnel events + `resolve_channel`) and it reported almost everything as `direct`,
+because nothing tagged the links we publish. Two rules make the helper safe to call everywhere:
+**only OUR OWN destinations are tagged** (`is_owned_link` — `PUBLIC_BASE_URL` / `BRAND_SIGNUP_URL` /
+`MARKETING_OWNED_DOMAINS` and their subdomains; a cited third-party article is somebody else's
+analytics and comes back bare, and with none of those configured tagging is a no-op everywhere), and
+**an existing UTM is never overwritten** (`build_utm_url` only fills in what is missing, so it is
+idempotent and more than one choke point can tag the same link). `mark_placement` is the one
+deliberate exception — it replaces `utm_content` ONLY, because a promo CTA is written days before
+publish assuming its link stays in the body and #392's split decides otherwise at publish time.
+Every value is slugged on the way onto a URL, so the placement constants are spelled in their
+already-slugged form (`post-body` / `first-comment` / `video-description`) — that is what a PostHog
+filter has to match, and a `MARKETING_OWNED_DOMAINS` entry is host-normalized (`www.`/port stripped)
+for the same reason: a shape mismatch there tags nothing and looks exactly like the pre-#658 state.
+
+Applied at: `artifact_cta_line` (post body), `first_comment_link_text` (the carried link),
+`brand_account.brand_preference_overrides` (the seeded goal URL), `video_tutorials.description_with_cta`
+(YouTube), and `run_automation._tagged_edition_body` (newsletter). A LinkedIn newsletter EDITION
+carries no links by design, so that last one is a no-op on the mainline — it exists for a draft the
+author edited. DM templates are NOT tagged: their links are the user's own copy, not ours.
+Campaign names come from `campaign_for_post`/`_edition`/`_tutorial`, never spelled at a call site.
+
+Capture side: `ref` (`?ref=<user id>`, the referral-link groundwork) is allow-listed through
+`FunnelAttribution` → `normalize_attribution`, a bare `ref` resolves to the `referral` channel, and
+`youtube` got its own channel (YouTube passes no usable referrer). The SPA writes the SAME
+`initial_<key>` `$set_once` person properties the server does, so browser and Celery converge on one
+person — that is what makes `activated`, which knows no UTMs, attributable. `recordSignup()` emits
+`signup_completed_web` from the browser; it is **not** the API's `signup_completed` and the two must
+never be summed — one signup produces both. `scripts/posthog_provision.py` provisions the **LEM
+Channels** dashboard plus the two web-analytics conversion goals (as PostHog *actions*: signup →
+the browser event, activation → `activated`). Full posture: `docs/marketing-attribution.md`.
+
 ### Content-quality telemetry (`utilities/content_quality.py`, issue #630)
 
 Every other quality gate is a one-time verdict — the slop lint (#625) blocks a draft, the comment

@@ -9,6 +9,7 @@
 // build ships it as a separate lazy chunk the browser never fetches and no request is ever made.
 
 import type { PostHog, Survey } from 'posthog-js'
+import { getAttribution } from './attribution'
 
 const KEY = import.meta.env.VITE_POSTHOG_KEY as string | undefined
 const HOST = (import.meta.env.VITE_POSTHOG_HOST as string | undefined) || 'https://us.i.posthog.com'
@@ -195,8 +196,23 @@ export type AnalyticsIdentity = {
 // means we never had a server-side baseline and must not invent one.
 let approvedCount: number | null = null
 
+// First-touch acquisition properties, keyed EXACTLY as observability.track_funnel_event writes them
+// server-side (`initial_<key>`) so browser and backend converge on one set of person properties
+// rather than two half-populated ones. $set_once, so the session that acquired the person wins:
+// posthog-js keeps its own $initial_utm_* on the anonymous person, but those do not survive being
+// read as a business channel — these are the keys the Channels dashboard groups on (issue #658).
+function firstTouchProps(): Record<string, unknown> {
+  const attribution = getAttribution()
+  const props: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(attribution)) {
+    if (value) props[`initial_${key}`] = value
+  }
+  return props
+}
+
 // Unify the anonymous browser person with the backend's str(user_id) person. Plan facts are set on
-// every call (they change); the signup date is $set_once so a later call can't rewrite history.
+// every call (they change); the signup date and the first-touch attribution are $set_once so a
+// later call can't rewrite history.
 // Deliberately no LinkedIn credentials, cookies or profile data — email is the only PII.
 export function identifyUser(identity: AnalyticsIdentity): void {
   const props: Record<string, unknown> = {}
@@ -209,8 +225,31 @@ export function identifyUser(identity: AnalyticsIdentity): void {
     approvedCount = identity.postsApproved
     props.posts_approved = identity.postsApproved
   }
-  const setOnce = identity.createdAt ? { created_at: identity.createdAt } : undefined
-  withClient((ph) => ph.identify(String(identity.userId), props, setOnce))
+  const setOnce: Record<string, unknown> = { ...firstTouchProps() }
+  if (identity.createdAt) setOnce.created_at = identity.createdAt
+  withClient((ph) =>
+    ph.identify(String(identity.userId), props, Object.keys(setOnce).length ? setOnce : undefined)
+  )
+}
+
+// The browser-side half of the signup funnel (issue #658). The API already emits
+// `signup_completed` from the auth route, but that event is captured server-side against
+// `str(user_id)` — it has no pageview context, and PostHog web analytics resolves a conversion
+// goal against the session that produced the visit. Firing it here, on the browser that landed
+// with the UTMs, is what makes signup readable as a CHANNEL conversion.
+//
+// The event carries the first-touch attribution directly, so it is attributable even before
+// AuthContext reads the session back and identifies the person. Deliberately a distinct event name
+// from the server's: summing the two would double every signup count.
+export function recordSignup(properties?: Record<string, unknown>): void {
+  const attribution = getAttribution()
+  const setOnce = firstTouchProps()
+  withClient((ph) => {
+    // Written on the still-anonymous person: identifyUser() merges it into the identified one a
+    // moment later, and $set_once means the merge cannot overwrite an earlier first touch.
+    if (Object.keys(setOnce).length) ph.setPersonProperties(undefined, setOnce)
+    ph.capture(EVENTS.signupCompletedWeb, { ...attribution, ...properties })
+  })
 }
 
 // A post-review decision that went APPROVED. Captures the product event and advances the
@@ -321,6 +360,9 @@ export function analyticsSessionId(): string | undefined {
 
 // The moments autocapture cannot name. Keep this vocabulary stable — PostHog insights key off it.
 export const EVENTS = {
+  // Browser-side signup confirmation (issue #658) — the web-analytics conversion goal. NOT the same
+  // event as the API's `signup_completed`; summing the two would double every signup count.
+  signupCompletedWeb: 'signup_completed_web',
   postApproved: 'post_approved',
   postRejected: 'post_rejected',
   prefsSaved: 'prefs_saved',

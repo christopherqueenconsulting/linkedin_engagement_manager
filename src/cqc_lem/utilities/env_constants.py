@@ -207,6 +207,11 @@ BRAND_ACCOUNT_ENABLED     = isTrue(get_constant_from_env('BRAND_ACCOUNT_ENABLED'
 BRAND_ACCOUNT_EMAIL       = get_constant_from_env('BRAND_ACCOUNT_EMAIL', default_value='')
 # Trial signup URL the brand's content/DMs steer toward. Empty = no CTA seeded.
 BRAND_SIGNUP_URL          = get_constant_from_env('BRAND_SIGNUP_URL', default_value='')
+# Extra hosts whose analytics we own (marketing site, blog, docs) — comma separated, bare host or
+# full URL. UTM tagging is applied to these and to PUBLIC_BASE_URL/BRAND_SIGNUP_URL ONLY: stamping
+# our campaign params on a third party's link would pollute their reporting and attribute nothing
+# to us (utilities/marketing/attribution.py).
+MARKETING_OWNED_DOMAINS   = get_constant_from_env('MARKETING_OWNED_DOMAINS', default_value='')
 
 # Unit-economics inputs for the margin report (docs/cost-performance-margin-plan.md §C.1). Monthly
 # tier prices mirror the SPA pricing table — override per environment instead of editing code so a

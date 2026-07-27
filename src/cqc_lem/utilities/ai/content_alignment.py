@@ -14,6 +14,10 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Optional
 
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
+from cqc_lem.utilities.marketing.attribution import (MEDIUM_SOCIAL, PLACEMENT_FIRST_COMMENT,
+                                                     PLACEMENT_POST_BODY, SOURCE_LINKEDIN,
+                                                     campaign_for_post, mark_placement,
+                                                     tag_owned_link)
 
 if TYPE_CHECKING:
     from cqc_lem.utilities.linkedin.profile import LinkedInProfile
@@ -350,7 +354,11 @@ def artifact_cta_line(lead_magnet: Optional[dict] = None, newsletter: Optional[d
         # newsletter link is moved into the first comment by post_to_linkedin's split (#392), and a
         # linkedin.com newsletter (what mark_newsletter_published records) is deliberately left in
         # the body by that same split, because the reach penalty only applies off-platform.
-        return f"{line} {delivery['url']}" if delivery["url"] else line
+        # Tagged only when the destination is ours (#658): a self-hosted newsletter is a page whose
+        # analytics we own, a linkedin.com or Substack one is somebody else's and comes back bare.
+        url = tag_owned_link(delivery["url"], SOURCE_LINKEDIN, MEDIUM_SOCIAL,
+                             campaign_for_post(post_id), content=PLACEMENT_POST_BODY)
+        return f"{line} {url}" if url else line
     return ""
 
 
@@ -943,8 +951,16 @@ def split_link_for_first_comment(content: Optional[str], enabled: bool = True,
 
 
 def first_comment_link_text(links, post_id: Optional[int] = None) -> str:
-    """The link-delivery line(s) for the author's first comment. Empty string when no links."""
-    links = [str(l).strip() for l in (links or []) if str(l or "").strip()]
+    """The link-delivery line(s) for the author's first comment. Empty string when no links.
+
+    This is the last place a carried link is still editable before a reader sees it, so it is where
+    the placement is stamped (#658): `utm_content=first_comment` distinguishes the link that landed
+    in the comment from the same campaign's link left in a post body. An already-tagged link keeps
+    every parameter it arrived with — `build_utm_url` only ever fills in what is missing."""
+    links = [mark_placement(tag_owned_link(l, SOURCE_LINKEDIN, MEDIUM_SOCIAL,
+                                           campaign_for_post(post_id)),
+                            PLACEMENT_FIRST_COMMENT)
+             for l in (str(x).strip() for x in (links or [])) if l]
     if not links:
         return ""
     idx = (int(post_id) % len(FIRST_COMMENT_LINK_MENU)) if post_id is not None else 0

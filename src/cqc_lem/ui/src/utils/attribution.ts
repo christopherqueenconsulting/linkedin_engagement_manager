@@ -9,12 +9,22 @@ export type Attribution = {
   utm_campaign?: string
   utm_content?: string
   utm_term?: string
+  // The referral link's referrer id (issue #658, `?ref=<user id>`). Read with the UTMs because a
+  // referral link carries both and first touch has to keep them together.
+  ref?: string
   referrer?: string
   landing_page?: string
 }
 
 const STORAGE_KEY = 'lem_attribution'
-const UTM_KEYS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term'] as const
+const UTM_KEYS = [
+  'utm_source',
+  'utm_medium',
+  'utm_campaign',
+  'utm_content',
+  'utm_term',
+  'ref',
+] as const
 
 function readStored(): Attribution | null {
   try {
