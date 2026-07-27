@@ -480,6 +480,18 @@ class TestConversionGoals:
         actions = php.plan_conversion_goals(php.conversion_goal_specs(), existing)
         assert all(a["action"] == "update_goal" for a in actions)
 
+    def test_unreadable_actions_block_the_goals_without_claiming_they_are_missing(self):
+        # A pre-#658 personal API key has no `action` scope. That must cost the two goals and
+        # nothing else — an unreadable state is not an empty one, and reporting `create_goal` here
+        # would promise an --apply that PostHog rejects.
+        actions = php.plan_conversion_goals(php.conversion_goal_specs(), None)
+        assert [a["action"] for a in actions] == ["blocked_goal", "blocked_goal"]
+        client = MagicMock()
+        lines = php.apply_actions(client, actions, dry_run=False)
+        assert all(line.startswith("skipped ") for line in lines)
+        client.create_action.assert_not_called()
+        client.update_action.assert_not_called()
+
     def test_goal_payload_sends_only_the_event_per_step(self):
         spec = php.conversion_goal_specs()[0]
         payload = php._goal_payload(spec)

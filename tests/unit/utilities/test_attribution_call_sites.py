@@ -136,6 +136,26 @@ class TestTutorialDescription:
         with _Patched(_owned(signup="", public="", extra="")):
             assert description_with_cta("Plain description.", flow) == "Plain description."
 
+    def test_an_over_long_description_never_chops_the_cta_url(self):
+        # The cap belongs on the PROSE. Truncating the finished string would cut the trial link
+        # mid-URL and publish a broken one, which is strictly worse than publishing no CTA.
+        from cqc_lem.utilities.marketing.video_tutorials import (DESCRIPTION_MAX_CHARS,
+                                                                 TUTORIAL_FLOWS,
+                                                                 description_with_cta)
+        flow = next(iter(TUTORIAL_FLOWS.values()))
+        with _Patched(_owned()):
+            out = description_with_cta("word " * 2000, flow)
+        assert len(out) <= DESCRIPTION_MAX_CHARS
+        assert out.endswith("utm_content=video-description")
+
+    def test_a_cap_too_small_for_the_cta_drops_it_whole(self):
+        from cqc_lem.utilities.marketing.video_tutorials import TUTORIAL_FLOWS, description_with_cta
+        flow = next(iter(TUTORIAL_FLOWS.values()))
+        with _Patched(_owned()):
+            out = description_with_cta("Plain description.", flow, max_chars=20)
+        assert out == "Plain description."[:20]
+        assert "utm_" not in out
+
 
 class TestNewsletterEditionBody:
     def test_an_owned_link_in_an_edited_edition_is_tagged_per_edition(self):

@@ -384,6 +384,10 @@ analytics and comes back bare, and with none of those configured tagging is a no
 idempotent and more than one choke point can tag the same link). `mark_placement` is the one
 deliberate exception — it replaces `utm_content` ONLY, because a promo CTA is written days before
 publish assuming its link stays in the body and #392's split decides otherwise at publish time.
+Every value is slugged on the way onto a URL, so the placement constants are spelled in their
+already-slugged form (`post-body` / `first-comment` / `video-description`) — that is what a PostHog
+filter has to match, and a `MARKETING_OWNED_DOMAINS` entry is host-normalized (`www.`/port stripped)
+for the same reason: a shape mismatch there tags nothing and looks exactly like the pre-#658 state.
 
 Applied at: `artifact_cta_line` (post body), `first_comment_link_text` (the carried link),
 `brand_account.brand_preference_overrides` (the seeded goal URL), `video_tutorials.description_with_cta`

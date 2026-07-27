@@ -23,7 +23,9 @@ This closes the loop at the **source**: one helper, applied at every surface tha
   params the destination's analytics reads — stamping them on a Reuters article we cited pollutes
   someone else's reporting and attributes nothing to us. The owned set is `PUBLIC_BASE_URL`,
   `BRAND_SIGNUP_URL` and anything in the new `MARKETING_OWNED_DOMAINS` env (comma-separated, bare
-  host or full URL), plus their subdomains. With none of them configured **nothing is tagged** —
+  host or full URL), plus their subdomains. A bare entry is normalized the same way a parsed URL's
+  host is (`www.` and any port stripped), or the comparison would silently never match and the
+  domain you configured would go untagged. With none of them configured **nothing is tagged** —
   the pre-#658 behaviour exactly.
 - **An existing UTM is never overwritten.** `build_utm_url` only fills in what is missing, so a
   hand-tagged link keeps its own attribution and running the helper twice on one URL is a no-op.
@@ -41,7 +43,7 @@ fact observed at publish, not a guess made at generation.
 | `utm_source` | `linkedin` · `newsletter` · `youtube` · `referral` · `email` | Where the link was published |
 | `utm_medium` | `social` · `video` · `newsletter` · `profile` · `referral` | The marketing medium |
 | `utm_campaign` | `post-<id>[-<archetype>]` · `newsletter-<id>` · `tutorial-<flow>` · `brand-profile` · `member-referral` | The publishable ITEM |
-| `utm_content` | `post_body` · `first_comment` · `video_description` | Placement within the medium |
+| `utm_content` | `post-body` · `first-comment` · `video-description` | Placement within the medium |
 | `ref` | `<user id>` | The referral link's referrer — a PERSON, not a creative variant |
 
 Campaigns come from `campaign_for_post` / `campaign_for_edition` / `campaign_for_tutorial`, never
@@ -51,8 +53,8 @@ spelled at a call site: a breakdown by campaign is only readable if every post w
 
 | Surface | Call site | Campaign |
 |---|---|---|
-| Promo CTA in a post body | `content_alignment.artifact_cta_line` | `post-<id>` (`utm_content=post_body`) |
-| Link carried into the first comment | `content_alignment.first_comment_link_text` | `post-<id>` (`utm_content=first_comment`) |
+| Promo CTA in a post body | `content_alignment.artifact_cta_line` | `post-<id>` (`utm_content=post-body`) |
+| Link carried into the first comment | `content_alignment.first_comment_link_text` | `post-<id>` (`utm_content=first-comment`) |
 | Brand account's seeded goal URL | `brand_account.brand_preference_overrides` | `brand-profile` |
 | YouTube tutorial description | `video_tutorials.description_with_cta` | `tutorial-<flow key>` |
 | Newsletter edition body | `run_automation._tagged_edition_body` | `newsletter-<edition id>` |
@@ -102,7 +104,8 @@ that script.
 
 The goal diff compares only each step's EVENT: PostHog hydrates a step with its own id and a pile of
 nulls, and matching whole objects would rewrite an action nobody touched on every run. The personal
-API key needs `action:read` + `action:write` on top of the existing scopes.
+API key needs `action:read` + `action:write` on top of the existing scopes; a key without them
+skips the goals (`blocked_goal`) rather than failing the whole provisioning run.
 
 ## Verifying end to end
 

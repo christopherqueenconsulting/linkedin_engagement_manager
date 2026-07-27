@@ -857,14 +857,19 @@ def alert_payload(spec: dict, insight_id, subscribed_users: Optional[list] = Non
             "enabled": True}
 
 
-def plan_conversion_goals(specs: list, existing_actions: dict) -> list:
+def plan_conversion_goals(specs: list, existing_actions: Optional[dict]) -> list:
     """Diff the web-analytics conversion goals against PostHog's existing actions.
 
-    `existing_actions` maps action name -> {"id", "steps", "description"}. Only the EVENT of each
-    step is compared: PostHog hydrates a step with a pile of nulls and its own ids, and matching on
-    the whole object would report drift on every run and rewrite an action nobody changed."""
+    `existing_actions` maps action name -> {"id", "steps", "description"}, or is None when the
+    actions could not be READ at all (a key without the `action` scope). None is `blocked_goal`,
+    never "missing" — mirroring `plan_endpoints`, so an unreadable state is never mistaken for an
+    empty one and reported as something `--apply` could create."""
     actions: list = []
     for spec in specs:
+        if existing_actions is None:
+            actions.append({"action": "blocked_goal", "goal": spec["name"],
+                            "reason": "PostHog actions could not be read (needs the `action` scope)"})
+            continue
         found = existing_actions.get(spec["name"])
         wanted = [str(step.get("event") or "") for step in spec["steps"]]
         if found is None:
@@ -1164,9 +1169,10 @@ def apply_actions(client: PostHogClient, actions: list, dry_run: bool = True) ->
             else:
                 client.update_endpoint(action["endpoint"], action["payload"])
             log.append(f"{verb}d endpoint '{action['endpoint']}'")
-        elif kind in ("blocked_alert", "blocked_subscription", "blocked_endpoint"):
-            log.append(f"skipped '{action.get('alert') or action.get('subscription') or action.get('endpoint')}': "
-                       f"{action['reason']}")
+        elif kind in ("blocked_alert", "blocked_subscription", "blocked_endpoint", "blocked_goal"):
+            name = (action.get("alert") or action.get("subscription") or action.get("endpoint")
+                    or action.get("goal"))
+            log.append(f"skipped '{name}': {action['reason']}")
     return log
 
 
@@ -1230,10 +1236,19 @@ def main(argv: Optional[list] = None) -> int:
     try:
         dashboards, insights = client.list_dashboards(), client.list_insights()
         alerts, subscriptions = client.list_alerts(), client.list_subscriptions()
-        existing_goals = client.list_actions()
     except Exception as exc:
         print(f"Failed to read PostHog state: {exc}", file=sys.stderr)
         return 1
+
+    # The conversion goals (issue #658) need an `action` scope the pre-#658 keys were never issued
+    # with, so this is its OWN read: a key missing that scope must not take the dashboards, alerts
+    # and endpoints down with it. Same degrade shape #654's endpoints read uses.
+    try:
+        existing_goals: Optional[dict] = client.list_actions()
+    except Exception as exc:
+        existing_goals = None
+        print(f"Could not read PostHog actions ({exc}) — conversion goals not provisioned. The "
+              "personal API key needs the `action` scope (read+write).", file=sys.stderr)
 
     try:
         me = client.whoami()

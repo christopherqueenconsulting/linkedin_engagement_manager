@@ -46,10 +46,12 @@ MEDIUM_PROFILE = "profile"
 MEDIUM_REFERRAL = "referral"
 
 # `utm_content` values — the PLACEMENT within a medium. This is what tells a link left in a post
-# body apart from the same campaign's link the #392 split carried into the first comment.
-PLACEMENT_POST_BODY = "post_body"
-PLACEMENT_FIRST_COMMENT = "first_comment"
-PLACEMENT_VIDEO_DESCRIPTION = "video_description"
+# body apart from the same campaign's link the #392 split carried into the first comment. Spelled
+# in their ALREADY-SLUGGED form: every value goes through `_slug` on the way onto a URL, so an
+# underscore here would be a constant that never equals the value the dashboard actually groups on.
+PLACEMENT_POST_BODY = "post-body"
+PLACEMENT_FIRST_COMMENT = "first-comment"
+PLACEMENT_VIDEO_DESCRIPTION = "video-description"
 
 # Campaign for the always-on brand surfaces that have no per-item id (profile CTA, business goal).
 CAMPAIGN_BRAND_PROFILE = "brand-profile"
@@ -83,17 +85,30 @@ def _host(url: Optional[str]) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
+def _bare_host(value: str) -> str:
+    """A scheme-less MARKETING_OWNED_DOMAINS entry reduced to the same shape `_host` returns.
+
+    It has to be the same shape or the comparison in `is_owned_link` silently never matches, and a
+    domain the operator configured is simply never tagged — the failure looks exactly like the
+    pre-#658 behaviour, so nothing surfaces it. `www.` and a port are the two that actually get
+    typed ("www.example.com", "example.com:8443")."""
+    host = str(value or "").strip().lower().lstrip(".")
+    host = host.split("//")[-1].split("/")[0].split("?")[0].split("#")[0]
+    host = host.split("@")[-1].split(":")[0]
+    return host[4:] if host.startswith("www.") else host
+
+
 def owned_hosts() -> set:
     """Hosts whose analytics we own, so tagging them is ours to do: this deployment's public base
     URL, the configured trial signup URL, and anything else the operator lists in
     MARKETING_OWNED_DOMAINS (the marketing site / blog, which live outside the app)."""
     hosts = {_host(PUBLIC_BASE_URL), _host(BRAND_SIGNUP_URL)}
     for entry in str(MARKETING_OWNED_DOMAINS or "").split(","):
-        candidate = entry.strip().lower()
+        candidate = entry.strip()
         if not candidate:
             continue
         # Accept either a bare host ("lem.example.com") or a full URL.
-        hosts.add(_host(candidate) or candidate.lstrip(".").split("/")[0])
+        hosts.add(_host(candidate) or _bare_host(candidate))
     return {h for h in hosts if h}
 
 

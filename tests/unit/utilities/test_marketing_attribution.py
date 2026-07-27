@@ -123,6 +123,21 @@ class TestOwnedLinks:
             article = "https://www.reuters.com/tech/some-article"
             assert tag_owned_link(article, "linkedin", "social", "post-1") == article
 
+    def test_a_bare_entry_is_host_normalized_like_a_parsed_url(self):
+        # `www.`, a port and a trailing path are all things an operator types into
+        # MARKETING_OWNED_DOMAINS. `_host` strips them off a real URL, so an entry that keeps them
+        # would never compare equal — and the domain would silently go untagged forever, which is
+        # indistinguishable from the pre-#658 behaviour.
+        from cqc_lem.utilities.marketing.attribution import is_owned_link, owned_hosts
+        with _Patched(_owned(public="", signup="",
+                             extra="www.lem.test, blog.example.org:8443, Docs.Example.NET/guide")):
+            assert owned_hosts() == {"lem.test", "blog.example.org", "docs.example.net"}
+            assert is_owned_link("https://www.lem.test/trial")
+            assert is_owned_link("https://lem.test/trial")
+            assert is_owned_link("https://blog.example.org/p")
+            assert is_owned_link("https://docs.example.net/guide")
+            assert not is_owned_link("https://example.net/guide")
+
 
 class TestMarkPlacement:
     def test_replaces_the_placement_the_body_assumed(self):
@@ -138,6 +153,22 @@ class TestMarkPlacement:
         with _Patched(_owned()):
             link = "https://substack.com/x?utm_content=post_body"
             assert mark_placement(link, "first_comment") == link
+
+
+class TestVocabularyIsWhatLandsOnTheUrl:
+    def test_placement_constants_survive_slugging_unchanged(self):
+        # Every value is slugged on the way onto a URL, so a constant spelled with an underscore
+        # would never equal the value a PostHog filter has to match. The constant IS the data.
+        from cqc_lem.utilities.marketing.attribution import (PLACEMENT_FIRST_COMMENT,
+                                                             PLACEMENT_POST_BODY,
+                                                             PLACEMENT_VIDEO_DESCRIPTION,
+                                                             _slug, build_utm_url)
+        for placement in (PLACEMENT_POST_BODY, PLACEMENT_FIRST_COMMENT,
+                          PLACEMENT_VIDEO_DESCRIPTION):
+            assert _slug(placement) == placement
+            out = build_utm_url("https://lem.test/t", "linkedin", "social", "post-1",
+                                content=placement)
+            assert _params(out)["utm_content"] == placement
 
 
 class TestTagLinksInText:
