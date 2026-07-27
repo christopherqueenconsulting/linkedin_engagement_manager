@@ -870,6 +870,7 @@ class TestAutoInviteToCompanyPages:
     def test_single_user_calls_apply_async_with_user_id(self):
         mock_task = _async_task_mock()
         with patch(_PATCH_GET_ACTIVE, return_value=[7]), \
+             patch(f"{_MOD}._stagger_due", return_value=True), \
              patch(_PATCH_AUTOMATE_INVITES, mock_task):
             from cqc_lem.app.run_scheduler import auto_invite_to_company_pages
             result = auto_invite_to_company_pages.run()
@@ -882,6 +883,7 @@ class TestAutoInviteToCompanyPages:
     def test_multiple_users_calls_apply_async_for_each(self):
         mock_task = _async_task_mock()
         with patch(_PATCH_GET_ACTIVE, return_value=[1, 2, 3]), \
+             patch(f"{_MOD}._stagger_due", return_value=True), \
              patch(_PATCH_AUTOMATE_INVITES, mock_task):
             from cqc_lem.app.run_scheduler import auto_invite_to_company_pages
             result = auto_invite_to_company_pages.run()
@@ -892,6 +894,7 @@ class TestAutoInviteToCompanyPages:
     def test_apply_async_includes_retry_policy_with_max_retries_3(self):
         mock_task = _async_task_mock()
         with patch(_PATCH_GET_ACTIVE, return_value=[99]), \
+             patch(f"{_MOD}._stagger_due", return_value=True), \
              patch(_PATCH_AUTOMATE_INVITES, mock_task):
             from cqc_lem.app.run_scheduler import auto_invite_to_company_pages
             auto_invite_to_company_pages.run()
@@ -1013,6 +1016,7 @@ class TestAutoInviteToCompanyPages:
                    side_effect=lambda uid: {1: "https://www.linkedin.com/company/a/",
                                             2: None,
                                             3: "https://www.linkedin.com/company/c/"}.get(uid)), \
+             patch(f"{_MOD}._stagger_due", return_value=True), \
              patch(f"{_MOD}.automate_invites_to_company_page_for_user") as mock_task:
             from cqc_lem.app.run_scheduler import auto_invite_to_company_pages
             result = auto_invite_to_company_pages()

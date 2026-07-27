@@ -11,6 +11,7 @@ const base = (over: Partial<EngPrefs> = {}): EngPrefs => ({
   authenticity_score_min: null, post_similarity_max_pct: null,
   min_reactions: null, max_post_age_hours: 24, reply_to_own_comments: true,
   max_comments_per_day: 20, max_dms_per_day: 20, max_invites_per_day: 10,
+  max_company_page_invites_per_day: 5,
   connection_request_mode: 'auto_approve', connection_targeting_mode: 'suggest',
   connection_target_authors: [], min_connection_icp_score: 55,
   default_video_quality: 'standard', reply_check_mode: 'event', reply_sweeps_per_day: 2,

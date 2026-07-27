@@ -52,6 +52,8 @@ from cqc_lem.utilities.db import (
     get_engagement_preferences, has_engagement_preferences, update_engagement_preferences,
     DEFAULT_POSTS_PER_WEEK, POSTS_PER_WEEK_MIN, POSTS_PER_WEEK_MAX,
     DEFAULT_POSTING_DAYS, normalize_posting_days,
+    COMPANY_PAGE_INVITES_PER_DAY_DEFAULT, COMPANY_PAGE_INVITES_PER_DAY_MIN,
+    COMPANY_PAGE_INVITES_PER_DAY_MAX,
     get_or_create_reply_inbound_token,
     get_newsletter_settings, update_newsletter_settings,
     get_pending_newsletter_editions,
@@ -594,6 +596,8 @@ class EngagementPreferencesRequest(BaseModel):
     max_comments_per_day: int = 20
     max_dms_per_day: int = 20
     max_invites_per_day: int = 10
+    # Company-page invites (issue #732). Effective ceiling is min(this, max_invites_per_day).
+    max_company_page_invites_per_day: int = COMPANY_PAGE_INVITES_PER_DAY_DEFAULT
     connection_request_mode: str = "auto_approve"  # 'auto_approve' (default) | 'pre_review'
     # Smart connection targeting (issue #486): 'off' | 'suggest' (default) | 'auto_queue'
     connection_targeting_mode: str = "suggest"
@@ -665,6 +669,15 @@ class EngagementPreferencesRequest(BaseModel):
             return min(14, max(1, int(v)))
         except (TypeError, ValueError):
             return 2
+
+    @field_validator("max_company_page_invites_per_day")
+    @classmethod
+    def _clamp_company_page_invites(cls, v: int) -> int:
+        try:
+            return min(COMPANY_PAGE_INVITES_PER_DAY_MAX,
+                       max(COMPANY_PAGE_INVITES_PER_DAY_MIN, int(v)))
+        except (TypeError, ValueError):
+            return COMPANY_PAGE_INVITES_PER_DAY_DEFAULT
 
     @field_validator("posts_per_week")
     @classmethod

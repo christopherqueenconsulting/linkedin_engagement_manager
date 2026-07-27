@@ -7,7 +7,7 @@ LinkedIn Engagement Manager (LEM) automates LinkedIn engagement end to end: Sele
 Two pillars:
 
 - **Content generation & scheduling** — a 30-day content plan of buyer-journey-staged posts (thought leadership, industry-news commentary, personal story, engagement prompts, carousels, native video, blog summaries) auto-scheduled around peak/golden hours, with sentiment checks and a preview/approval workflow.
-- **Engagement automation** — feed commenting, replies on the user's own posts, seed first comments, appreciation/outreach DMs with multi-touch follow-ups, and monthly company-page invitations — all driven by per-user targeting, voice/tone, and per-day cap preferences.
+- **Engagement automation** — feed commenting, replies on the user's own posts, seed first comments, appreciation/outreach DMs with multi-touch follow-ups, and a daily throttled company-page invite drip — all driven by per-user targeting, voice/tone, and per-day cap preferences.
 
 See **Feature Areas** below for the code paths behind each capability.
 
@@ -47,7 +47,7 @@ src/cqc_lem/
 │   ├── linkedin/  Selenium automation
 │   │   ├── scrapper.py            profile/feed scraping
 │   │   ├── poster.py              publishing posts/carousels/video
-│   │   ├── company_page_inviter.py  monthly company-page invites
+│   │   ├── company_page_inviter.py  paced daily company-page invite drip
 │   │   ├── verification_pin.py    email-PIN LinkedIn verification flow
 │   │   ├── rate_limit.py          429/auth-wall backoff
 │   │   └── helper.py, profile.py, token_refresh.py
@@ -169,7 +169,25 @@ the on-time/resource curve that sizes it. See `docs/SELENIUM_GRID.md` and `docs/
 - **Human pacing** (`utilities/human_pacing.py`, issue #626): the ONE place cadence is decided, consumed by commenting, replies, DMs and invites. Read-time delay before any comment (`pace_read` — length-scaled, floored at `PACING_READ_MIN_SECONDS`, ceilinged below `MAX_INLINE_SLEEP_SECONDS` so no worker ever parks >5 min); `dispatch_jitter_seconds` countdowns on every beat-dispatched engagement task (own-post replies use `PACE_RESPONSIVE` — jittered by seconds, not delayed by an hour); and `daily_budget`/`remaining_actions`, which turn each per-day cap into a stable random draw (weekend asymmetry + occasional account-wide rest days) under one account-level envelope, so the lanes can't each spend a full cap on the same day. Seeded on (user, action, date) and persisted in Redis, so a retry never re-rolls the day's budget. Fails open — no Redis, or `HUMAN_PACING_ENABLED=false`, restores the pre-#626 behaviour. Pacing only ever slows us down; the 429 breaker in `rate_limit.py` is the separate, harder gate.
 - **Comment outcome tracking** (`sweep_comment_outcomes` + `utilities/comment_outcomes.py`, issue #628): commenting used to be write-only — LEM posted and never looked back. A read-only sweep revisits each posted comment at T+24h (work list = un-checked `logs` comment rows with a navigable `feedurn://` key), locates it via the same #478 thread map, and writes ONE `comment_outcomes` row: author replies, thread replies, likes, whether we replied, and `visible_most_relevant`. That last one is **three-valued on purpose** — 1 present under the default 'Most relevant' sort, 0 absent there but present under 'Most recent' (the May-2026 demotion signal), NULL when the sort control couldn't be read or flipped. NULL rows are excluded from the demotion denominator, never counted as healthy. A comment that can't be found in either sort is a SKIPPED row with a reason, so an unfindable comment is never re-walked. The weekly report (`auto_weekly_comment_quality`) ships the rates to PostHog + `/user/engagement-analytics`, and a demotion rate over `COMMENT_DEMOTION_HOLD_RATE` on ≥`COMMENT_QUALITY_MIN_SAMPLE` readable readings **holds that user's feed commenting** (`hold_commenting` in `rate_limit.py` — narrower than the global `pause_automation`; posting/replies/DMs are untouched) and escalates as CRITICAL. Live selector grounding: `scripts/linkedin_live_validation.py --comment-outcome-url`.
 - **Suppression tripwire** (`auto_suppression_tripwire` + `utilities/suppression.py`, issue #629): 2026 LinkedIn penalties are SILENT — a flagged account just sees its reach step-collapse (the documented 8,500→340 pattern) and stays collapsed for 60–90 days, with no notification. A daily beat reads each user's own `build_engagement_trend` series and compares **impressions per post** (or engagement per post, when impressions weren't captured — a single impression-less day switches the whole comparison, it never mixes scales) against their OWN trailing 14-day median. Days with no posts are dropped BEFORE anything is measured, so `SUPPRESSION_CONSECUTIVE_DAYS` means consecutive **posting** days and a weekend off is never a collapse. A ≥`SUPPRESSION_DROP_RATIO` drop sustained across that run — or #628's comment-demotion verdict — `pause_automation()`s **engagement only** — posting is API-driven and never gated, and the read-only stat-capture lanes (`auto_scrape_stats`, `auto_capture_follower_stats`) are exempted from THIS pause specifically via `is_measurement_paused`, because the daily scrape is what produces the readings the tripwire re-evaluates: freeze it and a recovered account could never be seen to recover. It records the WHY in Redis (`record_suppression_trip`, no TTL), emails the user in plain language and escalates as CRITICAL. Cold start, a thin baseline (<`SUPPRESSION_MIN_BASELINE_POSTS`) or a zero baseline are `unknown` and never actioned; one bad day is `watch` and stops nothing. The pause is **re-armed daily while the trip stands** and only ever refreshed when the standing pause is the tripwire's own, so it never self-resumes and never extends a maintenance/429 pause. The only way back is the human one: `POST /user/automation-resume` behind the Account banner (`SuppressionBanner.tsx` off `GET /user/automation-status`), which reports a recovered reading beside the standing trip but leaves the decision to the user.
-- Monthly **company-page invitations** (`utilities/linkedin/company_page_inviter.py`).
+- **Company-page invitations** (`utilities/linkedin/company_page_inviter.py`, issue #732): a paced
+  DAILY drip, not the once-a-month blast it used to be. The old path read the Page's remaining
+  invitation credits, selected that many invitees, and recursed into itself until the pool was
+  empty — dozens-to-hundreds of identical actions in one 05:00-UTC window, and the only outbound
+  lane that consulted neither `max_invites_per_day` nor #626's pacing. A run is now bounded by the
+  SMALLEST of three ceilings: the user's own `max_company_page_invites_per_day` clamped by
+  `max_invites_per_day` (so `brand_account`'s phase policy still governs the brand user through the
+  one cap it already sets) and run through `human_pacing` like every other lane; the **credit
+  spread** `credits_remaining / days_left_in_month`, because a Page's credit pool renews on the 1st
+  and is REFUNDED when an invite is accepted, so a drip reaches more people per month than a blast;
+  and the live credit count itself, a hard stop at 0. `plan_daily_invites` decides all of that
+  BEFORE a Chrome session is opened — on most days the allowance is zero and a browser spent
+  discovering that is a lane another task needed. Idempotency is durable, not Redis: today's spend
+  is SUMMED out of the `logs` rows (`count_company_page_invites_sent_today` — one batched row
+  carries a count, so the trailing number is summed rather than rows counted), so a second run the
+  same day sends nothing beyond the budget. The beat is the staggered per-user daily tick
+  (`STAGGER_COMPANY_INVITE`, 10:00 local + 3h window) the other fan-outs use, and every run emits
+  `company_page_invite_run` — including the ones that send nothing, since a series carrying only
+  sends can't tell "paced to zero" from "silently broken".
 
 ### Engagement configuration (`engagement_preferences` table, API in `api/main.py`, SPA in `ui/.../Account.tsx`)
 - Targeting: include/exclude topics/keywords/authors, `min_reactions`, `max_post_age_hours`, plus LLM topic-relevance scoring.

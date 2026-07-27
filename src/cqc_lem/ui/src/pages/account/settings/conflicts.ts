@@ -76,6 +76,7 @@ export function blockingIssues(eng: EngPrefs): Finding[] {
     ['max_comments_per_day', eng.max_comments_per_day, 0, 100, 'volume', 'Comments per day must be between 0 and 100.'],
     ['max_dms_per_day', eng.max_dms_per_day, 0, 100, 'volume', 'DMs per day must be between 0 and 100.'],
     ['max_invites_per_day', eng.max_invites_per_day, 0, 100, 'volume', 'Invites per day must be between 0 and 100.'],
+    ['max_company_page_invites_per_day', eng.max_company_page_invites_per_day, 0, 50, 'volume', 'Company-page invites per day must be between 0 and 50.'],
     ['reply_sweeps_per_day', eng.reply_sweeps_per_day, 2, 12, 'volume', 'Reply checks per day must be between 2 and 12.'],
     ['reply_max_post_age_days', eng.reply_max_post_age_days, 1, 14, 'volume', 'Reply look-back must be between 1 and 14 days.'],
     ['min_connection_icp_score', eng.min_connection_icp_score, 0, 100, 'outreach', 'ICP fit score must be between 0 and 100.'],
@@ -316,6 +317,14 @@ export function evaluateConflicts(ctx: ConflictContext): Finding[] {
       ...(days.length >= 2
         ? { fix: { label: `Match the cadence to ${days.length} a week`, patch: { posts_per_week: days.length } } }
         : {}),
+    })
+  }
+  // C29 — the company-page cap is bounded by the account-wide invite cap (issue #732), so a bigger
+  // number here silently does nothing. Say so rather than letting the two disagree on screen.
+  if ((eng.max_company_page_invites_per_day ?? 5) > (eng.max_invites_per_day ?? 0)) {
+    out.push({
+      id: 'C29', severity: 'inform', section: 'volume', anchor: 'max_company_page_invites_per_day',
+      message: `Invites per day (${eng.max_invites_per_day ?? 0}) is the harder ceiling, so company-page invites will stop at that number.`,
     })
   }
   return out

@@ -374,6 +374,12 @@ class LogResultType(StrEnum):
 # combined daily invite budget is counted from these log rows (see count_invites_sent_today).
 CONNECTION_REQUEST_SENT_MESSAGE = "Connection Request Sent Successfully"
 
+# Marker message logged (as ENGAGED/SUCCESS) for a COMPANY-PAGE invite batch (issue #732). Page
+# invites are a single batched UI action — select N invitees, click Invite once — so ONE row carries
+# the count, and `count_company_page_invites_sent_today` SUMS the trailing number rather than
+# counting rows. Keep the "<message>: <n>" shape: that suffix is what the SUM parses.
+COMPANY_PAGE_INVITE_SENT_MESSAGE = "Company page invites sent"
+
 # Why a proactive invite was abandoned before it was attempted (issue #623). Stored as the request's
 # failure_reason so the Connections review UI explains a FAILED row instead of just colouring it red.
 ALREADY_CONNECTED_MESSAGE = "Already connected (1st-degree) — no invite to send"
@@ -3251,6 +3257,15 @@ def normalize_posting_days(value) -> list:
             days.append(day)
     return sorted(days) if days else list(DEFAULT_POSTING_DAYS)
 
+
+# Company-page invites per day (issue #732). LinkedIn Pages spend a MONTHLY credit pool that renews
+# on the 1st and is refunded when an invite is accepted; LinkedIn is currently cutting the free-Page
+# allowance from 250 to 50/month, so a drip has to survive both sizes. 5/day is the conservative
+# ceiling: at 50 credits the credits/days-left spread binds first (~2/day), at 250 this binds, and
+# the #626 budget draw (40-100% of cap) keeps the realised average lower still. 0 turns the lane off.
+COMPANY_PAGE_INVITES_PER_DAY_DEFAULT = 5
+COMPANY_PAGE_INVITES_PER_DAY_MIN, COMPANY_PAGE_INVITES_PER_DAY_MAX = 0, 50
+
 _ENGAGEMENT_DEFAULTS: dict = {
     # Default to MEDIUM (issue #394): 2026 LinkedIn weights substantive ≥15-word comments ~2.5× short
     # one-liners, so the out-of-the-box length produces a real, specific reply rather than a throwaway.
@@ -3267,6 +3282,9 @@ _ENGAGEMENT_DEFAULTS: dict = {
     "authenticity_score_min": None, "post_similarity_max_pct": None,
     "min_reactions": None, "max_post_age_hours": 24, "reply_to_own_comments": True,
     "max_comments_per_day": 20, "max_dms_per_day": 20, "max_invites_per_day": 10,
+    # Company-page invites (issue #732) run on their OWN small cap, and the effective ceiling is
+    # min(this, max_invites_per_day) — see COMPANY_PAGE_INVITES_PER_DAY_DEFAULT for why 5.
+    "max_company_page_invites_per_day": COMPANY_PAGE_INVITES_PER_DAY_DEFAULT,
     "connection_request_mode": "auto_approve",
     # Smart connection targeting (issue #486). 'suggest' sources candidates but always files them as
     # drafts, so enabling targeting can never send outbound on its own.
@@ -3300,7 +3318,8 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "business_goals", "personal_goals",
                     "authenticity_score_min", "post_similarity_max_pct", "min_reactions",
                     "max_post_age_hours", "reply_to_own_comments", "max_comments_per_day",
-                    "max_dms_per_day", "max_invites_per_day", "connection_request_mode",
+                    "max_dms_per_day", "max_invites_per_day",
+                    "max_company_page_invites_per_day", "connection_request_mode",
                     "connection_targeting_mode", "connection_target_authors",
                     "min_connection_icp_score",
                     "default_buyer_stage", "default_video_quality",
@@ -3360,6 +3379,11 @@ def _select_engagement_row(user_id: int) -> Optional[dict]:
         # so the planner gets the 3/week default rather than a falsy value it would read as zero.
         if row.get("posts_per_week") is None:
             row["posts_per_week"] = DEFAULT_POSTS_PER_WEEK
+        # A NULL company-page invite cap (any row predating the V20260727175938 migration) means
+        # "never chosen" -> the conservative default. Reading NULL as 0 would silently switch the
+        # lane off for every existing user; an explicit 0 IS "off" and is preserved.
+        if row.get("max_company_page_invites_per_day") is None:
+            row["max_company_page_invites_per_day"] = COMPANY_PAGE_INVITES_PER_DAY_DEFAULT
         for f in _ENGAGEMENT_JSON_FIELDS:
             row[f] = _coerce_json_list(row.get(f))
         # A NULL/empty posting_days (any row predating the V20260727045811 migration) means "never
@@ -3449,6 +3473,13 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
                                     if _ppw is not None else DEFAULT_POSTS_PER_WEEK)
     except (TypeError, ValueError):
         merged["posts_per_week"] = DEFAULT_POSTS_PER_WEEK
+    _cpi = merged.get("max_company_page_invites_per_day")
+    try:
+        merged["max_company_page_invites_per_day"] = (
+            min(COMPANY_PAGE_INVITES_PER_DAY_MAX, max(COMPANY_PAGE_INVITES_PER_DAY_MIN, int(_cpi)))
+            if _cpi is not None else COMPANY_PAGE_INVITES_PER_DAY_DEFAULT)
+    except (TypeError, ValueError):
+        merged["max_company_page_invites_per_day"] = COMPANY_PAGE_INVITES_PER_DAY_DEFAULT
     # The publishing day allow-list (issue #581): de-duped, sorted, Mon..Sun only. Anything
     # unusable — an empty set, strings, out-of-range ints — falls back to Mon-Fri rather than
     # persisting a cadence that would schedule nothing or a value the column would reject.
@@ -4132,6 +4163,32 @@ def count_invites_sent_today(user_id: int) -> int:
         return int(r[0]) if r else 0
     except mysql.connector.Error as err:
         myprint(f"Could not count invites for user_id {user_id} | Error: {err}")
+        return 0
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def count_company_page_invites_sent_today(user_id: int) -> int:
+    """Company-page invites sent today (issue #732) — the durable half of the daily cap.
+
+    A page invite is a BATCH action (select N, click Invite once), so one log row carries a count
+    rather than one row per invitee; the trailing number in COMPANY_PAGE_INVITE_SENT_MESSAGE is
+    summed instead of the rows being counted. Reading it back out of the immutable logs (not Redis)
+    is what makes a second run the same day idempotent across worker restarts."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT COALESCE(SUM(CAST(REGEXP_SUBSTR(message, '[0-9]+') AS UNSIGNED)), 0) FROM logs "
+            "WHERE user_id=%s AND action_type=%s AND result=%s AND message LIKE %s "
+            "AND created_at >= CURDATE()",
+            (user_id, LogActionType.ENGAGED.value, LogResultType.SUCCESS.value,
+             f"{COMPANY_PAGE_INVITE_SENT_MESSAGE}:%"))
+        r = cursor.fetchone()
+        return max(0, int(r[0])) if r and r[0] is not None else 0
+    except (mysql.connector.Error, TypeError, ValueError) as err:
+        myprint(f"Could not count company page invites for user_id {user_id} | Error: {err}")
         return 0
     finally:
         cursor.close()

@@ -108,6 +108,7 @@ class TestPartialUpdateKeepsTheRest:
         "authenticity_score_min": 80, "post_similarity_max_pct": 40,
         "min_reactions": 7, "max_post_age_hours": 12, "reply_to_own_comments": 0,
         "max_comments_per_day": 9, "max_dms_per_day": 4, "max_invites_per_day": 3,
+        "max_company_page_invites_per_day": 2,
         "connection_request_mode": "pre_review", "connection_targeting_mode": "auto_queue",
         "connection_target_authors": '["https://x/in/guru"]', "min_connection_icp_score": 70,
         "default_buyer_stage": "consideration", "default_video_quality": "standard",

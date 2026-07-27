@@ -149,7 +149,7 @@ class TestStaggeredBeatSchedule:
         return app.conf.beat_schedule
 
     @pytest.mark.parametrize("entry", ["daily-golden-hour-engagement", "send-appreciation-dms",
-                                       "group-engagement"])
+                                       "group-engagement", "invite_to_company_pages"])
     def test_staggered_fanouts_tick_at_the_stagger_cadence(self, entry):
         from cqc_lem.utilities.engagement_window import STAGGER_TICK_MINUTES
         expected = set(range(0, 60, STAGGER_TICK_MINUTES))

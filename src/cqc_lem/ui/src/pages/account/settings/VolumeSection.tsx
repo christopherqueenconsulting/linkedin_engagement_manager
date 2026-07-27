@@ -31,6 +31,13 @@ export default function VolumeSection() {
               onChange={(e) => setEng({ max_invites_per_day: Number(e.target.value) })}
               className={inputClass} />
           </Field>
+          <Field settingKey="max_company_page_invites_per_day">
+            <input type="number" min={0} max={50} value={eng.max_company_page_invites_per_day ?? 5}
+              onChange={(e) => setEng({
+                max_company_page_invites_per_day: Math.min(50, Math.max(0, Number(e.target.value) || 0)),
+              })}
+              className={inputClass} />
+          </Field>
           <Field settingKey="max_catchup_touches_per_day">
             <input type="number" min={0} max={catchupAllowed} value={eng.max_catchup_touches_per_day ?? 5}
               onChange={(e) => setEng({
