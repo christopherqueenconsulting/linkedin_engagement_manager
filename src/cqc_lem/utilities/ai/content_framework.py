@@ -2088,6 +2088,336 @@ def carousel_blueprint_directive(blueprint: dict, fact_anchors: Optional[list] =
     lines += [f"{i}. {s}" for i, s in enumerate(meta["structure"], 1)]
     if meta.get("hook_styles"):
         lines.append(hook_constraint_directive())
+    if meta.get("save_targeted"):
+        lines.append(reference_slide_directive())
     if meta.get("fact_anchored"):
         lines.append(fact_anchor_directive(fact_anchors))
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Reference-value gate for save-targeted decks (issue #728)
+#
+# `save_worthy_directive` has always ASKED for a reusable reference; nothing ever checked that one
+# came back. The first live document post ("The 160-Release Build Receipt") shipped five slides of
+# restated claims — no checklist, no commands, no config, no numbers table, no decision rule — while
+# its caption promised "the exact stack". A deck that is not save-worthy does not merely under-
+# perform: saves carry roughly 5x a like into 2026 evergreen redistribution, so it wastes the whole
+# advantage of the format.
+#
+# This is the deterministic counterpart, built exactly like the slop lint: pure regex/string work,
+# no LLM, no I/O, one plain-English reason per failure, fed back into a BOUNDED regeneration by the
+# caller. It grades two things a reader would notice immediately:
+#   1. REFERENCE VALUE — every body slide must carry at least one reusable artifact (a step, a
+#      command, a metric, a threshold, a config line, a checklist item, a decision rule, or a
+#      before/after comparison). The reader should be able to act from the deck alone with the post
+#      text deleted.
+#   2. PROMISE/DECK CONSISTENCY — if the caption promises a checklist/stack/framework/numbers, the
+#      slides have to contain one. A promise the deck never fulfils is the defect that made the
+#      original receipt read as a bait-and-switch.
+# Cover and CTA slides are exempt by design: the cover is a promise and the closing slide is a save
+# ask, and `carousel_creator` treats them as their own layout family for the same reason.
+# ---------------------------------------------------------------------------
+
+ARTIFACT_STEP = "step"
+ARTIFACT_COMMAND = "command"
+ARTIFACT_METRIC = "metric"
+ARTIFACT_THRESHOLD = "threshold"
+ARTIFACT_CONFIG = "config"
+ARTIFACT_CHECKLIST = "checklist"
+ARTIFACT_DECISION_RULE = "decision_rule"
+ARTIFACT_COMPARISON = "comparison"
+
+ARTIFACT_LABELS: dict = {
+    ARTIFACT_STEP: "a numbered step",
+    ARTIFACT_COMMAND: "a command or code token",
+    ARTIFACT_METRIC: "a real number",
+    ARTIFACT_THRESHOLD: "a threshold or limit",
+    ARTIFACT_CONFIG: "a config/setting line",
+    ARTIFACT_CHECKLIST: "a checklist item",
+    ARTIFACT_DECISION_RULE: "a decision rule",
+    ARTIFACT_COMPARISON: "a before/after or A-vs-B comparison",
+}
+
+# Slide keys the gate never grades. Their job is the promise and the save ask, not the reference —
+# and a testimonial is a quote, which is somebody else's words rather than a reusable artifact.
+DECK_EXEMPT_SLIDE_KEYS = frozenset({"cover", "call_to_action", "cta", "testimonial"})
+
+# Total decks a caller may spend on one carousel (initial + regenerations), mirroring
+# SLOP_LINT_MAX_ATTEMPTS. 2 = one retry: the directive names exactly what was missing, so a second
+# failure is a model that cannot do it rather than one that misread the ask.
+DECK_REFERENCE_MAX_ATTEMPTS_DEFAULT = 2
+
+# A bullet/enumeration marker anywhere in the text — the generator writes slide bodies as prose, so
+# these have to be found mid-string, not just at line starts.
+_ARTIFACT_CHECKLIST_RE = re.compile(r"(?:^|[\n\r])\s*[-*•▪◦✓✔☑]\s*\S|[✓✔☑]\s*\S|\[[ xX]\]")
+_ARTIFACT_STEP_RE = re.compile(
+    r"\bstep\s*(?:\d|one|two|three|four|five|six)\b"
+    r"|(?:^|[\n\r])\s*\d{1,2}[.)]\s+\S"
+    r"|\b(?:start|begin)\s+by\s+\w+ing\b",
+    re.IGNORECASE)
+# CLI/code shapes: a backticked span, a long flag, a call, an invocation of a known runner, or a
+# path. Deliberately narrow — a false "command" would let a narrative slide pass. The runner list is
+# the dangerous half: several of those names are also ordinary English verbs, so it is matched
+# case-SENSITIVELY (`(?-i:…)`) and refuses a following stop word — otherwise "Make sure the pipeline
+# is boring" and "make it simple" read as commands and a deck of pure narrative sails through.
+_COMMAND_STOP_WORDS = (
+    "sure|it|the|a|an|this|that|these|those|my|our|your|their|his|her|its|them|us|"
+    "time|room|sense|peace|money|progress|space|way|ways|do|does|did|is|are|was|were|be|been|"
+    "and|or|but|if|when|to|for|with|in|on|at|of|up|out|off|good|better|best|more|less|new|real"
+)
+_ARTIFACT_COMMAND_RE = re.compile(
+    r"`[^`\n]+`"
+    r"|(?:^|\s)--[a-z][\w-]+"
+    r"|\b[a-z_][\w.]*\(\)"
+    r"|(?-i:\b(?:npm|npx|pip|poetry|git|docker|kubectl|curl|make|yarn|brew|aws|gh|psql|mysql|python|"
+    r"node|terraform|helm|ffmpeg|pytest|flyway)\s+(?!(?:" + _COMMAND_STOP_WORDS + r")\b)[a-z][\w-]+)"
+    r"|(?:^|\s)\.?/[\w.-]+/[\w./-]+",
+    re.IGNORECASE)
+# An env-var / setting identifier, or an explicit key=value / "key: value" setting.
+_ARTIFACT_CONFIG_RE = re.compile(
+    r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+){1,}\b"
+    r"|\b[a-z][\w.-]*\s*=\s*[\w./\"'-]+"
+    r"|\bset\s+[\w.]+\s+to\s+\S+",
+    re.IGNORECASE)
+# A comparator sitting next to a number — "under 200ms", "at most 3", ">= 80%", "cap at 5".
+_ARTIFACT_THRESHOLD_RE = re.compile(
+    r"\b(?:under|over|below|above|beyond|within|at\s+least|at\s+most|no\s+more\s+than|"
+    r"no\s+fewer\s+than|fewer\s+than|less\s+than|more\s+than|up\s+to|max|maximum|min|minimum|"
+    r"cap(?:ped)?\s+at|limit(?:ed)?\s+to|threshold\s+of)\s+(?:about\s+)?[<>=~]*\s*\$?\d"
+    r"|[<>]=?\s*\d",
+    re.IGNORECASE)
+# An actionable conditional or a hard rule — "when X, use Y", "use X unless Y", "never commit Z".
+_ARTIFACT_RULE_RE = re.compile(
+    r"\b(?:if|when|unless|whenever|once)\b[^.!?\n]{3,120}?\b(?:use|run|set|pick|choose|switch|add|"
+    r"remove|skip|stop|start|keep|drop|prefer|reach\s+for|go\s+with|default\s+to|raise|lower|cap|"
+    r"roll\s+back|retry)\b"
+    r"|\b(?:use|run|set|pick|choose|prefer|default\s+to|reach\s+for|go\s+with|stick\s+with)\b"
+    r"[^.!?\n]{3,120}?\b(?:if|when|unless|only\s+for|instead\s+of)\b"
+    r"|\b(?:always|never)\s+(?:\w+\s+){0,2}(?:use|run|set|ship|deploy|commit|merge|skip|store|share|"
+    r"hardcode|invent|round|estimate|rename|reuse)\b",
+    re.IGNORECASE)
+# A stated CHANGE or a side-by-side, not merely the words "before"/"after"/"from…to" — those are
+# ordinary narrative connectives and would let a claims-only slide pass.
+_ARTIFACT_COMPARISON_RE = re.compile(
+    r"\bbefore\b[^.!?\n]{0,60}\bafter\b"
+    r"|\bafter\b[^.!?\n]{0,60}\bbefore\b"
+    r"|\bvs\.?\b|\bversus\b"
+    r"|\b(?:went|dropped|fell|rose|grew|shrank|cut|down|up)\s+from\b[^.!?\n]{0,60}\bto\b"
+    r"|\bfrom\s+\S*\d\S*\s+to\s+\S*\d\S*"
+    r"|(?:-->|->|→)",
+    re.IGNORECASE)
+
+# Caption promises → the artifact kinds that would fulfil them. Ordered; a caption may make several.
+# Deliberately a short, explicit lexicon: a loose one would demand an artifact of every deck and
+# turn the gate into a permanent regeneration tax.
+_DECK_PROMISES: tuple = (
+    (re.compile(r"\bcheck\s?lists?\b|\bthe\s+\d+\s+checks?\b", re.IGNORECASE),
+     "a checklist", (ARTIFACT_CHECKLIST, ARTIFACT_STEP)),
+    # Bare "process" is deliberately NOT here: "we rebuilt our hiring process" promises the reader
+    # nothing, and treating it as a promise would put every ordinary story deck through the gate.
+    (re.compile(r"\bstep[\s-]?by[\s-]?step\b|\bsteps\b|\bplaybook\b|\bframework\b|\bworkflow\b",
+                re.IGNORECASE),
+     "a step-by-step process", (ARTIFACT_STEP, ARTIFACT_CHECKLIST)),
+    (re.compile(r"\bstack\b|\bcommands?\b|\bconfigs?\b|\bconfiguration\b|\bsettings?\b|"
+                r"\bsnippets?\b|\btemplates?\b|\bprompts?\b", re.IGNORECASE),
+     "the exact stack, commands or config", (ARTIFACT_COMMAND, ARTIFACT_CONFIG)),
+    (re.compile(r"\bthe\s+numbers\b|\breceipts?\b|\bbenchmarks?\b|\bmetrics\b", re.IGNORECASE),
+     "real numbers", (ARTIFACT_METRIC,)),
+    (re.compile(r"\bbefore\s*(?:/|and|vs\.?)\s*after\b|\bversus\b|\bvs\.?\b|\bcomparison\b",
+                re.IGNORECASE),
+     "a before/after comparison", (ARTIFACT_COMPARISON,)),
+    (re.compile(r"\brules?\b|\bwhen\s+to\s+\w+\b|\bcriteria\b|\bthresholds?\b", re.IGNORECASE),
+     "a decision rule", (ARTIFACT_DECISION_RULE, ARTIFACT_THRESHOLD)),
+)
+
+# The template family that makes a slide inherently save-worthy. Given to the writer as SHAPES to
+# pick from, so "carry a reusable artifact" is a form it can copy rather than an abstract ask.
+REFERENCE_SLIDE_SHAPES: tuple = (
+    ("Numbered step", "one step of a real sequence, written as an instruction the reader can "
+                      "follow ('3. Pin the model version in the config, not the call site')"),
+    ("Checklist", "2-4 bullet-marked checks, each one line, each independently verifiable"),
+    ("Command / config block", "the literal command, flag, env var, or setting line — written "
+                               "exactly as it is typed"),
+    ("Numbers table", "the real figures side by side (cost, time, count) with what each one "
+                      "measures"),
+    ("Before / after", "the state before and the state after, with the number that changed"),
+    ("Decision rule", "the explicit if/when → do-this rule, including when NOT to"),
+)
+
+
+def deck_reference_enabled() -> bool:
+    """Read at call time (the POST_SIMILARITY_MAX live-env pattern) so ops can stand the gate down
+    without a restart. Fails OPEN when disabled: an ungraded deck ships exactly as it did before."""
+    raw = (os.environ.get("DECK_REFERENCE_ENABLED") or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def deck_reference_max_attempts() -> int:
+    """Total decks a caller may spend on one carousel (initial + regenerations)."""
+    raw = (os.environ.get("DECK_REFERENCE_MAX_ATTEMPTS") or "").strip()
+    try:
+        return max(1, min(4, int(raw))) if raw else DECK_REFERENCE_MAX_ATTEMPTS_DEFAULT
+    except ValueError:
+        return DECK_REFERENCE_MAX_ATTEMPTS_DEFAULT
+
+
+def reference_slide_directive() -> str:
+    """The writer-side injection for a save-targeted deck: the slide SHAPES that are inherently
+    reusable, plus the one-artifact-per-slide rule the gate below enforces."""
+    lines = [
+        "EVERY BODY SLIDE MUST CARRY SOMETHING REUSABLE (this is checked, and a deck of claims is "
+        "regenerated):",
+        "- Each slide between the cover and the closing slide must contain at least ONE of: a "
+        "numbered step, a command or flag, a real number, a threshold, a config/setting line, a "
+        "checklist item, a decision rule, or a before/after comparison.",
+        "- A slide that only restates a claim, an opinion, or the narrative is a FAILED slide. "
+        "Test each one: with the post text deleted, could the reader act from this slide alone?",
+        "- Pick a shape per slide from this family and fill it with real material:",
+    ]
+    lines += [f"  * {name}: {how}." for name, how in REFERENCE_SLIDE_SHAPES]
+    lines.append("- Whatever the caption promises (a checklist, the exact stack, the numbers, a "
+                 "framework), the SLIDES have to contain it. Never promise something the deck does "
+                 "not deliver.")
+    return "\n".join(lines)
+
+
+def slide_artifacts(text: Optional[str]) -> list:
+    """Which reusable-artifact kinds a single slide carries, in a stable order. Empty = the slide is
+    narrative or claims only. Deterministic — no LLM, no I/O."""
+    body = str(text or "")
+    if not body.strip():
+        return []
+    found = []
+    for kind, pattern in ((ARTIFACT_CHECKLIST, _ARTIFACT_CHECKLIST_RE),
+                          (ARTIFACT_STEP, _ARTIFACT_STEP_RE),
+                          (ARTIFACT_COMMAND, _ARTIFACT_COMMAND_RE),
+                          (ARTIFACT_CONFIG, _ARTIFACT_CONFIG_RE),
+                          (ARTIFACT_THRESHOLD, _ARTIFACT_THRESHOLD_RE),
+                          (ARTIFACT_DECISION_RULE, _ARTIFACT_RULE_RE),
+                          (ARTIFACT_COMPARISON, _ARTIFACT_COMPARISON_RE)):
+        if pattern.search(body):
+            found.append(kind)
+    # A metric is a number the slide ASSERTS — `numeric_claims` already discards list numbering,
+    # bare years and tool version numbers, so "GPT-4o" is not mistaken for reference value.
+    if numeric_claims(body):
+        found.append(ARTIFACT_METRIC)
+    return found
+
+
+def deck_slides(carousel: Optional[dict]) -> list:
+    """Every slide in a carousel dict, in schema order, as {key, index, title, content, graded}.
+    Schema-agnostic on purpose: the six carousel models in `carousel_creator` differ only in which
+    keys hold slides and which hold lists of them, and the gate has to grade all of them."""
+    if not isinstance(carousel, dict):
+        return []
+    slides = []
+
+    def _add(key: str, value, index: Optional[int] = None) -> None:
+        if not isinstance(value, dict):
+            return
+        slides.append({
+            "key": key,
+            "index": index,
+            "title": str(value.get("title") or "").strip(),
+            "content": str(value.get("content") or "").strip(),
+            "graded": key.lower() not in DECK_EXEMPT_SLIDE_KEYS,
+        })
+
+    for key, value in carousel.items():
+        if isinstance(value, list):
+            for i, item in enumerate(value):
+                _add(key, item, i)
+        else:
+            _add(key, value)
+    return slides
+
+
+def _slide_label(slide: dict) -> str:
+    """How a slide is named back to the writer and in the logs — its own title when it has one, so
+    the retry directive points at something the model can actually find in its last deck."""
+    title = str((slide or {}).get("title") or "").strip()
+    if title:
+        return title
+    key = str((slide or {}).get("key") or "slide")
+    index = (slide or {}).get("index")
+    return key if index is None else f"{key} {index + 1}"
+
+
+def deck_promises(post_text: Optional[str]) -> list:
+    """What the CAPTION tells the reader the deck contains, as {promise, needs} entries. This is the
+    cheap half of the consistency check — the copy said 'here is the exact stack', so the slides
+    have to hold one."""
+    body = str(post_text or "")
+    if not body.strip():
+        return []
+    return [{"promise": label, "needs": list(kinds)}
+            for pattern, label, kinds in _DECK_PROMISES if pattern.search(body)]
+
+
+def deck_reference_report(carousel: Optional[dict], post_text: Optional[str] = None,
+                          save_targeted: bool = False) -> dict:
+    """Grade a generated deck for REFERENCE VALUE and PROMISE CONSISTENCY. Deterministic — the same
+    deck always gets the same verdict.
+
+    Returns {checked, required, passes, slides, empty_slides, artifacts, promises, unfulfilled,
+    reasons}. `required` is True for a save-targeted archetype (build receipt, bookmarkable
+    compendium) or for ANY deck whose caption makes a promise — a deck nobody claimed was a
+    reference is reported but never failed. `checked` is False when the gate is disabled or the deck
+    has no gradeable slide, in which case the report passes: this layer fails OPEN, always.
+    """
+    slides = deck_slides(carousel)
+    graded = [s for s in slides if s["graded"]]
+    empty = {"checked": False, "required": False, "passes": True, "slides": slides,
+             "empty_slides": [], "artifacts": [], "promises": [], "unfulfilled": [], "reasons": []}
+    if not deck_reference_enabled() or not graded:
+        return empty
+
+    for slide in slides:
+        slide["artifacts"] = slide_artifacts(f"{slide['title']}\n{slide['content']}")
+    promises = deck_promises(post_text)
+    required = bool(save_targeted or promises)
+    # The whole deck's artifacts, cover and CTA included: a promise is fulfilled by anything in the
+    # deck, while the per-slide rule is what stops the middle from going narrative.
+    present = {k for s in slides for k in s.get("artifacts", [])}
+    empty_slides = [s for s in graded if not s.get("artifacts")]
+    unfulfilled = [p for p in promises if not (set(p["needs"]) & present)]
+
+    reasons = []
+    for slide in empty_slides:
+        reasons.append(f"slide “{_slide_label(slide)}” carries nothing reusable — it is claims or "
+                       f"narrative only")
+    for promise in unfulfilled:
+        wanted = " or ".join(ARTIFACT_LABELS.get(k, k) for k in promise["needs"])
+        reasons.append(f"the post text promises {promise['promise']} but no slide carries {wanted}")
+
+    return {
+        "checked": True,
+        "required": required,
+        "passes": not (required and (empty_slides or unfulfilled)),
+        "slides": slides,
+        "empty_slides": [_slide_label(s) for s in empty_slides],
+        "artifacts": sorted(present),
+        "promises": [p["promise"] for p in promises],
+        "unfulfilled": [p["promise"] for p in unfulfilled],
+        "reasons": reasons,
+    }
+
+
+def deck_retry_directive(report: Optional[dict]) -> str:
+    """The regeneration steer after a deck failed the reference gate: name the exact slides that
+    carried nothing reusable and the exact promise the slides never delivered, so the retry adds
+    material instead of rewording the same claims."""
+    reasons = [str(r) for r in (report or {}).get("reasons", []) if str(r).strip()]
+    if not reasons:
+        return ""
+    lines = ["\n\nYOUR PREVIOUS DECK WAS REJECTED — its slides carried nothing worth saving. "
+             "Rewrite it so none of these remain:"]
+    lines += [f"- {r[0].upper()}{r[1:]}." for r in reasons]
+    lines.append("- Give every body slide ONE concrete reusable artifact and say it in full: the "
+                 "actual step, the actual command or setting, the actual number, the actual "
+                 "threshold, or the actual if/when rule.")
+    lines += [f"  * {name}: {how}." for name, how in REFERENCE_SLIDE_SHAPES]
+    lines.append("- Keep every verified fact you were given and invent NOTHING to fill a slide — if "
+                 "you do not have the specific, use the placeholder form you were given.")
     return "\n".join(lines) + "\n"

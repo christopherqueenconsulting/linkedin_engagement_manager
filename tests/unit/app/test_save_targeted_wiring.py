@@ -319,17 +319,28 @@ class TestCarouselDrawsFromThePostMenu:
             rcp._select_carousel_blueprint(1)
         assert select.call_args[1]["exclude_formats"] is None
 
-    def test_the_carousel_writer_gets_the_same_verified_facts(self):
+    def test_the_carousel_writer_gets_the_one_selected_story_only(self):
+        # Issue #728: the writer's allow-list is the ONE anchored entry, never the whole bank —
+        # handing it every active entry is what produced a six-receipt greatest-hits deck.
         from cqc_lem.app.run_content_plan import create_carousel_content
+        entries = [{"id": 1, "kind": "artifact", "title": "Slide render",
+                    "body": "Rendered 40 slides in one pass", "active": True, "used_count": 0},
+                   {"id": 2, "kind": "number", "title": "Release count",
+                    "body": "Shipped 160 releases in a year", "active": True, "used_count": 3}]
         with patch(f"{_RCP}.get_engagement_preferences", return_value={}), \
              patch(f"{_RCP}.get_or_create_profile_synthesis", return_value="brief"), \
              patch(f"{_RCP}.get_recent_post_shape_history", return_value=[]), \
              patch(f"{_RCP}.get_shape_performance", return_value=None), \
-             patch(f"{_RCP}._fact_anchors", return_value=["Rendered 40 slides in one pass"]), \
+             patch(f"{_RCP}.get_story_bank_entries", return_value=entries), \
              patch("cqc_lem.utilities.ai.ai_helper.generate_carousel_content",
                    return_value=("caption", {"bogus": True})) as gen:
             create_carousel_content(1, "awareness", None)
-        assert gen.call_args[1]["fact_anchors"] == ["Rendered 40 slides in one pass"]
+        anchors = gen.call_args[1]["fact_anchors"]
+        assert any("40 slides" in a for a in anchors)
+        assert not any("160 releases" in a for a in anchors)
+        # …and the same single entry is what the writer is told to build the proof slot out of.
+        assert "Rendered 40 slides in one pass" in gen.call_args[1]["story_directive"]
+        assert "160 releases" not in gen.call_args[1]["story_directive"]
 
     def test_text_posts_do_not_force_the_save_targeted_bias(self):
         from cqc_lem.app import run_content_plan as rcp
