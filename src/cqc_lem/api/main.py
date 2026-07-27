@@ -170,9 +170,15 @@ _API_ACCESS_TOKEN_SET = {t.strip() for t in API_ACCESS_TOKENS.split(",") if t.st
 # of /api/user/* stays gated.
 # /api/faq is public: it serves the published front-page FAQ (issue #506) to logged-out visitors on
 # the landing page. GET-only, no user data — same shape as /api/app-info.
+# /api/flags is public for the SAME reason (issue #651): the landing page bootstraps its feature
+# flags from it and carries no bearer token. Gating it would 401 the flags query, and the SPA's
+# axios interceptor treats ANY 401 as a dead session — it clears lem_session and redirects, so a
+# signed-in visitor hitting the landing page would be silently logged out. GET-only; it returns the
+# registry's own toggle values, and the optional session_token is self-authenticating (an invalid
+# one resolves the "system" identity rather than erroring) — same model as /api/user/linkedin-cookie.
 _PUBLIC_API_PREFIXES = ("/api/auth/", "/api/billing/webhook", "/api/assets",
                         "/api/linkedin/verification-pin", "/api/linkedin/comment-notification",
-                        "/api/app-info", "/api/faq",
+                        "/api/app-info", "/api/faq", "/api/flags",
                         "/api/extension/", "/api/user/linkedin-cookie")
 
 

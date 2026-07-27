@@ -106,7 +106,10 @@ second client-side posthog reader for flags; that reintroduces exactly the split
 removes.
 
 An absent or invalid session resolves the same flags for the `"system"` identity rather than 401ing —
-the landing page is logged out and still needs to know what to render.
+the landing page is logged out and still needs to know what to render. For the same reason
+`/api/flags` sits in `_PUBLIC_API_PREFIXES`, outside the `API_ACCESS_TOKENS` bearer gate: the landing
+page carries no bearer token, and the SPA's axios interceptor treats any 401 as a dead session, so a
+gated flags query would log a signed-in visitor out on `/`.
 
 ## Configuration
 

@@ -93,6 +93,22 @@ class TestFlagBootstrap:
         assert detail["local_evaluation"] is True
         assert all(detail["flags"].values())
 
+    def test_stays_outside_the_bearer_gate_for_a_logged_out_visitor(self, client):
+        """The landing page bootstraps its flags from here and carries no bearer token. If the gate
+        covered this path the query would 401 — and the SPA's axios interceptor reads ANY 401 as a
+        dead session, clearing lem_session and redirecting, so a signed-in visitor landing on `/`
+        would be logged out by a marketing section."""
+        from cqc_lem.api.main import _api_token_required, _PUBLIC_API_PREFIXES
+
+        assert "/api/flags" in _PUBLIC_API_PREFIXES
+        with patch(f"{_M}._API_ACCESS_TOKEN_SET", {"secret"}):
+            assert _api_token_required("/api/flags") is False
+            # The exact leaf only — the boundary rule must not open a future /api/flags-admin.
+            assert _api_token_required("/api/flags-admin") is True
+            response = _get(client, "/api/flags")
+
+        assert response.status_code == 200
+
     def test_posthog_decision_beats_the_env_var_in_the_payload(self, client, monkeypatch):
         monkeypatch.setenv("POSTHOG_API_KEY", "phc_test")
         monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "phx_test")
