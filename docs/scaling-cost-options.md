@@ -88,15 +88,20 @@ Per `docs/SELENIUM_GRID.md` §4, the load test (`selenium_load_test.py`, issue #
 many concurrent Chrome sessions keep 95% of engagement work inside its window, on today's topology
 (8 slots, lanes 3/2/2/1):
 
-| Users | Sessions needed (measured, pre-stagger) | Sessions needed (staggered, **predicted** — re-run is #634) |
-|---|---|---|
-| 10 | 5 | 4 |
-| 50 | 14 | 11 |
-| 100 | 27 | 20 |
+| Users | Sessions needed (measured, pre-stagger) | Staggered, **predicted** (what the pricing below used) | Staggered, **measured** (#634, 2026-07-27) |
+|---|---|---|---|
+| 10 | 5 | 4 | 5 |
+| 50 | 14 | 11 | **15** |
+| 100 | 27 | 20 | **28** |
 
-Every cost column below is priced at **both** numbers as `staggered (measured)` — e.g. `4 (5)` —
-because the staggered curve is still a prediction pending #634, and pricing the conservative
-(measured) number avoids under-provisioning if #634 comes back worse than modeled. Ratio used
+Every cost column below is priced at **both** of the first two numbers as `staggered (measured)` —
+e.g. `4 (5)` — because when this spike was written the staggered curve was still a prediction
+pending #634, and pricing the conservative (pre-stagger measured) number avoided under-provisioning
+if #634 came back worse than modeled. **It did:** #634 landed at 5 / 15 / 28, i.e. at or just above
+the conservative column, so **read the parenthesised (measured) figure in every table below as the
+live one** — the optimistic figure never materialised. One session more at 50 and 100 users moves
+no verdict here: it is within Option B's next box, and it makes the hosted per-session vendors
+slightly *more* expensive, not less. Ratio used
 throughout: **~1 vCPU + ~1.2–1.5 GB RAM per concurrent Chrome session** (matches §4's measured 8
 slots ≈ 6.5–8 vCPU / 6–8 GB), and **~65–70 active Selenium-minutes/user/day** (§4's per-user
 workload total) for any vendor billed by browser-minute rather than by concurrency tier.
