@@ -1705,11 +1705,19 @@ def auto_file_feedback_issues(self, limit: int = 25):
     """Drain the captured-feedback queue into the work pipeline (issue #498, plan §B.2/B.3): classify
     each new report, dedup it against the open clusters (+1 the existing issue) and open ONE
     `MODE=start`-shaped issue per genuinely new problem. QueueOnce so two beat ticks can never file
-    the same report twice."""
-    from cqc_lem.utilities.feedback.issue_service import process_new_feedback
+    the same report twice.
+
+    The same pass repairs already-filed issues whose labels/assignee/Decision Comment never landed
+    (issue #718) — an unlabeled issue is invisible to the agent pipeline, so filing alone is not the
+    job being done."""
+    from cqc_lem.utilities.feedback.issue_service import (
+        process_new_feedback, repair_auto_filed_issues)
 
     result = process_new_feedback(limit=limit)
-    return f"Feedback filing: {result['processed']} row(s) — {result['counts'] or 'nothing to do'}"
+    repair = repair_auto_filed_issues()
+    return (f"Feedback filing: {result['processed']} row(s) — "
+            f"{result['counts'] or 'nothing to do'}; repair: {repair['scanned']} checked, "
+            f"{repair['repaired']} repaired, {repair['failed']} still broken")
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})

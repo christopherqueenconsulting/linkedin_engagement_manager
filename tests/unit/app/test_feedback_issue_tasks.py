@@ -9,9 +9,13 @@ _SVC = "cqc_lem.utilities.feedback.issue_service"
 
 
 class TestAutoFileFeedbackIssues:
+    def _repair(self, scanned=0, repaired=0, failed=0):
+        return patch(f"{_SVC}.repair_auto_filed_issues",
+                     return_value={"scanned": scanned, "repaired": repaired, "failed": failed})
+
     def test_delegates_to_the_service_and_summarizes_the_pass(self):
-        with patch(f"{_SVC}.process_new_feedback",
-                   return_value={"processed": 3, "counts": {"filed": 1, "deduped": 2}}) as service:
+        counts = {"processed": 3, "counts": {"filed": 1, "deduped": 2}}
+        with patch(f"{_SVC}.process_new_feedback", return_value=counts) as service, self._repair():
             from cqc_lem.app.run_scheduler import auto_file_feedback_issues
             result = auto_file_feedback_issues(limit=7)
         service.assert_called_once_with(limit=7)
@@ -19,9 +23,22 @@ class TestAutoFileFeedbackIssues:
         assert "'filed': 1" in result
 
     def test_empty_pass_says_nothing_to_do(self):
-        with patch(f"{_SVC}.process_new_feedback", return_value={"processed": 0, "counts": {}}):
+        with patch(f"{_SVC}.process_new_feedback", return_value={"processed": 0, "counts": {}}), \
+                self._repair():
             from cqc_lem.app.run_scheduler import auto_file_feedback_issues
             assert "nothing to do" in auto_file_feedback_issues()
+
+    def test_every_pass_also_repairs_already_filed_issues(self):
+        # Issue #718: filing an issue whose labels never landed is not the job being done — the
+        # pipeline selects on labels, so a label-less issue is invisible until this repairs it.
+        with patch(f"{_SVC}.process_new_feedback", return_value={"processed": 0, "counts": {}}), \
+                self._repair(scanned=4, repaired=2, failed=1) as repair:
+            from cqc_lem.app.run_scheduler import auto_file_feedback_issues
+            result = auto_file_feedback_issues()
+        repair.assert_called_once_with()
+        assert "4 checked" in result
+        assert "2 repaired" in result
+        assert "1 still broken" in result
 
 
 class TestAutoReclusterFeedback:

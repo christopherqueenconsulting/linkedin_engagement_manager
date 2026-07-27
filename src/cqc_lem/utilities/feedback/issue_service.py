@@ -11,6 +11,10 @@ category/severity/risk verdict. This stage decides what the world sees:
                                               ├─ similar to an OPEN cluster → +1 ITS issue
                                               └─ new problem → open ONE issue, stamp it back
 
+A filed issue is only useful if its LABELS land — the agent pipeline selects on them — so every
+filing beat also runs `repair_auto_filed_issues`, which re-attaches the labels/assignee/Decision
+Comment on any already-filed issue whose post-create calls were refused (issue #718).
+
 Dedup is the whole point: one recurring problem must be one issue, so the Nth report bumps demand on
 the existing issue instead of spamming the backlog. Similarity is embedding cosine when an embedding
 is available and falls back to `content_framework.text_similarity` (the deterministic token-overlap
@@ -40,6 +44,7 @@ Env:
 
 import json
 import os
+import re
 from typing import Optional
 
 from cqc_lem.utilities.ai.content_framework import as_vector, cosine_similarity, text_similarity
@@ -49,7 +54,7 @@ from cqc_lem.utilities.db import (
 )
 from cqc_lem.utilities.feedback.classifier import (
     MAX_BODY_CHARS, NEEDS_HUMAN_LABEL, RISK_LABELS, FeedbackCategory, FeedbackClassification,
-    FeedbackRisk, FeedbackRoute, classify_feedback, labels_for,
+    FeedbackRisk, FeedbackRoute, FeedbackSeverity, classify_feedback, labels_for,
 )
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 
@@ -76,6 +81,38 @@ RATE_LIMIT_WINDOW_HOURS = 24
 MAX_CLUSTER_CANDIDATES = 100
 MAX_TITLE_CHARS = 120
 GITHUB_TIMEOUT_SECONDS = 20
+
+# Issue #718: the label/assignee/comment sub-resource endpoints 403'd for weeks while `POST /issues`
+# kept succeeding, so every auto-filed issue landed label-less. Named in every failure log so the
+# operator sees the fix, not just the status code.
+TOKEN_PERMISSION_HINT = ("FEEDBACK_GITHUB_TOKEN needs `Issues: Read and write` (+ `Metadata: "
+                         "Read`) on this repo — see issue #718.")
+
+# What marks an issue as OURS. `build_issue_body` writes the first; `build_decision_comment` the
+# second. The repair pass will not touch an issue that carries neither.
+FILED_PROVENANCE_MARKER = "Auto-filed from in-app feedback"
+DECISION_COMMENT_MARKER = "Human decision needed"
+
+# The provenance/demand fields `build_issue_body` writes, read back so a repair pass can recompute
+# the exact label set WITHOUT re-paying for a classification.
+_PROVENANCE_RE = re.compile(r"Classifier:\s*(?P<category>[\w-]+)/(?P<severity>[\w-]+),\s*risk\s*"
+                            r"`(?P<risk>[\w-]+)`,\s*confidence\s*(?P<confidence>[0-9]*\.?[0-9]+)")
+_DEMAND_RE = re.compile(r"Reported by\s+(?P<reporters>\d+)\s+distinct user")
+_TITLE_RE = re.compile(r"^\w+\((?P<component>[\w-]+)\):\s*(?P<title>.+)$")
+
+MAX_REPAIR_ISSUES = 50
+REPAIR_COMMENT_PAGE_SIZE = 100
+# A refused WRITE stops the sweep on the first one; a refused READ can be a single deleted issue, so
+# it takes a short run of them before the same conclusion is drawn.
+REPAIR_READ_FAILURE_STOP = 3
+
+
+class RepairAction:
+    """What `repair_filed_issue` did to ONE already-filed issue (issue #718)."""
+    OK = 'ok'              # nothing missing — the attach calls landed
+    REPAIRED = 'repaired'  # labels/assignee/decision comment re-attached
+    SKIPPED = 'skipped'    # not ours, closed, or unreadable provenance — never touched
+    ERROR = 'error'        # GitHub refused the repair too (the token is still wrong)
 
 
 class IssueAction:
@@ -517,8 +554,11 @@ def create_github_issue(title: str, body: str, labels: list,
 
     Labels and assignees are attached in SEPARATE calls after creation (issue #598): GitHub
     silently drops both when a fine-grained PAT supplies them in the create payload, so every
-    auto-filed issue landed label-less and the pipeline never picked it up. A failed attach is a
-    warning, never a lost issue — the row is already on GitHub by then."""
+    auto-filed issue landed label-less and the pipeline never picked it up. A failed attach never
+    loses the issue — the row is already on GitHub by then — but it is an ERROR, not a warning
+    (issue #718): a label-less issue is invisible to the agent pipeline until a human hand-labels
+    it, so the loop is BROKEN, and only an error reaches PostHog at the default threshold.
+    `repair_auto_filed_issues` re-attaches what a failed pass dropped."""
     data = github_request("POST", "issues", {"title": title, "body": body})
     number = data.get("number") if isinstance(data, dict) else None
     if number is None:
@@ -527,13 +567,14 @@ def create_github_issue(title: str, body: str, labels: list,
     label_list = [str(label) for label in (labels or [])]
     if label_list and github_request("POST", f"issues/{number}/labels",
                                      {"labels": label_list}) is None:
-        log_warning(f"Auto-filed issue #{number} could not be labeled {label_list}",
-                    api_provider="github")
+        log_error(f"Auto-filed issue #{number} could not be labeled {label_list} — it is invisible "
+                  f"to the agent pipeline until this is repaired. {TOKEN_PERMISSION_HINT}",
+                  api_provider="github")
     assignee_list = [str(assignee) for assignee in (assignees or [])]
     if assignee_list and github_request("POST", f"issues/{number}/assignees",
                                         {"assignees": assignee_list}) is None:
-        log_warning(f"Auto-filed issue #{number} could not be assigned to {assignee_list}",
-                    api_provider="github")
+        log_error(f"Auto-filed issue #{number} could not be assigned to {assignee_list}. "
+                  f"{TOKEN_PERMISSION_HINT}", api_provider="github")
     log_info(f"Auto-filed feedback issue #{number}: {title}", api_provider="github")
     return number
 
@@ -639,8 +680,10 @@ def file_feedback_issue(feedback: dict, classification: FeedbackClassification =
         # Leave the row unclustered/`new` — the next pass retries rather than losing the report.
         return _result(IssueAction.ERROR, feedback_id, reason="issue creation failed",
                        labels=labels)
-    if not ready:
-        comment_on_issue(number, build_decision_comment(classification, reporter_count))
+    if not ready and not comment_on_issue(number, build_decision_comment(classification,
+                                                                         reporter_count)):
+        log_error(f"Auto-filed issue #{number} is held with no Decision Comment — the owner has "
+                  f"nothing to answer. {TOKEN_PERMISSION_HINT}", api_provider="github")
     update_feedback_triage(feedback_id, status=FeedbackStatus.ISSUE_CREATED,
                            cluster_id=feedback_id, github_issue_number=number, embedding=vector)
     return _result(IssueAction.FILED, feedback_id, issue_number=number, labels=labels,
@@ -716,3 +759,143 @@ def recluster_feedback(limit: int = 200) -> dict:
              f"{embedded} embedding(s) backfilled")
     return {"scanned": len(rows), "attached": attached, "embedded": embedded,
             "clusters": len(clusters)}
+
+
+# --- Repair pass (issue #718) --------------------------------------------------------------------
+# `POST /issues` kept succeeding while `/labels`, `/assignees` and `/comments` all 403'd, so issues
+# landed on GitHub with no `agent:ready`, no `priority:*`, no owner and no Decision Comment — and
+# the agent pipeline, which selects on labels, could not see them at all. Nothing in the DB records
+# the intended label set (recording it would need a schema change), but `build_issue_body` writes
+# the classifier verdict into the body, so the set is recomputable from the issue GitHub already
+# has — deterministically, with no second LLM call.
+
+
+def parse_filed_issue(title: str, body: str) -> Optional[tuple]:
+    """(classification, reporter_count) read back off an issue THIS loop filed, or None when the
+    provenance line is missing or unreadable. Only the fields the label set depends on are
+    reconstructed — `summary` stays empty because the repair never rewrites the body.
+
+    Both lines are read relative to OUR provenance block, never as the first match anywhere in the
+    body. Everything above that block is the `## Why` summary — model-written from user-supplied
+    text — so a report whose summary quotes "reported by 5 distinct users" would otherwise dictate
+    the demand its own issue is repaired with, and that is exactly the signal that decides whether a
+    feature is built unattended."""
+    text = body or ""
+    marker = text.find(FILED_PROVENANCE_MARKER)
+    provenance = _PROVENANCE_RE.search(text, max(marker, 0))
+    if not provenance:
+        return None
+    try:
+        category = FeedbackCategory(provenance.group("category"))
+        severity = FeedbackSeverity(provenance.group("severity"))
+        risk = FeedbackRisk(provenance.group("risk"))
+        confidence = float(provenance.group("confidence"))
+    except ValueError:
+        return None
+    # `build_issue_body` puts the demand line in the paragraph immediately BEFORE the provenance
+    # block, so the LAST match in front of it is ours and anything a summary quoted is behind it.
+    demand = list(_DEMAND_RE.finditer(text[:marker] if marker > 0 else text))
+    # No demand line means no reporters PROVEN — 0, never 1: floored up, a first-of-its-kind feature
+    # would repair itself into `agent:ready` on demand it never had.
+    reporter_count = int(demand[-1].group("reporters")) if demand else 0
+    named = _TITLE_RE.match((title or "").strip())
+    classification = FeedbackClassification(
+        category=category, severity=severity,
+        component=named.group("component") if named else 'other',
+        title=named.group("title") if named else (title or "").strip(),
+        summary="", risk=risk, confidence=confidence)
+    return classification, reporter_count
+
+
+def issue_comment_bodies(issue_number: int) -> Optional[list]:
+    """Every comment body on an issue, or None when the read failed (never [] on failure — "we could
+    not look" must not read as "there is no Decision Comment")."""
+    data = github_request("GET", f"issues/{int(issue_number)}/comments"
+                                 f"?per_page={REPAIR_COMMENT_PAGE_SIZE}")
+    if not isinstance(data, list):
+        return None
+    return [str(comment.get("body") or "") for comment in data if isinstance(comment, dict)]
+
+
+def repair_filed_issue(issue: dict) -> str:
+    """Re-attach what a failed post-create pass dropped from ONE auto-filed issue (`RepairAction`).
+
+    Only ever ADDS: the title/body are never rewritten (a human may have edited them by now) and no
+    label is ever removed. `feedback-loop` is the tripwire — this loop is the only thing that
+    attaches it, and it goes on in the same call as every other label, so its presence means that
+    call had permission and whatever else is on the issue is a human's curation, not our loss."""
+    if not isinstance(issue, dict):
+        return RepairAction.SKIPPED
+    number = int(issue.get("number") or 0)
+    body = issue.get("body") or ""
+    if not number or issue.get("state") == "closed" or FILED_PROVENANCE_MARKER not in body:
+        return RepairAction.SKIPPED
+    present = {label.get("name") if isinstance(label, dict) else str(label)
+               for label in (issue.get("labels") or [])}
+    if FEEDBACK_LABEL in present:
+        return RepairAction.OK
+    parsed = parse_filed_issue(issue.get("title") or "", body)
+    if parsed is None:
+        log_warning(f"Issue #{number} reads as auto-filed but its classifier line is unreadable — "
+                    f"leaving it for a human", api_provider="github")
+        return RepairAction.SKIPPED
+    classification, reporter_count = parsed
+    wanted = labels_for_issue(classification, reporter_count)
+    missing = [label for label in wanted if label not in present]
+    if github_request("POST", f"issues/{number}/labels", {"labels": missing}) is None:
+        log_error(f"Could not repair auto-filed issue #{number} — attaching {missing} was refused, "
+                  f"so it stays invisible to the pipeline. {TOKEN_PERMISSION_HINT}",
+                  api_provider="github")
+        return RepairAction.ERROR
+    if AGENT_READY_LABEL not in wanted:
+        if not issue.get("assignees"):
+            github_request("POST", f"issues/{number}/assignees",
+                           {"assignees": [issue_assignee()]})
+        comments = issue_comment_bodies(number)
+        if comments is not None and not any(DECISION_COMMENT_MARKER in c for c in comments):
+            comment_on_issue(number, build_decision_comment(classification, reporter_count))
+    log_info(f"Repaired auto-filed issue #{number} — attached {missing}", api_provider="github")
+    return RepairAction.REPAIRED
+
+
+def repair_auto_filed_issues(limit: int = MAX_REPAIR_ISSUES) -> dict:
+    """Re-attach the labels/assignee/Decision Comment on already-filed issues whose post-create
+    calls failed (issue #718). Runs on every filing beat, so a broken window self-heals as soon as
+    the token is fixed instead of waiting on a human to hand-label each issue.
+
+    One GET per open cluster and nothing written for a healthy issue. It stops at the FIRST refused
+    WRITE: a permission failure is deterministic, so if one repair is forbidden the next 49 are too,
+    and hammering GitHub would only bury the one error that says why. A refused READ gets the same
+    treatment after `REPAIR_READ_FAILURE_STOP` in a row — one unreadable issue is just a deleted
+    issue, but a run of them is the same broken token and must not cost 50 errors every beat."""
+    if not github_token():
+        return {"scanned": 0, "repaired": 0, "failed": 0}
+    seen: set = set()
+    scanned = repaired = failed = unreadable = 0
+    for cluster in get_open_feedback_clusters(max(1, int(limit))):
+        number = (cluster or {}).get("github_issue_number")
+        if not number or int(number) in seen:
+            continue
+        seen.add(int(number))
+        scanned += 1
+        issue = github_request("GET", f"issues/{int(number)}")
+        if not isinstance(issue, dict):
+            failed += 1
+            unreadable += 1
+            if unreadable >= REPAIR_READ_FAILURE_STOP:
+                log_error(f"Feedback issue repair pass stopped — {unreadable} issue reads in a row "
+                          f"failed, so the rest cannot be checked either. {TOKEN_PERMISSION_HINT}",
+                          api_provider="github")
+                break
+            continue
+        unreadable = 0
+        action = repair_filed_issue(issue)
+        if action == RepairAction.REPAIRED:
+            repaired += 1
+        elif action == RepairAction.ERROR:
+            failed += 1
+            break
+    if repaired or failed:
+        log_info(f"Feedback issue repair pass: {scanned} checked, {repaired} repaired, "
+                 f"{failed} still broken", api_provider="github")
+    return {"scanned": scanned, "repaired": repaired, "failed": failed}
