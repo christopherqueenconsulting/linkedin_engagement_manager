@@ -210,9 +210,23 @@ STAGGER_TICK_MINUTES = 15  # beat cadence for the staggered fan-outs; also one s
 
 # Per-fan-out defaults. Each is overridable at runtime with <NAME>_ANCHOR_HOUR /
 # <NAME>_WINDOW_MINUTES / <NAME>_ANCHOR_TZ, read at call time so ops can retune without a restart.
+#
+# Opening a window at the hour the old single crontab fired does NOT leave the batch where it was —
+# it moves the batch's CENTRE OF MASS half a window later, and its TAIL a full window later. That is
+# harmless for a fan-out whose lane carries nothing else, and it is exactly what made `se_outreach`
+# worse under #554 (issue #696): the appreciation-DM tail slid into the window the post-anchored
+# `profile_viewer_engagement` starts arriving in, on the same lane. So a fan-out that SHARES a lane
+# with a tighter-tolerance job opens its window `window_minutes / 2` EARLY, which puts the staggered
+# batch's midpoint back on the unstaggered batch's hour and leaves the drain time it used to have.
+# `APPRECIATION_DM_MIDPOINT_HOUR` below is the invariant that keeps the two numbers in step.
 STAGGER_GOLDEN_HOUR = ("GOLDEN_HOUR", 9, 180)
-STAGGER_APPRECIATION_DM = ("APPRECIATION_DM", 8, 120)
+STAGGER_APPRECIATION_DM = ("APPRECIATION_DM", 7, 120)
 STAGGER_GROUP_ENGAGEMENT = ("GROUP_ENGAGEMENT", 12, 120)
+
+# Where the appreciation-DM batch's midpoint has to land: the 08:00 off-peak hour PR #607 approved,
+# and the hour the pre-#554 `send-appreciation-dms` crontab fired. It is the send time users
+# actually experience on average — the anchor is only where the window OPENS.
+APPRECIATION_DM_MIDPOINT_HOUR = 8
 
 _SLOT_CLAIM_PREFIX = "engagement:slot:"
 # The claim key carries the slot's local DATE, so "once per user per day" holds no matter when the

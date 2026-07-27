@@ -426,21 +426,46 @@ class TestClaimDailySlot:
 
 class TestApprovedFanoutDefaults:
     """The three shipped windows are a product decision the owner signed off on in PR #607
-    (`1A 2A 3A`): golden hour 09:00 + 3h, appreciation DMs 08:00 + 2h, groups 12:00 + 2h — each
-    anchored on the USER's clock, not UTC. The rest of the suite exercises a local literal, so
+    (`1A 2A 3A`): golden hour 09:00 + 3h, appreciation DMs centred on 08:00 + 2h, groups 12:00 + 2h —
+    each anchored on the USER's clock, not UTC. The rest of the suite exercises a local literal, so
     without this the constants could drift away from the approved values silently. Retuning is an
     env change (`<NAME>_ANCHOR_HOUR` / `_WINDOW_MINUTES` / `_ANCHOR_TZ`); changing these numbers is
     changing the default every deployment inherits, so it needs the same sign-off again.
+
+    Issue #696 moved the appreciation-DM ANCHOR from 08:00 to 07:00 without moving the batch: a
+    window that OPENS on the approved hour lands its midpoint an hour after it and its tail two, and
+    that tail is what collided with `profile_viewer_engagement` on the shared se_outreach lane. The
+    08:00 the owner approved is now pinned as the window's MIDPOINT instead.
     """
 
     @pytest.mark.parametrize("fanout,expected", [
         ("STAGGER_GOLDEN_HOUR", ("GOLDEN_HOUR", 9, 180)),
-        ("STAGGER_APPRECIATION_DM", ("APPRECIATION_DM", 8, 120)),
+        ("STAGGER_APPRECIATION_DM", ("APPRECIATION_DM", 7, 120)),
         ("STAGGER_GROUP_ENGAGEMENT", ("GROUP_ENGAGEMENT", 12, 120)),
     ])
     def test_anchor_hour_and_window_match_the_approved_decision(self, fanout, expected):
         import cqc_lem.utilities.engagement_window as mod
         assert getattr(mod, fanout) == expected
+
+    def test_the_appreciation_dm_window_stays_centred_on_the_approved_off_peak_hour(self):
+        """Anchor and window have to move together. Widening the window without pulling the anchor
+        back would slide the batch's tail into the afternoon again (#696); narrowing it without
+        pushing the anchor forward would send the DMs earlier than the hour PR #607 approved."""
+        import cqc_lem.utilities.engagement_window as mod
+        _, anchor_hour, window_minutes = mod.STAGGER_APPRECIATION_DM
+        assert anchor_hour * 60 + window_minutes / 2 == mod.APPRECIATION_DM_MIDPOINT_HOUR * 60
+
+    def test_the_average_dm_still_goes_out_on_the_approved_hour(self, monkeypatch):
+        """The invariant above is arithmetic on the constants; this is the behaviour it buys —
+        across a fleet, the mean dispatch minute is the approved 08:00, not an hour after it."""
+        import cqc_lem.utilities.engagement_window as mod
+        name, anchor_hour, window_minutes = mod.STAGGER_APPRECIATION_DM
+        for suffix in ("_ANCHOR_HOUR", "_WINDOW_MINUTES", "_ANCHOR_TZ"):
+            monkeypatch.delenv(f"{name}{suffix}", raising=False)
+        config = mod.stagger_config(mod.STAGGER_APPRECIATION_DM)
+        minutes = [config.anchor_hour * 60 + mod.stagger_offset_minutes(user_id, config.window_minutes, name)
+                   for user_id in range(1, 501)]
+        assert abs(sum(minutes) / len(minutes) - mod.APPRECIATION_DM_MIDPOINT_HOUR * 60) < 15
 
     @pytest.mark.parametrize("fanout", ["STAGGER_GOLDEN_HOUR", "STAGGER_APPRECIATION_DM",
                                         "STAGGER_GROUP_ENGAGEMENT"])

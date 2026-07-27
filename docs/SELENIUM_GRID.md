@@ -176,7 +176,11 @@ cohort onboarding without parsing the table. `--json` emits the whole thing mach
 
 ### Pre-#554 baseline (2026-07-26, today's topology: 8 slots, lanes 3/2/2/1)
 
-`--stagger-hours 0` reproduces the ORIGINAL single-13:00-UTC-fan-out behaviour, exactly:
+`--stagger-hours 0` reproduces the ORIGINAL single-crontab-minute behaviour, exactly — every user
+lands on their fan-out's anchor minute instead of a slot inside a window. (#696 moved the
+appreciation-DM anchor an hour earlier; this table is unchanged by that, because with no window the
+batch drains long before the post band opens either way. It is the control for what the WINDOW
+costs, not a historical replay of the 08:00 UTC crontab.)
 
 | Users | On-time % | Late jobs | Delay p95 | Sessions needed | Chrome mem | Host CPU | Verdict |
 |---|---|---|---|---|---|---|---|
@@ -190,41 +194,60 @@ The harness previously modelled a `--stagger-hours 4` uniform what-if as a *pred
 checked* against #554's actual shipped shape: a hashed per-user slot inside a window anchored **in
 each user's own timezone** (golden hour 180 min, appreciation DMs 120 min — different widths per
 fan-out, not one uniform override), quantized to the beat's real 15-minute tick. #634 taught the
-model that shape; this is the DEFAULT run now (no flags):
+model that shape; this is the DEFAULT run now (no flags). It measured **53.7% / 15 sessions at
+50 users** — flat-to-*worse* than the pre-#554 baseline, not the predicted 84.0% / 11 — and traced
+it to the shared `se_outreach` lane. #696 fixed that; the current numbers are the next section.
+
+### Post-#696 — the se_outreach fix, re-measured (2026-07-27, DEFAULT run, no flags)
 
 | Users | On-time % | Late jobs | Delay p95 | Sessions needed | Chrome mem | Host CPU | Verdict |
 |---|---|---|---|---|---|---|---|
 | 10 | **100%** | 0 | 60 min | 5 (engage 2, prepost 1, outreach 1, content 1) | 6.0 GB | 6.5 vCPU (81%) | fits |
-| 50 | **53.7%** | 162 | 320 min | 15 (engage 6, prepost 4, outreach 3, content 2) | 18.0 GB | 16.5 vCPU (206%) | exceeds one VPS |
-| 100 | **21.6%** | 549 | 640 min | 28 (engage 12, prepost 7, outreach 5, content 4) | 33.6 GB | 29.5 vCPU (369%) | exceeds one VPS |
+| 50 | **64.3%** | 125 | 320 min | 14 (engage 6, prepost 4, outreach **2**, content 2) | 16.8 GB | 15.5 vCPU (194%) | at ceiling |
+| 100 | **21.6%** | 549 | 640 min | 27 (engage 12, prepost 7, outreach **4**, content 4) | 32.4 GB | 28.5 vCPU (356%) | exceeds one VPS |
 
-Per-lane on-time at the worst scale (100 users, post-#554): engage 20.3%, prepost 2.0%, outreach
-31.5%, content 25.0%.
+Per-lane on-time at the worst scale (100 users): engage 20.3%, prepost 2.0%, outreach 31.5%,
+content 25.0%.
 
-**The 84.0% / 11-session prediction does NOT hold.** Measured is 53.7% / 15 sessions at 50 users —
-flat-to-*worse* than the pre-#554 baseline, not the predicted improvement. Four things fall out of
-this:
+**The fix was one hour, not a lane.** `se_outreach` carries both the staggered `appreciation_dms`
+and the post-anchored `profile_viewer_engagement`. Opening a window at the hour the old crontab
+fired does not leave the batch where it was: it moves the batch's midpoint half a window later and
+its **tail a full window later**, and that tail is what reached `profile_viewer_engagement`'s
+arrivals. Spreading the DM burst never shrank the processing time it needs (workload ÷ concurrency
+is fixed) — it only moved it. So `APPRECIATION_DM_ANCHOR_HOUR` moved `08:00 → 07:00`, which puts the
+120-minute window's **midpoint** back on the 08:00 off-peak hour PR #607 approved and gives the
+batch back the drain time the single-instant version had. `APPRECIATION_DM_MIDPOINT_HOUR` in
+`utilities/engagement_window.py` pins anchor + window/2 = 08:00 so the two can't drift apart again.
 
-1. **Today's 8 slots are right for ~10 users and nothing more**, before or after #554. On-time
-   collapses into the 50s% at 50 users and the 20s% at 100 — the §2 prediction ("tasks miss their
-   window, the box does not fall over"), quantified, and staggering alone does not fix it.
+Of the three options #696 listed, this was the only one that cost nothing: raising `se_outreach`
+concurrency buys a Chrome slot on a box already at its ceiling, and giving `appreciation_dms` its own
+lane (the #553 shape) needs **4** slots across the two lanes at 50 users where the shared lane needs
+2 — a DM backlog can't delay profile-viewer engagement, but you pay for a browser that idles all
+afternoon. Five things fall out of the re-run:
+
+1. **Today's 8 slots are right for ~10 users and nothing more**, before or after #554/#696. On-time
+   is in the 60s% at 50 users and the 20s% at 100 — the §2 prediction ("tasks miss their window, the
+   box does not fall over"), quantified. Staggering helps; it does not fix this.
 2. **The uniform `--stagger-hours 4` what-if overstated the win** because it isn't what shipped: it
    spread EVERY staggerable fan-out (including `reply_sweep` and `content_tasks`, which #554 never
    touched) across one uniform 4-hour window, and used a simpler even-index spread instead of the
    real per-user hash + 15-minute tick quantization. Modelling the ACTUAL shape (different windows
-   per fan-out, only the three #554 actually staggers) is what changed the answer.
-3. **`se_outreach` is WORSE staggered, and it's a real finding, not a modelling bug.** It carries both
-   the now-staggered `appreciation_dms` and the post-anchored `profile_viewer_engagement`. Spreading
-   `appreciation_dms` over its window doesn't shrink the total processing time its burst needs at a
-   given concurrency (workload ÷ concurrency is fixed) — it pushes the batch's tail *later* in real
-   time, into `profile_viewer_engagement`'s window. Pre-#554 the single-instant batch happened to
-   drain before that window opened; post-#554 it doesn't always. `se_engage` (golden hour's own lane)
-   IS better staggered in isolation, exactly as predicted — the shared `se_outreach` lane is where a
-   different job's window absorbs the difference. Tracked as **#696**.
-4. **`se_prepost` is still the lane §4's back-of-envelope never modelled**, and staggering never
+   per fan-out, only the three #554 actually staggers) is what changed the answer, and it is why the
+   real number is 64.3%, not 84.0%.
+3. **`se_outreach` is now no worse staggered than unstaggered at any scale** — 10 through 200 users,
+   pinned per-scale by
+   `tests/unit/utilities/test_selenium_load_test.py::TestRequiredTopology::test_the_shipped_dm_window_costs_se_outreach_nothing_against_its_own_baseline`.
+   At 50 users the lane needs **2** sessions, matching the pre-#554 baseline (#696's acceptance
+   criterion); the whole-fleet total drops 15 → **14** and on-time rises 53.7% → **64.3%**, so the
+   stagger finally pays what the plan banked on instead of being absorbed by a lane-mate.
+4. **The generalizable rule:** a fan-out that shares a lane with a tighter-tolerance job must open
+   its window `window/2` EARLY, not on the hour the batch used to fire. Widening a window without
+   pulling its anchor back re-creates this exact regression, silently — the arrival times move, the
+   send hour users experience moves, and nothing fails.
+5. **`se_prepost` is still the lane §4's back-of-envelope never modelled**, and staggering never
    touches it (posts are per-user ETAs, not a fan-out). At 100 users it needs 7 slots on its own,
    because a 15-minute warm-up with a 5-minute tolerance cannot absorb posts arriving every
-   2.4 minutes. It remains the first lane to break and the least forgiving, before or after #634.
+   2.4 minutes. It remains the first lane to break and the least forgiving, before or after #696.
 
 > The harness is more complete than §4's back-of-envelope, which modelled only the commenting loops
 > and put 50 users at 8–10 sessions. Adding the once-a-day batch fan-outs (appreciation DMs, stats
@@ -270,10 +293,13 @@ has to scale.
 | Egress | unchanged (per-user proxies do the egress, `EGRESS_AT_SCALE.md`) | unchanged — nodes egress through the same per-user proxies |
 | Ceiling | ~16 sessions ≈ **50–60 users staggered**; then this decision repeats | none in practice |
 
-**Where this stands (updated by #633):** staggering went first and has shipped (#554) — it was the
-only free move — and re-measuring it (#634) found the 50-user curve is now **15** sessions, not the
-originally-predicted 11: the shared `se_outreach` lane needs its own fix first (**#696**) before
-staggering delivers the win the plan banked on.
+**Where this stands (updated by #633, then #696):** staggering went first and has shipped (#554) — it
+was the only free move — and re-measuring it (#634) found the 50-user curve was **15** sessions, not
+the originally-predicted 11, because the shared `se_outreach` lane needed its own fix first. #696
+shipped that fix (appreciation-DM anchor 08:00 → 07:00) and the curve is now **14** sessions at
+64.3% on-time: better than the pre-#554 baseline on both counts, and staggering is finally a net win
+at every scale rather than something a lane-mate pays for — but still short of the 11 the plan
+banked on, so it is bought headroom, not a substitute for capacity.
 
 **A is no longer the cheaper answer today.** #633 found Hostinger's VPS line tops out at the box LEM
 already runs, so "upgrade to 16 vCPU / 64 GB" now means switching provider entirely (~$315/mo
@@ -286,9 +312,9 @@ past ~16 sessions.
 
 The choice is **still not being made today** — nothing is bought until §5e files a breach. What
 #633 resolved is *which* option to reach for when that happens: B, not A. The sequence that
-remains: bank the stagger (done) → re-measure it (done, #634 — result: fix #696 first, then re-run)
-→ cut over the Grid at parity → scale nodes per §6's checklist when §5e says the cap is the
-operating point.
+remains: bank the stagger (done) → re-measure it (done, #634) → fix the lane contention it exposed
+(done, #696) → cut over the Grid at parity → scale nodes per §6's checklist when §5e says the cap
+is the operating point.
 
 The Grid is worth cutting over to **before** either, at the same 8 nodes: it is capacity-neutral,
 it makes a crashed Chrome cost one session instead of all of them, and it is the thing that makes B
@@ -302,8 +328,10 @@ a config change rather than a migration.
    is the operating point, not a busy afternoon.
 2. Run the load test at the target cohort size; record the curve in the issue.
 3. ✅ Golden-hour stagger shipped (#554). ✅ Re-ran the curve against the staggered arrivals (#634) —
-   it does NOT clear the SLO at 50 users (53.7% on-time, 15 sessions needed); fix the `se_outreach`
-   contention (#696) and re-run again before treating staggering as sufficient on its own.
+   53.7% on-time / 15 sessions at 50 users, worse than the baseline. ✅ Fixed the `se_outreach`
+   contention (#696, appreciation-DM anchor 08:00 → 07:00) and re-ran: **64.3% / 14 sessions**.
+   Staggering is now a net win at every scale, and still **does not clear the 95% SLO at 50 users**
+   on 8 slots — treat it as bought headroom, not as sufficient on its own.
 4. Cut over to the Grid at the SAME node count as today's cap (8). Verify `/status` shows 8 slots
    (see §2 — a short node count is silent) and a full engagement cycle runs green.
 5. Only then change the numbers: raise `SELENIUM_GRID_NODES` **and** the lane concurrencies in one
