@@ -138,8 +138,12 @@ WORKLOAD: tuple[JobSpec, ...] = (
     # runs an hour or three into the morning, so their windows are wide on purpose. Giving these the
     # same tolerance as a golden-hour loop would demand browsers the product does not actually need.
     # Also staggered by #554 (`APPRECIATION_DM_WINDOW_MINUTES`, default 120) — see the golden-hour
-    # comment above for why the model keeps `8 * 60` as the anchor stand-in.
-    JobSpec("appreciation_dms", "se_outreach", 10.0, 240.0, starts=(8 * 60,),
+    # comment above for the single-timezone anchor convention. Unlike golden hour's, this anchor is
+    # DERIVED from the shipped tuple rather than written out: #696 moved it, and se_outreach's whole
+    # problem was the model and production disagreeing about where this batch starts, so a retune
+    # that left the literal behind would re-open exactly the gap that issue was filed for.
+    JobSpec("appreciation_dms", "se_outreach", 10.0, 240.0,
+            starts=(STAGGER_APPRECIATION_DM[1] * 60,),
             stagger_window_minutes=float(STAGGER_APPRECIATION_DM[2]), stagger_salt=STAGGER_APPRECIATION_DM[0]),
     # `scrape-post-stats` — a single fixed-time batch #554 did NOT touch (only golden-hour,
     # appreciation DMs and group-engagement were staggered), so it stays a single-minute fan-out
