@@ -9,10 +9,9 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.grid.yml up -d
 #
-# This is the DEPLOYED topology as of the 2026-07-27 cutover: `scripts/deploy.sh` composes this file
-# in on every deploy unless SELENIUM_TOPOLOGY=standalone is set (env, or the box's .env). It is still
-# an overlay, not the base — a bare `docker compose up` (dev) is unchanged and runs the standalone.
-# See docs/SELENIUM_GRID.md for the cutover runbook, the rollback, and the load-test evidence.
+# NOT enabled by default. Prod runs the standalone until the capacity monitor (§5e) says the cap is
+# the operating point; see docs/SELENIUM_GRID.md for the cutover runbook and the load-test evidence
+# that should precede it.
 #
 # INVARIANT (same one the standalone carries): total session slots == the sum of every lane
 # worker's SELENIUM_CONCURRENCY. Here total slots = SELENIUM_GRID_NODES x SE_NODE_MAX_SESSIONS(=1),
@@ -58,9 +57,7 @@ services:
           # `selenium-chrome:4444` — the Cloudflare tunnel's lemgrid hostname (dashboard-managed,
           # not in this repo), SELENIUM_HUB_HOST in the box .env, and host-side tooling. Without
           # this alias the cutover 502s the Grid console and silently strips those callers of a
-          # hub. The standalone service is profile-parked, so the name is free — but only while it
-          # is not RUNNING: two containers answering to one alias round-robins half the sessions
-          # into the wrong browser, which is the other reason deploy.sh evicts it before the up.
+          # hub. The standalone service is profile-parked, so the name is free.
           - selenium-chrome
     deploy:
       resources:
@@ -122,13 +119,49 @@ services:
           cpus: '1.0'
           memory: 1536m
 
-  # The standalone is retired by this overlay, not deleted: `profiles` keeps it defined while
-  # excluding it from a normal `up`, so the rollback is one flag rather than a revert. Bringing it
-  # back is NOT `--profile standalone up selenium-chrome` alongside a live hub — both bind 4444 and
-  # both answer to the `selenium-chrome` alias, so that starts a container that cannot bind and
-  # half-resolves the name. Roll back the way docs/SELENIUM_GRID.md describes: set
-  # SELENIUM_TOPOLOGY=standalone (so the next deploy keeps it), evict the hub, and `up` WITHOUT
-  # this overlay — which is exactly what deploy.sh does on a `standalone` deploy.
+  # The standalone is retired by this overlay, not deleted: `profiles` keeps it defined (so
+  # `docker compose -f ... -f docker-compose.grid.yml --profile standalone up selenium-chrome` can
+  # still bring it back for an instant rollback) while excluding it from a normal `up`.
+  # The watchable node — deliberately a NINTH, on top of the eight the lanes are sized for.
+  # Owner decision 2026-07-27: at current user counts a spare browser is cheaper than losing a
+  # production slot to debugging, and the capacity monitor (`auto_capacity_watch`) is what says
+  # when the box needs more. So it is EXCLUDED from the cap == Σ-lanes invariant on purpose: the
+  # lanes can still only ask for 8 concurrent sessions, and this node exists to absorb the ad-hoc
+  # ones (MCP debugging, live-validation probes, a session you want to watch) without ever
+  # competing with automation for a slot.
+  #
+  # Caveat worth knowing: Grid routes a session to ANY free matching node, so this is 'a spare node
+  # you can watch', not 'the node your session is guaranteed to land on'. Deterministic pinning
+  # needs a distinguishing stereotype + a capability request from the client — tracked separately.
+  selenium-node-debug:
+    image: selenium/node-chrome:latest
+    container_name: selenium-node-debug
+    hostname: selenium-node-debug
+    shm_size: 2g
+    depends_on:
+      selenium-hub:
+        condition: service_started
+    ports:
+      # noVNC. Loopback by default like every other port in the prod overlay; the Cloudflare tunnel
+      # reaches it over the compose network by service name, not through this publish.
+      - "${SELENIUM_GRID_VNC_BIND:-127.0.0.1}:7900:7900"
+    environment:
+      - SE_EVENT_BUS_HOST=selenium-hub
+      - SE_EVENT_BUS_PUBLISH_PORT=4442
+      - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
+      - SE_NODE_MAX_SESSIONS=1
+      - SE_NODE_OVERRIDE_MAX_SESSIONS=true
+      - SE_NODE_SESSION_TIMEOUT=600
+      - SE_LOG_LEVEL=WARN
+      # Marks this node in the Grid UI's node list so it is obvious which one is watchable.
+      - SE_NODE_GRID_URL=http://selenium-hub:4444
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1536m
+
   selenium-chrome:
     profiles: ["standalone"]
 
