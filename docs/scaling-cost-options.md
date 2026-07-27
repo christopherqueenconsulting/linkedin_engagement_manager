@@ -8,6 +8,28 @@
 > parked the "16 vCPU/64 GB vs second box" decision pending this doc), `docs/EGRESS_AT_SCALE.md`
 > (why residential egress + ToS posture are load-bearing requirements below, not nice-to-haves).
 
+## Decision (owner, 2026-07-27, PR #694)
+
+**LEM stays self-managed. The hosted/cloud grid market is ruled out — all of it.** That means AWS
+(Fargate Grid nodes, EC2 Grid nodes, Device Farm) **and all eight commercial vendors surveyed
+below**, including Steel.dev and Browserbase, which this spike had flagged as the two structural
+fits worth one more look. No vendor spike is planned and none is scheduled at any user tier.
+
+Everything below is retained as the **evidence for that decision**, not as a shortlist. Two things
+follow from that framing and matter when reading it:
+
+- The per-vendor verdicts are what the research found, not standing recommendations. Where a vendor
+  is described as a "fit" or "worth a spike", read that as *what the numbers said before the call
+  was made* — the call went the other way.
+- Prices and terms here were accessed 2026-07-27 and this market moves fast. Nothing in this doc
+  should be treated as a live quote if the question is ever reopened; it would need re-researching
+  from scratch.
+
+The self-managed path itself is settled the same day: **Option B — a second same-provider Hostinger
+box running Grid nodes (`docker-compose.grid-node.yml`, already built) — is the default horizontal
+scale-out.** Option A ("upgrade to 16 vCPU / 64 GB") is retired, because the in-place resize it
+assumed does not exist on the current provider (§4, §6).
+
 ## TL;DR
 
 - **The premise that self-managed Option A ("upgrade to 16 vCPU / 64 GB") is a cheap in-place
@@ -33,31 +55,30 @@
     WebDriver, so it fails the "zero app-code-change" bar `get_docker_driver()` was built around.
   - **ZenRows / ScrapingBee**: structural mismatch — per-request scraping APIs, not persistent
     browser sessions. ZenRows' closest product caps session TTL at 1–15 minutes.
-- **Two vendors are a genuine, cheap fit on paper: Steel.dev and Browserbase.** Both are built for
-  exactly LEM's pattern — persistent authenticated sessions (`Profiles`/`Contexts` API), BYOP
-  (bring-your-own residential proxy, at no extra charge on Steel), custom extension loading, and
-  no session-length ceiling that matters at LEM's scale. Both are **cheaper than every AWS option
-  and cheaper than a Hetzner/DO primary-box upgrade** — Steel.dev ~$33–430/mo and Browserbase
-  ~$47–399/mo across the 10→100 user range, vs. AWS Fargate's ~$165–1,115/mo. Two things are
-  **not yet verified** and block acting on this: Steel's actual ToS text (redirects to a Google
-  Doc this research pass couldn't extract), and whether either vendor's WebDriver path is a true
-  URL-repoint into `get_docker_driver()` or needs a connection wrapper (Browserbase confirmed
-  needs one; Steel's Selenium support is documented but CDP-first).
+- **Two vendors were the only genuine fit on paper — Steel.dev and Browserbase — and they are ruled
+  out too, by decision rather than by disqualification.** Both are built for exactly LEM's pattern
+  (persistent authenticated sessions via a `Profiles`/`Contexts` API, BYOP residential proxy — free
+  on Steel, custom extension loading, no session-length ceiling that matters at LEM's scale) and
+  both price below every AWS option — Steel.dev ~$33–430/mo and Browserbase ~$47–399/mo across the
+  10→100 user range, vs. AWS Fargate's ~$165–1,115/mo. Each also carried an unresolved blocker:
+  Steel's actual ToS text (redirects to a Google Doc this research pass couldn't extract), and
+  whether either vendor's WebDriver path is a true URL-repoint into `get_docker_driver()` or needs
+  a connection wrapper (Browserbase confirmed needs one; Steel's Selenium support is documented but
+  CDP-first). The owner's call (2026-07-27) was to not spend engineering time resolving either —
+  self-managed only.
 - **AWS Fargate/EC2 Grid nodes are real and technically workable** (residential-proxy egress layers
   on cleanly; on-demand session-length is unbounded) **but cost more than every self-managed and
   Steel/Browserbase option at every tier**, and add real new ops surface (NAT/ASG/ECS) LEM doesn't
   otherwise need. Fargate Spot / EC2 Spot are not recommended as primary capacity — a 2-minute-warning
   reclaim mid-comment/mid-DM risks a half-submitted action on a live account and the kind of session
   churn that trips LinkedIn's own anti-bot detection.
-- **Recommendation (detail in §6, decision trigger in `docs/scaling-plan.md` §5f):** stay on the
-  self-managed path (Option B, same-provider Hostinger boxes, using the Grid that's already built)
-  as the default horizontal scale-out — it's cheap, proven, and carries zero new ToS/vendor risk.
-  Run one **cheap, non-committal technical spike** against Steel.dev and/or Browserbase (both have
-  free tiers) to settle the two open unknowns above, because if either clears, it's a materially
-  lower-ops alternative at the 100-user tier. Do **not** pursue AWS-hosted Grid nodes, AWS Device
-  Farm, or any QA-testing cloud (BrowserStack/Sauce Labs/LambdaTest/TestingBot/Browserless/
-  ZenRows/ScrapingBee) — each is either disqualified outright or strictly worse on both cost and
-  fit than what's already available.
+- **Decision (detail in §6, decision trigger in `docs/scaling-plan.md` §5f): self-managed only.**
+  The default horizontal scale-out is Option B — additional same-provider Hostinger boxes running
+  the Grid that's already built. It's cheap, proven, and carries zero new ToS/vendor risk. Nothing
+  in the hosted/cloud market is pursued: not AWS Grid nodes, not Device Farm, not the QA-testing
+  clouds (BrowserStack/Sauce Labs/LambdaTest/TestingBot/Browserless/ZenRows/ScrapingBee), and not
+  Steel.dev or Browserbase. The first group is disqualified on its own merits; the last two are a
+  deliberate owner call to keep the stack on infrastructure LEM already owns and operates.
 
 ---
 
@@ -145,8 +166,8 @@ live quote before budgeting off it).
 | **LambdaTest** | ~$580–750 (unverified, 5-parallel estimate; 14/27 sales-gated) | unpublished | unpublished | Yes | Unconfirmed `LT_PROXY_HOST` capability — may route outbound traffic through an external proxy, not verified live | No explicit ban found | 30 min auto-cap | Yes | **Weak candidate — not disqualified in writing, but no confirmed login persistence and unpublished pricing at scale; needs a live spike before serious evaluation** |
 | **TestingBot** | ~$90/mo flat (Automated Pro, nominally unlimited minutes/concurrency) | ~$90/mo flat (same caveat) | ~$90/mo flat (same caveat) | Yes | Unknown — no proxy/egress info published | No explicit ban found | Not published | Yes (Playwright-documented; presumed same for Selenium) | **Thinnest documentation of any vendor surveyed — cannot recommend without a direct vendor conversation on real limits behind "unlimited"** |
 | **Browserless** | ~$140/mo (Starter) | ~$350/mo + likely overage (Scale) | ~$350/mo + overage, or Enterprise | **No — CDP/Puppeteer/BQL-first** | Yes, paid (6 units/MB residential) + self-hosted BYOP | No explicit ban found | 15–60 min by plan | Yes | **Disqualified on protocol — not native Selenium WebDriver, fails the zero-app-code-change requirement** |
-| **Steel.dev** | ~$33–35/mo | ~$280–290/mo | ~$410–430/mo | Partial — Selenium documented, but CDP-first; may need a connection wrapper | **Yes** — managed residential proxies, Dedicated IPs, **free BYOP on all plans including free tier** | **Not independently verified** — real ToS is a Google Doc this research pass couldn't extract | 15 min–24 hr by plan; **explicit Profiles API persists cookies/login/extensions across separate sessions** | Yes (persists via Profiles) | **Strongest cost fit found — pending a direct Selenium-compatibility check and a real ToS read** |
-| **Browserbase** | ~$47–50/mo | ~$203–218/mo | ~$374–399/mo | Yes, but needs a **custom `RemoteConnection` wrapper** — not a pure `SELENIUM_HUB_HOST` repoint | **Yes** — residential by default (201 countries, geo-targeting) + BYOP | No explicit ban found; vendor markets a "Social Media Scraper" use case as intended use | 6 hr default cap; **explicit Contexts API persists cookies (incl. session cookies) across separate sessions** | Yes | **Strongest overall fit — mature docs, no ToS red flag, only friction is the Selenium wrapper and unconfirmed per-user IP stability across days (not just within a session)** |
+| **Steel.dev** | ~$33–35/mo | ~$280–290/mo | ~$410–430/mo | Partial — Selenium documented, but CDP-first; may need a connection wrapper | **Yes** — managed residential proxies, Dedicated IPs, **free BYOP on all plans including free tier** | **Not independently verified** — real ToS is a Google Doc this research pass couldn't extract | 15 min–24 hr by plan; **explicit Profiles API persists cookies/login/extensions across separate sessions** | Yes (persists via Profiles) | **Strongest cost fit found, but NOT PURSUED** — its Selenium-compatibility check and real ToS read were never run; ruled out with the rest of the hosted market (2026-07-27) |
+| **Browserbase** | ~$47–50/mo | ~$203–218/mo | ~$374–399/mo | Yes, but needs a **custom `RemoteConnection` wrapper** — not a pure `SELENIUM_HUB_HOST` repoint | **Yes** — residential by default (201 countries, geo-targeting) + BYOP | No explicit ban found; vendor markets a "Social Media Scraper" use case as intended use | 6 hr default cap; **explicit Contexts API persists cookies (incl. session cookies) across separate sessions** | Yes | **Strongest overall fit, but NOT PURSUED** — mature docs, no ToS red flag; the Selenium wrapper and per-user IP stability across days were never verified; ruled out with the rest of the hosted market (2026-07-27) |
 | **ZenRows / ScrapingBee** | not modeled — different billing unit (per-request, not per-minute/concurrency) | not modeled | not modeled | No | Bundled but moot | Neither explicitly names LinkedIn; ScrapingBee's AUP explicitly puts LinkedIn's own ToS risk back on the customer | **1–15 min hard cap (ZenRows Scraping Browser); no session concept at all (ScrapingBee)** | N/A | **Disqualified — structural mismatch, not a policy one. Cannot hold a login for more than 15 minutes at best.** |
 
 Full per-vendor pricing tiers, quotes, and source URLs are in the research notes this table was
@@ -165,7 +186,7 @@ first-steps/pricing, scrapingbee.com/acceptable-use-policy — all accessed 2026
 |---|---|---|---|---|---|---|---|
 | Datacenter-only egress (no residential path) | Layerable (proxy inside container) | Yes, unsupported to change | Yes — no outbound-through-proxy mechanism found | Layerable (paid or BYOP) | **No — residential/BYOP native** | Bundled but moot | N/A — own box, own proxy |
 | Per-minute billing vs. multi-minute logged-in sessions | On-demand: fine. Spot: mismatched | Mismatched (40 min cap) | Mismatched (30 min–3 hr caps, no persistence) | Mismatched (15–60 min caps) | **Fits** (hour/day-scale, persisted) | Mismatched (1–15 min cap) | N/A |
-| ToS forbids social-automation/scraping | Not found | Not confirmed, moot (technical disqualifier) | **Sauce Labs: explicit ban.** Others: not found in writing | Not found | Steel: **unverified** (couldn't read real ToS). Browserbase: not found, positive signal (markets this use case) | Not found, but customer bears the risk explicitly | N/A |
+| ToS forbids social-automation/scraping | Not found | Not confirmed, moot (technical disqualifier) | **Sauce Labs: explicit ban.** Others: not found in writing | Not found | Steel: **never verified** (couldn't read real ToS; not pursued). Browserbase: not found, positive signal (markets this use case) | Not found, but customer bears the risk explicitly | N/A |
 | Can load the MV3 proxy-auth extension | Yes (own container) | Unsupported | Yes (BrowserStack/TestingBot confirmed); N/A for the rest given other disqualifiers | Yes | Yes | No | N/A |
 
 ---
@@ -187,15 +208,21 @@ the research this table summarizes; the short version is **all AWS paths cost mo
 self-managed alternative at every tier and add ops surface LEM doesn't otherwise carry**, and
 Device Farm is a hard no regardless of price.
 
-## 6. Recommendation
+## 6. Decision
 
-**Do not pursue:** AWS Device Farm (disqualified — cannot hold a session), any of the four
-QA-testing clouds (BrowserStack, Sauce Labs, LambdaTest, TestingBot — disqualified or unproven,
-Sauce Labs explicitly banned in writing), Browserless (wrong protocol), ZenRows/ScrapingBee
-(wrong computing model), and AWS Fargate/EC2 Grid nodes (technically fine, but strictly more
-expensive and more ops-heavy than what's already built and cheaper).
+**Nothing hosted is pursued — the whole surveyed market is out.** AWS Device Farm (disqualified —
+cannot hold a session), the four QA-testing clouds (BrowserStack, Sauce Labs, LambdaTest,
+TestingBot — disqualified or unproven, Sauce Labs explicitly banned in writing), Browserless (wrong
+protocol), ZenRows/ScrapingBee (wrong computing model), AWS Fargate/EC2 Grid nodes (technically
+fine, but strictly more expensive and more ops-heavy than what's already built and cheaper) — and
+also **Steel.dev and Browserbase**, the two that fit LEM's pattern on paper and beat AWS on cost.
+Those last two are an owner call rather than a technical disqualification (2026-07-27): the open
+questions blocking them (a real Selenium-compatibility spike, and Steel's unreadable ToS) were
+judged not worth the engineering time against a self-managed path that is already built, already
+cheaper at every tier this plan projects, and already understood operationally. **No vendor spike
+is scheduled, at any tier.**
 
-**Default path stays self-managed, Option B** — additional same-provider Hostinger boxes running
+**The path is self-managed, Option B** — additional same-provider Hostinger boxes running
 Grid nodes only, cut over via the already-built `docker-compose.grid-node.yml` /
 `docker-compose.grid.yml` (issue #556). It is the cheapest option at every tier (~$0–200/mo across
 10→100 users), carries zero new vendor/ToS risk, and needs no new capability — just more of what
@@ -205,48 +232,35 @@ cross-provider migration to buy 16 vCPU/64 GB costs more (~$315–504/mo) and ca
 risk (DNS/data/stack cutover) than just adding a second box for the same or lower steady-state
 cost.
 
-**One cheap, non-committal spike is worth running before the ~50-user trigger:** both Steel.dev
-and Browserbase are purpose-built for LEM's exact pattern (persistent authenticated sessions over
-a residential/BYOP proxy) and are materially cheaper than every AWS option — and cheaper than
-adding a third/fourth self-managed box at the 100-user tier, with none of the VPS patching/ops
-burden. Two things block a real decision and should be resolved with their free tiers before any
-spend: (1) does either vendor's Selenium path actually drop into `get_docker_driver()` cleanly, or
-does it need a real connector rewrite (Browserbase confirmed needs a `RemoteConnection` wrapper;
-Steel's Selenium support is documented but CDP-first), and (2) Steel's actual ToS terms (this
-research pass could not extract them — a direct legal read is needed before it's a candidate at
-all). This is exploration, not a purchase — nothing here should move traffic off the self-managed
-path until both are answered.
-
 **Decision trigger:** carried into `docs/scaling-plan.md` §5f — the self-managed Grid cutover
 happens per `SELENIUM_GRID.md` §6's existing checklist (capacity monitor breach → re-run the
-staggered load test → cut over at parity → then scale nodes/lanes together). Steel.dev/Browserbase
-only enter the decision if the spike above clears both open questions **and** the 100-user tier is
-actually approaching — below that, self-managed Option B is cheaper and lower-risk on its own.
+staggered load test → cut over at parity → then scale nodes/lanes together). That sequence is now
+the whole decision; there is no hosted-vendor branch waiting on a spike, and no vendor re-enters it
+at the 50- or 100-user tier.
 
 ---
 
-## Open questions to verify before committing money
+## Open questions — only the ones the self-managed path still needs
 
-- [ ] Live Fargate Spot / EC2 Spot pricing (this pass used an AWS-documentation example range for
-      EC2 Spot and an approximated ratio for Fargate Spot memory — neither is a live quote).
-- [ ] Hetzner/DigitalOcean exact bandwidth costs if a 16 vCPU/64 GB box is ever provisioned in a
-      US region (Hetzner's US bandwidth allowance dropped sharply — 1 TB/mo vs 20 TB/mo in EU —
-      alongside its June 2026 price increase).
-- [ ] BrowserStack/Sauce Labs/LambdaTest real multi-parallel pricing at 5/14/27 concurrent sessions
-      — all are sales-gated above 1 parallel; the figures above are third-party extrapolations, not
-      vendor quotes. Moot unless one of them is reconsidered, which is not recommended here.
-- [ ] TestingBot's actual fair-use ceiling behind "unlimited" on Automated Pro — the $90/mo flat
-      price is suspiciously cheap relative to every other vendor and needs a direct vendor
-      conversation before it's trusted.
-- [ ] Steel.dev's real Terms of Service (the public link redirects to a Google Doc this research
-      pass could not extract) — read it directly before treating Steel as a candidate.
-- [ ] Confirm live, with either Steel.dev or Browserbase support: does a `contextId`/`profileId`
-      reused days apart get the **same** residential egress IP each time (not just the same
-      geo-target), matching LEM's "one stable IP per user, pinned for the life of the account"
-      requirement (`EGRESS_AT_SCALE.md`)? Geo-targeting alone doesn't guarantee IP stability across
-      separate sessions.
-- [ ] Confirm Selenium (not CDP-wrapped) compatibility with `get_docker_driver()` for both Steel.dev
-      and Browserbase with a working code spike, not documentation alone.
+The hosted-vendor unknowns this spike surfaced (Steel's unreadable ToS, Selenium-vs-CDP
+compatibility for Steel/Browserbase, per-user residential-IP stability across days, real
+multi-parallel pricing from the sales-gated QA clouds, TestingBot's fair-use ceiling behind
+"unlimited", live Fargate/EC2 Spot quotes) are **closed as not-applicable** — the decision above
+means none of them gates anything. They're recorded in §2b/§2c so a future reader can see what was
+and wasn't verified, not as a to-do list.
+
+What's still genuinely open, on the path actually being taken:
+
+- [ ] Hostinger KVM8 renewal pricing at the point a second box is actually bought — the ~$26–30/mo
+      figures above are promotional; renewal is ~$49.99/mo, and Option B's steady-state cost at
+      3–4 boxes should be budgeted at renewal rates, not promo.
+- [ ] Private networking between two Hostinger boxes: Hetzner offers native unmetered VPC between
+      same-region hosts, Hostinger's equivalent wasn't confirmed in this pass. If there isn't one,
+      the Grid hub↔node link needs WireGuard, which is a small but real setup item on the Option B
+      cutover checklist (`SELENIUM_GRID.md` §6).
+- [ ] Hetzner/DigitalOcean US bandwidth allowances remain worth knowing **only** if a
+      cross-provider move is ever reconsidered for reasons other than Selenium capacity (Hetzner's
+      US allowance dropped to 1 TB/mo vs 20 TB/mo in EU alongside its June 2026 price increase).
 
 ---
 

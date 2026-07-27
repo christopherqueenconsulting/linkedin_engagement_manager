@@ -448,22 +448,22 @@ ToS-risk requirements. Full comparison, cost tables and sources: `docs/scaling-c
   default path; **Option B (a second same-provider box running Grid nodes, already built as
   `docker-compose.grid-node.yml`) is now the clear default** — cheapest at every tier, no new
   vendor/ToS risk, no migration.
-- **Two vendors are a genuine, cheap fit on paper and worth one more look before scaling
-  hardware:** Steel.dev and Browserbase are purpose-built for persistent authenticated browser
-  sessions over a residential/BYOP proxy (`Profiles`/`Contexts` APIs persist cookies/login across
-  sessions the way LEM needs) and price well under both AWS and a third/fourth self-managed box at
-  the 100-user tier (~$410–430/mo and ~$374–399/mo respectively vs. Fargate's ~$826–1,115/mo). Two
-  things are unverified and block using either: whether their Selenium path is a true
-  `get_docker_driver()` URL-repoint or needs a connector rewrite, and (Steel only) its actual ToS
-  text, which this spike could not extract. **Recommended: a small, non-committal spike against
-  both free tiers to answer those two questions — not a purchase, not a path change today.**
+- **The two vendors that did fit are ruled out by decision, not by disqualification.** Steel.dev
+  and Browserbase are purpose-built for persistent authenticated browser sessions over a
+  residential/BYOP proxy (`Profiles`/`Contexts` APIs persist cookies/login across sessions the way
+  LEM needs) and price well under both AWS and a third/fourth self-managed box at the 100-user tier
+  (~$410–430/mo and ~$374–399/mo respectively vs. Fargate's ~$826–1,115/mo). Each still carried an
+  unresolved blocker — whether its Selenium path is a true `get_docker_driver()` URL-repoint or
+  needs a connector rewrite, and (Steel only) an actual ToS text this spike could not extract.
+  **Owner decision, 2026-07-27 (PR #694): don't spend the engineering time. No vendor spike, no
+  purchase, at any tier.** LEM stays on infrastructure it owns and operates.
 
 **Decision trigger:** unchanged from `SELENIUM_GRID.md` §6 — cut the self-managed Grid over at the
 capacity monitor's first breach, at parity (8 nodes), then scale nodes/lanes together per the
-load test's sessions-needed column. The hosted-vendor question is no longer blocking that
-decision: self-managed Option B is cheaper and lower-risk at every tier this plan currently
-projects, so it proceeds on its own. Steel.dev/Browserbase re-enter the decision only if the spike
-above clears **and** the 100-user tier is genuinely approaching.
+load test's sessions-needed column. That is now the entire decision: there is no hosted-vendor
+branch waiting on a spike and no vendor re-enters at the 50- or 100-user tier. `#633`'s market
+survey is kept in `docs/scaling-cost-options.md` as the evidence behind that call, and its prices
+(accessed 2026-07-27) would need re-researching from scratch if it were ever reopened.
 
 ---
 
@@ -508,9 +508,10 @@ above clears **and** the 100-user tier is genuinely approaching.
   (`docker-compose.grid-node.yml`) is the default horizontal path** — cheapest at every tier, no
   new vendor/ToS risk. #633 also priced the hosted/cloud market (AWS, BrowserStack/Sauce/
   LambdaTest/TestingBot/Browserless/Browserbase/Steel) against this curve and LEM's
-  residential-proxy/ToS requirements: almost all of it is disqualified outright, and the two
-  vendors that fit (Steel.dev, Browserbase) are worth a non-committal spike but not yet a path
-  change — see `docs/scaling-cost-options.md`. Nothing is bought until §5e files a breach.
+  residential-proxy/ToS requirements: almost all of it is disqualified outright, and the two that
+  did fit (Steel.dev, Browserbase) were **ruled out by owner decision** — the whole hosted market is
+  out, no vendor spike is planned — see `docs/scaling-cost-options.md`. Nothing is bought until §5e
+  files a breach.
 
 **Phase 3 — ~100 users:**
 - Grid nodes across 2+ hosts; dedicated Chrome host(s).

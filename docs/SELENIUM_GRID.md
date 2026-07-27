@@ -235,17 +235,21 @@ this:
 
 ## 5. The decision point: 16 vCPU / 64 GB, a second box — or someone else's grid
 
-**Status: default path set, hardware not yet bought (#633, 2026-07-27).** Nothing is bought until
-the capacity monitor (§5e in `docs/scaling-plan.md`) says the cap is the operating point. #633
-widened the option set and priced hosted/cloud grids (AWS Fargate/EC2 nodes, Device Farm,
+**Status: decided — self-managed, hardware not yet bought (#633, 2026-07-27).** The "someone else's
+grid" third option in this section's title is **closed**: LEM stays self-managed and no hosted
+vendor is pursued. Nothing is bought until the capacity monitor (§5e in `docs/scaling-plan.md`)
+says the cap is the operating point.
+
+#633 widened the option set and priced hosted/cloud grids (AWS Fargate/EC2 nodes, Device Farm,
 BrowserStack, Sauce Labs, LambdaTest, TestingBot, Browserless, Browserbase, Steel) against the two
 self-managed baselines below — full comparison: `docs/scaling-cost-options.md`. As suspected, most
 of that market disqualifies itself on session length (Device Farm caps at 40 min, the QA clouds at
 30 min–3 hr with no confirmed login persistence), explicit ToS (Sauce Labs bans non-testing social
-media use in writing), or protocol (Browserless is CDP-first, not Selenium) — Steel.dev and
-Browserbase are the two that fit LEM's pattern on paper and are cheaper than AWS, but both have an
-open question blocking use (a Selenium-compatibility check, and for Steel a real ToS read) and
-neither is recommended over self-managed today.
+media use in writing), or protocol (Browserless is CDP-first, not Selenium). Steel.dev and
+Browserbase were the two that fit LEM's pattern on paper and beat AWS on cost, but each carried an
+unresolved blocker (a Selenium-compatibility check, and for Steel a real ToS read) — and the owner's
+call was to **not spend the time resolving them**. They are out with the rest of the market; no
+vendor spike is scheduled at any user tier.
 
 **#633 also corrects this section's own premise: Option A below assumed an in-place resize that
 does not exist.** Hostinger's VPS line tops out at the box LEM already runs (8 vCPU / 32 GB) — a 16
