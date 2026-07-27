@@ -110,6 +110,14 @@ mutate_catalog(){  # pre-approve upcoming retirements + refresh the committed ca
   git add .litellm/model_upgrades.yaml .litellm/ollama_catalog_snapshot.json
 }
 
+mutate_benchmark(){  # render the run we ALREADY measured into the worktree (issue #721)
+                     # --render is pure: no provider or PostHog calls, so the PR always describes
+                     # the same measurement the alert above was based on.
+  "${PY[@]}" "$REPO/scripts/benchmark_models.py" --render "$BENCH_RESULTS" \
+      --out-dir "$1/docs/model-benchmarks" >>"$LOG" 2>&1
+  git add docs/model-benchmarks
+}
+
 log "=== weekly model-health check start ==="
 # Provider creds for the planner's direct probes.
 set -a; source <(sudo -n grep -E "^(OLLAMA_CLOUD_URL|OLLAMA_CLOUD_API_KEY)=" /opt/lem/.env); set +a
@@ -204,6 +212,61 @@ for n in json.load(sys.stdin)['notices']:
     rm -f "$PLANF"
     # 0/2/3 are the planner's own nothing/actions/alerts codes — only anything else is a failure.
     case "$RC" in 0|2|3) ;; *) log "issue filing failed (non-fatal, rc=$RC)";; esac
+  fi
+
+  # ── model-tier benchmark: is the candidate any GOOD? (issue #721) ──────────────────────────
+  # Everything above this line detects CHANGE. This measures QUALITY: each cron-detected candidate
+  # and the tier's current champion run the same synthetic suites, and the run is committed as a
+  # report PR. Strictly advisory — it never edits the config, never writes model_upgrades.yaml, and
+  # any failure here must NOT touch the retirement-swap safety path that already ran above.
+  set -a; source <(sudo -n grep -E "^(BENCHMARK_[A-Z_]+|POSTHOG_API_KEY|POSTHOG_HOST|POSTHOG_PERSONAL_API_KEY|POSTHOG_PROJECT_ID)=" /opt/lem/.env) 2>/dev/null; set +a
+  if [ "${BENCHMARK_ENABLED:-false}" != "true" ]; then
+    log "benchmark: BENCHMARK_ENABLED not set — skipping"
+  else
+    # Candidates = the new tags plus the family-upgrade candidates from the SAME plan the issues
+    # were filed from. Bounded, and the drop is logged rather than silently truncated.
+    CANDS="$(printf '%s' "$CAT" | python3 -c "
+import sys, json
+plan = json.load(sys.stdin)
+names, seen = [], set()
+for name in list(plan['catalog']['added']) + [u['candidate'] for u in plan['upgrades']]:
+    if name and name not in seen:
+        seen.add(name); names.append(name)
+print(','.join(names[:${BENCHMARK_MAX_CANDIDATES:-3}]), len(names))
+" 2>/dev/null || echo " 0")"
+    NCAND="${CANDS##* }"; CANDS="${CANDS%% *}"
+    if [ "${NCAND:-0}" -gt "${BENCHMARK_MAX_CANDIDATES:-3}" ]; then
+      log "benchmark: $NCAND candidates found, benchmarking the first ${BENCHMARK_MAX_CANDIDATES:-3}"
+    fi
+    if [ -z "$CANDS" ]; then
+      log "benchmark: no new candidates this week — skipping"
+    else
+      BENCH_RESULTS="$DIR/benchmark-$(date -u +%Y%m%dT%H%M%SZ).json"
+      log "benchmark: running tier suites for $CANDS (+ champions)"
+      "${PY[@]}" scripts/benchmark_models.py --run --models "$CANDS" --config "$BOX_CFG" \
+          --results-out "$BENCH_RESULTS" --out-dir "$DIR/benchmark-report" >>"$LOG" 2>&1
+      BRC=$?
+      # 0 = ran, nothing recommended; 2 = ran, recommendations. Anything else is a real failure.
+      case "$BRC" in
+        0|2)
+          log "benchmark: completed (rc=$BRC)"
+          open_pr "auto/model-benchmark" \
+            "docs(model-benchmarks): tier benchmark report for cron-detected candidates" \
+            "Automated by the weekly model-health check (issue #721). Each candidate and the tier's current champion ran the synthetic suites in tests/benchmarks/model_tiers/. Recommendations in the report are advisory: adopting one is a deliberate .litellm/config.yaml change, never an entry in the retirement map." \
+            mutate_benchmark
+          if [ "$BRC" -eq 2 ]; then
+            MSG="$(printf '%s' "$(cat "$BENCH_RESULTS")" | python3 -c "
+import sys, json
+run = json.load(sys.stdin)
+for r in run['recommendations']:
+    print(f\"{r['tier']}: {r['champion']} -> {r['model']} (benchmark-recommended, not applied)\")
+" 2>/dev/null || echo "(could not read recommendations)")"
+            alert "Model benchmark recommends a swap:"$'\n'"$MSG"
+          fi
+          ;;
+        *) alert "Model-tier benchmark FAILED (rc=$BRC) — see $LOG. Model-health swaps were unaffected.";;
+      esac
+    fi
   fi
 fi
 log "=== weekly model-health check done ==="
