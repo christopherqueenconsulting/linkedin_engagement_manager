@@ -456,23 +456,52 @@ class TestGithubIO:
         response.json.return_value = payload if payload is not None else {}
         return response
 
-    def test_create_issue_posts_title_body_labels_and_returns_the_number(self, monkeypatch):
+    def test_create_issue_attaches_labels_and_assignees_after_creation(self, monkeypatch):
+        # Issue #598: a fine-grained PAT silently drops labels/assignees sent in the create
+        # payload, so they MUST ride on their own endpoints afterwards.
         svc = _mod()
         monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
         monkeypatch.setenv("FEEDBACK_GITHUB_REPO", "o/r")
         requests = MagicMock()
-        requests.request.return_value = self._response(201, {"number": 777})
+        requests.request.side_effect = [self._response(201, {"number": 777}),
+                                        self._response(200, [{"name": "bug"}]),
+                                        self._response(201, {"number": 777})]
         with patch.dict("sys.modules", {"requests": requests}):
-            got = svc.create_github_issue("t", "b", ["bug"], assignees=["gitchrisqueen"])
+            got = svc.create_github_issue("t", "b", ["bug", "agent:ready"],
+                                          assignees=["gitchrisqueen"])
         assert got == 777
-        method, url = requests.request.call_args[0]
-        assert method == "POST"
-        assert url == "https://api.github.com/repos/o/r/issues"
-        payload = requests.request.call_args.kwargs["json"]
-        assert payload == {"title": "t", "body": "b", "labels": ["bug"],
-                           "assignees": ["gitchrisqueen"]}
-        headers = requests.request.call_args.kwargs["headers"]
-        assert headers["Authorization"] == "Bearer tok"
+        calls = requests.request.call_args_list
+        assert [c[0] for c in calls] == [
+            ("POST", "https://api.github.com/repos/o/r/issues"),
+            ("POST", "https://api.github.com/repos/o/r/issues/777/labels"),
+            ("POST", "https://api.github.com/repos/o/r/issues/777/assignees")]
+        assert calls[0].kwargs["json"] == {"title": "t", "body": "b"}
+        assert calls[1].kwargs["json"] == {"labels": ["bug", "agent:ready"]}
+        assert calls[2].kwargs["json"] == {"assignees": ["gitchrisqueen"]}
+        assert calls[0].kwargs["headers"]["Authorization"] == "Bearer tok"
+
+    def test_create_issue_skips_the_attach_calls_when_there_is_nothing_to_attach(self, monkeypatch):
+        svc = _mod()
+        monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
+        monkeypatch.setenv("FEEDBACK_GITHUB_REPO", "o/r")
+        requests = MagicMock()
+        requests.request.return_value = self._response(201, {"number": 12})
+        with patch.dict("sys.modules", {"requests": requests}):
+            assert svc.create_github_issue("t", "b", [], assignees=None) == 12
+        assert requests.request.call_count == 1
+
+    def test_failed_label_attach_still_returns_the_issue(self, monkeypatch):
+        # The issue is already on GitHub — losing its number would strand the feedback row.
+        svc = _mod()
+        monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
+        monkeypatch.setenv("FEEDBACK_GITHUB_REPO", "o/r")
+        requests = MagicMock()
+        requests.request.side_effect = [self._response(201, {"number": 31}),
+                                        self._response(403, {"message": "forbidden"}),
+                                        self._response(403, {"message": "forbidden"})]
+        with patch.dict("sys.modules", {"requests": requests}):
+            assert svc.create_github_issue("t", "b", ["bug"], assignees=["gitchrisqueen"]) == 31
+        assert requests.request.call_count == 3
 
     def test_no_token_files_nothing(self, monkeypatch):
         svc = _mod()

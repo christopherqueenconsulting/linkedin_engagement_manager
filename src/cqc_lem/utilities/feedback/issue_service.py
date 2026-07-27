@@ -513,16 +513,29 @@ def github_request(method: str, path: str, payload: dict = None) -> Optional[obj
 
 def create_github_issue(title: str, body: str, labels: list,
                         assignees: list = None) -> Optional[int]:
-    """Open an issue; returns its number or None."""
-    payload = {"title": title, "body": body, "labels": list(labels or [])}
-    if assignees:
-        payload["assignees"] = list(assignees)
-    data = github_request("POST", "issues", payload)
+    """Open an issue; returns its number or None.
+
+    Labels and assignees are attached in SEPARATE calls after creation (issue #598): GitHub
+    silently drops both when a fine-grained PAT supplies them in the create payload, so every
+    auto-filed issue landed label-less and the pipeline never picked it up. A failed attach is a
+    warning, never a lost issue — the row is already on GitHub by then."""
+    data = github_request("POST", "issues", {"title": title, "body": body})
     number = data.get("number") if isinstance(data, dict) else None
     if number is None:
         return None
+    number = int(number)
+    label_list = [str(label) for label in (labels or [])]
+    if label_list and github_request("POST", f"issues/{number}/labels",
+                                     {"labels": label_list}) is None:
+        log_warning(f"Auto-filed issue #{number} could not be labeled {label_list}",
+                    api_provider="github")
+    assignee_list = [str(assignee) for assignee in (assignees or [])]
+    if assignee_list and github_request("POST", f"issues/{number}/assignees",
+                                        {"assignees": assignee_list}) is None:
+        log_warning(f"Auto-filed issue #{number} could not be assigned to {assignee_list}",
+                    api_provider="github")
     log_info(f"Auto-filed feedback issue #{number}: {title}", api_provider="github")
-    return int(number)
+    return number
 
 
 def comment_on_issue(issue_number: int, body: str) -> bool:
