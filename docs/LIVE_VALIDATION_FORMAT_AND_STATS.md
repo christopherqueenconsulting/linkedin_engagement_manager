@@ -119,7 +119,7 @@ things LEM cannot do for itself: the LinkedIn app approved for the Community Man
 **every connected user re-consenting**, because a scope change invalidates the existing grant.
 That is an owner decision, tracked as the follow-up below.
 
-**Four details that will bite whoever does the cutover:**
+**Five details that will bite whoever does the cutover:**
 
 - **The entity URN is the OPPOSITE of the scrape's.** This finder takes a `share` or `ugcPost`
   URN (`entity=(share:…)` / `entity=(ugc:…)`); the analytics *page* keys off the **activity** URN
@@ -133,12 +133,18 @@ That is an owner decision, tracked as the follow-up below.
 - **`202506` is not enough for saves.** `POST_SAVE` only exists from `202604`. LEM's
   `LI_API_VERSION` default is `202606` (`env_constants.py`), which clears every floor above — but a
   pin rolled back to satisfy something else would silently drop saves as a `400`.
+- **`aggregation=TOTAL` is the only one that serves every signal.** Under `DAILY`, LinkedIn does
+  not serve `IMPRESSION` for a post entity (nor `MEMBERS_REACHED`, `LINK_CLICKS`,
+  `FOLLOWER_GAINED_FROM_CONTENT`, `PROFILE_VIEW_FROM_CONTENT` at all) — and it says so with the
+  **same `400` "query type … metric type" shape as a version gap**, so the two are easy to confuse.
+  The probe flags the combination itself and names the aggregation ahead of the version, and the
+  cutover wants `TOTAL` anyway: `post_stats` stores lifetime counts.
 
 **The probe ships even though it is blocked:** `scripts/linkedin_post_stats_api_probe.py` is
-read-only, stdlib-only and needs no browser, and it separates the three answers that demand
-different fixes — `403` (permission), `426` (retired `LI_API_VERSION`), `400`/absent metric
-(version predates the metric) — then compares whatever it *does* get against the latest stored
-`post_stats` row:
+read-only, stdlib-only and needs no browser, and it separates the answers that demand different
+fixes — `403` (permission), `426` (retired `LI_API_VERSION`), `400`/absent metric (version predates
+the metric) and the `400` that is really an unsupported `aggregation` — then compares whatever it
+*does* get against the latest stored `post_stats` row:
 
 ```bash
 sudo docker exec -i celery_worker python - --user-id 1 --post-id <post id> \

@@ -31,6 +31,9 @@ Three facts the report is built to separate, because they demand different fixes
 * **400 / absent metric** — the pinned version predates the metric. ``q=entity`` (single-post
   stats) landed in ``202506``; ``POST_SAVE`` only in ``202604``. The report states the floor for
   every metric it asks for so a 400 is never misread as "LinkedIn does not expose saves".
+* **400 under ``--aggregation DAILY``** — LinkedIn serves some metrics under ``TOTAL`` only
+  (``IMPRESSION`` among them, for a post entity) and answers the rest with the SAME 400 shape as a
+  version gap. That one is named separately, because the fix is the operator's own flag.
 
 The parsing/verdict logic is pure and unit-tested; the HTTP call is injected so tests never
 touch the network.
@@ -74,6 +77,16 @@ METRIC_MIN_VERSION = {
 }
 DEFAULT_METRICS = tuple(METRIC_COLUMNS)
 
+# LinkedIn documents DAILY as unsupported for these queryTypes ("Daily impression metrics are not
+# supported if given entity is post", plus the MEMBERS_REACHED/LINK_CLICKS/FOLLOWER_GAINED_FROM_
+# CONTENT/PROFILE_VIEW_FROM_CONTENT note). Those 400s carry the SAME "query type ... metric type"
+# error shape as a version gap, so without this the probe would send whoever reads the report off
+# to bump LI_API_VERSION over a flag they set themselves. TOTAL — the default — clears all of it.
+DAILY_UNSUPPORTED_METRICS = frozenset({
+    "IMPRESSION", "MEMBERS_REACHED", "LINK_CLICKS",
+    "FOLLOWER_GAINED_FROM_CONTENT", "PROFILE_VIEW_FROM_CONTENT",
+})
+
 # The entity finder takes a share or ugcPost URN. An ACTIVITY urn — which is what the analytics
 # PAGE keys off, and what _post_analytics_counts resolves by following the redirect — is not a
 # valid entity here, and the numeric ids are not interchangeable. Say so rather than guess.
@@ -113,6 +126,11 @@ def version_supports(configured: Optional[str], minimum: str) -> Optional[bool]:
     if not configured or not str(configured).isdigit() or len(str(configured)) != 6:
         return None
     return int(configured) >= int(minimum)
+
+
+def aggregation_supports(metric: str, aggregation: str) -> bool:
+    """Is this metric served under this aggregation? Only DAILY is ever restricted."""
+    return not (str(aggregation).upper() == "DAILY" and metric in DAILY_UNSUPPORTED_METRICS)
 
 
 def metric_type_name(raw) -> Optional[str]:
@@ -207,6 +225,8 @@ def probe_metric(entity: str, metric: str, token: str, version: str,
         "column": METRIC_COLUMNS.get(metric),
         "min_version": METRIC_MIN_VERSION.get(metric),
         "version_ok": version_supports(version, METRIC_MIN_VERSION.get(metric, "000000")),
+        "aggregation": aggregation,
+        "aggregation_ok": aggregation_supports(metric, aggregation),
     }
     status, body = fetch(build_url(entity, metric, aggregation), token, version)
     result["http_status"] = status
@@ -274,7 +294,8 @@ def verdict(results: list, comparison: dict) -> dict:
     if "forbidden" in statuses:
         return {"outcome": "blocked",
                 "reason": f"403 — the token lacks {REQUIRED_PERMISSION} (or the app is not "
-                          f"provisioned for the Community Management API); keep the scrape"}
+                          f"provisioned for the Community Management API, or the probed post is "
+                          f"not this member's own); keep the scrape"}
     if "unauthorized" in statuses:
         return {"outcome": "error",
                 "reason": "401 — the stored member token is expired or invalid; re-probe after "
@@ -296,6 +317,16 @@ def verdict(results: list, comparison: dict) -> dict:
                 "reason": f"every metric returned and agrees with the scrape on "
                           f"{len(graded)} signal(s)"}
     if "unsupported_metric" in statuses:
+        # The aggregation is checked FIRST: it is the one cause the operator introduced with a
+        # flag, and LinkedIn answers it with the same 400 shape as a version gap. Blaming
+        # LI_API_VERSION for a --aggregation DAILY run would send them to fix the wrong thing.
+        by_aggregation = sorted(r["metric"] for r in results
+                                if r.get("status") == "unsupported_metric"
+                                and r.get("aggregation_ok") is False)
+        if by_aggregation:
+            return {"outcome": "partial",
+                    "reason": f"LinkedIn does not serve {', '.join(by_aggregation)} under DAILY "
+                              f"aggregation — re-probe with --aggregation TOTAL"}
         stale = sorted(r["metric"] for r in results
                        if r.get("status") == "unsupported_metric" and r.get("version_ok") is False)
         if stale:
@@ -308,13 +339,16 @@ def verdict(results: list, comparison: dict) -> dict:
 
 
 def build_report(entity_urn: str, entity: str, version: str, results: list,
-                 stored: Optional[dict]) -> dict:
+                 stored: Optional[dict], aggregation: str = "TOTAL") -> dict:
     comparison = compare_counts(results, stored)
     return {
         "probe": "memberCreatorPostAnalytics",
         "entity_urn": entity_urn,
         "entity_param": entity,
         "linkedin_version": version,
+        # Recorded because it changes which metrics LinkedIn will serve at all — a report pasted
+        # into an issue without it cannot be read.
+        "aggregation": aggregation,
         "required_permission": REQUIRED_PERMISSION,
         "entity_finder_min_version": ENTITY_FINDER_MIN_VERSION,
         "metric_type_string_since": STRING_METRIC_TYPE_MIN_VERSION,
@@ -378,7 +412,8 @@ def main(argv: Optional[list] = None) -> int:
                           "verdict": {"outcome": "error", "reason": str(e)}}))
         return 1
 
-    print(json.dumps(build_report(entity_urn, entity, version, results, stored), indent=2))
+    print(json.dumps(build_report(entity_urn, entity, version, results, stored,
+                                  args.aggregation), indent=2))
     return 0
 
 

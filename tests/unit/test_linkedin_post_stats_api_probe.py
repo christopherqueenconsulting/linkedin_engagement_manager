@@ -75,6 +75,20 @@ class TestVersionSupport:
 
 
 @pytest.mark.unit
+class TestAggregationSupport:
+    def test_total_serves_every_metric_lem_stores(self):
+        for metric in probe.DEFAULT_METRICS:
+            assert probe.aggregation_supports(metric, "TOTAL") is True
+
+    def test_daily_does_not_serve_impressions_for_a_post_entity(self):
+        assert probe.aggregation_supports("IMPRESSION", "DAILY") is False
+
+    def test_daily_serves_the_engagement_metrics(self):
+        for metric in ("REACTION", "COMMENT", "RESHARE", "POST_SAVE"):
+            assert probe.aggregation_supports(metric, "DAILY") is True
+
+
+@pytest.mark.unit
 class TestMetricParsing:
     def test_reads_the_bare_string_metric_type(self):
         assert probe.metric_type_name("REACTION") == "REACTION"
@@ -175,6 +189,21 @@ class TestProbeMetric:
         assert result["version_ok"] is False
         assert result["min_version"] == "202604"
 
+    def test_a_daily_unsupported_metric_is_flagged_before_the_response_is_read(self):
+        result = probe.probe_metric("(share:x)", "IMPRESSION", "tok", "202606",
+                                    aggregation="DAILY",
+                                    fetch=_fetch(400, {"message": "Unsupported query type DAILY "
+                                                                  "for metric type IMPRESSION."}))
+        assert result["aggregation"] == "DAILY"
+        assert result["aggregation_ok"] is False
+        assert result["version_ok"] is True
+
+    def test_total_leaves_every_metric_servable(self):
+        result = probe.probe_metric("(share:x)", "IMPRESSION", "tok", "202606",
+                                    fetch=_fetch(200, _ok_payload("IMPRESSION", 72)))
+        assert result["aggregation"] == "TOTAL"
+        assert result["aggregation_ok"] is True
+
     def test_url_carries_the_finder_entity_and_aggregation(self):
         seen = {}
 
@@ -252,6 +281,22 @@ class TestVerdict:
         assert "POST_SAVE" in outcome["reason"] and "202604" in outcome["reason"]
         assert "LI_API_VERSION" in outcome["reason"]
 
+    def test_a_daily_only_restriction_blames_the_flag_not_the_version(self):
+        """LinkedIn answers a DAILY-unsupported metric with the same 400 shape as a version gap.
+        Sending the operator to bump LI_API_VERSION over their own --aggregation flag would waste
+        the exact debugging session this probe exists to prevent."""
+        results = [{"status": "unsupported_metric", "metric": "IMPRESSION",
+                    "version_ok": True, "aggregation_ok": False}]
+        outcome = probe.verdict(results, {})
+        assert outcome["outcome"] == "partial"
+        assert "DAILY" in outcome["reason"] and "--aggregation TOTAL" in outcome["reason"]
+        assert "LI_API_VERSION" not in outcome["reason"]
+
+    def test_the_aggregation_cause_is_named_ahead_of_the_version_one(self):
+        results = [{"status": "unsupported_metric", "metric": "IMPRESSION",
+                    "version_ok": False, "aggregation_ok": False}]
+        assert "DAILY" in probe.verdict(results, {})["reason"]
+
     def test_an_unsupported_metric_on_a_new_enough_pin_is_just_partial(self):
         """version_ok True means the pin clears the floor — blaming LI_API_VERSION there would
         send whoever reads this report to fix the wrong thing."""
@@ -287,6 +332,12 @@ class TestBuildReport:
         assert report["metric_type_string_since"] == "202605"
         assert report["comparison"]["saves"]["match"] is True
         assert report["verdict"]["outcome"] == "available_match"
+
+    def test_report_records_the_aggregation_it_ran_under(self):
+        """The report is pasted into an issue; without the aggregation, a metric that came back
+        empty cannot be told apart from one LinkedIn refuses to serve that way."""
+        report = probe.build_report("urn:li:share:7", "(share:x)", "202606", [], None, "DAILY")
+        assert report["aggregation"] == "DAILY"
 
     def test_report_is_json_serialisable(self):
         results = [probe.probe_metric("(share:x)", "COMMENT", "tok", "202606",
