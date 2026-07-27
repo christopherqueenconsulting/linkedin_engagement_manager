@@ -33,6 +33,9 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Mapping, Optional, Sequence
 
+from cqc_lem.utilities.engagement_window import (
+    STAGGER_APPRECIATION_DM, STAGGER_GOLDEN_HOUR, STAGGER_TICK_MINUTES, stagger_offset_minutes,
+)
 from cqc_lem.utilities.logger import log_info, log_warning
 
 # ───────────────────────────── topology defaults ─────────────────────────────
@@ -99,6 +102,10 @@ class JobSpec:
     # ARRIVAL_POST: minutes relative to the user's post time (the eta offsets in run_scheduler.py).
     post_offset_minutes: float = 0.0
     staggerable: bool = True
+    # The window this fan-out is ACTUALLY staggered across in production today (issue #554), used
+    # whenever the CLI doesn't pass an explicit `--stagger-hours` override. 0 means "not one of
+    # #554's three staggered fan-outs" — its arrivals stay a single fixed-time spike by default.
+    stagger_window_minutes: float = 0.0
 
 
 # Sums to ~68 Selenium-minutes/user/day — the §4 table this plan's math is built on. The tolerances
@@ -108,12 +115,14 @@ WORKLOAD: tuple[JobSpec, ...] = (
     # before the post goes live, so a few minutes late means it did nothing — the tightest window here.
     JobSpec("prepost_commenting", "se_prepost", 15.0, 5.0,
             arrival=ARRIVAL_POST, post_offset_minutes=-15.0, staggerable=False),
-    # The single 13:00 UTC fan-out (§3) — i.e. arrivals as they were BEFORE #554 staggered them, which
-    # is what makes `--stagger-hours 0` vs `3` a before/after comparison rather than two guesses.
-    # Modelling the shipped per-user slots (a hashed minute inside a 3 h window in the user's OWN
-    # timezone) is issue #634, together with the post-stagger re-run of this curve.
-    # Tolerance = the 2-hour golden window §4's C ≥ N ÷ (W×4) formula assumes.
-    JobSpec("golden_hour_commenting", "se_engage", 15.0, 120.0, starts=(13 * 60,)),
+    # #554 replaced the single 13:00 UTC fan-out with a `*/15 min` beat that dispatches each user at
+    # a stable hashed minute inside a window anchored (in the user's OWN timezone) at 09:00 local —
+    # `stagger_window_minutes` mirrors production's `GOLDEN_HOUR_WINDOW_MINUTES` default (issue #634).
+    # `13 * 60` remains the model's single-timezone stand-in for that local anchor (same convention
+    # POST_BAND uses), so `--stagger-hours 0` still reproduces the pre-#554 single-minute fan-out for
+    # a before/after comparison. Tolerance = the 2-hour golden window §4's C ≥ N ÷ (W×4) formula assumes.
+    JobSpec("golden_hour_commenting", "se_engage", 15.0, 120.0, starts=(13 * 60,),
+            stagger_window_minutes=float(STAGGER_GOLDEN_HOUR[2])),
     # Dispatched every 30 min and Redis-gated to the user's cadence, so a sweep that starts within
     # the next dispatch interval is indistinguishable from one that started on its own tick.
     JobSpec("reply_sweep", "se_engage", 4.0, 30.0, starts=(11 * 60, 19 * 60)),
@@ -123,8 +132,14 @@ WORKLOAD: tuple[JobSpec, ...] = (
     # §3's "fixed off-peak batch": nothing about an appreciation DM or a stats scrape breaks if it
     # runs an hour or three into the morning, so their windows are wide on purpose. Giving these the
     # same tolerance as a golden-hour loop would demand browsers the product does not actually need.
-    JobSpec("appreciation_dms", "se_outreach", 10.0, 240.0, starts=(8 * 60,)),
-    JobSpec("content_tasks", "se_content", 10.0, 240.0, starts=(23 * 60,)),
+    # Also staggered by #554 (`APPRECIATION_DM_WINDOW_MINUTES`, default 120) — see the golden-hour
+    # comment above for why the model keeps `8 * 60` as the anchor stand-in.
+    JobSpec("appreciation_dms", "se_outreach", 10.0, 240.0, starts=(8 * 60,),
+            stagger_window_minutes=float(STAGGER_APPRECIATION_DM[2])),
+    # `scrape-post-stats` — a single fixed-time batch #554 did NOT touch (only golden-hour,
+    # appreciation DMs and group-engagement were staggered), so it stays a single-minute fan-out
+    # regardless of `--stagger-hours` (`staggerable` gates the CLI override too).
+    JobSpec("content_tasks", "se_content", 10.0, 240.0, starts=(23 * 60,), staggerable=False),
 )
 
 
@@ -195,7 +210,7 @@ def _on_time_pct(results: Sequence[JobResult]) -> Optional[float]:
 
 
 def required_topology(users: int, base: Topology, target_on_time_pct: float = 95.0,
-                      stagger_hours: float = 0.0, specs: Sequence[JobSpec] = WORKLOAD,
+                      stagger_hours: Optional[float] = None, specs: Sequence[JobSpec] = WORKLOAD,
                       max_lane_concurrency: int = 64) -> dict:
     """Smallest per-lane concurrency (and therefore session cap) that starts `target_on_time_pct` of
     the day's work inside its window at `users` users.
@@ -251,30 +266,54 @@ def _post_time(user_index: int, users: int, band: tuple[int, int]) -> float:
     return start + (end - start) * (user_index / users)
 
 
-def build_workload(users: int, stagger_hours: float = 0.0,
+def _staggered_ready(start: float, user_id: int, salt: str, window_minutes: float) -> float:
+    """One user's arrival for a fan-out anchored at `start`, reusing the SAME hash
+    (`stagger_offset_minutes`) production's `plan_daily_slot` uses — so a load-test user's offset is
+    the offset the real beat would give that user_id, not a fresh approximation of it.
+
+    Quantized up to the next `STAGGER_TICK_MINUTES` boundary: the beat only ticks every 15 minutes
+    (`daily-golden-hour-engagement` et al. are `crontab(minute='*/15')`), so a slot that lands at
+    e.g. +37 minutes is not dispatched until the :45 tick discovers it — modelling a continuous
+    offset would understate how many users land on the SAME tick and therefore the same lane
+    contention.
+    """
+    if not window_minutes:
+        return float(start)
+    raw = start + stagger_offset_minutes(user_id, int(round(window_minutes)), salt=salt)
+    return math.ceil(raw / STAGGER_TICK_MINUTES) * STAGGER_TICK_MINUTES
+
+
+def build_workload(users: int, stagger_hours: Optional[float] = None,
                    specs: Sequence[JobSpec] = WORKLOAD,
                    post_band: tuple[int, int] = POST_BAND) -> list[Job]:
     """The day's Selenium jobs for `users` active users.
 
-    `stagger_hours` is §5d's highest-leverage proposal: instead of every user's golden-hour loop
-    landing on one crontab minute, spread the fan-out over a window. 0 reproduces today's behaviour.
+    `stagger_hours` overrides EVERY staggerable fan-out's window uniformly — pass `0` to reproduce
+    the pre-#554 "everyone at one crontab minute" behaviour, or another value for a what-if. Left at
+    the default `None`, each fan-out uses its OWN shipped window (`JobSpec.stagger_window_minutes`:
+    golden-hour 180 min, appreciation DMs 120 min, both mirroring `docs/scaling-plan.md` §5d) — this
+    is what makes a bare `selenium_load_test.py` run reflect production instead of the fixed-time
+    fan-out #554 already replaced (issue #634).
     """
     if users < 0:
         raise ValueError("users must be >= 0")
-    if stagger_hours < 0:
+    if stagger_hours is not None and stagger_hours < 0:
         raise ValueError("stagger_hours must be >= 0")
-    spread = stagger_hours * 60.0
+    override_window = None if stagger_hours is None else stagger_hours * 60.0
     jobs: list[Job] = []
     for index in range(users):
-        offset = (spread * index / users) if (spread and users) else 0.0
+        user_id = index + 1
         for spec in specs:
             if spec.arrival == ARRIVAL_POST:
                 ready_times = [_post_time(index, users, post_band) + spec.post_offset_minutes]
+            elif not spec.staggerable:
+                ready_times = list(spec.starts)
             else:
-                shift = offset if spec.staggerable else 0.0
-                ready_times = [start + shift for start in spec.starts]
+                window = spec.stagger_window_minutes if override_window is None else override_window
+                ready_times = [_staggered_ready(start, user_id, spec.name, window)
+                              for start in spec.starts]
             for ready in ready_times:
-                jobs.append(Job(user_id=index + 1, name=spec.name, lane=spec.lane,
+                jobs.append(Job(user_id=user_id, name=spec.name, lane=spec.lane,
                                 ready_at=float(ready), duration=spec.duration_minutes,
                                 tolerance=spec.tolerance_minutes))
     return jobs
@@ -394,7 +433,7 @@ def project_resources(sessions: int, topology_label: str) -> dict:
 
 
 def summarize(results: Sequence[JobResult], topology: Topology, users: int,
-              stagger_hours: float = 0.0, required: Optional[Mapping] = None) -> dict:
+              stagger_hours: Optional[float] = None, required: Optional[Mapping] = None) -> dict:
     """One row of the on-time / resource curve."""
     delays = [result.queue_delay for result in results]
     waits = [result.session_wait for result in results]
@@ -449,7 +488,7 @@ def summarize(results: Sequence[JobResult], topology: Topology, users: int,
     }
 
 
-def run_scale(users: int, topology: Topology, stagger_hours: float = 0.0,
+def run_scale(users: int, topology: Topology, stagger_hours: Optional[float] = None,
               specs: Sequence[JobSpec] = WORKLOAD, target_on_time_pct: float = 95.0) -> dict:
     """One scale, two answers: what the CURRENT topology delivers, and the smallest topology that
     would hit the SLO. The gap between them is the decision this harness exists to inform."""
@@ -460,7 +499,7 @@ def run_scale(users: int, topology: Topology, stagger_hours: float = 0.0,
                      stagger_hours=stagger_hours, required=required)
 
 
-def run_curve(user_counts: Sequence[int], topology: Topology, stagger_hours: float = 0.0,
+def run_curve(user_counts: Sequence[int], topology: Topology, stagger_hours: Optional[float] = None,
               specs: Sequence[JobSpec] = WORKLOAD, target_on_time_pct: float = 95.0) -> list[dict]:
     return [run_scale(users, topology, stagger_hours=stagger_hours, specs=specs,
                       target_on_time_pct=target_on_time_pct) for users in user_counts]
@@ -475,8 +514,11 @@ def render_curve(rows: Sequence[Mapping]) -> str:
         return "No scales simulated."
     first = rows[0]
     lanes = ", ".join(f"{lane} {count}" for lane, count in (first.get("lanes") or {}).items())
+    stagger_hours = first.get("stagger_hours")
+    stagger_desc = (f"{stagger_hours}h override (uniform)" if stagger_hours is not None
+                    else "shipped per-fan-out windows (golden hour 180m, appreciation DMs 120m)")
     header = (f"Topology: {first.get('topology')} — {first.get('session_cap')} session slot(s); "
-              f"lanes {lanes}; stagger {first.get('stagger_hours')}h")
+              f"lanes {lanes}; stagger: {stagger_desc}")
     if not first.get("cap_matches_lanes"):
         header += "  ⚠️ cap != summed lane concurrency (scaling-plan.md §5a invariant)"
     target = first.get("target_on_time_pct")
@@ -662,8 +704,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         help="model a Grid of N single-session nodes instead of the standalone")
     parser.add_argument("--lanes", default=None,
                         help="lane concurrencies, e.g. se_engage=4,se_prepost=3,se_outreach=3,se_content=2")
-    parser.add_argument("--stagger-hours", type=float, default=0.0,
-                        help="spread the fixed-time fan-outs over this many hours (scaling-plan §5d)")
+    parser.add_argument("--stagger-hours", type=float, default=None,
+                        help="override EVERY staggerable fan-out's window uniformly, in hours "
+                             "(0 = pre-#554 single-minute fan-out, for a before/after comparison). "
+                             "Default: each fan-out's own shipped window (scaling-plan §5d)")
     parser.add_argument("--target-on-time", type=float, default=95.0,
                         help="on-time %% the 'sessions needed' search must reach (default 95)")
     parser.add_argument("--live", action="store_true",

@@ -123,10 +123,14 @@ Both 4444 and the event bus bind to **loopback** by default (`SELENIUM_GRID_HUB_
 it cost to serve the demand?**
 
 ```sh
-# the curve, on today's deployed topology
+# the curve, on today's deployed topology — each staggerable fan-out uses its OWN shipped window
+# (golden hour 180 min, appreciation DMs 120 min, per #554), not a single crontab minute
 python -m cqc_lem.utilities.selenium_load_test --users 10,50,100
 
-# what-if: staggered golden hour (§5d), a 16-node Grid, Phase-2 lane concurrencies
+# the pre-#554 "before" baseline, for comparison (everyone at one crontab minute)
+python -m cqc_lem.utilities.selenium_load_test --users 10,50,100 --stagger-hours 0
+
+# what-if: a wider/narrower UNIFORM stagger window, a 16-node Grid, Phase-2 lane concurrencies
 python -m cqc_lem.utilities.selenium_load_test --users 50 --nodes 16 --stagger-hours 4 \
   --lanes se_engage=7,se_prepost=4,se_outreach=3,se_content=2
 
@@ -168,7 +172,11 @@ cohort onboarding without parsing the table. `--json` emits the whole thing mach
 
 ---
 
-## 4. Measured curve (2026-07-26, today's topology: 8 slots, lanes 3/2/2/1)
+## 4. Measured curve
+
+### Pre-#554 baseline (2026-07-26, today's topology: 8 slots, lanes 3/2/2/1)
+
+`--stagger-hours 0` reproduces the ORIGINAL single-13:00-UTC-fan-out behaviour, exactly:
 
 | Users | On-time % | Late jobs | Delay p95 | Sessions needed | Chrome mem | Host CPU | Verdict |
 |---|---|---|---|---|---|---|---|
@@ -176,34 +184,51 @@ cohort onboarding without parsing the table. `--json` emits the whole thing mach
 | 50 | **57.7%** | 148 | 320 min | 14 (engage 6, prepost 4, outreach 2, content 2) | 16.8 GB | 15.5 vCPU (194%) | at ceiling |
 | 100 | **17.7%** | 576 | 640 min | 27 (engage 12, prepost 7, outreach 4, content 4) | 32.4 GB | 28.5 vCPU (356%) | exceeds one VPS |
 
-With `--stagger-hours 4` (§5d's per-user golden-hour offset — **shipped in #554** while this harness
-was in review, so these rows are now a *prediction to be checked*, not a proposal; the re-run that
-confirms or refutes them is **#634**):
+### Post-#554 — the shipped stagger, re-measured (issue #634, 2026-07-27)
 
-| Users | On-time % | Sessions needed | Host CPU | Verdict |
-|---|---|---|---|---|
-| 10 | 100% | 4 | 5.5 vCPU (69%) | fits |
-| 50 | **84.0%** | 11 | 12.5 vCPU (156%) | at ceiling |
-| 100 | **31.1%** | 20 | 21.5 vCPU (269%) | exceeds one VPS |
+The harness previously modelled a `--stagger-hours 4` uniform what-if as a *prediction to be
+checked* against #554's actual shipped shape: a hashed per-user slot inside a window anchored **in
+each user's own timezone** (golden hour 180 min, appreciation DMs 120 min — different widths per
+fan-out, not one uniform override), quantized to the beat's real 15-minute tick. #634 taught the
+model that shape; this is the DEFAULT run now (no flags):
 
-Three things fall out of this:
+| Users | On-time % | Late jobs | Delay p95 | Sessions needed | Chrome mem | Host CPU | Verdict |
+|---|---|---|---|---|---|---|---|
+| 10 | **100%** | 0 | 60 min | 5 (engage 2, prepost 1, outreach 1, content 1) | 6.0 GB | 6.5 vCPU (81%) | fits |
+| 50 | **53.7%** | 162 | 320 min | 15 (engage 6, prepost 4, outreach 3, content 2) | 18.0 GB | 16.5 vCPU (206%) | exceeds one VPS |
+| 100 | **21.9%** | 547 | 640 min | 28 (engage 12, prepost 7, outreach 5, content 4) | 33.6 GB | 29.5 vCPU (369%) | exceeds one VPS |
 
-1. **Today's 8 slots are right for ~10 users and nothing more.** On-time collapses to 58% at 50
-   users and 18% at 100 — the §2 prediction ("tasks miss their window, the box does not fall over"),
-   quantified.
-2. **Staggering is the cheapest win, and it has now shipped (#554).** The model says it cuts the
-   sessions needed at 50 users from 14 to 11 and lifts on-time from 58% → 84% *with no new hardware* —
-   which is why it went first, before any spend. What is NOT yet done is proving it: the model still
-   fans every user out at one 13:00 UTC minute at `--stagger-hours 0`, whereas #554 gives each user a
-   hashed slot inside a 3-hour window **in their own timezone**. Teaching the workload model that
-   shape and re-running the curve is **#634**, and until it lands these two tables are a prediction.
-3. **`se_prepost` is the lane §4 never modelled.** At 100 users it needs 7 slots on its own, because
-   a 15-minute warm-up with a 5-minute tolerance cannot absorb posts arriving every 2.4 minutes. It
-   is the first lane to break and the least forgiving.
+Per-lane on-time at the worst scale (100 users, post-#554): engage 21.0%, prepost 2.0%, outreach
+31.5%, content 25.0%.
+
+**The 84.0% / 11-session prediction does NOT hold.** Measured is 53.7% / 15 sessions at 50 users —
+flat-to-*worse* than the pre-#554 baseline, not the predicted improvement. Four things fall out of
+this:
+
+1. **Today's 8 slots are right for ~10 users and nothing more**, before or after #554. On-time
+   collapses into the 50s% at 50 users and the 20s% at 100 — the §2 prediction ("tasks miss their
+   window, the box does not fall over"), quantified, and staggering alone does not fix it.
+2. **The uniform `--stagger-hours 4` what-if overstated the win** because it isn't what shipped: it
+   spread EVERY staggerable fan-out (including `reply_sweep` and `content_tasks`, which #554 never
+   touched) across one uniform 4-hour window, and used a simpler even-index spread instead of the
+   real per-user hash + 15-minute tick quantization. Modelling the ACTUAL shape (different windows
+   per fan-out, only the three #554 actually staggers) is what changed the answer.
+3. **`se_outreach` is WORSE staggered, and it's a real finding, not a modelling bug.** It carries both
+   the now-staggered `appreciation_dms` and the post-anchored `profile_viewer_engagement`. Spreading
+   `appreciation_dms` over its window doesn't shrink the total processing time its burst needs at a
+   given concurrency (workload ÷ concurrency is fixed) — it pushes the batch's tail *later* in real
+   time, into `profile_viewer_engagement`'s window. Pre-#554 the single-instant batch happened to
+   drain before that window opened; post-#554 it doesn't always. `se_engage` (golden hour's own lane)
+   IS better staggered in isolation, exactly as predicted — the shared `se_outreach` lane is where a
+   different job's window absorbs the difference. Tracked as **#696**.
+4. **`se_prepost` is still the lane §4's back-of-envelope never modelled**, and staggering never
+   touches it (posts are per-user ETAs, not a fan-out). At 100 users it needs 7 slots on its own,
+   because a 15-minute warm-up with a 5-minute tolerance cannot absorb posts arriving every
+   2.4 minutes. It remains the first lane to break and the least forgiving, before or after #634.
 
 > The harness is more complete than §4's back-of-envelope, which modelled only the commenting loops
 > and put 50 users at 8–10 sessions. Adding the once-a-day batch fan-outs (appreciation DMs, stats
-> scrape) and the `se_prepost` lane added by #553 is what takes 50 users to 14. Same box, same
+> scrape) and the `se_prepost` lane added by #553 is what takes 50 users to 14–15. Same box, same
 > assumptions (1.2 GB + 1 vCPU per session, §4) — more of the actual workload.
 
 ---
@@ -231,17 +256,19 @@ has to scale.
 | Egress | unchanged (per-user proxies do the egress, `EGRESS_AT_SCALE.md`) | unchanged — nodes egress through the same per-user proxies |
 | Ceiling | ~16 sessions ≈ **50–60 users staggered**; then this decision repeats | none in practice |
 
-**Where this stands:** staggering went first and has shipped (#554) — it was the only free move.
-Between A and B, A is the cheaper answer *if* the choice were made today: one 16 vCPU / 64 GB box
-covers the ~14 sessions that 50 users need (16.8 GB Chrome + ~6 GB app tier fits 64 GB with room) at
-a fraction of the operational cost of a second host, and B's fault isolation only starts paying when
-Chrome and the app tier genuinely compete — the 100-user row, not the 50-user one. B is the answer
-past **~16 sessions**, i.e. 100 users at any stagger.
+**Where this stands:** staggering went first and has shipped (#554), and re-measuring it (#634) found
+the 50-user curve is now **15** sessions, not the originally-predicted 11 — the shared `se_outreach`
+lane needs its own fix first (**#696**) before staggering delivers the win the plan banked on.
+Between A and B, A is still the cheaper answer *if* the choice were made today: one 16 vCPU / 64 GB
+box covers the ~15 sessions that 50 users need (18.0 GB Chrome + ~6 GB app tier fits 64 GB with room)
+at a fraction of the operational cost of a second host, and B's fault isolation only starts paying
+when Chrome and the app tier genuinely compete — the 100-user row, not the 50-user one. B is the
+answer past **~16 sessions**, i.e. 100 users at any stagger.
 
 But the choice is **not** being made today. The sequence the owner set is: bank the stagger (done) →
-re-measure it (#634) → price hosted alternatives beside A and B (#633) → decide when §5e files a
-breach. Buying either box now would pay for capacity the curve cannot yet prove is needed, and would
-foreclose an option that has not been costed.
+re-measure it (done, #634 — result: fix #696 first) → price hosted alternatives beside A and B
+(#633) → decide when §5e files a breach. Buying either box now would pay for capacity the curve
+cannot yet prove is needed, and would foreclose an option that has not been costed.
 
 The Grid is worth cutting over to **before** either, at the same 8 nodes: it is capacity-neutral,
 it makes a crashed Chrome cost one session instead of all of them, and it is the thing that makes B
@@ -254,8 +281,9 @@ a config change rather than a migration.
 1. Capacity monitor (§5e) has filed a `session_saturation` or `lane_backlog` breach — i.e. the cap
    is the operating point, not a busy afternoon.
 2. Run the load test at the target cohort size; record the curve in the issue.
-3. ✅ Golden-hour stagger shipped (#554). Re-run the curve against the staggered arrivals (#634) —
-   if it clears the SLO, stop here.
+3. ✅ Golden-hour stagger shipped (#554). ✅ Re-ran the curve against the staggered arrivals (#634) —
+   it does NOT clear the SLO at 50 users (53.7% on-time, 15 sessions needed); fix the `se_outreach`
+   contention (#696) and re-run again before treating staggering as sufficient on its own.
 4. Cut over to the Grid at the SAME node count as today's cap (8). Verify `/status` shows 8 slots
    (see §2 — a short node count is silent) and a full engagement cycle runs green.
 5. Only then change the numbers: raise `SELENIUM_GRID_NODES` **and** the lane concurrencies in one
