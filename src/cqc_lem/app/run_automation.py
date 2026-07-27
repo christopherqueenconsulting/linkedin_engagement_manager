@@ -31,6 +31,7 @@ from cqc_lem.utilities.ai.content_alignment import humanize_text, split_link_for
 from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, insert_new_log, LogActionType, \
     CONNECTION_REQUEST_SENT_MESSAGE, ALREADY_CONNECTED_MESSAGE, NO_CONNECT_BUTTON_MESSAGE, \
+    INVITE_NOT_SENT_MESSAGE, CONNECT_NOTE_MAX_CHARS, \
     get_engagement_preferences, count_comments_today, get_recent_engagers, upsert_engager, \
     get_newsletter_settings, mark_newsletter_published, record_newsletter_subscriber_stat, \
     get_newsletter_edition, mark_edition_published, mark_edition_failed, \
@@ -4963,6 +4964,62 @@ def _click_connect_affordance(driver, wait, user_id: int) -> bool:
         return False
 
 
+def _add_connect_note(driver, wait, message: str, user_id: int) -> bool:
+    """Type a personalized note into an OPEN Connect dialog. Best-effort by design (issue #573):
+    LinkedIn hides the note affordance once a free account's personalized-invite quota is spent, and
+    a note that can't be attached must not cost us the invite — the caller sends it bare instead. So
+    every miss here is a WARNING, and the note is stripped of non-BMP characters first because
+    ChromeDriver's send_keys raises on the emoji an AI-written note routinely carries."""
+    try:
+        click_element_wait_retry(driver, wait, '//button[contains(@aria-label,"Add a note")]',
+                                 "Finding Add a Note Button", max_retry=1, use_action_chain=True)
+
+        message_box = click_element_wait_retry(driver, wait, '//textarea[@id="custom-message"]',
+                                               "Finding Message Box", max_retry=1, use_action_chain=True)
+        message_box.clear()
+
+        for _ in range(3):
+            if len(message) > CONNECT_NOTE_MAX_CHARS:
+                message = get_ai_message_refinement(message, CONNECT_NOTE_MAX_CHARS)
+            else:
+                break
+
+        message_box.send_keys(_strip_non_bmp(message)[:CONNECT_NOTE_MAX_CHARS])
+
+        # The Send button only enables once the textarea has registered input.
+        time.sleep(2)
+        myprint("Added note to the connection request")
+        return True
+    except Exception as e:
+        log_warning("Could not attach a note to the connection request; sending it without one",
+                    exc=e, user_id=user_id, action_type="invite_connect")
+        return False
+
+
+# The Send button's aria-label differs between the bare dialog and the one carrying a note, and a
+# note attempt can leave the dialog in either state — so both are tried, preferred label first.
+_SEND_INVITE_XPATHS = ('//button[contains(@aria-label,"Send invitation")]',
+                       '//button[contains(@aria-label,"Send without a note")]')
+
+
+def _submit_connect_invite(driver, wait, user_id: int, with_note: bool) -> bool:
+    """Click Send on the open Connect dialog. False only when NEITHER Send affordance is clickable,
+    which loses the invite outright — that one stays an error (issue #573)."""
+    xpaths = _SEND_INVITE_XPATHS if with_note else tuple(reversed(_SEND_INVITE_XPATHS))
+    for xpath in xpaths:
+        try:
+            click_element_wait_retry(driver, wait, xpath, "Finding Send Connection Button",
+                                     max_retry=1, use_action_chain=True)
+            myprint("Found Send Connection Button and clicked it")
+            return True
+        except Exception:
+            continue  # wrong label for this dialog state — try the other one
+
+    log_error("Failed to send the connection request (no Send button on the open Connect dialog)",
+              user_id=user_id, action_type="invite_connect")
+    return False
+
+
 def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -> "tuple[bool, str]":
     """Core connect-invite send: open the profile, click Connect (+ optional note), log the result.
     Returns (sent, result_message) — the message is the failure reason when `sent` is False, which
@@ -5005,65 +5062,13 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -
                            message=NO_CONNECT_BUTTON_MESSAGE)
             return False, NO_CONNECT_BUTTON_MESSAGE
 
-        # If connection_message exist click the With note button
-        if message:
-            try:
-                click_element_wait_retry(driver, wait, '//button[contains(@aria-label,"Add a note")]',
-                                         "Finding Add a Note Button", use_action_chain=True)
+        # The note is an optional extra on an invite we already decided to send — a missing note
+        # affordance must not abandon an open Connect dialog, so the invite goes out bare (#573).
+        noted = bool(message) and _add_connect_note(driver, wait, message, user_id)
 
-                myprint("Found Add a Note Button and clicked it")
-
-                # Find the message box
-                message_box = click_element_wait_retry(driver, wait, '//textarea[@id="custom-message"]',
-                                                       "Finding Message Box", use_action_chain=True)
-
-                myprint("Found Message and clicked it")
-
-                # Clear the message box
-                message_box.clear()
-
-                myprint("Cleared the message box")
-
-                # Message must be less than 300 characters. Try 3 times to get a revised message under that limit
-                for i in range(3):
-                    # Check Message character length
-                    if len(message) > 300:
-                        message = get_ai_message_refinement(message, 300)
-                    else:
-                        break
-
-                # Put the text in the message box
-                message_box.send_keys(message)
-
-                myprint("Added message to message box")
-
-                # Sleep so send button can become active
-                time.sleep(2)
-
-                myprint("Waited for send button to activate")
-
-                # Click the send button
-                click_element_wait_retry(driver, wait,
-                                         '//button[contains(@aria-label,"Send invitation")]',
-                                         "Finding Send Connection Button", use_action_chain=True)
-
-                myprint("Found Send Connection Button and clicked it")
-                result = CONNECTION_REQUEST_SENT_MESSAGE
-            except Exception as e:
-                log_error("Failed to add a note to connection request", exc=e, user_id=user_id, action_type="invite_connect")
-                result = f"Failed to Add a note. Error: {str(e)}"
-        else:
-            # Else click send connection
-            try:
-                click_element_wait_retry(driver, wait,
-                                         '//button[contains(@aria-label,"Send without a note")]',
-                                         "Finding Send Without Note Button", use_action_chain=True)
-
-                myprint("Found Send Without a Note Button and clicked it")
-                result = CONNECTION_REQUEST_SENT_MESSAGE
-            except Exception as e:
-                log_error("Failed to find send-without-note connection button", exc=e, user_id=user_id, action_type="invite_connect")
-                result = f"Failed to find send without a note connection button. Error: {str(e)}"
+        result = (CONNECTION_REQUEST_SENT_MESSAGE
+                  if _submit_connect_invite(driver, wait, user_id, with_note=noted)
+                  else INVITE_NOT_SENT_MESSAGE)
     except LinkedInRateLimited:
         # Kill-switch / 429 breaker is open — let the caller defer instead of logging a false failure.
         raise

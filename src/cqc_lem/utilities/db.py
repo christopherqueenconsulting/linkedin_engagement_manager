@@ -384,6 +384,15 @@ ALREADY_CONNECTED_MESSAGE = "Already connected (1st-degree) — no invite to sen
 # rather than falling through to the note/send steps that can only fail after it.
 NO_CONNECT_BUTTON_MESSAGE = "No Connect option on this profile (invite may already be pending)"
 
+# The Connect dialog opened but neither Send affordance could be clicked, so nothing went out
+# (issue #573). Unlike a missing note this does NOT degrade gracefully — the invite is lost — which
+# is why it stays an error and gets its own reason on the request row.
+INVITE_NOT_SENT_MESSAGE = "Connect dialog opened but the invitation could not be sent"
+
+# LinkedIn's hard cap on a connection-request note. Also the point past which a drafted note is
+# refined down rather than typed and silently truncated by the textarea's own maxlength.
+CONNECT_NOTE_MAX_CHARS = 300
+
 
 def store_cookies(user_email: str, cookies: list[dict]) -> None:
     connection = get_db_connection()
