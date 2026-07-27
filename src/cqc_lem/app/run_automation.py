@@ -75,7 +75,7 @@ from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
     load_profile_for_user, clean_person_name, connection_degree, is_first_degree
 from cqc_lem.utilities.linkedin.message_thread import ThreadState, open_message_thread, \
-    read_last_message, read_last_sender
+    read_last_message, read_last_sender, resolve_self_name
 from cqc_lem.utilities.linkedin.poster import share_on_linkedin, share_carousel_on_linkedin, \
     share_document_on_linkedin, comment_on_linkedin_post, object_urn_from_post_url
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
@@ -4136,10 +4136,17 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
     nurtured = 0
     skipped = 0
     lead_ctx: dict = {}  # voice context for lead drafts — fetched lazily, only if someone replies
+    # Resolved ONCE per run: the saved display name (Settings, required) with the scraped profile as
+    # the fallback. Empty means every thread reads UNKNOWN and nothing is sent — which is the point.
+    self_name = resolve_self_name(user_id, my_profile)
+    if not self_name:
+        log_warning("No LinkedIn display name saved and none on the cached profile — every "
+                    "follow-up in this run will be skipped as unreadable. Set it under "
+                    "Settings > Setup & Connection.", user_id=user_id, action_type="followup",
+                    task_name="process_user_followups")
     try:
         for f in due[:max_per_run]:
-            state = check_dm_replied(driver, wait, f["profile_url"],
-                                     my_name=getattr(my_profile, "full_name", None),
+            state = check_dm_replied(driver, wait, f["profile_url"], my_name=self_name,
                                      person_name=f.get("first_name"), user_id=user_id)
             if state is ThreadState.UNKNOWN:
                 # We could not read the thread, so we do NOT know whether they answered. Sending

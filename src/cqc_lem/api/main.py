@@ -70,6 +70,7 @@ from cqc_lem.utilities.db import (
     update_subscription_from_stripe, update_user_linkedin_token,
     get_users_with_stripe_subscriptions,
     update_user_linkedin_password,
+    get_user_linkedin_display_name, update_user_linkedin_display_name,
     get_user_blog_url, get_user_sitemap_url, get_linkedin_profile_url_by_user_id,
     get_user_by_stripe_customer_id, get_avatar_credit_ledger_entry_by_session,
     get_avatar_credit_balance, add_avatar_credits,
@@ -796,6 +797,11 @@ class StoryBankDeleteRequest(BaseModel):
 class LinkedInPasswordRequest(BaseModel):
     session_token: str
     linkedin_password: str
+
+
+class LinkedInDisplayNameRequest(BaseModel):
+    session_token: str
+    linkedin_display_name: str
 
 
 class TimezoneRequest(BaseModel):
@@ -3045,6 +3051,54 @@ def update_linkedin_password(request: LinkedInPasswordRequest) -> ResponseModel:
     return ResponseModel(status_code=200, detail="LinkedIn password saved")
 
 
+def _scraped_profile_name(user_id: int) -> Optional[str]:
+    """The full name on the profile LEM last scraped for this user, at any age — used ONLY to
+    pre-fill/suggest the display-name field. Never a silent substitute for the saved value: the
+    reply comparison must run on what the user confirmed, not on a scrape that may be a placeholder."""
+    try:
+        from cqc_lem.utilities.db import get_linked_in_profile_by_user_id
+        raw = get_linked_in_profile_by_user_id(user_id, updated_less_than_days_ago=3650)
+        if not raw:
+            return None
+        data = json.loads(raw[0] if isinstance(raw, (tuple, list)) else raw)
+        return ((data or {}).get("full_name") or "").strip() or None
+    except Exception:
+        return None
+
+
+@router.get("/user/linkedin-display-name")
+def get_linkedin_display_name_endpoint(session_token: str) -> ResponseModel:
+    """The user's LinkedIn display name (issue #731) plus the name LEM scraped from their profile.
+
+    Reply detection compares the last sender in a DM thread against this exact string, so the UI
+    shows the scraped name as a suggestion and the user confirms what LinkedIn actually renders."""
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return ResponseModel(status_code=200, detail={
+        "linkedin_display_name": get_user_linkedin_display_name(user_id),
+        "profile_full_name": _scraped_profile_name(user_id),
+    })
+
+
+@router.put("/user/linkedin-display-name")
+def update_linkedin_display_name_endpoint(request: LinkedInDisplayNameRequest) -> ResponseModel:
+    """Save the user's LinkedIn display name. Required, and rejected empty: without it every DM
+    reply check is UNKNOWN and the follow-up sequencer skips the person entirely (issue #731)."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    name = " ".join((request.linkedin_display_name or "").split())
+    if not name:
+        raise HTTPException(status_code=400,
+                            detail="Enter your name exactly as it appears on your LinkedIn profile")
+    if len(name) > 255:
+        raise HTTPException(status_code=400, detail="Name is too long (max 255 characters)")
+    if not update_user_linkedin_display_name(user_id, name):
+        raise HTTPException(status_code=500, detail="Could not save your LinkedIn display name")
+    return ResponseModel(status_code=200, detail="LinkedIn display name saved")
+
+
 @router.get("/user/timezone")
 def get_user_timezone_endpoint(session_token: str) -> ResponseModel:
     user_id = get_session_user_id(session_token)
@@ -3248,6 +3302,10 @@ def account_readiness_endpoint(session_token: str) -> ResponseModel:
     geo = get_user_geo(user_id)
     has_location = bool(geo and geo.get("latitude") is not None)
 
+    # Required (issue #731): reply detection compares a thread's last sender against this name, so
+    # without it every DM follow-up is skipped as unreadable — a silently dead sequencer.
+    has_display_name = bool(get_user_linkedin_display_name(user_id))
+
     items = [
         {"key": "email", "label": "Verified email", "ok": True, "required": True,
          "hint": None},
@@ -3256,6 +3314,10 @@ def account_readiness_endpoint(session_token: str) -> ResponseModel:
         {"key": "linkedin_session", "label": "LinkedIn session (engagement)",
          "ok": has_engagement_login, "required": True,
          "hint": "Connect your LinkedIn session (cookie) or save your LinkedIn password."},
+        {"key": "linkedin_display_name", "label": "Your LinkedIn display name",
+         "ok": has_display_name, "required": True,
+         "hint": "Enter your name exactly as it appears on your LinkedIn profile — LEM needs it to "
+                 "tell your own messages apart from replies."},
         {"key": "subscription", "label": "Active plan", "ok": sub_active, "required": True,
          "hint": "Start a plan or trial under Subscription."},
         {"key": "location", "label": "Login location set", "ok": has_location,

@@ -160,6 +160,30 @@ class ThreadOpen:
         return self.opened
 
 
+def resolve_self_name(user_id: Optional[int], my_profile=None) -> str:
+    """The name to compare a thread's last sender against — '' when we genuinely don't know it.
+
+    The SAVED display name wins over the scraped profile: it is the user's own declaration of what
+    LinkedIn renders on their messages (Settings → Setup & Connection, required), while the scrape
+    can be stale, cached from a failed refresh, or a placeholder. Falling back to the scrape keeps
+    every account that never fills the field working exactly as it did.
+
+    An empty result is NOT a name mismatch — `check_dm_replied` turns it into UNKNOWN, which skips
+    the follow-up rather than sending one on a guess.
+    """
+    if user_id is not None:
+        try:
+            from cqc_lem.utilities.db import get_user_linkedin_display_name
+            saved = (get_user_linkedin_display_name(user_id) or "").strip()
+        except Exception as e:
+            log_warning("Could not read the saved LinkedIn display name", exc=e, user_id=user_id,
+                        action_type="followup")
+            saved = ""
+        if saved:
+            return saved
+    return (getattr(my_profile, "full_name", "") or "").strip()
+
+
 def profile_slug(profile_url: str) -> str:
     """The /in/<slug> identity from a profile URL (lowercased, empty when there isn't one)."""
     m = _SLUG_RE.search(profile_url or "")

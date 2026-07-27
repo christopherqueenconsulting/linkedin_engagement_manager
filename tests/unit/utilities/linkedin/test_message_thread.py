@@ -290,3 +290,43 @@ class TestReaders:
         d.execute_script.side_effect = WebDriverException("gone")
         assert mt.read_last_sender(d) == ""
         assert mt.read_last_message(d) == ""
+
+
+class TestResolveSelfName:
+    """The name reply detection compares the last sender against (issue #731). The SAVED settings
+    value is the user's own declaration of what LinkedIn renders; the scraped profile is only the
+    fallback, and '' means UNKNOWN — never 'they replied'."""
+
+    def _saved(self, value):
+        return patch("cqc_lem.utilities.db.get_user_linkedin_display_name", return_value=value)
+
+    def test_saved_name_wins_over_the_scraped_profile(self):
+        profile = MagicMock(full_name="C. Queen (Consultant)")
+        with self._saved("Christopher Queen"):
+            assert mt.resolve_self_name(1, profile) == "Christopher Queen"
+
+    def test_falls_back_to_the_scraped_profile(self):
+        profile = MagicMock(full_name="  Jordan Alvarez ")
+        with self._saved(None):
+            assert mt.resolve_self_name(1, profile) == "Jordan Alvarez"
+
+    def test_blank_saved_name_falls_back_too(self):
+        profile = MagicMock(full_name="Jordan Alvarez")
+        with self._saved("   "):
+            assert mt.resolve_self_name(1, profile) == "Jordan Alvarez"
+
+    def test_nothing_anywhere_is_empty_not_a_guess(self):
+        with self._saved(None):
+            assert mt.resolve_self_name(1, None) == ""
+
+    def test_a_db_failure_still_falls_back_to_the_profile(self):
+        profile = MagicMock(full_name="Jordan Alvarez")
+        with patch("cqc_lem.utilities.db.get_user_linkedin_display_name",
+                   side_effect=RuntimeError("db down")):
+            assert mt.resolve_self_name(1, profile) == "Jordan Alvarez"
+
+    def test_no_user_id_never_queries_the_db(self):
+        profile = MagicMock(full_name="Jordan Alvarez")
+        with patch("cqc_lem.utilities.db.get_user_linkedin_display_name") as lookup:
+            assert mt.resolve_self_name(None, profile) == "Jordan Alvarez"
+        lookup.assert_not_called()

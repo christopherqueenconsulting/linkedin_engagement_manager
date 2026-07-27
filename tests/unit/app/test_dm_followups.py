@@ -82,6 +82,7 @@ class TestProcessUserFollowups:
         with patch(f"{_RA}.get_due_followups", return_value=[_due()]), \
              patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
              patch(f"{_RA}.quit_gracefully"), patch(f"{_RA}.time.sleep"), patch(f"{_RA}.insert_new_log"), \
+             patch(f"{_RA}.resolve_self_name", return_value="Christopher Queen"), \
              patch(f"{_RA}.check_dm_replied", return_value=ThreadState.NOT_REPLIED), \
              patch(f"{_RA}.build_dm_from_template", return_value="follow up msg"), \
              patch(f"{_RA}.send_private_dm") as dm, \
@@ -98,6 +99,7 @@ class TestProcessUserFollowups:
         with patch(f"{_RA}.get_due_followups", return_value=[_due()]), \
              patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
              patch(f"{_RA}.quit_gracefully"), patch(f"{_RA}.time.sleep"), patch(f"{_RA}.insert_new_log"), \
+             patch(f"{_RA}.resolve_self_name", return_value="Christopher Queen"), \
              patch(f"{_RA}.check_dm_replied", return_value=ThreadState.REPLIED), \
              patch(f"{_RA}.get_engagement_preferences", return_value={}), \
              patch(f"{_RA}.get_or_create_profile_synthesis", return_value="synth"), \
@@ -126,6 +128,7 @@ class TestProcessUserFollowups:
         with patch(f"{_RA}.get_due_followups", return_value=[_due()]), \
              patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
              patch(f"{_RA}.quit_gracefully"), patch(f"{_RA}.time.sleep"), patch(f"{_RA}.insert_new_log"), \
+             patch(f"{_RA}.resolve_self_name", return_value="Christopher Queen"), \
              patch(f"{_RA}.check_dm_replied", return_value=ThreadState.UNKNOWN), \
              patch(f"{_RA}.build_dm_from_template", return_value="follow up msg"), \
              patch(f"{_RA}.send_private_dm") as dm, \
@@ -135,6 +138,42 @@ class TestProcessUserFollowups:
         dm.apply_async.assert_not_called()
         mark.assert_not_called()
         stop.assert_not_called()
+        assert "skipped 1" in result
+
+
+    def test_the_saved_display_name_is_what_the_reply_check_compares(self):
+        # Issue #731 follow-up: the settings value (Setup & Connection, required) beats the scraped
+        # profile name, and it is resolved ONCE per run rather than per person.
+        from cqc_lem.app.run_automation import process_user_followups
+        profile = MagicMock(full_name="C. Queen (Consultant)")
+        with patch(f"{_RA}.get_due_followups", return_value=[_due(), _due(id=2)]), \
+             patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", profile)), \
+             patch(f"{_RA}.quit_gracefully"), patch(f"{_RA}.time.sleep"), patch(f"{_RA}.insert_new_log"), \
+             patch("cqc_lem.utilities.db.get_user_linkedin_display_name",
+                   return_value="Christopher Queen") as saved, \
+             patch(f"{_RA}.check_dm_replied", return_value=ThreadState.UNKNOWN) as check:
+            process_user_followups.run(user_id=1)
+        assert saved.call_count == 1
+        assert {c.kwargs["my_name"] for c in check.call_args_list} == {"Christopher Queen"}
+
+    def test_no_name_anywhere_skips_every_thread(self):
+        # With nothing to compare against, every verdict is UNKNOWN — nothing may be sent.
+        from cqc_lem.app.run_automation import process_user_followups
+        profile = MagicMock()
+        profile.full_name = ""
+        with patch(f"{_RA}.get_due_followups", return_value=[_due()]), \
+             patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", profile)), \
+             patch(f"{_RA}.quit_gracefully"), patch(f"{_RA}.time.sleep"), patch(f"{_RA}.insert_new_log"), \
+             patch("cqc_lem.utilities.db.get_user_linkedin_display_name", return_value=None), \
+             patch(f"{_RA}.open_message_thread") as opened, \
+             patch(f"{_RA}.read_last_sender", return_value="Jane Doe"), \
+             patch(f"{_RA}.build_dm_from_template", return_value="follow up msg"), \
+             patch(f"{_RA}.send_private_dm") as dm, \
+             patch(f"{_RA}.mark_followup") as mark:
+            opened.return_value = MagicMock(opened=True, route="anchor", events=3, surface="page")
+            result = process_user_followups.run(user_id=1)
+        dm.apply_async.assert_not_called()
+        mark.assert_not_called()
         assert "skipped 1" in result
 
 

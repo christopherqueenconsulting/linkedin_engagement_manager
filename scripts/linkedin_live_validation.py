@@ -328,12 +328,20 @@ def message_thread_verdict(reading: Optional[dict]) -> str:
     route = reading.get("route")
     if not reading.get("events"):
         return f"opened via {route}, but no message events are readable (reply state = unknown)"
+    if not (reading.get("self_name") or "").strip():
+        return (f"opened via {route}, but no LinkedIn display name is saved for this user "
+                f"(reply state = unknown — set it under Settings > Setup & Connection)")
     return f"opened via {route}"
 
 
-def probe_message_thread(driver, profile_url: str, person_name: str = "", sleep=time.sleep) -> dict:
+def probe_message_thread(driver, profile_url: str, person_name: str = "", self_name: str = "",
+                         sleep=time.sleep) -> dict:
     """#731: walk the message-thread resolution ladder against a REAL profile and report which route
     resolved, which surface rendered (overlay vs full page), and what the reply reader then sees.
+
+    `self_name` is the saved LinkedIn display name, so the probe also answers the OTHER half of a
+    live reply check: does the name the user typed into Settings actually match what LinkedIn writes
+    on their own messages? A mismatch reads as UNKNOWN in production and silently stops follow-ups.
 
     Read-only: it opens the thread and reads it. It types nothing into the composer and sends nothing.
     """
@@ -350,11 +358,24 @@ def probe_message_thread(driver, profile_url: str, person_name: str = "", sleep=
                "surface": opened.surface,
                "events": opened.events,
                "composer": opened.composer,
+               "self_name": self_name or "",
                "profile_urn": profile_urn_from_page(driver)}
     sleep(1)
     reading["last_sender"] = read_last_sender(driver) if opened.opened else ""
+    reading["reply_state"] = _reply_state(reading)
     reading["verdict"] = message_thread_verdict(reading)
     return reading
+
+
+def _reply_state(reading: dict) -> str:
+    """The three-valued verdict `check_dm_replied` would return from this same reading — so the probe
+    reports the DECISION, not just the DOM. 'unknown' here is a live warning that the sequencer is
+    skipping this person (unreadable thread, or a saved display name that doesn't match)."""
+    last_sender = (reading.get("last_sender") or "").strip().lower()
+    self_name = (reading.get("self_name") or "").strip().lower()
+    if not reading.get("opened") or not last_sender or not self_name:
+        return "unknown"
+    return "not_replied" if self_name in last_sender else "replied"
 
 
 def main(argv: Optional[list] = None) -> int:
@@ -398,8 +419,10 @@ def main(argv: Optional[list] = None) -> int:
             report["comment_outcome"] = probe_comment_outcome(driver, args.comment_outcome_url,
                                                               slug, args.comment_text)
         if args.dm_thread_url:
-            report["message_thread"] = probe_message_thread(driver, args.dm_thread_url,
-                                                            args.dm_thread_name)
+            from cqc_lem.utilities.linkedin.message_thread import resolve_self_name
+            report["message_thread"] = probe_message_thread(
+                driver, args.dm_thread_url, args.dm_thread_name,
+                self_name=resolve_self_name(args.user_id, profile))
         if args.probe_composer:
             report["composer"] = probe_composer(driver)
     finally:
