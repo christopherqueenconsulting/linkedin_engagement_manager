@@ -5006,17 +5006,21 @@ def _submit_connect_invite(driver, wait, user_id: int, with_note: bool) -> bool:
     """Click Send on the open Connect dialog. False only when NEITHER Send affordance is clickable,
     which loses the invite outright — that one stays an error (issue #573)."""
     xpaths = _SEND_INVITE_XPATHS if with_note else tuple(reversed(_SEND_INVITE_XPATHS))
+    last_error: Exception = None
     for xpath in xpaths:
         try:
             click_element_wait_retry(driver, wait, xpath, "Finding Send Connection Button",
                                      max_retry=1, use_action_chain=True)
             myprint("Found Send Connection Button and clicked it")
             return True
-        except Exception:
-            continue  # wrong label for this dialog state — try the other one
+        except Exception as e:
+            last_error = e  # wrong label for this dialog state — try the other one
 
+    # exc= is what turns this into a fingerprinted PostHog issue (the loop that filed #573); an
+    # exc-less log_error only reaches Logs, so the one failure we deliberately keep as an error
+    # would never page anyone.
     log_error("Failed to send the connection request (no Send button on the open Connect dialog)",
-              user_id=user_id, action_type="invite_connect")
+              exc=last_error, user_id=user_id, action_type="invite_connect")
     return False
 
 

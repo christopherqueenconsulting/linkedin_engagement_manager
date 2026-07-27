@@ -130,3 +130,5 @@ class TestSendFailureIsStillAnError:
         # Both Send labels are tried before giving up — the dialog can be in either state.
         assert _clicked(click)[-2:] == [_SEND_XPATH, _SEND_BARE_XPATH]
         log_error.assert_called_once()
+        # exc= is what makes it a fingerprinted PostHog issue rather than a log line nobody reads.
+        assert isinstance(log_error.call_args.kwargs.get("exc"), Exception)
