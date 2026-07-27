@@ -5,6 +5,7 @@ import { AuthProvider, useAuth } from './contexts/AuthContext'
 import Layout from './components/Layout'
 import ProtectedRoute from './components/ProtectedRoute'
 import LoginModal from './components/LoginModal'
+import NewVersionNotice from './components/NewVersionNotice'
 import Dashboard from './pages/Dashboard'
 import Account from './pages/Account'
 import Avatars from './pages/Avatars'
@@ -38,6 +39,7 @@ function AppRoutes() {
   return (
     <>
       {isLoginModalOpen && <LoginModal />}
+      <NewVersionNotice />
       <Routes>
         <Route path="/" element={<Layout />}>
           <Route index element={user ? <Dashboard /> : <Landing />} />

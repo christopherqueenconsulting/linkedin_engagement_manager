@@ -48,12 +48,19 @@ services:
         condition: service_healthy
     env_file:
       - .env
+    environment:
+      # Stale-chunk retention (issue #743). Releases batch 4x daily and a tab open across one still
+      # asks for the PREVIOUS build's hashed lazy chunks; the app syncs each build's dist/assets
+      # into this volume and serves a miss out of it, so those tabs keep working instead of 404ing.
+      # Both colors share it, and it outlives the image — which is the whole point.
+      - SPA_ASSET_ARCHIVE_DIR=/app/spa_asset_archive
     # Ship code in the image — no dev source/test bind-mounts (see the note that used to live on
     # web_app: a ./src mount would mask the image's built SPA and 404 "/").
     volumes:
       - ./logs:/app/logs
       # Shared, persistent generated-media store (served at /api/assets).
       - assets:/app/src/cqc_lem/assets
+      - spa_asset_archive:/app/spa_asset_archive
     deploy:
       resources:
         limits:
@@ -239,3 +246,7 @@ services:
 # server share one location that survives container recreates.
 volumes:
   assets:
+  # Last N deployed SPA bundles' hashed assets (issue #743) — shared by both colors so a tab that
+  # predates the current release can still fetch the lazy chunks it holds hashes for. Pruned by the
+  # app on each deploy; content-hashed names mean an old hash is always safe to serve.
+  spa_asset_archive:
