@@ -196,9 +196,9 @@ model that shape; this is the DEFAULT run now (no flags):
 |---|---|---|---|---|---|---|---|
 | 10 | **100%** | 0 | 60 min | 5 (engage 2, prepost 1, outreach 1, content 1) | 6.0 GB | 6.5 vCPU (81%) | fits |
 | 50 | **53.7%** | 162 | 320 min | 15 (engage 6, prepost 4, outreach 3, content 2) | 18.0 GB | 16.5 vCPU (206%) | exceeds one VPS |
-| 100 | **21.9%** | 547 | 640 min | 28 (engage 12, prepost 7, outreach 5, content 4) | 33.6 GB | 29.5 vCPU (369%) | exceeds one VPS |
+| 100 | **21.6%** | 549 | 640 min | 28 (engage 12, prepost 7, outreach 5, content 4) | 33.6 GB | 29.5 vCPU (369%) | exceeds one VPS |
 
-Per-lane on-time at the worst scale (100 users, post-#554): engage 21.0%, prepost 2.0%, outreach
+Per-lane on-time at the worst scale (100 users, post-#554): engage 20.3%, prepost 2.0%, outreach
 31.5%, content 25.0%.
 
 **The 84.0% / 11-session prediction does NOT hold.** Measured is 53.7% / 15 sessions at 50 users —

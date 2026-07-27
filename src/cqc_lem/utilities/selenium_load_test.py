@@ -106,6 +106,11 @@ class JobSpec:
     # whenever the CLI doesn't pass an explicit `--stagger-hours` override. 0 means "not one of
     # #554's three staggered fan-outs" — its arrivals stay a single fixed-time spike by default.
     stagger_window_minutes: float = 0.0
+    # The salt production's `stagger_config(fanout).name` actually hashes with (e.g. "GOLDEN_HOUR",
+    # not this JobSpec's own `name`) — `_stagger_due` salts `stagger_offset_minutes` with the STAGGER_*
+    # tuple's name, so reusing anything else gives a user_id a DIFFERENT offset than the real beat
+    # would. Empty falls back to `name` for specs with no production stagger analog.
+    stagger_salt: str = ""
 
 
 # Sums to ~68 Selenium-minutes/user/day — the §4 table this plan's math is built on. The tolerances
@@ -122,7 +127,7 @@ WORKLOAD: tuple[JobSpec, ...] = (
     # POST_BAND uses), so `--stagger-hours 0` still reproduces the pre-#554 single-minute fan-out for
     # a before/after comparison. Tolerance = the 2-hour golden window §4's C ≥ N ÷ (W×4) formula assumes.
     JobSpec("golden_hour_commenting", "se_engage", 15.0, 120.0, starts=(13 * 60,),
-            stagger_window_minutes=float(STAGGER_GOLDEN_HOUR[2])),
+            stagger_window_minutes=float(STAGGER_GOLDEN_HOUR[2]), stagger_salt=STAGGER_GOLDEN_HOUR[0]),
     # Dispatched every 30 min and Redis-gated to the user's cadence, so a sweep that starts within
     # the next dispatch interval is indistinguishable from one that started on its own tick.
     JobSpec("reply_sweep", "se_engage", 4.0, 30.0, starts=(11 * 60, 19 * 60)),
@@ -135,7 +140,7 @@ WORKLOAD: tuple[JobSpec, ...] = (
     # Also staggered by #554 (`APPRECIATION_DM_WINDOW_MINUTES`, default 120) — see the golden-hour
     # comment above for why the model keeps `8 * 60` as the anchor stand-in.
     JobSpec("appreciation_dms", "se_outreach", 10.0, 240.0, starts=(8 * 60,),
-            stagger_window_minutes=float(STAGGER_APPRECIATION_DM[2])),
+            stagger_window_minutes=float(STAGGER_APPRECIATION_DM[2]), stagger_salt=STAGGER_APPRECIATION_DM[0]),
     # `scrape-post-stats` — a single fixed-time batch #554 did NOT touch (only golden-hour,
     # appreciation DMs and group-engagement were staggered), so it stays a single-minute fan-out
     # regardless of `--stagger-hours` (`staggerable` gates the CLI override too).
@@ -269,7 +274,10 @@ def _post_time(user_index: int, users: int, band: tuple[int, int]) -> float:
 def _staggered_ready(start: float, user_id: int, salt: str, window_minutes: float) -> float:
     """One user's arrival for a fan-out anchored at `start`, reusing the SAME hash
     (`stagger_offset_minutes`) production's `plan_daily_slot` uses — so a load-test user's offset is
-    the offset the real beat would give that user_id, not a fresh approximation of it.
+    the offset the real beat would give that user_id, not a fresh approximation of it, PROVIDED
+    `salt` is the production `stagger_config(fanout).name` (`JobSpec.stagger_salt`) and not this
+    job's own display `name` — the two are different strings and a salt mismatch silently gives
+    every user_id a different (still deterministic, but wrong) offset than production.
 
     Quantized up to the next `STAGGER_TICK_MINUTES` boundary: the beat only ticks every 15 minutes
     (`daily-golden-hour-engagement` et al. are `crontab(minute='*/15')`), so a slot that lands at
@@ -310,7 +318,8 @@ def build_workload(users: int, stagger_hours: Optional[float] = None,
                 ready_times = list(spec.starts)
             else:
                 window = spec.stagger_window_minutes if override_window is None else override_window
-                ready_times = [_staggered_ready(start, user_id, spec.name, window)
+                salt = spec.stagger_salt or spec.name
+                ready_times = [_staggered_ready(start, user_id, salt, window)
                               for start in spec.starts]
             for ready in ready_times:
                 jobs.append(Job(user_id=user_id, name=spec.name, lane=spec.lane,

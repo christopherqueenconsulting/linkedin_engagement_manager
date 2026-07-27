@@ -67,16 +67,25 @@ class TestBuildWorkload:
 
     def test_default_stagger_reuses_productions_own_hash_and_tick_quantization(self):
         # The model must give the SAME user_id the SAME offset production's plan_daily_slot would —
-        # reusing stagger_offset_minutes, not a fresh approximation of it — and then round up to the
-        # next STAGGER_TICK_MINUTES boundary, since the beat only ticks every 15 minutes.
-        from cqc_lem.utilities.engagement_window import STAGGER_TICK_MINUTES, stagger_offset_minutes
+        # reusing stagger_offset_minutes AND production's own salt (`stagger_config(fanout).name`,
+        # e.g. "GOLDEN_HOUR" — NOT this JobSpec's own display `name`, which is a different string and
+        # would silently hash every user_id to a different offset than the real beat) — and then
+        # round up to the next STAGGER_TICK_MINUTES boundary, since the beat only ticks every 15 min.
+        from cqc_lem.utilities.engagement_window import (
+            STAGGER_APPRECIATION_DM, STAGGER_GOLDEN_HOUR, STAGGER_TICK_MINUTES, stagger_offset_minutes,
+        )
         jobs = slt.build_workload(5)
         golden = {job.user_id: job.ready_at for job in jobs if job.name == "golden_hour_commenting"}
         for user_id, ready_at in golden.items():
-            raw = 13 * 60 + stagger_offset_minutes(user_id, 180, salt="golden_hour_commenting")
+            raw = 13 * 60 + stagger_offset_minutes(user_id, 180, salt=STAGGER_GOLDEN_HOUR[0])
             expected = math.ceil(raw / STAGGER_TICK_MINUTES) * STAGGER_TICK_MINUTES
             assert ready_at == expected
             assert ready_at % STAGGER_TICK_MINUTES == 0
+        dms = {job.user_id: job.ready_at for job in jobs if job.name == "appreciation_dms"}
+        for user_id, ready_at in dms.items():
+            raw = 8 * 60 + stagger_offset_minutes(user_id, 120, salt=STAGGER_APPRECIATION_DM[0])
+            expected = math.ceil(raw / STAGGER_TICK_MINUTES) * STAGGER_TICK_MINUTES
+            assert ready_at == expected
 
     def test_an_explicit_override_replaces_the_fanouts_own_window_uniformly(self):
         # A what-if run (e.g. modelling a wider/narrower window than what shipped) overrides EVERY
@@ -85,8 +94,10 @@ class TestBuildWorkload:
                   if job.name == "golden_hour_commenting"]
         dms = [job.ready_at for job in slt.build_workload(20, stagger_hours=4)
                if job.name == "appreciation_dms"]
-        assert max(golden) < 13 * 60 + 4 * 60
-        assert max(dms) < 8 * 60 + 4 * 60
+        # <= on the upper bound: tick-quantization can round a slot right up to the window's edge
+        # (see test_default_stagger_uses_each_fanouts_own_shipped_window).
+        assert max(golden) <= 13 * 60 + 4 * 60
+        assert max(dms) <= 8 * 60 + 4 * 60
         assert len(set(golden)) > 1
 
     def test_post_anchored_jobs_ignore_the_stagger_and_keep_their_eta_offset(self):
