@@ -82,6 +82,23 @@ describe('usePostHogSurvey', () => {
     expect(markSurveySeen).toHaveBeenCalledWith('0199-nps', null)
   })
 
+  it('claims nothing while paused, then asks once it is allowed to draw', async () => {
+    // Paused means a bespoke ask owns the screen (or we do not know yet). `survey shown` and
+    // markSurveySeen are claims the user SAW it — emitting either here would understate the
+    // response rate and spend the 30-day wait period on an ask nobody ever rendered.
+    const { result, rerender } = renderHook(({ paused }) => usePostHogSurvey(paused), {
+      initialProps: { paused: true },
+    })
+    await waitFor(() => expect(result.current.parsed).toBeNull())
+    expect(capture).not.toHaveBeenCalled()
+    expect(markSurveySeen).not.toHaveBeenCalled()
+
+    rerender({ paused: false })
+    await waitFor(() => expect(result.current.parsed?.kind).toBe('nps'))
+    expect(events('survey shown')).toHaveLength(1)
+    expect(markSurveySeen).toHaveBeenCalledTimes(1)
+  })
+
   it('shows nothing while the flag is off', async () => {
     flagEnabled = false
     const { result } = renderHook(() => usePostHogSurvey())

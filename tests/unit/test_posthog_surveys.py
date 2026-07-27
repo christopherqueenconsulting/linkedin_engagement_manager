@@ -201,6 +201,14 @@ class TestPlan:
         launched = [a["survey"] for a in actions if a["action"] == "launch_survey"]
         assert launched == [phs.NPS_SURVEY_NAME]
 
+    def test_a_survey_that_does_not_exist_yet_is_launched_too(self):
+        # `--apply --launch` on a virgin project must leave both surveys RUNNING; planning a launch
+        # only for surveys that already exist would leave them as drafts and quietly require a
+        # second run of the same command.
+        actions = phs.plan_actions(phs.build_specs(), {}, launch=True)
+        assert [a["action"] for a in actions] == ["create_survey", "launch_survey",
+                                                  "create_survey", "launch_survey"]
+
     def test_nothing_launches_without_the_flag(self):
         specs = phs.build_specs()
         existing = {s["name"]: _live(s) for s in specs}
@@ -233,7 +241,18 @@ class TestApply:
         client.create_survey.assert_called_once()
         assert client.create_survey.call_args.args[0]["name"] == phs.NPS_SURVEY_NAME
         client.update_survey.assert_called_once()
-        client.launch_survey.assert_called_once_with("0199-abc", now.isoformat())
+        # The just-created survey is launched under the id its POST returned, alongside the
+        # already-existing one.
+        assert [call.args for call in client.launch_survey.call_args_list] == [
+            ("0199-new", now.isoformat()), ("0199-abc", now.isoformat())]
+
+    def test_a_launch_whose_create_never_happened_is_reported_not_crashed(self):
+        client = MagicMock()
+        client.create_survey.return_value = None
+        actions = phs.plan_actions([phs.nps_survey_spec()], {}, launch=True)
+        log = phs.apply_actions(client, actions, dry_run=False)
+        client.launch_survey.assert_not_called()
+        assert any("could not launch" in line for line in log)
 
     def test_an_archived_survey_is_invisible_to_the_planner(self):
         # list_surveys drops archived rows, so an archived survey re-creates rather than being

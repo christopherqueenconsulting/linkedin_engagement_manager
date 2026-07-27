@@ -135,8 +135,14 @@ export interface PostHogSurveyState {
   dismiss: () => void
 }
 
-/** The PostHog survey to show right now, plus the two ways it ends. */
-export function usePostHogSurvey(): PostHogSurveyState {
+/** The PostHog survey to show right now, plus the two ways it ends.
+ *
+ * `paused` is the caller saying "I would not draw it even if you found one" — a bespoke ask already
+ * has the screen, or the snapshot that decides has not landed yet. It has to gate the LOOKUP, not
+ * just the render: `survey shown` and `markSurveySeen()` are claims that the user saw the ask, and
+ * emitting them for a survey nobody drew both understates the response rate and burns the 30-day
+ * wait period that silences BOTH surveys. */
+export function usePostHogSurvey(paused = false): PostHogSurveyState {
   const { sessionToken } = useAuth()
   const enabled = useFeatureFlag(FLAGS.posthogSurveys, false)
   const [parsed, setParsed] = useState<ParsedSurvey | null>(null)
@@ -157,7 +163,7 @@ export function usePostHogSurvey(): PostHogSurveyState {
   useEffect(() => {
     // Nothing to clear on the way out: with the flag off (or analytics off, or logged out) nothing
     // was ever set, and a logout unmounts the modal Layout only renders for a signed-in user.
-    if (!enabled || !sessionToken || !analyticsEnabled()) return
+    if (paused || !enabled || !sessionToken || !analyticsEnabled()) return
     let live = true
     activeMatchingSurveys((surveys) => {
       if (!live) return
@@ -175,7 +181,7 @@ export function usePostHogSurvey(): PostHogSurveyState {
     return () => {
       live = false
     }
-  }, [enabled, sessionToken, approvals])
+  }, [paused, enabled, sessionToken, approvals])
 
   const dismiss = useCallback(() => {
     setClosed(true)

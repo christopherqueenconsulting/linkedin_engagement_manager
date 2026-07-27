@@ -237,6 +237,13 @@ def plan_actions(specs: list, existing: dict, launch: bool = False) -> list:
         found = existing.get(spec["name"])
         if not found:
             actions.append({"action": "create_survey", "survey": spec["name"], "spec": spec})
+            # A survey that does not exist yet has by definition never been started, so --launch
+            # covers the first run too — otherwise `--apply --launch` would silently leave both
+            # surveys as drafts and the operator would have to run the same command twice.
+            # `survey_id` is only known once the create returns; apply_actions resolves it.
+            if launch:
+                actions.append({"action": "launch_survey", "survey": spec["name"],
+                                "survey_id": None})
             continue
         drift = drifted_fields(spec, found)
         if drift:
@@ -317,6 +324,7 @@ def apply_actions(client: PostHogSurveyClient, actions: list, dry_run: bool = Tr
     """Execute the plan. `dry_run` reports without writing. Returns the log lines emitted."""
     log: list = []
     start_date = (now or datetime.now(timezone.utc)).isoformat()
+    created: dict = {}
     for action in actions:
         kind, name = action["action"], action.get("survey")
         if kind == "noop":
@@ -326,6 +334,7 @@ def apply_actions(client: PostHogSurveyClient, actions: list, dry_run: bool = Tr
                 log.append(f"[dry-run] create survey '{name}' (draft — launch it explicitly)")
                 continue
             survey_id = client.create_survey(create_payload(action["spec"]))
+            created[name] = survey_id
             log.append(f"created survey '{name}' -> {survey_id}")
         elif kind == "update_survey":
             fields = ", ".join(action.get("fields") or [])
@@ -338,7 +347,12 @@ def apply_actions(client: PostHogSurveyClient, actions: list, dry_run: bool = Tr
             if dry_run:
                 log.append(f"[dry-run] launch survey '{name}'")
                 continue
-            client.launch_survey(action["survey_id"], start_date)
+            # A launch planned alongside a create has no id until that create returned.
+            survey_id = action.get("survey_id") or created.get(name)
+            if not survey_id:
+                log.append(f"could not launch survey '{name}' — it was never created")
+                continue
+            client.launch_survey(survey_id, start_date)
             log.append(f"launched survey '{name}'")
     return log
 

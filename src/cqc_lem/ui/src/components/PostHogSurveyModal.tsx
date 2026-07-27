@@ -11,8 +11,13 @@ import { useSurvey } from '../hooks/useSurvey'
 // PostHog. The two modals can never stack — a bespoke ask (the review that unlocks the extended
 // trial) outranks this one, because it is the one with something to give back.
 export default function PostHogSurveyModal() {
-  const { data: homegrown } = useSurvey()
-  const { parsed, submit, dismiss } = usePostHogSurvey()
+  const { data: homegrown, isLoading: homegrownLoading } = useSurvey()
+  // Until the bespoke snapshot has landed we do not yet know whether we are allowed to draw
+  // anything, and the hook must not claim a `survey shown` (or spend the 30-day wait period) for an
+  // ask this component would then refuse to render. `isLoading` — not `isPending` — because a query
+  // disabled for want of a session token is pending forever.
+  const blocked = homegrownLoading || !!homegrown?.survey
+  const { parsed, submit, dismiss } = usePostHogSurvey(blocked)
 
   const [score, setScore] = useState<number | null>(null)
   const [comment, setComment] = useState('')
@@ -20,7 +25,7 @@ export default function PostHogSurveyModal() {
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
 
-  if (!parsed || homegrown?.survey) return null
+  if (!parsed || blocked) return null
 
   const { rating, open } = parsed
   const choices = Array.from({ length: rating.max - rating.min + 1 }, (_, i) => rating.min + i)
