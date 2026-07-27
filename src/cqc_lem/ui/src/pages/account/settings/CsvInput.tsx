@@ -35,13 +35,15 @@ export default function CsvInput({ value, onChange, className = inputClass, ...r
   }
 
   return (
+    // `rest` is spread FIRST so a caller's stray onBlur can't silently replace the tidy handler
+    // and put the box back to the round-tripping behaviour this component exists to stop.
     <input
+      {...rest}
       type="text"
       value={text}
       className={className}
       onChange={(e) => publish(e.target.value)}
       onBlur={() => setText(echoed.current)}
-      {...rest}
     />
   )
 }
