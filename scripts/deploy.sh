@@ -10,7 +10,6 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 TAG="${1:?Usage: deploy.sh <image-tag>}"
-COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
 LAST_GOOD_FILE="${ROOT_DIR}/.last_good_tag"
 ENV_FILE="${ROOT_DIR}/.env"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-180}"
@@ -37,6 +36,28 @@ env_value() {  # $1 = key, $2 = default
 # the Cloudflare tunnel ingress is the fixed `http://web_app:8000`.
 API_PORT="${API_PORT:-$(env_value API_PORT 8000)}"
 EDGE_PORT=8000
+
+# Selenium topology. The Grid overlay (hub + N single-session nodes) became the deployed default at
+# the 2026-07-27 cutover; without composing it in here, EVERY deploy would silently revert the box
+# to the single standalone container — the stack would come up healthy and simply have the old
+# topology, which is exactly the kind of drift that is invisible until capacity matters.
+# Set SELENIUM_TOPOLOGY=standalone (env, or in the box's .env) to fall back; the overlay parks the
+# standalone behind a compose profile rather than deleting it, so the fallback stays one flag.
+# Resolved through env_value (NOT a second hand-rolled .env parser) so an inline comment, quotes or
+# a stray CR can't turn `standalone` into an unrecognised value.
+SELENIUM_TOPOLOGY="${SELENIUM_TOPOLOGY:-$(env_value SELENIUM_TOPOLOGY grid)}"
+SELENIUM_TOPOLOGY="$(printf '%s' "${SELENIUM_TOPOLOGY}" | tr '[:upper:]' '[:lower:]')"
+COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
+case "${SELENIUM_TOPOLOGY}" in
+  standalone) ;;
+  grid) COMPOSE="${COMPOSE} -f docker-compose.grid.yml" ;;
+  # Anything else is a typo. Deploying the OTHER topology on one is precisely the silent drift this
+  # block exists to end, so name it and take the documented default rather than guessing quietly.
+  *) log "WARN: unrecognised SELENIUM_TOPOLOGY='${SELENIUM_TOPOLOGY}' — using 'grid'"
+     SELENIUM_TOPOLOGY="grid"
+     COMPOSE="${COMPOSE} -f docker-compose.grid.yml" ;;
+esac
+log "Selenium topology: ${SELENIUM_TOPOLOGY}"
 
 # Run a maintenance-mode subcommand inside whichever app container is up. Best-effort by design:
 # a stack that can't answer must not block the deploy (warm shutdown + acks_late still protect
@@ -97,6 +118,28 @@ if [[ -n "${GHCR_PAT:-}" && -n "${GHCR_USER:-}" ]]; then
 fi
 
 export IMAGE_TAG="${TAG}"
+
+# 3b. Topology transition guard. A compose PROFILE stops a service from being STARTED; it does not
+# stop one that is already running. So on the first grid deploy of a box still running the
+# standalone, `selenium-chrome` keeps holding 127.0.0.1:4444 and the hub fails to bind — and the
+# half-created hub is left RUNNING WITH NO NETWORK ATTACHED, which presents as "hub unhealthy,
+# 0 nodes registered" (nodes cannot resolve `selenium-hub`) rather than as a port error. Evict the
+# standalone first so the transition is clean. Live-verified during the 2026-07-27 cutover.
+if [[ "${SELENIUM_TOPOLOGY}" == "grid" ]] && docker ps --format '{{.Names}}' | grep -qx "selenium-chrome"; then
+  log "Grid topology: evicting the running standalone selenium-chrome so the hub can bind 4444"
+  docker rm -f selenium-chrome >/dev/null 2>&1 || log "WARN: could not remove selenium-chrome (continuing)"
+fi
+# The SAME transition in reverse, which is the rollback path (`SELENIUM_TOPOLOGY=standalone`) and so
+# runs when something is already wrong. Compose only removes the hub/nodes as orphans during the
+# `up` in step 7, and while both exist the hub still answers to the `selenium-chrome` network alias
+# — so that name would resolve to two containers and half the workers would drive a hub with no
+# nodes. Take the Grid down first, by compose (it knows the project-prefixed replica names).
+if [[ "${SELENIUM_TOPOLOGY}" != "grid" ]] && docker ps --format '{{.Names}}' | grep -qx "selenium-hub"; then
+  log "Standalone topology: removing the Grid (hub + nodes) so the standalone can bind 4444"
+  docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.grid.yml \
+    rm -sf selenium-hub selenium-node-chrome selenium-node-debug >/dev/null 2>&1 \
+    || log "WARN: could not remove the grid containers (continuing)"
+fi
 
 # 4. Pull the exact app image tag (+ any updated third-party images).
 log "Pulling images for IMAGE_TAG=${TAG}"
