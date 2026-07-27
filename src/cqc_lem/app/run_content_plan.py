@@ -526,6 +526,17 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
     # check with the same full bank), and slide text has no review queue to be held in.
     _report_carousel_fact_grounding(user_id, post_id, blueprint, carousel_dict)
 
+    # Count the anchor as used so the NEXT piece rotates to different raw material — the same write
+    # create_text_post makes. Without it the carousel reads the bank but never advances it, so
+    # `select_story`'s least-used ordering hands every deck the SAME entry and the next text post
+    # re-uses it too: one anchor per post, but the same anchor every post. Only when a deck really
+    # came out of it — a failed generation must not burn the anecdote.
+    if story and story.get("id") and (post_text or carousel_dict):
+        try:
+            record_story_bank_use(user_id, int(story["id"]))
+        except Exception as e:
+            myprint(f"Could not record story bank use for entry {story.get('id')}: {e}")
+
     # Map stage to carousel model class
     stage_lower = (stage or "").lower()
     if "awareness" in stage_lower:

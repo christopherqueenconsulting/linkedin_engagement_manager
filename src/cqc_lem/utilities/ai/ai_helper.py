@@ -3298,9 +3298,23 @@ Return ONLY valid JSON. No explanation, no markdown fences."""
         log_info("Carousel deck carries no reusable reference value — regenerating: "
                  + "; ".join(report["reasons"]), user_id=user_id, task_name="create_carousel_content")
         attempt += 1
-        post_text, carousel_dict = _draft(_framework.deck_retry_directive(report))
-        report = _framework.deck_reference_report(carousel_dict, post_text,
-                                                  save_targeted=save_targeted)
+        # The retry must never cost us the draft we already have. A gate whose whole posture is
+        # "a narrative deck beats no post" cannot fail the task on a second-call error, and an
+        # unparseable retry grades as no-gradeable-slide (checked=False) — shipping THAT would
+        # trade a narrative deck for an empty one plus the generic fallback caption.
+        try:
+            retry_text, retry_deck = _draft(_framework.deck_retry_directive(report))
+        except Exception as exc:
+            log_warning("Carousel reference-gate retry failed — keeping the previous deck",
+                        exc=exc, user_id=user_id, task_name="create_carousel_content")
+            break
+        retry_report = _framework.deck_reference_report(retry_deck, retry_text,
+                                                        save_targeted=save_targeted)
+        if not retry_report["checked"]:
+            log_warning("Carousel reference-gate retry came back with no gradeable slide — keeping "
+                        "the previous deck", user_id=user_id, task_name="create_carousel_content")
+            break
+        post_text, carousel_dict, report = retry_text, retry_deck, retry_report
     if report["checked"] and report["required"] and not report["passes"]:
         log_warning(f"Carousel deck still carries nothing worth saving after {attempt} attempt(s): "
                     + "; ".join(report["reasons"]),

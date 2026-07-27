@@ -2157,13 +2157,21 @@ _ARTIFACT_STEP_RE = re.compile(
     r"|\b(?:start|begin)\s+by\s+\w+ing\b",
     re.IGNORECASE)
 # CLI/code shapes: a backticked span, a long flag, a call, an invocation of a known runner, or a
-# path. Deliberately narrow — a false "command" would let a narrative slide pass.
+# path. Deliberately narrow — a false "command" would let a narrative slide pass. The runner list is
+# the dangerous half: several of those names are also ordinary English verbs, so it is matched
+# case-SENSITIVELY (`(?-i:…)`) and refuses a following stop word — otherwise "Make sure the pipeline
+# is boring" and "make it simple" read as commands and a deck of pure narrative sails through.
+_COMMAND_STOP_WORDS = (
+    "sure|it|the|a|an|this|that|these|those|my|our|your|their|his|her|its|them|us|"
+    "time|room|sense|peace|money|progress|space|way|ways|do|does|did|is|are|was|were|be|been|"
+    "and|or|but|if|when|to|for|with|in|on|at|of|up|out|off|good|better|best|more|less|new|real"
+)
 _ARTIFACT_COMMAND_RE = re.compile(
     r"`[^`\n]+`"
     r"|(?:^|\s)--[a-z][\w-]+"
     r"|\b[a-z_][\w.]*\(\)"
-    r"|\b(?:npm|npx|pip|poetry|git|docker|kubectl|curl|make|yarn|brew|aws|gh|psql|mysql|python|node|"
-    r"terraform|helm|ffmpeg|pytest|flyway)\s+[a-z][\w-]+"
+    r"|(?-i:\b(?:npm|npx|pip|poetry|git|docker|kubectl|curl|make|yarn|brew|aws|gh|psql|mysql|python|"
+    r"node|terraform|helm|ffmpeg|pytest|flyway)\s+(?!(?:" + _COMMAND_STOP_WORDS + r")\b)[a-z][\w-]+)"
     r"|(?:^|\s)\.?/[\w.-]+/[\w./-]+",
     re.IGNORECASE)
 # An env-var / setting identifier, or an explicit key=value / "key: value" setting.
@@ -2206,8 +2214,10 @@ _ARTIFACT_COMPARISON_RE = re.compile(
 _DECK_PROMISES: tuple = (
     (re.compile(r"\bcheck\s?lists?\b|\bthe\s+\d+\s+checks?\b", re.IGNORECASE),
      "a checklist", (ARTIFACT_CHECKLIST, ARTIFACT_STEP)),
-    (re.compile(r"\bstep[\s-]?by[\s-]?step\b|\bsteps\b|\bplaybook\b|\bframework\b|\bprocess\b|"
-                r"\bworkflow\b", re.IGNORECASE),
+    # Bare "process" is deliberately NOT here: "we rebuilt our hiring process" promises the reader
+    # nothing, and treating it as a promise would put every ordinary story deck through the gate.
+    (re.compile(r"\bstep[\s-]?by[\s-]?step\b|\bsteps\b|\bplaybook\b|\bframework\b|\bworkflow\b",
+                re.IGNORECASE),
      "a step-by-step process", (ARTIFACT_STEP, ARTIFACT_CHECKLIST)),
     (re.compile(r"\bstack\b|\bcommands?\b|\bconfigs?\b|\bconfiguration\b|\bsettings?\b|"
                 r"\bsnippets?\b|\btemplates?\b|\bprompts?\b", re.IGNORECASE),

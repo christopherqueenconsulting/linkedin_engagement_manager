@@ -221,6 +221,33 @@ class TestReferenceSlideDirective:
         assert "EVERY BODY SLIDE MUST CARRY SOMETHING REUSABLE" not in text
 
 
+class TestEnglishVerbsAreNotCommands:
+    """Several runner names are also ordinary English verbs. If "Make sure …" reads as a command,
+    a deck of pure narrative passes the gate — the exact failure this module exists to catch."""
+
+    @pytest.mark.parametrize("text", [
+        "Release count is not the goal. Make sure the pipeline is boring first.",
+        "You do not need Kubernetes. Make it simple and let the platform do the work.",
+        "We had to make peace with shipping being a habit, not a heroic push.",
+        "The team learned to trust the process and stopped arguing about branch names.",
+    ])
+    def test_prose_that_merely_uses_the_verb_carries_nothing(self, text):
+        assert fw.slide_artifacts(text) == []
+
+    @pytest.mark.parametrize("text", [
+        "Run docker compose up -d on the box.",
+        "make build then make deploy.",
+        "Run `flyway migrate` before the app flips.",
+    ])
+    def test_a_real_invocation_still_counts(self, text):
+        assert fw.ARTIFACT_COMMAND in fw.slide_artifacts(text)
+
+    def test_a_bare_mention_of_a_process_is_not_a_promise(self):
+        # "our process" tells the reader nothing is coming; "step-by-step"/"playbook" does.
+        assert fw.deck_promises("We rebuilt our hiring process this year.") == []
+        assert fw.deck_promises("The playbook I use.")
+
+
 class TestMaxAttempts:
     def test_the_default_is_one_retry(self, monkeypatch):
         monkeypatch.delenv("DECK_REFERENCE_MAX_ATTEMPTS", raising=False)

@@ -18,7 +18,7 @@ _ENTRIES = [
 ]
 
 
-def _create(entries, post_id=None, deck=None, caption="caption"):
+def _create(entries, post_id=None, deck=None, caption="caption", used=None):
     from cqc_lem.app.run_content_plan import create_carousel_content
     with patch(f"{_RCP}.get_engagement_preferences", return_value={}), \
          patch(f"{_RCP}.get_or_create_profile_synthesis", return_value="brief"), \
@@ -27,9 +27,12 @@ def _create(entries, post_id=None, deck=None, caption="caption"):
          patch(f"{_RCP}.update_db_post_shape"), \
          patch(f"{_RCP}.update_db_post_status"), \
          patch(f"{_RCP}.get_story_bank_entries", return_value=entries), \
+         patch(f"{_RCP}.record_story_bank_use") as record, \
          patch("cqc_lem.utilities.ai.ai_helper.generate_carousel_content",
                return_value=(caption, deck if deck is not None else {"bogus": True})) as gen:
         create_carousel_content(1, "awareness", post_id)
+    if used is not None:
+        used.append(record)
     return gen
 
 
@@ -69,6 +72,33 @@ class TestOneAnchorPerDeck:
              patch(f"{_RCP}.get_shape_performance", return_value=None):
             picks = {rcp._select_carousel_blueprint(1, [])["format"] for _ in range(200)}
         assert picks and not picks & set(fact_anchored_formats("post"))
+
+
+class TestTheAnchorIsRotatedNotJustRead:
+    """One anchor per deck is only half the invariant — without the usage write, `select_story`'s
+    least-used ordering hands EVERY deck the same entry, and the next text post re-uses it too."""
+
+    def test_the_deck_counts_its_anchor_as_used(self):
+        used = []
+        _create(_ENTRIES, used=used)
+        assert used[0].call_args[0] == (1, 1)  # user 1, the least-used entry
+
+    def test_an_empty_bank_records_nothing(self):
+        used = []
+        _create([], used=used)
+        assert not used[0].called
+
+    def test_a_bookkeeping_failure_never_blocks_the_carousel(self):
+        from cqc_lem.app.run_content_plan import create_carousel_content
+        with patch(f"{_RCP}.get_engagement_preferences", return_value={}), \
+             patch(f"{_RCP}.get_or_create_profile_synthesis", return_value="brief"), \
+             patch(f"{_RCP}.get_recent_post_shape_history", return_value=[]), \
+             patch(f"{_RCP}.get_shape_performance", return_value=None), \
+             patch(f"{_RCP}.get_story_bank_entries", return_value=_ENTRIES), \
+             patch(f"{_RCP}.record_story_bank_use", side_effect=RuntimeError("db down")), \
+             patch("cqc_lem.utilities.ai.ai_helper.generate_carousel_content",
+                   return_value=("caption", {"bogus": True})):
+            assert create_carousel_content(1, "awareness", None) == "caption"
 
 
 class TestDeckFactGroundingIsCheckedAgainstTheWholeBank:

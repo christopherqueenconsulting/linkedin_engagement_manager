@@ -112,6 +112,27 @@ class TestReferenceGateRegeneration:
         assert deck == _NARRATIVE
 
 
+class TestTheRetryNeverCostsUsTheDraftWeHave:
+    """The gate's whole posture is 'a narrative deck beats no post'. A second call that errors or
+    comes back unparseable must not turn a shippable deck into a failed task or an empty one."""
+
+    def test_a_retry_that_raises_keeps_the_first_deck(self):
+        text, deck, call = _generate([_response(_NARRATIVE), RuntimeError("provider down")],
+                                     blueprint={"format": "build_receipt"})
+        assert call.call_count == 2
+        assert deck == _NARRATIVE
+        assert "exact stack" in text
+
+    def test_a_retry_that_comes_back_unparseable_keeps_the_first_deck(self):
+        bad = MagicMock()
+        bad.choices = [MagicMock(message=MagicMock(content="not json at all"))]
+        text, deck, call = _generate([_response(_NARRATIVE), bad],
+                                     blueprint={"format": "build_receipt"})
+        assert call.call_count == 2
+        assert deck == _NARRATIVE
+        assert "exact stack" in text
+
+
 class TestStoryDirectiveReachesTheWriter:
     def test_the_one_anchored_story_rides_into_the_carousel_prompt(self):
         directive = "\n\nYOUR STORY BANK ENTRY: rendered 40 slides in one pass.\n"
