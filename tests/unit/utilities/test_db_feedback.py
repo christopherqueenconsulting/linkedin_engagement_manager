@@ -260,8 +260,36 @@ class TestUpdateFeedbackTriage:
         import mysql.connector
         conn, cur = _dict_conn()
         cur.execute.side_effect = mysql.connector.Error("boom")
-        with patch(f"{_DB}.get_db_connection", return_value=conn), patch(f"{_DB}.log_error"):
+        with patch(f"{_DB}.get_db_connection", return_value=conn), \
+             patch(f"{_DB}.log_error") as log:
             from cqc_lem.utilities.db import update_feedback_triage, FeedbackStatus
             assert update_feedback_triage(3, status=FeedbackStatus.TRIAGED) is False
         cur.close.assert_called_once()
         conn.close.assert_called_once()
+        # The columns in flight are named, so the next 1265 says which ENUM rejected the value.
+        assert "status" in log.call_args[0][0]
+
+    def test_unknown_status_never_reaches_the_enum_column(self):
+        # issue #668: `feedback.status` is a MySQL ENUM — an out-of-vocabulary value used to blow up
+        # as an opaque "1265 Data truncated for column 'status'" and take the whole UPDATE with it.
+        with patch(f"{_DB}.get_db_connection") as get_conn, patch(f"{_DB}.log_error") as log:
+            from cqc_lem.utilities.db import update_feedback_triage
+            assert update_feedback_triage(1, status="pending", cluster_id=4) is False
+        get_conn.assert_not_called()
+        message = log.call_args[0][0]
+        assert "'pending'" in message and "issue_created" in message
+
+    def test_status_spelling_variants_are_accepted(self):
+        conn, cur = _dict_conn()
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_feedback_triage
+            assert update_feedback_triage(3, status=" Issue_Created ") is True
+        assert cur.execute.call_args[0][1] == ("issue_created", 3)
+
+    def test_every_feedback_status_member_is_writable(self):
+        from cqc_lem.utilities.db import update_feedback_triage, FeedbackStatus
+        for member in FeedbackStatus:
+            conn, cur = _dict_conn()
+            with patch(f"{_DB}.get_db_connection", return_value=conn):
+                assert update_feedback_triage(3, status=member) is True
+            assert cur.execute.call_args[0][1] == (member.value, 3)

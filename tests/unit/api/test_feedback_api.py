@@ -127,3 +127,19 @@ class TestFeedbackMigration:
         for col in ("user_id", "source", "type_hint", "body", "context_json", "embedding",
                     "cluster_id", "github_issue_number", "status", "sentiment", "created_at"):
             assert col in sql, f"missing column {col}"
+
+    def test_status_enum_matches_the_feedback_status_vocabulary(self):
+        # issue #668: a FeedbackStatus member with no matching ENUM value only fails in PRODUCTION,
+        # as "1265 Data truncated for column 'status'" — never in a unit test. Catch it at build time.
+        import glob
+        import os
+        import re
+        from cqc_lem.utilities.db import FeedbackStatus
+        root = os.path.join(os.path.dirname(__file__), "..", "..", "..",
+                            "compose", "local", "database", "migrations")
+        with open(glob.glob(os.path.join(root, "V*__add_feedback.sql"))[0]) as f:
+            sql = f.read()
+        declared = re.search(r"status\s+ENUM\(([^)]*)\)", sql, re.IGNORECASE)
+        assert declared, "the add_feedback migration no longer declares status as an ENUM"
+        values = set(re.findall(r"'([^']*)'", declared.group(1)))
+        assert {s.value for s in FeedbackStatus} == values
