@@ -1,4 +1,5 @@
-import { csv, parseCsv, CATCHUP_EVENTS } from '../types'
+import { CATCHUP_EVENTS } from '../types'
+import CsvInput from './CsvInput'
 import { useEngagementPrefs } from './EngagementPrefsContext'
 import { Advanced, Field, SectionCard, inputClass } from './Field'
 
@@ -30,10 +31,9 @@ export default function OutreachSection() {
           </Field>
         </div>
         <Field settingKey="connection_target_authors">
-          <input type="text" value={csv(eng.connection_target_authors)}
-            onChange={(e) => setEng({ connection_target_authors: parseCsv(e.target.value) })}
-            placeholder="https://www.linkedin.com/in/their-slug, https://www.linkedin.com/in/another"
-            className={inputClass} />
+          <CsvInput value={eng.connection_target_authors}
+            onChange={(values) => setEng({ connection_target_authors: values })}
+            placeholder="https://www.linkedin.com/in/their-slug, https://www.linkedin.com/in/another" />
         </Field>
         <Advanced>
           <Field settingKey="min_connection_icp_score">

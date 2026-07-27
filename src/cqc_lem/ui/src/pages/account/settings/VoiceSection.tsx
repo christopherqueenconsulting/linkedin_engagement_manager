@@ -1,6 +1,6 @@
 import Toggle from '../../../components/Toggle'
-import { csv, parseCsv } from '../types'
 import { FIELD_LIMITS } from '../fieldLimits'
+import CsvInput from './CsvInput'
 import { useEngagementPrefs } from './EngagementPrefsContext'
 import { useUserPrefs } from './UserPrefsContext'
 import { Field, SectionCard, inputClass } from './Field'
@@ -64,9 +64,9 @@ export default function VoiceSection() {
         blurb="These steer the ANGLE of your content and keep it aligned to your goals. They never override the subject of the post being engaged with, and LEM never promotes internal tools."
       >
         <Field settingKey="focus_topics">
-          <input type="text" value={csv(eng.focus_topics)}
-            onChange={(e) => setEng({ focus_topics: parseCsv(e.target.value) })}
-            placeholder="e.g. B2B sales, leadership, AI adoption" className={inputClass} />
+          <CsvInput value={eng.focus_topics}
+            onChange={(values) => setEng({ focus_topics: values })}
+            placeholder="e.g. B2B sales, leadership, AI adoption" />
         </Field>
         <Field settingKey="business_goals">
           <textarea value={eng.business_goals || ''} rows={2} maxLength={FIELD_LIMITS.goals}
