@@ -41,7 +41,8 @@ from cqc_lem.utilities.quality_gates import (authenticity_finding, similarity_fi
 from cqc_lem.utilities.ai.content_framework import select_blueprint, history_avoidance_directive, \
     find_most_similar, post_similarity_max, has_first_person_proof, shape_for_dwell, dwell_report, \
     dwell_score_min, requires_fact_anchor, fact_grounding_report, fact_retry_directive, \
-    fact_anchored_formats, weekly_post_slots, day_type_stage, day_type_formats, day_type_for_weekday
+    fact_anchored_formats, weekly_post_slots, day_type_stage, day_type_formats, \
+    day_type_for_weekday, deck_slides
 from cqc_lem.utilities.ai.content_alignment import (
     should_include_lead_magnet_cta, lead_magnet_cta_directive, ensure_lead_magnet_cta,
     personal_proof_directive, topic_authority_score, topic_authority_min, profile_topic_dna,
@@ -432,8 +433,10 @@ def _select_carousel_blueprint(user_id: int, fact_anchors: Optional[list] = None
     verified facts: with none, the fact-anchored archetypes are taken OFF the carousel menu entirely
     (not merely un-preferred), because their no-fabrication contract ships every specific as a
     `[[…]]` placeholder — and a carousel bakes its text into rendered slide IMAGES, which no edit or
-    re-score can ever fix. The caller passes the anchors it already read so the bank is read once per
-    carousel. Never raises — a carousel that loses its archetype still generates from the
+    re-score can ever fix. The caller passes the WRITER's anchors (the one selected story's facts,
+    issue #728) — that, not the size of the whole bank, is what this deck can actually write from;
+    the None fallback reads the bank only because a caller with no story selected has nothing
+    narrower to offer. Never raises — a carousel that loses its archetype still generates from the
     generic slide guidance."""
     try:
         anchors = _fact_anchors(user_id) if fact_anchors is None else fact_anchors
@@ -443,6 +446,31 @@ def _select_carousel_blueprint(user_id: int, fact_anchors: Optional[list] = None
     except Exception as e:
         myprint(f"Could not select a carousel archetype (using generic slide guidance): {e}")
         return None
+
+
+def _report_carousel_fact_grounding(user_id: int, post_id: Optional[int], blueprint: Optional[dict],
+                                    carousel: Optional[dict]) -> None:
+    """Grade a generated DECK's specifics against the user's whole verified bank (issue #728) and log
+    anything it could not back. Only for the fact-anchored archetypes, whose value IS the specifics.
+    Advisory by design: the slides are rendered into images, so there is nothing a hold could fix —
+    the point is that an invented slide number is visible instead of silent. Never raises."""
+    fmt = (blueprint or {}).get("format")
+    if not carousel or not requires_fact_anchor("post", fmt):
+        return
+    try:
+        slides = deck_slides(carousel)
+        deck_text = "\n".join(f"{s['title']} {s['content']}".strip() for s in slides)
+        report = fact_grounding_report(deck_text, _fact_anchors(user_id))
+        if report["unverified_values"]:
+            log_warning("Carousel slides state specifics no verified fact backs: "
+                        + ", ".join(report["unverified_values"][:5]),
+                        user_id=user_id, post_id=post_id, task_name="create_carousel_content")
+        if report["placeholders"]:
+            log_warning("Carousel slides carry unfilled placeholders that will be rendered into the "
+                        "images: " + ", ".join(report["placeholders"][:5]),
+                        user_id=user_id, post_id=post_id, task_name="create_carousel_content")
+    except Exception as e:
+        myprint(f"Could not grade carousel fact grounding for post {post_id}: {e}")
 
 
 @attribute_llm_cost(FEATURE_CONTENT)
@@ -468,17 +496,35 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
         myprint(f"Could not load profile synthesis for carousel: {e}")
         profile_synthesis = None
 
+    # ONE story-bank anchor per piece (issue #728), the same split text posts have always had: the
+    # WRITER gets the single selected entry, the CHECKERS keep the whole bank. Handing the writer
+    # every active entry is what produced a six-receipt greatest-hits deck that spent the account's
+    # best material in one post. Selected BEFORE the blueprint, because whether we HAVE an anchor is
+    # what decides if a fact-anchored archetype is even on the carousel menu.
+    story = _select_story_for_post(user_id, prefs)
+    story_directive = _story_bank.story_directive(story)
+    writer_anchors = _story_bank.fact_sources(story) if story else []
+    if story:
+        myprint(f"Story bank anchor for carousel post_id={post_id}: "
+                f"[{story.get('kind')}] {story.get('title')}")
+
     # Carousels draw their SHAPE from the same shared post menu as text posts (issue #619 / G4) and
     # rotate against the same V51 shape history, so a build receipt can land as a document post —
     # and so a carousel archetype counts against the next text post's rotation.
-    fact_anchors = _fact_anchors(user_id)
-    blueprint = _select_carousel_blueprint(user_id, fact_anchors)
+    blueprint = _select_carousel_blueprint(user_id, writer_anchors)
     post_text, carousel_dict = generate_carousel_content(user_id, stage, prefs=prefs,
                                                          profile_synthesis=profile_synthesis,
                                                          blueprint=blueprint,
-                                                         fact_anchors=fact_anchors)
+                                                         fact_anchors=writer_anchors,
+                                                         story_directive=story_directive)
     myprint(f"Carousel AI content generated for user_id={user_id} stage={stage} "
             f"archetype={(blueprint or {}).get('format')}")
+
+    # The verification half of the split: the SLIDES are checked against EVERY active bank entry,
+    # because a number out of the user's own material is by definition not one the model invented.
+    # Reported, never held — the caption already has its gate (`evaluate_post_gates` runs the same
+    # check with the same full bank), and slide text has no review queue to be held in.
+    _report_carousel_fact_grounding(user_id, post_id, blueprint, carousel_dict)
 
     # Map stage to carousel model class
     stage_lower = (stage or "").lower()

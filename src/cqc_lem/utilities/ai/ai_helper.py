@@ -32,7 +32,7 @@ from cqc_lem.utilities.ai.tools import search_recent_news, search_with_perplexit
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text, PLAIN_PUNCTUATION_DIRECTIVE, \
     linkedin_post_format_directive, enforce_post_readability
-from cqc_lem.utilities.logger import myprint, log_debug, log_error, log_warning
+from cqc_lem.utilities.logger import myprint, log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.utils import create_folder_if_not_exists, save_video_url_to_dir
 from cqc_lem.utilities.env_constants import DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_RATIO
 # create_runway_video lives in video_models (model abstraction); re-exported here
@@ -3125,12 +3125,17 @@ _CAROUSEL_CAPTION_MAX_CHARS = 2200
 
 def generate_carousel_content(user_id: int, stage: str, prefs: dict = None,
                               profile_synthesis: str = None, blueprint: dict = None,
-                              fact_anchors: list = None) -> tuple[str, dict]:
+                              fact_anchors: list = None,
+                              story_directive: str = None) -> tuple[str, dict]:
     """Generate structured carousel content using AI and return (post_text, carousel_dict).
 
     An assigned `blueprint` (issue #619 / G4) maps a SHORT-FORM POST ARCHETYPE onto the slides — a
     build receipt renders naturally as a document post, LinkedIn's highest-multiplier format — so
     carousels rotate through the same shared menu as text posts instead of a carousel-only prompt.
+
+    `fact_anchors` is the WRITER's allow-list — the ONE story-bank entry this deck is anchored to
+    (issue #728), never the whole bank; `story_directive` carries that same entry's material. The
+    full bank stays with the CHECKERS in `run_content_plan`.
 
     The carousel_dict matches the schema of one of the carousel models in carousel_creator.py.
     The carousel type is chosen by buyer journey stage:
@@ -3227,6 +3232,13 @@ Return ONLY valid JSON. No explanation, no markdown fences."""
     # archetype, so a build-receipt carousel can no more invent a metric than a text one can.
     prompt += _framework.carousel_blueprint_directive(blueprint, fact_anchors)
 
+    # The ONE story-bank entry this deck is anchored to (issue #620, wired for carousels in #728) —
+    # the author's own material, and the only personal specifics the writer may state. Carousels
+    # previously got the fact allow-list with no story behind it, so they had numbers to quote and
+    # nothing to say with them.
+    if story_directive:
+        prompt += story_directive
+
     # Same alignment core as text posts: voice synthesis when available, prefs steering, and the
     # hard anti-self-promo guardrail — carousels must not drift while text posts stay aligned.
     if profile_synthesis:
@@ -3244,30 +3256,55 @@ Return ONLY valid JSON. No explanation, no markdown fences."""
             + PLAIN_PUNCTUATION_DIRECTIVE
         ),
     }
-    user_message = {"role": "user", "content": [{"type": "text", "text": prompt}]}
-
-    response = _call_llm(
-        model="lem-complex",
-        messages=[system_prompt, user_message],
-        response_format={"type": "json_object"},
-        temperature=round(random.uniform(0.6, 0.8), 2),
-        top_p=round(random.uniform(0.85, 0.95), 2),
-    )
-
     import json as _json
-    raw = response.choices[0].message.content.strip()
-    try:
-        parsed = _json.loads(raw)
-    except _json.JSONDecodeError as exc:
-        log_error("generate_carousel_content: LLM returned invalid JSON", exc=exc)
-        parsed = {}
 
-    # QA guard: reflow a wall-of-text caption into scannable paragraphs and hard-cap the length,
-    # even when the model ignored the format directive (JSON mode often drops line breaks).
-    post_text = enforce_post_readability(
-        normalize_public_text(parsed.get("post_text", f"Explore our latest insights on {industry}.")),
-        max_chars=_CAROUSEL_CAPTION_MAX_CHARS)
-    carousel_dict = _normalize_carousel_strings(parsed.get("carousel", {}))
+    def _draft(extra_directive: str = "") -> tuple[str, dict]:
+        user_message = {"role": "user",
+                        "content": [{"type": "text", "text": prompt + extra_directive}]}
+        response = _call_llm(
+            model="lem-complex",
+            messages=[system_prompt, user_message],
+            response_format={"type": "json_object"},
+            temperature=round(random.uniform(0.6, 0.8), 2),
+            top_p=round(random.uniform(0.85, 0.95), 2),
+        )
+        raw = response.choices[0].message.content.strip()
+        try:
+            parsed = _json.loads(raw)
+        except _json.JSONDecodeError as exc:
+            log_error("generate_carousel_content: LLM returned invalid JSON", exc=exc)
+            parsed = {}
+        # QA guard: reflow a wall-of-text caption into scannable paragraphs and hard-cap the length,
+        # even when the model ignored the format directive (JSON mode often drops line breaks).
+        text = enforce_post_readability(
+            normalize_public_text(parsed.get("post_text",
+                                             f"Explore our latest insights on {industry}.")),
+            max_chars=_CAROUSEL_CAPTION_MAX_CHARS)
+        return text, _normalize_carousel_strings(parsed.get("carousel", {}))
+
+    post_text, carousel_dict = _draft()
+
+    # Reference-value gate (issue #728): a save-targeted deck — or any deck whose caption promises a
+    # checklist / the exact stack / the numbers — must carry something reusable on every body slide.
+    # Deterministic, so a failure names the exact slides and gets ONE bounded regeneration with that
+    # list attached, exactly like the slop lint's retry. A deck that still fails ships with the
+    # reason logged: the slides are baked into images with no review queue behind them, and a
+    # narrative deck is worth more than no post at all.
+    save_targeted = _framework.is_save_targeted("post", (blueprint or {}).get("format"))
+    report = _framework.deck_reference_report(carousel_dict, post_text, save_targeted=save_targeted)
+    attempts = _framework.deck_reference_max_attempts()
+    attempt = 1
+    while report["checked"] and report["required"] and not report["passes"] and attempt < attempts:
+        log_info("Carousel deck carries no reusable reference value — regenerating: "
+                 + "; ".join(report["reasons"]), user_id=user_id, task_name="create_carousel_content")
+        attempt += 1
+        post_text, carousel_dict = _draft(_framework.deck_retry_directive(report))
+        report = _framework.deck_reference_report(carousel_dict, post_text,
+                                                  save_targeted=save_targeted)
+    if report["checked"] and report["required"] and not report["passes"]:
+        log_warning(f"Carousel deck still carries nothing worth saving after {attempt} attempt(s): "
+                    + "; ".join(report["reasons"]),
+                    user_id=user_id, task_name="create_carousel_content")
     return post_text, carousel_dict
 
 
