@@ -5,13 +5,6 @@ the `selenium-chrome` container. When LinkedIn changes its DOM (login fields, bu
 the automation starts failing — this guide is how to drive and watch that exact
 browser to find out why.
 
-> **PROD runs the Selenium Grid since 2026-07-27** (`docs/SELENIUM_GRID.md`), so there is no
-> `selenium-chrome` container and no `lemvnc` on the box — the hub runs no browser, and N node
-> replicas cannot share host port 7900. Port **4444 is unchanged** (it is the hub), so everything
-> in the *drive* half of this guide still applies as written. To *watch*, attach to one node:
-> `docker compose port <node-container> 7900`, or use the Grid UI on 4444. Everything below
-> describes the standalone, which is still what **dev** (`docker compose up`, no overlay) runs.
-
 Two cooperating surfaces:
 
 | Port | What | Exposure |

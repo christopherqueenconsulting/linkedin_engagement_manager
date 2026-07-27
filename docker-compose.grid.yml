@@ -9,10 +9,9 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.grid.yml up -d
 #
-# This is the DEPLOYED topology as of the 2026-07-27 cutover: `scripts/deploy.sh` composes this file
-# in on every deploy unless SELENIUM_TOPOLOGY=standalone is set (env, or the box's .env). It is still
-# an overlay, not the base — a bare `docker compose up` (dev) is unchanged and runs the standalone.
-# See docs/SELENIUM_GRID.md for the cutover runbook, the rollback, and the load-test evidence.
+# NOT enabled by default. Prod runs the standalone until the capacity monitor (§5e) says the cap is
+# the operating point; see docs/SELENIUM_GRID.md for the cutover runbook and the load-test evidence
+# that should precede it.
 #
 # INVARIANT (same one the standalone carries): total session slots == the sum of every lane
 # worker's SELENIUM_CONCURRENCY. Here total slots = SELENIUM_GRID_NODES x SE_NODE_MAX_SESSIONS(=1),
@@ -51,6 +50,15 @@ services:
       - SE_SESSION_REQUEST_TIMEOUT=300
       - SE_SESSION_RETRY_INTERVAL=5
     restart: unless-stopped
+    networks:
+      default:
+        aliases:
+          # Answer to the STANDALONE's name too. Everything that predates the Grid points at
+          # `selenium-chrome:4444` — the Cloudflare tunnel's lemgrid hostname (dashboard-managed,
+          # not in this repo), SELENIUM_HUB_HOST in the box .env, and host-side tooling. Without
+          # this alias the cutover 502s the Grid console and silently strips those callers of a
+          # hub. The standalone service is profile-parked, so the name is free.
+          - selenium-chrome
     deploy:
       resources:
         limits:

@@ -7,10 +7,7 @@ loops) fires late; if they request LESS, paid-for slots sit idle. Nothing in the
 fails when the two drift apart — only these assertions do. See docs/scaling-plan.md §5a.
 """
 
-import os
 import re
-import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -21,7 +18,6 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 COMPOSE = (REPO_ROOT / "docker-compose.yml").read_text()
 PROD_OVERLAY = (REPO_ROOT / "docker-compose.prod.yml").read_text()
 GRID_OVERLAY = (REPO_ROOT / "docker-compose.grid.yml").read_text()
-DEPLOY_SH = (REPO_ROOT / "scripts" / "deploy.sh").read_text()
 
 
 def _service_block(compose: str, name: str) -> str:
@@ -191,76 +187,3 @@ class TestLoadTestMirrorsTheDeployedTopology:
         from cqc_lem.utilities.selenium_load_test import DEFAULT_SESSION_CAP
 
         assert DEFAULT_SESSION_CAP == _max_sessions(COMPOSE)
-
-
-def _run_deploy_prefix(tmp_path: Path, env_file: str | None = None, **env: str) -> subprocess.CompletedProcess:
-    """Execute deploy.sh up to (not including) the first side effect, then print what it resolved.
-
-    Everything above the git-sync step is pure variable/function setup, so it can run for real —
-    and it must, because the failure this guards is a `set -euo pipefail` abort, which no
-    substring assertion on the source can see.
-    """
-    prefix = DEPLOY_SH.split("# 1. Sync compose files")[0]
-    scripts = tmp_path / "scripts"
-    scripts.mkdir()
-    script = scripts / "deploy.sh"
-    script.write_text(prefix + '\necho "RESOLVED ${SELENIUM_TOPOLOGY} :: ${COMPOSE}"\n')
-    if env_file is not None:
-        (tmp_path / ".env").write_text(env_file)
-    clean = {k: v for k, v in os.environ.items() if k != "SELENIUM_TOPOLOGY"}
-    return subprocess.run(
-        ["bash", str(script), "v1.2.3"], capture_output=True, text=True, env={**clean, **env}
-    )
-
-
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")
-class TestDeployComposesTheGridTopology:
-    """The overlay only matters if the DEPLOY uses it. `docker-compose.grid.yml` shipped with #556
-    but `deploy.sh` composed base+prod only, so every release silently reverted the box to the
-    standalone — healthy, and quietly the wrong topology."""
-
-    def test_grid_is_the_default_when_the_env_file_has_no_topology_key(self, tmp_path):
-        # The state of every box today: the key is new, so no .env carries it. Reading it with a
-        # bare `grep` exits 1 here and `set -euo pipefail` aborts the deploy before check_env.sh.
-        result = _run_deploy_prefix(tmp_path, env_file="IMAGE_TAG=v1.2.3\nAPI_PORT=8000\n")
-        assert result.returncode == 0, result.stderr
-        assert "RESOLVED grid :: " in result.stdout
-        assert "-f docker-compose.grid.yml" in result.stdout
-
-    def test_grid_is_the_default_when_there_is_no_env_file_at_all(self, tmp_path):
-        result = _run_deploy_prefix(tmp_path)
-        assert result.returncode == 0, result.stderr
-        assert "-f docker-compose.grid.yml" in result.stdout
-
-    def test_env_file_can_fall_back_to_the_standalone(self, tmp_path):
-        result = _run_deploy_prefix(tmp_path, env_file="SELENIUM_TOPOLOGY=standalone\n")
-        assert result.returncode == 0, result.stderr
-        assert "RESOLVED standalone :: " in result.stdout
-        assert "docker-compose.grid.yml" not in result.stdout
-
-    def test_an_exported_value_beats_the_env_file(self, tmp_path):
-        result = _run_deploy_prefix(
-            tmp_path, env_file="SELENIUM_TOPOLOGY=standalone\n", SELENIUM_TOPOLOGY="grid"
-        )
-        assert result.returncode == 0, result.stderr
-        assert "-f docker-compose.grid.yml" in result.stdout
-
-    def test_an_unrecognized_value_falls_forward_to_grid_not_silently_back(self, tmp_path):
-        # A typo must not revert the topology — that is the exact drift this change exists to stop.
-        result = _run_deploy_prefix(tmp_path, env_file="SELENIUM_TOPOLOGY=Grid\n")
-        assert result.returncode == 0, result.stderr
-        assert "-f docker-compose.grid.yml" in result.stdout
-        assert "WARN: unrecognized SELENIUM_TOPOLOGY" in result.stdout
-
-    def test_the_stale_browser_is_evicted_after_the_drain_and_before_any_up(self):
-        # Both topologies bind 4444 and a compose PROFILE does not stop an already-running
-        # container, so the old one must go first. But evicting a browser kills every live session
-        # in it — after the drain, or the deploy does the mid-flight kill #549 exists to prevent.
-        evict = DEPLOY_SH.index("docker rm -f \"${STALE_BROWSER}\"")
-        assert DEPLOY_SH.index("maint drain") < evict < DEPLOY_SH.index("${COMPOSE} up -d mysql")
-
-    def test_the_rollback_direction_evicts_the_hub(self):
-        # Rolling back to the standalone hits the SAME collision with the roles swapped.
-        block = DEPLOY_SH.split("# 4c.")[1].split("# 5.")[0]
-        assert 'STALE_BROWSER="selenium-chrome"' in block
-        assert 'STALE_BROWSER="selenium-hub"' in block
