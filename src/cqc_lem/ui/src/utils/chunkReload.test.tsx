@@ -30,7 +30,13 @@ beforeEach(() => {
   })
 })
 
+// jsdom defines `onLine` on Navigator.prototype; an own property shadows it and `delete` restores.
+function goOffline(): void {
+  Object.defineProperty(window.navigator, 'onLine', { configurable: true, get: () => false })
+}
+
 afterEach(() => {
+  delete (window.navigator as unknown as Record<string, unknown>).onLine
   cleanup()
   vi.restoreAllMocks()
 })
@@ -85,6 +91,14 @@ describe('recoverFromChunkError', () => {
     expect(reload).not.toHaveBeenCalled()
   })
 
+  it('never reloads an offline tab — the shell is no-store, so it could not come back', () => {
+    goOffline()
+    expect(recoverFromChunkError(CHUNK_ERROR)).toBe('ignored')
+    // Even the signal that IS a chunk failure by definition: vite:preloadError names no cause.
+    expect(recoverFromChunkError(CHUNK_ERROR, { force: true })).toBe('ignored')
+    expect(reload).not.toHaveBeenCalled()
+  })
+
   it('ignores an unrelated error', () => {
     expect(recoverFromChunkError(new Error('network down'))).toBe('ignored')
     expect(reload).not.toHaveBeenCalled()
@@ -115,6 +129,14 @@ describe('importWithChunkRecovery', () => {
       importWithChunkRecovery(() => Promise.reject(CHUNK_ERROR)),
     ).rejects.toThrow(NEW_VERSION_MESSAGE)
     expect(reload).toHaveBeenCalledTimes(1)
+  })
+
+  it('rethrows an offline failure untouched instead of reloading away the app', async () => {
+    goOffline()
+    await expect(
+      importWithChunkRecovery(() => Promise.reject(CHUNK_ERROR)),
+    ).rejects.toBe(CHUNK_ERROR)
+    expect(reload).not.toHaveBeenCalled()
   })
 
   it('rethrows a non-chunk failure untouched', async () => {

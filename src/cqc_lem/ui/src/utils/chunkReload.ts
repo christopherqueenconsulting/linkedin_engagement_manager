@@ -72,6 +72,15 @@ function writeMarker(now: number): boolean {
   }
 }
 
+// A dynamic import that failed because the tab is OFFLINE reports the same message a stale chunk
+// does ("Failed to fetch dynamically imported module"), and `vite:preloadError` does not report a
+// reason at all. index.html is `no-store`, so reloading an offline tab cannot re-fetch the shell —
+// it replaces a working app with the browser's own offline page. `navigator.onLine` is only
+// trustworthy when it says false, which is exactly the direction this needs.
+function isOffline(): boolean {
+  return typeof navigator !== 'undefined' && navigator.onLine === false
+}
+
 function announceBlocked(): ChunkRecovery {
   try {
     window.dispatchEvent(new CustomEvent(CHUNK_RELOAD_BLOCKED_EVENT))
@@ -91,6 +100,9 @@ export function recoverFromChunkError(
 ): ChunkRecovery {
   if (!options.force && !isChunkLoadError(reason)) return 'ignored'
   if (typeof window === 'undefined') return 'ignored'
+  // Not a new version — leave the original failure to the caller's own error UI, which is
+  // recoverable once the connection comes back. A reload here would not be.
+  if (isOffline()) return 'ignored'
 
   const now = options.now ?? Date.now()
   const previous = lastAttemptAt ?? readMarker()

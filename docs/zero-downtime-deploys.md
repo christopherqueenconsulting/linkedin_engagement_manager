@@ -78,7 +78,9 @@ Two layers, in this order:
    on a chunk-load failure (`ui/src/utils/chunkReload.ts`). `index.html` is `no-store`, so the
    reload always lands on the current build. A `sessionStorage` marker caps it at one attempt per
    minute; a second failure inside that window shows "A new version was released — please refresh"
-   (`NewVersionNotice.tsx`) instead of looping.
+   (`NewVersionNotice.tsx`) instead of looping. An OFFLINE tab is never reloaded: a disconnected
+   dynamic import reports the same message a stale chunk does, and reloading a `no-store` shell with
+   no network replaces a working app with the browser's offline page.
 
 The `no-store` shell is load-bearing for BOTH layers — if a CDN rule ever caches `index.html`, the
 reload lands on the same broken build. `tests/unit/api/test_spa_asset_archive.py` guards the header
