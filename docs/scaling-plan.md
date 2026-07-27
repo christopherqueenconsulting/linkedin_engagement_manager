@@ -438,7 +438,7 @@ ToS-risk requirements. Full comparison, cost tables and sources: `docs/scaling-c
   minutes. None of these fit a logged-in, cookie-persisted, days-to-weeks LinkedIn session.
 - **AWS Fargate/EC2 Grid nodes are technically workable** (residential-proxy egress layers on
   cleanly regardless of host) **but cost strictly more than self-managed at every tier** — e.g.
-  Fargate on-demand ~$454–578/mo at the 50-user tier vs. a second Hostinger box's ~$52–100/mo —
+  Fargate on-demand ~$454–620/mo at the 50-user tier vs. a second Hostinger box's ~$52–100/mo —
   and add ops surface (NAT/ASG/ECS) the current stack doesn't otherwise carry. Not recommended.
 - **The one correction this spike makes to this plan:** `SELENIUM_GRID.md` §5's "Option A —
   upgrade to 16 vCPU / 64 GB" assumed an in-place resize. **Hostinger's VPS line has no plan above
@@ -452,7 +452,7 @@ ToS-risk requirements. Full comparison, cost tables and sources: `docs/scaling-c
   and Browserbase are purpose-built for persistent authenticated browser sessions over a
   residential/BYOP proxy (`Profiles`/`Contexts` APIs persist cookies/login across sessions the way
   LEM needs) and price well under both AWS and a third/fourth self-managed box at the 100-user tier
-  (~$410–430/mo and ~$374–399/mo respectively vs. Fargate's ~$826–1,115/mo). Each still carried an
+  (~$410–430/mo and ~$374–399/mo respectively vs. Fargate's ~$826–1,156/mo). Each still carried an
   unresolved blocker — whether its Selenium path is a true `get_docker_driver()` URL-repoint or
   needs a connector rewrite, and (Steel only) an actual ToS text this spike could not extract.
   **Owner decision, 2026-07-27 (PR #694): don't spend the engineering time. No vendor spike, no
