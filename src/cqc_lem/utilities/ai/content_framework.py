@@ -1763,11 +1763,37 @@ def comment_similarity_report(draft: Optional[str], recent_comments: list) -> di
             "measure": measure, "too_similar": scores[best] > threshold}
 
 
-def comment_contract_directive() -> str:
+# Mirrors `experiments.COMMENT_CONTRACT_AUTHOR_QUESTION`. Kept as a literal (the same reason
+# ai/client.py mirrors observability's system sentinel) so the shared content core never imports the
+# experiment plumbing; tests/unit/utilities/test_experiments.py pins the two together.
+COMMENT_CONTRACT_AUTHOR_QUESTION_VARIANT = "author-question"
+
+# The pilot prompt variant (issue #652, `experiments.COMMENT_CONTRACT_AUTHOR_QUESTION`). Control
+# lets the closing ask be any of the four value-adds; this arm REQUIRES the comment to end on a
+# question only the post's author could answer, which is the shape most likely to earn the reply the
+# whole contract exists to earn. Measured against author-reply rate (D4) from the #628 outcome sweep.
+#
+# It is worded as an ADDITIONAL rule rather than a rewrite of rules 1-6 on purpose: the deterministic
+# `comment_contract_report` grades the same six rules in both arms, so an arm that loosened one of
+# them would change what "passes the gate" means and the two arms would no longer be comparable.
+COMMENT_AUTHOR_QUESTION_DIRECTIVE = (
+    "7. END ON A QUESTION ONLY THIS AUTHOR COULD ANSWER — about their specific numbers, their "
+    "decision, or what they saw happen. A question anyone in the thread could answer just as well "
+    "(\"what do you all think?\") does not count, and neither does a question the post already "
+    "answered. One question, at the end, and nothing after it.\n"
+)
+
+
+def comment_contract_directive(variant: Optional[str] = None) -> str:
     """The WRITER-side contract injected into every fresh feed-comment prompt. Rule 5 is the "Tip
     #8" framing: a comment's audience is the post's READERS, and its job is to add what the post
-    missed — flattery for the author earns nothing and is what the 2026 ranking demotes."""
+    missed — flattery for the author earns nothing and is what the 2026 ranking demotes.
+
+    `variant` is the arm of the pilot prompt experiment (#652). An unknown or missing variant is the
+    control contract, so a mis-provisioned flag can only ever produce today's prompt."""
     banned = ", ".join(f"'{p}'" for p in comment_filler_openers()[:8])
+    extra = (COMMENT_AUTHOR_QUESTION_DIRECTIVE
+             if variant == COMMENT_CONTRACT_AUTHOR_QUESTION_VARIANT else "")
     return (
         "\n\nCOMMENT QUALITY CONTRACT — a draft that misses ANY of these is thrown away and "
         "rewritten, so satisfy all of them:\n"
@@ -1786,6 +1812,7 @@ def comment_contract_directive() -> str:
         "LinkedIn's 2026 ranking demotes comments that only validate.\n"
         "6. Use your own words and rhythm every time — never reuse the shape, opening, or phrasing "
         "of a comment you have already left on another post.\n"
+        + extra
     )
 
 

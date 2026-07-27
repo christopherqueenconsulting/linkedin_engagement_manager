@@ -25,10 +25,16 @@ The policy itself is a JSON document in Redis (`lem:routing:policy`), written we
           "feature": "content", "from_tier": "lem-complex", "to_tier": "lem-medium",
           "state": "experiment",             # experiment | adopted | rolled_back | hold
           "cohort_pct": 0.1,                 # share of users routed DOWN (the treatment arm)
+          "arms": {"7": "treatment"},        # PostHog experiment's answer, resolved app-side (#652)
           "generation": 2, "started_on": "2026-07-18", "cooldown_until": null
         }
       }
     }
+
+`arms` is how the PostHog experiment reaches this file without it importing anything: `cost_routing.py`
+resolves the multivariate flag for each active user once per weekly run and writes the answers into
+the document Redis already carries to the router. A user missing from the map falls back to the hash,
+so a PostHog outage changes nothing about who is routed where.
 """
 from __future__ import annotations
 
@@ -55,6 +61,16 @@ ROUTING_STATES = frozenset({STATE_EXPERIMENT, STATE_ADOPTED})
 
 ARM_TREATMENT = "treatment"
 ARM_CONTROL = "control"
+
+ARMS = (ARM_CONTROL, ARM_TREATMENT)
+
+# How a user's arm was decided. `flag` means a PostHog experiment flag decided it and the decision was
+# resolved APP-SIDE and handed to this module inside the policy document (issue #652) — this file is
+# mounted into the LiteLLM container and must stay stdlib-only, so it can never call PostHog itself.
+# `hash` is the original deterministic fallback, and it is what runs whenever the document carries no
+# answer for a user: a PostHog outage must not move traffic.
+ASSIGNMENT_FLAG = "flag"
+ASSIGNMENT_HASH = "hash"
 
 # Placeholder a request carries in `metadata.user_id` when no user owns the call. It exists because
 # LiteLLM's PostHog logger uses that field verbatim as the event's distinct_id (issue #647), and an
@@ -143,11 +159,41 @@ def normalize_policy(policy: Optional[Mapping]) -> dict:
     }
 
 
+def flag_arm(user_id: Optional[Any], bucket: Optional[Mapping]) -> Optional[str]:
+    """The arm a PostHog experiment flag pinned this user to, or None when the document has no usable
+    answer for them (issue #652).
+
+    The map is written into the bucket as `arms: {"<user_id>": "treatment"|"control"}` by
+    `cost_routing.py`, which resolves the multivariate flag app-side once per weekly run. Keys are
+    compared as STRINGS because the document is JSON — an int user id survives a round-trip through
+    Redis as `"7"`, and reading it back as 7 would silently lose every assignment.
+
+    A value that is not one of `ARMS` is None, not a guess: a hand-edited document must fall back to
+    the hash rather than route traffic on a typo."""
+    if not isinstance(bucket, Mapping) or user_id is None:
+        return None
+    arms = bucket.get("arms")
+    if not isinstance(arms, Mapping):
+        return None
+    key = str(user_id).strip()
+    if not key or key.lower() == SYSTEM_USER_ID:
+        return None
+    arm = arms.get(key)
+    return arm if arm in ARMS else None
+
+
 def assign_arm(user_id: Optional[Any], bucket: Optional[Mapping]) -> str:
-    """Which A/B arm a user falls in for this bucket. Deterministic on (bucket id, user), so a user
-    keeps the same arm for the whole experiment — a user flipping arms mid-week would contaminate
-    both sides of the comparison. The bucket id carries a generation counter, so re-running a
-    previously rolled-back experiment reshuffles the cohort instead of re-testing the same users.
+    """Which A/B arm a user falls in for this bucket.
+
+    A PostHog experiment flag decides it when the policy document carries that user's assignment
+    (`flag_arm` above, issue #652), so the cohort is reproducible from the flag and the same split the
+    router applied is the split the weekly analysis reads. Everything else falls back to the original
+    hash, which is what keeps a PostHog outage from moving traffic.
+
+    The hash is deterministic on (bucket id, user), so a user keeps the same arm for the whole
+    experiment — a user flipping arms mid-week would contaminate both sides of the comparison. The
+    bucket id carries a generation counter, so re-running a previously rolled-back experiment
+    reshuffles the cohort instead of re-testing the same users.
 
     Traffic with no user id (system/housekeeping calls) always lands in control: it cannot be
     attributed to a cohort, so it must not silently join the treatment. That includes the
@@ -167,6 +213,13 @@ def assign_arm(user_id: Optional[Any], bucket: Optional[Mapping]) -> str:
         return ARM_CONTROL
     if user_id is None or str(user_id).strip().lower() in ("", SYSTEM_USER_ID):
         return ARM_CONTROL
+    # The flag decides WHO, the optimizer's ramp decides WHETHER: a parked bucket (pct <= 0, checked
+    # above) can never be started by a flag, but inside a running one the flag's answer wins — including
+    # when it keeps a user in control at a cohort the ramp would have swept up, which is exactly the
+    # permanent holdout the §D.3 quality gate needs to stay measurable.
+    pinned = flag_arm(user_id, bucket)
+    if pinned is not None:
+        return pinned
     if pct >= 1:
         return ARM_TREATMENT
     salt = f"{bucket.get('id') or bucket_key(bucket.get('feature'), bucket.get('from_tier'))}|{user_id}"
@@ -178,13 +231,17 @@ def resolve_tier(base_tier: Optional[str], feature: Optional[str], user_id: Opti
                  policy: Optional[Mapping]) -> dict:
     """Apply the cost-aware policy to a tier the complexity rules already chose.
 
-    Returns `{"tier", "base_tier", "arm", "applied", "bucket"}`. Every failure mode — no policy, a
-    disabled policy, an unknown bucket, a bucket that isn't routing, a control-arm user, a target
-    that isn't strictly cheaper — resolves to the base tier untouched. Down-routing is the only
+    Returns `{"tier", "base_tier", "arm", "assignment", "applied", "bucket"}`. Every failure mode — no
+    policy, a disabled policy, an unknown bucket, a bucket that isn't routing, a control-arm user, a
+    target that isn't strictly cheaper — resolves to the base tier untouched. Down-routing is the only
     thing this can do; it can never route a call UP or to a non-tier model.
+
+    `assignment` names what decided the arm (`flag` / `hash`), so a down-route that came from a
+    PostHog experiment is distinguishable in the logs from one that came from the hash fallback — the
+    difference between "the experiment is running" and "PostHog was unreachable".
     """
     result = {"tier": base_tier, "base_tier": base_tier, "arm": ARM_CONTROL,
-              "applied": False, "bucket": None}
+              "assignment": ASSIGNMENT_HASH, "applied": False, "bucket": None}
     if base_tier not in TIER_ORDER:
         return result
     policy = normalize_policy(policy)
@@ -202,6 +259,8 @@ def resolve_tier(base_tier: Optional[str], feature: Optional[str], user_id: Opti
 
     result["bucket"] = key
     result["arm"] = assign_arm(user_id, bucket)
+    if flag_arm(user_id, bucket) is not None:
+        result["assignment"] = ASSIGNMENT_FLAG
     if result["arm"] == ARM_TREATMENT:
         result["tier"] = target
         result["applied"] = True

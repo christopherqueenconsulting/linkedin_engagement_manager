@@ -83,10 +83,33 @@ def record_shipped_variant(user_id: int, post_id: int, combo: dict, *,
                            batch_id: Optional[str] = None, variant_index: Optional[int] = None) -> bool:
     """Record which variant `combo` actually shipped for `post_id` so its outcome can be attributed
     later (issue #396 / D2). Derives the stable `combo_key` and persists via db; returns False on
-    any DB error rather than raising, so a shipping path is never broken by tracking."""
-    return _db_record_shipped_variant(
-        user_id, post_id, combo_key(combo), combo=combo,
+    any DB error rather than raising, so a shipping path is never broken by tracking.
+
+    This is also the exposure moment for the PostHog side of the same experiment (issue #652): the
+    combo that shipped IS the arm, so it is reported as one rather than looked up from a flag, and the
+    post's `post_outcome` event carries the same variant. The homegrown ranking
+    (`post_stats.select_variant_winners`) is untouched — PostHog gets the stats engine, the ranking
+    keeps its recency weighting. The exposure follows the DB write, not the other way round: the arm
+    a `post_outcome` event carries is read back out of `post_variants`, so an exposure for a row that
+    never landed would be an enrolment the metric can never cover."""
+    key = combo_key(combo)
+    recorded = _db_record_shipped_variant(
+        user_id, post_id, key, combo=combo,
         batch_id=batch_id, variant_index=variant_index)
+    if recorded:
+        _track_shipped_variant_exposure(user_id, post_id, key)
+    return recorded
+
+
+def _track_shipped_variant_exposure(user_id: Optional[int], post_id: Optional[int],
+                                    key: str) -> None:
+    """Best-effort PostHog exposure for the shipped variant. Never raises: analytics can lose an
+    exposure, a post cannot lose its variant record."""
+    try:
+        from cqc_lem.utilities.experiments import POST_MEDIA_VARIANT, track_shipped_variant
+        track_shipped_variant(POST_MEDIA_VARIANT, key, user_id=user_id, post_id=post_id)
+    except Exception as e:
+        log_warning("Shipped-variant experiment exposure skipped", exc=e)
 
 
 def _public_url(batch_id: str, file_name: str) -> str:

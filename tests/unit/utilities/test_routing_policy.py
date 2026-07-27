@@ -121,7 +121,8 @@ def test_a_user_id_is_bucketed_the_same_as_an_int_or_a_string():
 def test_resolve_tier_downroutes_treatment_cohort():
     decision = rp.resolve_tier(rp.TIER_COMPLEX, "content", 1, _policy())
     assert decision == {"tier": rp.TIER_MEDIUM, "base_tier": rp.TIER_COMPLEX,
-                        "arm": rp.ARM_TREATMENT, "applied": True, "bucket": "content:lem-complex"}
+                        "arm": rp.ARM_TREATMENT, "assignment": rp.ASSIGNMENT_HASH,
+                        "applied": True, "bucket": "content:lem-complex"}
 
 
 def test_resolve_tier_leaves_control_cohort_alone():
@@ -159,3 +160,94 @@ def test_resolve_tier_matches_the_bucket_by_feature_and_tier():
     assert rp.resolve_tier(rp.TIER_MEDIUM, "comment", 3, policy)["tier"] == rp.TIER_SIMPLE
     assert rp.resolve_tier(rp.TIER_MEDIUM, "content", 3, policy)["tier"] == rp.TIER_MEDIUM
     assert rp.resolve_tier(rp.TIER_COMPLEX, "comment", 3, policy)["tier"] == rp.TIER_COMPLEX
+
+
+# ── flag-decided arms (issue #652) ──
+# The PostHog experiment resolves each user's arm APP-SIDE and hands it to this stdlib-only module
+# inside the policy document, so these tests are the whole contract of that hand-off.
+
+def test_flag_arm_reads_the_document_map_with_string_keys():
+    """The document round-trips through Redis as JSON, so an int user id comes back as "7". Reading
+    it back as 7 would silently lose every assignment."""
+    bucket = _bucket(cohort_pct=0.1, arms={"7": rp.ARM_TREATMENT, "8": rp.ARM_CONTROL})
+    assert rp.flag_arm(7, bucket) == rp.ARM_TREATMENT
+    assert rp.flag_arm("7", bucket) == rp.ARM_TREATMENT
+    assert rp.flag_arm(8, bucket) == rp.ARM_CONTROL
+    assert rp.flag_arm(9, bucket) is None
+
+
+@pytest.mark.parametrize("arms", [None, "junk", {}, {"7": "TREATMENT"}, {"7": None},
+                                  {"7": "experiment"}])
+def test_flag_arm_falls_back_rather_than_guessing(arms):
+    assert rp.flag_arm(7, _bucket(cohort_pct=0.1, arms=arms)) is None
+
+
+def test_flag_arm_ignores_the_analytics_sentinel_and_no_user():
+    bucket = _bucket(cohort_pct=0.1, arms={rp.SYSTEM_USER_ID: rp.ARM_TREATMENT,
+                                           "7": rp.ARM_TREATMENT})
+    assert rp.flag_arm(rp.SYSTEM_USER_ID, bucket) is None
+    assert rp.flag_arm(None, bucket) is None
+    assert rp.flag_arm(7, None) is None
+
+
+def test_flag_assignment_beats_the_hash_in_both_directions():
+    """The flag decides WHO: it can pull a user the hash left in control into the treatment, and it
+    can keep the holdout the ramp would have swept up."""
+    hashed = {u: rp.assign_arm(u, _bucket(cohort_pct=0.5)) for u in range(50)}
+    control_user = next(u for u, arm in hashed.items() if arm == rp.ARM_CONTROL)
+    treated_user = next(u for u, arm in hashed.items() if arm == rp.ARM_TREATMENT)
+    assert rp.assign_arm(control_user, _bucket(cohort_pct=0.5,
+                                               arms={str(control_user): rp.ARM_TREATMENT})) \
+        == rp.ARM_TREATMENT
+    assert rp.assign_arm(treated_user, _bucket(cohort_pct=0.5,
+                                               arms={str(treated_user): rp.ARM_CONTROL})) \
+        == rp.ARM_CONTROL
+    # Even at full cohort the flag's holdout survives — that holdout is what keeps the §D.3 quality
+    # gate measurable after adoption.
+    assert rp.assign_arm(7, _bucket(cohort_pct=1.0, arms={"7": rp.ARM_CONTROL})) == rp.ARM_CONTROL
+
+
+def test_a_parked_bucket_cannot_be_started_by_a_flag():
+    """cohort_pct is the optimizer's ramp and it decides WHETHER: a rolled-back bucket routes nothing
+    no matter what the experiment flag says."""
+    assert rp.assign_arm(7, _bucket(cohort_pct=0.0, arms={"7": rp.ARM_TREATMENT})) == rp.ARM_CONTROL
+
+
+def test_resolve_tier_reports_which_side_assigned_the_arm():
+    flagged = rp.resolve_tier(rp.TIER_COMPLEX, "content", 7,
+                              _policy(_bucket(cohort_pct=0.1, arms={"7": rp.ARM_TREATMENT})))
+    assert flagged["applied"] is True
+    assert flagged["assignment"] == rp.ASSIGNMENT_FLAG
+    unflagged = rp.resolve_tier(rp.TIER_COMPLEX, "content", 7, _policy(_bucket(cohort_pct=1.0)))
+    assert unflagged["assignment"] == rp.ASSIGNMENT_HASH
+
+
+def test_normalize_policy_preserves_the_arms_map():
+    """The router reads the document through normalize_policy — dropping `arms` there would silently
+    revert every flag assignment to the hash."""
+    policy = rp.normalize_policy(_policy(_bucket(cohort_pct=0.1, arms={"7": rp.ARM_TREATMENT})))
+    assert policy["buckets"]["content:lem-complex"]["arms"] == {"7": rp.ARM_TREATMENT}
+
+
+def test_the_decision_core_stays_stdlib_only():
+    """This file is MOUNTED into the LiteLLM container, which has no LEM package and none of LEM's
+    dependencies. #652 moved cohorting to PostHog, which makes `from cqc_lem.utilities.experiments
+    import ...` a tempting one-liner here — it would break routing in production the moment the proxy
+    reloaded the hook, and nothing else in CI would notice."""
+    import ast
+    import sys
+    from pathlib import Path
+
+    tree = ast.parse(Path(rp.__file__).read_text())
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            imported.add(node.module.split(".")[0])
+        elif isinstance(node, ast.ImportFrom) and node.level:
+            raise AssertionError("routing_policy.py must not use relative imports — it is mounted "
+                                 "outside the package")
+    assert "cqc_lem" not in imported
+    assert imported <= set(sys.stdlib_module_names), (
+        f"non-stdlib imports in routing_policy.py: {imported - set(sys.stdlib_module_names)}")

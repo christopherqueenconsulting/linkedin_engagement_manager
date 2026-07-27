@@ -395,3 +395,54 @@ class TestRecentCommentHistoryQuery:
         sql, params = cursor.execute.call_args.args
         assert "FROM logs" in sql and "ORDER BY id DESC" in sql
         assert params == (7, LogActionType.COMMENT.value, LogResultType.SUCCESS.value, 25)
+
+
+class TestPromptExperiment:
+    """The pilot LLM prompt experiment (issue #652): the contract's closing ask is the variable, and
+    the six graded rules are deliberately NOT — an arm that loosened one would change what "passes
+    the gate" means and the two arms would stop being comparable."""
+
+    _RULE = "END ON A QUESTION ONLY THIS AUTHOR COULD ANSWER"
+
+    def test_treatment_adds_the_author_question_rule(self):
+        text = fw.comment_contract_directive(fw.COMMENT_CONTRACT_AUTHOR_QUESTION_VARIANT)
+        assert self._RULE in text
+        # The graded rules are untouched, so both arms face the same deterministic gate.
+        for rule in ("REFERENCE A SPECIFIC CLAIM", "WRITE FOR THE POST'S READERS",
+                     "NEVER open with validation filler"):
+            assert rule in text and rule in fw.comment_contract_directive()
+
+    @pytest.mark.parametrize("variant", [None, "", "control", "some-unknown-arm"])
+    def test_every_other_arm_is_the_control_contract(self, variant):
+        assert fw.comment_contract_directive(variant) == fw.comment_contract_directive()
+
+    def test_the_users_arm_reaches_the_feed_comment_prompt(self):
+        from cqc_lem.utilities.ai import ai_helper
+        with patch(f"{_AI}._call_llm", return_value=_resp(_GOOD)) as m, \
+             patch("cqc_lem.utilities.experiments.resolve_variant",
+                   return_value=fw.COMMENT_CONTRACT_AUTHOR_QUESTION_VARIANT) as resolve:
+            ai_helper.generate_ai_response(_POST, _profile(), user_id=7)
+        assert self._RULE in m.call_args.kwargs["messages"][0]["content"]
+        assert resolve.call_args.args[1] == 7
+
+    def test_a_broken_experiment_plane_still_writes_the_control_contract(self):
+        from cqc_lem.utilities.ai import ai_helper
+        with patch(f"{_AI}._call_llm", return_value=_resp(_GOOD)) as m, \
+             patch("cqc_lem.utilities.experiments.resolve_variant",
+                   side_effect=RuntimeError("posthog down")), \
+             patch(f"{_AI}.log_warning") as warn:
+            out = ai_helper.generate_ai_response(_POST, _profile(), user_id=7)
+        assert out == _GOOD
+        assert "COMMENT QUALITY CONTRACT" in m.call_args.kwargs["messages"][0]["content"]
+        assert self._RULE not in m.call_args.kwargs["messages"][0]["content"]
+        assert warn.called
+
+    def test_replying_to_a_comment_is_not_part_of_the_experiment(self):
+        """A reply has its own acknowledge-and-answer contract, and the #628 sweep never measures it,
+        so enrolling it would only add exposures the metric can't cover."""
+        from cqc_lem.utilities.ai import ai_helper
+        with patch(f"{_AI}._call_llm", return_value=_resp("Sure — here is the number.")), \
+             patch("cqc_lem.utilities.experiments.resolve_variant") as resolve:
+            ai_helper.generate_ai_response(_POST, _profile(), post_comment="what number?",
+                                           user_id=7)
+        resolve.assert_not_called()

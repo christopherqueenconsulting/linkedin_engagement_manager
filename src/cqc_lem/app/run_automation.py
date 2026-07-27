@@ -35,6 +35,7 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     get_newsletter_settings, mark_newsletter_published, record_newsletter_subscriber_stat, \
     get_newsletter_edition, mark_edition_published, mark_edition_failed, \
     upsert_user_group, get_enabled_group_ids, record_post_stats, get_recent_posted_post_ids, \
+    get_shipped_variant_keys, \
     get_lead_magnet_settings, has_received_lead_magnet, record_lead_magnet_sent, \
     LogResultType, has_user_commented_on_post_url, get_post_url_from_log_for_user, get_post_message_from_log_for_user, \
     claim_post_for_comment, mark_post_commented, mark_post_reacted, release_post_claim, has_commented_post, \
@@ -2119,6 +2120,9 @@ def auto_scrape_post_stats(self, user_id: int):
     post_ids = get_recent_posted_post_ids(user_id)
     if not post_ids:
         return "No recent posts to scrape"
+    # One query for the whole sweep, so every outcome event can name the A/B variant its post shipped
+    # (issues #396/#652) without a lookup inside the Selenium loop.
+    shipped_variants = get_shipped_variant_keys(user_id)
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Post Stats",
                                                                    measurement_only=True)
@@ -2150,7 +2154,8 @@ def auto_scrape_post_stats(self, user_id: int):
             track_post_outcome(post_id=pid, reactions=counts.get("reactions", 0),
                                comments=counts.get("comments", 0), reposts=counts.get("reposts") or 0,
                                impressions=counts.get("impressions") or None,
-                               saves=counts.get("saves") or 0, user_id=user_id)
+                               saves=counts.get("saves") or 0, user_id=user_id,
+                               variant_key=shipped_variants.get(pid))
             scraped += 1
         return f"Scraped stats for {scraped} post(s)"
     finally:

@@ -129,8 +129,10 @@ response = client.chat.completions.create(model="lem-simple", messages=[...])
 can additionally route a tier ONE step down for the treatment cohort of an active cost/quality
 experiment. `routing_policy.py` is the shared decision core — the app imports it, and docker-compose
 mounts that same file into the LiteLLM container — so it must stay **stdlib-only** (no `cqc_lem.*`
-imports). Off unless BOTH `COST_ROUTING_ENABLED` and `COST_AWARE_ROUTING_ENABLED` are set. See
-`docs/cost-performance-margin-plan.md` §D.1.1.
+imports). Off unless BOTH `COST_ROUTING_ENABLED` and `COST_AWARE_ROUTING_ENABLED` are set. Since
+issue #652 the treatment cohort comes from a PostHog experiment flag resolved app-side and handed to
+the router in the policy document's `arms` map (the hash stays as the fallback) — see
+`docs/experiments.md`. Also `docs/cost-performance-margin-plan.md` §D.1.1.
 
 See `ai_helper.py` for the per-function model assignment.
 
@@ -325,6 +327,50 @@ properties (`celery_task.state = 'FAILURE'`) rather than booleans: a boolean fil
 nothing yields an alert that never fires. Money tiles read `$ai_generation`, never `llm_call`.
 `mark_rate_limited()` emits `rate_limit_trip` (issue #650) because the breaker's WARNING log never
 reaches PostHog at the default `POSTHOG_LOG_LEVEL`.
+
+### Experiments (`utilities/experiments.py`, issue #652)
+
+LEM hand-rolled experimentation twice — the cost/quality down-routing cohort and the #396 media A/B
+harness — and neither could say whether a difference was real, or render anywhere a human looks. This
+module is the **adapter onto PostHog Experiments**, NOT a third implementation: the homegrown loops
+keep running, PostHog gets the arms, the exposures and the outcome labels. Full posture:
+`docs/experiments.md`.
+
+**An unresolvable experiment is the CONTROL arm** — no key, no flag, inconclusive evaluation,
+`EXPERIMENTS_ENABLED=false`, SDK raises. There is deliberately NO env fallback per experiment (a
+toggle has a default worth honouring, an arm does not), and `_raw_variant()` keeps "PostHog said
+control" apart from "PostHog said nothing" so `experiment_properties()` never stamps
+`$feature/x=control` on a metric event from someone who was never enrolled — a fabricated control arm
+makes a readout look populated. Assignment reuses `flags.py`'s ONE local-evaluation bootstrap (no
+second poller, zero network calls per lookup), so every experiment flag must use rollout-percentage /
+distinct-ID conditions only. Exposure is `$feature_flag_called` — PostHog's own event name and
+properties, not ours — emitted explicitly (flags.py suppresses it for hot toggles) and deduped per
+(experiment, person, arm) per process.
+
+Three registered experiments. **`cost-routing-arm`**: the arm is resolved app-side and written into
+each routing bucket as `arms: {"<user_id>": "treatment"}` INSIDE the policy document Redis already
+carries to the LiteLLM router — `routing_policy.py` is mounted into that container and must stay
+stdlib-only, so the decision is handed to it, never imported by it. `flag_arm()` reads the map,
+`assign_arm()` falls back to the original hash for anyone PostHog has no answer for, and a run that
+could not ASK PostHog at all carries the PREVIOUS document's map forward rather than wiping it
+(`resolve_cohort()` returns None for "couldn't ask" vs `{}` for "PostHog enrolled nobody") — so an
+outage moves no traffic instead of re-splitting a live cohort under the hash for a week.
+`resolve_tier()` reports `assignment` so a live-experiment down-route is
+distinguishable from a fallback one. The flag decides WHO, `cohort_pct` decides WHETHER: a parked
+bucket can never be started by a flag, and the arms map is applied AFTER the weekly evaluation because
+the window being judged was routed under the PREVIOUS document's arms. **`comment-contract-prompt`**:
+the pilot LLM prompt experiment — the #617 contract's closing ask, measured on author-reply rate from
+#628's sweep, scoped to FRESH FEED comments only (the seed/second-wave/reply surfaces are never
+measured by that sweep) and with the six deterministically-graded rules IDENTICAL in both arms, or
+"passes the gate" would mean two different things. **`post-media-variant`**: the #396 adapter, whose
+arms are data (the combo that shipped) rather than a flag — `select_variant_winners` is untouched.
+
+`scripts/posthog_experiments.py` provisions the multivariate flags + experiment records
+(`--print-specs` / dry-run / `--apply` / `--rollout KEY=PCT`). It NEVER resets an existing flag's
+rollout: PostHog owns the ramp once an experiment runs, and an `--apply` that reverted it would
+re-cohort a live experiment. Read a readout honestly — at current volume everything here is
+underpowered by design (the small-sample caveat is in the doc), and never re-roll a running
+experiment's variants: that re-cohorts people and invalidates the attribution already collected.
 
 ### Content-quality telemetry (`utilities/content_quality.py`, issue #630)
 

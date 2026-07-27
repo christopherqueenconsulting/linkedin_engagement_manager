@@ -118,6 +118,7 @@ class TestScrapeRecordsImpressions:
              patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
              patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://x/urn"), \
              patch(f"{_RA}._post_social_counts", return_value=counts), \
+             patch(f"{_RA}.get_shipped_variant_keys", return_value={}), \
              patch(f"{_RA}.record_post_stats") as rec, patch(f"{_RA}.quit_gracefully"):
             from cqc_lem.app.run_automation import auto_scrape_post_stats
             auto_scrape_post_stats.run(user_id=1)
@@ -125,6 +126,27 @@ class TestScrapeRecordsImpressions:
         assert rec.call_args.kwargs.get("impressions") == 153
         assert rec.call_args.kwargs.get("reposts") == 7
         assert rec.call_args.kwargs.get("saves") == 4
+
+    def test_outcome_event_carries_the_variant_the_post_shipped(self):
+        """Issue #652: the shipped A/B variant is looked up ONCE per sweep, not per post inside the
+        Selenium loop, and rides onto each post's outcome event as its experiment arm."""
+        counts = {"reactions": 5, "comments": 2, "reposts": 0, "impressions": 100, "saves": 0}
+        with patch(f"{_RA}.time.sleep"), \
+             patch(f"{_RA}.get_recent_posted_post_ids", return_value=[9, 10]), \
+             patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://x/urn"), \
+             patch(f"{_RA}._post_social_counts", return_value=counts), \
+             patch(f"{_RA}._post_analytics_counts", return_value={}), \
+             patch(f"{_RA}.get_shipped_variant_keys", return_value={9: "flux|gen4|1:1"}) as keys, \
+             patch(f"{_RA}.record_post_stats"), \
+             patch(f"{_RA}.track_post_outcome") as outcome, patch(f"{_RA}.quit_gracefully"):
+            from cqc_lem.app.run_automation import auto_scrape_post_stats
+            auto_scrape_post_stats.run(user_id=1)
+        keys.assert_called_once_with(1)
+        variants = {call.kwargs["post_id"]: call.kwargs["variant_key"]
+                    for call in outcome.call_args_list}
+        # A post with no recorded variant is None, never a made-up arm.
+        assert variants == {9: "flux|gen4|1:1", 10: None}
 
     def test_analytics_page_signals_merge_over_detail_page(self):
         detail = {"reactions": 5, "comments": 2, "reposts": 0, "impressions": 0, "saves": 0}
@@ -135,6 +157,7 @@ class TestScrapeRecordsImpressions:
              patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://x/urn"), \
              patch(f"{_RA}._post_social_counts", return_value=detail), \
              patch(f"{_RA}._post_analytics_counts", return_value=analytics), \
+             patch(f"{_RA}.get_shipped_variant_keys", return_value={}), \
              patch(f"{_RA}.record_post_stats") as rec, patch(f"{_RA}.quit_gracefully"):
             from cqc_lem.app.run_automation import auto_scrape_post_stats
             auto_scrape_post_stats.run(user_id=1)

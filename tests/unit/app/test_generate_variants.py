@@ -167,3 +167,34 @@ class TestRecordShippedVariant:
         assert ok is True
         rec.assert_called_once_with(1, 99, "m|gen4_turbo|1:1|seed=7", combo=combo,
                                     batch_id="b1", variant_index=2)
+
+    def test_reports_the_shipped_combo_as_a_posthog_exposure(self):
+        """The #396 harness adapter (issue #652): the combo that shipped IS the arm, so PostHog can
+        read post_outcome per variant beside select_variant_winners' own ranking."""
+        with patch("cqc_lem.app.generate_variants._db_record_shipped_variant", return_value=True), \
+             patch("cqc_lem.utilities.experiments.track_shipped_variant") as exposure:
+            from cqc_lem.app.generate_variants import record_shipped_variant
+            record_shipped_variant(1, 99, {"image_model": "m", "video_model": "gen4_turbo",
+                                           "ratio": "1:1"})
+        assert exposure.call_args.args == ("post-media-variant", "m|gen4_turbo|1:1")
+        assert exposure.call_args.kwargs == {"user_id": 1, "post_id": 99}
+
+    def test_a_failed_db_write_reports_no_exposure(self):
+        """post_outcome reads the arm back out of post_variants, so an exposure for a row that never
+        landed would be an enrolment the metric can never cover."""
+        with patch("cqc_lem.app.generate_variants._db_record_shipped_variant", return_value=False), \
+             patch("cqc_lem.utilities.experiments.track_shipped_variant") as exposure:
+            from cqc_lem.app.generate_variants import record_shipped_variant
+            assert record_shipped_variant(1, 99, {"image_model": "m"}) is False
+        exposure.assert_not_called()
+
+    def test_a_failed_exposure_never_costs_the_variant_record(self):
+        with patch("cqc_lem.app.generate_variants._db_record_shipped_variant",
+                   return_value=True) as rec, \
+             patch("cqc_lem.utilities.experiments.track_shipped_variant",
+                   side_effect=RuntimeError("posthog down")), \
+             patch("cqc_lem.app.generate_variants.log_warning") as warn:
+            from cqc_lem.app.generate_variants import record_shipped_variant
+            assert record_shipped_variant(1, 99, {"image_model": "m"}) is True
+        rec.assert_called_once()
+        assert warn.called
