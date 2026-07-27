@@ -88,8 +88,8 @@ Staged work (research → implementation, or a `2a → 2b → 2c` build order) i
 said "Phase 2 lands in a follow-up PR" — the issue goes closed, drops off every `agent:ready` and
 `needs-human` query, and the remaining work becomes invisible. That is not hypothetical: **#548**
 (avatar likeness/preview/guardrails), **#568** (encrypt LinkedIn secrets at rest, passkeys) and the
-stretch half of **#647** all shipped phase one and lost the rest this way; they had to be
-re-discovered by an audit and re-filed months of pipeline-time later as #744, #745 and #746.
+stretch half of **#647** all shipped phase one and lost the rest this way; none of it was noticed
+until an audit of every closed issue re-discovered it and re-filed it as #744, #745 and #746.
 
 **The rule: an issue may be closed only when ALL of its acceptance criteria are met.**
 
@@ -117,6 +117,14 @@ The pipeline enforces this at the merge gate: a PR whose closed issue declares a
 linked follow-up is **not merged**. It gets a `🧩 phase-guard` comment, `needs-human` +
 `agent:blocked`, and the owner is assigned. Unchecked boxes alone only produce a warning comment —
 so tick the boxes you actually satisfied, and don't leave a phase living in prose.
+
+Clearing the hold is a two-part manual step — the guard **strips `agent:working`**, and a PR without
+it is invisible to the merge loop no matter how you fixed the scope. So do one of the two above,
+then put the PR back in the flow:
+
+```bash
+gh pr edit <N> --add-label agent:working --remove-label needs-human --remove-label agent:blocked
+```
 
 ## Decision Comments — how to answer when something waits on you
 
@@ -175,9 +183,11 @@ gh issue list --label agent:ready --state open --limit 200
 gh issue list --state open --limit 200 --json number,title,labels \
   --jq '.[] | select((.labels|map(.name)) as $l | ([$l[] | select(startswith("agent:") or . == "needs-human")] | length) == 0) | "#\(.number) \(.title)"'
 
-# Closed issues that may have dropped a later phase (audit the "Phased work" rule)
+# Closed issues that may have dropped a later phase (audit the "Phased work" rule).
+# Markers match the merge gate's own list PLUS "stretch" — #647 lost its stretch half and says
+# nothing about a "phase", so a narrower regex reports a false all-clear on exactly that case.
 gh issue list --state closed --limit 300 --json number,title,body \
-  --jq '.[] | select((.body // "") | test("(?i)phase [2-9]|part [2-9]|next phase|follow-up (pr|issue)|deferred to")) | "#\(.number) \(.title)"'
+  --jq '.[] | select((.body // "") | test("(?i)phase [2-9]|part [2-9]|next phase|later phase|follow-up (pr|issue)|lands? in a follow-up|deferred to|out of scope for this issue|will be handled in|tracked separately|stretch")) | "#\(.number) \(.title)"'
 
 # Put an issue into the flow
 gh issue edit <N> --add-label agent:ready --add-label priority:medium
