@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.102.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.101.1...v0.102.0) (2026-07-27)
+
+
+### Features
+
+* **models:** benchmark cron-detected model candidates against tier contracts (closes [#721](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/721)) ([cb9a172](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/cb9a1727ee2e0caeb8dddb7649faefe9362e4a2a))
+* **models:** benchmark cron-detected model candidates against tier contracts (closes [#721](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/721)) ([f25907e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f25907e2ceb516ec57f3e4fc103c7021ec1dbe7f))
+* **ops:** scan Ollama Cloud retirements + new models before they bite (closes [#716](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/716)) ([55e1c33](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/55e1c3386bbfb368ec4c7cbf2033fdb9caca96a4))
+* **ops:** scan Ollama Cloud retirements + new models before they bite (closes [#716](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/716)) ([18731fc](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/18731fc45ecda395a3726cbd31da191461e5a81e))
+
+
+### Bug Fixes
+
+* **content:** bound pull-forward on every generated post, drop stale empty reasons ([bf9fc3a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bf9fc3a09c2d58e9fb9ecda20b2173471c41a81e))
+* **content:** explain an empty Generate run and pull planned posts forward ([d17e4be](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d17e4be3fbfe7b264932f9826c9e64423cbd575c)), closes [#719](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/719)
+* **content:** explain an empty Generate run and pull planned posts forward (closes [#719](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/719)) ([6df057a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6df057a04c6801c32f28fc0f53d20e4fb6ae81f8))
+* **feedback:** anchor the repair parse to our own provenance block ([088223a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/088223a66d558f0ddf5628c70b09a0bc1fee0e41))
+* **feedback:** repair auto-filed issues whose labels never landed (closes [#718](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/718)) ([8846ab1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8846ab1f5f0a8ba00cc97e01d043b971d12dbe2d))
+* **feedback:** repair auto-filed issues whose labels never landed (closes [#718](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/718)) ([a79983f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a79983f1b0954de41458795f1d8f2461417074e0))
+* **infra:** warn when the appreciation-DM window drifts off its pinned midpoint ([6fe7107](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6fe7107f4b48868ae8552dfe76fcdebf6b35f772))
+* **models:** keep the benchmark leaderboard and judge evidence honest ([70e81b3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/70e81b3f3ebd66188cb5a8fc4ff6d185048dc06a))
+* **ops:** validate remote model names + file catalog issues from the plan already read ([23ec297](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/23ec2976383023cfaea4659788a0bbc7d626107a))
+
+
+### Performance Improvements
+
+* **infra:** open the appreciation-DM window half its width early (closes [#696](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/696)) ([4bdbfa5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4bdbfa50028077a9f4b5c3f662492329504a9277))
+* **infra:** open the appreciation-DM window half its width early (closes [#696](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/696)) ([b06adc5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b06adc5d4efb4bf9ff0051797b491408acdd89e5))
+
+
+### Documentation
+
+* agent workflow playbook — issue/PR labels, Decision Comments, review economy ([075e3c0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/075e3c0cfda64156fbf391bf014337bc2d8c6e2d))
+* agent workflow playbook (issue/PR labels, Decision Comments, review economy) ([b392aa0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b392aa020fc3cc9abe9de69f5d08fffc7c30d6eb))
+* C1 confirmed live — API document posts render as document cards (closes [#644](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/644)) ([766b1ab](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/766b1abc4b463a2caaab4469e421b27389173c94))
+* C1 confirmed live — API document posts render as document cards (closes [#644](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/644)) ([d5c1b4f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d5c1b4f548fd3ee155581e089706086e91160a92))
+* correct playbook claims that silently no-op (un-park, fork PRs, model label) ([c5214a3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c5214a35338fd6a47a9816e5d7f9745f8378da21))
+* remove the stale "C1 unconfirmed" passages the confirmation left behind ([e8caaa9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e8caaa92032106f51c5f6d4dc59f944b0a99aaf6))
+
 ## [0.101.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.101.0...v0.101.1) (2026-07-27)
 
 
