@@ -351,8 +351,11 @@ Three registered experiments. **`cost-routing-arm`**: the arm is resolved app-si
 each routing bucket as `arms: {"<user_id>": "treatment"}` INSIDE the policy document Redis already
 carries to the LiteLLM router — `routing_policy.py` is mounted into that container and must stay
 stdlib-only, so the decision is handed to it, never imported by it. `flag_arm()` reads the map,
-`assign_arm()` falls back to the original hash for anyone PostHog has no answer for (a PostHog outage
-moves no traffic), and `resolve_tier()` reports `assignment` so a live-experiment down-route is
+`assign_arm()` falls back to the original hash for anyone PostHog has no answer for, and a run that
+could not ASK PostHog at all carries the PREVIOUS document's map forward rather than wiping it
+(`resolve_cohort()` returns None for "couldn't ask" vs `{}` for "PostHog enrolled nobody") — so an
+outage moves no traffic instead of re-splitting a live cohort under the hash for a week.
+`resolve_tier()` reports `assignment` so a live-experiment down-route is
 distinguishable from a fallback one. The flag decides WHO, `cohort_pct` decides WHETHER: a parked
 bucket can never be started by a flag, and the arms map is applied AFTER the weekly evaluation because
 the window being judged was routed under the PREVIOUS document's arms. **`comment-contract-prompt`**:

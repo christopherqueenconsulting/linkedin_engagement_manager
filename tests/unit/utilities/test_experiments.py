@@ -199,6 +199,13 @@ def test_experiment_properties_drops_an_empty_shipped_arm():
     assert ex.experiment_properties(7, extra={ex.POST_MEDIA_VARIANT: None}) == {}
 
 
+def test_the_kill_switch_also_strips_a_shipped_arm_label(monkeypatch):
+    """A shipped arm has no flag to read, so it would otherwise sail past the kill switch and leave
+    a switched-off experiment rendering a populated property breakdown."""
+    monkeypatch.setenv("EXPERIMENTS_ENABLED", "false")
+    assert ex.experiment_properties(7, extra={ex.POST_MEDIA_VARIANT: "flux|gen4|1:1"}) == {}
+
+
 # ── exposure emission ──
 
 def test_exposure_is_emitted_once_per_person_and_arm():

@@ -89,12 +89,16 @@ def record_shipped_variant(user_id: int, post_id: int, combo: dict, *,
     combo that shipped IS the arm, so it is reported as one rather than looked up from a flag, and the
     post's `post_outcome` event carries the same variant. The homegrown ranking
     (`post_stats.select_variant_winners`) is untouched — PostHog gets the stats engine, the ranking
-    keeps its recency weighting."""
+    keeps its recency weighting. The exposure follows the DB write, not the other way round: the arm
+    a `post_outcome` event carries is read back out of `post_variants`, so an exposure for a row that
+    never landed would be an enrolment the metric can never cover."""
     key = combo_key(combo)
-    _track_shipped_variant_exposure(user_id, post_id, key)
-    return _db_record_shipped_variant(
+    recorded = _db_record_shipped_variant(
         user_id, post_id, key, combo=combo,
         batch_id=batch_id, variant_index=variant_index)
+    if recorded:
+        _track_shipped_variant_exposure(user_id, post_id, key)
+    return recorded
 
 
 def _track_shipped_variant_exposure(user_id: Optional[int], post_id: Optional[int],

@@ -179,6 +179,15 @@ class TestRecordShippedVariant:
         assert exposure.call_args.args == ("post-media-variant", "m|gen4_turbo|1:1")
         assert exposure.call_args.kwargs == {"user_id": 1, "post_id": 99}
 
+    def test_a_failed_db_write_reports_no_exposure(self):
+        """post_outcome reads the arm back out of post_variants, so an exposure for a row that never
+        landed would be an enrolment the metric can never cover."""
+        with patch("cqc_lem.app.generate_variants._db_record_shipped_variant", return_value=False), \
+             patch("cqc_lem.utilities.experiments.track_shipped_variant") as exposure:
+            from cqc_lem.app.generate_variants import record_shipped_variant
+            assert record_shipped_variant(1, 99, {"image_model": "m"}) is False
+        exposure.assert_not_called()
+
     def test_a_failed_exposure_never_costs_the_variant_record(self):
         with patch("cqc_lem.app.generate_variants._db_record_shipped_variant",
                    return_value=True) as rec, \

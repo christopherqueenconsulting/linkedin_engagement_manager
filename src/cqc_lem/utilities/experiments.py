@@ -322,7 +322,11 @@ def experiment_properties(user_id: Optional[int] = None,
     an unenrolled person would inflate the control arm with traffic that was never in the test.
 
     `extra` carries arms the caller already knows (a shipped media variant), which have no flag to
-    read — those are slugified here so the caller never has to know PostHog's variant-key rules."""
+    read — those are slugified here so the caller never has to know PostHog's variant-key rules. The
+    kill switch covers those too: `EXPERIMENTS_ENABLED=false` must mean NO event carries an arm, or
+    a switched-off experiment still renders a populated property breakdown."""
+    if not enabled():
+        return {}
     props = {}
     for key in keys or ():
         variant = _raw_variant(key, user_id)

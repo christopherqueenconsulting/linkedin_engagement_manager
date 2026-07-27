@@ -96,6 +96,14 @@ Two properties fall out of that ordering, both intentional:
 The map is capped at `ARMS_MAX_USERS` (500) and a truncation is logged — the users left out are
 silently hash-assigned, which is not something to discover from an empty readout.
 
+**An outage carries the cohort forward; an ended experiment clears it.** `resolve_cohort()` answers
+`None` when it could not ASK PostHog (no experiment plane, the lookup raised, routing parked) and
+`{}` when it asked and PostHog enrolled nobody. Only the second clears the map. The per-user
+fallback in `assign_arm` is not enough on its own here: wiping the whole map on an unreachable
+PostHog would re-split every enrolled user under the hash for a week — a *different* split,
+mid-experiment — which is the arm flip `assign_arm`'s own docstring exists to prevent, and it would
+contaminate both sides of the comparison the next weekly run reads.
+
 **Ramping.** PostHog owns the rollout once the experiment is running. `scripts/posthog_experiments.py`
 never resets an existing flag's percentage (an `--apply` that reverted a 50% ramp to the spec's 10%
 start would re-cohort a live experiment); move it deliberately:

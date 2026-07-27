@@ -438,6 +438,25 @@ def test_apply_arms_clears_a_stale_map_when_posthog_answered_for_nobody():
     assert cleared["assignment"] == rp.ASSIGNMENT_HASH
 
 
+def test_apply_arms_carries_the_cohort_forward_when_posthog_could_not_be_asked():
+    """`None` is "we could not ask", not "nobody is enrolled" — wiping the map would send a live
+    cohort back to the hash for a week, which is the mid-experiment arm flip assign_arm exists to
+    prevent."""
+    kept = cr.apply_arms(_bucket(arms={"7": rp.ARM_TREATMENT}), None)
+    assert kept["arms"] == {"7": rp.ARM_TREATMENT}
+    assert kept["assignment"] == rp.ASSIGNMENT_FLAG
+
+
+def test_carried_arms_unions_only_the_buckets_that_route():
+    buckets = {
+        "content:lem-complex": _bucket(state=rp.STATE_EXPERIMENT, arms={"7": rp.ARM_TREATMENT}),
+        "comment:lem-medium": _bucket(state=rp.STATE_ADOPTED, arms={"8": rp.ARM_CONTROL}),
+        "video:lem-complex": _bucket(state=rp.STATE_ROLLED_BACK, arms={"9": rp.ARM_TREATMENT}),
+    }
+    assert cr.carried_arms(buckets) == {"7": rp.ARM_TREATMENT, "8": rp.ARM_CONTROL}
+    assert cr.carried_arms(None) == {}
+
+
 def test_arms_summary_separates_nobody_enrolled_from_nobody_treated():
     assert cr.arms_summary({})["treatment_share"] is None
     assert cr.arms_summary({})["assignment"] == rp.ASSIGNMENT_HASH
@@ -477,6 +496,53 @@ def test_build_routing_policy_judges_the_window_on_the_arms_that_were_in_force()
         str(u): rp.ARM_CONTROL for u in range(5)}
 
 
+def test_a_posthog_outage_moves_nobody_between_arms():
+    """The whole point of the hash fallback: an unreachable PostHog must leave the cohort exactly
+    where it was, not re-split it under the hash for a week."""
+    enrolled = {str(u): rp.ARM_TREATMENT for u in range(5)}
+    previous = {"version": 1, "enabled": True,
+                "buckets": {"content:lem-complex": _bucket(cohort_pct=0.1,
+                                                           arms=dict(enrolled))}}
+    result = cr.build_routing_policy(previous, [], TODAY, enabled=True, arms=None)
+    bucket = result["policy"]["buckets"]["content:lem-complex"]
+    assert bucket["arms"] == enrolled
+    assert bucket["assignment"] == rp.ASSIGNMENT_FLAG
+    assert result["cohort"]["enrolled"] == 5
+    # ...and the users stay in the arm they were in, rather than being re-drawn by the 10% hash.
+    assert all(rp.assign_arm(int(u), bucket) == rp.ARM_TREATMENT for u in enrolled)
+
+
+def test_an_ended_experiment_does_clear_the_cohort():
+    """`{}` is a real answer — PostHog enrolled nobody, so the hash split takes over again."""
+    previous = {"version": 1, "enabled": True,
+                "buckets": {"content:lem-complex": _bucket(cohort_pct=0.1,
+                                                           arms={"7": rp.ARM_TREATMENT})}}
+    result = cr.build_routing_policy(previous, [], TODAY, enabled=True, arms={})
+    bucket = result["policy"]["buckets"]["content:lem-complex"]
+    assert "arms" not in bucket and bucket["assignment"] == rp.ASSIGNMENT_HASH
+    assert result["cohort"]["assignment"] == rp.ASSIGNMENT_HASH
+
+
+def test_resolve_cohort_reports_none_when_it_could_not_ask():
+    with patch("cqc_lem.utilities.experiments.enrollment_available", return_value=False):
+        assert cr.resolve_cohort(_rows(1, 10)) is None
+    with patch("cqc_lem.utilities.experiments.enrollment_available", return_value=True), \
+         patch.object(cr, "cohort_user_ids", return_value=[]):
+        assert cr.resolve_cohort() is None
+
+
+def test_collect_routing_report_does_not_wipe_the_cohort_while_routing_is_off():
+    previous = {"version": 1, "enabled": True,
+                "buckets": {"content:lem-complex": _bucket(cohort_pct=0.1,
+                                                           arms={"7": rp.ARM_TREATMENT})}}
+    with patch.object(cr, "collect_quality_observations", return_value=[]), \
+         patch.object(cr, "resolve_cohort") as resolve, \
+         patch.object(cr, "load_policy", return_value=previous):
+        report = cr.collect_routing_report(days=7, today=TODAY, enabled=False)
+    resolve.assert_not_called()
+    assert report["policy"]["buckets"]["content:lem-complex"]["arms"] == {"7": rp.ARM_TREATMENT}
+
+
 def test_cohort_user_ids_unions_active_users_with_the_observed_window():
     with patch("cqc_lem.utilities.db.get_active_user_ids", return_value=[1, 2]):
         ids = cr.cohort_user_ids([{"user_id": 2}, {"user_id": 9}, {"user_id": None}])
@@ -493,7 +559,7 @@ def test_cohort_user_ids_survives_an_unreadable_user_table():
 def test_resolve_cohort_never_scans_users_when_posthog_cannot_enrol():
     with patch("cqc_lem.utilities.experiments.enrollment_available", return_value=False), \
          patch.object(cr, "cohort_user_ids") as listed:
-        assert cr.resolve_cohort(_rows(1, 10)) == {}
+        assert cr.resolve_cohort(_rows(1, 10)) is None
     listed.assert_not_called()
 
 
@@ -502,7 +568,7 @@ def test_resolve_cohort_falls_back_to_hash_cohorting_on_failure():
          patch.object(cr, "cohort_user_ids", return_value=[1]), \
          patch("cqc_lem.utilities.experiments.assignments", side_effect=RuntimeError("boom")), \
          patch.object(cr, "log_warning") as warned:
-        assert cr.resolve_cohort() == {}
+        assert cr.resolve_cohort() is None
     warned.assert_called_once()
 
 

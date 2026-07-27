@@ -330,12 +330,31 @@ def normalize_arms(arms: Optional[Mapping]) -> dict:
     return kept
 
 
+def carried_arms(buckets: Optional[Mapping]) -> dict:
+    """The cohort the PREVIOUS document already carries, unioned across its routing buckets.
+
+    This is what a run that could not ASK PostHog falls back to. Wiping the map instead would send
+    every enrolled user back to the hash for a week — a different split, mid-experiment — which is
+    the exact arm-flipping `assign_arm` exists to prevent. "PostHog was unreachable" and "PostHog
+    enrolled nobody" are different facts here for the same reason `_raw_variant` keeps them apart."""
+    carried: dict = {}
+    for bucket in (buckets or {}).values():
+        if isinstance(bucket, Mapping) and bucket.get("state") in ROUTING_STATES:
+            carried.update(normalize_arms(bucket.get("arms")))
+    return carried
+
+
 def apply_arms(bucket: Mapping, arms: Optional[Mapping]) -> dict:
     """Stamp the flag's cohort onto one bucket. A bucket that isn't routing carries no map — it moves
-    no traffic, so an assignment on it would only be stale data the next run has to reason about."""
+    no traffic, so an assignment on it would only be stale data the next run has to reason about.
+
+    `arms=None` means the run could not ask PostHog at all, so the bucket keeps whatever cohort it
+    already carried; `{}` means PostHog answered for nobody (the experiment is over, or the flag is
+    at 0%) and the map is cleared back to hash assignment."""
     updated = dict(bucket)
     routing = updated.get("state") in ROUTING_STATES
-    resolved = normalize_arms(arms) if routing else {}
+    source = updated.get("arms") if arms is None else arms
+    resolved = normalize_arms(source) if routing else {}
     if resolved:
         updated["arms"] = resolved
         updated["assignment"] = ASSIGNMENT_FLAG
@@ -439,7 +458,10 @@ def build_routing_policy(previous: Optional[Mapping], observations: Optional[Seq
     `arms` is the PostHog experiment's cohort ({user_id: arm}, resolved by `collect_routing_report`).
     It is applied AFTER the evaluation loop on purpose: the window being judged was routed under the
     PREVIOUS document's arms, so evaluating against a freshly-resolved cohort would grade posts in the
-    arm they are about to be in rather than the one they were written in."""
+    arm they are about to be in rather than the one they were written in. `None` means the run could
+    not ASK PostHog (outage, key missing, experiments off) — the previous document's cohort is carried
+    forward untouched, because reshuffling a live cohort back onto the hash is exactly the mid-flight
+    arm flip the fallback exists to avoid."""
     enabled = routing_enabled() if enabled is None else bool(enabled)
     limits = {**default_thresholds(), **(thresholds or {})}
     policy = normalize_policy(previous)
@@ -470,8 +492,9 @@ def build_routing_policy(previous: Optional[Mapping], observations: Optional[Seq
             changes.append({"bucket": key, "action": ACTION_START, "bucket_state": bucket,
                             "reason": bucket["reason"], "comparison": None})
 
+    effective_arms = carried_arms(buckets) if arms is None else normalize_arms(arms)
     for key, bucket in list(buckets.items()):
-        buckets[key] = apply_arms(bucket, arms)
+        buckets[key] = apply_arms(bucket, effective_arms)
     # The change records captured the pre-arms bucket, so refresh the ones that are still live —
     # otherwise the digest and the PostHog event would report a cohort the document does not carry.
     for record in changes + holds:
@@ -488,7 +511,7 @@ def build_routing_policy(previous: Optional[Mapping], observations: Optional[Seq
         },
         "changes": changes,
         "holds": holds,
-        "cohort": arms_summary(arms),
+        "cohort": arms_summary(effective_arms),
         "recommendations": recommend_unmeasurable(spend_by_feature),
     }
 
@@ -648,27 +671,33 @@ def cohort_user_ids(observations: Optional[Sequence[Mapping]] = None) -> list:
     return ids
 
 
-def resolve_cohort(observations: Optional[Sequence[Mapping]] = None) -> dict:
-    """`{user_id: arm}` from the PostHog `cost-routing-arm` experiment, or `{}` when it has no answer.
+def resolve_cohort(observations: Optional[Sequence[Mapping]] = None) -> Optional[dict]:
+    """`{user_id: arm}` from the PostHog `cost-routing-arm` experiment.
 
-    `{}` is the fail-open path and it is not an error: every bucket then falls back to the hash
-    assignment that shipped before #652, which is the same split it has always used.
+    The two empty answers are NOT the same and callers must be able to tell them apart:
+
+    * `None` — we could not ASK (no experiment plane, no users to ask about, the lookup raised).
+      `build_routing_policy` then carries the previous document's cohort forward, so a PostHog
+      outage moves nobody: reverting a live cohort to the hash for a week would flip arms
+      mid-experiment and contaminate both sides of the very comparison this feeds.
+    * `{}` — we asked and PostHog enrolled nobody (flag deleted, or ramped to 0). The map is
+      cleared and every bucket falls back to the hash split that shipped before #652.
 
     The availability check comes FIRST so a project with no experiment plane doesn't pay for the
     active-user scan it could never use an answer from."""
     from cqc_lem.utilities.experiments import COST_ROUTING_ARM, assignments, enrollment_available
 
     if not enrollment_available():
-        return {}
+        return None
     user_ids = cohort_user_ids(observations)
     if not user_ids:
-        return {}
+        return None
     try:
         return assignments(user_ids, COST_ROUTING_ARM)
     except Exception as e:
-        log_warning("PostHog routing-experiment assignment failed — using hash cohorting", exc=e,
-                    task_name="auto_weekly_cost_routing")
-        return {}
+        log_warning("PostHog routing-experiment assignment failed — carrying the previous cohort",
+                    exc=e, task_name="auto_weekly_cost_routing")
+        return None
 
 
 def collect_routing_report(days: int = COST_ROUTING_WINDOW_DAYS, today: Optional[date] = None,
@@ -685,7 +714,9 @@ def collect_routing_report(days: int = COST_ROUTING_WINDOW_DAYS, today: Optional
 
     The PostHog cohort is resolved on the same condition: with routing off there is nothing to enrol
     anyone INTO, and an exposure event for an experiment that isn't running would put control-arm
-    traffic in a readout that never had a treatment arm."""
+    traffic in a readout that never had a treatment arm. It is not CLEARED while off either (the
+    cohort is carried forward, same as an outage) — "resumes exactly where the loop left off" has to
+    include who was in which arm, or a flag flip would reshuffle the cohort on the way back on."""
     from cqc_lem.utilities.db import cost_ledger_available, get_cost_rollup
 
     enabled = routing_enabled() if enabled is None else bool(enabled)
@@ -693,7 +724,7 @@ def collect_routing_report(days: int = COST_ROUTING_WINDOW_DAYS, today: Optional
     observations = collect_quality_observations(days, end=today) if enabled else []
     spend = (get_cost_rollup(today - timedelta(days=max(int(days), 1)), today, group_by="feature")
              if enabled and cost_ledger_available() else {})
-    arms = resolve_cohort(observations) if enabled else {}
+    arms = resolve_cohort(observations) if enabled else None
     result = build_routing_policy(load_policy(), observations, today, spend, thresholds, enabled,
                                   arms=arms)
     return {
