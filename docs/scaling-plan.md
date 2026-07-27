@@ -424,6 +424,47 @@ have stopped holding:
 - **It never changes a limit by itself.** Raising the cap spends real RAM/CPU on a shared box
   (§5c), so the monitor's whole job is to put that decision in front of a human with evidence.
 
+### 5f. Hosted/cloud grid options — resolved by #633
+
+**Issue #633 priced the option set §5b's "someone else runs the browsers" line deferred**, against
+this section's sessions-needed curve and against `EGRESS_AT_SCALE.md`'s residential-proxy and
+ToS-risk requirements. Full comparison, cost tables and sources: `docs/scaling-cost-options.md`.
+
+- **Almost the entire hosted/cloud market is disqualified for LEM's use case**, not on price —
+  AWS Device Farm cannot hold a session past 40 minutes; the QA-testing clouds (BrowserStack,
+  Sauce Labs, LambdaTest, TestingBot) are built for short own-app test runs and **Sauce Labs'
+  Acceptable Use Policy explicitly bans "any social media site other than for purposes of software
+  testing"**; Browserless is CDP-first, not native Selenium; ZenRows/ScrapingBee cap at 1–15
+  minutes. None of these fit a logged-in, cookie-persisted, days-to-weeks LinkedIn session.
+- **AWS Fargate/EC2 Grid nodes are technically workable** (residential-proxy egress layers on
+  cleanly regardless of host) **but cost strictly more than self-managed at every tier** — e.g.
+  Fargate on-demand ~$454–620/mo at the 50-user tier vs. a second Hostinger box's ~$52–100/mo —
+  and add ops surface (NAT/ASG/ECS) the current stack doesn't otherwise carry. Not recommended.
+- **The one correction this spike makes to this plan:** `SELENIUM_GRID.md` §5's "Option A —
+  upgrade to 16 vCPU / 64 GB" assumed an in-place resize. **Hostinger's VPS line has no plan above
+  the current KVM8 (8 vCPU / 32 GB)** — a 16 vCPU/64 GB box is only available by switching provider
+  entirely (~$315/mo Hetzner, ~$504/mo DigitalOcean), which is a full migration (DNS, data, Docker
+  stack, Cloudflare Tunnel cutover), not a plan change. **Option A is effectively retired** as the
+  default path; **Option B (a second same-provider box running Grid nodes, already built as
+  `docker-compose.grid-node.yml`) is now the clear default** — cheapest at every tier, no new
+  vendor/ToS risk, no migration.
+- **The two vendors that did fit are ruled out by decision, not by disqualification.** Steel.dev
+  and Browserbase are purpose-built for persistent authenticated browser sessions over a
+  residential/BYOP proxy (`Profiles`/`Contexts` APIs persist cookies/login across sessions the way
+  LEM needs) and price well under both AWS and a third/fourth self-managed box at the 100-user tier
+  (~$410–430/mo and ~$374–399/mo respectively vs. Fargate's ~$826–1,156/mo). Each still carried an
+  unresolved blocker — whether its Selenium path is a true `get_docker_driver()` URL-repoint or
+  needs a connector rewrite, and (Steel only) an actual ToS text this spike could not extract.
+  **Owner decision, 2026-07-27 (PR #694): don't spend the engineering time. No vendor spike, no
+  purchase, at any tier.** LEM stays on infrastructure it owns and operates.
+
+**Decision trigger:** unchanged from `SELENIUM_GRID.md` §6 — cut the self-managed Grid over at the
+capacity monitor's first breach, at parity (8 nodes), then scale nodes/lanes together per the
+load test's sessions-needed column. That is now the entire decision: there is no hosted-vendor
+branch waiting on a spike and no vendor re-enters at the 50- or 100-user tier. `#633`'s market
+survey is kept in `docs/scaling-cost-options.md` as the evidence behind that call, and its prices
+(accessed 2026-07-27) would need re-researching from scratch if it were ever reopened.
+
 ---
 
 ## 6. Phased rollout tied to the launch
@@ -460,12 +501,17 @@ have stopped holding:
   pre-#554 baseline, because the staggered appreciation-DM tail can now bleed into the pre-post
   profile-viewer window on the shared `se_outreach` lane. Fix tracked as **#696**.
 - Lane concurrency 3–4 each; per-user 429 breaker keys; per-user rate pacing.
-- **Hardware/topology: deliberately undecided** (owner call on #556). Upgrading to **16 vCPU / 64 GB**
-  and splitting the Chrome tier onto a second box are compared in `docs/SELENIUM_GRID.md` §5 (short
-  version: upgrade covers ~16 sessions ≈ 50–60 staggered users at far lower ops cost; second box past
-  ~16 sessions, i.e. at 100 users) — but nothing is bought until §5e files a breach, and **#633**
-  first prices hosted/cloud grids (AWS, BrowserStack/Sauce/LambdaTest/Browserless/Browserbase/Steel)
-  beside both, against this curve and against our residential-proxy egress requirement.
+- **Hardware/topology: default path set, nothing bought yet** (§5f, #633). The "upgrade to 16
+  vCPU / 64 GB" comparison in `docs/SELENIUM_GRID.md` §5 assumed an in-place resize that doesn't
+  exist on the current provider — that option is now a full cross-provider migration, not a plan
+  change, and is effectively retired. **A second same-provider box running Grid nodes
+  (`docker-compose.grid-node.yml`) is the default horizontal path** — cheapest at every tier, no
+  new vendor/ToS risk. #633 also priced the hosted/cloud market (AWS, BrowserStack/Sauce/
+  LambdaTest/TestingBot/Browserless/Browserbase/Steel) against this curve and LEM's
+  residential-proxy/ToS requirements: almost all of it is disqualified outright, and the two that
+  did fit (Steel.dev, Browserbase) were **ruled out by owner decision** — the whole hosted market is
+  out, no vendor spike is planned — see `docs/scaling-cost-options.md`. Nothing is bought until §5e
+  files a breach.
 
 **Phase 3 — ~100 users:**
 - Grid nodes across 2+ hosts; dedicated Chrome host(s).

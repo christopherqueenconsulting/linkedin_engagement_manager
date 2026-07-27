@@ -235,14 +235,28 @@ this:
 
 ## 5. The decision point: 16 vCPU / 64 GB, a second box — or someone else's grid
 
-**Status: deliberately undecided (owner call on #556, 2026-07-26).** Nothing is bought until the
-capacity monitor (§5e) says the cap is the operating point, and the option set is widened first:
-**#633** prices hosted/cloud grids (AWS Fargate/EC2 nodes, Device Farm, BrowserStack, Sauce Labs,
-LambdaTest, Browserless, Browserbase, Steel) against the two self-managed baselines below, keyed to
-this section's sessions-needed curve. That comparison is a spike, not a foregone conclusion: most of
-that market is *test* infrastructure and may disqualify itself on datacenter egress IPs (we route
-per-user residential proxies on purpose), per-minute billing against long-lived logged-in sessions,
-ToS clauses on social automation, and whether the MV3 proxy-auth extension can load at all.
+**Status: decided — self-managed, hardware not yet bought (#633, 2026-07-27).** The "someone else's
+grid" third option in this section's title is **closed**: LEM stays self-managed and no hosted
+vendor is pursued. Nothing is bought until the capacity monitor (§5e in `docs/scaling-plan.md`)
+says the cap is the operating point.
+
+#633 widened the option set and priced hosted/cloud grids (AWS Fargate/EC2 nodes, Device Farm,
+BrowserStack, Sauce Labs, LambdaTest, TestingBot, Browserless, Browserbase, Steel) against the two
+self-managed baselines below — full comparison: `docs/scaling-cost-options.md`. As suspected, most
+of that market disqualifies itself on session length (Device Farm caps at 40 min, the QA clouds at
+30 min–3 hr with no confirmed login persistence), explicit ToS (Sauce Labs bans non-testing social
+media use in writing), or protocol (Browserless is CDP-first, not Selenium). Steel.dev and
+Browserbase were the two that fit LEM's pattern on paper and beat AWS on cost, but each carried an
+unresolved blocker (a Selenium-compatibility check, and for Steel a real ToS read) — and the owner's
+call was to **not spend the time resolving them**. They are out with the rest of the market; no
+vendor spike is scheduled at any user tier.
+
+**#633 also corrects this section's own premise: Option A below assumed an in-place resize that
+does not exist.** Hostinger's VPS line tops out at the box LEM already runs (8 vCPU / 32 GB) — a 16
+vCPU/64 GB box is only available by switching provider entirely (~$315/mo Hetzner, ~$504/mo
+DigitalOcean), which is a full migration (DNS, data, Docker stack, Cloudflare Tunnel cutover), not
+a plan change. Read the row below with that correction; **Option B is the default now**, not a
+close second.
 
 The two self-managed options are both real at ~50 users, and the load test picks between them by what
 has to scale.
@@ -250,25 +264,31 @@ has to scale.
 | | **A. Upgrade to 16 vCPU / 64 GB** | **B. Second VPS running Grid nodes** |
 |---|---|---|
 | Sessions it buys | ~16 concurrent (2× today) | ~8 per added box, unbounded by adding boxes |
-| Cost shape | one bigger monthly bill; no new ops surface | a second bill + a private network to run and firewall |
+| Cost shape | one bigger monthly bill (**now a different provider's bill** — see below) | a second, same-provider bill + a private network to run and firewall |
 | Failure domain | still ONE box — it takes the app tier with it | app tier survives a Chrome-box outage |
-| Ops cost | a resize + a restart | WireGuard/VPC, a second host to patch, node registration to monitor |
+| Ops cost | **a full migration** (DNS, data, Docker stack, Cloudflare Tunnel cutover) — Hostinger has no bigger tier to resize into | same-provider: a second host to patch + node registration to monitor, no migration |
 | Egress | unchanged (per-user proxies do the egress, `EGRESS_AT_SCALE.md`) | unchanged — nodes egress through the same per-user proxies |
 | Ceiling | ~16 sessions ≈ **50–60 users staggered**; then this decision repeats | none in practice |
 
-**Where this stands:** staggering went first and has shipped (#554), and re-measuring it (#634) found
-the 50-user curve is now **15** sessions, not the originally-predicted 11 — the shared `se_outreach`
-lane needs its own fix first (**#696**) before staggering delivers the win the plan banked on.
-Between A and B, A is still the cheaper answer *if* the choice were made today: one 16 vCPU / 64 GB
-box covers the ~15 sessions that 50 users need (18.0 GB Chrome + ~6 GB app tier fits 64 GB with room)
-at a fraction of the operational cost of a second host, and B's fault isolation only starts paying
-when Chrome and the app tier genuinely compete — the 100-user row, not the 50-user one. B is the
-answer past **~16 sessions**, i.e. 100 users at any stagger.
+**Where this stands (updated by #633):** staggering went first and has shipped (#554) — it was the
+only free move — and re-measuring it (#634) found the 50-user curve is now **15** sessions, not the
+originally-predicted 11: the shared `se_outreach` lane needs its own fix first (**#696**) before
+staggering delivers the win the plan banked on.
 
-But the choice is **not** being made today. The sequence the owner set is: bank the stagger (done) →
-re-measure it (done, #634 — result: fix #696 first) → price hosted alternatives beside A and B
-(#633) → decide when §5e files a breach. Buying either box now would pay for capacity the curve
-cannot yet prove is needed, and would foreclose an option that has not been costed.
+**A is no longer the cheaper answer today.** #633 found Hostinger's VPS line tops out at the box LEM
+already runs, so "upgrade to 16 vCPU / 64 GB" now means switching provider entirely (~$315/mo
+Hetzner, ~$504/mo DigitalOcean) plus a real migration project, not a resize. B (a second
+same-provider box, already built as `docker-compose.grid-node.yml`) is cheaper in absolute terms at
+every tier this plan projects (~$52–200/mo vs. A's ~$315–504/mo) **and** carries none of A's
+one-time migration risk. That reverses the old reading of the 50-user row — A's edge there was
+operational simplicity, and the migration eats it. **B is the default path**, not just the answer
+past ~16 sessions.
+
+The choice is **still not being made today** — nothing is bought until §5e files a breach. What
+#633 resolved is *which* option to reach for when that happens: B, not A. The sequence that
+remains: bank the stagger (done) → re-measure it (done, #634 — result: fix #696 first, then re-run)
+→ cut over the Grid at parity → scale nodes per §6's checklist when §5e says the cap is the
+operating point.
 
 The Grid is worth cutting over to **before** either, at the same 8 nodes: it is capacity-neutral,
 it makes a crashed Chrome cost one session instead of all of them, and it is the thing that makes B
