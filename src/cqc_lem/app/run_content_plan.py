@@ -26,7 +26,8 @@ from cqc_lem.utilities.db import get_post_type_counts, insert_planned_post, upda
 from cqc_lem.utilities.db import count_ready_posts_within_buffer, get_planned_posts_within_buffer, \
     get_user_ids_with_planned_posts_within_buffer, DEFAULT_CONTENT_BUFFER_DAYS, \
     DEFAULT_CONTENT_BUFFER_MAX_POSTS, MAX_CONTENT_BUFFER_DAYS, MAX_CONTENT_BUFFER_POSTS, \
-    DEFAULT_POSTS_PER_WEEK, POSTS_PER_WEEK_MIN, POSTS_PER_WEEK_MAX
+    DEFAULT_POSTS_PER_WEEK, POSTS_PER_WEEK_MIN, POSTS_PER_WEEK_MAX, \
+    DEFAULT_POSTING_DAYS, normalize_posting_days
 from cqc_lem.utilities.db import get_recent_post_shape_history, update_db_post_shape, get_lead_magnet_settings, \
     get_shape_performance, get_newsletter_settings, get_post_content_mix
 from cqc_lem.utilities.db import get_recent_post_texts, update_db_post_authenticity_score, \
@@ -103,17 +104,30 @@ def _cadence_slots(user_id: int, start_date: datetime, end_date: datetime) -> li
 
     Cadence, not volume, is the 2026 lever (issue #621 / G6): instead of one post on every remaining
     day of the month, a user publishes on the `posts_per_week` weekdays their fixed day-type
-    calendar owns. Falls back to the shipped default when preferences can't be read — never to daily.
+    calendar owns. `posting_days` (issue #581) then says WHICH weekdays are eligible at all —
+    Mon-Fri by default, so weekends are opt-in rather than what raising the cadence to 6-7/week
+    happens to produce. Falls back to the shipped defaults when preferences can't be read — never
+    to daily, and never to an empty week.
     """
+    posting_days = list(DEFAULT_POSTING_DAYS)
     try:
-        raw = (get_engagement_preferences(user_id) or {}).get("posts_per_week")
+        prefs = get_engagement_preferences(user_id) or {}
+        raw = prefs.get("posts_per_week")
         posts_per_week = DEFAULT_POSTS_PER_WEEK if raw is None else int(raw)
+        if prefs.get("posting_days") is not None:
+            posting_days = normalize_posting_days(prefs.get("posting_days"))
     except Exception as e:
         log_warning(f"Could not read posting cadence for user {user_id} — using the default",
                     exc=e, user_id=user_id, task_name="plan_content_for_user")
         posts_per_week = DEFAULT_POSTS_PER_WEEK
     posts_per_week = max(POSTS_PER_WEEK_MIN, min(POSTS_PER_WEEK_MAX, posts_per_week))
-    weekdays = set(weekly_post_slots(posts_per_week))
+    weekdays = set(weekly_post_slots(posts_per_week, allowed_days=posting_days))
+    if len(weekdays) < posts_per_week:
+        # The allow-list is the harder bound — say so, because the user asked for more posts than
+        # the days they left switched on can carry.
+        log_info(f"Posting cadence capped by the configured days for user {user_id}: "
+                 f"{posts_per_week}/week requested, {len(weekdays)} eligible day(s)",
+                 user_id=user_id, task_name="plan_content_for_user")
 
     slots = []
     day = start_date.date()

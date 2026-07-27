@@ -2,7 +2,7 @@ import Toggle from '../../../components/Toggle'
 import { useEngagementPrefs } from './EngagementPrefsContext'
 import { useUserPrefs } from './UserPrefsContext'
 import { Advanced, Field, SectionCard, inputClass } from './Field'
-import { CADENCE_OPTIONS } from './options'
+import { CADENCE_OPTIONS, DEFAULT_POSTING_DAYS, WEEKDAY_OPTIONS, weekdayLabels, weeklyPostSlots } from './options'
 
 // Everything about producing and shipping a post. The content-buffer knobs (F4) and the review
 // thresholds are exposed here under Advanced — the buffer settings drive real AI spend and had no
@@ -14,6 +14,17 @@ export default function ContentSection() {
 
   const gateDefaults = eng.gate_defaults ?? { authenticity_score_min: 60, post_similarity_max_pct: 55 }
 
+  const postingDays = eng.posting_days?.length ? eng.posting_days : DEFAULT_POSTING_DAYS
+  // Never let the last day be switched off — an empty set is normalised straight back to Mon-Fri
+  // server-side, so the UI would silently discard the click.
+  const toggleDay = (day: number) => {
+    const next = postingDays.includes(day)
+      ? postingDays.filter((d) => d !== day)
+      : [...postingDays, day].sort((a, b) => a - b)
+    if (next.length) setEng({ posting_days: next })
+  }
+  const resolvedDays = weeklyPostSlots(eng.posts_per_week ?? 3, postingDays)
+
   return (
     <SectionCard title="Publishing" blurb="What LEM generates, and what has to clear review before it ships.">
       <Field settingKey="posts_per_week">
@@ -23,6 +34,20 @@ export default function ContentSection() {
             <option key={o.value} value={o.value}>{o.label}</option>
           ))}
         </select>
+      </Field>
+      <Field settingKey="posting_days">
+        <div className="flex flex-wrap gap-2">
+          {WEEKDAY_OPTIONS.map((o) => (
+            <button key={o.value} type="button" onClick={() => toggleDay(o.value)}
+              aria-pressed={postingDays.includes(o.value)}
+              className={`px-3 py-1 rounded-full border text-sm ${postingDays.includes(o.value)
+                ? 'bg-blue-600 border-blue-600 text-white'
+                : 'bg-white border-gray-300 text-gray-600'}`}>
+              {o.label}
+            </button>
+          ))}
+        </div>
+        <p className="mt-2 text-xs text-gray-500">Publishes on: {weekdayLabels(resolvedDays)}</p>
       </Field>
       <Field settingKey="auto_schedule_posts">
         <Toggle on={!!prefs?.auto_schedule_posts}

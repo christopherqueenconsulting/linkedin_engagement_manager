@@ -17,7 +17,7 @@ const base = (over: Partial<EngPrefs> = {}): EngPrefs => ({
   reply_max_post_age_days: 2, feed_fallback_when_empty: true, link_in_first_comment: true,
   max_catchup_touches_per_day: 5, catchup_touch_mode: 'pre_review',
   catchup_event_types: ['job_change', 'promotion'], catchup_message_source: 'linkedin',
-  posts_per_week: 3,
+  posts_per_week: 3, posting_days: [0, 1, 2, 3, 4],
   ...over,
 })
 

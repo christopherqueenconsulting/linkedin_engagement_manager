@@ -40,6 +40,8 @@ export type EngPrefs = {
   link_in_first_comment: boolean
   // How many day-type slots a week the content plan fills (issue #621). 7 = daily.
   posts_per_week: number
+  // Which weekdays those slots may land on, Mon=0 … Sun=6 (issue #581). Default Mon-Fri.
+  posting_days: number[]
   max_catchup_touches_per_day: number
   catchup_touch_mode: string
   catchup_event_types: string[]

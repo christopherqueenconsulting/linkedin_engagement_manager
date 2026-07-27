@@ -304,6 +304,20 @@ export function evaluateConflicts(ctx: ConflictContext): Finding[] {
       fix: { label: 'Use 3 a week', patch: { posts_per_week: 3 } },
     })
   }
+  // C28 — the day allow-list is the harder bound (issue #581). Silently publishing fewer times
+  // than the cadence says is exactly the kind of gap a settings screen exists to surface.
+  const days = eng.posting_days?.length ? eng.posting_days : [0, 1, 2, 3, 4]
+  if (cadence > days.length) {
+    out.push({
+      id: 'C28', severity: 'warn', section: 'content', anchor: 'posting_days',
+      message: `You asked for ${cadence} posts a week but left only ${days.length} day${days.length === 1 ? '' : 's'} switched on, so the plan will publish ${days.length} time${days.length === 1 ? '' : 's'} a week.`,
+      // Only offered when the day count is itself a legal cadence — posts_per_week floors at 2, so
+      // "match the cadence" to a single day would just swap this warning for a blocking one.
+      ...(days.length >= 2
+        ? { fix: { label: `Match the cadence to ${days.length} a week`, patch: { posts_per_week: days.length } } }
+        : {}),
+    })
+  }
   return out
 }
 

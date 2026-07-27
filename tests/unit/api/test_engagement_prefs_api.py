@@ -204,6 +204,37 @@ class TestPostsPerWeek:
             assert upd.call_args[0][1]["posts_per_week"] == expected
 
 
+class TestPostingDays:
+    """The publishing day allow-list (issue #581)."""
+
+    def test_defaults_to_monday_to_friday_when_omitted(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/engagement-preferences",
+                              json={"session_token": _SESSION})
+        assert resp.status_code == 200
+        assert upd.call_args[0][1]["posting_days"] == [0, 1, 2, 3, 4]
+
+    def test_all_seven_days_are_accepted(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/engagement-preferences",
+                              json={"session_token": _SESSION, "posting_days": [6, 5, 4, 3, 2, 1, 0]})
+        assert resp.status_code == 200
+        assert upd.call_args[0][1]["posting_days"] == [0, 1, 2, 3, 4, 5, 6]
+
+    def test_bad_values_fall_back_rather_than_422_the_whole_save(self, client):
+        # The SPA saves every engagement field in one request — a malformed day list must not take
+        # the user's tone, caps and targeting down with it.
+        for given in ([], None, "nonsense", [9, -1], ["mon"]):
+            with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+                 patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+                resp = client.put("/api/user/engagement-preferences",
+                                  json={"session_token": _SESSION, "posting_days": given})
+            assert resp.status_code == 200, given
+            assert upd.call_args[0][1]["posting_days"] == [0, 1, 2, 3, 4], given
+
+
 class TestEngagementPersistenceRegression:
     """Guards for the class of bug that silently dropped engagement settings."""
 

@@ -3171,6 +3171,28 @@ def max_catchup_touches_allowed(user_id: int) -> int:
 POSTS_PER_WEEK_MIN, POSTS_PER_WEEK_MAX = 2, 7
 DEFAULT_POSTS_PER_WEEK = 3
 
+# WHICH weekdays those slots may land on (issue #581). Mon=0 … Sun=6, default Mon-Fri: weekends are
+# opt-in rather than the automatic consequence of raising the cadence to 6-7/week. All seven days
+# stay selectable — this is an allow-list, never a hardcoded work week. `posts_per_week` still
+# decides how many of the allowed days are actually filled.
+DEFAULT_POSTING_DAYS = [0, 1, 2, 3, 4]
+POSTING_DAY_MIN, POSTING_DAY_MAX = 0, 6
+
+
+def normalize_posting_days(value) -> list:
+    """A de-duped, sorted list of valid weekday ints — or the Mon-Fri default when the input holds
+    nothing usable. Never returns an empty set: an empty cadence would schedule no content at all,
+    and a bad value must not be persisted into the one-row prefs upsert (the V52 lesson)."""
+    days = []
+    for raw in _coerce_json_list(value):
+        try:
+            day = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if POSTING_DAY_MIN <= day <= POSTING_DAY_MAX and day not in days:
+            days.append(day)
+    return sorted(days) if days else list(DEFAULT_POSTING_DAYS)
+
 _ENGAGEMENT_DEFAULTS: dict = {
     # Default to MEDIUM (issue #394): 2026 LinkedIn weights substantive ≥15-word comments ~2.5× short
     # one-liners, so the out-of-the-box length produces a real, specific reply rather than a throwaway.
@@ -3206,10 +3228,12 @@ _ENGAGEMENT_DEFAULTS: dict = {
     "catchup_event_types": list(DEFAULT_CATCHUP_EVENT_TYPES),
     "catchup_message_source": "linkedin",
     "posts_per_week": DEFAULT_POSTS_PER_WEEK,
+    "posting_days": list(DEFAULT_POSTING_DAYS),
 }
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
                            "exclude_keywords", "include_authors", "exclude_authors", "post_types",
-                           "focus_topics", "connection_target_authors", "catchup_event_types")
+                           "focus_topics", "connection_target_authors", "catchup_event_types",
+                           "posting_days")
 _ENGAGEMENT_BOOL_FIELDS = ("use_emojis", "use_hashtags", "reply_to_own_comments",
                            "feed_fallback_when_empty", "link_in_first_comment")
 _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "use_hashtags",
@@ -3225,7 +3249,7 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "reply_check_mode", "reply_sweeps_per_day", "reply_max_post_age_days",
                     "feed_fallback_when_empty", "link_in_first_comment",
                     "max_catchup_touches_per_day", "catchup_touch_mode", "catchup_event_types",
-                    "catchup_message_source", "posts_per_week")
+                    "catchup_message_source", "posts_per_week", "posting_days")
 
 VALID_VIDEO_QUALITIES = ("standard", "premium", "premium_top")
 VALID_REPLY_MODES = ("event", "scheduled", "off")
@@ -3280,6 +3304,10 @@ def _select_engagement_row(user_id: int) -> Optional[dict]:
             row["posts_per_week"] = DEFAULT_POSTS_PER_WEEK
         for f in _ENGAGEMENT_JSON_FIELDS:
             row[f] = _coerce_json_list(row.get(f))
+        # A NULL/empty posting_days (any row predating the V20260727045811 migration) means "never
+        # chosen" -> Mon-Fri. Unlike catchup_event_types, an empty set here is NOT a meaningful
+        # choice: it would leave the planner with no day to publish on at all.
+        row["posting_days"] = normalize_posting_days(row.get("posting_days"))
         for f in _ENGAGEMENT_BOOL_FIELDS:
             row[f] = bool(row.get(f))
         return row
@@ -3363,6 +3391,10 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
                                     if _ppw is not None else DEFAULT_POSTS_PER_WEEK)
     except (TypeError, ValueError):
         merged["posts_per_week"] = DEFAULT_POSTS_PER_WEEK
+    # The publishing day allow-list (issue #581): de-duped, sorted, Mon..Sun only. Anything
+    # unusable — an empty set, strings, out-of-range ints — falls back to Mon-Fri rather than
+    # persisting a cadence that would schedule nothing or a value the column would reject.
+    merged["posting_days"] = normalize_posting_days(merged.get("posting_days"))
     # Quality-gate thresholds (issue #421): None means "use the deploy default", anything else is
     # clamped to its valid band so an out-of-range slider can never make a gate un-passable.
     from cqc_lem.utilities.quality_gates import (AUTHENTICITY_SCORE_MIN_BOUNDS,

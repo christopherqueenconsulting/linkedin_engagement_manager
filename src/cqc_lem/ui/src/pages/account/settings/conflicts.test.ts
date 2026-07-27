@@ -19,7 +19,7 @@ const eng = (over: Partial<EngPrefs> = {}): EngPrefs => ({
   reply_max_post_age_days: 2, feed_fallback_when_empty: true, link_in_first_comment: true,
   max_catchup_touches_per_day: 5, catchup_touch_mode: 'pre_review',
   catchup_event_types: ['job_change', 'promotion'], catchup_message_source: 'linkedin',
-  posts_per_week: 3,
+  posts_per_week: 3, posting_days: [0, 1, 2, 3, 4],
   gmail_forward_confirmation: { confirmed: true },
   ...over,
 })
@@ -197,6 +197,18 @@ describe('conflict matrix', () => {
     expect(daily?.anchor).toBe('posts_per_week')
     expect(daily?.message).toMatch(/26%/)
     expect(daily?.fix?.patch).toEqual({ posts_per_week: 3 })
+  })
+
+  it('C28 warns when the cadence asks for more days than are switched on', () => {
+    expect(find(ctx({ eng: eng({ posts_per_week: 3, posting_days: [0, 1, 2, 3, 4] }) }), 'C28'))
+      .toBeUndefined()
+    const capped = find(ctx({ eng: eng({ posts_per_week: 4, posting_days: [1, 3] }) }), 'C28')
+    expect(capped?.severity).toBe('warn')
+    expect(capped?.anchor).toBe('posting_days')
+    expect(capped?.fix?.patch).toEqual({ posts_per_week: 2 })
+    // A single day can't become a legal cadence (the floor is 2), so no one-click fix is offered.
+    expect(find(ctx({ eng: eng({ posts_per_week: 3, posting_days: [1] }) }), 'C28')?.fix)
+      .toBeUndefined()
   })
 
   it('never warns about a clean, default configuration', () => {

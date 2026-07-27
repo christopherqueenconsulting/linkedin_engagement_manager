@@ -14,7 +14,8 @@ pytestmark = pytest.mark.unit
 _RCP = "cqc_lem.app.run_content_plan"
 
 
-def _plan(posts_per_week=3, tz="UTC", window_days=27, post_hour=16, last_planned=None):
+def _plan(posts_per_week=3, tz="UTC", window_days=27, post_hour=16, last_planned=None,
+          posting_days=None):
     """Run plan_content_for_user with everything external mocked, and return the saved plan.
 
     Both ends of the planning window are pinned — the start via
@@ -37,7 +38,8 @@ def _plan(posts_per_week=3, tz="UTC", window_days=27, post_hour=16, last_planned
     with patch(f"{_RCP}.get_post_type_counts", return_value={"text": 1}), \
          patch(f"{_RCP}.get_last_planned_post_date_for_user", return_value=last_planned), \
          patch(f"{_RCP}._plan_window_end", return_value=window_end), \
-         patch(f"{_RCP}.get_engagement_preferences", return_value={"posts_per_week": posts_per_week}), \
+         patch(f"{_RCP}.get_engagement_preferences",
+               return_value={"posts_per_week": posts_per_week, "posting_days": posting_days}), \
          patch(f"{_RCP}.get_user_timezone", return_value=tz), \
          patch(f"{_RCP}.get_post_time", return_value=dt.time(post_hour, 0)), \
          patch(f"{_RCP}.save_content_plan", side_effect=_capture):
@@ -84,6 +86,64 @@ class TestPlanDensity:
         with patch(f"{_RCP}.get_engagement_preferences", return_value={"posts_per_week": None}):
             slots = _cadence_slots(1, start, end)
         assert [s.weekday() for s in slots] == [1, 2, 3]
+
+
+class TestPostingDays:
+    """The publishing day allow-list (issue #581): the cadence says how many slots, `posting_days`
+    says which weekdays are eligible for them. Best posting TIME still only picks the hour."""
+
+    def test_default_cadence_never_lands_on_a_weekend(self):
+        plan = _plan(posts_per_week=7)  # would have been daily before the allow-list
+        assert plan
+        assert {p["scheduled_datetime"].weekday() for p in plan}.isdisjoint({5, 6})
+
+    def test_slots_only_fall_on_configured_weekdays(self):
+        from cqc_lem.app.run_content_plan import _cadence_slots
+        start, end = dt.datetime(2026, 7, 27), dt.datetime(2026, 8, 9)  # two full Mon-Sun weeks
+        with patch(f"{_RCP}.get_engagement_preferences",
+                   return_value={"posts_per_week": 3, "posting_days": [0, 2, 4]}):
+            slots = _cadence_slots(1, start, end)
+        assert {s.weekday() for s in slots} == {0, 2, 4}
+        assert len(slots) == 6
+
+    def test_a_weekend_inclusive_set_is_honoured(self):
+        from cqc_lem.app.run_content_plan import _cadence_slots
+        start, end = dt.datetime(2026, 7, 27), dt.datetime(2026, 8, 2)
+        with patch(f"{_RCP}.get_engagement_preferences",
+                   return_value={"posts_per_week": 7, "posting_days": [0, 1, 2, 3, 4, 5, 6]}):
+            slots = _cadence_slots(1, start, end)
+        assert [s.weekday() for s in slots] == [0, 1, 2, 3, 4, 5, 6]
+
+    def test_cadence_is_capped_by_the_days_left_switched_on(self):
+        from cqc_lem.app.run_content_plan import _cadence_slots
+        start, end = dt.datetime(2026, 7, 27), dt.datetime(2026, 8, 2)
+        with patch(f"{_RCP}.get_engagement_preferences",
+                   return_value={"posts_per_week": 7, "posting_days": [1, 3]}):
+            slots = _cadence_slots(1, start, end)
+        assert [s.weekday() for s in slots] == [1, 3]
+
+    def test_missing_or_invalid_days_fall_back_to_monday_to_friday(self):
+        from cqc_lem.app.run_content_plan import _cadence_slots
+        start, end = dt.datetime(2026, 7, 27), dt.datetime(2026, 8, 2)
+        for days in (None, [], ["nonsense"], [99]):
+            with patch(f"{_RCP}.get_engagement_preferences",
+                       return_value={"posts_per_week": 7, "posting_days": days}):
+                slots = _cadence_slots(1, start, end)
+            assert [s.weekday() for s in slots] == [0, 1, 2, 3, 4], days
+
+    def test_unreadable_preferences_still_default_to_monday_to_friday(self):
+        from cqc_lem.app.run_content_plan import _cadence_slots
+        start, end = dt.datetime(2026, 7, 27), dt.datetime(2026, 8, 2)
+        with patch(f"{_RCP}.get_engagement_preferences", side_effect=RuntimeError("db down")):
+            slots = _cadence_slots(1, start, end)
+        assert {s.weekday() for s in slots}.isdisjoint({5, 6})
+
+    def test_the_hour_still_comes_from_get_post_time(self):
+        plan = _plan(posts_per_week=2, posting_days=[5, 6], post_hour=14)
+        assert plan
+        assert {p["scheduled_datetime"].weekday() for p in plan} == {5, 6}
+        # get_post_time is pinned to 14:00 and only jitter (15-30 min either way) may move it.
+        assert all(13 <= p["scheduled_datetime"].hour <= 15 for p in plan)
 
 
 class TestPlanWindow:
