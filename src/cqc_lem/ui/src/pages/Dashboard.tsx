@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import api from '../api/client'
 import { useAuth } from '../contexts/AuthContext'
 import { useUserTimezone } from '../hooks/useUserTimezone'
+import { useScrollAffordance } from '../hooks/useScrollAffordance'
 import { formatInTimezone } from '../utils/datetime'
 import { isHttpUrl, commentsActivityUrl } from '../utils/links'
 import OnboardingChecklist from '../components/OnboardingChecklist'
@@ -357,6 +358,9 @@ export default function Dashboard() {
   const upcoming = plannedData?.detail?.tasks ?? []
 
   const activity = activityData?.detail ?? []
+
+  const { attach: attachActivityScroll, canScrollDown: activityHasMore } =
+    useScrollAffordance<HTMLDivElement>()
 
   const perPost = analytics?.per_post ?? []
   const trend = analytics?.trend ?? []
@@ -841,69 +845,93 @@ export default function Dashboard() {
         </div>
 
         {/* Activity Feed — what has happened */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-5">
+        {/* h-full fills the grid row (as tall as the Planned Tasks sibling); the viewport cap keeps
+            a long feed from growing the row past the screen, so it inner-scrolls instead. */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-5 flex flex-col h-full max-h-[calc(100vh-8rem)]">
           <h2 className="text-lg font-semibold text-gray-700 mb-4">Activity Feed</h2>
           {activity.length === 0 ? (
             <p className="text-sm text-gray-400 text-center py-6">
               No activity yet. Posts, comments, DMs, and replies will appear here.
             </p>
           ) : (
-            <ul className="space-y-2 max-h-80 overflow-y-auto pr-1">
-              {activity.map((entry) => (
-                <li
-                  key={entry.id}
-                  className="flex items-start gap-3 py-2 border-b border-gray-100 last:border-0"
+            <div className="relative flex-1 min-h-0">
+              {/* min-h-0 lets this flex child shrink below its content height and scroll. */}
+              {/* tabIndex makes the scroll region reachable by keyboard, since it can hide rows. */}
+              <div
+                ref={attachActivityScroll}
+                tabIndex={0}
+                role="region"
+                aria-label="Activity feed"
+                className="h-full overflow-y-auto pr-1"
+              >
+                <ul className="space-y-2">
+                  {activity.map((entry) => (
+                    <li
+                      key={entry.id}
+                      className="flex items-start gap-3 py-2 border-b border-gray-100 last:border-0"
+                    >
+                      <span className="text-base mt-0.5 flex-shrink-0">
+                        {ACTION_ICONS[entry.action_type] ?? '🔔'}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-semibold text-gray-700 capitalize">
+                            {entry.action_type}
+                          </span>
+                          <span
+                            className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${
+                              entry.result === 'success'
+                                ? 'bg-green-100 text-green-700'
+                                : 'bg-red-100 text-red-600'
+                            }`}
+                          >
+                            {entry.result}
+                          </span>
+                        </div>
+                        {entry.message && (
+                          <p className="text-xs text-gray-500 mt-0.5 line-clamp-1">{entry.message}</p>
+                        )}
+                        {isHttpUrl(entry.post_url) ? (
+                          <a
+                            href={entry.post_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs text-blue-500 hover:underline truncate block"
+                          >
+                            {entry.post_url}
+                          </a>
+                        ) : commentsUrl && (entry.action_type === 'comment' || entry.action_type === 'reply') ? (
+                          // Feed comments/replies have no permalink (post_url is blanked server-side) —
+                          // link to the user's own LinkedIn "recent activity → comments" page instead.
+                          <a
+                            href={commentsUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="View your LinkedIn comments"
+                            className="text-xs text-blue-500 hover:underline truncate block"
+                          >
+                            View your LinkedIn comments
+                          </a>
+                        ) : null}
+                      </div>
+                      <span className="text-xs text-gray-400 flex-shrink-0 whitespace-nowrap">
+                        {formatInTimezone(entry.created_at, userTimezone)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              {activityHasMore && (
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center items-end h-10 bg-gradient-to-t from-white via-white/85 to-transparent"
                 >
-                  <span className="text-base mt-0.5 flex-shrink-0">
-                    {ACTION_ICONS[entry.action_type] ?? '🔔'}
+                  <span className="text-[10px] font-medium uppercase tracking-wide text-gray-400">
+                    Scroll for more ↓
                   </span>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-semibold text-gray-700 capitalize">
-                        {entry.action_type}
-                      </span>
-                      <span
-                        className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${
-                          entry.result === 'success'
-                            ? 'bg-green-100 text-green-700'
-                            : 'bg-red-100 text-red-600'
-                        }`}
-                      >
-                        {entry.result}
-                      </span>
-                    </div>
-                    {entry.message && (
-                      <p className="text-xs text-gray-500 mt-0.5 line-clamp-1">{entry.message}</p>
-                    )}
-                    {isHttpUrl(entry.post_url) ? (
-                      <a
-                        href={entry.post_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-xs text-blue-500 hover:underline truncate block"
-                      >
-                        {entry.post_url}
-                      </a>
-                    ) : commentsUrl && (entry.action_type === 'comment' || entry.action_type === 'reply') ? (
-                      // Feed comments/replies have no permalink (post_url is blanked server-side) —
-                      // link to the user's own LinkedIn "recent activity → comments" page instead.
-                      <a
-                        href={commentsUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        title="View your LinkedIn comments"
-                        className="text-xs text-blue-500 hover:underline truncate block"
-                      >
-                        View your LinkedIn comments
-                      </a>
-                    ) : null}
-                  </div>
-                  <span className="text-xs text-gray-400 flex-shrink-0 whitespace-nowrap">
-                    {formatInTimezone(entry.created_at, userTimezone)}
-                  </span>
-                </li>
-              ))}
-            </ul>
+                </div>
+              )}
+            </div>
           )}
         </div>
       </div>
