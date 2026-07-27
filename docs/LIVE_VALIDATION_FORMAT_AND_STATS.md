@@ -5,6 +5,7 @@
 **Date:** 2026-07-26 · **Probe:** `scripts/linkedin_live_validation.py` (read-only)
 **Updated:** 2026-07-27 (#645) — §2a settles the member post-stats API lead ·
 **Probe:** `scripts/linkedin_post_stats_api_probe.py` (read-only, no browser)
+**Updated:** 2026-07-27 (#644) — C1's live document-render check ran; §1, §3 and §5 carry the result
 
 ## TL;DR
 
@@ -12,20 +13,23 @@
 |---|---|---|
 | Document post publish path — **API or UI**? | **API.** Versioned `/rest/documents` → `/rest/posts`. No Selenium composer is used, or needed. | **Documented + shipped** (R3 #406 against `li-lms-2026-07`; `poster.py`) |
 | Current **SDUI anchors for document upload** | **None exist in LEM and none are invented here** — the UI path is not on the publish route. Capturable on demand via `--probe-composer`. | **Deliberately unmapped** |
-| Does a published document render as a **document card**? | Unconfirmed — needs one live post. | **OPEN** (C1's own acceptance) |
+| Does a published document render as a **document card**? | **CONFIRMED 2026-07-27** — verdict `document`; carousel control `image`. | **CLOSED** (#644) |
 | Are **saves** scrapeable? | **Yes**, own posts only, on `/analytics/post-summary/<activity-urn>/`. | **Live grab 2026-07-23** (encoded in `_stacked_counts`) |
 | Are **impressions** scrapeable? | **Yes**, same page (Discovery hero, value-first layout). Blank on the post detail view. | **Live grab 2026-07-23** |
 | Can an **API** replace that scrape? | **The endpoint exists** (`memberCreatorPostAnalytics`, impressions + saves + more) — but it needs `r_member_postAnalytics`, which **LEM's token does not request**. Scrape stays. | **Documented** (`li-lms-2026-07`) + **in-repo verified** (§2a) |
 
-**Net scope change: none for B2, one live confirmation left for C1.** Both features are built and
-merged; this spike's job was to say whether their assumptions hold, and they do. What is genuinely
-unresolved is a single end-to-end act — publish one native document and look at it — which needs a
-real account and so is the owner's call, not the agent's.
+**Net scope change: none.** Both features are built and merged; this spike's job was to say whether
+their assumptions hold, and they do. The one act that could not be done headless — publish one
+native document and look at it — was carried out with the owner on 2026-07-27 and came back
+`document` (§5).
 
-> **Honesty note.** This note was written headless: no LinkedIn session was driven. Every row above
-> carries its evidence grade, and no DOM selector appears here that was not either (a) already in the
-> repo or (b) captured in the 2026-07-23 owner grab. Rather than guess at the document-composer
-> anchors, the probe script captures them on a live session in one command.
+> **Honesty note.** The original pass (2026-07-26) was written headless: no LinkedIn session was
+> driven, every row carried its evidence grade, and no DOM selector appeared here that was not
+> either (a) already in the repo or (b) captured in the 2026-07-23 owner grab. The **one** row since
+> upgraded from a live session is the document-render verdict — its anchors (§3) were captured by
+> `probe_document_render` on 2026-07-27, not guessed. The document-**composer** anchors remain
+> deliberately uncaptured; `--probe-composer` gets them on a live session in one command if a UI
+> fallback is ever needed.
 
 ---
 
@@ -51,11 +55,11 @@ window. Writing a speculative composer selector chain here would create the main
 claims to remove. If a UI fallback ever becomes necessary (app deprovisioned with no versioned path
 left), `--probe-composer` dumps the composer's real control labels in one run — see §4.
 
-**What is still open for C1** is not the path but the *product* claim behind it: that the API-published
-deck renders in-feed as a swipeable **document**, not a multi-image share. `probe_document_render`
-answers this by capturing the media anchors of a published post (§4, check 2). It needs one document
-post to exist on the account first — that publish is C1's acceptance step and is human-gated
-(`risk:live-linkedin`). Tracked as **#644**.
+**The *product* claim behind that path — that the API-published deck renders in-feed as a swipeable
+document, not a multi-image share — is now confirmed.** `probe_document_render` answers it by
+capturing the media anchors of a published post (§4, check 1); run against a deck published through
+this path on 2026-07-27 it returned `verdict: "document"`, and `"image"` against a carousel control.
+Details and the captured anchors: §5 and §3. Tracked as **#644** (closed).
 
 ## 2. Saves and impressions are scrapeable — on the author's analytics page only
 
@@ -178,7 +182,7 @@ Nothing below is a guess; the provenance column says where each came from.
 | Profile views / search appearances | `https://www.linkedin.com/analytics/profile-views/` (falls back to `/analytics/search-appearances/`), value-first line pair | `capture_audience_snapshot` (#627) | in-repo, **best-effort / unvalidated** |
 | Feed composer trigger | `//button[contains(normalize-space(),'Start a post') or contains(@aria-label,'Start a post') or contains(@aria-label,'Create a post')]` | `auto_post_to_group`, `probe_composer` | in-repo, **best-effort / unvalidated** (F2 #403) |
 | Document upload control | — | — | **unmapped by design** (§1); `--probe-composer` captures it |
-| Document media card | — | — | **unmapped**; `probe_document_render` captures it |
+| Document media card | pager buttons `aria-label` = `Go to previous page of document` / `Go to next page of document` (any media node whose `data-testid`/`class`/`aria-label` contains `document` decides the verdict) | `probe_document_render` / `media_verdict` | **live grab 2026-07-27** (#644) — absent on the carousel control |
 
 ## 4. Running the live validation
 
@@ -195,8 +199,9 @@ sudo docker exec -i celery_worker_selenium python - \
 It emits one JSON report:
 
 1. **`document_render`** — the media anchors the post renders (`data-testid` / `class` / `aria-label`)
-   plus a `document` / `image` / `unknown` verdict. Run it against a **document** post to close C1's
-   acceptance, and against an existing carousel post first as a control.
+   plus a `document` / `image` / `unknown` verdict. This is the check that closed C1's acceptance
+   (#644); re-run it against a **document** post after any LinkedIn render change, with an existing
+   carousel post as the control that proves the check still discriminates.
 2. **`post_stats`** — per signal, whether a non-zero value came from the detail page, the analytics
    page, both, or neither, plus the raw label neighbourhoods from each page so a `0` can be read as
    "the post has none" versus "the layout drifted".
@@ -215,11 +220,14 @@ it can compare the API against the scrape's own stored row.
 
 ## 5. Scope updates
 
-**C1 (#390) — native document posts:** implementation complete (publish path, `PostType.DOCUMENT`,
-balancer, migration). Remaining: publish one document post on the live account and run check 1 to
-confirm it renders as a document card — tracked as **#644** (`risk:live-linkedin`, `priority:high`),
-so R1 (#404) closes with this note. No code change is expected; if the verdict comes back `image`,
-the legacy fallback silently took over and the finding is an API-provisioning bug, not a format bug.
+**C1 (#390) — native document posts: CONFIRMED LIVE 2026-07-27 (#644).** A LEM-generated deck was
+published through the versioned `/rest/documents` → `/rest/posts` path on the live account and
+check 1 returned **`verdict: "document"`**, with the document pager anchors present
+(`aria="Go to previous/next page of document"`). The same probe returned **`"image"`** for an
+existing carousel control, so the check discriminates correctly. The legacy image fallback did NOT
+take over: the app is correctly provisioned for document upload and `LI_API_VERSION=202606` is
+current. No provisioning bug; no code change was needed. (The test post was removed from the feed
+after probing — deck CONTENT quality is tracked separately in #728.)
 
 **B2 (#387) — reposts/impressions/saves:** implementation complete and consistent with the live
 layout as of 2026-07-23. Remaining: none from this spike. Split out as **#645**, which is now
