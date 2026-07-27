@@ -79,6 +79,53 @@ branch `feature/claude-issue-<N>`, PR titled `…(closes #N)`, adversarial revie
 Conventions agents follow (so don't fight them in the issue): migrations are timestamp-versioned
 (`V<YYYYMMDDHHMMSS>__name.sql`), ≥80% patch coverage, all repo rules in `CLAUDE.md`.
 
+## Phased work — one phase, one issue
+
+Staged work (research → implementation, or a `2a → 2b → 2c` build order) is normal here. What is
+**not** allowed is describing a later phase only in prose inside an issue that is about to close.
+
+`Closes #N` in a PR body closes #N the instant the PR merges. GitHub does not care that the body
+said "Phase 2 lands in a follow-up PR" — the issue goes closed, drops off every `agent:ready` and
+`needs-human` query, and the remaining work becomes invisible. That is not hypothetical: **#548**
+(avatar likeness/preview/guardrails), **#568** (encrypt LinkedIn secrets at rest, passkeys) and the
+stretch half of **#647** all shipped phase one and lost the rest this way; none of it was noticed
+until an audit of every closed issue re-discovered it and re-filed it as #744, #745 and #746.
+
+**The rule: an issue may be closed only when ALL of its acceptance criteria are met.**
+
+### Writing a phased issue
+- Put **only the phase you want built now** in `## Acceptance`. If the later phase has real scope,
+  it belongs in its own issue, not in a paragraph.
+- If phase two genuinely can't be specified yet (it depends on what the research finds), say so in
+  `## Scope` **and** make "file the follow-up issue for phase two" an explicit acceptance box. Then
+  the phase-two issue exists before this one can honestly close.
+- Title follow-ups so the lineage is obvious: `<original title> — Phase N (follow-up of #<orig>)`,
+  quote the remaining scope from the original, and give it its own testable acceptance.
+- Label the follow-up like any other work — topicals + `agent:ready` + a `priority:*` (+ `risk:*` if
+  merge needs sign-off). An unlabeled follow-up is invisible; see the TL;DR.
+- Cross-link both ways: `Follow-up: #<new>` in the PR body, and a comment on the original issue.
+
+### When you close the first phase
+Before merging a PR that says `Closes #N`, check #N for leftovers — unchecked `- [ ]` boxes you
+didn't implement, or wording like *Phase 2 / Part 2 / next phase / deferred to / out of scope for
+this issue / stretch*. If anything remains, do one of exactly two things:
+
+1. **File the follow-up issue and link it** — then `Closes #N` is honest.
+2. **Drop `Closes #N`** — write "Remaining on #N: …" instead and leave the issue open.
+
+The pipeline enforces this at the merge gate: a PR whose closed issue declares a later phase with no
+linked follow-up is **not merged**. It gets a `🧩 phase-guard` comment, `needs-human` +
+`agent:blocked`, and the owner is assigned. Unchecked boxes alone only produce a warning comment —
+so tick the boxes you actually satisfied, and don't leave a phase living in prose.
+
+Clearing the hold is a two-part manual step — the guard **strips `agent:working`**, and a PR without
+it is invisible to the merge loop no matter how you fixed the scope. So do one of the two above,
+then put the PR back in the flow:
+
+```bash
+gh pr edit <N> --add-label agent:working --remove-label needs-human --remove-label agent:blocked
+```
+
 ## Decision Comments — how to answer when something waits on you
 
 When an agent parks work, it posts a comment titled **“🧑‍⚖️ Human decision needed — reply with
@@ -135,6 +182,12 @@ gh issue list --label agent:ready --state open --limit 200
 # --limit matters: gh returns only 30 rows by default, so a bare list silently misses the tail.
 gh issue list --state open --limit 200 --json number,title,labels \
   --jq '.[] | select((.labels|map(.name)) as $l | ([$l[] | select(startswith("agent:") or . == "needs-human")] | length) == 0) | "#\(.number) \(.title)"'
+
+# Closed issues that may have dropped a later phase (audit the "Phased work" rule).
+# Markers match the merge gate's own list PLUS "stretch" — #647 lost its stretch half and says
+# nothing about a "phase", so a narrower regex reports a false all-clear on exactly that case.
+gh issue list --state closed --limit 300 --json number,title,body \
+  --jq '.[] | select((.body // "") | test("(?i)phase [2-9]|part [2-9]|next phase|later phase|follow-up (pr|issue)|lands? in a follow-up|deferred to|out of scope for this issue|will be handled in|tracked separately|stretch")) | "#\(.number) \(.title)"'
 
 # Put an issue into the flow
 gh issue edit <N> --add-label agent:ready --add-label priority:medium
