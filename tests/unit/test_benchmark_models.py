@@ -449,6 +449,22 @@ class TestRendering:
         assert body.index("bm-2") < body.index("bm-1")
         assert merged.count("| lem-simple |") == 4
 
+    def test_repeated_renders_never_grow_the_table_with_its_own_header(self):
+        """The header and divider are pipe-delimited rows of the right width. Reading them back as
+        DATA appended two junk rows per run and evicted real history at the row cap."""
+        text = (_ROOT / "docs" / "model-benchmarks" / "README.md").read_text()
+        for run_id in ("bm-1", "bm-2", "bm-3"):
+            run = self._run()
+            run["run_id"] = run_id
+            for card in run["scorecards"]:
+                card["benchmark_run_id"] = run_id
+            text = bm.update_leaderboard(text, bm.leaderboard_rows(run))
+        inner = text.split(bm.LEADERBOARD_BEGIN)[1].split(bm.LEADERBOARD_END)[0]
+        rows = [line for line in inner.splitlines() if line.strip().startswith("|")]
+        assert rows[0] == bm.LEADERBOARD_HEADER and rows[1] == bm.LEADERBOARD_DIVIDER
+        assert len(rows) == 2 + 6  # three runs × two scorecards, and nothing else
+        assert bm.LEADERBOARD_HEADER not in rows[2:]
+
     def test_the_committed_leaderboard_has_the_markers(self):
         text = (_ROOT / "docs" / "model-benchmarks" / "README.md").read_text()
         assert bm.LEADERBOARD_BEGIN in text and bm.LEADERBOARD_END in text
@@ -500,7 +516,8 @@ class TestJudge:
         with patch.dict(sys.modules, {}):
             with patch("builtins.__import__", side_effect=ImportError("no client")):
                 verdict = bm.fallback_judge(_suite(), _case(), "out")
-        assert verdict["passes"] is None and verdict["status"] == bm.JUDGE_TIMEOUT
+        # Unscored either way, but distinctly "unreachable" so the runner stops re-asking.
+        assert verdict["passes"] is None and verdict["status"] == bm.JUDGE_UNAVAILABLE
 
 
 # ───────────────────── PostHog evaluation specs + retrieval ──────────────────────
@@ -833,9 +850,13 @@ class TestRunBenchmark:
         evals.create_evaluation.return_value = "e1"
         evals.query.return_value = []
         # The polling deadline itself is covered in TestPostHogEvals with an injected sleep; here
-        # the point is what an EMPTY result set does to the scorecard.
+        # the point is what an EMPTY result set does to the scorecard when the in-runner judge is
+        # unavailable too — unscored, never inferred.
         with patch.object(bm, "emit_generation", return_value="evt-1"), \
-                patch.object(bm, "poll_judge_results", return_value=[]):
+                patch.object(bm, "poll_judge_results", return_value=[]), \
+                patch.object(bm, "fallback_judge",
+                             return_value={"passes": None, "status": bm.JUDGE_TIMEOUT,
+                                           "reasoning": "no judge"}):
             run = bm.run_benchmark(self._suites(), [], {"lem-simple": "champ"},
                                    run_id="bm-1", today="2026-07-27", provider=provider,
                                    evals=evals, judge_cap=10)
@@ -843,6 +864,93 @@ class TestRunBenchmark:
         assert run["scoring_mode"] == bm.SCORING_POSTHOG
         assert card["judge_timeouts"] == 1 and card["judge_pass_rate"] is None
         assert run["gates"] == []
+
+    def test_a_partial_posthog_read_keeps_the_unscored_cases_as_timeouts(self):
+        """Rebuilding a card from the returned rows alone used to DROP the cases PostHog never
+        scored, rendering 1-of-3 verdicts as a 100% judge pass on full evidence."""
+        suites = {"lem-simple": _suite("lem-simple", cases=[
+            _case(cid, assertions=[{"type": "max_chars", "value": 50}]) for cid in ("a", "b", "c")],
+            thresholds={"min_judged": 1})}
+        provider = MagicMock()
+        provider.complete.return_value = {"text": "short", "error": None,
+                                          "latency_ms": 5.0, "usage": {}}
+        evals = MagicMock()
+        evals.list_evaluations.return_value = {bm.evaluation_name("lem-simple"): {"id": "e1"}}
+        with patch.object(bm, "emit_generation", return_value="evt-1"), \
+                patch.object(bm, "poll_judge_results",
+                             return_value=[["a", "lem-simple", "champ", True, "ok"]]), \
+                patch.object(bm, "fallback_judge",
+                             return_value={"passes": None, "status": bm.JUDGE_TIMEOUT,
+                                           "reasoning": "no judge"}):
+            run = bm.run_benchmark(suites, [], {"lem-simple": "champ"}, run_id="bm-1",
+                                   today="2026-07-27", provider=provider, evals=evals,
+                                   judge_cap=10)
+        card = run["scorecards"][0]
+        assert card["judged"] == 1 and card["judge_passed"] == 1
+        assert card["judge_timeouts"] == 2
+
+    def test_a_posthog_run_that_scores_nothing_falls_back_to_the_in_runner_judge(self):
+        """PostHog's judge needs a provider key of its own (it cannot judge via Ollama Cloud). With
+        none configured the evaluations exist but score nothing, so the run degrades rather than
+        reporting evidence the gate can only read as absent."""
+        provider = MagicMock()
+        provider.complete.return_value = {"text": "short answer", "error": None,
+                                          "latency_ms": 5.0, "usage": {}}
+        evals = MagicMock()
+        evals.list_evaluations.return_value = {bm.evaluation_name("lem-simple"): {"id": "e1"}}
+        with patch.object(bm, "emit_generation", return_value="evt-1"), \
+                patch.object(bm, "poll_judge_results", return_value=[]), \
+                patch.object(bm, "emit_metric") as metric, \
+                patch.object(bm, "fallback_judge",
+                             return_value={"passes": True, "status": "scored",
+                                           "reasoning": "grounded"}) as fj:
+            run = bm.run_benchmark(self._suites(), [], {"lem-simple": "champ"},
+                                   run_id="bm-1", today="2026-07-27", provider=provider,
+                                   evals=evals, judge_cap=10)
+        card = run["scorecards"][0]
+        assert fj.called and metric.called
+        assert run["scoring_mode"] == bm.SCORING_FALLBACK
+        assert card["judged"] == 1 and card["judge_pass_rate"] == 1.0
+
+    def test_the_fallback_after_a_dead_posthog_judge_stays_inside_the_cap(self):
+        provider = MagicMock()
+        provider.complete.return_value = {"text": "short", "error": None,
+                                          "latency_ms": 5.0, "usage": {}}
+        evals = MagicMock()
+        evals.list_evaluations.return_value = {bm.evaluation_name("lem-simple"): {"id": "e1"}}
+        with patch.object(bm, "emit_generation", return_value="evt-1"), \
+                patch.object(bm, "poll_judge_results", return_value=[]), \
+                patch.object(bm, "emit_metric"), \
+                patch.object(bm, "fallback_judge",
+                             return_value={"passes": True, "status": "scored",
+                                           "reasoning": ""}) as fj:
+            run = bm.run_benchmark(self._suites(), [], {"lem-simple": "champ"},
+                                   run_id="bm-1", today="2026-07-27", provider=provider,
+                                   evals=evals, judge_cap=1)
+        assert fj.call_count == 0  # the single PostHog trigger already spent the cap
+        assert run["judge_calls"] == 1
+
+    def test_an_unreachable_in_runner_judge_is_asked_once_not_once_per_case(self):
+        suites = {"lem-simple": _suite("lem-simple", cases=[
+            _case(cid, assertions=[{"type": "max_chars", "value": 50}]) for cid in ("a", "b", "c")],
+            thresholds={"min_judged": 1})}
+        provider = MagicMock()
+        provider.complete.return_value = {"text": "short", "error": None,
+                                          "latency_ms": 5.0, "usage": {}}
+        with patch.object(bm, "fallback_judge",
+                          return_value={"passes": None, "status": bm.JUDGE_UNAVAILABLE,
+                                        "reasoning": "connection refused"}) as fj:
+            run = bm.run_benchmark(suites, [], {"lem-simple": "champ"}, run_id="bm-1",
+                                   today="2026-07-27", provider=provider, evals=None,
+                                   judge_cap=10)
+        assert fj.call_count == 1
+        assert run["scorecards"][0]["judge_timeouts"] == 3
+
+    def test_a_candidate_that_already_serves_the_tier_is_never_self_compared(self):
+        run = bm.run_benchmark(self._suites(), ["champ"], {"lem-simple": "champ"},
+                               run_id="bm-1", today="2026-07-27", dry_run=True, judge_cap=10)
+        assert [c["role"] for c in run["scorecards"]] == ["champion"]
+        assert run["gates"] == [] and run["recommendations"] == []
 
     def test_posthog_verdicts_are_merged_back_onto_the_right_scorecard(self):
         provider = MagicMock()

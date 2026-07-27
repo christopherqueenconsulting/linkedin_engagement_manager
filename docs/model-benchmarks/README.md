@@ -32,8 +32,12 @@ Two scoring layers, in this order:
 2. **LLM judge** (paid, capped) — PostHog Evaluations scoring the harness's own tagged
    `$ai_generation` events, filtered to a `benchmark_run_id` so it can never bill against
    production traffic. With no judge provider configured, the runner degrades to an in-runner
-   `lem-medium` judge and emits `$ai_metric`. A verdict that never arrives is `judge:timeout` —
-   never a fabricated score. The report names the mode it ran in.
+   `lem-medium` judge and emits `$ai_metric` — that degradation is decided by the RESULT, not by
+   config the runner cannot see: PostHog's judge needs a provider key of its own (it cannot judge
+   via Ollama Cloud), so a run whose evaluations exist but score nothing spends what is left of the
+   cap on the in-runner judge and reports the mode as `posthog-evals+in-runner-judge`. A verdict
+   that never arrives either way is `judge:timeout` — never a fabricated score, and never dropped
+   from the scorecard, so a partial read cannot render as a full-marks judge pass.
 
 Suite inputs are **synthetic** prompt templates in `tests/benchmarks/model_tiers/`. No customer
 content, credentials or production logs appear in a report; the renderer refuses any run that is

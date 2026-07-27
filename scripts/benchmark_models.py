@@ -82,14 +82,22 @@ BENCHMARK_DISTINCT_ID = "model-benchmark"
 
 SCORING_POSTHOG = "posthog-evals"
 SCORING_FALLBACK = "in-runner-judge"
+SCORING_MIXED = "posthog-evals+in-runner-judge"
 SCORING_DETERMINISTIC = "deterministic-only"
 SCORING_DRY_RUN = "dry-run-canned"
 
 JUDGE_TIMEOUT = "judge:timeout"
+# Kept apart from JUDGE_TIMEOUT so the runner can tell "this answer confused the judge" (retry the
+# next case) from "the judge is not reachable at all" (stop asking). Both are still unscored.
+JUDGE_UNAVAILABLE = "judge:unavailable"
 
 LEADERBOARD_BEGIN = "<!-- LEADERBOARD:BEGIN -->"
 LEADERBOARD_END = "<!-- LEADERBOARD:END -->"
 LEADERBOARD_MAX_ROWS = 400
+LEADERBOARD_COLUMNS = ("Date", "Run", "Tier", "Model", "Role", "Deterministic", "Judge", "p50",
+                       "Verdict")
+LEADERBOARD_HEADER = "| " + " | ".join(LEADERBOARD_COLUMNS) + " |"
+LEADERBOARD_DIVIDER = "|" + "---|" * len(LEADERBOARD_COLUMNS)
 
 _OLLAMA_MARKER = "OLLAMA_CLOUD_URL"
 
@@ -790,7 +798,14 @@ def _row_key(row: dict) -> tuple:
 
 def _parse_row(line: str) -> Optional[dict]:
     cells = [c.strip() for c in line.strip().strip("|").split("|")]
-    if len(cells) != 9:
+    if len(cells) != len(LEADERBOARD_COLUMNS):
+        return None
+    # The table's own header and divider are pipe-delimited rows of the right width. Reading them
+    # back as DATA is how a rolling table quietly grows two junk rows per render and evicts real
+    # history at the row cap, so they are recognised and dropped here rather than re-emitted.
+    if [c.strip("`") for c in cells] == list(LEADERBOARD_COLUMNS):
+        return None
+    if all(c and set(c.strip("`")) <= {"-", ":"} for c in cells):
         return None
     return {"date": cells[0], "run_id": cells[1].strip("`"), "tier": cells[2],
             "model": cells[3].strip("`"), "role": cells[4], "deterministic": cells[5],
@@ -802,8 +817,7 @@ def update_leaderboard(text: str, rows: list) -> str:
 
     Re-running the same run id REPLACES its rows rather than appending duplicates, so a re-render
     (a failed PR retried, a `--render` of an older results file) is idempotent."""
-    header = ["| Date | Run | Tier | Model | Role | Deterministic | Judge | p50 | Verdict |",
-              "|---|---|---|---|---|---|---|---|---|"]
+    header = [LEADERBOARD_HEADER, LEADERBOARD_DIVIDER]
     body = str(text or "")
     if LEADERBOARD_BEGIN in body and LEADERBOARD_END in body:
         before, rest = body.split(LEADERBOARD_BEGIN, 1)
@@ -1188,8 +1202,21 @@ def fallback_judge(suite: dict, case: dict, output: str) -> dict:
             temperature=0, max_tokens=200)
         return parse_judge_verdict(response.choices[0].message.content)
     except Exception as exc:  # noqa: BLE001 - an unavailable judge is unscored, never a pass
-        return {"passes": None, "status": JUDGE_TIMEOUT,
+        return {"passes": None, "status": JUDGE_UNAVAILABLE,
                 "reasoning": f"fallback judge unavailable: {str(exc)[:120]}"}
+
+
+def flush_events() -> None:
+    """Drain posthog-python's background batch queue.
+
+    The manual eval-run endpoint is keyed by the generation's event uuid, so triggering it while
+    that event is still sitting in the client's queue asks PostHog to score something it has never
+    seen. Best-effort: a client that was never configured has nothing to flush."""
+    try:
+        import posthog
+        posthog.flush()
+    except Exception:  # noqa: BLE001 - flushing is best-effort, never a run failure
+        pass
 
 
 def poll_judge_results(evals: "PostHogEvals", run_id: str, expected: int,
@@ -1235,6 +1262,13 @@ def run_benchmark(suites: dict, models: list, champions: dict, *, run_id: str, t
         if champion:
             targets.append((tier, champion, "champion"))
         for model in models:
+            if model == champion:
+                # Benchmarking a model against ITSELF ties every expectation, which the gate reads
+                # as meets-or-beats and would emit as a `X -> X` swap recommendation straight into
+                # the retirement-map block. It is not a comparison; skip the tier.
+                print(f"  {model} already serves {tier} — skipping it as a candidate there",
+                      file=sys.stderr)
+                continue
             targets.append((tier, model, "candidate"))
 
     scoring_mode = SCORING_DRY_RUN if dry_run else (
@@ -1259,7 +1293,9 @@ def run_benchmark(suites: dict, models: list, champions: dict, *, run_id: str, t
     scorecards: list = []
     judge_budget = max(0, int(judge_cap))
     judge_spent = 0
+    fallback_down = False  # the in-runner judge answered "unreachable" — stop asking it
     pending: list = []  # (tier, model, role, case_id, event_id) awaiting PostHog verdicts
+    awaiting: list = []  # (card, suite, outputs, judge_results) whose verdicts PostHog still owes
 
     for tier, model, role in targets:
         suite = suites[tier]
@@ -1292,6 +1328,8 @@ def run_benchmark(suites: dict, models: list, champions: dict, *, run_id: str, t
 
         judge_results: dict = {}
         if judge_enabled:
+            if evals is not None and not dry_run:
+                flush_events()
             planned = plan_judge_calls(case_results, suite, judge_budget - judge_spent)
             skipped = len(judgeable_cases(case_results, suite)) - len(planned)
             if skipped > 0:
@@ -1318,28 +1356,66 @@ def run_benchmark(suites: dict, models: list, champions: dict, *, run_id: str, t
                                   file=sys.stderr)
                     judge_results[case_id] = {"passes": None, "status": JUDGE_TIMEOUT,
                                               "reasoning": "awaiting PostHog verdict"}
+                elif fallback_down:
+                    # The judge answered the FIRST case with "I am not reachable". Re-asking it
+                    # forty more times costs the openai client's retry budget per case and cannot
+                    # produce a verdict, so the rest of the run is unscored deliberately.
+                    judge_results[case_id] = {"passes": None, "status": JUDGE_UNAVAILABLE,
+                                              "reasoning": "fallback judge unavailable"}
+                    continue
                 else:
                     verdict = fallback_judge(suite, case, outputs.get(case_id) or "")
                     judge_results[case_id] = verdict
-                    emit_metric(run_id, tier, case_id, model, verdict)
+                    if verdict.get("status") == JUDGE_UNAVAILABLE:
+                        fallback_down = True
+                        print(f"  ! in-runner judge unreachable ({verdict.get('reasoning')}) — "
+                              "the remaining cases are reported unscored", file=sys.stderr)
+                    else:
+                        emit_metric(run_id, tier, case_id, model, verdict)
                 judge_spent += 1
 
         card = merge_scorecard(tier, model, role, case_results, judge_results, timings)
         card["benchmark_run_id"] = run_id
         scorecards.append(card)
+        if evals is not None and judge_enabled and not dry_run and judge_results:
+            awaiting.append((card, suite, outputs, judge_results))
 
-    if evals is not None and judge_enabled and not dry_run and judge_spent:
+    if awaiting and judge_spent:
         rows = poll_judge_results(evals, run_id, judge_spent, judge_timeout_seconds())
-        for card in scorecards:
-            verdicts = merge_judge_events(rows, card["model"], card["tier"])
-            if verdicts:
-                merged = merge_scorecard(card["tier"], card["model"], card["role"],
-                                         card["case_results"], verdicts,
-                                         {r["case_id"]: {"latency_ms": None} for r in
-                                          card["case_results"]})
-                for key in ("judged", "judge_passed", "judge_timeouts", "judge_pass_rate",
-                            "judge_notes"):
-                    card[key] = merged[key]
+        posthog_scored = fallback_used = False
+        for card, suite, outputs, judge_results in awaiting:
+            # UPDATE, never replace: a case PostHog never scored has to stay in the dict as a
+            # timeout. Rebuilding the card from the returned rows alone drops it entirely, and a
+            # partial read would then render as a full-marks judge pass on a cherry-picked subset.
+            judge_results.update(merge_judge_events(rows, card["model"], card["tier"]))
+            posthog_scored = posthog_scored or any(v.get("passes") is not None
+                                                   for v in judge_results.values())
+            # PostHog accepted the events but scored none of them — the documented degraded case
+            # (its judge needs a provider key of its own; it cannot judge via Ollama Cloud). Spend
+            # what is left of the cap on the in-runner judge rather than reporting a run whose
+            # every case is unscorable, which the gate can only ever read as no evidence at all.
+            for case_id in sorted(judge_results):
+                if judge_results[case_id].get("passes") is not None or fallback_down:
+                    continue
+                if judge_spent >= judge_budget:
+                    break
+                replacement = fallback_judge(suite, _case_by_id(suite, case_id),
+                                             outputs.get(case_id) or "")
+                judge_spent += 1
+                if replacement.get("status") == JUDGE_UNAVAILABLE:
+                    fallback_down = True
+                if replacement.get("passes") is None:
+                    continue
+                judge_results[case_id] = replacement
+                emit_metric(run_id, card["tier"], case_id, card["model"], replacement)
+                fallback_used = True
+            merged = merge_scorecard(card["tier"], card["model"], card["role"],
+                                     card["case_results"], judge_results, {})
+            for key in ("judged", "judge_passed", "judge_timeouts", "judge_pass_rate",
+                        "judge_notes"):
+                card[key] = merged[key]
+        if fallback_used:
+            scoring_mode = SCORING_MIXED if posthog_scored else SCORING_FALLBACK
 
     gates = gate_run(scorecards, suites)
     recommendations = swap_recommendations(gates)
