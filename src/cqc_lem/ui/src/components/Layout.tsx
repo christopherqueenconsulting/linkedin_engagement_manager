@@ -2,6 +2,7 @@ import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import AccountReadinessBanner from './AccountReadinessBanner'
 import FeedbackWidget from './FeedbackWidget'
+import FloatingDock from './FloatingDock'
 import Footer from './Footer'
 import PostHogSurveyModal from './PostHogSurveyModal'
 import ShippedNotice from './ShippedNotice'
@@ -81,7 +82,11 @@ export default function Layout() {
         <Outlet />
       </main>
       <Footer />
-      <FeedbackWidget />
+      {/* Shared bottom-right stack — page-level floating controls (Settings' Save All) portal in
+          here so nothing can be buried under the feedback launcher again (issue #596). */}
+      <FloatingDock>
+        <FeedbackWidget />
+      </FloatingDock>
       {/* Survey modal — renders only when the server says a survey is due (issue #501) */}
       {user && <SurveyModal />}
       {/* PostHog-targeted NPS/CSAT, drawn in LEM's own chrome (issue #653). Stands down whenever

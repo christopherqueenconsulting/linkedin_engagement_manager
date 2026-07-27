@@ -111,7 +111,7 @@ export default function FeedbackWidget() {
           ensureSessionRecorded()
           capture(EVENTS.feedbackOpened, { route: location.pathname })
         }}
-        className="fixed bottom-4 right-4 z-40 bg-blue-600 text-white text-xs font-semibold px-3.5 py-2 rounded-full shadow-lg hover:bg-blue-700 transition-colors"
+        className="bg-blue-600 text-white text-xs font-semibold px-3.5 py-2 rounded-full shadow-lg hover:bg-blue-700 transition-colors"
         aria-label="Feedback / Report a bug"
       >
         Feedback / Report a bug
@@ -120,7 +120,9 @@ export default function FeedbackWidget() {
   }
 
   return (
-    <div className="fixed bottom-4 right-4 z-40 w-[22rem] max-w-[calc(100vw-2rem)] bg-white border border-gray-200 rounded-xl shadow-xl p-4">
+    // Positioned by FloatingDock (issue #596); `relative` keeps the close button anchored to the
+    // panel now that the panel is no longer the fixed element.
+    <div className="relative w-[22rem] max-w-[calc(100vw-2rem)] bg-white border border-gray-200 rounded-xl shadow-xl p-4">
       <button
         onClick={close}
         className="absolute top-2 right-3 text-gray-400 hover:text-gray-600 text-xl leading-none"
