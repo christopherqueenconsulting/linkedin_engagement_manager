@@ -11,6 +11,7 @@ from typing import Optional, Any
 from urllib.parse import urlparse, urlunparse
 
 from cqc_lem import assets_dir
+from cqc_lem.api.spa_assets import ArchivedStaticFiles, spa_index_headers, sync_build_to_archive
 from cqc_lem.app.aws_test_celery_task import test_get_my_profile
 from cqc_lem.app.run_automation import (
     automate_invites_to_company_page_for_user, automate_reply_commenting,
@@ -120,7 +121,6 @@ from fastapi.responses import JSONResponse
 from fastapi.responses import HTMLResponse
 from fastapi.responses import RedirectResponse
 from fastapi.responses import StreamingResponse
-from fastapi.staticfiles import StaticFiles
 from linkedin_api.clients.auth.client import AuthClient
 from linkedin_api.clients.restli.client import RestliClient
 from linkedin_api.common.errors import ResponseFormattingError
@@ -4436,28 +4436,21 @@ async def assets_compat_redirect(request: Request, file_name: Optional[str] = No
 if os.path.isdir(_ui_dist):
     _spa_index = os.path.join(_ui_dist, "index.html")
 
-    class _ImmutableStaticFiles(StaticFiles):
-        # Vite emits content-hashed filenames, so assets can be cached forever.
-        # (CDN edge cache is also purged on each deploy via build-and-push.yml.)
-        async def get_response(self, path, scope):
-            response = await super().get_response(path, scope)
-            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-            return response
+    _spa_assets_dir = os.path.join(_ui_dist, "assets")
 
-    # Serve static assets (JS/CSS/icons) from the dist root
-    app.mount("/assets", _ImmutableStaticFiles(directory=os.path.join(_ui_dist, "assets")), name="spa-assets")
+    # Retain this build's chunks so a tab opened before the deploy can still load the lazy ones it
+    # was holding hashes for (issue #743). No-op unless SPA_ASSET_ARCHIVE_DIR is configured.
+    sync_build_to_archive(_spa_assets_dir)
+
+    # Vite emits content-hashed filenames, so assets can be cached forever, and a miss falls back to
+    # a previously-deployed build. (CDN edge cache is also purged on each deploy via build-and-push.yml.)
+    app.mount("/assets", ArchivedStaticFiles(directory=_spa_assets_dir), name="spa-assets")
 
     @app.get("/{full_path:path}", response_class=HTMLResponse, include_in_schema=False)
     def serve_spa(full_path: str):
         with open(_spa_index) as fh:
-            # The HTML shell references hashed asset filenames, so it must NEVER be
-            # cached by browsers or the CDN — otherwise a stale shell points at an
-            # old bundle after every deploy. (Cloudflare must respect this; if a
-            # "Cache Everything" rule overrides it, the rule needs an HTML bypass.)
-            return HTMLResponse(content=fh.read(), headers={
-                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-                "Pragma": "no-cache",
-            })
+            # spa_index_headers() owns the no-store contract — see the note there.
+            return HTMLResponse(content=fh.read(), headers=spa_index_headers())
 
 
 def send_bytes_range_requests(

@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../api/client'
 import { useAuth } from '../contexts/AuthContext'
+import { importWithChunkRecovery } from '../utils/chunkReload'
 
 const PACKAGES = [
   { key: 'starter', price: '$5',  credits: 1,  label: '1 Training',     badge: '',           savings: '' },
@@ -81,7 +82,9 @@ export default function Avatars() {
       if (!files || files.length === 0) throw new Error('Please select photos to upload.')
       if (!triggerWord.trim()) throw new Error('Trigger word is required.')
 
-      const { default: JSZip } = await import('jszip')
+      // react-query catches this rejection, so the window-level handler would never see it —
+      // the wrapper is what makes a stale jszip chunk self-heal instead of failing the training.
+      const { default: JSZip } = await importWithChunkRecovery(() => import('jszip'))
       const zip = new JSZip()
       Array.from(files).forEach((f) => zip.file(f.name, f))
       const zipBlob = await zip.generateAsync({ type: 'blob' })
