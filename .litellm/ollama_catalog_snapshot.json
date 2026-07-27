@@ -1,0 +1,114 @@
+{
+  "_comment": "Committed snapshot of ollama.com/api/tags, refreshed by scripts/model_health_check.py --catalog-apply. New tags here vs the live catalog become ONE agent:ready evaluation issue; do not hand-edit.",
+  "updated": "2026-07-27",
+  "models": {
+    "deepseek-v4-flash": {
+      "modified_at": "2026-04-24T00:00:00Z",
+      "size": 140000000000,
+      "parameter_size": "",
+      "family": ""
+    },
+    "deepseek-v4-pro": {
+      "modified_at": "2026-04-24T00:00:00Z",
+      "size": 1600000000000,
+      "parameter_size": "",
+      "family": ""
+    },
+    "gemma4:31b": {
+      "modified_at": "2026-04-02T09:00:00-08:00",
+      "size": 62546177752,
+      "parameter_size": "",
+      "family": ""
+    },
+    "glm-5.1": {
+      "modified_at": "2026-04-07T08:00:00-07:00",
+      "size": 1507728316928,
+      "parameter_size": "",
+      "family": ""
+    },
+    "glm-5.2": {
+      "modified_at": "2026-06-16T08:00:00-07:00",
+      "size": 0,
+      "parameter_size": "",
+      "family": ""
+    },
+    "gpt-oss:120b": {
+      "modified_at": "2025-08-05T00:00:00Z",
+      "size": 65290180781,
+      "parameter_size": "",
+      "family": ""
+    },
+    "gpt-oss:20b": {
+      "modified_at": "2025-08-05T00:00:00Z",
+      "size": 13780162412,
+      "parameter_size": "",
+      "family": ""
+    },
+    "kimi-k2.5": {
+      "modified_at": "2026-01-26T00:00:00Z",
+      "size": 1118481408000,
+      "parameter_size": "",
+      "family": ""
+    },
+    "kimi-k2.6": {
+      "modified_at": "2026-03-31T00:00:00Z",
+      "size": 595148192736,
+      "parameter_size": "",
+      "family": ""
+    },
+    "kimi-k2.7-code": {
+      "modified_at": "2026-06-12T00:00:00Z",
+      "size": 595148192736,
+      "parameter_size": "",
+      "family": ""
+    },
+    "minimax-m2.5": {
+      "modified_at": "2026-02-12T00:00:00Z",
+      "size": 230000000000,
+      "parameter_size": "",
+      "family": ""
+    },
+    "minimax-m2.7": {
+      "modified_at": "2026-03-18T00:00:00Z",
+      "size": 480836588544,
+      "parameter_size": "",
+      "family": ""
+    },
+    "minimax-m3": {
+      "modified_at": "2026-06-01T00:00:00Z",
+      "size": 0,
+      "parameter_size": "",
+      "family": ""
+    },
+    "mistral-large-3:675b": {
+      "modified_at": "2025-12-02T00:00:00Z",
+      "size": 682000000000,
+      "parameter_size": "",
+      "family": ""
+    },
+    "nemotron-3-nano:30b": {
+      "modified_at": "2025-12-15T00:00:00Z",
+      "size": 32645090390,
+      "parameter_size": "",
+      "family": ""
+    },
+    "nemotron-3-super": {
+      "modified_at": "2026-03-11T00:00:00Z",
+      "size": 230500000000,
+      "parameter_size": "",
+      "family": ""
+    },
+    "nemotron-3-ultra": {
+      "modified_at": "2026-06-04T00:00:00Z",
+      "size": 0,
+      "parameter_size": "",
+      "family": ""
+    },
+    "qwen3.5:397b": {
+      "modified_at": "2026-02-16T00:00:00Z",
+      "size": 397000000000,
+      "parameter_size": "",
+      "family": ""
+    }
+  }
+}

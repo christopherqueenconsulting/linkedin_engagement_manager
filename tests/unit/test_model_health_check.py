@@ -1,6 +1,7 @@
 """Unit tests for scripts/model_health_check.py — the pure planning/rewriting logic."""
 
 import importlib.util
+import json
 import pathlib
 
 import pytest
@@ -8,10 +9,14 @@ import pytest
 pytestmark = pytest.mark.unit
 
 # The tool lives under scripts/ (not an importable package) — load it by path.
-_PATH = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "model_health_check.py"
+_ROOT = pathlib.Path(__file__).resolve().parents[2]
+_PATH = _ROOT / "scripts" / "model_health_check.py"
 _spec = importlib.util.spec_from_file_location("model_health_check", _PATH)
 mhc = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mhc)
+
+# Real captures of the two sources the proactive scan reads (issue #716).
+FIXTURES = _ROOT / "tests" / "unit" / "fixtures" / "ollama"
 
 
 def _cfg():
@@ -165,3 +170,625 @@ class TestApplySwaps:
                 "      model: openai/gpt-oss:20b\n")
         new, n = mhc.apply_swaps(text, [{"old": "openai/gpt-oss:20b", "new": "openai/gpt-oss:21b"}])
         assert n == 2 and "20b" not in new
+
+
+# ══════════════════ issue #716 — proactive scan (advance retirements, catalog, families) ═════════
+
+def _cloud_md():
+    return (FIXTURES / "cloud.md").read_text()
+
+
+def _tags():
+    return json.loads((FIXTURES / "tags.json").read_text())
+
+
+def _ollama_cfg(*models):
+    return {"model_list": [
+        {"model_name": "lem-medium", "litellm_params": {
+            "model": f"openai/{m}", "api_base": "os.environ/OLLAMA_CLOUD_URL"}}
+        for m in models]}
+
+
+class TestParseRetirements:
+    def test_real_cloud_md_upcoming_rows(self):
+        rows = mhc.parse_retirements(_cloud_md())
+        upcoming = {r["model"]: r for r in rows if r["upcoming"]}
+        assert upcoming["minimax-m2.5"] == {"model": "minimax-m2.5", "alternative": "minimax-m2.7",
+                                            "date": "2026-07-31", "upcoming": True}
+        assert upcoming["kimi-k2.5"]["alternative"] == "kimi-k2.6"
+
+    def test_past_accordion_rows_inherit_the_accordion_date(self):
+        rows = {r["model"]: r for r in mhc.parse_retirements(_cloud_md()) if not r["upcoming"]}
+        assert rows["kimi-k2:1t"]["date"] == "2026-06-16"       # June 16, 2026 accordion
+        assert rows["ministral-3:8b"]["date"] == "2026-07-15"   # July 15, 2026 accordion
+        assert rows["qwen3-coder:480b"]["alternative"] == "qwen3.5:397b"
+
+    def test_missing_alternative_is_none_not_empty_string(self):
+        rows = {r["model"]: r for r in mhc.parse_retirements(_cloud_md())}
+        assert rows["devstral-small-2:24b"]["alternative"] is None
+
+    def test_header_and_separator_rows_are_not_models(self):
+        names = {r["model"] for r in mhc.parse_retirements(_cloud_md())}
+        assert not any(n.lower() in {"model", "retirement date", "recommended alternative"}
+                       for n in names)
+        assert not any(set(n) <= {"-", ":"} for n in names)
+
+    def test_tables_outside_the_retirements_section_are_ignored(self):
+        md = ("## Something else\n\n| Model | Recommended alternative |\n"
+              "| ----- | ----------------------- |\n| `not-a-retirement` | `x` |\n"
+              "\n## Retirements\n\n### Upcoming retirements\n\n"
+              "| Retirement date | Model | Recommended alternative |\n"
+              "| --- | --- | --- |\n| March 3, 2027 | `real-1` | `real-2` |\n")
+        rows = mhc.parse_retirements(md)
+        assert [r["model"] for r in rows] == ["real-1"]
+        assert rows[0]["date"] == "2027-03-03"
+
+    def test_unparseable_or_empty_input_is_empty(self):
+        assert mhc.parse_retirements("") == []
+        assert mhc.parse_retirements(None) == []
+
+    def test_parse_doc_date_rejects_garbage(self):
+        assert mhc.parse_doc_date("Smarch 3, 2026") is None
+        assert mhc.parse_doc_date("February 31, 2026") is None
+        assert mhc.parse_doc_date("") is None
+
+
+class TestRetirementNotices:
+    def _rows(self, *models):
+        return mhc.parse_deployments(_ollama_cfg(*models))
+
+    def test_future_retirement_of_a_configured_model_alerts_and_maps(self):
+        notices, additions = mhc.plan_retirement_notices(
+            self._rows("minimax-m2.5"), mhc.parse_retirements(_cloud_md()), {}, "2026-07-20",
+            mhc.parse_catalog(_tags()))
+        assert [n["bare"] for n in notices] == ["minimax-m2.5"]
+        assert notices[0]["date"] == "2026-07-31" and notices[0]["days_until"] == 11
+        assert notices[0]["mapped"] is False
+        assert additions == {"minimax-m2.5": "minimax-m2.7"}
+
+    def test_already_past_retirement_is_the_410_probes_job(self):
+        notices, additions = mhc.plan_retirement_notices(
+            self._rows("minimax-m2.5"), mhc.parse_retirements(_cloud_md()), {}, "2026-08-01", None)
+        assert notices == [] and additions == {}
+
+    def test_same_day_is_not_future(self):
+        notices, _ = mhc.plan_retirement_notices(
+            self._rows("minimax-m2.5"), mhc.parse_retirements(_cloud_md()), {}, "2026-07-31", None)
+        assert notices == []
+
+    def test_already_mapped_still_notices_but_adds_nothing(self):
+        notices, additions = mhc.plan_retirement_notices(
+            self._rows("minimax-m2.5"), mhc.parse_retirements(_cloud_md()),
+            {"minimax-m2.5": "minimax-m2.7"}, "2026-07-20", None)
+        assert notices[0]["mapped"] is True
+        assert additions == {}
+
+    def test_alternative_missing_from_the_catalog_is_never_auto_mapped(self):
+        retirements = [{"model": "minimax-m2.5", "alternative": "ghost-model",
+                        "date": "2026-07-31", "upcoming": True}]
+        notices, additions = mhc.plan_retirement_notices(
+            self._rows("minimax-m2.5"), retirements, {}, "2026-07-20", {"minimax-m2.7": {}})
+        assert notices[0]["alternative_in_catalog"] is False
+        assert additions == {}
+
+    def test_no_published_alternative_alerts_without_writing_remove(self):
+        retirements = [{"model": "minimax-m2.5", "alternative": None,
+                        "date": "2026-07-31", "upcoming": True}]
+        notices, additions = mhc.plan_retirement_notices(
+            self._rows("minimax-m2.5"), retirements, {}, "2026-07-20", None)
+        assert notices and notices[0]["alternative"] is None
+        assert additions == {}
+
+    def test_unconfigured_models_are_not_our_problem(self):
+        notices, additions = mhc.plan_retirement_notices(
+            self._rows("gpt-oss:20b"), mhc.parse_retirements(_cloud_md()), {}, "2026-07-20", None)
+        assert notices == [] and additions == {}
+
+    def test_non_ollama_deployment_is_never_noticed(self):
+        cfg = {"model_list": [{"model_name": "lem-medium", "litellm_params": {
+            "model": "openai/minimax-m2.5", "api_key": "os.environ/OPENAI_API_KEY"}}]}
+        notices, _ = mhc.plan_retirement_notices(
+            mhc.parse_deployments(cfg), mhc.parse_retirements(_cloud_md()), {}, "2026-07-20", None)
+        assert notices == []
+
+
+class TestAppendUpgradeMappings:
+    MAP = ('# header comment\nupgrades:\n  # existing\n  "kimi-k2:1t": "REMOVE"\n')
+
+    def test_appends_inside_the_block_and_keeps_comments(self):
+        text, added = mhc.append_upgrade_mappings(self.MAP, {"minimax-m2.5": "minimax-m2.7"},
+                                                  "2026-07-20")
+        assert added == ["minimax-m2.5"]
+        assert "# header comment" in text and '"kimi-k2:1t": "REMOVE"' in text
+        assert '  "minimax-m2.5": "minimax-m2.7"' in text
+        assert mhc.load_map(mhc.load_map_text(text)) == {"kimi-k2:1t": "REMOVE",
+                                                         "minimax-m2.5": "minimax-m2.7"}
+
+    def test_existing_key_is_never_duplicated(self):
+        text, added = mhc.append_upgrade_mappings(self.MAP, {"kimi-k2:1t": "kimi-k2.6"},
+                                                  "2026-07-20")
+        assert added == [] and text == self.MAP
+
+    def test_is_idempotent(self):
+        once, _ = mhc.append_upgrade_mappings(self.MAP, {"a": "b"}, "2026-07-20")
+        twice, added = mhc.append_upgrade_mappings(once, {"a": "b"}, "2026-07-21")
+        assert twice == once and added == []
+
+    def test_creates_the_block_when_the_file_has_none(self):
+        text, added = mhc.append_upgrade_mappings("# only a comment\n", {"a": "b"}, "2026-07-20")
+        assert added == ["a"]
+        assert mhc.load_map(mhc.load_map_text(text)) == {"a": "b"}
+
+    def test_does_not_append_past_the_block_into_a_later_section(self):
+        src = 'upgrades:\n  "a": "b"\n\nother:\n  "x": "y"\n'
+        text, _ = mhc.append_upgrade_mappings(src, {"c": "d"}, "2026-07-20")
+        assert text.index('"c": "d"') < text.index("other:")
+        assert mhc.load_map(mhc.load_map_text(text)) == {"a": "b", "c": "d"}
+
+
+class TestCatalogSnapshot:
+    def test_parse_catalog_from_the_real_tags_payload(self):
+        catalog = mhc.parse_catalog(_tags())
+        assert "minimax-m3" in catalog and "gpt-oss:20b" in catalog
+        assert catalog["gpt-oss:20b"]["size"] > 0
+
+    def test_parse_catalog_tolerates_junk_rows(self):
+        assert mhc.parse_catalog({"models": [None, {}, {"name": "  "}, {"model": "x"}]}) == {
+            "x": {"modified_at": "", "size": 0, "parameter_size": "", "family": ""}}
+        assert mhc.parse_catalog(None) == {}
+
+    def test_snapshot_round_trip(self):
+        catalog = mhc.parse_catalog(_tags())
+        assert mhc.load_snapshot_text(mhc.render_snapshot(catalog, "2026-07-27")) == catalog
+
+    def test_snapshot_of_unreadable_json_is_empty_not_an_exception(self):
+        assert mhc.load_snapshot_text("{not json") == {}
+
+    def test_diff_reports_added_and_removed(self):
+        assert mhc.diff_catalog({"a": {}, "b": {}}, {"b": {}, "c": {}}) == {"added": ["c"],
+                                                                            "removed": ["a"]}
+
+    def test_committed_snapshot_matches_the_real_catalog_shape(self):
+        snapshot = mhc.load_snapshot_text((_ROOT / ".litellm"
+                                           / "ollama_catalog_snapshot.json").read_text())
+        assert snapshot, "the committed snapshot must not be empty — an empty one files every tag"
+        assert "gpt-oss:20b" in snapshot  # a model config.yaml actually runs
+
+
+class TestParseModelVersion:
+    @pytest.mark.parametrize("name,family,version,size_tag", [
+        ("minimax-m2.7", "minimax", (2, 7), ""),
+        ("minimax-m3", "minimax", (3,), ""),
+        ("qwen3.5:397b", "qwen", (3, 5), "397b"),
+        ("glm-5.1", "glm", (5, 1), ""),
+        ("glm-5.2", "glm", (5, 2), ""),
+        ("kimi-k2.6", "kimi", (2, 6), ""),
+        ("kimi-k2.7-code", "kimi-code", (2, 7), ""),
+        ("kimi-k2:1t", "kimi", (2,), "1t"),
+        ("gemma4:31b", "gemma", (4,), "31b"),
+        ("gemma3:12b", "gemma", (3,), "12b"),
+        ("deepseek-v4-flash", "deepseek-flash", (4,), ""),
+        ("deepseek-v4-pro", "deepseek-pro", (4,), ""),
+        ("nemotron-3-nano:30b", "nemotron-nano", (3,), "30b"),
+        ("nemotron-3-super", "nemotron-super", (3,), ""),
+        ("nemotron-3-ultra", "nemotron-ultra", (3,), ""),
+        ("mistral-large-3:675b", "mistral-large", (3,), "675b"),
+        ("qwen3-coder:480b", "qwen-coder", (3,), "480b"),
+        ("ministral-3:8b", "ministral", (3,), "8b"),
+        ("gpt-oss:20b", "gpt-oss", None, "20b"),      # size-tagged, not versioned
+        ("gpt-oss:120b", "gpt-oss", None, "120b"),
+    ])
+    def test_real_catalog_names(self, name, family, version, size_tag):
+        assert mhc.parse_model_version(name) == (family, version, size_tag)
+
+    def test_every_live_catalog_tag_parses(self):
+        for name in mhc.parse_catalog(_tags()):
+            family, _version, _tag = mhc.parse_model_version(name)
+            assert family, name
+
+    def test_empty_input(self):
+        assert mhc.parse_model_version("") == ("", None, "")
+        assert mhc.parse_model_version(None) == ("", None, "")
+
+    def test_version_str(self):
+        assert mhc.version_str((2, 7)) == "2.7"
+        assert mhc.version_str(None) == "unversioned"
+        assert mhc.version_str(()) == "unversioned"
+
+
+class TestPlanFamilyUpgrades:
+    def _rows(self, *models):
+        return mhc.parse_deployments(_ollama_cfg(*models))
+
+    def test_major_bump_against_the_real_catalog(self):
+        out = mhc.plan_family_upgrades(self._rows("minimax-m2.7"), mhc.parse_catalog(_tags()))
+        assert len(out) == 1
+        assert out[0]["candidate"] == "minimax-m3" and out[0]["urgency"] == "major"
+        assert out[0]["groups"] == ["lem-medium"]
+
+    def test_minor_bump_is_reported_at_lower_urgency(self):
+        out = mhc.plan_family_upgrades(self._rows("glm-5.1"), mhc.parse_catalog(_tags()))
+        assert out[0]["candidate"] == "glm-5.2" and out[0]["urgency"] == "minor"
+
+    def test_current_newest_produces_nothing(self):
+        assert mhc.plan_family_upgrades(self._rows("minimax-m3"), mhc.parse_catalog(_tags())) == []
+        assert mhc.plan_family_upgrades(self._rows("qwen3.5:397b"),
+                                        mhc.parse_catalog(_tags())) == []
+
+    def test_a_variant_is_never_offered_as_the_base_models_upgrade(self):
+        # kimi-k2.7-code is a coding variant, not a newer kimi-k2.6.
+        assert mhc.plan_family_upgrades(self._rows("kimi-k2.6"), mhc.parse_catalog(_tags())) == []
+
+    def test_size_tagged_unversioned_model_with_no_versioned_sibling_is_skipped(self):
+        assert mhc.plan_family_upgrades(self._rows("gpt-oss:20b"), mhc.parse_catalog(_tags())) == []
+
+    def test_unversioned_current_with_a_versioned_sibling_is_a_major(self):
+        out = mhc.plan_family_upgrades(self._rows("gpt-oss:20b"), {"gpt-oss2": {}})
+        assert out[0]["urgency"] == "major" and out[0]["current_version"] == "unversioned"
+
+    def test_a_retiring_candidate_is_never_recommended(self):
+        catalog = {"minimax-m2.5": {}, "minimax-m2.7": {}}
+        out = mhc.plan_family_upgrades(self._rows("minimax-m2.5"), catalog,
+                                       retiring={"minimax-m2.7"})
+        assert out == []
+
+    def test_non_ollama_deployments_are_ignored(self):
+        cfg = {"model_list": [{"model_name": "lem-medium", "litellm_params": {
+            "model": "openai/minimax-m2.7", "api_key": "os.environ/OPENAI_API_KEY"}}]}
+        assert mhc.plan_family_upgrades(mhc.parse_deployments(cfg),
+                                        mhc.parse_catalog(_tags())) == []
+
+    def test_duplicate_deployments_report_once_with_every_tier(self):
+        cfg = {"model_list": [
+            {"model_name": "lem-medium", "litellm_params": {
+                "model": "openai/minimax-m2.7", "api_base": "os.environ/OLLAMA_CLOUD_URL"}},
+            {"model_name": "lem-complex", "litellm_params": {
+                "model": "openai/minimax-m2.7", "api_base": "os.environ/OLLAMA_CLOUD_URL"}}]}
+        out = mhc.plan_family_upgrades(mhc.parse_deployments(cfg), mhc.parse_catalog(_tags()))
+        assert len(out) == 1 and out[0]["groups"] == ["lem-complex", "lem-medium"]
+
+    def test_usage_levels_ride_along_and_flag_a_tier_jump(self):
+        levels = {"minimax-m2.7": {"level": 2, "label": "medium"},
+                  "minimax-m3": {"level": 3, "label": "high"}}
+        out = mhc.plan_family_upgrades(self._rows("minimax-m2.7"), mhc.parse_catalog(_tags()),
+                                       usage_lookup=lambda m: levels.get(m))
+        assert out[0]["usage_jump"] is True
+        assert out[0]["candidate_usage"]["label"] == "high"
+
+    def test_an_unreadable_usage_page_is_none_not_no_jump(self):
+        def boom(_model):
+            raise RuntimeError("ollama.com down")
+
+        out = mhc.plan_family_upgrades(self._rows("minimax-m2.7"), mhc.parse_catalog(_tags()),
+                                       usage_lookup=boom)
+        assert out[0]["usage_jump"] is None
+
+
+class TestParseUsageLevel:
+    def test_real_model_pages(self):
+        assert mhc.parse_usage_level((FIXTURES / "usage" / "minimax-m2.7.html").read_text()) == {
+            "level": 2, "label": "medium"}
+        assert mhc.parse_usage_level((FIXTURES / "usage" / "minimax-m3.html").read_text()) == {
+            "level": 3, "label": "high"}
+        assert mhc.parse_usage_level((FIXTURES / "usage" / "deepseek-v4-pro.html").read_text()) == {
+            "level": 4, "label": "extra high"}
+
+    def test_missing_usage_block(self):
+        assert mhc.parse_usage_level("<html><body>nothing</body></html>") == {"level": None,
+                                                                              "label": None}
+        assert mhc.parse_usage_level("") == {"level": None, "label": None}
+
+    def test_reading_stops_before_the_next_stat(self):
+        # "low" appears only AFTER the Context label — it must not be read as the usage level.
+        html = ('<div>Usage</div><span class="bg-neutral-900"></span>'
+                '<div>Context</div><span>low</span>')
+        assert mhc.parse_usage_level(html) == {"level": 1, "label": None}
+
+
+class TestIssueRendering:
+    UPGRADES = [{"family": "minimax", "groups": ["lem-medium"], "current": "minimax-m2.7",
+                 "current_version": "2.7", "candidate": "minimax-m3", "candidate_version": "3",
+                 "urgency": "major", "current_usage": {"level": 2, "label": "medium"},
+                 "candidate_usage": {"level": 3, "label": "high"}, "usage_jump": True}]
+
+    def test_upgrade_marker_and_title(self):
+        assert mhc.upgrade_marker(self.UPGRADES[0]) == "minimax-m2.7 -> minimax-m3"
+        title = mhc.build_upgrade_issue_title(self.UPGRADES)
+        assert title.startswith(mhc.UPGRADE_TITLE_PREFIX)
+        assert "minimax-m2.7 -> minimax-m3" in title
+
+    def test_upgrade_body_names_the_usage_jump_and_the_never_auto_swap_rule(self):
+        body = mhc.build_upgrade_issue_body(self.UPGRADES, "2026-07-27")
+        assert "minimax-m2.7 -> minimax-m3" in body
+        assert "medium (level 2)" in body and "high (level 3)" in body
+        assert "usage level goes UP" in body
+        assert "model_upgrades.yaml" in body  # says explicitly not to add it there
+
+    def test_unknown_usage_is_worded_as_unknown_not_as_no_jump(self):
+        upgrade = {**self.UPGRADES[0], "usage_jump": None,
+                   "current_usage": {"level": None, "label": None},
+                   "candidate_usage": {"level": None, "label": None}}
+        assert "usage level unknown" in mhc.build_upgrade_issue_body([upgrade], "2026-07-27")
+
+    def test_minor_upgrades_get_their_own_section(self):
+        minor = {**self.UPGRADES[0], "urgency": "minor"}
+        body = mhc.build_upgrade_issue_body([minor], "2026-07-27")
+        assert "Minor/patch behind" in body and "Major version behind" not in body
+
+    def test_eval_title_and_body_from_the_real_catalog(self):
+        catalog = mhc.parse_catalog(_tags())
+        title = mhc.build_eval_issue_title(["minimax-m3", "glm-5.2"])
+        assert title == f"{mhc.EVAL_TITLE_PREFIX} minimax-m3, glm-5.2"
+        body = mhc.build_eval_issue_body(["minimax-m3"], catalog, "2026-07-27")
+        assert "`minimax-m3`" in body and "family `minimax`" in body
+
+    def test_long_title_is_truncated_but_the_body_keeps_every_marker(self):
+        names = [f"some-rather-long-model-name-{i}" for i in range(12)]
+        title = mhc.build_eval_issue_title(names)
+        assert len(title) <= mhc.MAX_TITLE_CHARS
+        assert "more)" in title
+        body = mhc.build_eval_issue_body(names, {}, "2026-07-27")
+        assert all(n in body for n in names)
+
+
+class TestPlanIssue:
+    def test_creates_when_nothing_open(self):
+        assert mhc.plan_issue([], ["a -> b"], title_prefix=mhc.UPGRADE_TITLE_PREFIX) == {
+            "action": "create", "markers": ["a -> b"], "number": None}
+
+    def test_no_markers_is_never_an_issue(self):
+        assert mhc.plan_issue([], [], title_prefix=mhc.UPGRADE_TITLE_PREFIX)["action"] == "none"
+
+    def test_marker_already_in_an_open_issue_body_is_not_refiled(self):
+        open_issues = [{"number": 9, "title": mhc.UPGRADE_TITLE_PREFIX + " x",
+                        "body": "markers: `a -> b`", "comments": []}]
+        out = mhc.plan_issue(open_issues, ["a -> b"], title_prefix=mhc.UPGRADE_TITLE_PREFIX)
+        assert out == {"action": "none", "markers": [], "number": 9}
+
+    def test_marker_in_a_comment_counts_as_filed(self):
+        open_issues = [{"number": 9, "title": mhc.UPGRADE_TITLE_PREFIX + " x", "body": "",
+                        "comments": [{"body": "found more: `a -> b`"}]}]
+        assert mhc.plan_issue(open_issues, ["a -> b"],
+                              title_prefix=mhc.UPGRADE_TITLE_PREFIX)["action"] == "none"
+
+    def test_new_marker_appends_to_the_open_issue(self):
+        open_issues = [{"number": 9, "title": mhc.UPGRADE_TITLE_PREFIX + " x",
+                        "body": "`a -> b`", "comments": []}]
+        out = mhc.plan_issue(open_issues, ["a -> b", "c -> d"],
+                             title_prefix=mhc.UPGRADE_TITLE_PREFIX)
+        assert out == {"action": "append", "markers": ["c -> d"], "number": 9}
+
+    def test_an_unrelated_open_issue_does_not_count(self):
+        open_issues = [{"number": 9, "title": "Something else entirely", "body": "`a -> b`",
+                        "comments": []}]
+        assert mhc.plan_issue(open_issues, ["a -> b"],
+                              title_prefix=mhc.UPGRADE_TITLE_PREFIX)["action"] == "create"
+
+    def test_append_comment_carries_the_markers_and_the_detail(self):
+        text = mhc.build_append_comment(["c -> d"], "FULL BODY")
+        assert "`c -> d`" in text and "FULL BODY" in text
+
+
+class _FakeGitHub:
+    def __init__(self, open_issues=None, fail_lookup=False):
+        self._open = open_issues or []
+        self._fail = fail_lookup
+        self.created = []
+        self.comments = []
+
+    def open_issues(self, title_prefix):
+        if self._fail:
+            raise RuntimeError("gh exploded")
+        return [i for i in self._open if str(i.get("title", "")).startswith(title_prefix)]
+
+    def create(self, title, body, labels=mhc.ISSUE_LABELS):
+        self.created.append((title, body))
+        return "https://github.com/x/y/issues/1"
+
+    def comment(self, number, body):
+        self.comments.append((number, body))
+        return True
+
+
+def _plan_with_issues(upgrade_markers=(), eval_markers=()):
+    return {"issues": {
+        "upgrade": {"markers": list(upgrade_markers), "title": "T-up", "body": "B-up"},
+        "evaluation": {"markers": list(eval_markers), "title": "T-ev", "body": "B-ev"}}}
+
+
+class TestFileIssues:
+    def test_files_both_issues(self):
+        gh = _FakeGitHub()
+        assert mhc._file_issues(_plan_with_issues(["a -> b"], ["new-tag"]), gh) == 2
+        assert [t for t, _ in gh.created] == ["T-up", "T-ev"]
+
+    def test_nothing_to_file(self):
+        gh = _FakeGitHub()
+        assert mhc._file_issues(_plan_with_issues(), gh) == 0
+        assert gh.created == []
+
+    def test_appends_instead_of_refiling(self):
+        gh = _FakeGitHub([{"number": 7, "title": mhc.UPGRADE_TITLE_PREFIX + " a -> b",
+                           "body": "`a -> b`", "comments": []}])
+        assert mhc._file_issues(_plan_with_issues(["a -> b", "c -> d"]), gh) == 1
+        assert gh.created == [] and gh.comments[0][0] == 7
+
+    def test_a_failed_dedup_lookup_skips_rather_than_duplicating(self):
+        gh = _FakeGitHub(fail_lookup=True)
+        assert mhc._file_issues(_plan_with_issues(["a -> b"]), gh) == 0
+        assert gh.created == []
+
+
+class TestGitHubIssuesClient:
+    def _proc(self, returncode=0, stdout="", stderr=""):
+        class P:
+            pass
+        p = P()
+        p.returncode, p.stdout, p.stderr = returncode, stdout, stderr
+        return p
+
+    def test_open_issues_filters_by_title_prefix(self, monkeypatch):
+        gh = mhc.GitHubIssues("o/n")
+        payload = json.dumps([{"number": 1, "title": mhc.UPGRADE_TITLE_PREFIX + " x"},
+                              {"number": 2, "title": "unrelated"}])
+        monkeypatch.setattr(gh, "_run", lambda args: self._proc(stdout=payload))
+        assert [i["number"] for i in gh.open_issues(mhc.UPGRADE_TITLE_PREFIX)] == [1]
+
+    def test_open_issues_fails_closed_on_a_gh_error(self, monkeypatch):
+        gh = mhc.GitHubIssues("o/n")
+        monkeypatch.setattr(gh, "_run", lambda args: self._proc(returncode=1, stderr="boom"))
+        with pytest.raises(RuntimeError):
+            gh.open_issues(mhc.UPGRADE_TITLE_PREFIX)
+
+    def test_open_issues_fails_closed_on_unparseable_json(self, monkeypatch):
+        gh = mhc.GitHubIssues("o/n")
+        monkeypatch.setattr(gh, "_run", lambda args: self._proc(stdout="{nope"))
+        with pytest.raises(RuntimeError):
+            gh.open_issues(mhc.UPGRADE_TITLE_PREFIX)
+
+    def test_create_passes_every_label_and_returns_the_url(self, monkeypatch):
+        gh = mhc.GitHubIssues("o/n")
+        seen = {}
+
+        def run(args):
+            seen["args"] = args
+            return self._proc(stdout="https://github.com/o/n/issues/5\n")
+
+        monkeypatch.setattr(gh, "_run", run)
+        assert gh.create("T", "B") == "https://github.com/o/n/issues/5"
+        for label in mhc.ISSUE_LABELS:
+            assert label in seen["args"]
+
+    def test_create_failure_is_none_not_a_raise(self, monkeypatch):
+        gh = mhc.GitHubIssues("o/n")
+        monkeypatch.setattr(gh, "_run", lambda args: self._proc(returncode=1, stderr="nope"))
+        assert gh.create("T", "B") is None
+
+    def test_comment_reports_success_and_failure(self, monkeypatch):
+        gh = mhc.GitHubIssues("o/n")
+        monkeypatch.setattr(gh, "_run", lambda args: self._proc())
+        assert gh.comment(3, "body") is True
+        monkeypatch.setattr(gh, "_run", lambda args: self._proc(returncode=1))
+        assert gh.comment(3, "body") is False
+
+
+class TestFetchDegradation:
+    def test_docs_fetch_failure_is_none(self, monkeypatch):
+        monkeypatch.setattr(mhc, "http_get", lambda *a, **k: (_ for _ in ()).throw(OSError("down")))
+        assert mhc.fetch_cloud_docs() is None
+
+    def test_catalog_fetch_failure_is_none(self, monkeypatch):
+        monkeypatch.setattr(mhc, "http_get", lambda *a, **k: (_ for _ in ()).throw(OSError("down")))
+        assert mhc.fetch_catalog("key") is None
+
+    def test_catalog_sends_the_bearer_token_when_one_is_set(self, monkeypatch):
+        seen = {}
+
+        def fake(url, headers=None, timeout=None):
+            seen["headers"] = headers
+            return '{"models": []}'
+
+        monkeypatch.setattr(mhc, "http_get", fake)
+        mhc.fetch_catalog("sekret")
+        assert seen["headers"] == {"Authorization": "Bearer sekret"}
+        mhc.fetch_catalog("")
+        assert seen["headers"] == {}
+
+    def test_usage_fetch_failure_is_unknown_not_a_raise(self, monkeypatch):
+        monkeypatch.setattr(mhc, "http_get", lambda *a, **k: (_ for _ in ()).throw(OSError("down")))
+        assert mhc.fetch_usage_level("minimax-m3") == {"level": None, "label": None}
+
+    def test_usage_fetch_strips_the_size_tag_from_the_page_url(self, monkeypatch):
+        seen = {}
+
+        def fake(url, headers=None, timeout=None):
+            seen["url"] = url
+            return (FIXTURES / "usage" / "minimax-m3.html").read_text()
+
+        monkeypatch.setattr(mhc, "http_get", fake)
+        assert mhc.fetch_usage_level("qwen3.5:397b")["label"] == "high"
+        assert seen["url"].endswith("/library/qwen3.5")
+
+
+class TestCatalogScanCLI:
+    """The dry-run proof required by the issue: a future-dated retirement of a CONFIGURED model
+    produces the alert + the map addition, and a new tag renders the evaluation issue — all with
+    the network replaced by the committed fixtures."""
+
+    def _workspace(self, tmp_path, model="minimax-m2.5", drop=("minimax-m3", "glm-5.2")):
+        (tmp_path / "config.yaml").write_text(
+            "model_list:\n"
+            "  - model_name: lem-medium\n"
+            "    litellm_params:\n"
+            f"      model: openai/{model}\n"
+            "      api_base: os.environ/OLLAMA_CLOUD_URL\n")
+        (tmp_path / "map.yaml").write_text('upgrades:\n  "kimi-k2:1t": "REMOVE"\n')
+        catalog = mhc.parse_catalog(_tags())
+        (tmp_path / "snapshot.json").write_text(
+            mhc.render_snapshot({k: v for k, v in catalog.items() if k not in drop}, "2026-07-01"))
+        return [f"--config={tmp_path / 'config.yaml'}", f"--map={tmp_path / 'map.yaml'}",
+                f"--snapshot={tmp_path / 'snapshot.json'}", f"--catalog-fixture={FIXTURES}",
+                "--today=2026-07-20"]
+
+    def test_dry_run_reports_everything_and_writes_nothing(self, tmp_path, capsys):
+        args = self._workspace(tmp_path)
+        before = (tmp_path / "map.yaml").read_text(), (tmp_path / "snapshot.json").read_text()
+        code = mhc.main(["--catalog-scan", *args])
+        out = capsys.readouterr().out
+        assert code == 3  # a configured model is scheduled to retire — alert-worthy
+        assert "RETIRING [lem-medium] minimax-m2.5 on 2026-07-31 (11d) -> minimax-m2.7" in out
+        assert 'MAP + "minimax-m2.5": "minimax-m2.7"' in out
+        assert "NEW TAG minimax-m3" in out and "NEW TAG glm-5.2" in out
+        assert mhc.EVAL_TITLE_PREFIX in out and mhc.UPGRADE_TITLE_PREFIX in out
+        assert ((tmp_path / "map.yaml").read_text(),
+                (tmp_path / "snapshot.json").read_text()) == before
+
+    def test_catalog_apply_writes_the_map_and_snapshot(self, tmp_path, capsys):
+        args = self._workspace(tmp_path)
+        mhc.main(["--catalog-apply", *args])
+        assert mhc.load_map(mhc.load_map_text((tmp_path / "map.yaml").read_text())) == {
+            "kimi-k2:1t": "REMOVE", "minimax-m2.5": "minimax-m2.7"}
+        snapshot = mhc.load_snapshot_text((tmp_path / "snapshot.json").read_text())
+        assert "minimax-m3" in snapshot and "glm-5.2" in snapshot
+        # Re-running changes nothing further.
+        second = (tmp_path / "map.yaml").read_text(), (tmp_path / "snapshot.json").read_text()
+        mhc.main(["--catalog-apply", *args])
+        assert ((tmp_path / "map.yaml").read_text(),
+                (tmp_path / "snapshot.json").read_text()) == second
+
+    def test_catalog_json_is_machine_readable_and_hides_the_raw_catalog(self, tmp_path, capsys):
+        args = self._workspace(tmp_path)
+        mhc.main(["--catalog-json", *args])
+        plan = json.loads(capsys.readouterr().out)
+        assert "_catalog" not in plan
+        assert plan["repo_changes"] is True
+        assert [n["bare"] for n in plan["notices"]] == ["minimax-m2.5"]
+        assert plan["catalog"]["added"] == ["glm-5.2", "minimax-m3"]
+
+    def test_clean_config_is_exit_zero(self, tmp_path, capsys):
+        args = self._workspace(tmp_path, model="minimax-m3", drop=())
+        assert mhc.main(["--catalog-scan", *args]) == 0
+        assert "nothing to do" in capsys.readouterr().out
+
+    def test_a_missing_snapshot_is_seeded_not_reported_as_a_catalog_of_new_tags(self, tmp_path,
+                                                                                capsys):
+        args = self._workspace(tmp_path, model="minimax-m3", drop=())
+        (tmp_path / "snapshot.json").unlink()
+        code = mhc.main(["--catalog-scan", *args])
+        out = capsys.readouterr().out
+        assert "NEW TAG" not in out and "seeding it this run" in out
+        assert code == 2  # the snapshot itself still needs writing
+
+    def test_the_repo_config_and_committed_snapshot_are_clean_today(self, tmp_path, capsys):
+        """Guards the shipped state: no configured model is scheduled to retire, and the committed
+        snapshot matches the catalog fixture, so a fresh run files nothing spurious."""
+        code = mhc.main(["--catalog-scan", "--no-usage-levels",
+                         f"--config={_ROOT / '.litellm' / 'config.yaml'}",
+                         f"--map={_ROOT / '.litellm' / 'model_upgrades.yaml'}",
+                         f"--snapshot={_ROOT / '.litellm' / 'ollama_catalog_snapshot.json'}",
+                         f"--catalog-fixture={FIXTURES}", "--today=2026-07-27"])
+        out = capsys.readouterr().out
+        assert "RETIRING" not in out and "NEW TAG" not in out
+        # minimax-m2.7 trails minimax-m3 — the owner's example, reported as an evaluation only.
+        assert "UPGRADE (major) minimax-m2.7 -> minimax-m3" in out
+        assert code == 2
