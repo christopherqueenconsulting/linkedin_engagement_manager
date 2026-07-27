@@ -59,6 +59,22 @@ class TestSignupFunnel:
         # Pre-signup there is no user row, so the event is keyed to a pseudonymous id.
         assert kwargs["distinct_id"].startswith("anon_")
 
+    def test_a_referral_ref_survives_the_request_model(self, client):
+        """Issue #658: `?ref=<user id>` is what a referral link carries. It has to be declared on
+        FunnelAttribution or FastAPI drops it before normalize_attribution ever sees it."""
+        with patch(f"{_MAIN}.get_user_id", return_value=None), \
+             patch(f"{_MAIN}.generate_pin", return_value="123456"), \
+             patch(f"{_MAIN}.hash_pin", return_value="hashed"), \
+             patch(f"{_MAIN}.send_pin_email", return_value=(True, False)), \
+             patch(f"{_MAIN}.create_pin_for_email", return_value=True), \
+             patch(f"{_MAIN}.track_funnel_event") as track:
+            resp = client.post(self.INIT, json={
+                "email": "referred@example.com",
+                "attribution": {"utm_source": "referral", "utm_medium": "referral", "ref": "7"}})
+
+        assert resp.status_code == 200
+        assert track.call_args.kwargs["attribution"]["ref"] == "7"
+
     def test_known_email_is_a_login_not_a_signup(self, client):
         with patch(f"{_MAIN}.get_user_id", return_value=5), \
              patch(f"{_MAIN}.generate_pin", return_value="123456"), \

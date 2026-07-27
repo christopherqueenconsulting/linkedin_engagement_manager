@@ -50,6 +50,9 @@ from cqc_lem.utilities.env_constants import (API_URL_FINAL, ELEVENLABS_API_KEY,
 from cqc_lem.utilities.flags import TUTORIAL_VIDEOS, flag_enabled
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
+from cqc_lem.utilities.marketing.attribution import (MEDIUM_VIDEO, PLACEMENT_VIDEO_DESCRIPTION,
+                                                     SOURCE_YOUTUBE, campaign_for_tutorial,
+                                                     signup_url, tag_links_in_text)
 from cqc_lem.utilities.observability import FEATURE_MARKETING, track_media_cost
 from cqc_lem.utilities.utils import create_folder_if_not_exists
 
@@ -421,7 +424,25 @@ def generate_script(flow: TutorialFlow, capture: dict) -> dict:
     # The description is read, not spoken, so it gets the full READER-mode de-slop pass.
     description = humanize_text(data["youtube_description"], content_type="post") or flow.feature
     return {"segments": segments, "narration": narration, "title": title[:100],
-            "description": description[:4500]}
+            "description": description_with_cta(description, flow)[:4500]}
+
+
+def description_with_cta(description: str, flow: TutorialFlow) -> str:
+    """The YouTube description plus ONE tagged trial link (issue #658).
+
+    A tutorial is an acquisition surface, and YouTube passes no referrer we can read — without the
+    UTMs on this link every signup a video drives is indistinguishable from direct traffic. Any
+    owned link the model already wrote into the description is tagged in place under the same
+    campaign; the CTA is only appended when there is a signup URL configured AND the description
+    does not already carry it, so re-running never stacks two."""
+    campaign = campaign_for_tutorial(flow.key)
+    body = tag_links_in_text(description or "", SOURCE_YOUTUBE, MEDIUM_VIDEO, campaign,
+                             content=PLACEMENT_VIDEO_DESCRIPTION)
+    link = signup_url(SOURCE_YOUTUBE, MEDIUM_VIDEO, campaign,
+                      content=PLACEMENT_VIDEO_DESCRIPTION)
+    if not link or link.split("?")[0] in body:
+        return body
+    return f"{body}\n\nTry it on your own account: {link}".strip()
 
 
 def _coerce_script(raw: str, step_count: int) -> Optional[dict]:

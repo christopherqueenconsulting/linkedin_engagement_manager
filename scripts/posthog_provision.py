@@ -15,6 +15,10 @@ the UI:
     and the engagement-rate trends.
   • **Threshold alerts** (4 of PostHog's 5 free ones) — comments below a weekly floor, LLM daily
     spend over cap, Celery failure spike, 429 spike. They email the key's owner.
+  • **LEM Channels** (issue #658) — marketing attribution: signups and activations by UTM
+    source/campaign and first-touch channel, the brand-post → visit → signup funnel, referral
+    arrivals and tagged landing visits. Plus the two web-analytics **conversion goals** (signup,
+    activation), which PostHog reads from actions — so they are defined here, not clicked together.
   • **A weekly email subscription** of LEM Growth — this is what replaces the hand-run 2-week
     perf-report cron.
 
@@ -38,14 +42,14 @@ insight. `utilities/posthog_endpoints.py` is the runtime half: it calls `/run` w
 
 CLI (--dry-run and --apply are mutually exclusive):
   --dry-run             Show what would be created/updated against the live project. No writes. (default)
-  --apply               Create missing dashboards/insights/alerts/subscription/endpoints and update drifted ones.
+  --apply               Create missing dashboards/insights/alerts/goals/subscription/endpoints and update drifted ones.
   --print-sql           Print every tile's and endpoint's query (no network).
   --simulate NAME=VALUE Report whether VALUE would breach the named alert's threshold. No network.
   --email ADDR          Weekly-report recipient (default $POSTHOG_REPORT_EMAIL, else the key owner).
 Env:
   POSTHOG_PERSONAL_API_KEY  Personal API key (required for network). Scopes: insight, dashboard,
-                            alert and subscription read+write, user:read for the subscriber id, plus
-                            endpoint and insight_variable read+write for the Endpoints panel.
+                            alert, action and subscription read+write, user:read for the subscriber
+                            id, plus endpoint and insight_variable read+write for the Endpoints panel.
   POSTHOG_PROJECT_ID        PostHog project id (default 475262 — "CQC LEM").
   POSTHOG_APP_HOST          App host for the API (default https://us.posthog.com).
   POSTHOG_REPORT_EMAIL      Weekly Growth-dashboard recipient. Falls back to the key owner's email.
@@ -65,6 +69,7 @@ DEFAULT_APP_HOST = "https://us.posthog.com"
 
 DASH_HEALTH = "LEM Health"
 DASH_GROWTH = "LEM Growth"
+DASH_CHANNELS = "LEM Channels"
 
 TAGS = ["lem", "kpi", "health", "growth"]
 
@@ -108,6 +113,8 @@ SOURCE_EVENTS = (
     "onboarding_step_completed",
     "activated",
     "subscription_started",
+    "signup_completed_web",
+    "$pageview",
     "$ai_generation",
 )
 
@@ -173,10 +180,20 @@ def _trends(series: dict, interval: str = "day", date_from: str = "-30d") -> dic
 
 def _funnel(events: list, date_from: str = "-90d", window_days: int = 14) -> dict:
     """An ordered funnel over `events`. The conversion window has to be generous: a content plan is
-    30 days long, so a plan → approve → post → engagement chain spans weeks, not a session."""
+    30 days long, so a plan → approve → post → engagement chain spans weeks, not a session.
+
+    An entry may be a bare event name or `(event, properties)` — a step that has to be narrowed to
+    one channel (the brand-post funnel's first pageview) cannot say so any other way."""
+    series = []
+    for entry in events:
+        event, properties = entry if isinstance(entry, tuple) else (entry, None)
+        step = {"kind": "EventsNode", "event": event, "name": event}
+        if properties:
+            step["properties"] = properties
+        series.append(step)
     return {"kind": "InsightVizNode",
             "source": {"kind": "FunnelsQuery",
-                       "series": [{"kind": "EventsNode", "event": e, "name": e} for e in events],
+                       "series": series,
                        "dateRange": {"date_from": date_from},
                        "funnelsFilter": {"funnelVizType": "steps", "funnelOrderType": "ordered",
                                          "funnelWindowInterval": window_days,
@@ -523,6 +540,147 @@ def plan_endpoints(specs: list, existing_endpoints: dict, variable_id, code_name
     return actions
 
 
+# ── LEM Channels (issue #658) ────────────────────────────────────────────────────────
+# Marketing attribution. Every tile groups on the SAME vocabulary the source side writes
+# (utilities/marketing/attribution.py) and the capture side normalizes
+# (observability.normalize_attribution) — utm_source/utm_campaign on the event, and the first-touch
+# `initial_*` person properties for the later events that cannot know the UTMs.
+#
+# The two signup events are never mixed: `signup_completed` is the server's (the funnel of record)
+# and `signup_completed_web` is the browser's (the web-analytics conversion goal). Each tile picks
+# ONE, because a person who converted produces both and summing them doubles every count.
+
+def channel_tiles() -> list:
+    """Which channels actually bring signups, and what happens to them after they arrive."""
+    return [
+        _tile(
+            "Channels — Signups by source and campaign (90d)",
+            "Every completed signup grouped by the UTMs it arrived with, plus the derived channel. "
+            "An untagged arrival shows as (direct) — a row of those against a campaign we are "
+            "running is the tell that a link shipped without going through build_utm_url.",
+            _hogql(f"""
+SELECT coalesce(nullIf(toString(properties.channel), ''), 'direct') AS channel,
+       coalesce(nullIf(toString(properties.utm_source), ''), '(none)') AS source,
+       coalesce(nullIf(toString(properties.utm_campaign), ''), '(none)') AS campaign,
+       coalesce(nullIf(toString(properties.utm_content), ''), '(none)') AS placement,
+       count() AS signups
+FROM events
+WHERE event = 'signup_completed' AND timestamp >= now() - {GROWTH_WINDOW}
+GROUP BY channel, source, campaign, placement
+ORDER BY signups DESC
+LIMIT 100
+""", "ActionsTable"),
+        ),
+        _tile(
+            "Channels — Signups per week by channel",
+            "The channel mix over time. A campaign that starts working shows up here as a shift in "
+            "the mix, not just a bump in the total.",
+            _hogql(f"""
+SELECT toStartOfWeek(timestamp) AS week,
+       countIf(toString(properties.channel) = 'linkedin') AS linkedin,
+       countIf(toString(properties.channel) = 'newsletter') AS newsletter,
+       countIf(toString(properties.channel) = 'youtube') AS youtube,
+       countIf(toString(properties.channel) = 'referral') AS referral,
+       countIf(toString(properties.channel) = 'seo') AS seo,
+       countIf(toString(properties.channel) IN ('direct', '')) AS direct,
+       count() AS signups
+FROM events
+WHERE event = 'signup_completed' AND timestamp >= now() - {GROWTH_WINDOW}
+GROUP BY week
+ORDER BY week ASC
+""", "ActionsBar", _line("week", ["linkedin", "newsletter", "youtube", "referral", "seo", "direct"])),
+        ),
+        _tile(
+            "Channels — Activations by first-touch channel (90d)",
+            "Signups vs activations per channel, off the `initial_channel` person property "
+            "track_funnel_event writes at first touch — an `activated` event carries no UTMs of its "
+            "own, so a channel that converts well but activates badly is only visible this way.",
+            _hogql(f"""
+SELECT coalesce(nullIf(toString(person.properties.initial_channel), ''), 'direct') AS channel,
+       uniqExactIf(distinct_id, event = 'signup_completed') AS signups,
+       uniqExactIf(distinct_id, event = 'activated') AS activations,
+       round(100 * uniqExactIf(distinct_id, event = 'activated')
+             / nullIf(uniqExactIf(distinct_id, event = 'signup_completed'), 0), 2) AS activation_pct
+FROM events
+WHERE event IN ('signup_completed', 'activated') AND timestamp >= now() - {GROWTH_WINDOW}
+GROUP BY channel
+ORDER BY signups DESC
+""", "ActionsTable"),
+        ),
+        _tile(
+            "Channels — Brand post → site visit → signup funnel",
+            "The organic-LinkedIn acquisition path end to end: a UTM-tagged brand CTA lands a "
+            "pageview, the visitor starts signup, the account is created. The first step is scoped "
+            "to utm_source=linkedin, so this measures the brand account's own traffic only.",
+            _funnel([("$pageview", [{"key": "utm_source", "value": ["linkedin"],
+                                     "operator": "exact", "type": "event"}]),
+                     "signup_started", "signup_completed"],
+                    date_from="-90d", window_days=30),
+        ),
+        _tile(
+            "Channels — Referral signups by referrer (90d)",
+            "Signups that arrived on a `?ref=<user id>` link. The full referral program is its own "
+            "issue; this is the groundwork reading, so the link format can be proven end to end "
+            "before any reward logic is built on it.",
+            _hogql(f"""
+SELECT coalesce(nullIf(toString(properties.ref), ''), '(none)') AS referrer_user_id,
+       count() AS signups
+FROM events
+WHERE event = 'signup_completed' AND properties.ref IS NOT NULL
+      AND timestamp >= now() - {GROWTH_WINDOW}
+GROUP BY referrer_user_id
+ORDER BY signups DESC
+LIMIT 50
+""", "ActionsTable"),
+        ),
+        _tile(
+            "Channels — Tagged landing visits per week",
+            "Pageviews arriving with UTMs, by source — the TOP of the funnel the signup tiles "
+            "measure the bottom of. A source with visits and no signups is a landing-page problem, "
+            "not an attribution one.",
+            _hogql(f"""
+SELECT toStartOfWeek(timestamp) AS week,
+       coalesce(nullIf(toString(properties.utm_source), ''), '(none)') AS source,
+       count() AS visits,
+       uniqExact(distinct_id) AS visitors
+FROM events
+WHERE event = '$pageview' AND properties.utm_source IS NOT NULL
+      AND timestamp >= now() - {GROWTH_WINDOW}
+GROUP BY week, source
+ORDER BY week ASC, visits DESC
+""", "ActionsTable"),
+        ),
+    ]
+
+
+# ── web-analytics conversion goals (issue #658) ──────────────────────────────────────
+# PostHog's web analytics picks its conversion goal from an ACTION, so the two goals are defined
+# here rather than clicked together in the UI — same reason as every other tile in this file.
+GOAL_SIGNUP = "LEM — Signup completed (conversion goal)"
+GOAL_ACTIVATION = "LEM — Activated: first post published (conversion goal)"
+
+
+def conversion_goal_specs() -> list:
+    """The two web-analytics conversion goals: signup and activation.
+
+    The signup goal reads the BROWSER event (`signup_completed_web`), not the API's
+    `signup_completed`. Web analytics attributes a conversion to the SESSION that produced it, and a
+    server-side event has no session or pageview context — pointing the goal at it would report
+    every signup as an unattributed conversion. Activation has no browser equivalent (it is decided
+    by a Celery task), so it converts against the person's first-touch channel instead."""
+    return [
+        {"name": GOAL_SIGNUP,
+         "description": "A new account was created in the browser. Fired by ui/src/utils/"
+                        "analytics.ts recordSignup(); distinct from the API's `signup_completed`, "
+                        "which is the funnel of record — never sum the two.",
+         "steps": [{"event": "signup_completed_web"}]},
+        {"name": GOAL_ACTIVATION,
+         "description": "The user reached the activation aha (first post published). Server-side, "
+                        "so it attributes on the person's first-touch channel rather than a session.",
+         "steps": [{"event": "activated"}]},
+    ]
+
+
 def build_specs() -> list:
     """The full issue-#650 dashboard set. Pure — same input every run, so a diff against PostHog is
     meaningful and `--apply` is idempotent."""
@@ -537,6 +695,11 @@ def build_specs() -> list:
                         "onboarding drop-off, the comment→reply engagement loop and the engagement "
                         "rate/audience trends. Emailed to the owner weekly.",
          "tiles": growth_tiles()},
+        {"name": DASH_CHANNELS,
+         "description": "Where signups come from (issue #658): signups and activations by UTM "
+                        "source/campaign and first-touch channel, the brand-post → visit → signup "
+                        "funnel, referral arrivals and tagged landing visits.",
+         "tiles": channel_tiles()},
     ]
 
 
@@ -694,6 +857,30 @@ def alert_payload(spec: dict, insight_id, subscribed_users: Optional[list] = Non
             "enabled": True}
 
 
+def plan_conversion_goals(specs: list, existing_actions: dict) -> list:
+    """Diff the web-analytics conversion goals against PostHog's existing actions.
+
+    `existing_actions` maps action name -> {"id", "steps", "description"}. Only the EVENT of each
+    step is compared: PostHog hydrates a step with a pile of nulls and its own ids, and matching on
+    the whole object would report drift on every run and rewrite an action nobody changed."""
+    actions: list = []
+    for spec in specs:
+        found = existing_actions.get(spec["name"])
+        wanted = [str(step.get("event") or "") for step in spec["steps"]]
+        if found is None:
+            actions.append({"action": "create_goal", "goal": spec["name"], "spec": spec})
+            continue
+        current = [str(step.get("event") or "") for step in (found.get("steps") or [])]
+        described = found.get("description", spec["description"]) == spec["description"]
+        if current == wanted and described:
+            actions.append({"action": "unchanged_goal", "goal": spec["name"],
+                            "goal_id": found["id"]})
+        else:
+            actions.append({"action": "update_goal", "goal": spec["name"],
+                            "goal_id": found["id"], "spec": spec})
+    return actions
+
+
 def plan_subscriptions(specs: list, existing_subscriptions: list, dashboard_ids: dict) -> list:
     """Diff the email subscriptions. Matched on (dashboard, recipient, frequency) and NOT on
     `start_date`: PostHog advances that with every send, so comparing it would recreate the
@@ -721,7 +908,7 @@ def plan_subscriptions(specs: list, existing_subscriptions: list, dashboard_ids:
     return actions
 
 
-UNCHANGED_ACTIONS = ("unchanged", "unchanged_alert", "unchanged_subscription",
+UNCHANGED_ACTIONS = ("unchanged", "unchanged_alert", "unchanged_subscription", "unchanged_goal",
                     "unchanged_variable", "unchanged_endpoint")
 
 
@@ -813,6 +1000,24 @@ class PostHogClient:
     def list_subscriptions(self) -> list:
         return [s for s in self._paged("/subscriptions/?limit=100") if not s.get("deleted")]
 
+    def list_actions(self) -> dict:
+        actions = {}
+        for item in self._paged("/actions/?limit=100"):
+            if item.get("deleted"):
+                continue
+            actions[item.get("name")] = {
+                "id": item.get("id"),
+                "steps": list(item.get("steps") or []),
+                "description": item.get("description") or "",
+            }
+        return actions
+
+    def create_action(self, spec: dict) -> int:
+        return self._request("POST", "/actions/", json=_goal_payload(spec)).get("id")
+
+    def update_action(self, action_id, spec: dict) -> None:
+        self._request("PATCH", f"/actions/{action_id}/", json=_goal_payload(spec))
+
     def create_dashboard(self, name: str, description: str) -> int:
         return self._request("POST", "/dashboards/", json={
             "name": name, "description": description, "tags": TAGS, "pinned": True})["id"]
@@ -861,6 +1066,12 @@ class PostHogClient:
 
     def update_endpoint(self, name: str, payload: dict) -> None:
         self._request("PATCH", f"/endpoints/{name}/", json=payload)
+
+
+def _goal_payload(spec: dict) -> dict:
+    """PostHog's action body for a conversion goal."""
+    return {"name": spec["name"], "description": spec["description"],
+            "steps": [{"event": step["event"]} for step in spec["steps"]], "tags": TAGS}
 
 
 def _insight_id_of(insight) -> Optional[int]:
@@ -920,6 +1131,17 @@ def apply_actions(client: PostHogClient, actions: list, dry_run: bool = True) ->
                 continue
             client.update_alert(action["alert_id"], action["payload"])
             log.append(f"updated alert '{action['alert']}'")
+        elif kind in ("create_goal", "update_goal"):
+            verb = "create" if kind == "create_goal" else "update"
+            if dry_run:
+                log.append(f"[dry-run] {verb} conversion goal '{action['goal']}'")
+                continue
+            if kind == "create_goal":
+                goal_id = client.create_action(action["spec"])
+                log.append(f"created conversion goal '{action['goal']}' -> {goal_id}")
+            else:
+                client.update_action(action["goal_id"], action["spec"])
+                log.append(f"updated conversion goal '{action['goal']}'")
         elif kind == "create_subscription":
             if dry_run:
                 log.append(f"[dry-run] create subscription '{action['subscription']}'")
@@ -1008,6 +1230,7 @@ def main(argv: Optional[list] = None) -> int:
     try:
         dashboards, insights = client.list_dashboards(), client.list_insights()
         alerts, subscriptions = client.list_alerts(), client.list_subscriptions()
+        existing_goals = client.list_actions()
     except Exception as exc:
         print(f"Failed to read PostHog state: {exc}", file=sys.stderr)
         return 1
@@ -1033,6 +1256,10 @@ def main(argv: Optional[list] = None) -> int:
 
     alert_actions = plan_alerts(alert_specs(), alerts, insight_ids, subscribed_users)
     for line in apply_actions(client, alert_actions, dry_run=dry_run):
+        print(line)
+
+    goal_actions = plan_conversion_goals(conversion_goal_specs(), existing_goals)
+    for line in apply_actions(client, goal_actions, dry_run=dry_run):
         print(line)
 
     subscription_actions: list = []
@@ -1073,7 +1300,8 @@ def main(argv: Optional[list] = None) -> int:
     for line in apply_actions(client, endpoint_actions, dry_run=dry_run):
         print(line)
 
-    all_actions = actions + alert_actions + subscription_actions + [variable_action] + endpoint_actions
+    all_actions = (actions + alert_actions + goal_actions + subscription_actions
+                   + [variable_action] + endpoint_actions)
     print(summarize(all_actions))
     for spec in specs:
         dashboard_id = dashboards.get(spec["name"])

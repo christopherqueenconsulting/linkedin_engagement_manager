@@ -42,9 +42,9 @@ def _tile_by_name(name):
 
 
 class TestSpecs:
-    def test_two_consolidated_dashboards(self):
+    def test_three_consolidated_dashboards(self):
         names = [spec["name"] for spec in php.build_specs()]
-        assert names == [php.DASH_HEALTH, php.DASH_GROWTH]
+        assert names == [php.DASH_HEALTH, php.DASH_GROWTH, php.DASH_CHANNELS]
         assert all(spec["tiles"] for spec in php.build_specs())
 
     def test_tile_names_are_globally_unique(self):
@@ -116,7 +116,7 @@ class TestSpecs:
     def test_funnels_are_ordered_and_have_a_conversion_window(self):
         funnels = [tile for _, tile in _all_tiles()
                    if tile["query"]["source"]["kind"] == "FunnelsQuery"]
-        assert len(funnels) == 2
+        assert len(funnels) == 3
         for tile in funnels:
             source = tile["query"]["source"]
             assert len(source["series"]) >= 3
@@ -252,7 +252,7 @@ class TestReportSchedule:
 class TestPlanActions:
     def test_empty_project_creates_everything(self):
         actions = php.plan_actions(php.build_specs(), {}, {})
-        assert sum(1 for a in actions if a["action"] == "create_dashboard") == 2
+        assert sum(1 for a in actions if a["action"] == "create_dashboard") == 3
         assert all(a["action"] in ("create_dashboard", "create_insight") for a in actions)
 
     def test_matching_state_is_unchanged(self):
@@ -401,6 +401,92 @@ class TestPlanSubscriptions:
                                       {php.DASH_GROWTH: 9})[0]["action"] == "create_subscription"
 
 
+class TestChannelDashboard:
+    """The marketing-attribution dashboard (issue #658)."""
+
+    def test_channel_tiles_never_mix_the_two_signup_events(self):
+        # `signup_completed` (API) and `signup_completed_web` (browser) both fire for one signup.
+        # A tile that read both would double every count, so each picks exactly one.
+        for tile in php.channel_tiles():
+            if tile["query"]["kind"] != "DataVisualizationNode":
+                continue
+            sql = _sql(tile)
+            assert not ("'signup_completed'" in sql and "'signup_completed_web'" in sql), tile["name"]
+
+    def test_activation_tile_reads_the_first_touch_person_property(self):
+        # `activated` carries no UTMs of its own — only the person's first touch can attribute it.
+        sql = _sql(_tile_by_name("Channels — Activations by first-touch channel (90d)"))
+        assert "person.properties.initial_channel" in sql
+
+    def test_brand_funnel_is_scoped_to_linkedin_traffic(self):
+        source = _tile_by_name(
+            "Channels — Brand post → site visit → signup funnel")["query"]["source"]
+        steps = [s["event"] for s in source["series"]]
+        assert steps == ["$pageview", "signup_started", "signup_completed"]
+        assert source["series"][0]["properties"][0]["key"] == "utm_source"
+        assert source["series"][0]["properties"][0]["value"] == ["linkedin"]
+        # Only the first step is narrowed; narrowing the signup steps too would drop anyone who
+        # navigated before converting.
+        assert all("properties" not in s for s in source["series"][1:])
+
+    def test_referral_tile_groups_on_the_ref_property(self):
+        sql = _sql(_tile_by_name("Channels — Referral signups by referrer (90d)"))
+        assert "properties.ref" in sql
+
+
+class TestConversionGoals:
+    def test_signup_goal_reads_the_browser_event_not_the_api_one(self):
+        spec = next(s for s in php.conversion_goal_specs() if s["name"] == php.GOAL_SIGNUP)
+        assert [step["event"] for step in spec["steps"]] == ["signup_completed_web"]
+
+    def test_activation_goal_reads_the_activation_event(self):
+        spec = next(s for s in php.conversion_goal_specs() if s["name"] == php.GOAL_ACTIVATION)
+        assert [step["event"] for step in spec["steps"]] == ["activated"]
+
+    def test_goals_only_reference_known_events(self):
+        events = {step["event"] for s in php.conversion_goal_specs() for step in s["steps"]}
+        assert events <= set(php.SOURCE_EVENTS)
+
+    def test_goal_names_do_not_collide_with_insight_names(self):
+        names = {s["name"] for s in php.conversion_goal_specs()}
+        assert not (names & {tile["name"] for _, tile in _all_tiles()})
+
+    def test_missing_goals_are_created(self):
+        actions = php.plan_conversion_goals(php.conversion_goal_specs(), {})
+        assert [a["action"] for a in actions] == ["create_goal", "create_goal"]
+
+    def test_matching_goals_are_unchanged(self):
+        existing = {s["name"]: {"id": i, "steps": [dict(step) for step in s["steps"]],
+                                "description": s["description"]}
+                    for i, s in enumerate(php.conversion_goal_specs(), start=1)}
+        actions = php.plan_conversion_goals(php.conversion_goal_specs(), existing)
+        assert all(a["action"] == "unchanged_goal" for a in actions)
+
+    def test_posthogs_extra_step_fields_do_not_read_as_drift(self):
+        # PostHog hydrates a step with its own id and a pile of nulls; comparing whole objects
+        # would rewrite an action nobody touched on every single run.
+        existing = {s["name"]: {"id": 1,
+                                "steps": [{**step, "id": 99, "url": None, "selector": None}
+                                          for step in s["steps"]],
+                                "description": s["description"]}
+                    for s in php.conversion_goal_specs()}
+        actions = php.plan_conversion_goals(php.conversion_goal_specs(), existing)
+        assert all(a["action"] == "unchanged_goal" for a in actions)
+
+    def test_a_repointed_goal_is_updated(self):
+        existing = {s["name"]: {"id": 1, "steps": [{"event": "wrong_event"}],
+                                "description": s["description"]}
+                    for s in php.conversion_goal_specs()}
+        actions = php.plan_conversion_goals(php.conversion_goal_specs(), existing)
+        assert all(a["action"] == "update_goal" for a in actions)
+
+    def test_goal_payload_sends_only_the_event_per_step(self):
+        spec = php.conversion_goal_specs()[0]
+        payload = php._goal_payload(spec)
+        assert payload["name"] == spec["name"]
+        assert payload["steps"] == [{"event": "signup_completed_web"}]
+
+
 class TestApplyActions:
     def _client(self):
         client = MagicMock()
@@ -408,8 +494,28 @@ class TestApplyActions:
         client.create_insight.return_value = 22
         client.create_alert.return_value = 33
         client.create_subscription.return_value = 44
-        client.list_dashboards.return_value = {php.DASH_HEALTH: 11, php.DASH_GROWTH: 12}
+        client.create_action.return_value = 55
+        client.list_dashboards.return_value = {php.DASH_HEALTH: 11, php.DASH_GROWTH: 12,
+                                               php.DASH_CHANNELS: 13}
         return client
+
+    def test_goal_actions_are_applied_and_dry_run_writes_nothing(self):
+        client = self._client()
+        actions = php.plan_conversion_goals(php.conversion_goal_specs(), {})
+        assert all(line.startswith("[dry-run]")
+                   for line in php.apply_actions(client, actions, dry_run=True))
+        client.create_action.assert_not_called()
+        php.apply_actions(client, actions, dry_run=False)
+        assert client.create_action.call_count == 2
+
+    def test_an_updated_goal_patches_rather_than_creates(self):
+        client = self._client()
+        existing = {s["name"]: {"id": 7, "steps": [{"event": "wrong_event"}], "description": ""}
+                    for s in php.conversion_goal_specs()}
+        actions = php.plan_conversion_goals(php.conversion_goal_specs(), existing)
+        php.apply_actions(client, actions, dry_run=False)
+        client.create_action.assert_not_called()
+        assert client.update_action.call_count == 2
 
     def test_dry_run_writes_nothing(self):
         client = self._client()
@@ -423,7 +529,7 @@ class TestApplyActions:
         client = self._client()
         actions = php.plan_actions(php.build_specs(), {}, {})
         php.apply_actions(client, actions, dry_run=False)
-        assert client.create_dashboard.call_count == 2
+        assert client.create_dashboard.call_count == 3
         assert client.create_insight.call_count == len(_all_tiles())
         # Every insight lands on the id the create returned, not on a re-listed guess.
         assert all(call.args[1] == 11 for call in client.create_insight.call_args_list[:1])
@@ -633,11 +739,13 @@ class TestMain:
         client.list_insights.return_value = {}
         client.list_alerts.return_value = {}
         client.list_subscriptions.return_value = []
+        client.list_actions.return_value = {}
         client.list_insight_variables.return_value = {}
         client.list_endpoints.return_value = {}
         client.whoami.return_value = {"id": 7, "email": "owner@example.com"}
         client.create_dashboard.return_value = 11
         client.create_insight.return_value = 22
+        client.create_action.return_value = 55
         client.create_insight_variable.return_value = {"id": "var-1", "code_name": "distinct_id"}
         for key, value in overrides.items():
             getattr(client, key).return_value = value

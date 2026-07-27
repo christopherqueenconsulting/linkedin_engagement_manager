@@ -70,6 +70,23 @@ class TestResolveChannel:
         assert resolve_channel(None) == CHANNEL_DIRECT
         assert resolve_channel("not-a-dict") == CHANNEL_DIRECT
 
+    def test_youtube_has_its_own_bucket(self):
+        # Issue #658: the tutorial videos tag utm_source=youtube and YouTube passes no usable
+        # referrer, so without this rule every video-driven signup would be `other`.
+        from cqc_lem.utilities.observability import resolve_channel, CHANNEL_YOUTUBE
+        assert resolve_channel({"utm_source": "youtube", "utm_medium": "video"}) == CHANNEL_YOUTUBE
+        assert resolve_channel({"referrer": "https://www.youtube.com/watch?v=x"}) == CHANNEL_YOUTUBE
+
+    def test_a_bare_ref_with_no_utms_is_still_a_referral(self):
+        # A member who pastes their referral link into a DM often loses the query string except
+        # the ref — that arrival is a referral, not direct (issue #658).
+        from cqc_lem.utilities.observability import resolve_channel, CHANNEL_REFERRAL
+        assert resolve_channel({"ref": "7"}) == CHANNEL_REFERRAL
+
+    def test_utms_still_win_over_a_ref(self):
+        from cqc_lem.utilities.observability import resolve_channel, CHANNEL_LINKEDIN
+        assert resolve_channel({"ref": "7", "utm_source": "linkedin"}) == CHANNEL_LINKEDIN
+
 
 class TestNormalizeAttribution:
     def test_keeps_allowlisted_keys_and_derives_channel(self):
@@ -80,6 +97,11 @@ class TestNormalizeAttribution:
         })
         assert props == {"utm_source": "linkedin", "utm_campaign": "launch",
                          "landing_page": "/", "channel": "linkedin"}
+
+    def test_ref_is_allowlisted_and_rides_onto_the_person(self):
+        from cqc_lem.utilities.observability import normalize_attribution
+        props = normalize_attribution({"utm_source": "referral", "ref": "7"})
+        assert props["ref"] == "7" and props["channel"] == "referral"
 
     def test_channel_is_always_present(self):
         from cqc_lem.utilities.observability import normalize_attribution, CHANNEL_DIRECT

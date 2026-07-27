@@ -4,9 +4,13 @@ LEM's PostHog project had 41 insights across 6 dashboards and still could not an
 *do the business loops close?* and *did something break overnight?* Everything was a point metric,
 every watchdog was a hand-run cron, and the 2-week perf report was a human remembering to run it.
 
-`scripts/posthog_provision.py` defines the answer as code: two consolidated dashboards, the funnels
+`scripts/posthog_provision.py` defines the answer as code: the consolidated dashboards, the funnels
 over LEM's actual loops, four threshold alerts and one weekly email. Re-running it re-creates
 anything edited away in the UI, and does nothing at all when the project already matches.
+
+Issue #658 added a third dashboard (**LEM Channels**) and the two web-analytics conversion goals to
+the same script — where signups come from, and which link brought them. That surface has its own
+doc: `docs/marketing-attribution.md`. Everything below still describes Health and Growth.
 
 ```bash
 # what would change (default; no writes)
@@ -21,8 +25,9 @@ poetry run python scripts/posthog_provision.py --simulate 'LEM — LinkedIn 429 
 
 Exit codes: `0` in sync / applied, `2` changes pending (dry run), `1` error.
 
-Env: `POSTHOG_PERSONAL_API_KEY` (scopes: `insight`, `dashboard`, `alert` and `subscription`
-read+write, plus `user:read` so alerts get a subscriber), `POSTHOG_PROJECT_ID`,
+Env: `POSTHOG_PERSONAL_API_KEY` (scopes: `insight`, `dashboard`, `alert`, `action` and
+`subscription` read+write, `user:read` so alerts get a subscriber, plus `endpoint` and
+`insight_variable` read+write for the Endpoints panel below), `POSTHOG_PROJECT_ID`,
 `POSTHOG_APP_HOST`, `POSTHOG_REPORT_EMAIL` (weekly recipient; falls back to the key owner's email,
 overridable with `--email`).
 

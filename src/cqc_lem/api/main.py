@@ -336,6 +336,9 @@ class FunnelAttribution(BaseModel):
     referrer: Optional[str] = None
     landing_page: Optional[str] = None
     channel: Optional[str] = None
+    # The referral link's referrer id (issue #658, `?ref=<user id>`). Allow-listed like the rest —
+    # `normalize_attribution` drops anything not in its key list.
+    ref: Optional[str] = None
 
 
 class AuthInitRequest(BaseModel):

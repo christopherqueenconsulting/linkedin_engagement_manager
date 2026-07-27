@@ -6,6 +6,9 @@ from unittest.mock import patch
 pytestmark = pytest.mark.unit
 
 _BA = "cqc_lem.utilities.brand_account"
+# BRAND_SIGNUP_URL moved behind utilities/marketing/attribution.signup_url (issue #658), so the
+# signup CTA's env constant is patched on THAT module now.
+_ATTR = "cqc_lem.utilities.marketing.attribution"
 _DB = "cqc_lem.utilities.db"
 _RS = "cqc_lem.app.run_scheduler"
 
@@ -15,7 +18,7 @@ def _enabled(email="brand@lem.test", signup_url="", phase="P0"):
     return [
         patch(f"{_BA}.BRAND_ACCOUNT_ENABLED", True),
         patch(f"{_BA}.BRAND_ACCOUNT_EMAIL", email),
-        patch(f"{_BA}.BRAND_SIGNUP_URL", signup_url),
+        patch(f"{_ATTR}.BRAND_SIGNUP_URL", signup_url),
         patch(f"{_BA}.LAUNCH_PHASE", phase),
     ]
 
@@ -141,17 +144,23 @@ class TestBrandPreferenceOverrides:
         overrides = brand_preference_overrides({"focus_topics": ["  "]}, "P0")
         assert overrides["focus_topics"] == list(BRAND_FOCUS_TOPICS)
 
-    def test_seeds_the_signup_cta_when_configured(self):
+    def test_seeds_the_signup_cta_utm_tagged(self):
+        """Issue #658: the goal line is echoed by the brand's own posts/DMs, so the URL in it has to
+        arrive tagged — an untagged one makes every signup it drives read as `direct`."""
         from cqc_lem.utilities.brand_account import brand_preference_overrides
-        with patch(f"{_BA}.BRAND_SIGNUP_URL", "https://lem.test/trial"):
+        with patch(f"{_ATTR}.BRAND_SIGNUP_URL", "https://lem.test/trial"):
             overrides = brand_preference_overrides({}, "P0")
-        assert overrides["business_goals"] == "Drive free-trial signups at https://lem.test/trial"
+        goal = overrides["business_goals"]
+        assert goal.startswith("Drive free-trial signups at https://lem.test/trial?")
+        assert "utm_source=linkedin" in goal
+        assert "utm_medium=profile" in goal
+        assert "utm_campaign=brand-profile" in goal
 
     def test_no_cta_without_a_signup_url_and_never_over_existing_goals(self):
         from cqc_lem.utilities.brand_account import brand_preference_overrides
-        with patch(f"{_BA}.BRAND_SIGNUP_URL", ""):
+        with patch(f"{_ATTR}.BRAND_SIGNUP_URL", ""):
             assert "business_goals" not in brand_preference_overrides({}, "P0")
-        with patch(f"{_BA}.BRAND_SIGNUP_URL", "https://lem.test/trial"):
+        with patch(f"{_ATTR}.BRAND_SIGNUP_URL", "https://lem.test/trial"):
             assert "business_goals" not in brand_preference_overrides({"business_goals": "mine"}, "P0")
 
     def test_caps_are_always_reasserted_over_a_manual_edit(self):

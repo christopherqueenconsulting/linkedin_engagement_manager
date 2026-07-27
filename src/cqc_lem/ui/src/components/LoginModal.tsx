@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import api from '../api/client'
 import { getAttribution } from '../utils/attribution'
+import { recordSignup } from '../utils/analytics'
 
 type Step = 'email' | 'pin'
 
@@ -27,6 +28,7 @@ export default function LoginModal() {
 
       if (detail.bypass) {
         // No email provider — session already created server-side, log in immediately
+        if (detail.is_new_user) recordSignup({ method: 'email_pin', pin_bypassed: true })
         login(detail.session_token, detail.email)
         return
       }
@@ -47,7 +49,10 @@ export default function LoginModal() {
     setLoading(true)
     try {
       const r = await api.post('/auth/email/verify', { email, pin, attribution: getAttribution() })
-      const { session_token, email: verifiedEmail } = r.data.detail
+      const { session_token, email: verifiedEmail, is_new_user } = r.data.detail
+      // Only a brand-new account is a signup conversion — a returning user re-authenticating is a
+      // login, the same line the API's own funnel event draws (issue #658).
+      if (is_new_user) recordSignup({ method: 'email_pin', pin_bypassed: false })
       login(session_token, verifiedEmail)
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail

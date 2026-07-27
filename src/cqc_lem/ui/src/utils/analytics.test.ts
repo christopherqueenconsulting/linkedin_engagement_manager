@@ -17,6 +17,7 @@ const ph = {
   }),
   startSessionRecording: vi.fn(),
   sessionRecordingStarted: vi.fn(() => false),
+  setPersonProperties: vi.fn(),
 }
 vi.mock('posthog-js', () => ({ posthog: ph }))
 
@@ -32,6 +33,7 @@ async function loadAnalytics(key?: string, replayEnv: Record<string, string> = {
 beforeEach(() => {
   Object.values(ph).forEach((fn) => fn.mockClear())
   delete (window as unknown as { posthog?: unknown }).posthog
+  window.sessionStorage.clear()
 })
 
 afterEach(() => {
@@ -287,6 +289,82 @@ describe('session replay', () => {
     a.ensureSessionRecorded()
     await Promise.resolve()
     expect(ph.startSessionRecording).not.toHaveBeenCalled()
+  })
+})
+
+// Issue #658: marketing attribution. The first touch is captured into sessionStorage by
+// utils/attribution.ts; these cases prove it reaches the PostHog person and the signup event, which
+// is what makes a signup readable as a CHANNEL conversion rather than as direct traffic.
+describe('first-touch attribution', () => {
+  const FIRST_TOUCH = {
+    utm_source: 'linkedin',
+    utm_medium: 'social',
+    utm_campaign: 'post-12',
+    ref: '7',
+    landing_page: '/',
+  }
+
+  function storeFirstTouch() {
+    window.sessionStorage.setItem('lem_attribution', JSON.stringify(FIRST_TOUCH))
+  }
+
+  it('rides onto the person as $set_once keys matching the backend convention', async () => {
+    storeFirstTouch()
+    const a = await loadAnalytics('phc_test')
+    a.identifyUser({ userId: 42, createdAt: '2026-01-02T03:04:05Z' })
+    await vi.waitFor(() => expect(ph.identify).toHaveBeenCalled())
+    expect(ph.identify.mock.calls[0][2]).toEqual({
+      initial_utm_source: 'linkedin',
+      initial_utm_medium: 'social',
+      initial_utm_campaign: 'post-12',
+      initial_ref: '7',
+      initial_landing_page: '/',
+      created_at: '2026-01-02T03:04:05Z',
+    })
+  })
+
+  it('sends no set-once payload at all for a direct visit', async () => {
+    const a = await loadAnalytics('phc_test')
+    a.identifyUser({ userId: 42 })
+    await vi.waitFor(() => expect(ph.identify).toHaveBeenCalled())
+    expect(ph.identify).toHaveBeenCalledWith('42', {}, undefined)
+  })
+
+  it('records a signup with its attribution, on a distinct event name from the API\'s', async () => {
+    storeFirstTouch()
+    const a = await loadAnalytics('phc_test')
+    a.recordSignup({ method: 'email_pin', pin_bypassed: false })
+    await vi.waitFor(() => expect(ph.capture).toHaveBeenCalled())
+    expect(a.EVENTS.signupCompletedWeb).toBe('signup_completed_web')
+    expect(ph.capture).toHaveBeenCalledWith('signup_completed_web', {
+      ...FIRST_TOUCH,
+      method: 'email_pin',
+      pin_bypassed: false,
+    })
+    // Written on the still-anonymous person so the identify that follows merges it in.
+    expect(ph.setPersonProperties).toHaveBeenCalledWith(undefined, {
+      initial_utm_source: 'linkedin',
+      initial_utm_medium: 'social',
+      initial_utm_campaign: 'post-12',
+      initial_ref: '7',
+      initial_landing_page: '/',
+    })
+  })
+
+  it('captures the signup even when there is no attribution to carry', async () => {
+    const a = await loadAnalytics('phc_test')
+    a.recordSignup()
+    await vi.waitFor(() => expect(ph.capture).toHaveBeenCalled())
+    expect(ph.capture).toHaveBeenCalledWith('signup_completed_web', {})
+    expect(ph.setPersonProperties).not.toHaveBeenCalled()
+  })
+
+  it('is a no-op with analytics disabled', async () => {
+    storeFirstTouch()
+    const a = await loadAnalytics()
+    a.recordSignup()
+    await Promise.resolve()
+    expect(ph.capture).not.toHaveBeenCalled()
   })
 })
 

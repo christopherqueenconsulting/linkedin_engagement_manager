@@ -1040,6 +1040,7 @@ CHANNEL_EMAIL = "email"
 CHANNEL_REFERRAL = "referral"
 CHANNEL_AFFILIATE = "affiliate"
 CHANNEL_PAID = "paid"
+CHANNEL_YOUTUBE = "youtube"
 CHANNEL_DIRECT = "direct"
 CHANNEL_OTHER = "other"
 
@@ -1051,14 +1052,17 @@ CHANNELS = (
     CHANNEL_REFERRAL,
     CHANNEL_AFFILIATE,
     CHANNEL_PAID,
+    CHANNEL_YOUTUBE,
     CHANNEL_DIRECT,
     CHANNEL_OTHER,
 )
 
 # Client-supplied attribution is allow-listed: a funnel event's schema is ours, not the caller's.
+# `ref` is the referral link's referrer id (issue #658) — it rides beside the UTMs rather than
+# inside utm_content because it names a PERSON, not a creative variant.
 _ATTRIBUTION_KEYS = (
     "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
-    "referrer", "landing_page",
+    "referrer", "landing_page", "ref",
 )
 _ATTRIBUTION_MAX_LEN = 255
 
@@ -1071,6 +1075,10 @@ _SOURCE_CHANNEL_RULES = (
     ("affiliate", CHANNEL_AFFILIATE),
     ("partner", CHANNEL_AFFILIATE),
     ("linkedin", CHANNEL_LINKEDIN),
+    # The tutorial videos (issue #505) tag `utm_source=youtube`. YouTube passes no usable referrer,
+    # so without its own bucket every video-driven signup would land in `other`.
+    ("youtube", CHANNEL_YOUTUBE),
+    ("youtu.be", CHANNEL_YOUTUBE),
     ("google", CHANNEL_SEO),
     ("bing", CHANNEL_SEO),
     ("duckduckgo", CHANNEL_SEO),
@@ -1133,6 +1141,10 @@ def resolve_channel(attribution: Optional[dict]) -> str:
             return channel
     if source or medium or _clean_property(data.get("utm_campaign")):
         return CHANNEL_OTHER
+    # A `ref` with no UTMs is still a referral: our own referral links carry both, but a member who
+    # pastes the link into a DM strips query params often enough that this is a real arrival shape.
+    if _clean_property(data.get("ref")):
+        return CHANNEL_REFERRAL
 
     host = _referrer_host(data.get("referrer"))
     if host:

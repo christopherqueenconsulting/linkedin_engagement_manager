@@ -1609,6 +1609,20 @@ def _fill_and_publish_article(driver, wait, title: str, body: str, subtitle: str
     return driver.current_url
 
 
+def _tagged_edition_body(body: str, edition_id: "int | None" = None) -> str:
+    """The edition body with any OWNED link in it UTM-tagged under this edition's campaign (#658).
+
+    The generator is told not to put links in an edition at all (off-platform links suppress an
+    article's reach), so on the mainline path this is a no-op — but the SPA lets the author edit a
+    draft before it publishes, and a hand-added link to their own site is exactly the traffic worth
+    attributing to the edition that sent it. Publish time is the right choke point: it is the last
+    moment the body is still ours, and both publish tasks pass through here."""
+    from cqc_lem.utilities.marketing.attribution import (MEDIUM_NEWSLETTER, SOURCE_NEWSLETTER,
+                                                         campaign_for_edition, tag_links_in_text)
+    return tag_links_in_text(body, SOURCE_NEWSLETTER, MEDIUM_NEWSLETTER,
+                             campaign_for_edition(edition_id))
+
+
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
                   queue='se_content')
 def auto_publish_newsletter_edition(self, user_id: int):
@@ -1631,7 +1645,8 @@ def auto_publish_newsletter_edition(self, user_id: int):
             return "No newsletter edition generated"
         driver.get("https://www.linkedin.com/article/new/")
         time.sleep(random.uniform(6, 9))
-        url = _fill_and_publish_article(driver, wait, edition["title"], edition["body"],
+        url = _fill_and_publish_article(driver, wait, edition["title"],
+                                        _tagged_edition_body(edition["body"]),
                                         subtitle=edition.get("subtitle"))
         if url:
             mark_newsletter_published(user_id, url)
@@ -1663,7 +1678,8 @@ def auto_publish_edition(self, edition_id: int):
     try:
         driver.get("https://www.linkedin.com/article/new/")
         time.sleep(random.uniform(6, 9))
-        url = _fill_and_publish_article(driver, wait, edition["title"], edition["body"],
+        url = _fill_and_publish_article(driver, wait, edition["title"],
+                                        _tagged_edition_body(edition["body"], edition_id),
                                         subtitle=edition.get("subtitle"))
         if url:
             mark_edition_published(edition_id, url)
