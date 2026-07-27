@@ -223,6 +223,7 @@ jobs:
       # passed by this point; a PostHog hiccup here must not fail an otherwise-successful release.
       # The script itself degrades gracefully (exits 0) when POSTHOG_PERSONAL_API_KEY isn't set.
       - name: Checkout (for the annotation script)
+        continue-on-error: true
         uses: actions/checkout@v7
         with:
           ref: ${{ needs.build-and-push.outputs.tag }}
