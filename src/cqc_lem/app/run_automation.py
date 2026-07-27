@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
 from celery_once import QueueOnce
@@ -6255,6 +6255,49 @@ if __name__ == "__main__":
     pass
 
 
+def _affiliate_disclosure_gate(user_id: int, post_id: int, content: str,
+                               first_comment_links: Optional[list] = None) -> Optional[str]:
+    """Refuse to publish affiliate promotion that carries no FTC disclosure (issue #737).
+
+    Returns None when the post may publish, or the task's return string when it may not. A blocked
+    post is flagged ERROR rather than dropped: it is the author's own material and a human has to
+    decide whether to add the disclosure or remove the link — silently publishing an undisclosed
+    paid endorsement is the one outcome that is not available.
+
+    Non-affiliate posts (virtually all of them) never touch a disclosure requirement, and any
+    unexpected failure here publishes: this is a compliance check on a rare shape of post, not a new
+    way for the whole posting path to break."""
+    try:
+        from cqc_lem.utilities.marketing.affiliate import disclosure_report
+        graded = "\n".join([content or "", *(first_comment_links or [])])
+        report = disclosure_report(graded, user_id=user_id)
+    except Exception as e:
+        log_warning("Affiliate disclosure check failed — publishing", exc=e,
+                    user_id=user_id, post_id=post_id)
+        return None
+    if report.get("ok"):
+        return None
+
+    reason = report.get("reason")
+    message = ("Post carries your referral link but no FTC affiliate disclosure — add the "
+               "disclosure or remove the link, then re-approve."
+               if reason == "missing_ftc_disclosure" else
+               "Post carries a referral link but this deployment has no affiliate disclosure "
+               "configured (AFFILIATE_DISCLOSURE_TEXT).")
+    update_db_post_status(post_id, PostStatus.ERROR)
+    log_error(f"Post blocked: {reason}", user_id=user_id, post_id=post_id, action_type="post")
+    insert_new_log(user_id=user_id, action_type=LogActionType.POST, result=LogResultType.FAILURE,
+                   post_id=post_id, message=message)
+    try:
+        from cqc_lem.utilities.observability import (AFFILIATE_DISCLOSURE_BLOCKED,
+                                                     track_affiliate_event)
+        track_affiliate_event(AFFILIATE_DISCLOSURE_BLOCKED, user_id=user_id, post_id=post_id,
+                              reason=reason)
+    except Exception as e:
+        log_warning("Could not track affiliate disclosure block", exc=e, user_id=user_id)
+    return f"Post {post_id} flagged 'error' — {reason}"
+
+
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['post_id']}, reject_on_worker_lost=True,
                   rate_limit='2/m')
 def post_to_linkedin(self, user_id: int, post_id: int):
@@ -6285,6 +6328,15 @@ def post_to_linkedin(self, user_id: int, post_id: int):
     # for a retry.
     content, first_comment_links = split_link_for_first_comment(
         content, enabled=bool(prefs.get("link_in_first_comment", True)))
+
+    # FTC 16 CFR §255 (issue #737): extra trial time is compensation, so a post that publishes the
+    # user's own referral link is a paid endorsement and must disclose the material connection IN
+    # the content. Graded on the body AND the link the #392 split just carried out of it — a link in
+    # the first comment is still the same post's endorsement, and grading the trimmed body alone
+    # would let every affiliate post pass by having its link moved.
+    gate = _affiliate_disclosure_gate(user_id, post_id, content, first_comment_links)
+    if gate:
+        return gate
 
     myprint(f"Posting to LinkedIn: {content}")
 

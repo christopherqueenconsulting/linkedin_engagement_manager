@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useAccountReadiness } from '../hooks/useAccountReadiness'
 import SuppressionBanner from '../components/SuppressionBanner'
+import AffiliateNotice from '../components/AffiliateNotice'
 import SettingsHub from './account/settings/SettingsHub'
 
 export default function Account() {
@@ -41,6 +42,10 @@ export default function Account() {
 
       {/* Silent-suppression tripwire (issue #629) — the only notice a limited account ever gets */}
       <SuppressionBanner />
+
+      {/* Affiliate enrollment notice (issue #737) — default-on enrollment is only fair if it is
+          announced, so this shows until the user acknowledges it. */}
+      <AffiliateNotice />
 
       {/* Account setup checklist — exactly what automation needs, from the readiness API */}
       {readiness && !readiness.ready && (

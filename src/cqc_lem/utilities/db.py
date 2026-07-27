@@ -338,6 +338,33 @@ class FaqStatus(StrEnum):
     ARCHIVED = 'archived'
 
 
+class AffiliateStatus(StrEnum):
+    """(A) affiliate STATUS (issue #737) — whether the user holds a referral link and earns trial
+    time for it. Default ENROLLED, one click to OPTED_OUT. This says nothing at all about (B),
+    whether LEM may publish promo content from their account; that is `promo_content_opt_in`, is
+    default-off, and is stored beside this column precisely so the two can never be conflated."""
+    ENROLLED = 'enrolled'
+    OPTED_OUT = 'opted_out'
+
+
+class ReferralStatus(StrEnum):
+    """A referral's lifecycle. PENDING on signup through a member's link; CONVERTED only once the
+    referred user ACTIVATES (a real activated signup, not a click); REJECTED for self-referral and
+    the other fraud shapes — stored rather than dropped so the signal is countable."""
+    PENDING = 'pending'
+    CONVERTED = 'converted'
+    REJECTED = 'rejected'
+
+
+class AffiliateRewardKind(StrEnum):
+    """What a `affiliate_rewards` row paid for. ENROLLMENT is the status-linked bonus (revoked on
+    opt-out via a negative REVOKED row); REFERRAL was earned by driving an activation and is never
+    clawed back."""
+    ENROLLMENT = 'enrollment'
+    REFERRAL = 'referral'
+    REVOKED = 'revoked'
+
+
 class OnboardingStep(StrEnum):
     """Steps of the activation checklist (issue #500), in the order a user completes them.
     ACTIVATED is the "aha" moment: first AI post published AND first automated comment/DM sent."""
@@ -8969,6 +8996,439 @@ def extend_trial_for_user(user_id: int, feedback_id: Optional[int] = None) -> di
                 return _result(True, "already_granted", existing["cohort"],
                                int(existing["trial_days"]), existing["trial_ends_at"])
         log_error("Could not extend trial", exc=err, user_id=user_id)
+        return _result(False, "error")
+    finally:
+        cursor.close()
+        connection.close()
+
+
+# --- Affiliate / ambassador program (issue #737) ---------------------------------------------------
+# Trial days are the reward currency, so every write that moves `users.trial_ends_at` runs inside ONE
+# transaction with its ledger row: a grant that lands without its ledger entry is free service nobody
+# can account for, and a ledger row without the extension is a promise we broke.
+
+def _affiliate_row(row: Optional[dict]) -> Optional[dict]:
+    """Normalize an enrollment row for callers: booleans as booleans, status as a plain string."""
+    if not row:
+        return None
+    return {
+        "user_id": int(row["user_id"]),
+        "status": str(row["status"]),
+        "referral_code": str(row.get("referral_code") or ""),
+        "enrolled_at": row.get("enrolled_at"),
+        "opted_out_at": row.get("opted_out_at"),
+        "notice_seen_at": row.get("notice_seen_at"),
+        "promo_content_opt_in": bool(row.get("promo_content_opt_in")),
+        "promo_consent_at": row.get("promo_consent_at"),
+        "promo_consent_version": row.get("promo_consent_version"),
+    }
+
+
+def get_affiliate_enrollment(user_id: int) -> Optional[dict]:
+    """The user's affiliate row, or None when they have never been enrolled."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT user_id, status, referral_code, enrolled_at, opted_out_at, notice_seen_at, "
+            "promo_content_opt_in, promo_consent_at, promo_consent_version "
+            "FROM affiliate_enrollments WHERE user_id=%s",
+            (user_id,),
+        )
+        return _affiliate_row(cursor.fetchone())
+    except mysql.connector.Error as err:
+        log_error("Could not read affiliate enrollment", exc=err, user_id=user_id)
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def ensure_affiliate_enrollment(user_id: int, status: str = 'enrolled',
+                                referral_code: Optional[str] = None) -> Optional[dict]:
+    """Create the user's affiliate row if it doesn't exist, then return it.
+
+    Idempotent by INSERT IGNORE rather than read-then-write: two requests racing on a first page
+    load must not produce two rows or a duplicate-key 500. An existing row is never re-statused
+    here — an opted-out user staying opted out is the entire point of the opt-out."""
+    code = str(referral_code or user_id)
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT IGNORE INTO affiliate_enrollments (user_id, status, referral_code, enrolled_at) "
+            "VALUES (%s,%s,%s,%s)",
+            (user_id, str(status), code,
+             datetime.now(timezone.utc) if str(status) == str(AffiliateStatus.ENROLLED) else None),
+        )
+        connection.commit()
+    except mysql.connector.Error as err:
+        log_error("Could not create affiliate enrollment", exc=err, user_id=user_id)
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+    return get_affiliate_enrollment(user_id)
+
+
+def set_affiliate_status(user_id: int, enrolled: bool) -> Optional[dict]:
+    """Opt the user in or out of (A) affiliate status. Immediate — the caller reflects the resulting
+    trial length back to the user, and the reward side (grant/revoke of the enrollment bonus) is the
+    caller's separate, ledgered step so a status flip can never silently move money."""
+    status = AffiliateStatus.ENROLLED if enrolled else AffiliateStatus.OPTED_OUT
+    now = datetime.now(timezone.utc)
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE affiliate_enrollments SET status=%s, enrolled_at=IF(%s, COALESCE(enrolled_at,%s), enrolled_at), "
+            "opted_out_at=IF(%s, opted_out_at, %s) WHERE user_id=%s",
+            (str(status), enrolled, now, enrolled, now, user_id),
+        )
+        connection.commit()
+    except mysql.connector.Error as err:
+        log_error("Could not update affiliate status", exc=err, user_id=user_id)
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+    return get_affiliate_enrollment(user_id)
+
+
+def set_affiliate_promo_opt_in(user_id: int, enabled: bool, consent_version: str) -> Optional[dict]:
+    """(B) — whether LEM may publish promotional content about LEM from the user's own LinkedIn
+    account. Enabling stamps the consent timestamp AND the version of the copy consented to;
+    disabling clears both, so a re-enable can never inherit an old consent record."""
+    now = datetime.now(timezone.utc) if enabled else None
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE affiliate_enrollments SET promo_content_opt_in=%s, promo_consent_at=%s, "
+            "promo_consent_version=%s WHERE user_id=%s",
+            (1 if enabled else 0, now, str(consent_version) if enabled else None, user_id),
+        )
+        connection.commit()
+    except mysql.connector.Error as err:
+        log_error("Could not update affiliate promo consent", exc=err, user_id=user_id)
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+    return get_affiliate_enrollment(user_id)
+
+
+def mark_affiliate_notice_seen(user_id: int) -> bool:
+    """Record that the user has actually SEEN the enrollment notice. Default-enrollment is only
+    honest if the notice was delivered, so this timestamp is the evidence — not a UI nicety."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE affiliate_enrollments SET notice_seen_at=COALESCE(notice_seen_at,%s) WHERE user_id=%s",
+            (datetime.now(timezone.utc), user_id),
+        )
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        log_error("Could not mark affiliate notice seen", exc=err, user_id=user_id)
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_affiliate_reward_totals(user_id: int) -> dict:
+    """`{total, enrollment, referral}` granted days. `total` is the SUM over the whole ledger,
+    revocations included as negatives — it is what the per-user cap is measured against, so a user
+    who opts out and back in cannot use the round trip to mint days."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT kind, COALESCE(SUM(trial_days),0) AS days FROM affiliate_rewards "
+            "WHERE user_id=%s GROUP BY kind",
+            (user_id,),
+        )
+        by_kind = {str(r["kind"]): int(r["days"] or 0) for r in cursor.fetchall()}
+        return {
+            "total": sum(by_kind.values()),
+            "enrollment": by_kind.get(str(AffiliateRewardKind.ENROLLMENT), 0),
+            "referral": by_kind.get(str(AffiliateRewardKind.REFERRAL), 0),
+            "revoked": by_kind.get(str(AffiliateRewardKind.REVOKED), 0),
+        }
+    except mysql.connector.Error as err:
+        log_error("Could not read affiliate reward totals", exc=err, user_id=user_id)
+        return {"total": 0, "enrollment": 0, "referral": 0, "revoked": 0}
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_affiliate_referral_counts(user_id: int) -> dict:
+    """`{pending, converted, rejected}` referrals this member has driven."""
+    counts = {str(s): 0 for s in ReferralStatus}
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT status, COUNT(*) AS n FROM affiliate_referrals WHERE referrer_user_id=%s GROUP BY status",
+            (user_id,),
+        )
+        for row in cursor.fetchall():
+            counts[str(row["status"])] = int(row["n"] or 0)
+        return counts
+    except mysql.connector.Error as err:
+        log_error("Could not read affiliate referral counts", exc=err, user_id=user_id)
+        return counts
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_affiliate_referral_for_referred(referred_user_id: int) -> Optional[dict]:
+    """The one referral row a referred user can have, or None."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT id, referrer_user_id, referred_user_id, referral_code, status, reject_reason, "
+            "created_at, converted_at FROM affiliate_referrals WHERE referred_user_id=%s",
+            (referred_user_id,),
+        )
+        return cursor.fetchone()
+    except mysql.connector.Error as err:
+        log_error("Could not read affiliate referral", exc=err, user_id=referred_user_id)
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def record_affiliate_referral(referrer_user_id: int, referred_user_id: int, referral_code: str,
+                              status: str = 'pending',
+                              reject_reason: Optional[str] = None) -> Optional[int]:
+    """Attribute a new signup to a referrer. Returns the referral id, or None when one already
+    exists for this referred user.
+
+    A rejected referral is WRITTEN (status='rejected' + a reason) rather than discarded: the caller
+    has already decided it doesn't pay, and a self-referral we can count is a fraud signal, while a
+    self-referral we dropped is nothing. The UNIQUE key on referred_user_id is what makes a replayed
+    signup a no-op rather than a second attribution."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO affiliate_referrals (referrer_user_id, referred_user_id, referral_code, "
+            "status, reject_reason) VALUES (%s,%s,%s,%s,%s)",
+            (referrer_user_id, referred_user_id, str(referral_code), str(status), reject_reason),
+        )
+        connection.commit()
+        return cursor.lastrowid
+    except mysql.connector.Error as err:
+        if err.errno == errorcode.ER_DUP_ENTRY:
+            log_info("Referral already attributed — ignoring duplicate", user_id=referred_user_id)
+            return None
+        log_error("Could not record affiliate referral", exc=err, user_id=referred_user_id)
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def convert_affiliate_referral(referred_user_id: int) -> Optional[dict]:
+    """Mark a PENDING referral converted, and return it. Returns None when there is nothing to
+    convert — no referral, already converted, or rejected — so the caller's reward grant is driven
+    by the rowcount rather than by a re-read that a concurrent activation could race."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE affiliate_referrals SET status=%s, converted_at=%s "
+            "WHERE referred_user_id=%s AND status=%s",
+            (str(ReferralStatus.CONVERTED), datetime.now(timezone.utc), referred_user_id,
+             str(ReferralStatus.PENDING)),
+        )
+        connection.commit()
+        if cursor.rowcount != 1:
+            return None
+    except mysql.connector.Error as err:
+        log_error("Could not convert affiliate referral", exc=err, user_id=referred_user_id)
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+    return get_affiliate_referral_for_referred(referred_user_id)
+
+
+def _affiliate_baseline_trial_end(cursor, user_id: int, started: datetime) -> datetime:
+    """The trial end a revoked enrollment bonus may never take the user below: their standard trial,
+    any early-adopter grant (#499), and every referral day they EARNED. Only the enrollment bonus is
+    contingent on status; nothing else the user holds is."""
+    from cqc_lem.utilities.env_constants import FREE_TRIAL_DAYS
+    baseline = started + timedelta(days=FREE_TRIAL_DAYS)
+    cursor.execute("SELECT trial_ends_at FROM early_adopter_grants WHERE user_id=%s", (user_id,))
+    grant = cursor.fetchone()
+    grant_end = _as_naive_utc(grant["trial_ends_at"]) if grant else None
+    if grant_end and grant_end > baseline:
+        baseline = grant_end
+    cursor.execute(
+        "SELECT COALESCE(SUM(trial_days),0) AS days FROM affiliate_rewards WHERE user_id=%s AND kind=%s",
+        (user_id, str(AffiliateRewardKind.REFERRAL)),
+    )
+    earned = cursor.fetchone()
+    return baseline + timedelta(days=max(0, int((earned or {}).get("days") or 0)))
+
+
+def grant_affiliate_trial_days(user_id: int, days: int, kind: str,
+                               referral_id: Optional[int] = None,
+                               reason: Optional[str] = None) -> dict:
+    """Extend the user's trial by `days` and write the matching ledger row, in ONE transaction.
+
+    Capped twice: by `AFFILIATE_MAX_REWARD_DAYS` against the user's own ledger sum (a partial grant
+    is granted, not refused — the user gets what is left under the ceiling), and by the ENUM'd
+    `kind`. Only trialling users are extended; a paying subscriber has no trial to lengthen, and
+    silently paying them in a currency they can't spend would look like a granted reward in the UI.
+
+    Returns `{granted, reason, days, total_days, trial_ends_at}` where reason is one of
+    granted | already_granted | capped | not_on_trial | user_not_found | disabled | error.
+    """
+    from cqc_lem.utilities.marketing.affiliate import grantable_days, program_enabled
+
+    def _result(granted: bool, why: str, days_granted: int = 0, total: int = 0,
+                ends_at: Optional[datetime] = None) -> dict:
+        return {"granted": granted, "reason": why, "days": days_granted,
+                "total_days": total, "trial_ends_at": ends_at}
+
+    if not program_enabled():
+        return _result(False, "disabled")
+    if int(days) <= 0:
+        return _result(False, "capped")
+
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        connection.start_transaction()
+        cursor.execute(
+            "SELECT COALESCE(SUM(trial_days),0) AS total FROM affiliate_rewards WHERE user_id=%s FOR UPDATE",
+            (user_id,),
+        )
+        already = int((cursor.fetchone() or {}).get("total") or 0)
+
+        # One enrollment bonus at a time: the migration's UNIQUE key only constrains referral rows
+        # (repeated NULLs are legal), so the "already granted" check for the status bonus is held
+        # here, inside the same transaction that would pay it.
+        if str(kind) == str(AffiliateRewardKind.ENROLLMENT):
+            cursor.execute(
+                "SELECT COALESCE(SUM(trial_days),0) AS net FROM affiliate_rewards "
+                "WHERE user_id=%s AND kind IN (%s,%s) FOR UPDATE",
+                (user_id, str(AffiliateRewardKind.ENROLLMENT), str(AffiliateRewardKind.REVOKED)),
+            )
+            if int((cursor.fetchone() or {}).get("net") or 0) > 0:
+                connection.rollback()
+                return _result(True, "already_granted", 0, already)
+
+        payable = grantable_days(already, int(days))
+        if payable <= 0:
+            connection.rollback()
+            return _result(False, "capped", 0, already)
+
+        cursor.execute(
+            "SELECT subscription_status, trial_started_at, trial_ends_at FROM users WHERE id=%s FOR UPDATE",
+            (user_id,),
+        )
+        user = cursor.fetchone()
+        if not user:
+            connection.rollback()
+            return _result(False, "user_not_found")
+        if user["subscription_status"] not in _EXTENDABLE_STATUSES:
+            connection.rollback()
+            return _result(False, "not_on_trial", 0, already)
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        started = _as_naive_utc(user["trial_started_at"]) or now
+        # Extend from whichever is later: a trial that already lapsed is extended from TODAY, or the
+        # reward would land entirely in the past and read as nothing happening.
+        current_end = _as_naive_utc(user["trial_ends_at"]) or now
+        new_end = max(current_end, now) + timedelta(days=payable)
+
+        cursor.execute(
+            "INSERT INTO affiliate_rewards (user_id, referral_id, kind, trial_days, reason, trial_ends_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s)",
+            (user_id, referral_id, str(kind), payable, reason, new_end),
+        )
+        cursor.execute(
+            "UPDATE users SET trial_started_at=%s, trial_ends_at=%s, subscription_status='trial', "
+            "subscription_tier=COALESCE(subscription_tier,'free_trial') WHERE id=%s",
+            (started, new_end, user_id),
+        )
+        connection.commit()
+        log_info(f"Affiliate reward granted: +{payable} trial days ({kind})", user_id=user_id)
+        return _result(True, "granted", payable, already + payable, new_end)
+    except mysql.connector.Error as err:
+        connection.rollback()
+        if err.errno == errorcode.ER_DUP_ENTRY:
+            # A concurrent activation already paid this referral. Not an error — the invariant held.
+            return _result(True, "already_granted")
+        log_error("Could not grant affiliate trial days", exc=err, user_id=user_id)
+        return _result(False, "error")
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def revoke_affiliate_enrollment_bonus(user_id: int) -> dict:
+    """Return an opted-out user to their standard trial: subtract the enrollment bonus still standing
+    and write the negative ledger row, in one transaction.
+
+    Never takes the trial below `_affiliate_baseline_trial_end` — the standard trial, any
+    early-adopter grant, and every referral day the user EARNED all survive an opt-out. That is what
+    keeps "your trial returns to the standard N days" true rather than punitive."""
+    def _result(revoked: bool, why: str, days: int = 0,
+                ends_at: Optional[datetime] = None) -> dict:
+        return {"revoked": revoked, "reason": why, "days": days, "trial_ends_at": ends_at}
+
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        connection.start_transaction()
+        cursor.execute(
+            "SELECT COALESCE(SUM(trial_days),0) AS net FROM affiliate_rewards "
+            "WHERE user_id=%s AND kind IN (%s,%s) FOR UPDATE",
+            (user_id, str(AffiliateRewardKind.ENROLLMENT), str(AffiliateRewardKind.REVOKED)),
+        )
+        standing = int((cursor.fetchone() or {}).get("net") or 0)
+        if standing <= 0:
+            connection.rollback()
+            return _result(False, "nothing_to_revoke")
+
+        cursor.execute(
+            "SELECT trial_started_at, trial_ends_at FROM users WHERE id=%s FOR UPDATE",
+            (user_id,),
+        )
+        user = cursor.fetchone()
+        if not user:
+            connection.rollback()
+            return _result(False, "user_not_found")
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        started = _as_naive_utc(user["trial_started_at"]) or now
+        current_end = _as_naive_utc(user["trial_ends_at"]) or now
+        baseline = _affiliate_baseline_trial_end(cursor, user_id, started)
+        new_end = max(current_end - timedelta(days=standing), baseline)
+
+        cursor.execute(
+            "INSERT INTO affiliate_rewards (user_id, referral_id, kind, trial_days, reason, trial_ends_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s)",
+            (user_id, None, str(AffiliateRewardKind.REVOKED), -standing, "opted_out", new_end),
+        )
+        cursor.execute("UPDATE users SET trial_ends_at=%s WHERE id=%s", (new_end, user_id))
+        connection.commit()
+        log_info(f"Affiliate enrollment bonus revoked: -{standing} trial days", user_id=user_id)
+        return _result(True, "revoked", standing, new_end)
+    except mysql.connector.Error as err:
+        connection.rollback()
+        log_error("Could not revoke affiliate enrollment bonus", exc=err, user_id=user_id)
         return _result(False, "error")
     finally:
         cursor.close()

@@ -1787,6 +1787,21 @@ def _track_signup_funnel(user_id: int, email: str, attribution: dict, pin_bypass
                        trial_days=FREE_TRIAL_DAYS, tier="free_trial")
 
 
+def _start_affiliate_membership(user_id: int, attribution: dict) -> None:
+    """Enrol a brand-new user in the affiliate program (A) and attribute their signup to whoever
+    referred them (issue #737).
+
+    Order matters: attribution first, because `enroll_user` extends THIS user's trial and a failure
+    there must not cost the referrer their pending referral. Best-effort throughout — the affiliate
+    program is a perk, and no part of it may ever fail a signup."""
+    try:
+        from cqc_lem.utilities.marketing.affiliate import attribute_referral, enroll_user
+        attribute_referral(user_id, attribution)
+        enroll_user(user_id)
+    except Exception as e:
+        log_warning("Could not start affiliate membership", exc=e, user_id=user_id)
+
+
 # LinkedIn OAuth initiation — builds the authorization URL and redirects user to LinkedIn
 @router.post("/auth/email/init")
 def auth_email_init(request: AuthInitRequest) -> ResponseModel:
@@ -1818,6 +1833,7 @@ def auth_email_init(request: AuthInitRequest) -> ResponseModel:
             raise HTTPException(status_code=500, detail="Could not create session")
         if is_new_user:
             _track_signup_funnel(user_id, email, attribution, pin_bypassed=True)
+            _start_affiliate_membership(user_id, attribution)
         return ResponseModel(status_code=200, detail={
             "bypass": True,
             "session_token": session_token,
@@ -1862,8 +1878,9 @@ def auth_email_verify(request: AuthVerifyRequest) -> ResponseModel:
         raise HTTPException(status_code=500, detail="Could not create session")
 
     if is_new_user:
-        _track_signup_funnel(user_id, email, _attribution_dict(request.attribution),
-                             pin_bypassed=False)
+        signup_attribution = _attribution_dict(request.attribution)
+        _track_signup_funnel(user_id, email, signup_attribution, pin_bypassed=False)
+        _start_affiliate_membership(user_id, signup_attribution)
 
     return ResponseModel(
         status_code=200,
@@ -2893,6 +2910,124 @@ def resume_automation_endpoint(request: AutomationResumeRequest) -> ResponseMode
         "cleared": cleared, "resumed": resumed,
         **_suppression_status(user_id),
     })
+
+
+# --- Affiliate / ambassador program (issue #737) ---------------------------------------------------
+
+class AffiliateStatusRequest(BaseModel):
+    session_token: str
+    # (A) affiliate status. One field, because opting out has to be ONE click — a confirm-then-submit
+    # dance is the dark pattern the issue explicitly rules out.
+    enrolled: bool
+
+
+class AffiliatePromoConsentRequest(BaseModel):
+    session_token: str
+    # (B) — publishing LEM promotion from the user's OWN LinkedIn account.
+    enabled: bool
+    # Enabling REQUIRES the user to have seen and accepted the consent copy. The API refuses an
+    # enable without it rather than trusting the SPA to have shown the screen: consent that the
+    # server never verified is consent we cannot evidence.
+    consent_acknowledged: bool = False
+
+
+class AffiliateNoticeRequest(BaseModel):
+    session_token: str
+
+
+def _affiliate_detail(user_id: int, **extra) -> dict:
+    from cqc_lem.utilities.marketing.affiliate import affiliate_state
+    state = affiliate_state(user_id)
+    for key in ("notice_seen_at", "promo_consent_at"):
+        state[key] = _utc_iso(state.get(key))
+    return {**state, **extra}
+
+
+@router.get("/user/affiliate", responses={
+    200: {"description": "Affiliate program state for the signed-in user"},
+    **{k: v for k, v in error_responses.items() if k in [401]},
+})
+def get_affiliate_endpoint(session_token: str) -> ResponseModel:
+    """The Account > Affiliate section's whole picture (issue #737): status, referral link, referrals
+    driven, trial days earned against the cap, and BOTH toggles with their consent record.
+
+    Reading this page is also what enrols a user who predates the program — enrollment is
+    default-on, and `enroll_user` is idempotent, so an existing opted-out row is never revived."""
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    try:
+        from cqc_lem.utilities.marketing.affiliate import enroll_user
+        enroll_user(user_id)
+    except Exception as e:
+        log_warning("Could not backfill affiliate enrollment", exc=e, user_id=user_id)
+    return ResponseModel(status_code=200, detail=_affiliate_detail(user_id))
+
+
+@router.post("/user/affiliate/status", responses={
+    200: {"description": "Updated affiliate state"},
+    **{k: v for k, v in error_responses.items() if k in [401]},
+})
+def set_affiliate_status_endpoint(request: AffiliateStatusRequest) -> ResponseModel:
+    """Join or leave (A). Takes effect immediately, and the response carries the resulting trial end
+    date so the SPA can tell the user their new trial length in the same breath as the change —
+    opting out returns them to the standard trial, it does not take away days they EARNED."""
+    from cqc_lem.utilities.marketing.affiliate import set_status
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    result = set_status(user_id, bool(request.enrolled))
+    reward = result.get("reward") or {}
+    trial_ends_at = reward.get("trial_ends_at")
+    log_info(f"Affiliate status set to {'enrolled' if request.enrolled else 'opted_out'}",
+             user_id=user_id)
+    return ResponseModel(status_code=200, detail=_affiliate_detail(
+        user_id,
+        reward_days=int(reward.get("days") or 0),
+        trial_ends_at=_utc_iso(trial_ends_at) if trial_ends_at else None,
+    ))
+
+
+@router.post("/user/affiliate/promo-consent", responses={
+    200: {"description": "Updated affiliate state"},
+    **{k: v for k, v in error_responses.items() if k in [401, 422]},
+})
+def set_affiliate_promo_consent_endpoint(request: AffiliatePromoConsentRequest) -> ResponseModel:
+    """(B) — the separate, explicit opt-IN for LEM publishing promotional content about LEM from the
+    user's OWN LinkedIn account. Default OFF, and it can only be turned on by this call, with
+    `consent_acknowledged`, which is what makes the stored timestamp mean something.
+
+    Turning it off needs no acknowledgement: withdrawing consent is never gated."""
+    from cqc_lem.utilities.marketing.affiliate import set_promo_consent
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if request.enabled and not request.consent_acknowledged:
+        raise HTTPException(status_code=422,
+                            detail="Explicit consent is required to publish promotional content "
+                                   "from your LinkedIn account")
+    result = set_promo_consent(user_id, bool(request.enabled))
+    if not result.get("ok"):
+        raise HTTPException(status_code=422,
+                            detail="Join the affiliate program before enabling promotional posts")
+    log_info(f"Affiliate promo consent {'granted' if request.enabled else 'withdrawn'}",
+             user_id=user_id)
+    return ResponseModel(status_code=200, detail=_affiliate_detail(user_id))
+
+
+@router.post("/user/affiliate/notice", responses={
+    200: {"description": "Enrollment notice acknowledged"},
+    **{k: v for k, v in error_responses.items() if k in [401]},
+})
+def acknowledge_affiliate_notice_endpoint(request: AffiliateNoticeRequest) -> ResponseModel:
+    """Record that the user has SEEN the enrollment notice. Default enrollment is only fair if the
+    notice was actually delivered, so this timestamp is the evidence it was."""
+    from cqc_lem.utilities.db import mark_affiliate_notice_seen
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    mark_affiliate_notice_seen(user_id)
+    return ResponseModel(status_code=200, detail=_affiliate_detail(user_id))
 
 
 @router.get("/user/audience-growth")

@@ -213,6 +213,40 @@ BRAND_SIGNUP_URL          = get_constant_from_env('BRAND_SIGNUP_URL', default_va
 # to us (utilities/marketing/attribution.py).
 MARKETING_OWNED_DOMAINS   = get_constant_from_env('MARKETING_OWNED_DOMAINS', default_value='')
 
+# Affiliate / ambassador program (issue #737). PERMANENT, not a launch-phase promo: LEM's marketing
+# arm is its own users, so the program outlives P0/P1/P2 and the kill switch below exists for
+# environments (dev, CI) that should not mint referral links at all.
+#
+# Two toggles, deliberately separate, and the split is the whole point of the design:
+#   (A) affiliate STATUS  -> default ON with a one-click opt-out. Low risk: it grants a referral
+#                            link and trial time. AFFILIATE_PROGRAM_ENABLED / _DEFAULT_ENROLLED.
+#   (B) promotional CONTENT published from the user's OWN LinkedIn account -> default OFF, per user,
+#       and un-settable without recorded consent. It is their professional identity; there is no env
+#       var that can turn it on for anybody, which is why (B) has no default here at all.
+AFFILIATE_PROGRAM_ENABLED = isTrue(get_constant_from_env('AFFILIATE_PROGRAM_ENABLED', default_value='True'))
+AFFILIATE_DEFAULT_ENROLLED = isTrue(get_constant_from_env('AFFILIATE_DEFAULT_ENROLLED', default_value='True'))
+# Trial days granted for BEING enrolled — the owner's model ("affiliates receive additional free
+# trial time"). Revoked on opt-out, which is what returns the user to the standard trial.
+AFFILIATE_ENROLLMENT_BONUS_DAYS = int(get_constant_from_env('AFFILIATE_ENROLLMENT_BONUS_DAYS', default_value='7'))
+# Trial days per referral that ACTIVATES (not per click, not per raw signup). Earned, so opting out
+# never claws these back.
+AFFILIATE_REFERRAL_BONUS_DAYS = int(get_constant_from_env('AFFILIATE_REFERRAL_BONUS_DAYS', default_value='14'))
+# Hard ceiling on total granted days per user. Without it a referral chain is unbounded free service
+# against a per-user LLM cost that is not (docs/cost-performance-margin-plan.md).
+AFFILIATE_MAX_REWARD_DAYS = int(get_constant_from_env('AFFILIATE_MAX_REWARD_DAYS', default_value='90'))
+# Only users with a LinkedIn company page may be enrolled. The owner floated this as a possible
+# cleaner boundary; OFF by default so the program is open to every user.
+AFFILIATE_REQUIRE_COMPANY_PAGE = isTrue(get_constant_from_env('AFFILIATE_REQUIRE_COMPANY_PAGE', default_value='False'))
+# The FTC 16 CFR §255 material-connection disclosure stamped on affiliate content. Overridable per
+# environment (jurisdiction//brand voice); blank DISABLES publishing affiliate content entirely
+# rather than publishing it undisclosed.
+AFFILIATE_DISCLOSURE_TEXT = get_constant_from_env(
+    'AFFILIATE_DISCLOSURE_TEXT',
+    default_value='#ad — I get free LinkedIn Engagement Manager trial time when people sign up through my link.')
+# Bumped whenever the (B) consent copy materially changes, so a stored consent can be told apart
+# from consent to a different ask.
+AFFILIATE_PROMO_CONSENT_VERSION = get_constant_from_env('AFFILIATE_PROMO_CONSENT_VERSION', default_value='v1')
+
 # Unit-economics inputs for the margin report (docs/cost-performance-margin-plan.md §C.1). Monthly
 # tier prices mirror the SPA pricing table — override per environment instead of editing code so a
 # price change never needs a deploy.
