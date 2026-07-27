@@ -2112,6 +2112,64 @@ def get_planned_posts_within_buffer(user_id: int,
     return planned_content
 
 
+def get_next_planned_posts_after_buffer(user_id: int, days: int, limit: int) -> list[dict]:
+    """The soonest status=planning posts due BEYOND the buffer window, soonest first (issue #719).
+
+    The pull-forward list for an explicitly requested run: when the window holds no planning rows
+    (every near-term slot was posted or rejected, and rejected slots are never re-planned) the
+    Generate button would otherwise no-op forever. Forward-only — a planning row already in the
+    past is a stale slot, and generating content for a time that has passed would publish it
+    immediately.
+    """
+    limit = int(limit)
+    if limit <= 0:
+        return []
+
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT user_id, id, post_type, buyer_stage, content_mix, scheduled_time FROM posts"
+            " WHERE status = 'planning' AND user_id = %s"
+            " AND scheduled_time > NOW() + INTERVAL %s DAY"
+            " ORDER BY scheduled_time ASC, id ASC LIMIT %s",
+            (user_id, int(days), limit),
+        )
+        planned_content = cursor.fetchall()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get planned posts after buffer for user_id {user_id} | Error: {err}")
+        planned_content = []
+    finally:
+        cursor.close()
+        connection.close()
+
+    return planned_content
+
+
+def get_next_planned_post_date(user_id: int) -> Optional[datetime]:
+    """When this user's soonest UPCOMING planning slot is due, or None when nothing is planned.
+
+    Feeds the "nothing to generate right now" explanation (issue #719) — without a date the SPA
+    can only say a run produced nothing, which reads as a broken feature.
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT MIN(scheduled_time) FROM posts"
+            " WHERE status = 'planning' AND user_id = %s AND scheduled_time > NOW()",
+            (user_id,),
+        )
+        row = cursor.fetchone()
+        return row[0] if row else None
+    except mysql.connector.Error as err:
+        myprint(f"Could not get next planned post date for user_id {user_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_user_ids_with_planned_posts_within_buffer(days: int = MAX_CONTENT_BUFFER_DAYS) -> list[int]:
     """User IDs that have any status=planning post due within the next `days` days.
 

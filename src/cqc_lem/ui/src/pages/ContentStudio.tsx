@@ -17,6 +17,8 @@ import ComposePost from './content/ComposePost'
 import { useAuth } from '../contexts/AuthContext'
 import { useUserTimezone } from '../hooks/useUserTimezone'
 import { formatInTimezone, toZonedInputValue, zonedInputToUtcIso } from '../utils/datetime'
+import { emptyRunExplanation, isGenerationRunning } from '../utils/generationStatus'
+import type { GenerationStatus } from '../utils/generationStatus'
 import { EVENTS, capture, maskProps, recordPostApproval } from '../utils/analytics'
 
 // Consolidated content hub: compose posts, schedule DMs, manage newsletters, and review/edit
@@ -111,23 +113,6 @@ const STATUS_COLORS: Record<string, string> = {
   scheduled: 'bg-purple-100 text-purple-700',
   error: 'bg-red-100 text-red-700',
 }
-
-// Progress of a weekly content-generation run, polled while it is running (issue #545).
-type GenerationState = 'queued' | 'in_progress' | 'done' | 'failed'
-interface GenerationStatus {
-  state: GenerationState
-  total: number
-  completed: number
-  failed: number
-  post_ids: number[]
-  ready_post_ids: number[]
-  failed_post_ids: number[]
-  started_at: string | null
-  finished_at: string | null
-  updated_at?: string | null
-}
-const isGenerationRunning = (s?: GenerationStatus | null) =>
-  !!s && (s.state === 'queued' || s.state === 'in_progress')
 
 export default function ContentStudio() {
   const { user, sessionToken } = useAuth()
@@ -365,6 +350,7 @@ export default function ContentStudio() {
   // here — the user can also dismiss the result early.
   const [dismissedRunStartedAt, setDismissedRunStartedAt] = useState<string | null>(null)
   const showGenBanner = !!genStatus && genStatus.started_at !== dismissedRunStartedAt
+  const emptyRun = genStatus ? emptyRunExplanation(genStatus, userTimezone) : null
 
   const generating = weeklyMutation.isPending || isGenerationRunning(genStatus)
   const generateLabel = !generating
@@ -460,7 +446,9 @@ export default function ContentStudio() {
               ? 'bg-blue-50 border-blue-200 text-blue-800'
               : genStatus.state === 'failed'
                 ? 'bg-red-50 border-red-200 text-red-800'
-                : 'bg-green-50 border-green-200 text-green-800'
+                : emptyRun
+                  ? 'bg-amber-50 border-amber-200 text-amber-900'
+                  : 'bg-green-50 border-green-200 text-green-800'
           }`}
         >
           <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -471,7 +459,9 @@ export default function ContentStudio() {
                   ? `Generating your posts — ${genStatus.completed + genStatus.failed} of ${genStatus.total} done`
                   : 'Generating your posts…')}
               {genStatus.state === 'done' &&
-                `${genStatus.completed} ${genStatus.completed === 1 ? 'post is' : 'posts are'} ready to review`}
+                (emptyRun
+                  ? emptyRun.headline
+                  : `${genStatus.completed} ${genStatus.completed === 1 ? 'post is' : 'posts are'} ready to review`)}
               {genStatus.state === 'failed' && 'Content generation failed — no posts were created'}
             </span>
             {isGenerationRunning(genStatus) ? (
@@ -500,6 +490,7 @@ export default function ContentStudio() {
               />
             </div>
           )}
+          {emptyRun && <p className="mt-2 text-xs">{emptyRun.detail}</p>}
           {genStatus.failed > 0 && (
             <p className="mt-2 text-xs">
               {genStatus.failed} {genStatus.failed === 1 ? 'post' : 'posts'} couldn't be generated

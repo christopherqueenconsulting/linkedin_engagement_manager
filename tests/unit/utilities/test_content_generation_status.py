@@ -1,6 +1,7 @@
 """Unit tests for the weekly content-generation progress store (issue #545)."""
 
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from unittest.mock import MagicMock, patch
@@ -199,6 +200,81 @@ class TestLifecycle:
         assert fake_redis.ttls["content_generation:status:9"] == 120
         mark_finished(9)
         assert fake_redis.ttls["content_generation:status:9"] == 30
+
+
+class TestMarkEmpty:
+    """A run that generated nothing must say WHY, not just report 0 posts (issue #719)."""
+
+    def test_records_reason_and_detail(self, fake_redis):
+        from cqc_lem.utilities.content_generation_status import (
+            ContentGenerationEmptyReason, ContentGenerationState, get_generation_status,
+            mark_empty, mark_queued)
+        mark_queued(1)
+        queued_at = get_generation_status(1)["started_at"]
+
+        returned = mark_empty(1, ContentGenerationEmptyReason.NO_PLANNED_SLOTS,
+                              next_planned_at=datetime(2026, 8, 3, 13, 30), buffer_days=5)
+        status = get_generation_status(1)
+        assert returned == status
+        assert status["state"] == ContentGenerationState.DONE
+        assert status["total"] == 0 and status["completed"] == 0 and status["failed"] == 0
+        assert status["reason"] == "no_planned_slots"
+        assert status["reason_detail"]["next_planned_at"] == "2026-08-03T13:30:00+00:00"
+        assert status["reason_detail"]["buffer_days"] == 5
+        assert status["started_at"] == queued_at  # same run the SPA has been polling
+        assert status["finished_at"]
+
+    def test_buffer_full_carries_the_counts(self, fake_redis):
+        from cqc_lem.utilities.content_generation_status import (
+            ContentGenerationEmptyReason, get_generation_status, mark_empty)
+        mark_empty(2, ContentGenerationEmptyReason.BUFFER_FULL, buffer_days=5,
+                   ready_count=5, buffer_max=5)
+        detail = get_generation_status(2)["reason_detail"]
+        assert detail == {"buffer_days": 5, "ready_count": 5, "buffer_max": 5}
+
+    def test_unknown_values_are_omitted_not_zeroed(self, fake_redis):
+        """None means 'we don't know', which must never render as 0 posts ready."""
+        from cqc_lem.utilities.content_generation_status import (
+            ContentGenerationEmptyReason, get_generation_status, mark_empty)
+        mark_empty(3, ContentGenerationEmptyReason.ALREADY_RUNNING)
+        assert get_generation_status(3)["reason_detail"] == {}
+
+    def test_aware_next_planned_is_normalized_to_utc(self, fake_redis):
+        from cqc_lem.utilities.content_generation_status import (
+            ContentGenerationEmptyReason, get_generation_status, mark_empty)
+        aware = datetime(2026, 8, 3, 9, 0, tzinfo=timezone(timedelta(hours=-4)))
+        mark_empty(4, ContentGenerationEmptyReason.BUFFER_FULL, next_planned_at=aware)
+        assert get_generation_status(4)["reason_detail"]["next_planned_at"] == \
+            "2026-08-03T13:00:00+00:00"
+
+    def test_gets_the_shorter_result_ttl(self, fake_redis, monkeypatch):
+        monkeypatch.setenv("CONTENT_GENERATION_RESULT_TTL_SECONDS", "30")
+        from cqc_lem.utilities.content_generation_status import (
+            ContentGenerationEmptyReason, mark_empty)
+        mark_empty(5, ContentGenerationEmptyReason.BUFFER_FULL)
+        assert fake_redis.ttls["content_generation:status:5"] == 30
+
+    def test_noops_without_redis(self, no_redis):
+        from cqc_lem.utilities.content_generation_status import (
+            ContentGenerationEmptyReason, mark_empty)
+        assert mark_empty(1, ContentGenerationEmptyReason.BUFFER_FULL) is None
+
+    def test_a_run_that_produces_posts_drops_a_stale_reason(self, fake_redis):
+        """A second click while the first run is still generating writes ALREADY_RUNNING over the
+        same key. Carrying that forward would have the finished run tell the user to wait for a
+        run that is already done, instead of naming the posts it made."""
+        from cqc_lem.utilities.content_generation_status import (
+            ContentGenerationEmptyReason, ContentGenerationState, get_generation_status,
+            mark_empty, mark_finished, mark_in_progress, record_post_generated)
+        mark_in_progress(6, [101])
+        mark_empty(6, ContentGenerationEmptyReason.ALREADY_RUNNING)
+        record_post_generated(6, 101)
+        status = mark_finished(6)
+
+        assert status["state"] == ContentGenerationState.DONE
+        assert status["completed"] == 1
+        assert "reason" not in status and "reason_detail" not in status
+        assert "reason" not in get_generation_status(6)
 
 
 class TestFailsOpen:
