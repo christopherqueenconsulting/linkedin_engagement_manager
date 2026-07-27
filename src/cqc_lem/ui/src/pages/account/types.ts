@@ -26,6 +26,7 @@ export type EngPrefs = {
   max_comments_per_day: number
   max_dms_per_day: number
   max_invites_per_day: number
+  max_company_page_invites_per_day: number
   connection_request_mode: string
   connection_targeting_mode: string
   connection_target_authors: string[]

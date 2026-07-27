@@ -247,7 +247,10 @@ app.conf.update(
         #},
         'invite_to_company_pages': {
             'task': 'cqc_lem.app.run_scheduler.auto_invite_to_company_pages',
-            'schedule': crontab(hour='5', minute='0', day_of_month='1')  # Run on the 1st of the month at 5:00 AM
+            # DAILY drip at each user's staggered slot (issue #732), replacing the once-a-month
+            # 05:00-UTC blast that drained the whole invitation-credit pool in one sitting. The
+            # per-day volume is capped and paced inside the task.
+            'schedule': crontab(minute=f'*/{STAGGER_TICK_MINUTES}')
         },
         'notify-missing-linkedin-session': {
             'task': 'cqc_lem.app.run_scheduler.auto_notify_missing_linkedin_session',

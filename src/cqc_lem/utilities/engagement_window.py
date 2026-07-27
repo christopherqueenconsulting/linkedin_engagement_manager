@@ -222,6 +222,11 @@ STAGGER_TICK_MINUTES = 15  # beat cadence for the staggered fan-outs; also one s
 STAGGER_GOLDEN_HOUR = ("GOLDEN_HOUR", 9, 180)
 STAGGER_APPRECIATION_DM = ("APPRECIATION_DM", 7, 120)
 STAGGER_GROUP_ENGAGEMENT = ("GROUP_ENGAGEMENT", 12, 120)
+# Company-page invites (issue #732): a daily drip on the user's OWN clock, replacing the fixed
+# 05:00-UTC monthly blast. It opens after the appreciation-DM window has drained (07:00-09:00) so
+# the two don't queue on `se_outreach` together, and it carries no deadline of its own — a page
+# invite is equally good at 10:00 or 12:30, which is exactly why it gets the wide window.
+STAGGER_COMPANY_INVITE = ("COMPANY_INVITE", 10, 180)
 
 # Where the appreciation-DM batch's midpoint has to land: the 08:00 off-peak hour PR #607 approved,
 # and the hour the pre-#554 `send-appreciation-dms` crontab fired. It is the send time users

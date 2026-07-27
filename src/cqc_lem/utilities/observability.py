@@ -773,6 +773,30 @@ def track_pre_post_engagement(post_id: int, user_id: Optional[int], status: str,
     )
 
 
+def track_company_page_invite_run(user_id: Optional[int], report: Optional[dict] = None,
+                                  **extra) -> None:
+    """Emit one company-page invite run (issue #732) — EVERY run, including the ones that sent
+    nothing. The lane used to be a once-a-month blast with no volume series at all; a series that
+    only carried sends could not distinguish "paced down to zero today" from "silently broken", so
+    the skip reason (budget_reached / credits_exhausted / paused / disabled) is the point."""
+    report = dict(report or {})
+    posthog.capture(
+        distinct_id=str(user_id or "system"),
+        event="company_page_invite_run",
+        properties={
+            "user_id": user_id,
+            "status": report.get("status"),
+            "invites_sent": int(report.get("invites_sent") or 0),
+            "budget": int(report.get("budget") or 0),
+            "cap": int(report.get("cap") or 0),
+            "sent_today": int(report.get("sent_today") or 0),
+            "credits_remaining": report.get("credits_remaining"),
+            "credit_spread": report.get("credit_spread"),
+            **extra,
+        },
+    )
+
+
 def track_margin_report(report: dict) -> None:
     """Emit the weekly unit-economics scorecard (plan §E.1.4) as one `margin_report` event so the
     PostHog tiles read system margin, cohort margin and LTV:CAC without re-deriving them. Per-user

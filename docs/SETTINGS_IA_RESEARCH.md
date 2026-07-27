@@ -67,7 +67,8 @@ Defaults are the real code defaults: `_ENGAGEMENT_DEFAULTS` (`db.py:3012`), `_NE
 | `feed_fallback_when_empty` | Targeting | `true` | Comment on best feed posts when includes match nothing — **only active when at least one include filter is set** (`run_automation.py:1103`). |
 | `max_comments_per_day` | Targeting | `20` | Hard daily cap; run exits immediately when reached (`run_automation.py:1064`). |
 | `max_dms_per_day` | Targeting | `20` | Hard daily cap across appreciation, outreach, nurture **and catch-up** DMs. |
-| `max_invites_per_day` | Targeting | `10` | Combined cap for proactive connect targets + profile-viewer invites. Does **not** cover newsletter or company-page invites. |
+| `max_invites_per_day` | Targeting | `10` | Combined cap for proactive connect targets + profile-viewer invites. Does **not** cover newsletter invites, and is the hard ceiling on (but not the cap for) company-page invites. |
+| `max_company_page_invites_per_day` | Volume | `5` | Daily company-page invite drip (issue #732). Effective ceiling is `min(this, max_invites_per_day)`, further bounded by the Page's remaining monthly credits spread over the days left in the month. |
 | `connection_request_mode` | Targeting | `auto_approve` | `pre_review` holds each connect target for approval. |
 | `connection_targeting_mode` | Targeting | `suggest` | `off` / `suggest` (always drafts) / `auto_queue` (defers to the mode above). |
 | `connection_target_authors` | Targeting | `[]` | Adjacent-author profile URLs to harvest engagers from. |
@@ -98,7 +99,7 @@ Read-only fields the GET adds for the UI: `reply_inbound_address`, `gmail_forwar
 | `auto_schedule_posts` | Preferences | `true` — **the UI form initialises to `false`** | Off = every generated post waits for manual approval. |
 | `content_language` | Preferences | `NULL` (auto) | Language of generated content incl. premium video audio. |
 | `blog_url` / `sitemap_url` | Content & Profile | `NULL` | Blog-summary posts and newsletter blog alignment. |
-| `company_linked_in_url` | Company Page | `NULL` | Enables monthly company-page invitations. |
+| `company_linked_in_url` | Company Page | `NULL` | Enables the daily company-page invite drip. |
 | LinkedIn password | LinkedIn Connection | `NULL` | Required for Selenium login; without it engagement silently does nothing. |
 | `content_buffer_days` / `content_buffer_max_posts` | — | code defaults | Read by `run_content_plan.py:1567` to decide how far ahead drafts are generated. **Unreachable in the SPA** (F4). |
 
@@ -127,7 +128,7 @@ Read-only fields the GET adds for the UI: `reply_inbound_address`, `gmail_forwar
 | **F2** | `post_types` and `default_buyer_stage` are columns the API accepts but nothing reads. Worse: the SPA's `EngPrefs` type omits them, so every save from the SPA rewrites them to `[]` / `NULL` (the PUT model defaults them and the upsert writes the full row). | Dead config that also silently resets. |
 | **F3** | `reply_max_post_age_days` (1–14) has no control anywhere. | Unreachable setting. |
 | **F4** | `content_buffer_days` / `content_buffer_max_posts` are read by the content plan but have no UI. | Users can't control how far ahead drafts are generated. |
-| **F5** | "invites" means three different things — `max_invites_per_day` (connects + profile-viewer), newsletter `max_invites_per_run`, and company-page invites (governed by neither). | Users assume one cap governs all outbound invites. |
+| **F5** | "invites" means three different things — `max_invites_per_day` (connects + profile-viewer), newsletter `max_invites_per_run`, and company-page invites (own cap since #732, but ceilinged by `max_invites_per_day`). | Users assume one cap governs all outbound invites. |
 | **F6** | `feed_fallback_when_empty` is presented as an unconditional toggle but is a **no-op when no include filter is set** (`run_automation.py:1103`). | The safety net looks on and isn't. |
 | **F7** | The "Engagement Targeting" card is a grab-bag: it also holds catch-up config, connection targeting, video quality and link-in-first-comment. Its title describes ~1/3 of its contents. | Nothing is findable. |
 | **F8** | Three separate save buttons ("Save Voice & Tone", "Save Focus & Goals", "Save Targeting") all PUT the **same** row. One over-long field fails all three at once — the V52 incident. Save-All and the unsaved-changes guard exist on the automation tab only. | Inconsistent, and a known silent-rollback class of bug. |

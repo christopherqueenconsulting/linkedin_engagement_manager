@@ -1,15 +1,119 @@
+"""Company-page invitations — a paced daily drip, not a monthly credit blast (issue #732).
+
+A LinkedIn Page spends a MONTHLY invitation-credit pool that renews on the 1st and is refunded when
+an invite is ACCEPTED (up to 72h later). This lane used to fire once a month and deliberately drain
+that pool in one sitting — it selected as many invitees as there were credits and then recursed into
+itself until there were none left. Dozens-to-hundreds of identical actions inside one narrow window
+is the loudest velocity signal in the product, and it was the one outbound path that consulted
+neither `max_invites_per_day` nor the #626 pacing engine.
+
+Three ceilings now bound a run, and the smallest wins:
+
+1. **The user's cap** — `min(max_company_page_invites_per_day, max_invites_per_day)`, so the
+   brand-account phase policy (which already clamps `max_invites_per_day`) governs the brand user
+   with no second ceiling to keep in step. That cap goes through `human_pacing` like every other
+   outbound lane: a stable 40-100% daily draw, weekend asymmetry, rest days, and the shared account
+   envelope, minus what today's log rows say was already spent.
+2. **The credit spread** — `credits_remaining / days_left_in_month`, so the pool lasts the month
+   instead of being front-loaded. Acceptances refund credits, so a drip can reach MORE people per
+   month than a blast can.
+3. **The credits themselves** — a hard stop at 0, read live off the page.
+
+`automate_invitations` sends at most that budget, in ONE pass. The recursion is gone.
+"""
+
+import calendar
+import random
 import re
 import time
+from datetime import date, datetime, timezone
+from typing import Optional
 
 from selenium.common import TimeoutException
 from selenium.webdriver import ActionChains
 
 from cqc_lem.utilities.db import get_user_password_pair_by_id, get_company_linked_in_url_for_user, \
-    insert_new_log, LogActionType, LogResultType
+    insert_new_log, LogActionType, LogResultType, get_engagement_preferences, \
+    count_company_page_invites_sent_today, COMPANY_PAGE_INVITE_SENT_MESSAGE, \
+    COMPANY_PAGE_INVITES_PER_DAY_DEFAULT
+from cqc_lem.utilities.human_pacing import (ACTION_INVITE, engagement_caps_from_prefs,
+                                            pacing_enabled, record_action, remaining_actions)
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin
-from cqc_lem.utilities.logger import myprint
+from cqc_lem.utilities.logger import myprint, log_info
 from cqc_lem.utilities.selenium_util import get_element_wait_retry, get_elements_as_list_wait_stale, getText, \
     wait_for_ajax, click_element_wait_retry
+
+# Run statuses — stable strings, so "why did this account send nothing yesterday?" is a group-by on
+# the telemetry rather than a log grep.
+INVITE_STATUS_SENT = "sent"
+INVITE_STATUS_BUDGET_REACHED = "budget_reached"
+INVITE_STATUS_DISABLED = "disabled"           # the user's cap (or max_invites_per_day) is 0
+INVITE_STATUS_CREDITS_EXHAUSTED = "credits_exhausted"
+INVITE_STATUS_NO_CANDIDATES = "no_candidates"
+INVITE_STATUS_NO_PAGE = "no_page"
+INVITE_STATUS_FAILED = "failed"
+INVITE_STATUS_PAUSED = "paused"
+
+# Hand-selecting invitees is not instant. A short randomized pause between checkbox clicks keeps a
+# batch from being N identical machine-timed clicks; the budget is single digits, so the total added
+# time stays well inside the task's own runtime (and inside MAX_INLINE_SLEEP_SECONDS).
+SELECTION_PAUSE_MIN_SECONDS = 0.4
+SELECTION_PAUSE_MAX_SECONDS = 2.5
+
+
+def days_left_in_month(day: Optional[date] = None) -> int:
+    """Days remaining in `day`'s month, counting today. The credit pool renews on the 1st, so this
+    is the horizon the remaining credits have to cover."""
+    day = day or datetime.now(timezone.utc).date()
+    return calendar.monthrange(day.year, day.month)[1] - day.day + 1
+
+
+def credit_spread_budget(credits_remaining: int, day: Optional[date] = None) -> int:
+    """How many of the remaining monthly credits today may spend, so the pool lasts the month.
+
+    Floor division of credits over the days left, with a floor of 1 while any credit remains — a
+    thin pool late in the month should still drip rather than stop entirely (the daily cap and the
+    credit count are the real ceilings above this). 0 credits is 0, never 1."""
+    credits = max(0, int(credits_remaining or 0))
+    if credits <= 0:
+        return 0
+    return max(1, credits // max(1, days_left_in_month(day)))
+
+
+def invite_cap_for_user(prefs: Optional[dict]) -> int:
+    """The lane's own per-day ceiling: its cap, bounded by the account-wide invite cap.
+
+    `max_invites_per_day` is the harder bound on purpose — it is what `brand_account`'s launch-phase
+    policy clamps, so the brand account can never run page invites hotter than its phase allows."""
+    prefs = prefs or {}
+
+    def _cap(key: str, default: int) -> int:
+        try:
+            value = prefs.get(key)
+            return max(0, int(default if value is None else value))
+        except (TypeError, ValueError):
+            return default
+
+    return min(_cap("max_company_page_invites_per_day", COMPANY_PAGE_INVITES_PER_DAY_DEFAULT),
+               _cap("max_invites_per_day", 0))
+
+
+def plan_daily_invites(user_id: int, prefs: Optional[dict] = None) -> dict:
+    """Today's paced allowance for this user, decided BEFORE any browser session is opened.
+
+    Returns `{'allowance': int, 'status': str, 'cap': int, 'sent_today': int}`. A zero allowance is
+    the common case on most days (rest day, budget already spent, cap of 0) and must not cost a
+    Chrome slot, which is why this is separate from the Selenium half. `status` is only meaningful
+    when the allowance is 0 — it says WHY nothing may go out."""
+    prefs = prefs if prefs is not None else get_engagement_preferences(user_id)
+    cap = invite_cap_for_user(prefs)
+    if cap <= 0:  # lane switched off — don't spend a DB round-trip proving it
+        return {"allowance": 0, "status": INVITE_STATUS_DISABLED, "cap": 0, "sent_today": 0}
+    sent_today = count_company_page_invites_sent_today(user_id)
+    allowance = max(0, remaining_actions(user_id, ACTION_INVITE, cap, sent_today,
+                                         caps=engagement_caps_from_prefs(prefs)))
+    status = INVITE_STATUS_SENT if allowance > 0 else INVITE_STATUS_BUDGET_REACHED
+    return {"allowance": allowance, "status": status, "cap": cap, "sent_today": sent_today}
 
 
 def get_available_credits(driver, wait):
@@ -65,6 +169,16 @@ def scroll_invitee_list(driver, wait):
     myprint("Scrolled down to load more connections.")
 
 
+def _pause_between_selections(rng: Optional[random.Random] = None) -> float:
+    """A short human pause between ticking two invitees. 0 (and no sleep) when pacing is off, so
+    HUMAN_PACING_ENABLED=false restores the pre-#626 behaviour here too."""
+    if not pacing_enabled():
+        return 0.0
+    delay = (rng or random).uniform(SELECTION_PAUSE_MIN_SECONDS, SELECTION_PAUSE_MAX_SECONDS)
+    time.sleep(delay)
+    return delay
+
+
 def select_connection_checkboxes(driver, wait, limit):
     # myprint("Entering select_connection_checkboxes function.")
 
@@ -107,6 +221,7 @@ def select_connection_checkboxes(driver, wait, limit):
         if not checkbox.is_selected():
             driver.execute_script("arguments[0].click();", checkbox)
             selected_count += 1
+            _pause_between_selections()
 
     if selected_count < limit:
         myprint(f"Selected {selected_count} connections so far. Could not reach limit of {limit}.")
@@ -142,13 +257,34 @@ def dismiss_prompt(driver, wait):
     return False
 
 
-def automate_invitations(driver, wait, user_id):
+def _report(status: str, **fields) -> dict:
+    report = {"status": status, "invites_sent": 0, "budget": 0, "cap": 0, "sent_today": 0,
+              "credits_remaining": None, "credit_spread": None}
+    report.update(fields)
+    return report
+
+
+def automate_invitations(driver, wait, user_id: int, plan: Optional[dict] = None) -> dict:
+    """Send AT MOST today's paced budget of company-page invites, in one pass.
+
+    Returns the run report — the caller turns it into telemetry. `plan` lets the task reuse the
+    allowance it already computed to decide whether opening a browser was worth it at all."""
     myprint("Automate invitations to Company Page.")
+
+    plan = plan if plan is not None else plan_daily_invites(user_id)
+    allowance = max(0, int(plan.get("allowance") or 0))
+    base = {"cap": plan.get("cap", 0), "sent_today": plan.get("sent_today", 0)}
+    if allowance <= 0:
+        log_info(f"Company page invites: nothing to send ({plan.get('status')})", user_id=user_id,
+                 action_type="company_invite")
+        return _report(plan.get("status") or INVITE_STATUS_BUDGET_REACHED, **base)
 
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
     # Get Company page from DB
     li_company_page_url = get_company_linked_in_url_for_user(user_id)
+    if not li_company_page_url:
+        return _report(INVITE_STATUS_NO_PAGE, **base)
 
     login_to_linkedin(driver, wait, user_email, user_password)
 
@@ -161,33 +297,42 @@ def automate_invitations(driver, wait, user_id):
 
     current_credits, total_credits = get_available_credits(driver, wait)
     if current_credits <= 0:
-        myprint("No credits available. Exiting automate_invitations.")
-        return
+        log_info("Company page invites: no credits left this month", user_id=user_id,
+                 action_type="company_invite")
+        return _report(INVITE_STATUS_CREDITS_EXHAUSTED, credits_remaining=current_credits, **base)
 
-    myprint(f"Credits Available: {current_credits}/{total_credits}")
+    # Credits are a CEILING, not a target: spend at most this day's share of what's left so the
+    # monthly pool (and the credits acceptances refund into it) lasts past the first week.
+    spread = credit_spread_budget(current_credits)
+    budget = min(allowance, spread, current_credits)
+    log_info(f"Company page invite budget {budget} "
+             f"(allowance {allowance}, spread {spread}, credits {current_credits}/{total_credits})",
+             user_id=user_id, action_type="company_invite")
+    base.update({"budget": budget, "credits_remaining": current_credits, "credit_spread": spread})
 
-    selected_count = select_connection_checkboxes(driver, wait, current_credits)
-    if selected_count > 0:
-        if invite_selected_connections(driver, wait):
-            insert_new_log(user_id, LogActionType.ENGAGED, LogResultType.SUCCESS,
-                           post_url=li_company_page_url,
-                           message=f"Invited {selected_count} connection(s) to company page")
-            time.sleep(2)  # Delay to ensure the prompt appears before checking for it
-            if dismiss_prompt(driver, wait):
-                myprint("Prompt handled")
-            else:
-                myprint("No prompt to handle.")
-
-            # If the selected_count is less than the current_credits, we can continue inviting
-            if selected_count < current_credits:
-                myprint("Continuing automate_invitations.")
-                selected_count += automate_invitations(driver, wait, user_id)
-        else:
-            insert_new_log(user_id, LogActionType.ENGAGED, LogResultType.FAILURE,
-                           post_url=li_company_page_url,
-                           message="Failed to invite to company page: invite button not found")
-            myprint("No invite button found, stopping automate_invitations.")
-    else:
+    selected_count = select_connection_checkboxes(driver, wait, budget)
+    if selected_count <= 0:
         myprint("No more connections to invite or already selected. Exiting automate_invitations.")
+        return _report(INVITE_STATUS_NO_CANDIDATES, **base)
 
-    return selected_count
+    if not invite_selected_connections(driver, wait):
+        insert_new_log(user_id, LogActionType.ENGAGED, LogResultType.FAILURE,
+                       post_url=li_company_page_url,
+                       message="Failed to invite to company page: invite button not found")
+        myprint("No invite button found, stopping automate_invitations.")
+        return _report(INVITE_STATUS_FAILED, **base)
+
+    # The "<message>: <n>" shape is load-bearing — count_company_page_invites_sent_today SUMS that
+    # number, and it is what makes a second run today idempotent.
+    insert_new_log(user_id, LogActionType.ENGAGED, LogResultType.SUCCESS,
+                   post_url=li_company_page_url,
+                   message=f"{COMPANY_PAGE_INVITE_SENT_MESSAGE}: {selected_count}")
+    record_action(user_id, ACTION_INVITE, selected_count)  # account-level governor (issue #626)
+    time.sleep(2)  # Delay to ensure the prompt appears before checking for it
+    if dismiss_prompt(driver, wait):
+        myprint("Prompt handled")
+    else:
+        myprint("No prompt to handle.")
+
+    # NO recursion: whatever is left of the monthly pool is tomorrow's drip, not this run's.
+    return _report(INVITE_STATUS_SENT, invites_sent=selected_count, **base)

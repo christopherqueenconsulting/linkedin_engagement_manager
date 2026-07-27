@@ -71,7 +71,8 @@ from cqc_lem.utilities import golden_hour as _golden
 from cqc_lem.utilities.human_pacing import pace_read, record_action, remaining_actions, \
     engagement_caps_from_prefs, \
     ACTION_COMMENT, ACTION_DM, ACTION_INVITE, ACTION_REPLY
-from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations
+from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations, \
+    plan_daily_invites, INVITE_STATUS_FAILED, INVITE_STATUS_PAUSED
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
     load_profile_for_user, clean_person_name, connection_degree, is_first_degree
 from cqc_lem.utilities.linkedin.poster import share_on_linkedin, share_carousel_on_linkedin, \
@@ -83,7 +84,8 @@ from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited, _redis_cl
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
 from cqc_lem.utilities.logger import myprint, log_error, log_info, log_warning
 from cqc_lem.utilities.observability import track_post_outcome, track_audience_snapshot, \
-    track_comment_outcome, track_golden_hour_report, attribute_llm_cost, llm_attribution, \
+    track_comment_outcome, track_golden_hour_report, track_company_page_invite_run, \
+    attribute_llm_cost, llm_attribution, \
     FEATURE_COMMENT, FEATURE_CONTENT, FEATURE_DM
 from cqc_lem.utilities.selenium_util import click_element_wait_retry, \
     get_element_wait_retry, get_elements_as_list_wait_stale, getText, close_tab, get_driver_wait_pair, quit_gracefully, \
@@ -6402,20 +6404,42 @@ def post_to_linkedin(self, user_id: int, post_id: int):
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': False}, reject_on_worker_lost=True,
                   rate_limit='4/m', queue='se_outreach')
 def automate_invites_to_company_page_for_user(self, user_id: int):
-    """Send invites to the company page for the given user."""
+    """Send this user's paced daily drip of company-page invites (issue #732).
+
+    The budget is decided BEFORE a browser session is opened: on most days the allowance is zero
+    (rest day, budget already spent, single-digit cap already reached) and a Chrome slot spent to
+    discover that is a slot an engagement lane needed. A paused account stands down here too — page
+    invites are discretionary amplification, never a response owed to someone."""
+    task_name = "automate_invites_to_company_page_for_user"
+
+    if is_automation_paused():
+        report = {"status": INVITE_STATUS_PAUSED}
+        log_info("Company page invites skipped — automation paused", user_id=user_id,
+                 task_name=task_name, action_type="company_invite")
+        track_company_page_invite_run(user_id, report)
+        return "Company page invites skipped — automation paused"
+
+    plan = plan_daily_invites(user_id)
+    if plan["allowance"] <= 0:
+        report = {"status": plan["status"], "cap": plan["cap"], "sent_today": plan["sent_today"]}
+        log_info(f"Company page invites skipped — {plan['status']} "
+                 f"(cap {plan['cap']}, sent today {plan['sent_today']})",
+                 user_id=user_id, task_name=task_name, action_type="company_invite")
+        track_company_page_invite_run(user_id, report)
+        return f"No company page invites to send ({plan['status']})"
 
     driver, wait = get_driver_wait_pair(session_name='Company Page Invites', user_id=user_id)
 
     try:
-
-        invite_count = automate_invitations(driver, wait, user_id)
-
+        report = automate_invitations(driver, wait, user_id, plan=plan)
     except Exception as e:
-        log_error("Error while inviting to company page", exc=e, user_id=user_id, task_name="automate_invites_to_company_page_for_user", action_type="company_invite")
-        invite_count = 0
+        log_error("Error while inviting to company page", exc=e, user_id=user_id, task_name=task_name, action_type="company_invite")
+        report = {"status": INVITE_STATUS_FAILED, "cap": plan["cap"], "sent_today": plan["sent_today"]}
     finally:
         quit_gracefully(driver)
 
-    result = f"Invited {invite_count if invite_count else 0} people to the company page."
-    myprint(result)
+    track_company_page_invite_run(user_id, report)
+    result = (f"Invited {report.get('invites_sent') or 0} people to the company page "
+              f"({report.get('status')}).")
+    log_info(result, user_id=user_id, task_name=task_name, action_type="company_invite")
     return result
