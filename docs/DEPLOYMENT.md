@@ -26,7 +26,7 @@ Public surface:
 | `app.<domain>` | web_app:8000 (SPA + API) | Public; API routes require a bearer token |
 | `flower.<domain>` | flower:8555 | Cloudflare Access + Flower basic auth |
 | `litellm.<domain>` | litellm:4000 | Cloudflare Access + `LITELLM_MASTER_KEY` |
-| `vnc.<domain>` | selenium-chrome:7900 | Cloudflare Access |
+| `vnc.<domain>` | selenium-chrome:7900 — **dead on the Grid topology** (no standalone container; see `docs/SELENIUM_GRID.md`) | Cloudflare Access |
 
 ## Sizing
 

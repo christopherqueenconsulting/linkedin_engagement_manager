@@ -1,11 +1,13 @@
 # Selenium Grid — the horizontal browser path (Phase 2)
 
-**Status:** built, NOT enabled in prod · **Issue:** #556 · **Plan:** `docs/scaling-plan.md` §5b/§5c
+**Status:** LIVE in prod since 2026-07-27 (`SELENIUM_TOPOLOGY=grid` is the deploy default) ·
+**Issue:** #556 · **Plan:** `docs/scaling-plan.md` §5b/§5c
 
-Prod runs **one `selenium/standalone-chrome`** with 8 session slots. §4 of the scaling plan puts the
-top of this box's Chrome budget at ~8 sessions, so 8 is not a step on a ladder — it is the ceiling.
-The next capacity increase has to be **horizontal**: a Grid hub with N single-session nodes, where
-nodes can live on a second box.
+Prod used to run **one `selenium/standalone-chrome`** with 8 session slots. §4 of the scaling plan
+puts the top of this box's Chrome budget at ~8 sessions, so 8 is not a step on a ladder — it is the
+ceiling. The next capacity increase has to be **horizontal**: a Grid hub with N single-session
+nodes, where nodes can live on a second box. Dev (`docker compose up` with no overlay) still runs
+the standalone.
 
 Nothing in the app changes. `get_docker_driver()` already talks to
 `${SELENIUM_HUB_HOST}:${SELENIUM_HUB_PORT}/wd/hub`, which is the hub's address exactly as it was the
@@ -70,11 +72,18 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compos
   up -d --scale selenium-node-chrome="${SELENIUM_GRID_NODES:-8}"
 ```
 
-Rollback is one flag, because the overlay parks the standalone rather than deleting it:
+Rollback is one flag, because the overlay parks the standalone rather than deleting it. Set the flag
+so the NEXT deploy keeps the fallback (otherwise the deploy puts the Grid straight back):
 
 ```sh
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d   # back to the standalone
+echo 'SELENIUM_TOPOLOGY=standalone' >> /opt/lem/.env
+docker rm -f selenium-hub                                                # it holds 4444 (see below)
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --remove-orphans
 ```
+
+`deploy.sh` does exactly this on a `standalone` deploy: it evicts whichever browser container the
+target topology replaces (hub ↔ standalone) before bringing the new one up, because both bind 4444
+and a profile does not stop an already-running container. `--remove-orphans` clears the nodes.
 
 ### Second box (nodes only)
 
