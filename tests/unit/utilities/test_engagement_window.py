@@ -476,6 +476,68 @@ class TestApprovedFanoutDefaults:
             monkeypatch.delenv(f"{name}{suffix}", raising=False)
         assert mod.stagger_config(getattr(mod, fanout)).local is True
 
+    @pytest.fixture(autouse=True)
+    def _forget_drift_warnings(self):
+        import cqc_lem.utilities.engagement_window as mod
+        mod._MIDPOINT_DRIFT_WARNED.clear()
+        yield
+        mod._MIDPOINT_DRIFT_WARNED.clear()
+
+    def test_a_deployment_still_pinning_the_pre_696_anchor_is_called_out(self, monkeypatch):
+        """The failure mode #696 can actually ship into: `.env.example` lists this var explicitly,
+        so every existing deployment's own .env carries `APPRECIATION_DM_ANCHOR_HOUR=8` and the new
+        default never reaches it. Nothing errors — the batch just goes on colliding — so config
+        resolution says it out loud instead."""
+        import cqc_lem.utilities.engagement_window as mod
+        monkeypatch.setenv("APPRECIATION_DM_ANCHOR_HOUR", "8")
+        monkeypatch.delenv("APPRECIATION_DM_WINDOW_MINUTES", raising=False)
+        with patch.object(mod, "log_warning") as warn:
+            config = mod.stagger_config(mod.STAGGER_APPRECIATION_DM)
+        assert config.anchor_hour == 8  # the override still wins — this warns, it does not correct
+        assert warn.called
+        message = warn.call_args[0][0]
+        assert "APPRECIATION_DM_ANCHOR_HOUR" in message and "09:00" in message
+
+    def test_widening_the_window_without_moving_the_anchor_is_called_out(self, monkeypatch):
+        import cqc_lem.utilities.engagement_window as mod
+        monkeypatch.delenv("APPRECIATION_DM_ANCHOR_HOUR", raising=False)
+        monkeypatch.setenv("APPRECIATION_DM_WINDOW_MINUTES", "240")
+        with patch.object(mod, "log_warning") as warn:
+            mod.stagger_config(mod.STAGGER_APPRECIATION_DM)
+        assert warn.called and "APPRECIATION_DM_WINDOW_MINUTES" in warn.call_args[0][0]
+
+    def test_a_matching_retune_of_both_halves_is_silent(self, monkeypatch):
+        """Anchor and window moved together — 05:00 + 6h still centres on 08:00, which is the
+        supported retune. Warning on that would train ops to ignore the line."""
+        import cqc_lem.utilities.engagement_window as mod
+        monkeypatch.setenv("APPRECIATION_DM_ANCHOR_HOUR", "5")
+        monkeypatch.setenv("APPRECIATION_DM_WINDOW_MINUTES", "360")
+        with patch.object(mod, "log_warning") as warn:
+            mod.stagger_config(mod.STAGGER_APPRECIATION_DM)
+        assert not warn.called
+
+    def test_the_shipped_defaults_and_unpinned_fanouts_are_silent(self, monkeypatch):
+        import cqc_lem.utilities.engagement_window as mod
+        for fanout in (mod.STAGGER_GOLDEN_HOUR, mod.STAGGER_APPRECIATION_DM,
+                       mod.STAGGER_GROUP_ENGAGEMENT):
+            for suffix in ("_ANCHOR_HOUR", "_WINDOW_MINUTES", "_ANCHOR_TZ"):
+                monkeypatch.delenv(f"{fanout[0]}{suffix}", raising=False)
+        with patch.object(mod, "log_warning") as warn:
+            for fanout in (mod.STAGGER_GOLDEN_HOUR, mod.STAGGER_APPRECIATION_DM,
+                           mod.STAGGER_GROUP_ENGAGEMENT):
+                mod.stagger_config(fanout)
+        assert not warn.called
+
+    def test_the_drift_warning_is_one_line_per_process_not_one_per_beat_tick(self, monkeypatch):
+        """`stagger_config` resolves once per user per 15-minute tick — an unmemoized warning would
+        be thousands of identical lines a day and PostHog noise, not a signal."""
+        import cqc_lem.utilities.engagement_window as mod
+        monkeypatch.setenv("APPRECIATION_DM_ANCHOR_HOUR", "8")
+        with patch.object(mod, "log_warning") as warn:
+            for _ in range(50):
+                mod.stagger_config(mod.STAGGER_APPRECIATION_DM)
+        assert warn.call_count == 1
+
     def test_every_window_is_wide_enough_to_stagger(self):
         """A window narrower than the beat cadence would put the whole fleet back on one tick."""
         import cqc_lem.utilities.engagement_window as mod

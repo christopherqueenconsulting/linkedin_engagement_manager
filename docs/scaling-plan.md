@@ -331,7 +331,11 @@ per additional concurrent session**.
 > `APPRECIATION_DM_ANCHOR_HOUR` **08:00 → 07:00**, so the 120-minute window's *midpoint* is the 08:00
 > off-peak hour PR #607 approved and the batch sits where the unstaggered one did.
 > `APPRECIATION_DM_MIDPOINT_HOUR` pins `anchor + window/2 = 08:00` so widening the window can't
-> silently re-create the collision. Current default run: **50 users at 64.3% on-time, 14 sessions**
+> silently re-create the collision: a unit test holds the code defaults to it, and `stagger_config`
+> logs a WARNING (once per process, naming the hour the batch actually centres on) when the
+> RESOLVED env pair drifts off it — which is also what catches a deployment whose own `.env` still
+> pins the pre-#696 `APPRECIATION_DM_ANCHOR_HOUR=8` and therefore never received this fix.
+> Current default run: **50 users at 64.3% on-time, 14 sessions**
 > (`se_outreach` back to **2**, the pre-#554 number and #696's acceptance criterion); 100 users at
 > 21.6% / 27. `se_outreach` is now no worse staggered than unstaggered at any scale from 10 to 200
 > users, pinned per-scale in `tests/unit/utilities/test_selenium_load_test.py`. The generalizable
@@ -396,8 +400,9 @@ concurrency rises:
   window of `1` restores "everyone at once"). **A window OPENS on its anchor, so it also ends
   a full window later than the batch it replaced** — a fan-out that shares a lane with a
   tighter-tolerance job therefore opens `window/2` EARLY so its midpoint stays on the hour it
-  used to fire. That is why appreciation DMs anchor at 07:00 for an 08:00 batch (#696, and
-  `APPRECIATION_DM_MIDPOINT_HOUR` pins the two together); golden hour and groups own their
+  used to fire. That is why appreciation DMs anchor at 07:00 for an 08:00 batch (#696;
+  `PINNED_MIDPOINT_HOURS` keeps the two in step and warns when a retune — or a stale `.env`
+  still on the old anchor — puts them out of step); golden hour and groups own their
   lanes' peak outright and anchor on the hour itself. A Redis claim
   (`engagement:slot:<NAME>:<user>:<local date>`) keeps it to one run per user per local day
   and lets a slot missed by a beat outage — or by an open 429 breaker — catch up on a later

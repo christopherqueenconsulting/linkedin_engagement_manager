@@ -217,7 +217,11 @@ arrivals. Spreading the DM burst never shrank the processing time it needs (work
 is fixed) — it only moved it. So `APPRECIATION_DM_ANCHOR_HOUR` moved `08:00 → 07:00`, which puts the
 120-minute window's **midpoint** back on the 08:00 off-peak hour PR #607 approved and gives the
 batch back the drain time the single-instant version had. `APPRECIATION_DM_MIDPOINT_HOUR` in
-`utilities/engagement_window.py` pins anchor + window/2 = 08:00 so the two can't drift apart again.
+`utilities/engagement_window.py` pins anchor + window/2 = 08:00 so the two can't drift apart again —
+a unit test holds the code defaults to it, and `stagger_config` logs one WARNING per process when
+the RESOLVED env pair drifts off it. **Deploy note:** this is a DEFAULT change, and `.env.example`
+lists `APPRECIATION_DM_ANCHOR_HOUR` explicitly, so a deployment whose own `.env` still says `8` keeps
+the pre-#696 behaviour until that value is changed to `7`. That warning is how you find out.
 
 Of the three options #696 listed, this was the only one that cost nothing: raising `se_outreach`
 concurrency buys a Chrome slot on a box already at its ceiling, and giving `appreciation_dms` its own
