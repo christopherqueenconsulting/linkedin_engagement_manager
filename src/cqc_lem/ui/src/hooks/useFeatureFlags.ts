@@ -23,6 +23,7 @@ export const FLAGS = {
   tutorialVideos: 'tutorial-videos-enabled',
   feedFallbackDefault: 'feed-fallback-when-empty-default',
   costRouting: 'cost-routing-enabled',
+  posthogSurveys: 'posthog-surveys-enabled',
 } as const
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS]

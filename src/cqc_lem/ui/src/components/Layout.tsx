@@ -3,6 +3,7 @@ import { useAuth } from '../contexts/AuthContext'
 import AccountReadinessBanner from './AccountReadinessBanner'
 import FeedbackWidget from './FeedbackWidget'
 import Footer from './Footer'
+import PostHogSurveyModal from './PostHogSurveyModal'
 import ShippedNotice from './ShippedNotice'
 import SurveyModal from './SurveyModal'
 
@@ -83,6 +84,9 @@ export default function Layout() {
       <FeedbackWidget />
       {/* Survey modal — renders only when the server says a survey is due (issue #501) */}
       {user && <SurveyModal />}
+      {/* PostHog-targeted NPS/CSAT, drawn in LEM's own chrome (issue #653). Stands down whenever
+          the bespoke modal above has something to ask, so the two can never stack. */}
+      {user && <PostHogSurveyModal />}
     </div>
   )
 }

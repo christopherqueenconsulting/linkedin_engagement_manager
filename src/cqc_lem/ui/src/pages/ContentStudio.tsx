@@ -17,7 +17,7 @@ import ComposePost from './content/ComposePost'
 import { useAuth } from '../contexts/AuthContext'
 import { useUserTimezone } from '../hooks/useUserTimezone'
 import { formatInTimezone, toZonedInputValue, zonedInputToUtcIso } from '../utils/datetime'
-import { EVENTS, capture, maskProps } from '../utils/analytics'
+import { EVENTS, capture, maskProps, recordPostApproval } from '../utils/analytics'
 
 // Consolidated content hub: compose posts, schedule DMs, manage newsletters, and review/edit
 // existing content — one page, four tabs, synced to ?tab= for deep-linking.
@@ -213,12 +213,16 @@ export default function ContentStudio() {
     if (status !== 'approved' && status !== 'rejected') return
     const post = posts.find((p) => p.post_id === postId)
     if (post?.status === status) return
-    capture(status === 'approved' ? EVENTS.postApproved : EVENTS.postRejected, {
+    const properties = {
       post_id: postId,
       post_type: post?.post_type ?? null,
       archetype: post?.archetype ?? null,
       ...extra,
-    })
+    }
+    // An approval also advances the `posts_approved` person property the CSAT survey is gated on
+    // (issue #653) — same event either way, one extra person update on the approve path.
+    if (status === 'approved') recordPostApproval(properties)
+    else capture(EVENTS.postRejected, properties)
   }
 
   const updateMutation = useMutation({

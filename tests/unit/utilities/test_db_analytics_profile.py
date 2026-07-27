@@ -20,18 +20,39 @@ def _conn(fetch_one=None):
 
 
 class TestGetUserAnalyticsProfile:
-    def test_returns_plan_timezone_and_signup(self):
+    def test_returns_plan_timezone_signup_and_the_survey_targeting_facts(self):
         row = {
             "subscription_tier": "premium",
             "subscription_status": "active",
             "timezone": "America/Chicago",
             "created_at": datetime(2026, 1, 2, 3, 4, 5),
+            "onboarding_completed_at": datetime(2026, 2, 3, 4, 5, 6),
+            "posts_approved": 12,
         }
         conn, cur = _conn(fetch_one=row)
         with patch(f"{_DB}.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_user_analytics_profile
             assert get_user_analytics_profile(7) == row
-        assert cur.execute.call_args[0][1] == (7,)
+        assert cur.execute.call_args[0][1][-1] == 7
+
+    def test_the_approval_tally_survives_a_post_moving_on(self):
+        # An approved post becomes scheduled and then posted; counting status='approved' alone would
+        # reset the CSAT survey's gate the moment automation ran.
+        conn, cur = _conn(fetch_one={})
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_user_analytics_profile
+            get_user_analytics_profile(1)
+        statuses = set(cur.execute.call_args[0][1][:-1])
+        assert statuses == {"approved", "scheduled", "posted"}
+
+    def test_onboarding_completion_comes_from_activation_not_signup(self):
+        conn, cur = _conn(fetch_one={})
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_user_analytics_profile
+            get_user_analytics_profile(1)
+        sql = " ".join(cur.execute.call_args[0][0].split()).lower()
+        assert "o.activated_at as onboarding_completed_at" in sql
+        assert "left join onboarding_state" in sql
 
     def test_selects_no_credentials(self):
         conn, cur = _conn(fetch_one={})

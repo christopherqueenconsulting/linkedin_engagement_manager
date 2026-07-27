@@ -16,6 +16,9 @@ interface SessionDetail {
   plan_status?: string | null
   timezone?: string | null
   created_at?: string | null
+  // What PostHog Surveys target on (issue #653).
+  onboarding_completed_at?: string | null
+  posts_approved?: number | null
 }
 
 interface AuthContextValue {
@@ -54,6 +57,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         planStatus: detail.plan_status,
         timezone: detail.timezone,
         createdAt: detail.created_at,
+        onboardingCompletedAt: detail.onboarding_completed_at,
+        postsApproved: detail.posts_approved,
       })
     }
   }

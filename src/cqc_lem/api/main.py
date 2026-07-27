@@ -928,6 +928,20 @@ class SurveyDismissRequest(BaseModel):
     survey_key: str = Field(min_length=1, max_length=_LEN_FEEDBACK_TYPE_HINT)
 
 
+class PostHogSurveyRequest(BaseModel):
+    """A PostHog Surveys answer relayed by the SPA (issue #653). `kind` says which of the two LEM
+    surveys answered — the score bounds are the KIND's, checked in the handler, because 0-10 and 1-5
+    can't both be a field constraint. `survey_id`/`survey_name` are PostHog's own, kept so a
+    `feedback` row can be lined up against the `survey sent` event the browser already emitted."""
+    session_token: str
+    kind: str = Field(min_length=1, max_length=_LEN_FEEDBACK_TYPE_HINT)
+    score: int = Field(ge=0, le=10)
+    comment: Optional[str] = Field(default=None, max_length=_LEN_FEEDBACK_BODY)
+    survey_id: Optional[str] = Field(default=None, max_length=64)
+    survey_name: Optional[str] = Field(default=None, max_length=128)
+    context: Optional[Dict[str, Any]] = None
+
+
 class ShippedNoticeAckRequest(BaseModel):
     """Acknowledging a "you asked, we shipped" notice (issue #502). `resolved` is the micro-CSAT:
     True/False answers "did this fix it?", None means the user just dismissed the notice."""
@@ -1046,10 +1060,41 @@ def dismiss_survey_endpoint(request: SurveyDismissRequest) -> ResponseModel:
                          detail={"dismissed": dismiss_survey(user_id, request.survey_key)})
 
 
+@router.post("/survey/posthog")
+def submit_posthog_survey_endpoint(request: PostHogSurveyRequest) -> ResponseModel:
+    """Capture a PostHog Surveys answer (issue #653) as a `feedback` row so it reaches the
+    feedback->auto-work loop. The browser has already emitted PostHog's own `survey sent`; this
+    handler deliberately does NOT emit the homegrown `survey_response` event, so one answer is
+    counted once."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    from cqc_lem.utilities.surveys import posthog_survey_kinds, record_posthog_survey_response
+    spec = posthog_survey_kinds().get(request.kind)
+    if spec is None:
+        raise HTTPException(status_code=422, detail=f"Unknown survey kind '{request.kind}'")
+    if not spec["min"] <= request.score <= spec["max"]:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Score {request.score} is outside {spec['min']}-{spec['max']} for "
+                   f"'{request.kind}'")
+
+    result = record_posthog_survey_response(
+        user_id, request.kind, request.score, comment=request.comment,
+        survey_id=request.survey_id, survey_name=request.survey_name,
+        context=_bounded_context(request.context))
+    if not result:
+        raise HTTPException(status_code=500, detail="Could not save your response")
+    log_info("PostHog survey response captured", user_id=user_id)
+    return ResponseModel(status_code=200, detail=result)
+
+
 @router.get("/user/survey")
 def survey_endpoint(session_token: str) -> ResponseModel:
     """The survey to show in-app right now (day-3 NPS, trial T-3d NPS, or the review that unlocks
-    the extended trial), or none (issue #501)."""
+    the extended trial), or none (issue #501). With PostHog Surveys on (issue #653) the NPS asks are
+    retired from this snapshot — PostHog is asking them."""
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -1822,6 +1867,11 @@ def auth_check_session(session_token: str) -> ResponseModel:
         "plan_status": profile.get("subscription_status"),
         "timezone": profile.get("timezone"),
         "created_at": _utc_iso(profile.get("created_at")),
+        # The two facts PostHog Surveys target on (issue #653). They ride on the session check
+        # because that is the call every authenticated page already makes — a survey that needed its
+        # own round trip would be a survey that never fired on the first page view.
+        "onboarding_completed_at": _utc_iso(profile.get("onboarding_completed_at")),
+        "posts_approved": int(profile.get("posts_approved") or 0),
     })
 
 

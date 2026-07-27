@@ -252,6 +252,8 @@ class TestAuthCheckSession:
             "subscription_status": "active",
             "timezone": "America/Chicago",
             "created_at": datetime(2026, 1, 2, 3, 4, 5),
+            "onboarding_completed_at": datetime(2026, 2, 3, 4, 5, 6),
+            "posts_approved": 12,
         }
         with patch(f"{_MAIN}.get_session_user_id", return_value=7), \
              patch(f"{_MAIN}.get_user_email", return_value="me@example.com"), \
@@ -262,6 +264,9 @@ class TestAuthCheckSession:
         assert detail["plan_status"] == "active"
         assert detail["timezone"] == "America/Chicago"
         assert detail["created_at"] == "2026-01-02T03:04:05Z"
+        # What PostHog Surveys target on (issue #653).
+        assert detail["onboarding_completed_at"] == "2026-02-03T04:05:06Z"
+        assert detail["posts_approved"] == 12
 
     def test_missing_profile_row_leaves_person_facts_null(self, client):
         with patch(f"{_MAIN}.get_session_user_id", return_value=7), \
@@ -273,6 +278,9 @@ class TestAuthCheckSession:
         assert detail["plan_status"] is None
         assert detail["timezone"] is None
         assert detail["created_at"] is None
+        assert detail["onboarding_completed_at"] is None
+        # A user who has approved nothing is 0, never null — the survey rule is a `>=` comparison.
+        assert detail["posts_approved"] == 0
 
 
 # ---------------------------------------------------------------------------
