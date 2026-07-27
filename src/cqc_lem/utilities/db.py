@@ -5418,6 +5418,27 @@ def record_post_stats(user_id: int, post_id: int, reactions: Optional[int], comm
         connection.close()
 
 
+def get_latest_post_stats(user_id: int, post_id: int) -> Optional[dict]:
+    """The most recent captured counts for one post, or None when nothing was ever captured.
+
+    `impressions` stays NULL when the capture never read one — the API probe (#645) grades a
+    signal it cannot compare as ungraded rather than as a disagreement."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT reactions, comments, reposts, impressions, saves, captured_at "
+            "FROM post_stats WHERE user_id=%s AND post_id=%s ORDER BY id DESC LIMIT 1",
+            (user_id, post_id))
+        return cursor.fetchone()
+    except mysql.connector.Error as err:
+        myprint(f"Could not read post stats for user {user_id} post {post_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_recent_posted_post_ids(user_id: int, days: int = 21) -> list:
     connection = get_db_connection()
     cursor = connection.cursor()
