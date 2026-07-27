@@ -170,9 +170,15 @@ _API_ACCESS_TOKEN_SET = {t.strip() for t in API_ACCESS_TOKENS.split(",") if t.st
 # of /api/user/* stays gated.
 # /api/faq is public: it serves the published front-page FAQ (issue #506) to logged-out visitors on
 # the landing page. GET-only, no user data — same shape as /api/app-info.
+# /api/flags is public for the SAME reason (issue #651): the landing page bootstraps its feature
+# flags from it and carries no bearer token. Gating it would 401 the flags query, and the SPA's
+# axios interceptor treats ANY 401 as a dead session — it clears lem_session and redirects, so a
+# signed-in visitor hitting the landing page would be silently logged out. GET-only; it returns the
+# registry's own toggle values, and the optional session_token is self-authenticating (an invalid
+# one resolves the "system" identity rather than erroring) — same model as /api/user/linkedin-cookie.
 _PUBLIC_API_PREFIXES = ("/api/auth/", "/api/billing/webhook", "/api/assets",
                         "/api/linkedin/verification-pin", "/api/linkedin/comment-notification",
-                        "/api/app-info", "/api/faq",
+                        "/api/app-info", "/api/faq", "/api/flags",
                         "/api/extension/", "/api/user/linkedin-cookie")
 
 
@@ -1072,6 +1078,22 @@ def shipped_notices_endpoint(session_token: str) -> ResponseModel:
                        "changelog_line": n.get("changelog_line"),
                        "shipped_at": n.get("shipped_at")} for n in get_recent_shipped_notices()],
     })
+
+
+@router.get("/flags")
+def get_feature_flags(session_token: Optional[str] = None) -> ResponseModel:
+    """Server-evaluated feature flags for the SPA (issue #651, docs/feature-flags.md).
+
+    This is the SPA's flag BOOTSTRAP: values are resolved server-side with PostHog local evaluation
+    (or the env fallback) and shipped in one payload, so the browser renders the right thing on the
+    FIRST paint instead of flickering while a client-side flag request lands — and so the SPA, the
+    API and the Celery workers can never disagree about a flag's value.
+
+    An invalid or absent session resolves the SAME flags for the `"system"` identity rather than
+    401ing: the landing page is logged out and still needs to know what to render."""
+    from cqc_lem.utilities.flags import bootstrap_payload
+    user_id = get_session_user_id(session_token) if session_token else None
+    return ResponseModel(status_code=200, detail=bootstrap_payload(user_id))
 
 
 @router.get("/faq")

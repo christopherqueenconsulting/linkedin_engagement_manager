@@ -330,10 +330,12 @@ def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=No
         blueprint = _framework.select_blueprint("comment")
     blueprint_block = _framework.blueprint_directive("comment", blueprint) if post_comment is None else ""
 
-    # Optional, tightly-gated background facts: research_topic returns empty immediately unless
-    # COMMENT_RESEARCH_ENABLED is explicitly on, so the default path makes NO research call.
+    # Optional, tightly-gated background facts: research_topic returns empty immediately unless the
+    # `comment-research-enabled` flag (default COMMENT_RESEARCH_ENABLED) is on, so the default path
+    # makes NO research call. `user_id` is what lets a rollout reach one cohort (issue #651).
     if research is None and post_comment is None:
-        research = research_topic(str(post_content or "")[:300], content_type="comment", prefs=prefs)
+        research = research_topic(str(post_content or "")[:300], content_type="comment", prefs=prefs,
+                                  user_id=user_id)
     findings = str((research or {}).get("findings") or "").strip()
     research_block = (
         "\n\nOptional background facts (use at most ONE, only when it genuinely strengthens the "

@@ -53,3 +53,17 @@ def _no_real_redis():
     blocked = ConnectionError("redis blocked in unit tests")
     with patch("redis.Redis.from_url", side_effect=blocked):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _feature_flags_env_only(monkeypatch):
+    """Issue #651: the flag wrapper polls PostHog for flag DEFINITIONS the first time any flag is
+    checked. `tests/conftest.py` calls load_dotenv(), so a dev box with a real
+    POSTHOG_PERSONAL_API_KEY in .env would make the unit lane reach the network — and worse, make
+    a test's outcome depend on whichever rollout is live in PostHog right now. Pin the whole lane
+    to the fail-open (env var) path, which is exactly what CI already gets; tests/unit/utilities/
+    test_flags.py turns the backend back on with an explicitly faked SDK.
+    """
+    monkeypatch.setenv("POSTHOG_FLAGS_ENABLED", "false")
+    from cqc_lem.utilities import flags
+    flags.reset_flag_state()

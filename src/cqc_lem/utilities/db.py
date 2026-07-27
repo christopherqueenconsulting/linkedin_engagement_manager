@@ -3170,6 +3170,9 @@ _ENGAGEMENT_DEFAULTS: dict = {
     "default_buyer_stage": None,
     "default_video_quality": "standard",
     "reply_check_mode": "event", "reply_sweeps_per_day": 2, "reply_max_post_age_days": 2,
+    # feed_fallback_when_empty's FLEET default is runtime-controlled by the
+    # `feed-fallback-when-empty-default` flag (issue #651) via _code_engagement_defaults(); the
+    # value here is what that flag falls back to. A saved row always wins over both.
     "feed_fallback_when_empty": True, "link_in_first_comment": True,
     # Catch-up congratulations (issue #482): small cap, human approval, and only the BD-relevant
     # milestone types out of the box — a generic "Congrats!" at volume is worse than nothing.
@@ -3260,6 +3263,16 @@ def _select_engagement_row(user_id: int) -> Optional[dict]:
         connection.close()
 
 
+def _code_engagement_defaults(user_id: int) -> dict:
+    """`_ENGAGEMENT_DEFAULTS` with the one field whose FLEET default is runtime-controlled resolved
+    for this user (issue #651). Only reached when the user has no saved row: once they save one, the
+    column holds their own explicit 0/1 and the flag can never override it."""
+    from cqc_lem.utilities.flags import FEED_FALLBACK_DEFAULT, flag_enabled
+    defaults = dict(_ENGAGEMENT_DEFAULTS)
+    defaults["feed_fallback_when_empty"] = flag_enabled(FEED_FALLBACK_DEFAULT, user_id=user_id)
+    return defaults
+
+
 def get_engagement_preferences(user_id: int) -> dict:
     """Return the user's engagement preferences (voice/targeting/caps) with code-level
     defaults when no row exists — so behaviour is unchanged until the user customizes."""
@@ -3267,8 +3280,8 @@ def get_engagement_preferences(user_id: int) -> dict:
         row = _select_engagement_row(user_id)
     except mysql.connector.Error as err:
         myprint(f"Could not get engagement prefs for user_id {user_id} | Error: {err}")
-        return dict(_ENGAGEMENT_DEFAULTS)
-    return dict(_ENGAGEMENT_DEFAULTS) if row is None else row
+        return _code_engagement_defaults(user_id)
+    return _code_engagement_defaults(user_id) if row is None else row
 
 
 def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
@@ -3286,7 +3299,7 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
         log_error("Could not read engagement prefs before update — aborting write",
                   exc=err, user_id=user_id)
         return False
-    base = {**_ENGAGEMENT_DEFAULTS,
+    base = {**_code_engagement_defaults(user_id),
             **{k: v for k, v in (existing or {}).items() if k in _ENGAGEMENT_DEFAULTS}}
     merged = {**base, **{k: v for k, v in prefs.items() if k in _ENGAGEMENT_DEFAULTS}}
 

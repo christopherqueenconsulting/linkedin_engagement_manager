@@ -1,9 +1,14 @@
 import { useEffect, useState } from 'react'
 import api from '../api/client'
+import { FLAGS, useFeatureFlag } from '../hooks/useFeatureFlags'
 
 // Automated feature tutorials (issue #505). The video agent writes a manifest of finished
 // tutorials into the shared assets volume; this reads it and embeds whatever is there. Nothing
 // produced yet -> renders nothing, so the page never shows an empty "videos" shell.
+//
+// Gated by the same `tutorial-videos-enabled` flag that gates the PRODUCER (issue #651), so one
+// runtime toggle covers both filming the tutorials and showing them — no deploy to pull the
+// section. Fallback is OFF: an unreachable API must not publish a marketing section.
 interface TutorialRecord {
   flow: string
   title: string
@@ -19,8 +24,10 @@ const MANIFEST = '/assets?file_name=videos/tutorials/manifest.json'
 
 export default function TutorialVideos() {
   const [videos, setVideos] = useState<TutorialRecord[]>([])
+  const enabled = useFeatureFlag(FLAGS.tutorialVideos)
 
   useEffect(() => {
+    if (!enabled) return
     let cancelled = false
     api
       .get(MANIFEST)
@@ -33,9 +40,9 @@ export default function TutorialVideos() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [enabled])
 
-  if (videos.length === 0) return null
+  if (!enabled || videos.length === 0) return null
 
   return (
     <section id="tutorials" className="py-16 px-4 bg-white">

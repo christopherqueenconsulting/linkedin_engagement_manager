@@ -14,10 +14,14 @@ COST POLICY (per-type toggles, all under the CONTENT_RESEARCH_ENABLED master swi
   worth one search call each.
 - comment — COMMENT_RESEARCH_ENABLED, default OFF. Comments run at HIGH volume (many per day per
   user) and are already grounded in their primary source: the TARGET POST. Firing a Perplexity
-  search per comment would multiply API spend for marginal value, so comment research is opt-in."""
+  search per comment would multiply API spend for marginal value, so comment research is opt-in.
+  This is the one type ALSO carried by a runtime feature flag (issue #651): it is the expensive,
+  reversible toggle worth trialling on a cohort without a deploy. The env var stays its default and
+  its fallback — see utilities/flags.py."""
 
 import os
 
+from cqc_lem.utilities.flags import COMMENT_RESEARCH, flag_enabled
 from cqc_lem.utilities.logger import log_debug, log_warning
 
 _EMPTY: dict = {"findings": "", "sources": []}
@@ -58,11 +62,16 @@ def _bool_env(name: str, default: bool) -> bool:
     return raw.strip().lower() not in ("0", "false", "no", "off")
 
 
-def research_enabled(content_type: str) -> bool:
-    """Master switch AND the per-type toggle must both allow research."""
+def research_enabled(content_type: str, user_id: int = None) -> bool:
+    """Master switch AND the per-type toggle must both allow research. The comment toggle is
+    additionally flag-controlled (issue #651) and can therefore be trialled per-user; the flag falls
+    back to COMMENT_RESEARCH_ENABLED whenever PostHog has no answer."""
     if not _bool_env("CONTENT_RESEARCH_ENABLED", True):
         return False
     env_name, default = _TYPE_TOGGLES.get(content_type, _TYPE_TOGGLES["comment"])
+    # Unknown types already inherit the comment toggle, so they inherit its flag too.
+    if env_name == _TYPE_TOGGLES["comment"][0]:
+        return flag_enabled(COMMENT_RESEARCH, user_id=user_id)
     return _bool_env(env_name, default)
 
 
@@ -112,12 +121,13 @@ def _research_via_litellm(query: str, max_sources: int) -> dict:
 
 def research_topic(subject: str, content_type: str = "newsletter", blueprint: dict = None,
                    context_description: str = None, prefs: dict = None,
-                   max_sources: int = 5) -> dict:
+                   max_sources: int = 5, user_id: int = None) -> dict:
     """One research call for one piece of content. Returns {'findings': str, 'sources': [{'url':
     ...}]}; empty findings on toggle-off, missing key, or any failure — callers always generate
-    regardless."""
+    regardless. `user_id` only scopes the flag lookup (issue #651) — pass it where a per-user
+    rollout should be able to reach this call."""
     subject = (subject or "").strip()
-    if not subject or not research_enabled(content_type):
+    if not subject or not research_enabled(content_type, user_id=user_id):
         return dict(_EMPTY)
     query = _build_research_query(subject, content_type, blueprint, context_description, prefs)
     try:

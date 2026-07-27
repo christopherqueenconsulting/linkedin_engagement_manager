@@ -365,6 +365,35 @@ AI-detector (`AI_DETECTOR_*`) is OFF by default, sampled on a stable per-item dr
 and a REGRESSION SIGNAL ONLY per the #416 policy — it never rewrites or holds anything, and a missing
 key is a silent no-op.
 
+### Feature flags — runtime toggles (issue #651)
+
+`utilities/flags.py` is the ONE place a runtime toggle is read, and its contract is **fail open to
+the env var**: no personal API key, `POSTHOG_FLAGS_ENABLED=false`, definitions unloaded, flag
+undefined, evaluation inconclusive, SDK raises — every one of those returns the flag's own env var,
+so a deployment with no PostHog flags behaves exactly as it did before. Each registered flag keeps
+its env var as BOTH default and fallback; the registry (`FLAGS`, a `FlagSpec` per toggle with key /
+env var / default / owner) is the whole vocabulary, and call sites use the exported constant so a
+typo raises instead of silently reading `False` inside a Celery task.
+
+Lookups are `only_evaluate_locally=True` + `send_feature_flag_events=False`: definitions are polled
+into the process (`POSTHOG_FLAG_POLL_SECONDS`, default 30) and evaluated in memory, so a feed loop
+checking a flag per post makes ZERO network requests and a flip lands on a long-running worker
+without a restart. The one fetch is at a process's first check, and a failed fetch retries no more
+than once per poll interval. The price is a hard registry constraint: **flags must use rollout-%
+/ distinct-ID conditions only** — a person-property condition can't be decided locally and would
+silently fall back to env everywhere. distinct_id is `str(user_id)` / `"system"`, same as
+`observability.py`.
+
+Read the toggle at the CALL SITE, never into a module constant at import — an import-time read is
+exactly how a flag ends up doing nothing. Migrated so far: `comment-research-enabled`,
+`tutorial-videos-enabled`, `feed-fallback-when-empty-default` (fleet default only — a user's saved
+row always wins), `cost-routing-enabled`. **Safety controls are NOT flags**: the 429 breaker,
+`hold_commenting`, `pause_automation`/the suppression tripwire and every per-day cap stay in
+Redis/env, and `COST_AWARE_ROUTING_ENABLED` stays env-only because `routing_policy.py` must remain
+stdlib-only. The SPA bootstraps from `GET /api/flags` (server-resolved, so no flag flicker and no
+disagreement between browser, API and workers) via `hooks/useFeatureFlags.ts` — NOT through
+posthog-js, which stays the analytics surface. Full posture: `docs/feature-flags.md`.
+
 ## CI Gates
 
 Before merging any PR, all of the following must pass:
