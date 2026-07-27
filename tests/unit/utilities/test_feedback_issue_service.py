@@ -503,6 +503,37 @@ class TestGithubIO:
             assert svc.create_github_issue("t", "b", ["bug"], assignees=["gitchrisqueen"]) == 31
         assert requests.request.call_count == 3
 
+    def test_a_failed_attach_is_an_error_not_a_soft_warning(self, monkeypatch):
+        # Issue #718: a label-less issue is invisible to the agent pipeline, so the loop is BROKEN —
+        # and only an ERROR reaches PostHog at the default POSTHOG_LOG_LEVEL.
+        svc = _mod()
+        monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
+        requests = MagicMock()
+        requests.request.side_effect = [self._response(201, {"number": 31}),
+                                        self._response(403, {"message": "forbidden"}),
+                                        self._response(403, {"message": "forbidden"})]
+        with patch.dict("sys.modules", {"requests": requests}), \
+                patch(f"{_SVC}.log_error") as error, patch(f"{_SVC}.log_warning") as warning:
+            svc.create_github_issue("t", "b", ["bug"], assignees=["gitchrisqueen"])
+        messages = [call[0][0] for call in error.call_args_list]
+        assert any("could not be labeled" in m and "Issues: Read and write" in m for m in messages)
+        assert any("could not be assigned" in m for m in messages)
+        warning.assert_not_called()
+
+    def test_a_held_issue_with_no_decision_comment_is_an_error(self):
+        # The owner is asked to answer a Decision Comment that never posted — a silent dead end.
+        svc = _mod()
+        classification = _classification(confidence=0.65)
+        with patch(f"{_SVC}.classify_feedback", return_value=classification), \
+                patch(f"{_SVC}.create_github_issue", return_value=91), \
+                patch(f"{_SVC}.comment_on_issue", return_value=False), \
+                patch(f"{_SVC}.embed_text", return_value=None), \
+                patch(f"{_SVC}.update_feedback_triage"), \
+                patch(f"{_SVC}.count_feedback_filed_by_user", return_value=0), \
+                patch(f"{_SVC}.log_error") as error:
+            svc.file_feedback_issue({"id": 1, "user_id": 2, "body": "x"}, clusters=[])
+        assert "no Decision Comment" in error.call_args[0][0]
+
     def test_no_token_files_nothing(self, monkeypatch):
         svc = _mod()
         monkeypatch.delenv("FEEDBACK_GITHUB_TOKEN", raising=False)
@@ -941,3 +972,241 @@ class TestEnvReaders:
         monkeypatch.setenv("FEEDBACK_ISSUE_ASSIGNEE", "someone")
         assert svc.github_repo() == "me/mine"
         assert svc.issue_assignee() == "someone"
+
+
+class TestParseFiledIssue:
+    """Reading a filed issue back well enough to recompute its labels — issue #718."""
+
+    def _round_trip(self, classification, reporter_count=1, feedback_id=42):
+        svc = _mod()
+        title = svc.build_issue_title(classification)
+        body = svc.build_issue_body(classification, feedback_id, reporter_count, item_count=2)
+        return svc.parse_filed_issue(title, body)
+
+    def test_round_trips_everything_the_label_set_depends_on(self):
+        classification = _classification()
+        parsed, reporters = self._round_trip(classification)
+        assert parsed.category == classification.category
+        assert parsed.severity == classification.severity
+        assert parsed.risk == classification.risk
+        assert parsed.confidence == pytest.approx(classification.confidence)
+        assert parsed.component == classification.component
+        assert reporters == 1
+
+    @pytest.mark.parametrize("risk", ['product-decision', 'live-linkedin', 'migration', 'security'])
+    def test_recomputed_labels_match_what_was_filed_for_every_risk(self, risk):
+        from cqc_lem.utilities.feedback.classifier import FeedbackRisk
+        svc = _mod()
+        classification = _classification(risk=FeedbackRisk(risk))
+        parsed, reporters = self._round_trip(classification, reporter_count=1)
+        assert svc.labels_for_issue(parsed, reporters) == svc.labels_for_issue(classification, 1)
+
+    def test_recomputed_labels_match_for_a_feature_held_on_demand(self):
+        from cqc_lem.utilities.feedback.classifier import FeedbackCategory
+        svc = _mod()
+        classification = _classification(category=FeedbackCategory.FEATURE)
+        parsed, reporters = self._round_trip(classification, reporter_count=1)
+        assert reporters == 1
+        labels = svc.labels_for_issue(parsed, reporters)
+        assert 'needs-human' in labels and 'agent:ready' not in labels
+        # ...and the same feature with proven demand comes back agent:ready.
+        parsed, reporters = self._round_trip(classification, reporter_count=3)
+        assert reporters == 3
+        assert 'agent:ready' in svc.labels_for_issue(parsed, reporters)
+
+    def test_anonymous_report_stays_at_zero_reporters(self):
+        parsed, reporters = self._round_trip(_classification(), reporter_count=0)
+        assert reporters == 0
+        assert parsed is not None
+
+    @pytest.mark.parametrize("body", ["", "not our issue at all",
+                                      "Classifier: nonsense/high, risk `none`, confidence 0.90.",
+                                      "Classifier: bug/high, risk `unknown`, confidence 0.90."])
+    def test_unreadable_provenance_is_none_not_a_guess(self, body):
+        assert _mod().parse_filed_issue("fix(api): x", body) is None
+
+    def test_missing_demand_line_reads_as_no_proven_reporters(self):
+        parsed, reporters = _mod().parse_filed_issue(
+            "fix(api): x", "Classifier: bug/high, risk `none`, confidence 0.90.")
+        assert reporters == 0
+        assert parsed.category == 'bug'
+
+    def test_unparseable_title_still_yields_a_classification(self):
+        svc = _mod()
+        body = svc.build_issue_body(_classification(), 1, 1, 1)
+        parsed, _ = svc.parse_filed_issue("a bare human title", body)
+        assert parsed.component == 'other'
+        assert parsed.title == "a bare human title"
+
+
+class TestRepairFiledIssue:
+    """Re-attaching what a 403'd post-create pass dropped — issue #718."""
+
+    def _issue(self, classification=None, number=713, labels=(), assignees=(), state='open',
+               reporter_count=1):
+        svc = _mod()
+        classification = classification or _classification()
+        return {"number": number, "state": state,
+                "title": svc.build_issue_title(classification),
+                "body": svc.build_issue_body(classification, 4, reporter_count, item_count=1),
+                "labels": [{"name": name} for name in labels],
+                "assignees": [{"login": login} for login in assignees]}
+
+    def test_label_less_issue_gets_its_full_label_set_back(self):
+        svc = _mod()
+        with patch(f"{_SVC}.github_request", return_value={}) as request:
+            assert svc.repair_filed_issue(self._issue()) == svc.RepairAction.REPAIRED
+        request.assert_called_once_with(
+            "POST", "issues/713/labels",
+            {"labels": ['bug', 'priority:high', 'feedback-loop', 'agent:ready']})
+
+    def test_an_issue_that_already_carries_our_label_is_left_alone(self):
+        svc = _mod()
+        with patch(f"{_SVC}.github_request") as request:
+            assert svc.repair_filed_issue(
+                self._issue(labels=['bug', 'feedback-loop'])) == svc.RepairAction.OK
+        request.assert_not_called()
+
+    def test_labels_a_human_added_are_kept_and_only_the_rest_attached(self):
+        svc = _mod()
+        with patch(f"{_SVC}.github_request", return_value={}) as request:
+            svc.repair_filed_issue(self._issue(labels=['bug', 'agent:ready']))
+        assert request.call_args[0][2] == {"labels": ['priority:high', 'feedback-loop']}
+
+    @pytest.mark.parametrize("issue", [
+        None, {}, {"number": 5, "state": "open", "body": "someone else's issue"},
+        {"number": 5, "state": "open", "body": "Auto-filed from in-app feedback #1 ..."},
+    ])
+    def test_issues_that_are_not_ours_or_unreadable_are_never_touched(self, issue):
+        svc = _mod()
+        with patch(f"{_SVC}.github_request") as request:
+            assert svc.repair_filed_issue(issue) == svc.RepairAction.SKIPPED
+        request.assert_not_called()
+
+    def test_a_closed_issue_is_never_repaired(self):
+        svc = _mod()
+        with patch(f"{_SVC}.github_request") as request:
+            assert svc.repair_filed_issue(self._issue(state='closed')) == svc.RepairAction.SKIPPED
+        request.assert_not_called()
+
+    def test_a_held_issue_also_gets_its_assignee_and_decision_comment_back(self):
+        from cqc_lem.utilities.feedback.classifier import FeedbackRisk
+        svc = _mod()
+        issue = self._issue(classification=_classification(risk=FeedbackRisk.MIGRATION))
+        with patch(f"{_SVC}.github_request", side_effect=[{}, {}, []]) as request, \
+                patch(f"{_SVC}.comment_on_issue", return_value=True) as comment:
+            assert svc.repair_filed_issue(issue) == svc.RepairAction.REPAIRED
+        assert [call[0][:2] for call in request.call_args_list] == [
+            ("POST", "issues/713/labels"), ("POST", "issues/713/assignees"),
+            ("GET", "issues/713/comments?per_page=100")]
+        assert request.call_args_list[1][0][2] == {"assignees": ["gitchrisqueen"]}
+        assert "Human decision needed" in comment.call_args[0][1]
+        assert "risk:migration" in comment.call_args[0][1]
+
+    def test_an_existing_decision_comment_is_not_duplicated(self):
+        from cqc_lem.utilities.feedback.classifier import FeedbackRisk
+        svc = _mod()
+        issue = self._issue(classification=_classification(risk=FeedbackRisk.SECURITY),
+                            assignees=['gitchrisqueen'])
+        with patch(f"{_SVC}.github_request",
+                   side_effect=[{}, [{"body": "## 🧑‍⚖️ Human decision needed — reply..."}]]), \
+                patch(f"{_SVC}.comment_on_issue") as comment:
+            assert svc.repair_filed_issue(issue) == svc.RepairAction.REPAIRED
+        comment.assert_not_called()
+
+    def test_an_unreadable_comment_list_does_not_post_a_second_decision_comment(self):
+        from cqc_lem.utilities.feedback.classifier import FeedbackRisk
+        svc = _mod()
+        issue = self._issue(classification=_classification(risk=FeedbackRisk.SECURITY),
+                            assignees=['gitchrisqueen'])
+        with patch(f"{_SVC}.github_request", side_effect=[{}, None]), \
+                patch(f"{_SVC}.comment_on_issue") as comment:
+            assert svc.repair_filed_issue(issue) == svc.RepairAction.REPAIRED
+        comment.assert_not_called()
+
+    def test_an_agent_ready_issue_is_never_assigned_or_commented_on(self):
+        svc = _mod()
+        with patch(f"{_SVC}.github_request", return_value={}) as request, \
+                patch(f"{_SVC}.comment_on_issue") as comment:
+            assert svc.repair_filed_issue(self._issue()) == svc.RepairAction.REPAIRED
+        assert request.call_count == 1
+        comment.assert_not_called()
+
+    def test_a_refused_repair_is_an_error_and_stops_there(self):
+        svc = _mod()
+        from cqc_lem.utilities.feedback.classifier import FeedbackRisk
+        issue = self._issue(classification=_classification(risk=FeedbackRisk.SECURITY))
+        with patch(f"{_SVC}.github_request", return_value=None) as request, \
+                patch(f"{_SVC}.comment_on_issue") as comment, \
+                patch(f"{_SVC}.log_error") as error:
+            assert svc.repair_filed_issue(issue) == svc.RepairAction.ERROR
+        assert request.call_count == 1
+        comment.assert_not_called()
+        assert "Issues: Read and write" in error.call_args[0][0]
+
+
+class TestRepairAutoFiledIssues:
+    """The sweep that runs on every filing beat — issue #718."""
+
+    def _open_issue(self, number, labels=()):
+        svc = _mod()
+        classification = _classification()
+        return {"number": number, "state": "open", "title": svc.build_issue_title(classification),
+                "body": svc.build_issue_body(classification, 1, 1, 1),
+                "labels": [{"name": name} for name in labels], "assignees": []}
+
+    def test_no_token_reads_nothing_at_all(self, monkeypatch):
+        svc = _mod()
+        monkeypatch.delenv("FEEDBACK_GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        with patch(f"{_SVC}.get_open_feedback_clusters") as clusters:
+            assert svc.repair_auto_filed_issues() == {"scanned": 0, "repaired": 0, "failed": 0}
+        clusters.assert_not_called()
+
+    def test_repairs_the_broken_issues_and_leaves_the_healthy_ones(self, monkeypatch):
+        svc = _mod()
+        monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
+        clusters = [_cluster(1, issue=101), _cluster(2, issue=102)]
+        with patch(f"{_SVC}.get_open_feedback_clusters", return_value=clusters), \
+                patch(f"{_SVC}.github_request",
+                      side_effect=[self._open_issue(101, labels=['bug', 'feedback-loop']),
+                                   self._open_issue(102), {}]) as request:
+            assert svc.repair_auto_filed_issues() == {"scanned": 2, "repaired": 1, "failed": 0}
+        assert request.call_args_list[-1][0][:2] == ("POST", "issues/102/labels")
+
+    def test_the_same_issue_is_only_checked_once_per_pass(self, monkeypatch):
+        svc = _mod()
+        monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
+        clusters = [_cluster(1, issue=101), _cluster(2, issue=101), {"cluster_id": 3}]
+        with patch(f"{_SVC}.get_open_feedback_clusters", return_value=clusters), \
+                patch(f"{_SVC}.github_request",
+                      return_value=self._open_issue(101, labels=['feedback-loop'])) as request:
+            assert svc.repair_auto_filed_issues() == {"scanned": 1, "repaired": 0, "failed": 0}
+        assert request.call_count == 1
+
+    def test_a_refusal_stops_the_sweep_instead_of_hammering_github(self, monkeypatch):
+        svc = _mod()
+        monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
+        clusters = [_cluster(1, issue=101), _cluster(2, issue=102), _cluster(3, issue=103)]
+        with patch(f"{_SVC}.get_open_feedback_clusters", return_value=clusters), \
+                patch(f"{_SVC}.github_request",
+                      side_effect=[self._open_issue(101), None]) as request:
+            assert svc.repair_auto_filed_issues() == {"scanned": 1, "repaired": 0, "failed": 1}
+        assert request.call_count == 2
+
+    def test_an_unreadable_issue_does_not_stop_the_sweep(self, monkeypatch):
+        svc = _mod()
+        monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
+        clusters = [_cluster(1, issue=404), _cluster(2, issue=102)]
+        with patch(f"{_SVC}.get_open_feedback_clusters", return_value=clusters), \
+                patch(f"{_SVC}.github_request",
+                      side_effect=[None, self._open_issue(102, labels=['feedback-loop'])]):
+            assert svc.repair_auto_filed_issues() == {"scanned": 2, "repaired": 0, "failed": 1}
+
+    def test_the_work_list_is_bounded(self, monkeypatch):
+        svc = _mod()
+        monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
+        with patch(f"{_SVC}.get_open_feedback_clusters", return_value=[]) as clusters, \
+                patch(f"{_SVC}.github_request"):
+            svc.repair_auto_filed_issues(limit=7)
+        clusters.assert_called_once_with(7)
