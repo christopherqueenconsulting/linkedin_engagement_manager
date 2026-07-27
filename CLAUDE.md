@@ -406,6 +406,40 @@ never be summed — one signup produces both. `scripts/posthog_provision.py` pro
 Channels** dashboard plus the two web-analytics conversion goals (as PostHog *actions*: signup →
 the browser event, activation → `activated`). Full posture: `docs/marketing-attribution.md`.
 
+### Model-tier evaluation harness (`scripts/benchmark_models.py`, issue #721)
+
+#716 taught the weekly model-health cron to SEE change coming (advance retirements, new Ollama
+Cloud tags, a family we trail); it could never say whether a candidate was any GOOD, so #717's
+roster refresh was decided on spec sheets. This is the measurement half. Each LiteLLM tier is a
+CONTRACT encoded as a fixed suite of synthetic prompts in `tests/benchmarks/model_tiers/<tier>.json`
+(10–20 cases, drawn from LEM's real prompt shapes, **no user data**), and every cron-detected
+candidate runs it **beside the tier's current champion** — a verdict is always a comparison.
+
+Two scoring layers, in this order. **Deterministic** is the source of truth and it is the in-repo
+linters, not a second copy of them: `slop_lint.lint_report`, `content_framework.comment_contract_report`,
+`routing_policy.complexity_tier` (the `lem-router` contract — deterministic and model-independent
+on purpose, so it is a regression guard on the ROUTER), plus length/shape/JSON/burstiness/
+self-similarity assertions. A case that fails here never spends a judge call. **LLM judge** is
+PostHog Evaluations scoring the harness's OWN tagged `$ai_generation` events (emitted independently
+of #647's prod callback, because the harness calls Ollama Cloud directly), whose `conditions` filter
+on `benchmark_run_id` — a property production traffic never carries, so an enabled evaluation can
+never bill against a customer. No judge-provider key degrades to an in-runner `lem-medium` judge
+emitting `$ai_metric`; a verdict that never lands is `judge:timeout`, never a fabricated score, and
+the report names the mode it ran in.
+
+The gate is champion/challenger and only `recommend` (clears the tier's absolute floors AND
+meets-or-beats the champion on every graded expectation) becomes a swap recommendation —
+`recommend-deterministic-only` / `no-baseline` / `reject` are reported and go no further. A
+recommendation is deliberately **rendered, never written**: `.litellm/model_upgrades.yaml` is the
+RETIREMENT map that `model_health_check.py` auto-swaps into the live config, so a benchmark win must
+not walk itself into production. Reports land in `docs/model-benchmarks/<date>-<run_id>.md` plus a
+rolling leaderboard, committed through the same ephemeral-worktree `open_pr` flow — and
+`render_report` runs `assert_benchmark_only` first, so a run that isn't provably benchmark output
+never reaches disk. OFF unless `BENCHMARK_ENABLED`; judge calls are capped per run; a benchmark
+failure alerts but never blocks the retirement-swap safety path. `--dry-run` renders a full report
+from each case's committed canned output with zero network calls. Full posture:
+`docs/model-benchmarks/README.md`.
+
 ### Content-quality telemetry (`utilities/content_quality.py`, issue #630)
 
 Every other quality gate is a one-time verdict — the slop lint (#625) blocks a draft, the comment

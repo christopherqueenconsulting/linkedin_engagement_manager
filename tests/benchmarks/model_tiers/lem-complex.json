@@ -1,0 +1,221 @@
+{
+  "tier": "lem-complex",
+  "version": 1,
+  "contract": "Long-form LinkedIn content: thought leadership, personal story, industry-news commentary, carousel outlines and newsletter editions. The output must follow the requested blueprint, hold a varied human sentence rhythm rather than uniform AI cadence, survive LEM's deterministic slop lint, and state no specific number, customer, employer or outcome that the prompt did not supply. A promotional post must ask for an artefact (a resource or a newsletter subscription), never a meeting.",
+  "judge_rubric": "Pass only if the piece follows the requested structure, sounds like one identifiable practitioner writing from the supplied material, invents no statistic, customer name or outcome beyond what the prompt gave, avoids the contrastive 'it's not X, it's Y' frame and bait closers, and ends on the CTA the prompt asked for rather than a meeting request.",
+  "thresholds": {"deterministic_pass_rate": 0.9, "judge_pass_rate": 0.8, "min_judged": 4},
+  "cases": [
+    {
+      "id": "complex-thought-leadership",
+      "title": "Thought-leadership post from a supplied point of view",
+      "messages": [
+        {"role": "system", "content": "You write long-form LinkedIn thought-leadership posts in a plain, specific practitioner voice. No em-dash pile-ups, no 'it's not X, it's Y', no bait closer. Never invent statistics."},
+        {"role": "user", "content": "Write a thought leadership post of 900-2500 characters arguing that platform teams should be measured on the time a change waits, not the time it runs. Buyer stage: awareness. You may use only these facts: the author has run platform teams at two companies, and at the second one queue time was four times longer than build time. End with a question the reader can answer from their own experience."}
+      ],
+      "params": {"temperature": 0.8, "max_tokens": 1400},
+      "assertions": [
+        {"type": "min_chars", "value": 700},
+        {"type": "max_chars", "value": 3000},
+        {"type": "no_preamble"},
+        {"type": "slop_lint", "content_type": "post"},
+        {"type": "min_burstiness", "value": 0.2},
+        {"type": "forbidden_phrases", "values": ["as an ai", "in today's fast-paced"]}
+      ],
+      "canned": {
+        "output": "Most platform teams report build time. Almost none of them report wait time.\n\nAt the second company where I ran a platform team, we measured both for a month. Queue time was four times longer than build time. Every dashboard we had was pointed at the shorter number.\n\nThat gap is not a tooling problem. It is a reporting one. Build time is easy to instrument and flattering to show. Wait time is spread across approvals, shared runners, and the hours a change sits after someone goes home. Nobody owns it, so nobody counts it.\n\nWhen we started counting it, the arguments changed. We stopped debating which runner image to use and started asking why a change needed two approvals from the same person's manager.\n\nThe engineers already knew. They had been describing it in retros for a year, in the only language available to them: this is slow.\n\nWhat does the wait look like on your team, and does anyone report it?",
+        "latency_ms": 8200,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "complex-personal-story",
+      "title": "Personal story anchored only to supplied facts",
+      "messages": [
+        {"role": "system", "content": "You write LinkedIn personal-story posts. Ground every specific in the facts given. If a detail was not supplied, write around it rather than inventing it."},
+        {"role": "user", "content": "Write a personal story post of 900-2200 characters. Supplied facts, and no others: the author once shipped a change on a Friday that took the checkout flow down for 40 minutes, they found it themselves before a customer reported it, and their manager's first question was about the runbook rather than the mistake. Close by inviting readers to share how their team handled a similar moment."}
+      ],
+      "params": {"temperature": 0.8, "max_tokens": 1200},
+      "assertions": [
+        {"type": "min_chars", "value": 700},
+        {"type": "max_chars", "value": 2600},
+        {"type": "no_preamble"},
+        {"type": "slop_lint", "content_type": "post"},
+        {"type": "min_burstiness", "value": 0.2},
+        {"type": "required_phrases", "values": ["40"], "mode": "all"}
+      ],
+      "canned": {
+        "output": "I took checkout down for 40 minutes on a Friday afternoon.\n\nI found it myself. That is the only part of the story I am still glad about, and it was luck as much as diligence — I had the graph open because I was curious, not because anyone told me to watch it.\n\nWhat I remember is my manager's first question. Not what did you change. Not why did you deploy on a Friday. He asked whether the runbook had got me back up faster, and when I said I had not opened it, he asked why not.\n\nThe honest answer was that I did not trust it. It had been written for a version of the system that no longer existed, and I knew that, and I had never said so.\n\nWe rewrote it that week. The next person who broke checkout used it, and they were back in nine minutes.\n\nHow did your team handle the first outage somebody owned out loud?",
+        "latency_ms": 7600,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "complex-industry-news",
+      "title": "Industry-news commentary that stays inside the supplied article",
+      "messages": [
+        {"role": "system", "content": "You write LinkedIn commentary on industry news. You may only use facts present in the supplied article. Add the author's interpretation, not new data."},
+        {"role": "user", "content": "Article: 'A survey of 1,200 engineering leaders reported that 61% now run at least one production workload on a platform their team does not operate. The same survey found that incident response times were unchanged year over year.'\n\nWrite 800-2000 characters of commentary for an awareness-stage audience. Do not add statistics that are not in the article."}
+      ],
+      "params": {"temperature": 0.8, "max_tokens": 1200},
+      "assertions": [
+        {"type": "min_chars", "value": 600},
+        {"type": "max_chars", "value": 2400},
+        {"type": "no_preamble"},
+        {"type": "slop_lint", "content_type": "post"},
+        {"type": "required_phrases", "values": ["61", "1,200"], "mode": "any"},
+        {"type": "forbidden_phrases", "values": ["studies show", "research proves"]}
+      ],
+      "canned": {
+        "output": "61% of the engineering leaders in this survey now run production on something their own team does not operate.\n\nThe number that matters sits next to it: incident response times did not move.\n\nThose two findings only look contradictory if you believe response time is mostly about access. It is not. It is about whether the person paged understands the failure in front of them, and handing operations to somebody else does not change that, it just changes who they have to call.\n\nSo the survey is not evidence that the shift failed. It is evidence that the thing teams hoped to buy was not the thing they bought.\n\nIf your incident numbers held flat through a platform migration, that is the expected result, not a sign you did it badly.",
+        "latency_ms": 7100,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "complex-build-receipt",
+      "title": "Fact-anchored build receipt with a placeholder for unknowns",
+      "messages": [
+        {"role": "system", "content": "You write 'build receipt' posts: a concrete account of something built, leading with a real number. You may only state specifics that were supplied. Anything you would need but were not given must appear as [[LABEL: what is missing]] rather than a guess."},
+        {"role": "user", "content": "Write a build receipt of 700-2000 characters. Supplied facts: the build took 11 working days, it replaced a nightly export with an incremental sync, and it removed a 6am manual step from one person's morning. The exact row count was not supplied. Lead with a real number."}
+      ],
+      "params": {"temperature": 0.7, "max_tokens": 1200},
+      "assertions": [
+        {"type": "min_chars", "value": 500},
+        {"type": "max_chars", "value": 2400},
+        {"type": "no_preamble"},
+        {"type": "slop_lint", "content_type": "post"},
+        {"type": "required_phrases", "values": ["11"], "mode": "all"},
+        {"type": "forbidden_phrases", "values": ["million rows", "billions of records"]}
+      ],
+      "canned": {
+        "output": "11 working days to delete a 6am alarm from somebody's phone.\n\nWhat it replaced: a nightly export that ran as one job, finished when it finished, and needed a person at 6am to confirm it had.\n\nWhat we built: an incremental sync that moves changes as they land, so there is no window to check and nothing to babysit.\n\nWhat it moved: [[LABEL: rows synced per day — not measured before the change]].\n\nWhat it cost: 11 working days, most of them spent on the backfill rather than the sync itself. The sync was three days of work. Proving the old and new paths agreed took the rest.\n\nThe part I would repeat: we ran both for a week before deleting anything.",
+        "latency_ms": 6900,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "complex-carousel-outline",
+      "title": "Carousel outline as a bare JSON object",
+      "messages": [
+        {"role": "system", "content": "You return a single JSON object and nothing else. No markdown fence, no commentary."},
+        {"role": "user", "content": "Produce a 6-slide educational carousel outline on reducing on-call pager noise. Return {\"title\": string, \"slides\": [{\"heading\": string, \"body\": string}]}. Every slide body must be under 220 characters. Use no statistics."}
+      ],
+      "params": {"temperature": 0.6, "max_tokens": 900},
+      "assertions": [
+        {"type": "json_object", "required_keys": ["title", "slides"]},
+        {"type": "max_chars", "value": 3000},
+        {"type": "no_preamble"}
+      ],
+      "canned": {
+        "output": "{\"title\": \"Cutting pager noise without going blind\", \"slides\": [{\"heading\": \"Start with what woke you\", \"body\": \"List every page from the last month and mark the ones that needed a human that hour. Most teams find the honest answer uncomfortable.\"}, {\"heading\": \"Delete before you tune\", \"body\": \"An alert nobody has acted on in a month is not a signal. Remove it rather than raising its threshold and forgetting it again.\"}, {\"heading\": \"Page on symptoms\", \"body\": \"Alert on what the customer experiences, not on the internal condition you think causes it. The cause changes; the symptom does not.\"}, {\"heading\": \"Give every alert an owner\", \"body\": \"An alert without a named owner becomes everyone's to ignore. The owner decides whether it survives the next review.\"}, {\"heading\": \"Review monthly, out loud\", \"body\": \"Read the noisiest three alerts in front of the team. Saying them aloud is what gets them fixed or deleted.\"}, {\"heading\": \"Measure sleep, not volume\", \"body\": \"Track pages outside working hours. Total alert count can fall while the ones that wake people stay exactly where they were.\"}]}",
+        "latency_ms": 6400,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "complex-newsletter-edition",
+      "title": "Newsletter edition with a subscribe CTA",
+      "messages": [
+        {"role": "system", "content": "You write a LinkedIn newsletter edition. Plain practitioner voice, no hype, no invented statistics. Close with an invitation to subscribe, never a meeting request."},
+        {"role": "user", "content": "Write an edition of 1000-2500 characters on why runbooks rot, using only this material: runbooks are written during an incident's aftermath, they are rarely opened again until the next incident, and the systems they describe change weekly. Close by inviting the reader to subscribe."}
+      ],
+      "params": {"temperature": 0.8, "max_tokens": 1400},
+      "assertions": [
+        {"type": "min_chars", "value": 800},
+        {"type": "max_chars", "value": 3000},
+        {"type": "no_preamble"},
+        {"type": "slop_lint", "content_type": "newsletter"},
+        {"type": "forbidden_phrases", "values": ["book a call", "schedule a demo", "calendly", "hop on a call"]}
+      ],
+      "canned": {
+        "output": "A runbook is written at the worst possible moment: just after an incident, by someone who is tired and wants to be finished.\n\nThat is not a criticism of the person. It is a description of when we ask for the work. The document that results is accurate for about a week, because the system it describes changes weekly and the runbook does not.\n\nThen it sits. Nobody opens a runbook when things are fine. The next person to open it is under pressure, at night, and discovers that the third step refers to a service that was renamed in March.\n\nSo they improvise, it works, and they do not go back and fix the document, because the incident is over and the document is not the incident.\n\nThat loop is the whole problem, and it is not solved by writing better runbooks. It is solved by opening them when nothing is wrong.\n\nThe teams I have seen break the cycle do one small thing: they read one runbook aloud at a quiet moment each month and fix whatever is wrong while they read. It takes ten minutes and it is the only mechanism I have seen that survives contact with a busy quarter.\n\nIf that is the kind of thing you want in your inbox, subscribe to the newsletter.",
+        "latency_ms": 8800,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "complex-promo-artifact-cta",
+      "title": "Promotional post that asks for an artefact, never a meeting",
+      "messages": [
+        {"role": "system", "content": "You write the one promotional post in ten. It must sell through usefulness and close by offering a resource or a newsletter, never by asking for a meeting, demo or call."},
+        {"role": "user", "content": "Write 700-1800 characters describing, in the author's own voice, what changed for a team that moved incident review notes into the same repository as the code. Supplied facts only: the notes now sit beside the service they describe, and pull requests link to them. Close by offering the reader a checklist if they comment the word RECEIPTS."}
+      ],
+      "params": {"temperature": 0.8, "max_tokens": 1100},
+      "assertions": [
+        {"type": "min_chars", "value": 500},
+        {"type": "max_chars", "value": 2200},
+        {"type": "no_preamble"},
+        {"type": "slop_lint", "content_type": "post", "exempt_keyword": "RECEIPTS"},
+        {"type": "forbidden_phrases", "values": ["book a call", "schedule a demo", "calendly", "hop on a call", "let's chat", "dm me for a quick call"]},
+        {"type": "required_phrases", "values": ["RECEIPTS"], "mode": "all"}
+      ],
+      "canned": {
+        "output": "We moved our incident review notes out of the wiki and into the repository beside the service they describe.\n\nNothing about the notes changed. Where they live did.\n\nThe first effect was mechanical: a pull request can link to the review that caused it, so the reason for a change is one click from the change. The second effect took longer to notice. People started reading them, because they were already in the directory.\n\nThe wiki was never the problem. Distance was.\n\nIf you want the checklist we used to move ours without losing the history, comment RECEIPTS and I will send it over.",
+        "latency_ms": 6100,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "complex-mobile-hook",
+      "title": "Opening line only, inside the mobile hook budget",
+      "messages": [
+        {"role": "system", "content": "You write opening lines for LinkedIn posts. Reply with the single line and nothing else."},
+        {"role": "user", "content": "Write the opening line for a post about a team that cut its release checklist from 34 steps to 6. Under 140 characters, one line, lead with the number, no emoji."}
+      ],
+      "params": {"temperature": 0.7, "max_tokens": 60},
+      "assertions": [
+        {"type": "max_chars", "value": 140},
+        {"type": "max_lines", "value": 1},
+        {"type": "no_preamble"},
+        {"type": "required_phrases", "values": ["34", "6"], "mode": "any"}
+      ],
+      "canned": {
+        "output": "34 steps to 6. The 28 we deleted had all been added after an incident nobody could name.",
+        "latency_ms": 1900,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "complex-similarity-guard",
+      "title": "A fifth long-form piece that must not echo the earlier ones",
+      "messages": [
+        {"role": "system", "content": "You write long-form LinkedIn posts. Do not reuse the structure, opening move or closing shape of a post you have already written today."},
+        {"role": "user", "content": "Write 800-2000 characters, consideration stage, on why a written decision record beats a longer meeting. Supplied facts only: the author's team replaced a weekly architecture meeting with a written record that anyone may comment on, and the meeting now happens only when the record has an unresolved comment."}
+      ],
+      "params": {"temperature": 0.8, "max_tokens": 1200},
+      "assertions": [
+        {"type": "min_chars", "value": 600},
+        {"type": "max_chars", "value": 2400},
+        {"type": "no_preamble"},
+        {"type": "slop_lint", "content_type": "post"},
+        {"type": "max_similarity", "value": 0.4, "against": ["complex-thought-leadership", "complex-personal-story", "complex-industry-news"]}
+      ],
+      "canned": {
+        "output": "We deleted the weekly architecture meeting. What replaced it was a document anyone can comment on, and a rule: the meeting only happens if a comment is still unresolved by Thursday.\n\nMost weeks it does not happen.\n\nThe surprise was not the time saved. It was who started participating. In the meeting, three people spoke and eleven listened. In the document, the people who never interrupted anybody began leaving the sharpest objections, usually a day later, usually after they had gone and checked something.\n\nA meeting rewards whoever can compose an argument in real time. A written record rewards whoever is right. Those are not the same group, and for four years we had been optimising for the first one without meaning to.\n\nThe cost is real: someone has to write the thing, and writing it badly is worse than a meeting. But that cost is paid once by one person, rather than by fourteen people simultaneously for an hour.",
+        "latency_ms": 7800,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "complex-engagement-prompt",
+      "title": "Engagement-prompt post that asks a real question",
+      "messages": [
+        {"role": "system", "content": "You write short engagement-prompt posts. They must ask something specific enough that a reader can answer from their own experience. No bait closers, no 'agree?'."},
+        {"role": "user", "content": "Write 400-1200 characters ending on a question about the last thing the reader's team deleted rather than built. Use no statistics and no customer names."}
+      ],
+      "params": {"temperature": 0.8, "max_tokens": 700},
+      "assertions": [
+        {"type": "min_chars", "value": 300},
+        {"type": "max_chars", "value": 1400},
+        {"type": "no_preamble"},
+        {"type": "slop_lint", "content_type": "post"},
+        {"type": "forbidden_phrases", "values": ["thoughts?", "agree?", "who else", "double tap"]}
+      ],
+      "canned": {
+        "output": "Every roadmap I have seen lists what a team will build. None of them list what it will remove.\n\nSo the removals happen quietly, usually by one person on a slow afternoon, and they are never in the quarterly summary even when they were the most useful thing that quarter.\n\nThe last service we deleted had two users, both internal, both of whom had forgotten it existed. Turning it off took an afternoon. Finding out whether we could took three weeks.\n\nWhat did your team delete most recently, and how long did the deciding take compared to the doing?",
+        "latency_ms": 5400,
+        "judge_pass": true
+      }
+    }
+  ]
+}
