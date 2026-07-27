@@ -12,19 +12,6 @@ cd "$ROOT_DIR"
 TAG="${1:?Usage: deploy.sh <image-tag>}"
 LAST_GOOD_FILE="${ROOT_DIR}/.last_good_tag"
 ENV_FILE="${ROOT_DIR}/.env"
-
-# Selenium topology. The Grid overlay (hub + N single-session nodes) became the deployed default at
-# the 2026-07-27 cutover; without composing it in here, EVERY deploy would silently revert the box
-# to the single standalone container — the stack would come up healthy and simply have the old
-# topology, which is exactly the kind of drift that is invisible until capacity matters.
-# Set SELENIUM_TOPOLOGY=standalone (env, or in the box's .env) to fall back; the overlay parks the
-# standalone behind a compose profile rather than deleting it, so the fallback stays one flag.
-SELENIUM_TOPOLOGY="${SELENIUM_TOPOLOGY:-$(grep -E '^SELENIUM_TOPOLOGY=' "${ENV_FILE}" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'")}"
-SELENIUM_TOPOLOGY="${SELENIUM_TOPOLOGY:-grid}"
-COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
-if [[ "${SELENIUM_TOPOLOGY}" == "grid" ]]; then
-  COMPOSE="${COMPOSE} -f docker-compose.grid.yml"
-fi
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-180}"
 # Maintenance window (issue #549): how long dispatch stays paused (TTL — it self-clears if this
 # script dies) and how long we wait for in-flight tasks to finish before recreating the workers.
@@ -49,6 +36,26 @@ env_value() {  # $1 = key, $2 = default
 # the Cloudflare tunnel ingress is the fixed `http://web_app:8000`.
 API_PORT="${API_PORT:-$(env_value API_PORT 8000)}"
 EDGE_PORT=8000
+
+# Selenium topology. The Grid overlay (hub + N single-session nodes) became the deployed default at
+# the 2026-07-27 cutover; without composing it in here, EVERY deploy would silently revert the box
+# to the single standalone container — the stack would come up healthy and simply have the old
+# topology, which is exactly the kind of drift that is invisible until capacity matters.
+# Set SELENIUM_TOPOLOGY=standalone (env, or in the box's .env) to fall back; the overlay parks the
+# standalone behind a compose profile rather than deleting it, so the fallback stays one flag.
+# Read through env_value, NOT a bare grep: this script runs under `set -euo pipefail`, and a grep
+# that finds nothing exits 1 — inside a command substitution that aborts the WHOLE deploy before
+# check_env.sh ever runs, which is exactly the state of every box today (the key is new, so no .env
+# has it yet). env_value always exits 0 and returns the default.
+SELENIUM_TOPOLOGY="${SELENIUM_TOPOLOGY:-$(env_value SELENIUM_TOPOLOGY grid)}"
+if [[ "${SELENIUM_TOPOLOGY}" != "grid" && "${SELENIUM_TOPOLOGY}" != "standalone" ]]; then
+  log "WARN: unrecognized SELENIUM_TOPOLOGY='${SELENIUM_TOPOLOGY}' — using 'grid'"
+  SELENIUM_TOPOLOGY="grid"
+fi
+COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
+if [[ "${SELENIUM_TOPOLOGY}" == "grid" ]]; then
+  COMPOSE="${COMPOSE} -f docker-compose.grid.yml"
+fi
 
 # Run a maintenance-mode subcommand inside whichever app container is up. Best-effort by design:
 # a stack that can't answer must not block the deploy (warm shutdown + acks_late still protect
@@ -110,17 +117,6 @@ fi
 
 export IMAGE_TAG="${TAG}"
 
-# 3b. Topology transition guard. A compose PROFILE stops a service from being STARTED; it does not
-# stop one that is already running. So on the first grid deploy of a box still running the
-# standalone, `selenium-chrome` keeps holding 127.0.0.1:4444 and the hub fails to bind — and the
-# half-created hub is left RUNNING WITH NO NETWORK ATTACHED, which presents as "hub unhealthy,
-# 0 nodes registered" (nodes cannot resolve `selenium-hub`) rather than as a port error. Evict the
-# standalone first so the transition is clean. Live-verified during the 2026-07-27 cutover.
-if [[ "${SELENIUM_TOPOLOGY}" == "grid" ]] && docker ps --format '{{.Names}}' | grep -qx "selenium-chrome"; then
-  log "Grid topology: evicting the running standalone selenium-chrome so the hub can bind 4444"
-  docker rm -f selenium-chrome >/dev/null 2>&1 || log "WARN: could not remove selenium-chrome (continuing)"
-fi
-
 # 4. Pull the exact app image tag (+ any updated third-party images).
 log "Pulling images for IMAGE_TAG=${TAG}"
 ${COMPOSE} pull
@@ -135,6 +131,28 @@ maint begin --pause-seconds "${MAINT_PAUSE_SECONDS}" || log "WARN: maintenance b
 log "Draining in-flight Celery tasks (up to ${DRAIN_TIMEOUT}s)"
 maint drain --timeout "${DRAIN_TIMEOUT}" \
   || log "WARN: drain timed out — remaining tasks get re-queued on shutdown (task_acks_late)"
+
+# 4c. Topology transition guard — AFTER the drain, because evicting a browser container kills every
+# live Selenium session inside it, which is the exact mid-flight kill the maintenance window exists
+# to prevent (issue #549). Nothing before this point starts a browser service, so waiting is free.
+# A compose PROFILE stops a service from being STARTED; it does not stop one that is already
+# running. So on the first grid deploy of a box still running the standalone, `selenium-chrome`
+# keeps holding 127.0.0.1:4444 and the hub fails to bind — and the half-created hub is left RUNNING
+# WITH NO NETWORK ATTACHED, which presents as "hub unhealthy, 0 nodes registered" (nodes cannot
+# resolve `selenium-hub`) rather than as a port error. Live-verified during the 2026-07-27 cutover.
+# The rollback direction has the SAME collision with the roles swapped: the hub holds 4444 and the
+# standalone can't bind, so evict whichever container the target topology is replacing. The grid
+# NODES need no explicit eviction — they aren't services of the base+prod project, so step 7's
+# `--remove-orphans` clears them.
+if [[ "${SELENIUM_TOPOLOGY}" == "grid" ]]; then
+  STALE_BROWSER="selenium-chrome"
+else
+  STALE_BROWSER="selenium-hub"
+fi
+if docker ps --format '{{.Names}}' | grep -qx "${STALE_BROWSER}"; then
+  log "${SELENIUM_TOPOLOGY} topology: evicting the running ${STALE_BROWSER} so the new one can bind 4444"
+  docker rm -f "${STALE_BROWSER}" >/dev/null 2>&1 || log "WARN: could not remove ${STALE_BROWSER} (continuing)"
+fi
 
 # 5. Migrations first — Flyway is idempotent (repair + migrate, baselineOnMigrate).
 log "Running database migrations"
