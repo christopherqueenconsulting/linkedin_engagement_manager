@@ -278,6 +278,9 @@ class TestUpdateFeedbackTriage:
         get_conn.assert_not_called()
         message = log.call_args[0][0]
         assert "'pending'" in message and "issue_created" in message
+        # exc= is what makes it a grouped PostHog $exception like the 1265 it replaces — a refusal
+        # logged without one would never reach error tracking or the issue filer.
+        assert isinstance(log.call_args.kwargs.get("exc"), ValueError)
 
     def test_status_spelling_variants_are_accepted(self):
         conn, cur = _dict_conn()

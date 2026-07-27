@@ -7950,7 +7950,8 @@ def count_feedback_filed_by_user(user_id: int, hours: int = 24) -> int:
         connection.close()
 
 
-def update_feedback_triage(feedback_id: int, status: "FeedbackStatus" = None,
+def update_feedback_triage(feedback_id: int,
+                           status: Optional[Union["FeedbackStatus", str]] = None,
                            cluster_id: int = None, github_issue_number: int = None,
                            embedding: list = None, sentiment: str = None) -> bool:
     """Stamp the auto-triage result back onto a feedback row (issue #498). Only the arguments you
@@ -7965,10 +7966,12 @@ def update_feedback_triage(feedback_id: int, status: "FeedbackStatus" = None,
     if status is not None:
         try:
             status = FeedbackStatus(str(status).strip().lower())
-        except ValueError:
+        except ValueError as err:
+            # exc= is what turns this into a grouped PostHog $exception (issue #648) — the 1265 it
+            # replaces was one, so without it the refusal would page nobody and only land in Logs.
             log_error(f"Refusing to write unknown feedback status {str(status)!r} for feedback "
                       f"{feedback_id} — expected one of "
-                      f"{', '.join(s.value for s in FeedbackStatus)}")
+                      f"{', '.join(s.value for s in FeedbackStatus)}", exc=err)
             return False
         updates.append("status=%s")
         params.append(str(status))
