@@ -7950,15 +7950,29 @@ def count_feedback_filed_by_user(user_id: int, hours: int = 24) -> int:
         connection.close()
 
 
-def update_feedback_triage(feedback_id: int, status: "FeedbackStatus" = None,
+def update_feedback_triage(feedback_id: int,
+                           status: Optional[Union["FeedbackStatus", str]] = None,
                            cluster_id: int = None, github_issue_number: int = None,
                            embedding: list = None, sentiment: str = None) -> bool:
     """Stamp the auto-triage result back onto a feedback row (issue #498). Only the arguments you
     pass are written, so the filer can save an embedding on one pass and the cluster/issue on the
-    next without clobbering anything."""
+    next without clobbering anything.
+
+    `status` is checked against `FeedbackStatus` BEFORE the write (issue #668): the column is a
+    MySQL ENUM, so an out-of-vocabulary value used to surface as an opaque `1265 Data truncated for
+    column 'status'` AND roll back the cluster/issue/embedding travelling in the same UPDATE."""
     updates: list = []
     params: list = []
     if status is not None:
+        try:
+            status = FeedbackStatus(str(status).strip().lower())
+        except ValueError as err:
+            # exc= is what turns this into a grouped PostHog $exception (issue #648) — the 1265 it
+            # replaces was one, so without it the refusal would page nobody and only land in Logs.
+            log_error(f"Refusing to write unknown feedback status {str(status)!r} for feedback "
+                      f"{feedback_id} — expected one of "
+                      f"{', '.join(s.value for s in FeedbackStatus)}", exc=err)
+            return False
         updates.append("status=%s")
         params.append(str(status))
     if cluster_id is not None:
@@ -7983,7 +7997,9 @@ def update_feedback_triage(feedback_id: int, status: "FeedbackStatus" = None,
         connection.commit()
         return cursor.rowcount > 0
     except mysql.connector.Error as err:
-        log_error(f"Could not update feedback triage for {feedback_id}", exc=err)
+        columns = ", ".join(u.split("=")[0] for u in updates)
+        log_error(f"Could not update feedback triage for {feedback_id} (columns: {columns})",
+                  exc=err)
         return False
     finally:
         cursor.close()

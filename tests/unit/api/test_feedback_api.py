@@ -127,3 +127,29 @@ class TestFeedbackMigration:
         for col in ("user_id", "source", "type_hint", "body", "context_json", "embedding",
                     "cluster_id", "github_issue_number", "status", "sentiment", "created_at"):
             assert col in sql, f"missing column {col}"
+
+    def test_status_enum_matches_the_feedback_status_vocabulary(self):
+        # issue #668: a FeedbackStatus member with no matching ENUM value only fails in PRODUCTION,
+        # as "1265 Data truncated for column 'status'" — never in a unit test. Catch it at build time.
+        # The vocabulary is the LAST declaration in version order, so widening the ENUM the only
+        # legal way — a new ALTER migration — satisfies this test. An already-merged migration must
+        # never be edited to appease it: Flyway validates applied ones by version+checksum.
+        import glob
+        import os
+        import re
+        from cqc_lem.utilities.db import FeedbackStatus
+        root = os.path.join(os.path.dirname(__file__), "..", "..", "..",
+                            "compose", "local", "database", "migrations")
+        declared = None
+        for path in sorted(glob.glob(os.path.join(root, "V*.sql"))):
+            with open(path) as f:
+                sql = f.read()
+            for statement in sql.split(";"):
+                if not re.search(r"TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?feedback`?\b",
+                                 statement, re.IGNORECASE):
+                    continue
+                match = re.search(r"\bstatus\s+ENUM\(([^)]*)\)", statement, re.IGNORECASE)
+                if match:
+                    declared = set(re.findall(r"'([^']*)'", match.group(1)))
+        assert declared, "no migration declares feedback.status as an ENUM"
+        assert {s.value for s in FeedbackStatus} == declared
