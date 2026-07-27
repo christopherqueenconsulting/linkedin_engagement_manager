@@ -51,6 +51,7 @@ from cqc_lem.utilities.db import (
     MAX_CONTENT_BUFFER_DAYS, MAX_CONTENT_BUFFER_POSTS,
     get_engagement_preferences, has_engagement_preferences, update_engagement_preferences,
     DEFAULT_POSTS_PER_WEEK, POSTS_PER_WEEK_MIN, POSTS_PER_WEEK_MAX,
+    DEFAULT_POSTING_DAYS, normalize_posting_days,
     get_or_create_reply_inbound_token,
     get_newsletter_settings, update_newsletter_settings,
     get_pending_newsletter_editions,
@@ -607,6 +608,9 @@ class EngagementPreferencesRequest(BaseModel):
     link_in_first_comment: bool = True
     # Publishing cadence — how many day-type slots a week the content plan fills (issue #621).
     posts_per_week: int = DEFAULT_POSTS_PER_WEEK
+    # Which weekdays those slots may land on, Mon=0 … Sun=6 (issue #581). Default Mon-Fri; all
+    # seven remain selectable.
+    posting_days: List[int] = list(DEFAULT_POSTING_DAYS)
     # Catch-up congratulations (issue #482)
     max_catchup_touches_per_day: int = CATCHUP_TOUCHES_MAX_STANDARD
     catchup_touch_mode: str = "pre_review"  # 'pre_review' (default) | 'auto_approve'
@@ -669,6 +673,13 @@ class EngagementPreferencesRequest(BaseModel):
             return min(POSTS_PER_WEEK_MAX, max(POSTS_PER_WEEK_MIN, int(v)))
         except (TypeError, ValueError):
             return DEFAULT_POSTS_PER_WEEK
+
+    # mode="before": a malformed day list must fall back to Mon-Fri, not 422 the whole settings
+    # save — the SPA writes every engagement field in one request.
+    @field_validator("posting_days", mode="before")
+    @classmethod
+    def _clean_posting_days(cls, v) -> List[int]:
+        return normalize_posting_days(v)
 
     @field_validator("authenticity_score_min")
     @classmethod

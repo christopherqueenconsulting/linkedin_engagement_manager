@@ -491,6 +491,28 @@ class TestDayTypeCalendar:
     def test_seven_a_week_is_daily(self):
         assert fw.weekly_post_slots(7) == [0, 1, 2, 3, 4, 5, 6]
 
+    def test_allowed_days_narrow_which_weekdays_are_eligible(self):
+        # Issue #581: cadence says HOW MANY, the allow-list says WHICH.
+        assert fw.weekly_post_slots(3, allowed_days=[0, 2, 4]) == [0, 2, 4]
+        # Priority still decides which of the allowed days fill first: Wed (p3) then Mon (p4).
+        assert fw.weekly_post_slots(2, allowed_days=[0, 2, 4]) == [0, 2]
+
+    def test_a_monday_to_friday_allow_list_never_yields_a_weekend(self):
+        for count in range(1, 8):
+            assert set(fw.weekly_post_slots(count, allowed_days=[0, 1, 2, 3, 4])).isdisjoint({5, 6})
+
+    def test_cadence_is_capped_by_the_allow_list(self):
+        assert fw.weekly_post_slots(7, allowed_days=[0, 1, 2, 3, 4]) == [0, 1, 2, 3, 4]
+        assert fw.weekly_post_slots(5, allowed_days=[6]) == [6]
+
+    def test_weekends_stay_reachable_when_configured(self):
+        assert fw.weekly_post_slots(2, allowed_days=[5, 6]) == [5, 6]
+
+    def test_an_unusable_allow_list_falls_back_to_the_full_calendar(self):
+        # Never schedule NOTHING — an empty/garbage list means "not configured".
+        assert fw.weekly_post_slots(3, allowed_days=[]) == fw.weekly_post_slots(3)
+        assert fw.weekly_post_slots(3, allowed_days=["mon"]) == fw.weekly_post_slots(3)
+
     def test_day_type_lookups(self):
         assert fw.day_type_for_weekday(2)["key"] == "story"
         assert fw.day_type_for_weekday(9) is None

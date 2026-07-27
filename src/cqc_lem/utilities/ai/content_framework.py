@@ -507,17 +507,28 @@ POST_DAY_TYPES: dict = {
 POST_DAY_TYPE_MAX_SLOTS = len(POST_DAY_TYPES)
 
 
-def weekly_post_slots(posts_per_week: int) -> list:
+def weekly_post_slots(posts_per_week: int, allowed_days: Optional[list] = None) -> list:
     """The weekdays (Mon=0 … Sun=6) a user posting `posts_per_week` times publishes on, in weekday
     order. Slots fill by the calendar's `priority`, so raising the cadence ADDS days without moving
-    the ones already in use — a user who goes 3→4/week keeps Tue/Wed/Thu and gains Monday."""
+    the ones already in use — a user who goes 3→4/week keeps Tue/Wed/Thu and gains Monday.
+
+    `allowed_days` (issue #581) narrows the candidates to the user's configured `posting_days`:
+    cadence still says HOW MANY, the allow-list says WHICH ARE ELIGIBLE. A cadence higher than the
+    allow-list can hold is capped by it — you cannot publish on a day you have switched off — and an
+    empty/unusable allow-list means "not configured", which falls back to the full calendar rather
+    than scheduling nothing.
+    """
     try:
         count = int(posts_per_week)
     except (TypeError, ValueError):
         count = 0
-    count = max(1, min(POST_DAY_TYPE_MAX_SLOTS, count))
-    by_priority = sorted(POST_DAY_TYPES, key=lambda wd: POST_DAY_TYPES[wd]["priority"])
-    return sorted(by_priority[:count])
+    candidates = sorted(POST_DAY_TYPES, key=lambda wd: POST_DAY_TYPES[wd]["priority"])
+    if allowed_days is not None:
+        narrowed = [wd for wd in candidates if wd in set(allowed_days)]
+        if narrowed:
+            candidates = narrowed
+    count = max(1, min(POST_DAY_TYPE_MAX_SLOTS, len(candidates), count))
+    return sorted(candidates[:count])
 
 
 def day_type_for_weekday(weekday: int) -> Optional[dict]:

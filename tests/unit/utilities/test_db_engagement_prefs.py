@@ -115,7 +115,7 @@ class TestPartialUpdateKeepsTheRest:
         "feed_fallback_when_empty": 0, "link_in_first_comment": 0,
         "max_catchup_touches_per_day": 4, "catchup_touch_mode": "auto_approve",
         "catchup_event_types": '["promotion"]', "catchup_message_source": "ai",
-        "posts_per_week": 5,
+        "posts_per_week": 5, "posting_days": '[0, 2, 4, 6]',
     }
     # Round-tripped through the upsert, every column persists back exactly as it was stored.
     _EXPECTED = dict(_STORED)
@@ -296,6 +296,63 @@ class TestPostsPerWeekPref:
                 from cqc_lem.utilities.db import update_engagement_preferences
                 update_engagement_preferences(3, {"posts_per_week": given})
             assert self._saved(cursor)["posts_per_week"] == expected
+
+
+class TestPostingDays:
+    """The publishing day allow-list (issue #581) — Mon-Fri by default, weekends opt-in, and never
+    an empty set that would schedule nothing."""
+
+    def _saved(self, cursor):
+        cols = list(__import__("cqc_lem.utilities.db", fromlist=["_ENGAGEMENT_COLS"])._ENGAGEMENT_COLS)
+        return dict(zip(cols, cursor.execute.call_args[0][1][1:]))
+
+    def test_default_is_monday_to_friday(self):
+        conn, _ = _mock_conn(fetch_row=None)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_engagement_preferences, DEFAULT_POSTING_DAYS
+            assert get_engagement_preferences(1)["posting_days"] == DEFAULT_POSTING_DAYS == [0, 1, 2, 3, 4]
+
+    def test_null_column_reads_as_monday_to_friday(self):
+        conn, _ = _mock_conn(fetch_row={"posting_days": None})
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_engagement_preferences
+            assert get_engagement_preferences(1)["posting_days"] == [0, 1, 2, 3, 4]
+
+    def test_saved_row_decodes_its_own_days(self):
+        conn, _ = _mock_conn(fetch_row={"posting_days": "[5, 6]"})
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_engagement_preferences
+            assert get_engagement_preferences(1)["posting_days"] == [5, 6]
+
+    def test_all_seven_days_stay_selectable(self):
+        conn, cursor = _mock_conn(rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_engagement_preferences
+            update_engagement_preferences(3, {"posting_days": [6, 5, 4, 3, 2, 1, 0]})
+        assert self._saved(cursor)["posting_days"] == "[0, 1, 2, 3, 4, 5, 6]"
+
+    def test_bad_values_fall_back_to_the_default_instead_of_rolling_back(self):
+        # The whole prefs row upserts at once (the V52 lesson), so nothing unusable may reach MySQL.
+        for given in ([], None, "nonsense", [9, -1], ["mon", "tue"], {}):
+            conn, cursor = _mock_conn(rowcount=1)
+            with patch(f"{_DB}.get_db_connection", return_value=conn):
+                from cqc_lem.utilities.db import update_engagement_preferences
+                update_engagement_preferences(3, {"posting_days": given})
+            assert self._saved(cursor)["posting_days"] == "[0, 1, 2, 3, 4]", given
+
+    def test_duplicates_and_order_are_normalised(self):
+        conn, cursor = _mock_conn(rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_engagement_preferences
+            update_engagement_preferences(3, {"posting_days": [4, 0, 4, "2"]})
+        assert self._saved(cursor)["posting_days"] == "[0, 2, 4]"
+
+    def test_partial_valid_input_keeps_only_the_valid_days(self):
+        conn, cursor = _mock_conn(rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_engagement_preferences
+            update_engagement_preferences(3, {"posting_days": [1, 42, "x"]})
+        assert self._saved(cursor)["posting_days"] == "[1]"
 
 
 class TestReplyInboundToken:
