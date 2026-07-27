@@ -1,5 +1,6 @@
 """Progress + completion-notification wiring for auto_create_weekly_content (issue #545)."""
 
+from datetime import datetime
 from unittest.mock import patch
 
 import pytest
@@ -20,6 +21,8 @@ def _generation_patches(planned, create_content_result=("Post text", None), **ov
         "release_run_lock": {},
         "count_ready_posts_within_buffer": {"return_value": 0},
         "get_planned_posts_within_buffer": {"return_value": planned},
+        "get_next_planned_posts_after_buffer": {"return_value": []},
+        "get_next_planned_post_date": {"return_value": None},
         "create_content": {"return_value": create_content_result},
         "update_db_post_content": {},
         "update_db_post_status": {},
@@ -55,11 +58,12 @@ def progress():
     """Patch the progress store + notifier where run_content_plan imported them."""
     with patch(f"{_RCP}.mark_in_progress") as in_progress, \
          patch(f"{_RCP}.mark_finished") as finished, \
+         patch(f"{_RCP}.mark_empty") as empty, \
          patch(f"{_RCP}.record_post_generated") as generated, \
          patch(f"{_RCP}.record_post_failed") as failed, \
          patch(f"{_RCP}.notify_content_generation_ready") as notify:
-        yield {"in_progress": in_progress, "finished": finished, "generated": generated,
-               "failed": failed, "notify": notify}
+        yield {"in_progress": in_progress, "finished": finished, "empty": empty,
+               "generated": generated, "failed": failed, "notify": notify}
 
 
 class TestProgressTracking:
@@ -118,8 +122,8 @@ class TestProgressTracking:
         with _Patched(_generation_patches([])):
             auto_create_weekly_content(user_id=1)
 
-        progress["in_progress"].assert_called_once_with(1, [])
-        progress["finished"].assert_called_once_with(1)
+        progress["empty"].assert_called_once()
+        progress["in_progress"].assert_not_called()
         progress["notify"].assert_not_called()
 
     def test_full_buffer_closes_out_the_queued_run(self, progress):
@@ -130,8 +134,8 @@ class TestProgressTracking:
         with _Patched(patches):
             auto_create_weekly_content(user_id=1)
 
-        progress["in_progress"].assert_called_once_with(1, [])
-        progress["finished"].assert_called_once_with(1)
+        progress["empty"].assert_called_once()
+        progress["in_progress"].assert_not_called()
         progress["generated"].assert_not_called()
 
     def test_lock_loser_closes_out_the_queued_run(self, progress):
@@ -141,8 +145,8 @@ class TestProgressTracking:
         with _Patched(patches):
             auto_create_weekly_content(user_id=1)
 
-        progress["in_progress"].assert_called_once_with(1, [])
-        progress["finished"].assert_called_once_with(1)
+        progress["empty"].assert_called_once()
+        progress["in_progress"].assert_not_called()
         progress["generated"].assert_not_called()
 
     def test_persist_failure_counts_as_failed_and_run_continues(self, progress):
@@ -181,3 +185,109 @@ class TestProgressTracking:
 
         progress["in_progress"].assert_not_called()
         progress["finished"].assert_not_called()
+        progress["empty"].assert_not_called()
+
+
+class TestEmptyRunReason:
+    """'0 posts are ready to review' with no reason reads as a broken button (issue #719)."""
+
+    def _reason(self, progress):
+        call = progress["empty"].call_args
+        return call.args[1], call.kwargs
+
+    def test_lock_loser_reports_already_running(self, progress):
+        from cqc_lem.app.run_content_plan import auto_create_weekly_content
+        from cqc_lem.utilities.content_generation_status import ContentGenerationEmptyReason
+        patches = _generation_patches([_planned(1, 11)],
+                                      **{"acquire_run_lock": {"return_value": None}})
+        with _Patched(patches):
+            auto_create_weekly_content(user_id=1)
+
+        reason, _ = self._reason(progress)
+        assert reason == ContentGenerationEmptyReason.ALREADY_RUNNING
+
+    def test_full_buffer_reports_the_counts(self, progress):
+        from cqc_lem.app.run_content_plan import auto_create_weekly_content
+        from cqc_lem.utilities.content_generation_status import ContentGenerationEmptyReason
+        patches = _generation_patches(
+            [_planned(1, 11)],
+            **{"count_ready_posts_within_buffer": {"return_value": 5},
+               "get_user_preferences": {"return_value": {"content_buffer_days": 5,
+                                                         "content_buffer_max_posts": 5}}})
+        with _Patched(patches):
+            auto_create_weekly_content(user_id=1)
+
+        reason, kwargs = self._reason(progress)
+        assert reason == ContentGenerationEmptyReason.BUFFER_FULL
+        assert kwargs["ready_count"] == 5 and kwargs["buffer_max"] == 5
+        assert kwargs["buffer_days"] == 5
+
+    def test_nothing_planned_reports_the_next_slot_date(self, progress):
+        from cqc_lem.app.run_content_plan import auto_create_weekly_content
+        from cqc_lem.utilities.content_generation_status import ContentGenerationEmptyReason
+        next_at = datetime(2026, 8, 3, 13, 30)
+        with _Patched(_generation_patches(
+                [], **{"get_next_planned_post_date": {"return_value": next_at}})):
+            auto_create_weekly_content(user_id=1)
+
+        reason, kwargs = self._reason(progress)
+        assert reason == ContentGenerationEmptyReason.NO_PLANNED_SLOTS
+        assert kwargs["next_planned_at"] == next_at
+
+    def test_unreadable_next_slot_date_still_closes_the_run(self, progress):
+        """The explanation is best-effort — a DB hiccup must not strand the SPA on 'queued'."""
+        from cqc_lem.app.run_content_plan import auto_create_weekly_content
+        with _Patched(_generation_patches(
+                [], **{"get_next_planned_post_date": {"side_effect": RuntimeError("db gone")}})):
+            auto_create_weekly_content(user_id=1)
+
+        _, kwargs = self._reason(progress)
+        assert kwargs["next_planned_at"] is None
+
+
+class TestPullForward:
+    """An explicit click on an empty window pulls the next planned posts forward (issue #719)."""
+
+    def test_requested_run_generates_the_next_planned_posts(self, progress):
+        from cqc_lem.app.run_content_plan import auto_create_weekly_content
+        patches = _generation_patches(
+            [], **{"get_next_planned_posts_after_buffer": {"return_value": [_planned(1, 31)]}})
+        with _Patched(patches) as mocks:
+            auto_create_weekly_content(user_id=1)
+
+        progress["in_progress"].assert_called_once_with(1, [31])
+        progress["generated"].assert_called_once_with(1, 31)
+        progress["empty"].assert_not_called()
+        # Bounded by the same ceiling, counted across the whole planning horizon.
+        assert mocks["get_next_planned_posts_after_buffer"].call_args.args[2] == 5
+
+    def test_beat_run_never_pulls_forward(self, progress):
+        """Generating a week early on autopilot is spend nobody asked for."""
+        from cqc_lem.app.run_content_plan import auto_create_weekly_content
+        patches = _generation_patches(
+            [], **{"get_next_planned_posts_after_buffer": {"return_value": [_planned(1, 31)]}})
+        with _Patched(patches) as mocks, \
+                patch(f"{_RCP}.get_user_ids_with_planned_posts_within_buffer", return_value=[1]):
+            auto_create_weekly_content()
+
+        mocks["get_next_planned_posts_after_buffer"].assert_not_called()
+        progress["generated"].assert_not_called()
+
+    def test_repeated_clicks_cannot_walk_the_cap_down_the_calendar(self, progress):
+        """Everything ahead is already generated — report it instead of generating the month."""
+        from cqc_lem.app.run_content_plan import auto_create_weekly_content
+        from cqc_lem.utilities.content_generation_status import ContentGenerationEmptyReason
+        # 0 ready inside the 5-day window, 5 ready across the 30-day horizon.
+        ready_by_days = {5: 0, 30: 5}
+        patches = _generation_patches(
+            [],
+            **{"count_ready_posts_within_buffer": {
+                "side_effect": lambda uid, days: ready_by_days[days]},
+               "get_next_planned_posts_after_buffer": {"return_value": [_planned(1, 31)]}})
+        with _Patched(patches) as mocks:
+            auto_create_weekly_content(user_id=1)
+
+        mocks["get_next_planned_posts_after_buffer"].assert_not_called()
+        progress["generated"].assert_not_called()
+        assert progress["empty"].call_args.args[1] == ContentGenerationEmptyReason.BUFFER_FULL
+        assert progress["empty"].call_args.kwargs["ready_count"] == 5

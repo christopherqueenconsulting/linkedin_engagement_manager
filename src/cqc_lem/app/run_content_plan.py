@@ -24,6 +24,7 @@ from cqc_lem.utilities.db import get_post_type_counts, insert_planned_post, upda
     update_db_post_video_url, update_db_post_status, PostType, get_user_preferences, \
     update_db_post_carousel_slides, get_post_content, get_user_timezone, get_engagement_preferences
 from cqc_lem.utilities.db import count_ready_posts_within_buffer, get_planned_posts_within_buffer, \
+    get_next_planned_posts_after_buffer, get_next_planned_post_date, \
     get_user_ids_with_planned_posts_within_buffer, DEFAULT_CONTENT_BUFFER_DAYS, \
     DEFAULT_CONTENT_BUFFER_MAX_POSTS, MAX_CONTENT_BUFFER_DAYS, MAX_CONTENT_BUFFER_POSTS, \
     DEFAULT_POSTS_PER_WEEK, POSTS_PER_WEEK_MIN, POSTS_PER_WEEK_MAX, \
@@ -51,7 +52,7 @@ from cqc_lem.utilities.ai import story_bank as _story_bank
 from cqc_lem.utilities.ai.slop_lint import (lint_report as slop_lint_report,
                                             slop_retry_directive, violation_reasons)
 from cqc_lem.utilities.content_generation_status import mark_in_progress, mark_finished, \
-    record_post_generated, record_post_failed
+    record_post_generated, record_post_failed, mark_empty, ContentGenerationEmptyReason
 from cqc_lem.utilities.notifications import notify_content_generation_ready
 from cqc_lem.utilities.env_constants import API_URL_FINAL, DEFAULT_VIDEO_RATIO, \
     DEFAULT_IMAGE_RATIO, AI_DISCLOSURE_ENABLED, AI_DISCLOSURE_TEXT, \
@@ -2063,18 +2064,51 @@ def auto_create_weekly_content(user_id: int = None):
         _top_up_buffer_for_user(uid, requested=user_id is not None)
 
 
-def _close_out_empty_run(user_id: int, requested: bool) -> None:
-    """Finish a requested run that generated nothing (issue #545).
+def _next_planned_at(user_id: int) -> Optional[datetime]:
+    """When the user's next planning slot is due — best effort, never fails the run (issue #719)."""
+    try:
+        return get_next_planned_post_date(user_id)
+    except Exception as e:
+        log_warning(f"Could not read the next planned post date for user {user_id}", exc=e,
+                    user_id=user_id, task_name="auto_create_weekly_content")
+        return None
+
+
+def _close_out_empty_run(user_id: int, requested: bool,
+                         reason: ContentGenerationEmptyReason,
+                         buffer_days: Optional[int] = None,
+                         ready_count: Optional[int] = None,
+                         buffer_max: Optional[int] = None) -> None:
+    """Finish a requested run that generated nothing, saying WHY (issues #545, #719).
 
     `/create_weekly_content/` publishes 'queued' at dispatch, so a top-up that returns early
     (lock lost, buffer already full, nothing planned) must still close the record out or the SPA
     polls a queued run that never reports anything. The beat run publishes nothing up front, so
-    it has nothing to close.
+    it has nothing to close. The reason rides along because "0 posts are ready to review" on its
+    own reads as a broken button rather than as an answer.
     """
     if not requested:
         return
-    mark_in_progress(user_id, [])
-    mark_finished(user_id)
+    mark_empty(user_id, reason, next_planned_at=_next_planned_at(user_id),
+               buffer_days=buffer_days, ready_count=ready_count, buffer_max=buffer_max)
+
+
+def _pull_forward_planned_posts(user_id: int, buffer_days: int,
+                                buffer_max: int) -> Tuple[list[dict], int]:
+    """The next planned posts BEYOND the buffer window, plus how many are already ready ahead.
+
+    An explicit Generate click on a user whose near-term slots were all consumed (posted, or
+    rejected — rejected slots are never re-planned) used to no-op forever, because the plan only
+    ever appends after the last planning row and the top-up only looks `buffer_days` ahead
+    (issue #719). Pulling the next slots forward is bounded by the SAME ceiling, counted across
+    the whole planning horizon rather than the buffer window — otherwise repeated clicks would
+    walk the buffer cap down the calendar and generate the entire month.
+    """
+    ready_ahead = count_ready_posts_within_buffer(user_id, MAX_CONTENT_BUFFER_DAYS)
+    limit = buffer_max - ready_ahead
+    if limit <= 0:
+        return [], ready_ahead
+    return get_next_planned_posts_after_buffer(user_id, buffer_days, limit) or [], ready_ahead
 
 
 def _top_up_buffer_for_user(user_id: int, requested: bool = False) -> None:
@@ -2090,7 +2124,7 @@ def _top_up_buffer_for_user(user_id: int, requested: bool = False) -> None:
     lock_token = acquire_run_lock(lock_name, ttl_seconds=_BUFFER_LOCK_TTL_SECONDS)
     if lock_token is None:
         myprint(f"user_id {user_id}: another buffer top-up is in progress — skipping this cycle.")
-        _close_out_empty_run(user_id, requested)
+        _close_out_empty_run(user_id, requested, ContentGenerationEmptyReason.ALREADY_RUNNING)
         return
 
     try:
@@ -2100,14 +2134,33 @@ def _top_up_buffer_for_user(user_id: int, requested: bool = False) -> None:
         if already_ready >= buffer_max:
             myprint(f"user_id {user_id}: buffer already full ({already_ready}/{buffer_max} ready "
                     f"within {buffer_days} days). Skipping content creation.")
-            _close_out_empty_run(user_id, requested)
+            _close_out_empty_run(user_id, requested, ContentGenerationEmptyReason.BUFFER_FULL,
+                                 buffer_days=buffer_days, ready_count=already_ready,
+                                 buffer_max=buffer_max)
             return
 
         planned_posts = get_planned_posts_within_buffer(user_id, buffer_days, buffer_max, already_ready)
+        if not planned_posts and requested:
+            # A user who clicked Generate asked for something to happen — so look past the window
+            # rather than no-opping on an empty one (issue #719). The beat keeps its narrow window:
+            # generating a week early on autopilot is spend nobody asked for.
+            planned_posts, ready_ahead = _pull_forward_planned_posts(user_id, buffer_days, buffer_max)
+            if planned_posts:
+                log_info(f"user_id {user_id}: no planned posts within {buffer_days} days — pulling "
+                         f"{len(planned_posts)} upcoming post(s) forward on explicit request",
+                         user_id=user_id, task_name="auto_create_weekly_content")
+            elif ready_ahead >= buffer_max:
+                myprint(f"user_id {user_id}: {ready_ahead} post(s) already generated ahead "
+                        f"(cap {buffer_max}). Skipping content creation.")
+                _close_out_empty_run(user_id, requested, ContentGenerationEmptyReason.BUFFER_FULL,
+                                     buffer_days=buffer_days, ready_count=ready_ahead,
+                                     buffer_max=buffer_max)
+                return
         if not planned_posts:
             myprint(f"user_id {user_id}: no planned posts within {buffer_days} days. "
                     f"Skipping content creation.")
-            _close_out_empty_run(user_id, requested)
+            _close_out_empty_run(user_id, requested, ContentGenerationEmptyReason.NO_PLANNED_SLOTS,
+                                 buffer_days=buffer_days)
             return
 
         myprint(f"user_id {user_id}: generating {len(planned_posts)} post(s) to top buffer up to "

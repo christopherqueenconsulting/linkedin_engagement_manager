@@ -47,6 +47,18 @@ class ContentGenerationState(StrEnum):
     FAILED = 'failed'            # finished with nothing generated
 
 
+class ContentGenerationEmptyReason(StrEnum):
+    """Why a run legitimately generated nothing (issue #719).
+
+    'done, 0 posts' is an ANSWER, not a failure — but rendered without the reason the SPA said
+    only "0 posts are ready to review", which reads as broken. Each value maps to one sentence
+    the user can act on, so the reason travels with the status instead of living in worker logs.
+    """
+    BUFFER_FULL = 'buffer_full'              # enough ready posts already sit in the window
+    NO_PLANNED_SLOTS = 'no_planned_slots'    # nothing left planned to generate from
+    ALREADY_RUNNING = 'already_running'      # another top-up holds the single-flight lock
+
+
 def _ttl_seconds() -> int:
     try:
         return int(os.getenv("CONTENT_GENERATION_STATUS_TTL_SECONDS", str(_DEFAULT_TTL_SECONDS)))
@@ -92,6 +104,19 @@ def _key(user_id: int) -> str:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _utc_iso(dt: Optional[datetime]) -> Optional[str]:
+    """Serialize a scheduling instant with an EXPLICIT UTC offset (docs/timezone-contract.md).
+
+    Scheduling rows are stored naive-UTC; emitting them naive would let the SPA read them as the
+    viewer's local time and render the wrong "next planned post" date.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
 
 
 def _read(client: RedisLike, user_id: int) -> Optional[dict]:
@@ -199,6 +224,45 @@ def mark_finished(user_id: int) -> Optional[dict]:
     status["state"] = str(ContentGenerationState.FAILED if failed and not completed
                           else ContentGenerationState.DONE)
     status["finished_at"] = _now()
+    _write(client, user_id, status, ttl=_result_ttl_seconds())
+    return status
+
+
+def mark_empty(user_id: int,
+               reason: "ContentGenerationEmptyReason | str",
+               next_planned_at: Optional[datetime] = None,
+               buffer_days: Optional[int] = None,
+               ready_count: Optional[int] = None,
+               buffer_max: Optional[int] = None) -> Optional[dict]:
+    """Close out a run that generated nothing, WITH the reason it did (issue #719).
+
+    Replaces the `mark_in_progress(user_id, []) + mark_finished(user_id)` pair for the early-exit
+    paths: same terminal DONE/0 record the SPA already understands, plus `reason` and the numbers
+    behind it so the banner can say "your next planned post is Aug 3" instead of "0 posts".
+    """
+    client = _redis_client()
+    if client is None:
+        return None
+    existing = _read(client, user_id) or {}
+    detail = {
+        "next_planned_at": _utc_iso(next_planned_at),
+        "buffer_days": int(buffer_days) if buffer_days is not None else None,
+        "ready_count": int(ready_count) if ready_count is not None else None,
+        "buffer_max": int(buffer_max) if buffer_max is not None else None,
+    }
+    status = {
+        "state": str(ContentGenerationState.DONE),
+        "total": 0,
+        "completed": 0,
+        "failed": 0,
+        "post_ids": [],
+        "ready_post_ids": [],
+        "failed_post_ids": [],
+        "started_at": existing.get("started_at") or _now(),
+        "finished_at": _now(),
+        "reason": str(reason),
+        "reason_detail": {k: v for k, v in detail.items() if v is not None},
+    }
     _write(client, user_id, status, ttl=_result_ttl_seconds())
     return status
 
