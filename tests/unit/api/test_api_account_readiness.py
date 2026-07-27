@@ -29,9 +29,10 @@ def client():
             p.stop()
 
 
-def _patches(*, oauth, session, password, sub_status, lat):
+def _patches(*, oauth, session, password, sub_status, lat, display_name="Jordan Alvarez"):
     return [
         patch(f"{_M}.get_session_user_id", return_value=42),
+        patch(f"{_M}.get_user_linkedin_display_name", return_value=display_name),
         patch(f"{_M}.get_user_token_info",
               return_value={"access_token": "tok"} if oauth else None),
         patch(f"{_M}.has_linkedin_session", return_value=session),
@@ -90,6 +91,20 @@ class TestAccountReadiness:
         assert d["ready"] is True
         loc = next(i for i in d["items"] if i["key"] == "location")
         assert loc["required"] is False and loc["ok"] is False
+
+    def test_display_name_is_required(self, client):
+        # Issue #731: without it every DM reply check is UNKNOWN and follow-ups stop silently.
+        resp = _run(client, oauth=True, session=True, password=False, sub_status="active", lat=1.0,
+                    display_name=None)
+        d = resp.json()["detail"]
+        assert d["ready"] is False
+        item = next(i for i in d["items"] if i["key"] == "linkedin_display_name")
+        assert item["ok"] is False and item["required"] is True
+
+    def test_display_name_present_clears_the_item(self, client):
+        resp = _run(client, oauth=True, session=True, password=False, sub_status="active", lat=1.0)
+        item = next(i for i in resp.json()["detail"]["items"] if i["key"] == "linkedin_display_name")
+        assert item["ok"] is True
 
     def test_401_invalid_session(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=None):

@@ -2609,6 +2609,45 @@ def get_recent_logs(user_id: int, limit: int = 20) -> list:
     return rows
 
 
+def get_user_linkedin_display_name(user_id: int) -> Optional[str]:
+    """The user's own name exactly as LinkedIn renders it on their messages (issue #731), or None.
+
+    This is what reply detection compares the last sender against, so it is stored per user rather
+    than re-derived from a scrape that may be stale or unavailable."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT linkedin_display_name FROM users WHERE id = %s", (user_id,))
+        row = cursor.fetchone()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get LinkedIn display name for user {user_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+    name = (row[0] if row else None) or ""
+    return name.strip() or None
+
+
+def update_user_linkedin_display_name(user_id: int, display_name: Optional[str]) -> bool:
+    """Set (or clear, when None/empty) the user's LinkedIn display name."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE users SET linkedin_display_name = %s WHERE id = %s",
+            ((display_name or "").strip() or None, user_id),
+        )
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not update LinkedIn display name for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def update_user_linkedin_password(user_id: int, password: str) -> bool:
     """Store the user's LinkedIn login password for Selenium-driven automation.
 

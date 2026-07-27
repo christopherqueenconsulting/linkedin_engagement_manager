@@ -5,6 +5,8 @@ responder (DM + reply channels). Selenium DOM targeting itself is validated on a
 import pytest
 from unittest.mock import MagicMock, patch
 
+from cqc_lem.utilities.linkedin.message_thread import ThreadState
+
 pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"
@@ -142,9 +144,10 @@ class TestLastInboundMessage:
         assert _fn("_last_inbound_message")(driver) == ""
 
     def test_script_error_is_non_fatal(self):
+        # The read now lives in the shared #731 thread module, so that is where the warning comes from.
         driver = MagicMock()
         driver.execute_script.side_effect = RuntimeError("stale")
-        with patch(f"{_RA}.log_warning") as warn:
+        with patch("cqc_lem.utilities.linkedin.message_thread.log_warning") as warn:
             assert _fn("_last_inbound_message")(driver) == ""
         warn.assert_called_once()
 
@@ -294,7 +297,7 @@ class TestReadPathWiring:
              patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
              patch(f"{_RA}.get_engagement_preferences", return_value={}), \
              patch(f"{_RA}.get_or_create_profile_synthesis", return_value="synth"), \
-             patch(f"{_RA}.check_dm_replied", return_value=True), \
+             patch(f"{_RA}.check_dm_replied", return_value=ThreadState.REPLIED), \
              patch(f"{_RA}._last_inbound_message", return_value="How much for the full program?"), \
              patch(f"{_RA}._flag_lead_signal", return_value=5) as flag, \
              patch(f"{_RA}.stop_followups_for_profile"), \
