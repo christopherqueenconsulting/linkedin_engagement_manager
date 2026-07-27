@@ -10,9 +10,21 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 TAG="${1:?Usage: deploy.sh <image-tag>}"
-COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
 LAST_GOOD_FILE="${ROOT_DIR}/.last_good_tag"
 ENV_FILE="${ROOT_DIR}/.env"
+
+# Selenium topology. The Grid overlay (hub + N single-session nodes) became the deployed default at
+# the 2026-07-27 cutover; without composing it in here, EVERY deploy would silently revert the box
+# to the single standalone container — the stack would come up healthy and simply have the old
+# topology, which is exactly the kind of drift that is invisible until capacity matters.
+# Set SELENIUM_TOPOLOGY=standalone (env, or in the box's .env) to fall back; the overlay parks the
+# standalone behind a compose profile rather than deleting it, so the fallback stays one flag.
+SELENIUM_TOPOLOGY="${SELENIUM_TOPOLOGY:-$(grep -E '^SELENIUM_TOPOLOGY=' "${ENV_FILE}" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'")}"
+SELENIUM_TOPOLOGY="${SELENIUM_TOPOLOGY:-grid}"
+COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
+if [[ "${SELENIUM_TOPOLOGY}" == "grid" ]]; then
+  COMPOSE="${COMPOSE} -f docker-compose.grid.yml"
+fi
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-180}"
 # Maintenance window (issue #549): how long dispatch stays paused (TTL — it self-clears if this
 # script dies) and how long we wait for in-flight tasks to finish before recreating the workers.
@@ -97,6 +109,17 @@ if [[ -n "${GHCR_PAT:-}" && -n "${GHCR_USER:-}" ]]; then
 fi
 
 export IMAGE_TAG="${TAG}"
+
+# 3b. Topology transition guard. A compose PROFILE stops a service from being STARTED; it does not
+# stop one that is already running. So on the first grid deploy of a box still running the
+# standalone, `selenium-chrome` keeps holding 127.0.0.1:4444 and the hub fails to bind — and the
+# half-created hub is left RUNNING WITH NO NETWORK ATTACHED, which presents as "hub unhealthy,
+# 0 nodes registered" (nodes cannot resolve `selenium-hub`) rather than as a port error. Evict the
+# standalone first so the transition is clean. Live-verified during the 2026-07-27 cutover.
+if [[ "${SELENIUM_TOPOLOGY}" == "grid" ]] && docker ps --format '{{.Names}}' | grep -qx "selenium-chrome"; then
+  log "Grid topology: evicting the running standalone selenium-chrome so the hub can bind 4444"
+  docker rm -f selenium-chrome >/dev/null 2>&1 || log "WARN: could not remove selenium-chrome (continuing)"
+fi
 
 # 4. Pull the exact app image tag (+ any updated third-party images).
 log "Pulling images for IMAGE_TAG=${TAG}"

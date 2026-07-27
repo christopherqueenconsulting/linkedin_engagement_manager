@@ -35,6 +35,21 @@ design, and the change of capacity is a separate, deliberate decision.
 
 ## 2. Running it
 
+> **Status: the Grid is the DEPLOYED topology as of 2026-07-27.** `scripts/deploy.sh` composes
+> `docker-compose.grid.yml` in on every deploy (`SELENIUM_TOPOLOGY`, default `grid`); set
+> `SELENIUM_TOPOLOGY=standalone` in `/opt/lem/.env` to fall back. Before this, the overlay existed
+> but no deploy used it — a manual `up` with the overlay was reverted by the very next release.
+>
+> **Two cutover failure modes worth knowing (both hit live on 2026-07-27):**
+> 1. A compose *profile* stops a service from being **started**, not from **running**. The standalone
+>    kept holding `127.0.0.1:4444`, so the hub could not bind. `deploy.sh` now evicts a running
+>    `selenium-chrome` before bringing the grid up.
+> 2. When that bind fails, Docker leaves the hub container **running with no network attached**. It
+>    presents as *"hub unhealthy, 0 nodes"* and the node logs say
+>    `UnknownHostException: selenium-hub` — not as a port error. The fix is `docker rm -f
+>    selenium-hub` and recreate; check `docker inspect selenium-hub --format '{{.NetworkSettings.Networks}}'`
+>    if nodes ever fail to register.
+
 ### Primary box (hub + local nodes)
 
 ```sh
