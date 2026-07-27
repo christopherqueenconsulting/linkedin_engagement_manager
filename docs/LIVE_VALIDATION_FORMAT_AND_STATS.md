@@ -12,7 +12,7 @@
 |---|---|---|
 | Document post publish path — **API or UI**? | **API.** Versioned `/rest/documents` → `/rest/posts`. No Selenium composer is used, or needed. | **Documented + shipped** (R3 #406 against `li-lms-2026-07`; `poster.py`) |
 | Current **SDUI anchors for document upload** | **None exist in LEM and none are invented here** — the UI path is not on the publish route. Capturable on demand via `--probe-composer`. | **Deliberately unmapped** |
-| Does a published document render as a **document card**? | Unconfirmed — needs one live post. | **OPEN** (C1's own acceptance) |
+| Does a published document render as a **document card**? | **CONFIRMED 2026-07-27** — verdict `document`; carousel control `image`. | **CLOSED** (#644) |
 | Are **saves** scrapeable? | **Yes**, own posts only, on `/analytics/post-summary/<activity-urn>/`. | **Live grab 2026-07-23** (encoded in `_stacked_counts`) |
 | Are **impressions** scrapeable? | **Yes**, same page (Discovery hero, value-first layout). Blank on the post detail view. | **Live grab 2026-07-23** |
 | Can an **API** replace that scrape? | **The endpoint exists** (`memberCreatorPostAnalytics`, impressions + saves + more) — but it needs `r_member_postAnalytics`, which **LEM's token does not request**. Scrape stays. | **Documented** (`li-lms-2026-07`) + **in-repo verified** (§2a) |
@@ -215,11 +215,14 @@ it can compare the API against the scrape's own stored row.
 
 ## 5. Scope updates
 
-**C1 (#390) — native document posts:** implementation complete (publish path, `PostType.DOCUMENT`,
-balancer, migration). Remaining: publish one document post on the live account and run check 1 to
-confirm it renders as a document card — tracked as **#644** (`risk:live-linkedin`, `priority:high`),
-so R1 (#404) closes with this note. No code change is expected; if the verdict comes back `image`,
-the legacy fallback silently took over and the finding is an API-provisioning bug, not a format bug.
+**C1 (#390) — native document posts: CONFIRMED LIVE 2026-07-27 (#644).** A LEM-generated deck was
+published through the versioned `/rest/documents` → `/rest/posts` path on the live account and
+check 1 returned **`verdict: "document"`**, with the document pager anchors present
+(`aria="Go to previous/next page of document"`). The same probe returned **`"image"`** for an
+existing carousel control, so the check discriminates correctly. The legacy image fallback did NOT
+take over: the app is correctly provisioned for document upload and `LI_API_VERSION=202606` is
+current. No provisioning bug; no code change was needed. (The test post was removed from the feed
+after probing — deck CONTENT quality is tracked separately in #728.)
 
 **B2 (#387) — reposts/impressions/saves:** implementation complete and consistent with the live
 layout as of 2026-07-23. Remaining: none from this spike. Split out as **#645**, which is now
