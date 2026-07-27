@@ -50,6 +50,15 @@ describe('prefs_saved instrumentation (issue #646)', () => {
     expect(capture).toHaveBeenCalledWith('prefs_saved', { section: 'volume', ok: false })
   })
 
+  // Rendered outside a Layout there is no dock to portal into, so the bar must still place itself
+  // — otherwise a standalone settings card would lose its Save All entirely (issue #596).
+  it('falls back to its own fixed corner when no floating dock exists', () => {
+    const { container } = harness([{ id: 'voice', save: () => Promise.resolve(true) }])
+    const bar = screen.getByRole('button', { name: /Save All/ }).parentElement as HTMLElement
+    expect(container.contains(bar)).toBe(true)
+    expect(bar.className).toContain('fixed')
+  })
+
   // A card's own Save button never goes through saveAll, so it has to report the same event or
   // prefs_saved silently counts only the Save All users.
   it('reports the same event from a card own save button', () => {

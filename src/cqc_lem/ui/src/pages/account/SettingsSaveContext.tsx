@@ -2,6 +2,8 @@ import {
   createContext, useCallback, useContext, useEffect, useMemo, useRef, useState,
   type ReactNode,
 } from 'react'
+import { createPortal } from 'react-dom'
+import { FLOATING_DOCK_ID } from '../../components/FloatingDock'
 import { EVENTS, capture } from '../../utils/analytics'
 
 // One shared registry so every settings section exposes the SAME save it already uses (single
@@ -137,15 +139,22 @@ export function useUnsavedChangesGuard(enabled: boolean) {
   }, [enabled])
 }
 
-// Fixed bottom-right Save All control + per-section result summary. Also wires the unsaved guard.
+// Bottom-right Save All control + per-section result summary. Also wires the unsaved guard.
+// It rides in Layout's FloatingDock rather than pinning itself to the same corner as the feedback
+// widget, which used to render later in the DOM at the same z-index and bury it (issue #596).
 export function SaveAllBar() {
   const ctx = useSettingsSave()
+  // Layout commits the dock after this subtree renders, so it can only be read post-commit — the
+  // one extra render is the cost. Falls back to self-positioning when used outside a Layout.
+  const [dock, setDock] = useState<HTMLElement | null>(null)
   useUnsavedChangesGuard((ctx?.dirtyIds.length ?? 0) > 0)
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => setDock(document.getElementById(FLOATING_DOCK_ID)), [])
   if (!ctx) return null
   const { dirtyIds, savingAll, summary, saveAll } = ctx
   if (dirtyIds.length === 0 && !summary && !savingAll) return null
-  return (
-    <div className="fixed bottom-4 right-4 z-40 max-w-xs">
+  const bar = (
+    <div className={dock ? 'max-w-xs' : 'fixed bottom-4 right-4 z-40 max-w-xs'}>
       {summary && (
         <div className="mb-2 bg-white rounded-lg shadow-lg border border-gray-200 p-3 space-y-1">
           {summary.map((r, i) => (
@@ -169,4 +178,5 @@ export function SaveAllBar() {
       )}
     </div>
   )
+  return dock ? createPortal(bar, dock) : bar
 }
