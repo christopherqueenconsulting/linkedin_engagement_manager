@@ -1,5 +1,69 @@
 # Changelog
 
+## [0.101.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.100.0...v0.101.0) (2026-07-27)
+
+
+### Features
+
+* **analytics:** PostHog Endpoints stats panel + deploy-time release annotations (closes [#654](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/654)) ([912d037](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/912d0379509c6a188cce4328257aec86b989c303))
+* **analytics:** PostHog Endpoints stats panel + deploy-time release annotations (closes [#654](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/654)) ([14fd010](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/14fd0100b2eff08bd6a711f9b659a9b7f02bc042))
+* **analytics:** probe the member post-stats API as a scrape replacement (closes [#645](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/645)) ([c19a695](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c19a695cb09e4c508f31680166755d004a8521eb))
+* **analytics:** probe the member post-stats API as a scrape replacement (closes [#645](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/645)) ([4e6bc48](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4e6bc4889b1c448a8db5f0c41e13a252b7623391))
+* **content:** configurable posting days, default Mon-Fri (closes [#581](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/581)) ([38348e4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/38348e41aff0c8c6d2fe5fa90a76c3b4d41099a8))
+* **content:** configurable posting days, default Mon-Fri (closes [#581](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/581)) ([7e96835](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7e968355e6469d3ed987367aee351d8b5e87ee70))
+* **engagement:** close the owned-asset CTA loop (closes [#624](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/624)) ([5537903](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5537903538840be0538454793b5124d2b684818a))
+* **flags:** runtime feature flags with local evaluation + SPA bootstrap (closes [#651](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/651)) ([80495fa](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/80495faba00b9674dc09850fb278800bed75b028))
+* **flags:** runtime feature flags with local evaluation + SPA bootstrap (closes [#651](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/651)) ([3778ed9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3778ed9baaee19cafc3adce2f295d29219a1f21a))
+* **marketing:** UTM discipline on every outbound link + channel dashboard (closes [#658](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/658)) ([5de646d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5de646dcbe9d32bc50a47e32d9a011cff8b866a8))
+* **marketing:** UTM discipline on every outbound link + conversion goals + channel dashboard (closes [#658](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/658)) ([3722662](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3722662d0735b187120d84091224a56e6500040d))
+* **observability:** nightly slop/ER quality telemetry + weekly regression alerts (closes [#630](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/630)) ([c5b431a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c5b431a62989e6a091d5975a98dc479fc1d12741))
+* **observability:** port cost-routing + content A/B experiments to PostHog Experiments (closes [#652](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/652)) ([cd90060](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/cd90060ef3a65ec84d6d25459966a2efa3c57c30))
+* **observability:** port cost-routing + content A/B experiments to PostHog Experiments (closes [#652](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/652)) ([450e728](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/450e72845b12be637a951d18b05f59d1327719f6))
+* **observability:** PostHog advanced-surface spike — CDP destination + evaluation doc (closes [#655](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/655)) ([d42d39e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d42d39e9f6f7e96f6ac355c3476dbd09b6a08b9c))
+* **observability:** PostHog advanced-surface spike — CDP destination, evaluation doc (closes [#655](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/655)) ([449a674](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/449a674b8ebddbdde99dda09d07a384c3936bf78))
+* **observability:** slop-score & engagement-rate telemetry with regression alerts (closes [#630](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/630)) ([01bb6b1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/01bb6b19e6d8e5a00b0b372201f1ee5c6c7d8c56))
+* **surveys:** NPS/CSAT via PostHog Surveys, wired into the feedback loop (closes [#653](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/653)) ([0837a10](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0837a10774ca6654ba4e0fdd2e6594fa5335ccaa))
+* **surveys:** NPS/CSAT via PostHog Surveys, wired into the feedback loop (closes [#653](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/653)) ([16de7c1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/16de7c16633d6f38d6da177de6a62ba3eb20b384))
+
+
+### Bug Fixes
+
+* **analytics:** tell a DAILY-aggregation 400 apart from a version gap in the stats probe ([65e69fb](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/65e69fb95619c22eed0ccbe540546425b620768e))
+* **automation:** close the remaining fail paths in the profile-viewer walk ([1df1f2d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1df1f2d33885fe594a092c1516d6acd7fc949075))
+* **automation:** fingerprint the lost-invite error so it reaches PostHog issues ([a53b429](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a53b4298dd84b12b0503db4aece1c3020688d926))
+* **automation:** make the connection-request note best-effort (closes [#573](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/573)) ([bd47a2b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bd47a2bfe5a9cd26bcf6b86a0a7f32e8fe5b05a0))
+* **automation:** make the connection-request note best-effort (closes [#573](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/573)) ([7381a39](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7381a391ab259e8260abbbad0bc130eb6f64e0c9))
+* **automation:** stop an empty profile-views page failing the viewer task (closes [#572](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/572)) ([dcee64d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/dcee64d6580e7eaaeabd213bee77d4e5e3af6b8c))
+* **automation:** stop an empty profile-views page failing the viewer task (closes [#572](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/572)) ([37f6c4b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/37f6c4bb506ad8cffcb3def1deec7f6923da977c))
+* **automation:** stop the missing-Connect-button error paging the cron (closes [#571](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/571)) ([bd3a32b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bd3a32bc6871029e58360b3007d734462c17a200))
+* **automation:** stop the missing-Connect-button error paging the cron (closes [#571](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/571)) ([2316512](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2316512a4dab97f82a67d57285ea51d710144590))
+* **ci:** don't let a checkout hiccup fail an already-successful deploy ([ca529b0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ca529b06dd398650422c6d102dd05dcb92dac509))
+* **experiments:** carry the routing cohort through a PostHog outage ([453a038](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/453a038adaf3f18832fed846cbb70f3e74a27f01))
+* **flags:** keep GET /api/flags outside the API bearer gate ([2f0dc0b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2f0dc0b6dddef28aa25d6665186abe94edbdbda8))
+* **infra:** use production's own stagger salt in the load-test model ([237f7e9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/237f7e925b58dccddaaf59e0bc7b6a49303cd1ab))
+* **marketing:** close three silent-failure seams in the [#658](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/658) UTM path ([1cd40bd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1cd40bd3e75eff559255faa88702fa6dec93901e))
+* **observability:** bill the quality pass's embeddings, make the ER floor reachable, stop mixing similarity scales ([b79962b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b79962b05dbed1365c8f7636fa93f0bde6977ad2))
+* **observability:** use `destination` not `internal_destination` for the 429-trip CDP function ([017ccb5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/017ccb53c258858aa1917fab10e15650458f6e58))
+* **surveys:** launch newly-created surveys, and never claim an unshown ask ([ef08880](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ef08880feaf661b36abe88cca50bff1b72c66c44))
+* **ui:** activity feed fills its card then inner-scrolls (closes [#583](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/583)) ([469d2a1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/469d2a141c1f45662083f34f4779d5ab286dccd3))
+* **ui:** Dashboard Activity Feed fills its card then inner-scrolls (closes [#583](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/583)) ([e08635f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e08635fc5fd76f9c657d6419c61ac687704e5f13))
+
+
+### Performance Improvements
+
+* **infra:** teach the load-test model the shipped golden-hour stagger, re-run (closes [#634](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/634)) ([cab88a2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/cab88a20147b8397fc62f3dfdfd692f60e48dbe6))
+* **infra:** teach the load-test model the shipped golden-hour stagger, re-run (closes [#634](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/634)) ([2b435a0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2b435a0aa97e5e3a7bbeaaed095ebe257136807f))
+
+
+### Documentation
+
+* `docs/surveys.md`, plus a CLAUDE.md section and `.env.example`. ([16de7c1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/16de7c16633d6f38d6da177de6a62ba3eb20b384))
+* **infra:** cost/feasibility spike — hosted grids vs self-managed VPS scaling (closes [#633](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/633)) ([e7c6c6b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e7c6c6b5b12b4b5dc4249038160e3181d8bddd12))
+* **infra:** cost/feasibility spike — hosted grids vs self-managed VPS scaling (closes [#633](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/633)) ([cb17474](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/cb1747451d5dedb9bb51afec1a0a0585a44d6d39))
+* **infra:** key the cost spike to [#634](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/634)'s measured stagger curve ([e8cdf14](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e8cdf146bfa737bc27999132a7f97df769a08297))
+* **infra:** recompute Fargate/EC2 pricing against the corrected 15/28-session curve ([a7db39d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a7db39d8b8cfb638d91b943a742a63c37d6511bd))
+* **infra:** rule out the hosted grid market entirely — self-managed only ([a70db9e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a70db9efa747031b166bc354e74d4d136406aafd))
+
 ## [0.100.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.99.0...v0.100.0) (2026-07-26)
 
 
