@@ -3,6 +3,8 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
+from cqc_lem.utilities.linkedin.message_thread import ThreadState
+
 pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"
@@ -80,7 +82,7 @@ class TestProcessUserFollowups:
         with patch(f"{_RA}.get_due_followups", return_value=[_due()]), \
              patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
              patch(f"{_RA}.quit_gracefully"), patch(f"{_RA}.time.sleep"), patch(f"{_RA}.insert_new_log"), \
-             patch(f"{_RA}.check_dm_replied", return_value=False), \
+             patch(f"{_RA}.check_dm_replied", return_value=ThreadState.NOT_REPLIED), \
              patch(f"{_RA}.build_dm_from_template", return_value="follow up msg"), \
              patch(f"{_RA}.send_private_dm") as dm, \
              patch(f"{_RA}.mark_followup") as mark, \
@@ -96,7 +98,7 @@ class TestProcessUserFollowups:
         with patch(f"{_RA}.get_due_followups", return_value=[_due()]), \
              patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
              patch(f"{_RA}.quit_gracefully"), patch(f"{_RA}.time.sleep"), patch(f"{_RA}.insert_new_log"), \
-             patch(f"{_RA}.check_dm_replied", return_value=True), \
+             patch(f"{_RA}.check_dm_replied", return_value=ThreadState.REPLIED), \
              patch(f"{_RA}.get_engagement_preferences", return_value={}), \
              patch(f"{_RA}.get_or_create_profile_synthesis", return_value="synth"), \
              patch(f"{_RA}._last_inbound_message", return_value="thanks!"), \
@@ -117,36 +119,61 @@ class TestProcessUserFollowups:
         assert "No due follow-ups" in result
         gp.assert_not_called()
 
+    def test_unknown_defers_the_followup_instead_of_sending_blind(self):
+        # Issue #731: the whole point of the third state. An unreadable thread must NOT send — and
+        # must NOT be marked either, so the row stays due for the next run.
+        from cqc_lem.app.run_automation import process_user_followups
+        with patch(f"{_RA}.get_due_followups", return_value=[_due()]), \
+             patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_RA}.quit_gracefully"), patch(f"{_RA}.time.sleep"), patch(f"{_RA}.insert_new_log"), \
+             patch(f"{_RA}.check_dm_replied", return_value=ThreadState.UNKNOWN), \
+             patch(f"{_RA}.build_dm_from_template", return_value="follow up msg"), \
+             patch(f"{_RA}.send_private_dm") as dm, \
+             patch(f"{_RA}.stop_followups_for_profile") as stop, \
+             patch(f"{_RA}.mark_followup") as mark:
+            result = process_user_followups.run(user_id=1)
+        dm.apply_async.assert_not_called()
+        mark.assert_not_called()
+        stop.assert_not_called()
+        assert "skipped 1" in result
+
 
 class TestCheckDmReplied:
-    def _driver(self, last_sender):
-        d = MagicMock()
-        # execute_script is called twice: [click msg button, last-sender JS]
-        d.execute_script.side_effect = [None, last_sender]
-        return d
+    """The reply verdict itself. The ladder that opens the thread is covered in
+    tests/unit/utilities/linkedin/test_message_thread.py — here it is stubbed."""
 
-    def test_true_when_other_person_spoke_last(self):
-        from cqc_lem.app.run_automation import check_dm_replied
-        d = self._driver("Brandon Allen-Santos")
-        with patch(f"{_RA}.time.sleep"), patch(f"{_RA}.find_first", return_value=MagicMock()):
-            assert check_dm_replied(d, MagicMock(), "https://x/in/b", my_name="Christopher Queen") is True
+    def _opened(self, opened=True, route="anchor"):
+        from cqc_lem.utilities.linkedin.message_thread import ThreadOpen
+        return ThreadOpen(opened=opened, route=route if opened else None,
+                          events=3 if opened else 0, surface="page" if opened else None)
 
-    def test_false_when_we_spoke_last(self):
+    def _check(self, last_sender, my_name="Christopher Queen", opened=True):
         from cqc_lem.app.run_automation import check_dm_replied
-        d = self._driver("Christopher Queen")
-        with patch(f"{_RA}.time.sleep"), patch(f"{_RA}.find_first", return_value=MagicMock()):
-            assert check_dm_replied(d, MagicMock(), "https://x/in/b", my_name="Christopher Queen") is False
+        with patch(f"{_RA}.open_message_thread", return_value=self._opened(opened)), \
+             patch(f"{_RA}.read_last_sender", return_value=last_sender):
+            return check_dm_replied(MagicMock(), MagicMock(), "https://x/in/b", my_name=my_name)
 
-    def test_false_when_no_messages(self):
-        from cqc_lem.app.run_automation import check_dm_replied
-        d = self._driver(None)
-        with patch(f"{_RA}.time.sleep"), patch(f"{_RA}.find_first", return_value=MagicMock()):
-            assert check_dm_replied(d, MagicMock(), "https://x/in/b", my_name="Christopher Queen") is False
+    def test_replied_when_other_person_spoke_last(self):
+        assert self._check("Brandon Allen-Santos") is ThreadState.REPLIED
 
-    def test_false_when_no_message_button(self):
+    def test_not_replied_when_we_spoke_last(self):
+        assert self._check("Christopher Queen") is ThreadState.NOT_REPLIED
+
+    def test_unknown_when_no_messages_are_readable(self):
+        assert self._check("") is ThreadState.UNKNOWN
+
+    def test_unknown_when_no_route_opened_a_thread(self):
+        assert self._check("Brandon Allen-Santos", opened=False) is ThreadState.UNKNOWN
+
+    def test_unknown_when_our_own_name_is_missing(self):
+        # Without a self-name every sender looks like 'someone else' — that used to read as a reply.
+        assert self._check("Brandon Allen-Santos", my_name=None) is ThreadState.UNKNOWN
+
+    def test_an_exception_is_unknown_not_no_reply(self):
         from cqc_lem.app.run_automation import check_dm_replied
-        with patch(f"{_RA}.time.sleep"), patch(f"{_RA}.find_first", return_value=None):
-            assert check_dm_replied(MagicMock(), MagicMock(), "https://x/in/b", my_name="Me") is False
+        with patch(f"{_RA}.open_message_thread", side_effect=RuntimeError("boom")):
+            assert check_dm_replied(MagicMock(), MagicMock(), "https://x/in/b",
+                                    my_name="Me") is ThreadState.UNKNOWN
 
 
 class TestAutoSendDueFollowups:

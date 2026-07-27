@@ -11,6 +11,10 @@ Answers, against a REAL logged-in session, the two questions
   3. On a post we already commented on: does the comment sort control exist, is our comment present
      under the default 'Most relevant' view, and does flipping to 'Most recent' surface it? —
      grounds the demotion signal in D4 (#628) before it is trusted to hold commenting.
+  4. On a profile we have DM'd: WHICH route of the #731 message-thread ladder actually opens the
+     thread today (anchor / button / text node / More menu / direct compose URL / messaging search),
+     on which surface, and what the reply reader sees once it is open — the early warning for the
+     next entry-point rotation, which is what silently disabled reply detection in the first place.
 
 **Read-only.** It navigates and reads: it publishes nothing, comments on nothing, sends no
 invites or DMs and changes no settings. ``--probe-composer`` additionally OPENS the post
@@ -311,6 +315,48 @@ def probe_comment_outcome(driver, post_url: str, our_slug: str, comment_text: st
     return reading
 
 
+def message_thread_verdict(reading: Optional[dict]) -> str:
+    """What one thread-open probe proves about the #731 resolution ladder.
+
+    The route that WON is the finding: 'anchor' is today's presentation, and a walk that only lands
+    on 'direct_url' or 'messaging_search' means the profile-page controls have rotated again — the
+    early warning this probe exists to give, one rotation BEFORE reply detection goes quiet.
+    """
+    reading = dict(reading or {})
+    if not reading.get("opened"):
+        return "no route opened a thread"
+    route = reading.get("route")
+    if not reading.get("events"):
+        return f"opened via {route}, but no message events are readable (reply state = unknown)"
+    return f"opened via {route}"
+
+
+def probe_message_thread(driver, profile_url: str, person_name: str = "", sleep=time.sleep) -> dict:
+    """#731: walk the message-thread resolution ladder against a REAL profile and report which route
+    resolved, which surface rendered (overlay vs full page), and what the reply reader then sees.
+
+    Read-only: it opens the thread and reads it. It types nothing into the composer and sends nothing.
+    """
+    from cqc_lem.utilities.linkedin.message_thread import (open_message_thread, read_last_sender,
+                                                           profile_urn_from_page)
+    from selenium.webdriver.support.ui import WebDriverWait
+
+    wait = WebDriverWait(driver, 10)
+    opened = open_message_thread(driver, wait, profile_url, person_name=person_name or None)
+    reading = {"profile_url": profile_url,
+               "opened": opened.opened,
+               "route": opened.route,
+               "routes_tried": list(opened.tried),
+               "surface": opened.surface,
+               "events": opened.events,
+               "composer": opened.composer,
+               "profile_urn": profile_urn_from_page(driver)}
+    sleep(1)
+    reading["last_sender"] = read_last_sender(driver) if opened.opened else ""
+    reading["verdict"] = message_thread_verdict(reading)
+    return reading
+
+
 def main(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(description="Read-only live LinkedIn validation probe (#404)")
     parser.add_argument("--user-id", type=int, default=1, help="user whose session drives the probe")
@@ -322,10 +368,16 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--our-slug", help="the user's /in/<slug> (defaults to their profile URL)")
     parser.add_argument("--comment-text", default="",
                         help="the comment we left, so the reader can match the right one")
+    parser.add_argument("--dm-thread-url",
+                        help="profile URL of someone this user has DM'd — reports which message-thread "
+                             "route resolves (#731)")
+    parser.add_argument("--dm-thread-name", default="",
+                        help="that person's name, for the messaging-search fallback route")
     args = parser.parse_args(argv)
 
-    if not args.post_url and not args.probe_composer and not args.comment_outcome_url:
-        parser.error("nothing to probe — pass --post-url, --comment-outcome-url and/or --probe-composer")
+    if not (args.post_url or args.probe_composer or args.comment_outcome_url or args.dm_thread_url):
+        parser.error("nothing to probe — pass --post-url, --comment-outcome-url, --dm-thread-url "
+                     "and/or --probe-composer")
 
     from cqc_lem.app.run_automation import get_current_profile
     from cqc_lem.utilities.selenium_util import quit_gracefully
@@ -345,6 +397,9 @@ def main(argv: Optional[list] = None) -> int:
             slug = _profile_slug(raw) or raw.strip().strip("/").lower()
             report["comment_outcome"] = probe_comment_outcome(driver, args.comment_outcome_url,
                                                               slug, args.comment_text)
+        if args.dm_thread_url:
+            report["message_thread"] = probe_message_thread(driver, args.dm_thread_url,
+                                                            args.dm_thread_name)
         if args.probe_composer:
             report["composer"] = probe_composer(driver)
     finally:

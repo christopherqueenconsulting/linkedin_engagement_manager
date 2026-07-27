@@ -4,6 +4,8 @@ APPROVAL-GATED next message instead of the end of the thread."""
 import pytest
 from unittest.mock import MagicMock, patch
 
+from cqc_lem.utilities.linkedin.message_thread import ThreadState
+
 pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"
@@ -209,7 +211,7 @@ class TestProcessUserFollowupsNurture:
     def test_a_reply_nurtures_the_thread_after_stopping_the_old_sequence(self):
         order = []
         result, mocks = self._run([_followup()], {
-            "check_dm_replied": patch(f"{_RA}.check_dm_replied", return_value=True),
+            "check_dm_replied": patch(f"{_RA}.check_dm_replied", return_value=ThreadState.REPLIED),
             "_last_inbound_message": patch(f"{_RA}._last_inbound_message",
                                            return_value="Sounds good, let's talk"),
             "stop_followups_for_profile": patch(f"{_RA}.stop_followups_for_profile",
@@ -225,7 +227,7 @@ class TestProcessUserFollowupsNurture:
 
     def test_the_inbound_text_is_read_once_and_used_by_both_lead_detection_and_nurture(self):
         _result, mocks = self._run([_followup()], {
-            "check_dm_replied": patch(f"{_RA}.check_dm_replied", return_value=True),
+            "check_dm_replied": patch(f"{_RA}.check_dm_replied", return_value=ThreadState.REPLIED),
             "_last_inbound_message": patch(f"{_RA}._last_inbound_message", return_value="How much?"),
             "_nurture_after_reply": patch(f"{_RA}._nurture_after_reply", return_value=None),
         })
@@ -234,7 +236,7 @@ class TestProcessUserFollowupsNurture:
 
     def test_a_nurture_followup_never_auto_sends_a_template(self):
         result, mocks = self._run([_followup(event_type="nurture", next_step=0)], {
-            "check_dm_replied": patch(f"{_RA}.check_dm_replied", return_value=False),
+            "check_dm_replied": patch(f"{_RA}.check_dm_replied", return_value=ThreadState.NOT_REPLIED),
             "build_dm_from_template": patch(f"{_RA}.build_dm_from_template"),
         })
         mocks["build_dm_from_template"].assert_not_called()

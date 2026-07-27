@@ -4,6 +4,8 @@ approval gating, the capped send drip and the reply->funnel routing."""
 import pytest
 from unittest.mock import MagicMock, patch
 
+from cqc_lem.utilities.linkedin.message_thread import ThreadState
+
 pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"
@@ -715,7 +717,7 @@ class TestCatchupHandoffToNurture:
             "get_current_profile": patch(f"{_RA}.get_current_profile",
                                          return_value=(MagicMock(), MagicMock(), "e", MagicMock())),
             "quit_gracefully": patch(f"{_RA}.quit_gracefully"),
-            "check_dm_replied": patch(f"{_RA}.check_dm_replied", return_value=True),
+            "check_dm_replied": patch(f"{_RA}.check_dm_replied", return_value=ThreadState.REPLIED),
             "_last_inbound_message": patch(f"{_RA}._last_inbound_message", return_value=reply),
             "get_engagement_preferences": patch(f"{_RA}.get_engagement_preferences", return_value={}),
             "get_or_create_profile_synthesis": patch(f"{_RA}.get_or_create_profile_synthesis",

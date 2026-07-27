@@ -183,6 +183,52 @@ class TestProbeComposer:
 
 
 @pytest.mark.unit
+class TestMessageThreadProbe:
+    """#731: the probe's job is to name the route that won, so the NEXT rotation is visible early."""
+
+    def test_verdict_names_the_winning_route(self):
+        assert llv.message_thread_verdict({"opened": True, "route": "anchor", "events": 12}) \
+            == "opened via anchor"
+
+    def test_an_unreadable_thread_is_not_a_clean_pass(self):
+        verdict = llv.message_thread_verdict({"opened": True, "route": "direct_url", "events": 0})
+        assert "no message events" in verdict and "unknown" in verdict
+
+    def test_no_route_opened_is_its_own_verdict(self):
+        assert llv.message_thread_verdict({"opened": False}) == "no route opened a thread"
+        assert llv.message_thread_verdict(None) == "no route opened a thread"
+
+    def test_probe_reports_the_route_surface_and_reader_output(self, monkeypatch):
+        from cqc_lem.utilities.linkedin.message_thread import ThreadOpen
+        opened = ThreadOpen(opened=True, route="anchor", events=18, composer=True,
+                            surface="overlay", tried=["anchor"])
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.message_thread.open_message_thread",
+                            lambda *a, **k: opened)
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.message_thread.read_last_sender",
+                            lambda d: "Jane Doe")
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.message_thread.profile_urn_from_page",
+                            lambda d: "urn:li:fsd_profile:ABC")
+        report = llv.probe_message_thread(MagicMock(), "https://x/in/jane", "Jane Doe",
+                                          sleep=lambda s: None)
+        assert report["route"] == "anchor" and report["surface"] == "overlay"
+        assert report["events"] == 18 and report["last_sender"] == "Jane Doe"
+        assert report["profile_urn"] == "urn:li:fsd_profile:ABC"
+        assert report["verdict"] == "opened via anchor"
+
+    def test_a_ladder_that_opened_nothing_reads_no_sender(self, monkeypatch):
+        from cqc_lem.utilities.linkedin.message_thread import ThreadOpen
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.message_thread.open_message_thread",
+                            lambda *a, **k: ThreadOpen(tried=["anchor", "button"]))
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.message_thread.read_last_sender",
+                            lambda d: (_ for _ in ()).throw(AssertionError("must not read")))
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.message_thread.profile_urn_from_page",
+                            lambda d: None)
+        report = llv.probe_message_thread(MagicMock(), "https://x/in/jane", sleep=lambda s: None)
+        assert report["last_sender"] == ""
+        assert report["routes_tried"] == ["anchor", "button"]
+
+
+@pytest.mark.unit
 class TestMain:
     def test_requires_something_to_probe(self):
         with pytest.raises(SystemExit):
