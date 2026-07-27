@@ -133,6 +133,9 @@ _LAST_MESSAGE_JS = (
     "for(let i=ev.length-1;i>=0;i--){const b=ev[i].querySelector('.msg-s-event-listitem__body, "
     ".msg-s-event__content');if(b&&b.innerText.trim())return b.innerText.trim();}return null;")
 
+# How far from the person's slug an embedded URN may sit and still be treated as theirs.
+_URN_SLUG_WINDOW = 600
+
 _PROFILE_URN_RE = re.compile(r"urn:li:fsd_profile:[A-Za-z0-9_-]+")
 _SLUG_RE = re.compile(r"/in/([^/?#]+)")
 _TRAILING_ID_RE = re.compile(r"-[0-9a-f]{4,}$", re.IGNORECASE)
@@ -200,11 +203,49 @@ def name_from_profile_url(profile_url: str) -> str:
     return slug.replace("-", " ").strip()
 
 
-def profile_urn_from_page(driver: WebDriver) -> Optional[str]:
+def name_matches(needle: str, haystack: str) -> bool:
+    """Whole-word containment, case- and whitespace-insensitive.
+
+    Plain substring matching is wrong for names in BOTH places it is used: 'Jane' is a substring of
+    'Janet Smith' (a stranger's conversation) and 'Chris' is a substring of 'Christine Baker' (their
+    reply read as our own message, so the follow-up goes out anyway — the exact spam #731 exists to
+    stop). A name must appear as its own word sequence to count.
+    """
+    needle = " ".join((needle or "").split()).lower()
+    hay = " ".join((haystack or "").split()).lower()
+    if not needle or not hay:
+        return False
+    return re.search(rf"(?<![^\W\d_]){re.escape(needle)}(?![^\W\d_])", hay) is not None
+
+
+def _urn_near_slug(source: str, slug: str) -> Optional[str]:
+    """The profile URN sitting NEAREST this person's slug in the embedded page model.
+
+    LinkedIn's model puts a person's ``publicIdentifier`` beside their ``entityUrn``, so proximity to
+    the slug is what identifies the URN as theirs.
+    """
+    best: Optional[tuple[int, str]] = None
+    for hit in re.finditer(re.escape(slug), source, re.IGNORECASE):
+        start = max(0, hit.start() - _URN_SLUG_WINDOW)
+        window = source[start:hit.end() + _URN_SLUG_WINDOW]
+        anchor = hit.start() - start
+        for m in _PROFILE_URN_RE.finditer(window):
+            distance = 0 if m.start() <= anchor <= m.end() else min(abs(m.start() - anchor),
+                                                                    abs(m.end() - anchor))
+            if best is None or distance < best[0]:
+                best = (distance, m.group(0))
+    return best[1] if best else None
+
+
+def profile_urn_from_page(driver: WebDriver, profile_url: str = "") -> Optional[str]:
     """The person's ``urn:li:fsd_profile:*`` URN, for the direct-URL route.
 
-    Prefer the compose anchor's own ``profileUrn`` query value (that is LinkedIn's own answer for THIS
-    person); fall back to the first profile URN in the rendered page. Returns None rather than guessing.
+    Prefer the compose anchor's own ``profileUrn`` query value — that is LinkedIn's own answer for
+    THIS person. The page-model fallback is deliberately SLUG-SCOPED rather than "first URN in the
+    document": a profile page also carries the viewer's own URN (the Me menu) and every 'People also
+    viewed' card, so the first URN is routinely somebody else — and composing to it would open a
+    stranger's thread whose last sender then decides THIS person's follow-up. Returns None rather
+    than guessing, which drops the ladder to the messaging-search route.
     """
     try:
         for el in driver.find_elements(By.CSS_SELECTOR, "a[href*='profileUrn=']"):
@@ -214,9 +255,11 @@ def profile_urn_from_page(driver: WebDriver) -> Optional[str]:
                 return m.group(0)
     except (WebDriverException, StaleElementReferenceException, NoSuchElementException):
         pass
+    slug = profile_slug(profile_url)
+    if not slug:
+        return None
     try:
-        m = _PROFILE_URN_RE.search(unquote(driver.page_source or ""))
-        return m.group(0) if m else None
+        return _urn_near_slug(unquote(driver.page_source or ""), slug)
     except (WebDriverException, AttributeError):
         return None
 
@@ -241,14 +284,23 @@ def thread_reading(driver: WebDriver) -> dict:
 
 def _wait_thread_open(driver: WebDriver, timeout: float = THREAD_RENDER_TIMEOUT_SECONDS) -> dict:
     """Poll `thread_reading` until the thread renders (or the budget runs out). Bounded on purpose:
-    the ladder has five more routes to try and cannot spend a WebDriverWait on each one."""
+    the ladder has five more routes to try and cannot spend a WebDriverWait on each one.
+
+    Message EVENTS end the wait; a bare composer does not. LinkedIn paints the compose form before
+    the message list, so returning on the first composer would report a perfectly readable thread as
+    empty — and an empty thread is UNKNOWN, which parks that person's follow-up until the DOM
+    changes. A composer-only reading is held and returned only once the budget is spent.
+    """
     deadline = time.monotonic() + max(0.0, timeout)
+    composer_only = None
     while True:
         reading = thread_reading(driver)
-        if reading["events"] or reading["composer"]:
+        if reading["events"]:
             return reading
+        if reading["composer"] and composer_only is None:
+            composer_only = reading
         if time.monotonic() >= deadline:
-            return reading
+            return composer_only or reading
         time.sleep(_POLL_SECONDS)
 
 
@@ -329,14 +381,15 @@ def _try_overflow(driver: WebDriver, timeout: float) -> Optional[dict]:
     return None
 
 
-def _try_direct_url(driver: WebDriver, timeout: float, urn: str = None) -> Optional[dict]:
+def _try_direct_url(driver: WebDriver, timeout: float, urn: str = None,
+                    profile_url: str = "") -> Optional[dict]:
     """The strongest fallback: navigate straight to the compose URL built from the person's URN, so
     nothing depends on a rendered control at all.
 
     The URN is captured from the PROFILE page before any route clicks, because an earlier route may
     have navigated somewhere that no longer carries it; reading it again here is only the fallback.
     """
-    urn = urn or profile_urn_from_page(driver)
+    urn = urn or profile_urn_from_page(driver, profile_url)
     if not urn:
         return None
     driver.get(f"{COMPOSE_URL}?profileUrn={quote(urn, safe='')}")
@@ -347,7 +400,13 @@ def _try_direct_url(driver: WebDriver, timeout: float, urn: str = None) -> Optio
 def _try_messaging_search(driver: WebDriver, wait: WebDriverWait, person_name: str,
                           profile_url: str, timeout: float) -> Optional[dict]:
     """Slowest route, and the only one that works when the profile page offers nothing: open
-    /messaging/, search the person by name, and open the matching conversation."""
+    /messaging/, search the person by name, and open the matching conversation.
+
+    Identifying the RIGHT conversation is the whole risk here — an opened thread is trusted, so a
+    stranger's thread would decide this person's follow-up. A row that links to a different
+    ``/in/<slug>`` is therefore rejected outright rather than falling back to its label, and the
+    label itself must match a whole name ('Jane' does not match 'Janet Smith').
+    """
     name = (person_name or "").strip() or name_from_profile_url(profile_url)
     if not name:
         return None
@@ -365,15 +424,20 @@ def _try_messaging_search(driver: WebDriver, wait: WebDriverWait, person_name: s
     time.sleep(_POLL_SECONDS * 4)
 
     slug = profile_slug(profile_url)
-    wanted = name.lower()
+    # The slug-derived name is usually FULLER than the stored first name, so both are accepted.
+    derived = name_from_profile_url(profile_url)
     for item in _visible_elements(driver, _CONVERSATION_LOCATORS)[:10]:
         try:
-            text = (item.text or "").lower()
+            text = item.text or ""
             hrefs = " ".join(str(a.get_attribute("href") or "")
                              for a in item.find_elements(By.TAG_NAME, "a")).lower()
         except (WebDriverException, StaleElementReferenceException):
             continue
-        if wanted not in text and not (slug and f"/in/{slug}" in hrefs):
+        if slug and f"/in/{slug}" in hrefs:
+            pass  # the row names this person outright
+        elif "/in/" in hrefs:
+            continue  # it names SOMEBODY ELSE — never guess past that
+        elif not (name_matches(name, text) or name_matches(derived, text)):
             continue
         if not _click(driver, item):
             continue
@@ -408,7 +472,7 @@ def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str
         (ROUTE_BUTTON, lambda: _try_control(driver, _BUTTON_LOCATORS, timeout=timeout)),
         (ROUTE_TEXT_NODE, lambda: _try_control(driver, _TEXT_NODE_LOCATORS, timeout=timeout)),
         (ROUTE_OVERFLOW, lambda: _try_overflow(driver, timeout)),
-        (ROUTE_DIRECT_URL, lambda: _try_direct_url(driver, timeout, urn)),
+        (ROUTE_DIRECT_URL, lambda: _try_direct_url(driver, timeout, urn, profile_url)),
         (ROUTE_MESSAGING_SEARCH, lambda: _try_messaging_search(driver, wait, person_name,
                                                                profile_url, timeout)),
     )

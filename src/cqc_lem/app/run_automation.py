@@ -74,8 +74,8 @@ from cqc_lem.utilities.human_pacing import pace_read, record_action, remaining_a
 from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
     load_profile_for_user, clean_person_name, connection_degree, is_first_degree
-from cqc_lem.utilities.linkedin.message_thread import ThreadState, open_message_thread, \
-    read_last_message, read_last_sender, resolve_self_name
+from cqc_lem.utilities.linkedin.message_thread import ThreadState, name_matches, \
+    open_message_thread, read_last_message, read_last_sender, resolve_self_name
 from cqc_lem.utilities.linkedin.poster import share_on_linkedin, share_carousel_on_linkedin, \
     share_document_on_linkedin, comment_on_linkedin_post, object_urn_from_post_url
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
@@ -3975,7 +3975,7 @@ def check_dm_replied(driver, wait, profile_url: str, my_name: str = None,
                         "treating as UNKNOWN, not as 'no reply'",
                         user_id=user_id, action_type="followup")
             return ThreadState.UNKNOWN
-        if my_name.strip().lower() in last_sender.strip().lower():
+        if name_matches(my_name, last_sender):
             return ThreadState.NOT_REPLIED  # we spoke last → no reply yet
         return ThreadState.REPLIED  # someone other than us spoke last → they replied
     except Exception as e:

@@ -16,6 +16,11 @@ pytestmark = pytest.mark.unit
 
 PROFILE = "https://www.linkedin.com/in/jane-doe-8a4b21/"
 URN = "urn:li:fsd_profile:ACoAAABCDEF"
+# What a real profile page carries: the VIEWER's own URN (the Me menu) lands in the document before
+# the person being viewed, so "first URN in the page" is routinely somebody else.
+VIEWER_URN = "urn:li:fsd_profile:ACoAAAVIEWER"
+PAGE_MODEL = ('{"me":{"entityUrn":"' + VIEWER_URN + '"},'
+              '"included":[{"publicIdentifier":"jane-doe-8a4b21","entityUrn":"' + URN + '"}]}')
 
 
 class FakeElement:
@@ -127,6 +132,53 @@ class TestThreadReading:
         assert mt.thread_reading(d)["events"] == 0
 
 
+class TestWaitThreadOpen:
+    """A bare composer must not end the wait: LinkedIn paints the compose form before the message
+    list, and a thread reported with zero events is UNKNOWN — which parks that person's follow-up."""
+
+    def test_events_that_arrive_after_the_composer_are_still_read(self, monkeypatch):
+        readings = [{"events": 0, "composer": True, "surface": "page"},
+                    {"events": 0, "composer": True, "surface": "page"},
+                    {"events": 9, "composer": True, "surface": "page"}]
+        monkeypatch.setattr(mt, "thread_reading", lambda _d: readings.pop(0))
+        assert mt._wait_thread_open(MagicMock(), timeout=5)["events"] == 9
+
+    def test_a_composer_only_thread_is_still_returned_once_the_budget_is_spent(self, monkeypatch):
+        monkeypatch.setattr(mt, "thread_reading",
+                            lambda _d: {"events": 0, "composer": True, "surface": "page"})
+        reading = mt._wait_thread_open(MagicMock(), timeout=0)
+        assert reading["composer"] is True and reading["events"] == 0
+
+    def test_nothing_rendered_is_nothing_rendered(self, monkeypatch):
+        monkeypatch.setattr(mt, "thread_reading",
+                            lambda _d: {"events": 0, "composer": False, "surface": None})
+        assert mt._wait_thread_open(MagicMock(), timeout=0) == {"events": 0, "composer": False,
+                                                                "surface": None}
+
+
+class TestNameMatches:
+    """Whole-word, both directions of harm: a loose match opens a stranger's thread, and a loose
+    SELF match reads their reply as our own message and sends the follow-up anyway."""
+
+    def test_a_full_name_matches_inside_a_label(self):
+        assert mt.name_matches("Jane Doe", "Jane Doe\nthanks!")
+
+    def test_case_and_whitespace_are_ignored(self):
+        assert mt.name_matches("  jane   doe ", "JANE\nDOE")
+
+    def test_a_prefix_of_a_longer_name_does_not_match(self):
+        assert not mt.name_matches("Jane", "Janet Smithers")
+        assert not mt.name_matches("Chris", "Christine Baker")
+
+    def test_a_trailing_suffix_still_matches(self):
+        assert mt.name_matches("Christopher Queen", "Christopher Queen, MBA")
+
+    def test_empty_either_side_is_never_a_match(self):
+        assert not mt.name_matches("", "Jane Doe")
+        assert not mt.name_matches("Jane Doe", "")
+        assert not mt.name_matches(None, None)
+
+
 class TestRoutes:
     def _ladder(self, driver, person_name=None):
         return mt.open_message_thread(driver, MagicMock(), PROFILE, person_name=person_name,
@@ -171,7 +223,7 @@ class TestRoutes:
         assert more.clicked == 1
 
     def test_direct_url_route_builds_the_compose_url_from_the_profile_urn(self):
-        d = FakeDriver(page_source=f'<code>{URN}</code>')
+        d = FakeDriver(page_source=PAGE_MODEL)
 
         def _get(url):
             d.urls.append(url)
@@ -186,7 +238,7 @@ class TestRoutes:
     def test_the_urn_is_captured_before_any_route_navigates_away(self):
         # An earlier route can leave us on a page that no longer carries the person's URN — the
         # direct-URL fallback would then have nothing to build from.
-        d = FakeDriver(page_source=f"<code>{URN}</code>")
+        d = FakeDriver(page_source=PAGE_MODEL)
         dud = FakeElement({"href": "/messaging/compose/?x"})
 
         def _get(url):
@@ -206,7 +258,23 @@ class TestRoutes:
         d = FakeDriver(page_source="<code>urn:li:fsd_profile:WRONGONE</code>")
         d.dom[(By.CSS_SELECTOR, "a[href*='profileUrn=']")] = [
             FakeElement({"href": "https://x/messaging/compose/?profileUrn=urn%3Ali%3Afsd_profile%3ARIGHT"})]
-        assert mt.profile_urn_from_page(d) == "urn:li:fsd_profile:RIGHT"
+        assert mt.profile_urn_from_page(d, PROFILE) == "urn:li:fsd_profile:RIGHT"
+
+    def test_the_page_model_urn_is_the_one_beside_this_persons_slug(self):
+        # The viewer's own URN (Me menu) comes FIRST in the document. Taking it would compose to
+        # ourselves and then judge this person's follow-up from our own thread.
+        assert mt.profile_urn_from_page(FakeDriver(page_source=PAGE_MODEL), PROFILE) == URN
+
+    def test_a_page_with_no_urn_for_this_person_yields_none_rather_than_a_stranger(self):
+        d = FakeDriver(page_source='{"me":{"entityUrn":"' + VIEWER_URN + '"}}')
+        assert mt.profile_urn_from_page(d, PROFILE) is None
+        # …and with nothing to build from, the direct-URL route never navigates.
+        assert mt._try_direct_url(d, 0, None, PROFILE) is None
+        assert d.urls == []
+
+    def test_a_urn_cannot_be_resolved_without_a_slug_to_scope_it(self):
+        d = FakeDriver(page_source=PAGE_MODEL)
+        assert mt.profile_urn_from_page(d, "https://x/feed/") is None
 
     def test_messaging_search_route_opens_the_matching_conversation(self):
         d = FakeDriver()
@@ -226,6 +294,27 @@ class TestRoutes:
             result = self._ladder(d, person_name="Jane Doe")
         assert not result.opened
         assert other.clicked == 0
+
+    def test_messaging_search_does_not_match_a_name_that_merely_starts_the_same(self):
+        # 'Jane' is a substring of 'Janet' — opening her thread would judge Jane's follow-up from a
+        # stranger's conversation, which is the spam this whole issue is about.
+        d = FakeDriver()
+        janet = FakeElement(text="Janet Smithers\nsure thing", on_click=_opens(d))
+        d.dom[(By.CSS_SELECTOR, "li.msg-conversation-listitem")] = [janet]
+        with patch.object(mt, "find_first", return_value=FakeElement()):
+            result = self._ladder(d, person_name="Jane")
+        assert not result.opened and janet.clicked == 0
+
+    def test_messaging_search_rejects_a_row_that_links_to_a_different_profile(self):
+        # The label may read right and the link still name somebody else — the link wins.
+        d = FakeDriver()
+        link = FakeElement({"href": "https://www.linkedin.com/in/jane-doe-other-99/"})
+        convo = FakeElement(text="Jane Doe", children={(By.TAG_NAME, "a"): [link]},
+                            on_click=_opens(d))
+        d.dom[(By.CSS_SELECTOR, "li.msg-conversation-listitem")] = [convo]
+        with patch.object(mt, "find_first", return_value=FakeElement()):
+            result = self._ladder(d, person_name="Jane Doe")
+        assert not result.opened and convo.clicked == 0
 
     def test_messaging_search_matches_on_the_profile_slug_when_the_name_does_not(self):
         d = FakeDriver()

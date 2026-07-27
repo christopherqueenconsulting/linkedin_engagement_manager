@@ -359,7 +359,7 @@ def probe_message_thread(driver, profile_url: str, person_name: str = "", self_n
                "events": opened.events,
                "composer": opened.composer,
                "self_name": self_name or "",
-               "profile_urn": profile_urn_from_page(driver)}
+               "profile_urn": profile_urn_from_page(driver, profile_url)}
     sleep(1)
     reading["last_sender"] = read_last_sender(driver) if opened.opened else ""
     reading["reply_state"] = _reply_state(reading)
@@ -370,12 +370,17 @@ def probe_message_thread(driver, profile_url: str, person_name: str = "", self_n
 def _reply_state(reading: dict) -> str:
     """The three-valued verdict `check_dm_replied` would return from this same reading — so the probe
     reports the DECISION, not just the DOM. 'unknown' here is a live warning that the sequencer is
-    skipping this person (unreadable thread, or a saved display name that doesn't match)."""
-    last_sender = (reading.get("last_sender") or "").strip().lower()
-    self_name = (reading.get("self_name") or "").strip().lower()
+    skipping this person (unreadable thread, or a saved display name that doesn't match).
+
+    It runs the SAME whole-word comparison production uses, or the probe would report a verdict the
+    sequencer never reaches."""
+    from cqc_lem.utilities.linkedin.message_thread import name_matches
+
+    last_sender = (reading.get("last_sender") or "").strip()
+    self_name = (reading.get("self_name") or "").strip()
     if not reading.get("opened") or not last_sender or not self_name:
         return "unknown"
-    return "not_replied" if self_name in last_sender else "replied"
+    return "not_replied" if name_matches(self_name, last_sender) else "replied"
 
 
 def main(argv: Optional[list] = None) -> int:

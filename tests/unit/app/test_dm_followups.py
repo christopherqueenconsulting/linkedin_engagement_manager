@@ -204,6 +204,11 @@ class TestCheckDmReplied:
     def test_unknown_when_no_route_opened_a_thread(self):
         assert self._check("Brandon Allen-Santos", opened=False) is ThreadState.UNKNOWN
 
+    def test_a_name_that_only_prefixes_the_sender_is_a_reply(self):
+        # 'Chris' is a substring of 'Christine Baker'. Reading her reply as OUR last message is how
+        # a follow-up goes out to somebody who already answered — the exact #731 failure.
+        assert self._check("Christine Baker", my_name="Chris") is ThreadState.REPLIED
+
     def test_unknown_when_our_own_name_is_missing(self):
         # Without a self-name every sender looks like 'someone else' — that used to read as a reply.
         assert self._check("Brandon Allen-Santos", my_name=None) is ThreadState.UNKNOWN

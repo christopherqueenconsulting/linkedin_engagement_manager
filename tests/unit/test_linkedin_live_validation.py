@@ -214,7 +214,7 @@ class TestMessageThreadProbe:
         monkeypatch.setattr("cqc_lem.utilities.linkedin.message_thread.read_last_sender",
                             lambda d: "Jane Doe")
         monkeypatch.setattr("cqc_lem.utilities.linkedin.message_thread.profile_urn_from_page",
-                            lambda d: "urn:li:fsd_profile:ABC")
+                            lambda *_a: "urn:li:fsd_profile:ABC")
         report = llv.probe_message_thread(MagicMock(), "https://x/in/jane", "Jane Doe",
                                           self_name="Christopher Queen", sleep=lambda s: None)
         assert report["route"] == "anchor" and report["surface"] == "overlay"
@@ -230,7 +230,7 @@ class TestMessageThreadProbe:
                             lambda *a, **k: ThreadOpen(opened=True, route="anchor", events=4,
                                                        surface="page", tried=["anchor"]))
         monkeypatch.setattr("cqc_lem.utilities.linkedin.message_thread.profile_urn_from_page",
-                            lambda d: None)
+                            lambda *_a: None)
         monkeypatch.setattr("cqc_lem.utilities.linkedin.message_thread.read_last_sender",
                             lambda d: "Christopher Queen")
         ours = llv.probe_message_thread(MagicMock(), "https://x/in/jane",
@@ -249,7 +249,7 @@ class TestMessageThreadProbe:
         monkeypatch.setattr("cqc_lem.utilities.linkedin.message_thread.read_last_sender",
                             lambda d: (_ for _ in ()).throw(AssertionError("must not read")))
         monkeypatch.setattr("cqc_lem.utilities.linkedin.message_thread.profile_urn_from_page",
-                            lambda d: None)
+                            lambda *_a: None)
         report = llv.probe_message_thread(MagicMock(), "https://x/in/jane", sleep=lambda s: None)
         assert report["last_sender"] == ""
         assert report["routes_tried"] == ["anchor", "button"]
