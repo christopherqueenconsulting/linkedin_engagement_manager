@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.101.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.101.0...v0.101.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* **feedback:** attach labels/assignees after issue creation (closes [#598](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/598)) ([832781b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/832781b25a4e8b6057631fef968e7ddcc2514f2a))
+* **feedback:** attach labels/assignees after issue creation (closes [#598](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/598)) ([a0c0a3d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a0c0a3da40af6dc2c410fbbbc8899f7d7b270da6))
+* **feedback:** page on a refused triage status and pin the ENUM across ALTERs ([c43da98](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c43da98d6465e035d301cf275060e4cd0a4f8831))
+* **feedback:** reject unknown triage statuses before the ENUM write (closes [#668](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/668)) ([ebc291c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ebc291c45e9609a5af84a9d66ac44fcb5edfcfe2))
+* **feedback:** reject unknown triage statuses before the ENUM write (closes [#668](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/668)) ([1228ffd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1228ffdc3b2f293c1badb1d8aa1d3efeb4c6f69b))
+* **ui:** Save All no longer hidden behind the feedback widget (closes [#596](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/596)) ([ac2eb85](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ac2eb85bc184e66311aab7b47e584e93faf0c3e8))
+
 ## [0.101.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.100.0...v0.101.0) (2026-07-27)
 
 
