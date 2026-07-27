@@ -2093,6 +2093,14 @@ def _close_out_empty_run(user_id: int, requested: bool,
                buffer_days=buffer_days, ready_count=ready_count, buffer_max=buffer_max)
 
 
+# The pull-forward cap counts EVERY future ready post, not the buffer's own 30-day ceiling:
+# `plan_content_for_user` appends a whole month after the LAST planning row, so a laid-out plan
+# routinely reaches ~60 days out. Counting over MAX_CONTENT_BUFFER_DAYS would not see the posts a
+# pull-forward click just generated past day 30, and each further click would re-earn the full cap
+# further down the calendar — the exact runaway the cap exists to stop.
+_PULL_FORWARD_READY_HORIZON_DAYS = 365
+
+
 def _pull_forward_planned_posts(user_id: int, buffer_days: int,
                                 buffer_max: int) -> Tuple[list[dict], int]:
     """The next planned posts BEYOND the buffer window, plus how many are already ready ahead.
@@ -2101,10 +2109,10 @@ def _pull_forward_planned_posts(user_id: int, buffer_days: int,
     rejected — rejected slots are never re-planned) used to no-op forever, because the plan only
     ever appends after the last planning row and the top-up only looks `buffer_days` ahead
     (issue #719). Pulling the next slots forward is bounded by the SAME ceiling, counted across
-    the whole planning horizon rather than the buffer window — otherwise repeated clicks would
-    walk the buffer cap down the calendar and generate the entire month.
+    everything already generated ahead rather than the buffer window — otherwise repeated clicks
+    would walk the buffer cap down the calendar and generate the entire plan.
     """
-    ready_ahead = count_ready_posts_within_buffer(user_id, MAX_CONTENT_BUFFER_DAYS)
+    ready_ahead = count_ready_posts_within_buffer(user_id, _PULL_FORWARD_READY_HORIZON_DAYS)
     limit = buffer_max - ready_ahead
     if limit <= 0:
         return [], ready_ahead

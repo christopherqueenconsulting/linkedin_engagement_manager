@@ -259,6 +259,23 @@ class TestMarkEmpty:
             ContentGenerationEmptyReason, mark_empty)
         assert mark_empty(1, ContentGenerationEmptyReason.BUFFER_FULL) is None
 
+    def test_a_run_that_produces_posts_drops_a_stale_reason(self, fake_redis):
+        """A second click while the first run is still generating writes ALREADY_RUNNING over the
+        same key. Carrying that forward would have the finished run tell the user to wait for a
+        run that is already done, instead of naming the posts it made."""
+        from cqc_lem.utilities.content_generation_status import (
+            ContentGenerationEmptyReason, ContentGenerationState, get_generation_status,
+            mark_empty, mark_finished, mark_in_progress, record_post_generated)
+        mark_in_progress(6, [101])
+        mark_empty(6, ContentGenerationEmptyReason.ALREADY_RUNNING)
+        record_post_generated(6, 101)
+        status = mark_finished(6)
+
+        assert status["state"] == ContentGenerationState.DONE
+        assert status["completed"] == 1
+        assert "reason" not in status and "reason_detail" not in status
+        assert "reason" not in get_generation_status(6)
+
 
 class TestFailsOpen:
     def test_all_writes_noop_without_redis(self, no_redis):

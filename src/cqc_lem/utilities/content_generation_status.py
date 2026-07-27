@@ -193,6 +193,12 @@ def _record(user_id: int, post_id: int, failed: bool) -> None:
     status[bucket] = ids
     status["failed" if failed else "completed"] = len(ids)
     status["state"] = str(ContentGenerationState.IN_PROGRESS)
+    # A run that is producing posts is not an empty one. A second click while this run is still
+    # generating writes an ALREADY_RUNNING record over this very key (issue #719), and carrying
+    # that reason forward would have the finished run tell the user to wait for a run that is
+    # already done instead of naming the posts it made.
+    status.pop("reason", None)
+    status.pop("reason_detail", None)
     _write(client, user_id, status)
 
 

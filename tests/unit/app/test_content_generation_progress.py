@@ -275,10 +275,11 @@ class TestPullForward:
 
     def test_repeated_clicks_cannot_walk_the_cap_down_the_calendar(self, progress):
         """Everything ahead is already generated — report it instead of generating the month."""
-        from cqc_lem.app.run_content_plan import auto_create_weekly_content
+        from cqc_lem.app.run_content_plan import (auto_create_weekly_content,
+                                                  _PULL_FORWARD_READY_HORIZON_DAYS)
         from cqc_lem.utilities.content_generation_status import ContentGenerationEmptyReason
-        # 0 ready inside the 5-day window, 5 ready across the 30-day horizon.
-        ready_by_days = {5: 0, 30: 5}
+        # 0 ready inside the 5-day window, 5 ready across everything generated ahead.
+        ready_by_days = {5: 0, _PULL_FORWARD_READY_HORIZON_DAYS: 5}
         patches = _generation_patches(
             [],
             **{"count_ready_posts_within_buffer": {
@@ -291,3 +292,24 @@ class TestPullForward:
         progress["generated"].assert_not_called()
         assert progress["empty"].call_args.args[1] == ContentGenerationEmptyReason.BUFFER_FULL
         assert progress["empty"].call_args.kwargs["ready_count"] == 5
+
+    def test_cap_counts_posts_generated_past_the_buffer_ceiling(self, progress):
+        """A pulled-forward post can land past MAX_CONTENT_BUFFER_DAYS — the plan appends a month
+        after the LAST planning row, so a laid-out plan reaches ~60 days out. Counting the cap over
+        the 30-day ceiling would not see those, and the next click would re-earn the whole cap."""
+        from cqc_lem.app.run_content_plan import auto_create_weekly_content
+        from cqc_lem.utilities.content_generation_status import ContentGenerationEmptyReason
+        from cqc_lem.utilities.db import MAX_CONTENT_BUFFER_DAYS
+        # Nothing ready within 30 days; the 5 already generated all sit BEYOND day 30.
+        ready_by_days = {5: 0, MAX_CONTENT_BUFFER_DAYS: 0}
+        patches = _generation_patches(
+            [],
+            **{"count_ready_posts_within_buffer": {
+                "side_effect": lambda uid, days: ready_by_days.get(days, 5)},
+               "get_next_planned_posts_after_buffer": {"return_value": [_planned(1, 31)]}})
+        with _Patched(patches) as mocks:
+            auto_create_weekly_content(user_id=1)
+
+        mocks["get_next_planned_posts_after_buffer"].assert_not_called()
+        progress["generated"].assert_not_called()
+        assert progress["empty"].call_args.args[1] == ContentGenerationEmptyReason.BUFFER_FULL
