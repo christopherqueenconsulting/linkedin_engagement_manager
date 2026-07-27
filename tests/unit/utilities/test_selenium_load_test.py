@@ -6,6 +6,7 @@ needed" search, and the resource projection.
 """
 
 import json
+import math
 from unittest.mock import patch
 
 import pytest
@@ -45,17 +46,59 @@ class TestBuildWorkload:
         jobs = slt.build_workload(1)
         assert 65 <= sum(job.duration for job in jobs) <= 70
 
-    def test_unstaggered_fanout_lands_every_user_on_the_same_minute(self):
-        golden = [job for job in slt.build_workload(20) if job.name == "golden_hour_commenting"]
+    def test_explicit_zero_stagger_reproduces_the_pre_554_single_fanout(self):
+        # `--stagger-hours 0` is the deliberate "before" baseline (scaling-plan §5c/§5d) — every user
+        # landing on the golden-hour crontab's one minute, as it did before issue #554 shipped.
+        golden = [job for job in slt.build_workload(20, stagger_hours=0) if job.name == "golden_hour_commenting"]
         assert {job.ready_at for job in golden} == {13 * 60}
 
-    def test_stagger_spreads_the_fanout_over_the_window(self):
-        golden = [job for job in slt.build_workload(20, stagger_hours=4)
+    def test_default_stagger_uses_each_fanouts_own_shipped_window(self):
+        # No override → each fan-out uses ITS OWN production window (issue #634): golden-hour is
+        # staggered across 180 min, appreciation DMs across 120 min — not a single uniform value.
+        jobs = slt.build_workload(20)
+        golden = [job.ready_at for job in jobs if job.name == "golden_hour_commenting"]
+        dms = [job.ready_at for job in jobs if job.name == "appreciation_dms"]
+        # <= on the upper bound: tick-quantization can round a slot right up to the window's edge.
+        assert min(golden) >= 13 * 60 and max(golden) <= 13 * 60 + 180
+        assert min(dms) >= 8 * 60 and max(dms) <= 8 * 60 + 120
+        # A single crontab minute would mean everyone lands on one value; staggering spreads them.
+        assert len(set(golden)) > 1
+        assert len(set(dms)) > 1
+
+    def test_default_stagger_reuses_productions_own_hash_and_tick_quantization(self):
+        # The model must give the SAME user_id the SAME offset production's plan_daily_slot would —
+        # reusing stagger_offset_minutes AND production's own salt (`stagger_config(fanout).name`,
+        # e.g. "GOLDEN_HOUR" — NOT this JobSpec's own display `name`, which is a different string and
+        # would silently hash every user_id to a different offset than the real beat) — and then
+        # round up to the next STAGGER_TICK_MINUTES boundary, since the beat only ticks every 15 min.
+        from cqc_lem.utilities.engagement_window import (
+            STAGGER_APPRECIATION_DM, STAGGER_GOLDEN_HOUR, STAGGER_TICK_MINUTES, stagger_offset_minutes,
+        )
+        jobs = slt.build_workload(5)
+        golden = {job.user_id: job.ready_at for job in jobs if job.name == "golden_hour_commenting"}
+        for user_id, ready_at in golden.items():
+            raw = 13 * 60 + stagger_offset_minutes(user_id, 180, salt=STAGGER_GOLDEN_HOUR[0])
+            expected = math.ceil(raw / STAGGER_TICK_MINUTES) * STAGGER_TICK_MINUTES
+            assert ready_at == expected
+            assert ready_at % STAGGER_TICK_MINUTES == 0
+        dms = {job.user_id: job.ready_at for job in jobs if job.name == "appreciation_dms"}
+        for user_id, ready_at in dms.items():
+            raw = 8 * 60 + stagger_offset_minutes(user_id, 120, salt=STAGGER_APPRECIATION_DM[0])
+            expected = math.ceil(raw / STAGGER_TICK_MINUTES) * STAGGER_TICK_MINUTES
+            assert ready_at == expected
+
+    def test_an_explicit_override_replaces_the_fanouts_own_window_uniformly(self):
+        # A what-if run (e.g. modelling a wider/narrower window than what shipped) overrides EVERY
+        # staggerable fan-out's window with the same value.
+        golden = [job.ready_at for job in slt.build_workload(20, stagger_hours=4)
                   if job.name == "golden_hour_commenting"]
-        readies = sorted(job.ready_at for job in golden)
-        assert readies[0] == 13 * 60
-        # 20 users over 4h = one every 12 minutes, last one 12 minutes short of the window's end.
-        assert readies[-1] == pytest.approx(13 * 60 + 4 * 60 - 12)
+        dms = [job.ready_at for job in slt.build_workload(20, stagger_hours=4)
+               if job.name == "appreciation_dms"]
+        # <= on the upper bound: tick-quantization can round a slot right up to the window's edge
+        # (see test_default_stagger_uses_each_fanouts_own_shipped_window).
+        assert max(golden) <= 13 * 60 + 4 * 60
+        assert max(dms) <= 8 * 60 + 4 * 60
+        assert len(set(golden)) > 1
 
     def test_post_anchored_jobs_ignore_the_stagger_and_keep_their_eta_offset(self):
         # The pre-post warm-up is pinned to the user's post, not to a crontab — staggering the
@@ -178,11 +221,36 @@ class TestRequiredTopology:
         caps = [slt.required_topology(users, slt.default_topology())["cap"] for users in (10, 50, 100)]
         assert caps == sorted(caps)
 
-    def test_staggering_the_fanouts_lowers_the_requirement(self):
-        # §5d calls this the single highest-leverage change; if the model didn't show it, the model
-        # would be arguing for hardware instead of scheduling.
-        assert (slt.required_topology(100, slt.default_topology(), stagger_hours=4)["cap"]
-                < slt.required_topology(100, slt.default_topology())["cap"])
+    def test_staggering_a_fanout_in_isolation_lowers_its_own_requirement(self):
+        # §5d calls this the single highest-leverage change for the fan-out ITSELF: spread over a
+        # window, the smallest concurrency that starts 95% of a burst on time is never worse than
+        # the same burst landing on one crontab minute. Isolated to golden_hour_commenting's own
+        # lane so the result is not confounded by cross-job contention on a SHARED lane (issue #634
+        # found real cases of exactly that — see TestBuildWorkload — which is a separate, honest
+        # finding and not something this property claims away).
+        spec = (slt.JobSpec("golden_hour_commenting", "se_engage", 15.0, 120.0, starts=(13 * 60,),
+                            stagger_window_minutes=180.0),)
+        unstaggered = slt.required_topology(100, slt.default_topology(), stagger_hours=0, specs=spec)["cap"]
+        staggered = slt.required_topology(100, slt.default_topology(), specs=spec)["cap"]
+        assert staggered < unstaggered
+
+    def test_the_shipped_stagger_can_shift_appreciation_dm_contention_onto_profile_viewer(self):
+        # A real, intentional finding from teaching the model the shipped windows (issue #634), not
+        # a bug: appreciation_dms alone benefits from its 120-min window (fewer sessions needed), but
+        # se_outreach also carries profile_viewer_engagement, whose own arrivals start at the post
+        # band's opening minute. Spreading appreciation_dms' arrivals later in the day does not
+        # shrink the TOTAL se_outreach processing time its burst needs (workload ÷ concurrency is
+        # fixed) — it can instead push the batch's tail later in real time, into
+        # profile_viewer_engagement's window, where the pre-#554 single-instant batch happened to
+        # have already drained. This is why the full-fleet se_outreach requirement can come out
+        # EQUAL OR HIGHER under the real shipped windows than under the pre-#554 baseline, even
+        # though the isolated appreciation_dms burst is strictly better staggered
+        # (see test_staggering_a_fanout_in_isolation_lowers_its_own_requirement).
+        outreach_specs = tuple(spec for spec in slt.WORKLOAD if spec.lane == "se_outreach")
+        unstaggered = slt.required_topology(100, slt.default_topology(), stagger_hours=0,
+                                            specs=outreach_specs)["cap"]
+        staggered = slt.required_topology(100, slt.default_topology(), specs=outreach_specs)["cap"]
+        assert staggered >= unstaggered
 
     def test_an_impossible_window_reports_no_answer_rather_than_a_huge_one(self):
         # A 15-minute loop that must start within 1 minute of a fan-out can never be met for

@@ -309,24 +309,40 @@ per additional concurrent session**.
 
 ### 5c. Resource plan by scale
 
-> **Measured by the load test (issue #556), 2026-07-26.** The table below was the estimate; running
-> `python -m cqc_lem.utilities.selenium_load_test --users 10,50,100` against today's topology
-> (8 slots, lanes 3/2/2/1) gives the on-time curve behind it: **10 users 100% on time, 50 users
-> 57.7%, 100 users 17.7%**, needing **5 / 14 / 27** sessions respectively to hold 95% on-time.
-> Two corrections to the estimate: the "concurrent Chrome sessions" column below **under-counts at
-> 50+** because it modelled only the commenting loops, not the once-a-day batch fan-outs or the
-> `se_prepost` lane #553 added afterwards; and **`se_prepost` is the first lane to break** (7 slots
-> of its own at 100 users — a 15-minute warm-up with a 5-minute window cannot absorb posts arriving
-> every 2.4 minutes). Staggering (§5d) was the cheapest fix and has since shipped (#554): the model
-> puts 50 users at 57.7% → 84.0% on-time and 14 → 11 sessions with no new hardware. That is still a
-> **prediction** — the model fans users out at one 13:00 UTC minute, not at #554's per-user local
-> slots, so re-running the curve against the shipped stagger is #634. Full curve, both modes and the
-> reading guide: `docs/SELENIUM_GRID.md` §3–§4.
+> **Measured by the load test (issue #556), 2026-07-26**, then **re-measured against the shipped
+> stagger (issue #634), 2026-07-27.** The #556 table below was the pre-stagger estimate:
+> `python -m cqc_lem.utilities.selenium_load_test --users 10,50,100 --stagger-hours 0` (the deliberate
+> "before" baseline) reproduces it exactly — **10 users 100% on-time, 50 users 57.7%, 100 users
+> 17.7%**, needing **5 / 14 / 27** sessions to hold 95% on-time. #554 shipped a per-user hashed slot
+> inside a window anchored in each user's own timezone (golden hour 180 min, appreciation DMs
+> 120 min) in place of that single fan-out, and the harness's workload model still assumed the old
+> single-minute fan-out — #634 taught it the real windows (default run, no flags).
+>
+> **The predicted improvement (57.7% → 84.0%, 14 → 11 sessions at 50 users) does NOT hold.** The
+> corrected model measures **50 users at 53.7% on-time, needing 15 sessions** — flat-to-worse than
+> the pre-#554 baseline, not better. Cause: `se_outreach` carries both the now-staggered
+> `appreciation_dms` and the post-anchored `profile_viewer_engagement`. Spreading `appreciation_dms`'
+> arrivals over its window doesn't shrink the total processing time its burst needs at a given
+> concurrency — workload ÷ concurrency is fixed — it can instead push the batch's tail *later* in
+> real time, into the window `profile_viewer_engagement` starts arriving in. Pre-#554 the
+> single-instant DM batch happened to fully drain before that window opened; post-#554 it doesn't
+> always. `se_engage` (golden-hour's own lane) is unaffected — the isolated golden-hour burst is
+> exactly as much better-staggered as predicted, it's the SHARED se_outreach lane where a different
+> job's window absorbs the difference. Filed as **#696** to fix (shrink the DM window, raise
+> `se_outreach` concurrency, or give `appreciation_dms` its own lane) and re-measure again.
+>
+> Two standing corrections to the ORIGINAL #556 estimate (both still true): the table below
+> **under-counts at 50+** because it modelled only the commenting loops, not the once-a-day batch
+> fan-outs or the `se_prepost` lane #553 added afterwards; and **`se_prepost` is the first lane to
+> break** (7 slots of its own at 100 users — a 15-minute warm-up with a 5-minute window cannot absorb
+> posts arriving every 2.4 minutes) — staggering never touched `se_prepost` (posts aren't a fan-out,
+> they're per-user ETAs) so it is unaffected by #634's re-run. Full curve, both modes and the reading
+> guide: `docs/SELENIUM_GRID.md` §3–§4.
 
 | Active users | Concurrent Chrome sessions | vCPU | RAM | Topology | Verdict on current VPS (8 vCPU / 31 GB) |
 |---|---|---|---|---|---|
 | **10** | 4–6 | ~6–8 used peak | ~10–12 GB peak | Current stack + Phase 1 bumps + staggered golden hour | **Fits comfortably** |
-| **50** | 8–10 | ~12–14 peak | ~20–24 GB peak | Grid hub + 2–3 nodes; lane concurrency 3–4; MySQL pooling; stagger fan-outs | **At/over the ceiling** — Chrome RAM + 8 vCPU become the limit; move Grid nodes to a **2nd VPS** or upgrade to **16 vCPU / 64 GB** |
+| **50** | 8–10 | ~12–14 peak | ~20–24 GB peak | Grid hub + 2–3 nodes; lane concurrency 3–4; MySQL pooling; stagger fan-outs | **Exceeds one VPS on the measured curve** (15 sessions, issue #634) — Chrome RAM + 8 vCPU become the limit; move Grid nodes to a **2nd VPS** or upgrade to **16 vCPU / 64 GB**, and see #696 for the se_outreach fix first |
 | **100** | 12–16 | ~20+ | ~40+ GB | Grid across **2+ boxes**; dedicated Chrome host(s); LLM cost/RPM budget; MySQL pooling mandatory | **Exceeds one VPS** — horizontal (separate app tier + Chrome tier) |
 
 - **MySQL:** ✅ done (#555) — `get_db_connection()` checks out of a
@@ -438,7 +454,11 @@ have stopped holding:
   against a deployed Grid. Run it before onboarding the cohort; it exits 2 when a scale exceeds
   one VPS.
 - ✅ **Stagger the golden-hour fan-out** (§5d, #554) — the load test's biggest free on-time win, taken
-  first. Verifying it against the harness (which still models the pre-#554 single fan-out) is #634.
+  first. ✅ **Re-verified against the harness** (#634): the model was still assuming the pre-#554
+  single fan-out and has been corrected to the shipped windows. The correction **refuted** the
+  original 84.0%/11-session prediction at 50 users — measured is 53.7%/15 sessions, worse than the
+  pre-#554 baseline, because the staggered appreciation-DM tail can now bleed into the pre-post
+  profile-viewer window on the shared `se_outreach` lane. Fix tracked as **#696**.
 - Lane concurrency 3–4 each; per-user 429 breaker keys; per-user rate pacing.
 - **Hardware/topology: deliberately undecided** (owner call on #556). Upgrading to **16 vCPU / 64 GB**
   and splitting the Chrome tier onto a second box are compared in `docs/SELENIUM_GRID.md` §5 (short
