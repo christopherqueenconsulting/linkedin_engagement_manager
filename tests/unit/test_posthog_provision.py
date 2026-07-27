@@ -453,6 +453,44 @@ class TestApplyActions:
         client.create_alert.assert_not_called()
         assert all(line.startswith("skipped") for line in log)
 
+    def test_creates_the_distinct_id_variable(self):
+        client = self._client()
+        client.create_insight_variable.return_value = {"id": "v1", "code_name": "distinct_id"}
+        action = php.plan_variable({})
+        log = php.apply_actions(client, [action], dry_run=False)
+        client.create_insight_variable.assert_called_once_with(action["payload"])
+        assert any("created insight variable" in line for line in log)
+
+    def test_variable_dry_run_writes_nothing(self):
+        client = self._client()
+        php.apply_actions(client, [php.plan_variable({})], dry_run=True)
+        client.create_insight_variable.assert_not_called()
+
+    def test_creates_and_updates_endpoints(self):
+        client = self._client()
+        specs = php.endpoint_specs()
+        actions = php.plan_endpoints(specs, {}, "v1", "distinct_id")
+        php.apply_actions(client, actions, dry_run=False)
+        assert client.create_endpoint.call_count == 3
+        client.update_endpoint.assert_not_called()
+
+        client.reset_mock()
+        stale = {specs[0]["name"]: {"query": {"kind": "edited-away"},
+                                    "description": specs[0]["description"],
+                                    "data_freshness_seconds": php.ENDPOINT_DATA_FRESHNESS_SECONDS,
+                                    "is_active": True}}
+        update_actions = php.plan_endpoints(specs[:1], stale, "v1", "distinct_id")
+        php.apply_actions(client, update_actions, dry_run=False)
+        client.update_endpoint.assert_called_once_with(specs[0]["name"], update_actions[0]["payload"])
+        client.create_endpoint.assert_not_called()
+
+    def test_endpoint_blocked_items_are_reported_not_written(self):
+        client = self._client()
+        log = php.apply_actions(client, php.plan_endpoints(php.endpoint_specs(), {}, None, None),
+                                dry_run=False)
+        client.create_endpoint.assert_not_called()
+        assert all(line.startswith("skipped") for line in log)
+
     def test_summarize_counts_every_action_kind(self):
         summary = php.summarize([{"action": "create_insight"}, {"action": "create_insight"},
                                  {"action": "unchanged"}])
@@ -479,6 +517,115 @@ class TestClientNormalization:
         assert php._user_id_of(None) is None
 
 
+class TestEndpointSpecs:
+    def test_three_endpoints_scoped_to_one_user(self):
+        specs = php.endpoint_specs()
+        assert {s["name"] for s in specs} == {
+            php.ENDPOINT_POSTS_ENGAGEMENT, php.ENDPOINT_COMMENT_ACTIVITY,
+            php.ENDPOINT_LLM_COST_BY_FEATURE}
+        for spec in specs:
+            assert "distinct_id = {variables.distinct_id}" in spec["sql"]
+            assert spec["description"]
+
+    def test_names_are_valid_endpoint_slugs(self):
+        # PostHog's ENDPOINT_NAME_REGEX: starts with a letter, only alnum/hyphen/underscore.
+        for spec in php.endpoint_specs():
+            assert re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", spec["name"])
+
+    def test_llm_cost_endpoint_reads_llm_call_not_ai_generation(self):
+        # Money questions use llm_call (LEM's own estimate, keyed by feature) — never
+        # $ai_generation, per docs/llm-analytics.md.
+        spec = next(s for s in php.endpoint_specs() if s["name"] == php.ENDPOINT_LLM_COST_BY_FEATURE)
+        assert "llm_call" in spec["sql"] and "$ai_generation" not in spec["sql"]
+
+    def test_no_name_collision_with_insight_tiles(self):
+        tile_names = {tile["name"] for _, tile in _all_tiles()}
+        endpoint_names = {s["name"] for s in php.endpoint_specs()}
+        assert not (tile_names & endpoint_names)
+
+
+class TestEndpointQuery:
+    def test_binds_the_live_variable_id_and_code_name(self):
+        spec = php.endpoint_specs()[0]
+        query = php.endpoint_query(spec, "var-uuid-1", "distinct_id")
+        assert query["kind"] == "HogQLQuery"
+        assert query["query"] == spec["sql"].strip()
+        assert query["variables"] == {
+            "var-uuid-1": {"variableId": "var-uuid-1", "code_name": "distinct_id",
+                          "value": None, "isNull": True}}
+
+    def test_variable_id_is_stringified(self):
+        # PostHog variable ids are UUIDs; a caller that passes a non-str (e.g. from a raw API
+        # response) must not produce a query with a mismatched key type.
+        query = php.endpoint_query(php.endpoint_specs()[0], 42, "distinct_id")
+        assert list(query["variables"].keys()) == ["42"]
+
+
+class TestPlanVariable:
+    def test_missing_variable_is_created(self):
+        action = php.plan_variable({})
+        assert action["action"] == "create_variable"
+        assert action["payload"] == {"name": php.DISTINCT_ID_VARIABLE_NAME, "type": "String",
+                                     "default_value": None}
+
+    def test_existing_variable_is_unchanged(self):
+        existing = {php.DISTINCT_ID_VARIABLE_NAME: {"id": "v1", "code_name": "distinct_id"}}
+        action = php.plan_variable(existing)
+        assert action == {"action": "unchanged_variable", "id": "v1", "code_name": "distinct_id"}
+
+
+class TestPlanEndpoints:
+    def test_blocked_when_variable_does_not_exist(self):
+        actions = php.plan_endpoints(php.endpoint_specs(), {}, None, None)
+        assert {a["action"] for a in actions} == {"blocked_endpoint"}
+        assert php.pending(actions) == actions
+
+    def test_empty_project_creates_all_three(self):
+        actions = php.plan_endpoints(php.endpoint_specs(), {}, "v1", "distinct_id")
+        assert {a["action"] for a in actions} == {"create_endpoint"}
+        assert len(actions) == 3
+
+    def test_matching_state_is_unchanged(self):
+        specs = php.endpoint_specs()
+        existing = {s["name"]: {"query": php.endpoint_query(s, "v1", "distinct_id"),
+                                "description": s["description"],
+                                "data_freshness_seconds": php.ENDPOINT_DATA_FRESHNESS_SECONDS,
+                                "is_active": True}
+                    for s in specs}
+        actions = php.plan_endpoints(specs, existing, "v1", "distinct_id")
+        assert {a["action"] for a in actions} == {"unchanged_endpoint"}
+        assert php.pending(actions) == []
+
+    def test_drifted_query_is_updated(self):
+        specs = php.endpoint_specs()[:1]
+        existing = {specs[0]["name"]: {"query": {"kind": "edited-away"},
+                                       "description": specs[0]["description"],
+                                       "data_freshness_seconds": php.ENDPOINT_DATA_FRESHNESS_SECONDS,
+                                       "is_active": True}}
+        action = php.plan_endpoints(specs, existing, "v1", "distinct_id")[0]
+        assert action["action"] == "update_endpoint"
+
+    def test_inactive_endpoint_is_reactivated(self):
+        specs = php.endpoint_specs()[:1]
+        existing = {specs[0]["name"]: {"query": php.endpoint_query(specs[0], "v1", "distinct_id"),
+                                       "description": specs[0]["description"],
+                                       "data_freshness_seconds": php.ENDPOINT_DATA_FRESHNESS_SECONDS,
+                                       "is_active": False}}
+        action = php.plan_endpoints(specs, existing, "v1", "distinct_id")[0]
+        assert action["action"] == "update_endpoint"
+
+    def test_a_different_variable_id_forces_an_update(self):
+        # The variable was recreated (a fresh id) — every endpoint's stored `variables` map now
+        # points at a dangling id and must be repointed.
+        specs = php.endpoint_specs()[:1]
+        existing = {specs[0]["name"]: {"query": php.endpoint_query(specs[0], "stale-id", "distinct_id"),
+                                       "description": specs[0]["description"],
+                                       "data_freshness_seconds": php.ENDPOINT_DATA_FRESHNESS_SECONDS,
+                                       "is_active": True}}
+        action = php.plan_endpoints(specs, existing, "fresh-id", "distinct_id")[0]
+        assert action["action"] == "update_endpoint"
+
+
 class TestMain:
     def _client(self, **overrides):
         client = MagicMock()
@@ -486,9 +633,12 @@ class TestMain:
         client.list_insights.return_value = {}
         client.list_alerts.return_value = {}
         client.list_subscriptions.return_value = []
+        client.list_insight_variables.return_value = {}
+        client.list_endpoints.return_value = {}
         client.whoami.return_value = {"id": 7, "email": "owner@example.com"}
         client.create_dashboard.return_value = 11
         client.create_insight.return_value = 22
+        client.create_insight_variable.return_value = {"id": "var-1", "code_name": "distinct_id"}
         for key, value in overrides.items():
             getattr(client, key).return_value = value
         return client
@@ -564,3 +714,31 @@ class TestMain:
         err = capsys.readouterr().err
         assert "alerts will have no subscriber" in err
         assert "weekly report not provisioned" in err
+
+    def test_endpoints_are_blocked_until_the_variable_exists(self, monkeypatch, capsys):
+        # A dry run never claims it can create an endpoint before the variable behind it exists.
+        monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "phx_test")
+        monkeypatch.setenv("POSTHOG_REPORT_EMAIL", "owner@example.com")
+        client = self._client()
+        monkeypatch.setattr(php, "PostHogClient", lambda *a, **k: client)
+        assert php.main(["--dry-run"]) == 2
+        out = capsys.readouterr().out
+        assert "[dry-run] create insight variable 'distinct_id'" in out
+        assert "skipped 'lem-posts-engagement-weekly'" in out
+        client.create_endpoint.assert_not_called()
+
+    def test_apply_provisions_endpoints_once_the_variable_exists(self, monkeypatch, capsys):
+        monkeypatch.setenv("POSTHOG_PERSONAL_API_KEY", "phx_test")
+        monkeypatch.setenv("POSTHOG_REPORT_EMAIL", "owner@example.com")
+        client = self._client()
+        # Freshly created, so the id/code_name only exist on the RE-read after create — the same
+        # create-then-reread shape the dashboard/insight pass uses.
+        client.list_insight_variables.side_effect = [
+            {}, {php.DISTINCT_ID_VARIABLE_NAME: {"id": "v1", "code_name": "distinct_id"}}]
+        monkeypatch.setattr(php, "PostHogClient", lambda *a, **k: client)
+        assert php.main(["--apply"]) == 0
+        client.create_insight_variable.assert_called_once()
+        assert client.create_endpoint.call_count == 3
+        for call in client.create_endpoint.call_args_list:
+            assert call.args[0]["query"]["variables"] == {
+                "v1": {"variableId": "v1", "code_name": "distinct_id", "value": None, "isNull": True}}

@@ -470,6 +470,29 @@ definition nobody read). The `posthog-surveys-enabled` flag stands the homegrown
 (`select_survey(nps_enabled=False)`) so nobody is prompted twice; the review offer is untouched.
 Full posture: `docs/surveys.md`.
 
+### Endpoints panel + release annotations (issue #654)
+
+Two cheap wins riding on the same `scripts/posthog_provision.py` that already owns Health/Growth.
+**Endpoints** (PostHog beta) publishes a HogQL query as a versioned, cached HTTP route — the fast
+path to the Dashboard's own "Live stats" card (posts/engagement per week, comment activity per
+week, LLM cost by feature over 30d) without a bespoke MySQL reporting layer. Every query is scoped
+with `distinct_id = {variables.distinct_id}` — PostHog is ONE project shared by every LEM account,
+so an un-scoped query would leak one customer's numbers into another's Dashboard. The placeholder
+resolves against a single provisioned `InsightVariable`; an endpoint is `blocked_endpoint`, not
+creatable, until that variable exists, mirroring `plan_alerts`'s missing-insight shape.
+`utilities/posthog_endpoints.py` is the runtime half — `GET /user/posthog-stats` calls each
+endpoint's `/run` with the CALLER's own `str(user_id)`, server-side only, so the personal API key
+never reaches the browser. Every failure mode (no key, endpoint not provisioned yet, PostHog
+unreachable) degrades to `available: false` for that one panel; `PostHogStatsPanel.tsx` renders
+nothing at all if every panel comes back unavailable.
+
+**Release annotations**: `scripts/posthog_annotate.py`, called from `build-and-push.yml`'s deploy
+job right after `deploy.sh`'s own health check passes, posts one project-scoped annotation —
+`"vX.Y.Z deployed"` — so every insight graph explains its own step-changes; LEM ships multiple
+releases a day and no graph showed when before this. Needs its own GH Actions secret,
+`POSTHOG_PERSONAL_API_KEY` (scope: `annotation` read+write). Absent key or a PostHog outage is a
+no-op (`continue-on-error: true` on the step, exit 0 in the script) — never a failed release.
+
 ## CI Gates
 
 Before merging any PR, all of the following must pass:

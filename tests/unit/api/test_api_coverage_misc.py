@@ -516,6 +516,29 @@ class TestEngagementAnalytics:
         assert quality["alerts"] == []
 
 
+class TestPostHogStatsEndpoint:
+    """In-SPA 'your stats' panel backed by PostHog Endpoints (issue #654)."""
+
+    def test_returns_the_panel_for_the_session_user(self, client):
+        panel = {
+            "posts_engagement": {"available": True, "rows": [{"week": "2026-07-20", "posts_measured": 3}]},
+            "comment_activity": {"available": True, "rows": []},
+            "llm_cost_by_feature": {"available": False, "rows": []},
+        }
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch("cqc_lem.utilities.posthog_endpoints.get_user_stats_panel",
+                   return_value=panel) as get_panel:
+            resp = client.get(f"/api/user/posthog-stats?session_token={_TOK}")
+        assert resp.status_code == 200
+        assert resp.json()["detail"] == panel
+        get_panel.assert_called_once_with(_UID)
+
+    def test_401_without_session(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=None):
+            resp = client.get(f"/api/user/posthog-stats?session_token=bad")
+        assert resp.status_code == 401
+
+
 class TestAudienceGrowth:
     """Follower & audience telemetry endpoint (issue #627)."""
 

@@ -27,15 +27,25 @@ insight forever.
 Split the same way as scripts/posthog_dashboards.py: PURE spec/plan logic (unit-tested) and a thin
 I/O layer (the PostHog REST client, mocked in tests).
 
+Also provisions the three **Endpoints** (issue #654) behind the in-SPA "your stats" panel — HogQL
+queries published as versioned, cached HTTP endpoints, each scoped to ONE user via a
+`{variables.distinct_id}` placeholder (PostHog is one project shared by every LEM account, so an
+un-scoped query would leak cross-tenant data into a customer's own dashboard). The placeholder
+resolves against a single provisioned `InsightVariable` — `endpoints` are blocked, not created,
+until it exists, the same "missing prerequisite" shape `plan_alerts` already uses for a missing
+insight. `utilities/posthog_endpoints.py` is the runtime half: it calls `/run` with the caller's own
+`distinct_id`, server-side only, so no PostHog key ever reaches the browser.
+
 CLI (--dry-run and --apply are mutually exclusive):
   --dry-run             Show what would be created/updated against the live project. No writes. (default)
-  --apply               Create missing dashboards/insights/alerts/subscription and update drifted ones.
-  --print-sql           Print every tile's query (no network).
+  --apply               Create missing dashboards/insights/alerts/subscription/endpoints and update drifted ones.
+  --print-sql           Print every tile's and endpoint's query (no network).
   --simulate NAME=VALUE Report whether VALUE would breach the named alert's threshold. No network.
   --email ADDR          Weekly-report recipient (default $POSTHOG_REPORT_EMAIL, else the key owner).
 Env:
   POSTHOG_PERSONAL_API_KEY  Personal API key (required for network). Scopes: insight, dashboard,
-                            alert and subscription read+write, plus user:read for the subscriber id.
+                            alert and subscription read+write, user:read for the subscriber id, plus
+                            endpoint and insight_variable read+write for the Endpoints panel.
   POSTHOG_PROJECT_ID        PostHog project id (default 475262 — "CQC LEM").
   POSTHOG_APP_HOST          App host for the API (default https://us.posthog.com).
   POSTHOG_REPORT_EMAIL      Weekly Growth-dashboard recipient. Falls back to the key owner's email.
@@ -57,6 +67,20 @@ DASH_HEALTH = "LEM Health"
 DASH_GROWTH = "LEM Growth"
 
 TAGS = ["lem", "kpi", "health", "growth"]
+
+# ── Endpoints (issue #654) ───────────────────────────────────────────────────────────
+ENDPOINT_TAGS = ["lem", "endpoints"]
+# The one variable every per-user endpoint scopes its query on. PostHog derives `code_name` from
+# `name` (lowercased, non-alnum -> "_"), so this already-lowercase name round-trips unchanged —
+# `endpoint_query` still reads the code_name PostHog actually returns rather than assuming it.
+DISTINCT_ID_VARIABLE_NAME = "distinct_id"
+# A valid data_freshness_seconds bucket (900/1800/3600/21600/43200/86400/604800). A per-user stats
+# panel doesn't need sub-hour freshness; 6h keeps materialization/cache churn low.
+ENDPOINT_DATA_FRESHNESS_SECONDS = 21600
+
+ENDPOINT_POSTS_ENGAGEMENT = "lem-posts-engagement-weekly"
+ENDPOINT_COMMENT_ACTIVITY = "lem-comment-activity-weekly"
+ENDPOINT_LLM_COST_BY_FEATURE = "lem-llm-cost-by-feature"
 
 # Rolling windows, so "30d" means the same thing on every tile.
 OPS_WINDOW = "INTERVAL 30 DAY"
@@ -398,6 +422,107 @@ ORDER BY week ASC
     ]
 
 
+# ── Endpoints — the in-SPA "your stats" panel (issue #654) ────────────────────────────
+
+def endpoint_specs() -> list:
+    """The three per-user Endpoints behind the SPA's stats panel. Pure — no live PostHog state — so
+    it's reusable for `--print-sql` and for diffing. Every query is scoped with
+    `distinct_id = {variables.distinct_id}`; `endpoint_query()` binds that placeholder to a live
+    variable id at apply time, the same two-step shape `alert_payload` uses for a live insight id."""
+    return [
+        {"name": ENDPOINT_POSTS_ENGAGEMENT,
+         "description": "Weekly posts measured, median engagement rate and impressions for ONE "
+                        "user (issue #654) — the SPA's own-stats panel read via /run.",
+         "sql": """
+SELECT toStartOfWeek(timestamp) AS week,
+       count() AS posts_measured,
+       round(median(toFloat(properties.engagement_rate)), 6) AS median_engagement_rate,
+       coalesce(sum(toFloat(properties.impressions)), 0) AS impressions
+FROM events
+WHERE event = 'post_outcome' AND distinct_id = {variables.distinct_id}
+      AND timestamp >= now() - INTERVAL 90 DAY
+GROUP BY week
+ORDER BY week ASC
+"""},
+        {"name": ENDPOINT_COMMENT_ACTIVITY,
+         "description": "Weekly comments measured and author-reply rate for ONE user (issue #654), "
+                        "off the #628 comment-outcome sweep.",
+         "sql": """
+SELECT toStartOfWeek(timestamp) AS week,
+       count() AS comments_measured,
+       countIf(toBool(properties.author_replied)) AS author_replies,
+       round(100 * countIf(toBool(properties.author_replied)) / nullIf(count(), 0), 2) AS author_reply_pct
+FROM events
+WHERE event = 'comment_outcome' AND distinct_id = {variables.distinct_id}
+      AND timestamp >= now() - INTERVAL 90 DAY
+GROUP BY week
+ORDER BY week ASC
+"""},
+        {"name": ENDPOINT_LLM_COST_BY_FEATURE,
+         "description": "30-day LLM spend by feature bucket for ONE user (issue #654). Reads "
+                        "`llm_call` (LEM's own cost estimate, keyed by feature) — never "
+                        "`$ai_generation`, per docs/llm-analytics.md.",
+         "sql": """
+SELECT coalesce(nullIf(toString(properties.feature), ''), 'unattributed') AS feature,
+       round(coalesce(sum(toFloat(properties.cost_usd)), 0), 6) AS spend_usd,
+       count() AS calls
+FROM events
+WHERE event = 'llm_call' AND distinct_id = {variables.distinct_id}
+      AND timestamp >= now() - INTERVAL 30 DAY
+GROUP BY feature
+ORDER BY spend_usd DESC
+"""},
+    ]
+
+
+def endpoint_query(spec: dict, variable_id, code_name: str) -> dict:
+    """The live HogQLQuery body for one endpoint spec. PostHog validates every `{variables.X}`
+    placeholder against a declared variable at create/update time, so the definition has to carry
+    the variable even though the FastAPI proxy supplies its VALUE fresh on every `/run` call."""
+    return {"kind": "HogQLQuery", "query": spec["sql"].strip(),
+            "variables": {str(variable_id): {"variableId": str(variable_id), "code_name": code_name,
+                                             "value": None, "isNull": True}}}
+
+
+def plan_variable(existing_variables: dict) -> dict:
+    """Ensure the ONE InsightVariable every per-user endpoint scopes on exists. `existing_variables`
+    maps name -> {"id", "code_name"}. Unlike dashboards/insights this is a single resource, so the
+    action is singular rather than a list."""
+    found = existing_variables.get(DISTINCT_ID_VARIABLE_NAME)
+    if found is not None:
+        return {"action": "unchanged_variable", "id": found["id"], "code_name": found["code_name"]}
+    return {"action": "create_variable",
+            "payload": {"name": DISTINCT_ID_VARIABLE_NAME, "type": "String", "default_value": None}}
+
+
+def plan_endpoints(specs: list, existing_endpoints: dict, variable_id, code_name: Optional[str]) -> list:
+    """Diff the endpoint spec against what PostHog already has. An endpoint is `blocked` (not
+    creatable) until the distinct_id variable exists — mirrors `plan_alerts`'s missing-insight
+    shape, so a dry-run never claims it can create something the apply pass actually can't yet."""
+    actions: list = []
+    for spec in specs:
+        if variable_id is None:
+            actions.append({"action": "blocked_endpoint", "endpoint": spec["name"],
+                            "reason": f"'{DISTINCT_ID_VARIABLE_NAME}' insight variable does not "
+                                     "exist yet"})
+            continue
+        query = endpoint_query(spec, variable_id, code_name)
+        payload = {"name": spec["name"], "description": spec["description"], "query": query,
+                  "data_freshness_seconds": ENDPOINT_DATA_FRESHNESS_SECONDS, "is_active": True,
+                  "tags": ENDPOINT_TAGS}
+        found = existing_endpoints.get(spec["name"])
+        if found is None:
+            actions.append({"action": "create_endpoint", "endpoint": spec["name"], "payload": payload})
+            continue
+        if (found.get("query") == query and found.get("description") == spec["description"]
+                and found.get("data_freshness_seconds") == ENDPOINT_DATA_FRESHNESS_SECONDS
+                and found.get("is_active", True)):
+            actions.append({"action": "unchanged_endpoint", "endpoint": spec["name"]})
+        else:
+            actions.append({"action": "update_endpoint", "endpoint": spec["name"], "payload": payload})
+    return actions
+
+
 def build_specs() -> list:
     """The full issue-#650 dashboard set. Pure — same input every run, so a diff against PostHog is
     meaningful and `--apply` is idempotent."""
@@ -596,7 +721,8 @@ def plan_subscriptions(specs: list, existing_subscriptions: list, dashboard_ids:
     return actions
 
 
-UNCHANGED_ACTIONS = ("unchanged", "unchanged_alert", "unchanged_subscription")
+UNCHANGED_ACTIONS = ("unchanged", "unchanged_alert", "unchanged_subscription",
+                    "unchanged_variable", "unchanged_endpoint")
 
 
 def pending(actions: list) -> list:
@@ -710,6 +836,32 @@ class PostHogClient:
     def create_subscription(self, payload: dict) -> int:
         return self._request("POST", "/subscriptions/", json=payload).get("id")
 
+    def list_insight_variables(self) -> dict:
+        """Maps variable name -> {"id", "code_name"}. `code_name` is PostHog-derived (read-only on
+        write), so callers always read it back here rather than assuming it matches `name`."""
+        return {v["name"]: {"id": v["id"], "code_name": v.get("code_name")}
+                for v in self._paged("/insight_variables/?limit=100")}
+
+    def create_insight_variable(self, payload: dict) -> dict:
+        return self._request("POST", "/insight_variables/", json=payload)
+
+    def list_endpoints(self) -> dict:
+        endpoints = {}
+        for item in self._paged("/endpoints/?limit=100"):
+            endpoints[item.get("name")] = {
+                "query": item.get("query"),
+                "description": item.get("description") or "",
+                "data_freshness_seconds": item.get("data_freshness_seconds"),
+                "is_active": item.get("is_active", True),
+            }
+        return endpoints
+
+    def create_endpoint(self, payload: dict) -> None:
+        self._request("POST", "/endpoints/", json=payload)
+
+    def update_endpoint(self, name: str, payload: dict) -> None:
+        self._request("PATCH", f"/endpoints/{name}/", json=payload)
+
 
 def _insight_id_of(insight) -> Optional[int]:
     """PostHog returns an alert's insight as a bare id on some versions and a nested object on
@@ -774,8 +926,24 @@ def apply_actions(client: PostHogClient, actions: list, dry_run: bool = True) ->
                 continue
             subscription_id = client.create_subscription(action["payload"])
             log.append(f"created subscription '{action['subscription']}' -> {subscription_id}")
-        elif kind in ("blocked_alert", "blocked_subscription"):
-            log.append(f"skipped '{action.get('alert') or action.get('subscription')}': "
+        elif kind == "create_variable":
+            if dry_run:
+                log.append(f"[dry-run] create insight variable '{action['payload']['name']}'")
+                continue
+            created = client.create_insight_variable(action["payload"])
+            log.append(f"created insight variable '{action['payload']['name']}' -> {created.get('id')}")
+        elif kind in ("create_endpoint", "update_endpoint"):
+            verb = "create" if kind == "create_endpoint" else "update"
+            if dry_run:
+                log.append(f"[dry-run] {verb} endpoint '{action['endpoint']}'")
+                continue
+            if kind == "create_endpoint":
+                client.create_endpoint(action["payload"])
+            else:
+                client.update_endpoint(action["endpoint"], action["payload"])
+            log.append(f"{verb}d endpoint '{action['endpoint']}'")
+        elif kind in ("blocked_alert", "blocked_subscription", "blocked_endpoint"):
+            log.append(f"skipped '{action.get('alert') or action.get('subscription') or action.get('endpoint')}': "
                        f"{action['reason']}")
     return log
 
@@ -789,6 +957,9 @@ def _print_specs() -> None:
                 print(query["source"]["query"])
             else:
                 print(json.dumps(query["source"], indent=2))
+    for spec in endpoint_specs():
+        print(f"\n-- endpoint :: {spec['name']}")
+        print(spec["sql"].strip())
 
 
 def _simulate(expression: str) -> int:
@@ -874,7 +1045,35 @@ def main(argv: Optional[list] = None) -> int:
         print("No recipient (set POSTHOG_REPORT_EMAIL or --email) — weekly report not provisioned.",
               file=sys.stderr)
 
-    all_actions = actions + alert_actions + subscription_actions
+    # Endpoints (issue #654): the distinct_id variable has to exist before any endpoint referencing
+    # it can be created, so it's applied first and re-read to get the live id/code_name — the same
+    # create-then-reread shape the dashboard/insight pass above uses.
+    try:
+        existing_variables = client.list_insight_variables()
+        existing_endpoints = client.list_endpoints()
+    except Exception as exc:
+        existing_variables, existing_endpoints = {}, {}
+        print(f"Could not read PostHog Endpoints state ({exc}) — endpoints not provisioned.",
+              file=sys.stderr)
+
+    variable_action = plan_variable(existing_variables)
+    variable_log = apply_actions(client, [variable_action], dry_run=dry_run)
+    for line in variable_log:
+        print(line)
+
+    if variable_action["action"] == "unchanged_variable":
+        variable_id, code_name = variable_action["id"], variable_action["code_name"]
+    elif not dry_run:
+        created = client.list_insight_variables().get(DISTINCT_ID_VARIABLE_NAME) or {}
+        variable_id, code_name = created.get("id"), created.get("code_name")
+    else:
+        variable_id, code_name = None, None
+
+    endpoint_actions = plan_endpoints(endpoint_specs(), existing_endpoints, variable_id, code_name)
+    for line in apply_actions(client, endpoint_actions, dry_run=dry_run):
+        print(line)
+
+    all_actions = actions + alert_actions + subscription_actions + [variable_action] + endpoint_actions
     print(summarize(all_actions))
     for spec in specs:
         dashboard_id = dashboards.get(spec["name"])
