@@ -14,6 +14,10 @@ A review row is also the gate on the extended trial (issue #499): `db.has_review
 Issue #502 adds a fourth, per-issue survey: the micro-CSAT asked after a fix the user reported
 ships ("did this fix it?"). Its key is BUILT (`fix_csat_<issue>`) rather than listed in `_SURVEYS`,
 and it is scheduled by the shipped-notice queue rather than by `select_survey`.
+
+Issue #653 hands TWO asks to PostHog Surveys — the NPS and a post-quality CSAT — while leaving the
+bespoke ones here. See the "PostHog Surveys" section at the bottom of this module and docs/surveys.md
+for who owns what and why nothing is ever asked twice.
 """
 
 from datetime import datetime, timedelta
@@ -110,12 +114,16 @@ def select_survey(activated_at: Optional[datetime] = None,
                   nps_answered_at: Optional[datetime] = None,
                   review_answered_at: Optional[datetime] = None,
                   sent_keys=(), last_sent_at: Optional[datetime] = None,
-                  now: Optional[datetime] = None) -> Optional[dict]:
+                  now: Optional[datetime] = None, nps_enabled: bool = True) -> Optional[dict]:
     """The one survey worth asking this user right now, or None.
 
     Rules: each survey is asked at most once (`sent_keys`); at most one ask per
     SURVEY_COOLDOWN_HOURS (`last_sent_at`); an already-answered survey is never re-asked. At trial
-    T-3d the review offer outranks NPS — it is the ask that gives the user something back."""
+    T-3d the review offer outranks NPS — it is the ask that gives the user something back.
+
+    `nps_enabled=False` retires the two homegrown NPS asks because PostHog Surveys now own NPS
+    (issue #653). The review offer is NOT retired with them: it is the extended-trial gate (#499),
+    which PostHog has no way to unlock."""
     now = now or datetime.now()
     if last_sent_at and now - last_sent_at < timedelta(hours=SURVEY_COOLDOWN_HOURS):
         return None
@@ -127,7 +135,7 @@ def select_survey(activated_at: Optional[datetime] = None,
     if trial_ending and not review_answered_at and SURVEY_REVIEW_TRIAL_END not in sent:
         return _survey(SURVEY_REVIEW_TRIAL_END)
 
-    if not nps_answered_at:
+    if nps_enabled and not nps_answered_at:
         if (activated_at and SURVEY_NPS_DAY3 not in sent
                 and now - activated_at >= timedelta(days=NPS_AFTER_ACTIVATION_DAYS)):
             return _survey(SURVEY_NPS_DAY3)
@@ -148,6 +156,10 @@ def next_survey_for_user(user_id: int) -> Optional[dict]:
         review_answered_at=get_latest_feedback_at(user_id, FeedbackSource.REVIEW),
         sent_keys=set(sent),
         last_sent_at=max(sent.values()) if sent else None,
+        # Read at the CALL SITE, never into a module constant — an import-time read is how a flag
+        # ends up doing nothing (docs/feature-flags.md). This is the ONE gate that stops the email
+        # beat and the in-app modal double-prompting a user PostHog is already asking.
+        nps_enabled=not posthog_surveys_enabled(user_id),
     )
 
 
@@ -276,3 +288,132 @@ def send_survey_prompt(user_id: int, survey: dict) -> bool:
         return False
     record_survey_prompt(user_id, survey["key"])
     return True
+
+
+# --- PostHog Surveys (issue #653) ---------------------------------------------------------------
+# PostHog owns the SCHEDULING of two asks — who gets them, when, and how long between surveys — and
+# this module owns what happens to the ANSWER. The split is deliberate: PostHog's targeting is
+# runtime-editable and its wait-between-surveys throttle is one rule instead of four; but a response
+# that only ever became a PostHog event would never reach the feedback->auto-work loop, which is the
+# whole reason LEM collects scores at all.
+#
+# So a response arrives TWICE on purpose and is counted ONCE:
+#   • the browser emits PostHog's own `survey sent` (that is what makes it a PostHog survey response,
+#     visible in the Surveys product and summarizable there), and
+#   • it POSTs the same answer here, where it becomes an ordinary `feedback` row and enters the
+#     classifier -> cluster -> GitHub issue pipeline like any bug report.
+# `track_survey_response` — the HOMEGROWN `survey_response` event — is deliberately NOT emitted on
+# this path. Two events for one answer would double every response-rate number on the dashboards.
+
+# The survey NAMES are the contract between three places that must agree: scripts/posthog_surveys.py
+# creates them, the SPA matches on them to know which form to render, and the API maps them onto a
+# feedback source. One string, not three.
+POSTHOG_NPS_SURVEY_NAME = "LEM NPS"
+POSTHOG_CSAT_SURVEY_NAME = "LEM CSAT — post quality"
+
+POSTHOG_KIND_NPS = "nps"
+POSTHOG_KIND_CSAT = "csat"
+
+# The post-quality CSAT is a 1-5 rating, same scale as the review form.
+CSAT_MIN, CSAT_MAX = 1, 5
+# At or below these, the answer is a complaint: it stays `new` so the auto-filing pass turns it into
+# a feedback issue. NPS's own banding already calls 0-6 a detractor.
+CSAT_LOW_SCORE = 2
+NPS_DETRACTOR_MAX = 6
+
+# Ask for NPS this long after the user ACTIVATED (the onboarding "aha", not signup). Mirrored by the
+# targeting rule in scripts/posthog_surveys.py — the number lives here so the test can hold the two
+# to each other.
+POSTHOG_NPS_AFTER_ACTIVATION_DAYS = 30
+# The CSAT is event-triggered on `post_approved`, but only once the user has approved enough posts to
+# have an opinion about the writing.
+POSTHOG_CSAT_MIN_APPROVALS = 5
+# Nobody sees a second PostHog survey inside this many days, whichever one they saw first.
+POSTHOG_SURVEY_WAIT_DAYS = 30
+
+_POSTHOG_KINDS: dict = {
+    POSTHOG_KIND_NPS: {
+        "survey_name": POSTHOG_NPS_SURVEY_NAME,
+        "source": FeedbackSource.NPS,
+        "type_hint": "nps",
+        "min": NPS_MIN, "max": NPS_MAX,
+    },
+    POSTHOG_KIND_CSAT: {
+        "survey_name": POSTHOG_CSAT_SURVEY_NAME,
+        "source": FeedbackSource.CSAT,
+        "type_hint": "post_quality_csat",
+        "min": CSAT_MIN, "max": CSAT_MAX,
+    },
+}
+
+
+def posthog_survey_kinds() -> dict:
+    """The registry as plain data — the SPA contract test and the provisioning script both read it
+    rather than re-listing the names."""
+    return {kind: dict(spec) for kind, spec in _POSTHOG_KINDS.items()}
+
+
+def posthog_surveys_enabled(user_id: Optional[int] = None) -> bool:
+    """Whether PostHog owns NPS/CSAT for this user. Fails open to POSTHOG_SURVEYS_ENABLED, so a
+    PostHog outage leaves the homegrown scheduler exactly as it was."""
+    try:
+        from cqc_lem.utilities.flags import POSTHOG_SURVEYS, flag_enabled
+        return flag_enabled(POSTHOG_SURVEYS, user_id)
+    except Exception as e:
+        log_warning("Could not resolve the PostHog-surveys flag — keeping the homegrown asks",
+                    exc=e, user_id=user_id)
+        return False
+
+
+def is_low_score(kind: str, score: int) -> bool:
+    """A score that should open a feedback report rather than be filed away as a happy answer."""
+    if kind == POSTHOG_KIND_NPS:
+        return int(score) <= NPS_DETRACTOR_MAX
+    return int(score) <= CSAT_LOW_SCORE
+
+
+def posthog_response_sentiment(kind: str, score: int) -> str:
+    return nps_bucket(int(score)) if kind == POSTHOG_KIND_NPS else review_sentiment(int(score))
+
+
+def record_posthog_survey_response(user_id: Optional[int], kind: str, score: int,
+                                   comment: Optional[str] = None,
+                                   survey_id: Optional[str] = None,
+                                   survey_name: Optional[str] = None,
+                                   context: Optional[dict] = None) -> Optional[dict]:
+    """Persist one PostHog survey answer as a `feedback` row so it enters the auto-work loop.
+
+    A low score, or ANY free text, is left at status `new` — that is what turns it into a feedback
+    issue. A happy score with nothing written is stamped `resolved` on the spot: there is nothing to
+    classify, and a promoter who typed nothing must not burn an LLM call every time one lands.
+
+    Returns None when the kind/score is unusable (the endpoint validates too — this is the belt).
+    """
+    spec = _POSTHOG_KINDS.get(kind)
+    if spec is None:
+        return None
+    try:
+        value = int(score)
+    except (TypeError, ValueError):
+        return None
+    if not spec["min"] <= value <= spec["max"]:
+        return None
+
+    text = (comment or "").strip()
+    body = text or f"{kind.upper()} {value}/{spec['max']} — no comment"
+    low = is_low_score(kind, value)
+    payload = {**(context or {}), "score": value, "survey_kind": kind,
+               "posthog_survey_id": survey_id, "posthog_survey_name": survey_name,
+               # The marker that says "PostHog already counted this response" — anything reading
+               # feedback rows for survey volume must not add it to the `survey_response` stream.
+               "origin": "posthog_survey"}
+    feedback_id = insert_feedback(body, user_id=user_id, source=spec["source"],
+                                  type_hint=spec["type_hint"], context=payload,
+                                  sentiment=posthog_response_sentiment(kind, value))
+    if not feedback_id:
+        return None
+    actionable = bool(low or text)
+    if not actionable:
+        update_feedback_triage(feedback_id, status=FeedbackStatus.RESOLVED)
+    return {"feedback_id": feedback_id, "sentiment": posthog_response_sentiment(kind, value),
+            "low_score": low, "actionable": actionable}

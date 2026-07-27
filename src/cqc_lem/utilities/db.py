@@ -2784,15 +2784,25 @@ def get_user_analytics_profile(user_id: int) -> dict:
     """The non-sensitive person facts the SPA sets on the PostHog person at $identify (issue #646):
     plan tier/status, timezone and the signup timestamp. `users` has no created_at column, so the
     signup time is trial_started_at falling back to updated_at — the same convention the cohort
-    query uses. Never returns credentials; the SPA already knows the email."""
+    query uses. Never returns credentials; the SPA already knows the email.
+
+    Issue #653 adds the two facts PostHog Surveys TARGET on: when onboarding actually completed (the
+    activation "aha", not signup — a user who signed up and stalled has no opinion worth surveying)
+    and how many posts the user has ever approved. "Ever approved" is deliberately not
+    `status='approved'`: an approved post moves on to scheduled and then posted, so counting the
+    current status alone would reset the tally the moment automation ran."""
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute(
-            "SELECT subscription_tier, subscription_status, timezone, "
-            "COALESCE(trial_started_at, updated_at) AS created_at "
-            "FROM users WHERE id = %s",
-            (user_id,))
+            "SELECT u.subscription_tier, u.subscription_status, u.timezone, "
+            "COALESCE(u.trial_started_at, u.updated_at) AS created_at, "
+            "o.activated_at AS onboarding_completed_at, "
+            "(SELECT COUNT(*) FROM posts p WHERE p.user_id = u.id "
+            " AND p.status IN (%s, %s, %s)) AS posts_approved "
+            "FROM users u LEFT JOIN onboarding_state o ON o.user_id = u.id "
+            "WHERE u.id = %s",
+            (str(PostStatus.APPROVED), str(PostStatus.SCHEDULED), str(PostStatus.POSTED), user_id))
         row = cursor.fetchone()
         return row or {}
     except mysql.connector.Error as err:

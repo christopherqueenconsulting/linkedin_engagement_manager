@@ -394,6 +394,36 @@ stdlib-only. The SPA bootstraps from `GET /api/flags` (server-resolved, so no fl
 disagreement between browser, API and workers) via `hooks/useFeatureFlags.ts` — NOT through
 posthog-js, which stays the analytics surface. Full posture: `docs/feature-flags.md`.
 
+### Surveys — NPS/CSAT via PostHog (issue #653)
+
+LEM's four asks now have TWO owners, and the line between them is what an answer can DO. PostHog
+Surveys owns the two general-purpose ones — the **NPS** at 30 days past ACTIVATION (not signup; a
+stalled user's score is about onboarding) and the **post-quality CSAT** triggered by `post_approved`
+once `posts_approved >= 5` — because their targeting and cadence should be tunable without a deploy.
+`utilities/surveys.py` keeps the two bespoke ones: the trial-T-3d **review** (it is the #499
+extended-trial gate, which PostHog cannot unlock) and the per-issue **fix CSAT** (#502).
+
+Both PostHog surveys are type **`api`** and rendered headless in `PostHogSurveyModal.tsx`, not as
+PostHog's popover — a popover answer is a PostHog event and NOTHING ELSE, and the reason LEM asks for
+scores at all is the feedback→auto-work loop. So one answer takes two paths and is counted ONCE: the
+browser emits PostHog's own `survey sent` (native `$survey_response`/`$survey_questions` shape, so it
+shows up in the Surveys product), and the same answer POSTs to `/api/survey/posthog` where it becomes
+a `feedback` row that the classifier files as an issue. `track_survey_response` is deliberately NOT
+emitted on that path — two events per answer would double every response-rate number. A detractor
+(NPS ≤6 / CSAT ≤2) or ANY free text stays `new` so the loop files it; a happy score with no comment
+is stamped `resolved` on the spot rather than burning an LLM call per promoter.
+
+Rendering it ourselves means posthog-js never sees the ask, so `markSurveySeen()` is what advances
+its seen/wait-period bookkeeping — drop it and the 30-day `seenSurveyWaitPeriodInDays` throttle
+silently stops working. Targeting reads person properties the SPA sets at `$identify` off
+`GET /auth/session` (`onboarding_completed_at`, `posts_approved` — counted across
+approved/scheduled/posted, because an approved post moves on and a current-status count would reset
+the tally). `scripts/posthog_surveys.py` is the ONE place the surveys are defined (`--dry-run` diffs,
+`--apply` converges, `--launch` is a separate opt-in so an apply never starts collecting from a
+definition nobody read). The `posthog-surveys-enabled` flag stands the homegrown NPS asks down
+(`select_survey(nps_enabled=False)`) so nobody is prompted twice; the review offer is untouched.
+Full posture: `docs/surveys.md`.
+
 ## CI Gates
 
 Before merging any PR, all of the following must pass:

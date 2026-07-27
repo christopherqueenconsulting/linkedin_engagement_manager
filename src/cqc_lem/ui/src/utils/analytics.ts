@@ -8,7 +8,7 @@
 // Disabled means DISABLED: with no VITE_POSTHOG_KEY the posthog-js chunk is never imported, so the
 // build ships it as a separate lazy chunk the browser never fetches and no request is ever made.
 
-import type { PostHog } from 'posthog-js'
+import type { PostHog, Survey } from 'posthog-js'
 
 const KEY = import.meta.env.VITE_POSTHOG_KEY as string | undefined
 const HOST = (import.meta.env.VITE_POSTHOG_HOST as string | undefined) || 'https://us.i.posthog.com'
@@ -184,7 +184,16 @@ export type AnalyticsIdentity = {
   planStatus?: string | null
   timezone?: string | null
   createdAt?: string | null
+  // The two facts PostHog Surveys target on (issue #653). Both are set on EVERY identify because
+  // both change — an approval count frozen at $set_once would gate the CSAT forever.
+  onboardingCompletedAt?: string | null
+  postsApproved?: number | null
 }
+
+// The approval count this browser last told PostHog about, so recordPostApproval() can keep the
+// person property in step within a session instead of waiting for the next session check. null
+// means we never had a server-side baseline and must not invent one.
+let approvedCount: number | null = null
 
 // Unify the anonymous browser person with the backend's str(user_id) person. Plan facts are set on
 // every call (they change); the signup date is $set_once so a later call can't rewrite history.
@@ -195,14 +204,88 @@ export function identifyUser(identity: AnalyticsIdentity): void {
   if (identity.plan) props.plan = identity.plan
   if (identity.planStatus) props.plan_status = identity.planStatus
   if (identity.timezone) props.timezone = identity.timezone
+  if (identity.onboardingCompletedAt) props.onboarding_completed_at = identity.onboardingCompletedAt
+  if (typeof identity.postsApproved === 'number') {
+    approvedCount = identity.postsApproved
+    props.posts_approved = identity.postsApproved
+  }
   const setOnce = identity.createdAt ? { created_at: identity.createdAt } : undefined
   withClient((ph) => ph.identify(String(identity.userId), props, setOnce))
+}
+
+// A post-review decision that went APPROVED. Captures the product event and advances the
+// `posts_approved` person property the CSAT survey is gated on, so the ask can fire on the approval
+// that crosses the threshold rather than one session later. With no server baseline (analytics
+// identified before the session check landed) only the event is sent — a made-up count would target
+// the survey at the wrong people.
+export function recordPostApproval(properties?: Record<string, unknown>): void {
+  capture(EVENTS.postApproved, properties)
+  if (approvedCount !== null) {
+    const total = (approvedCount += 1)
+    withClient((ph) => ph.setPersonProperties({ posts_approved: total }))
+  }
+  approvalListeners.forEach((listener) => {
+    try {
+      listener()
+    } catch {
+      // A listener must never break the capture that triggered it.
+    }
+  })
+}
+
+// The CSAT survey is triggered by an approval, and its eligibility can only change AT one — so the
+// survey hook subscribes here rather than polling. Kept in this module because it is the same event
+// `recordPostApproval` reports to PostHog; two places emitting "a post was approved" would drift.
+const approvalListeners = new Set<() => void>()
+
+export function onPostApproval(listener: () => void): () => void {
+  approvalListeners.add(listener)
+  return () => {
+    approvalListeners.delete(listener)
+  }
 }
 
 // Logout must break the link between this browser and the person, or the next user on the same
 // machine inherits their events.
 export function resetAnalytics(): void {
+  approvedCount = null
   withClient((ph) => ph.reset())
+}
+
+// --- PostHog Surveys, rendered headless (issue #653) ------------------------------------------
+// The surveys themselves are `api` type, so posthog-js never draws anything: it decides WHO is
+// eligible and we draw the form. These three wrappers are the whole surface the survey components
+// need, which keeps this module the SPA's ONE PostHog reader.
+
+export const SURVEY_EVENTS = {
+  shown: 'survey shown',
+  sent: 'survey sent',
+  dismissed: 'survey dismissed',
+} as const
+
+export type ActiveSurvey = Survey
+
+// Surveys whose targeting + display conditions the current person satisfies right now. `reload`
+// forces a fresh fetch — used right after an event that can newly qualify someone (a post
+// approval), where the cached definition set would still say "not eligible".
+export function activeMatchingSurveys(
+  callback: (surveys: ActiveSurvey[]) => void,
+  reload = false
+): void {
+  if (!KEY) {
+    callback([])
+    return
+  }
+  withClient((ph) => ph.getActiveMatchingSurveys((surveys) => callback(surveys ?? []), reload))
+}
+
+// Tell posthog-js we displayed this survey. Without it the SDK has no record of the ask, so its
+// "already seen" and wait-between-surveys checks would offer the same survey again on every load —
+// those checks are local state the SDK only writes when IT renders.
+export function markSurveySeen(surveyId: string, iteration?: number | null): void {
+  // `surveys` is a tree-shakeable extension, so it is legitimately absent in a build that dropped
+  // it — an optional call, not a defensive one.
+  withClient((ph) => ph.surveys?.markSurveyAsSeen?.(surveyId, { iteration: iteration ?? null }))
 }
 
 export function capture(event: string, properties?: Record<string, unknown>): void {

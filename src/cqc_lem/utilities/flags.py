@@ -70,6 +70,7 @@ COMMENT_RESEARCH = "comment-research-enabled"
 TUTORIAL_VIDEOS = "tutorial-videos-enabled"
 FEED_FALLBACK_DEFAULT = "feed-fallback-when-empty-default"
 COST_ROUTING = "cost-routing-enabled"
+POSTHOG_SURVEYS = "posthog-surveys-enabled"
 
 FLAGS: Dict[str, FlagSpec] = {
     spec.key: spec for spec in (
@@ -109,6 +110,17 @@ FLAGS: Dict[str, FlagSpec] = {
                          "into the routing policy document. The proxy's own "
                          "COST_AWARE_ROUTING_ENABLED is a SEPARATE switch and is deliberately NOT a "
                          "flag: routing_policy.py must stay stdlib-only."),
+        ),
+        FlagSpec(
+            key=POSTHOG_SURVEYS,
+            env_var="POSTHOG_SURVEYS_ENABLED",
+            default=False,
+            owner="growth",
+            description=("PostHog Surveys own NPS + the post-quality CSAT (issue #653). ON hands "
+                         "those two asks to PostHog's targeting and stands the homegrown NPS "
+                         "scheduler down, so a user is never prompted twice. The bespoke asks — the "
+                         "review that unlocks the extended trial, the per-issue fix CSAT — are "
+                         "unaffected either way."),
         ),
     )
 }

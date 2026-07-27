@@ -58,7 +58,8 @@ class TestRegistry:
 
     def test_exported_constants_are_all_registered(self):
         for key in (flags.COMMENT_RESEARCH, flags.TUTORIAL_VIDEOS,
-                    flags.FEED_FALLBACK_DEFAULT, flags.COST_ROUTING):
+                    flags.FEED_FALLBACK_DEFAULT, flags.COST_ROUTING,
+                    flags.POSTHOG_SURVEYS):
             assert key in flags.FLAGS
 
     def test_safety_controls_are_not_flags(self):
