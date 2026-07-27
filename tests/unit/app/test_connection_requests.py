@@ -3,6 +3,8 @@
 import pytest
 from unittest.mock import patch
 
+from cqc_lem.utilities.db import NO_CONNECT_BUTTON_MESSAGE
+
 pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"
@@ -32,12 +34,12 @@ class TestSendConnectionRequest:
         with patch("cqc_lem.utilities.db.get_connection_request", return_value=self._req()), \
              patch("cqc_lem.utilities.db.count_invites_sent_today", return_value=0), \
              patch(f"{_RA}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
-             patch(f"{_RA}.invite_to_connect_now", return_value=(False, "Failed to find more or connect button")), \
+             patch(f"{_RA}.invite_to_connect_now", return_value=(False, NO_CONNECT_BUTTON_MESSAGE)), \
              patch("cqc_lem.utilities.db.update_connection_request_status") as upd:
             ra.send_connection_request(3)
         from cqc_lem.utilities.db import ConnectionRequestStatus
         upd.assert_called_once_with(3, ConnectionRequestStatus.FAILED,
-                                   failure_reason="Failed to find more or connect button")
+                                   failure_reason=NO_CONNECT_BUTTON_MESSAGE)
 
     def test_defers_when_cap_reached(self):
         from cqc_lem.app import run_automation as ra
