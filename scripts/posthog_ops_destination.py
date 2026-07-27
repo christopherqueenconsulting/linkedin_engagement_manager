@@ -43,7 +43,14 @@ DEFAULT_APP_HOST = "https://us.posthog.com"
 DESTINATION_NAME = "LEM ops ping — LinkedIn 429 breaker tripped"
 TRIGGER_EVENT = "rate_limit_trip"
 TEMPLATE_ID = "template-webhook"
-FUNCTION_TYPE = "internal_destination"
+# `destination` (not `internal_destination`): internal_destination is PostHog's reserved type for
+# its OWN internal-only signals ($insight_alert_firing, $activity_log_entry_created, ...) — those
+# don't flow through the regular event stream, and neither does an internal_destination function
+# fire for anything else. `rate_limit_trip` is an ordinary captured event (it already backs a
+# regular trends insight in posthog_provision.py), so it needs the standard `destination` type that
+# consumes the normal event-ingestion pipeline; `internal_destination` would create successfully but
+# never actually fire.
+FUNCTION_TYPE = "destination"
 DESCRIPTION = (
     "Realtime ping the moment the LinkedIn 429 circuit breaker trips (utilities/linkedin/"
     "rate_limit.py), rather than waiting for the daily 'LEM — LinkedIn 429 spike' threshold "

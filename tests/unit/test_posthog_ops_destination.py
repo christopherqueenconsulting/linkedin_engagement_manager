@@ -29,7 +29,7 @@ class TestDestinationPayload:
 
     def test_payload_shape(self):
         payload = pod.destination_payload("https://hooks.example.com/x")
-        assert payload["type"] == "internal_destination"
+        assert payload["type"] == "destination"
         assert payload["template_id"] == "template-webhook"
         assert payload["name"] == pod.DESTINATION_NAME
         assert payload["enabled"] is True

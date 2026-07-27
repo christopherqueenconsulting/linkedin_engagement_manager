@@ -53,9 +53,13 @@ scripts/posthog_ops_destination.py                   # dry run (exit 2 = a chang
 scripts/posthog_ops_destination.py --apply           # create/update it
 ```
 
-It provisions ONE `internal_destination` (`template-webhook`) filtered on `rate_limit_trip` — LEM's
-own "the 429 breaker just tripped" event, already emitted by `mark_rate_limited()` (issue #650). The
+It provisions ONE `destination` (`template-webhook`) filtered on `rate_limit_trip` — LEM's own "the
+429 breaker just tripped" event, already emitted by `mark_rate_limited()` (issue #650). The
 destination URL comes from `POSTHOG_OPS_WEBHOOK_URL`, read only at provision time, never hardcoded.
+(Deliberately not `internal_destination`: that type is reserved for PostHog's own internal-only
+signals like `$insight_alert_firing`/`$activity_log_entry_created`, which never share a pipeline
+with an ordinary captured event like `rate_limit_trip` — verified against the PostHog API docs and
+MCP before writing this script.)
 
 Rather than fabricate a target or paste in a credential the pipeline shouldn't be handling
 unsupervised, the script is **inert by default**: with no `POSTHOG_OPS_WEBHOOK_URL` set, both
