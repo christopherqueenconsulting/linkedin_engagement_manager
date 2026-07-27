@@ -102,6 +102,9 @@ _TITLE_RE = re.compile(r"^\w+\((?P<component>[\w-]+)\):\s*(?P<title>.+)$")
 
 MAX_REPAIR_ISSUES = 50
 REPAIR_COMMENT_PAGE_SIZE = 100
+# A refused WRITE stops the sweep on the first one; a refused READ can be a single deleted issue, so
+# it takes a short run of them before the same conclusion is drawn.
+REPAIR_READ_FAILURE_STOP = 3
 
 
 class RepairAction:
@@ -770,8 +773,16 @@ def recluster_feedback(limit: int = 200) -> dict:
 def parse_filed_issue(title: str, body: str) -> Optional[tuple]:
     """(classification, reporter_count) read back off an issue THIS loop filed, or None when the
     provenance line is missing or unreadable. Only the fields the label set depends on are
-    reconstructed — `summary` stays empty because the repair never rewrites the body."""
-    provenance = _PROVENANCE_RE.search(body or "")
+    reconstructed — `summary` stays empty because the repair never rewrites the body.
+
+    Both lines are read relative to OUR provenance block, never as the first match anywhere in the
+    body. Everything above that block is the `## Why` summary — model-written from user-supplied
+    text — so a report whose summary quotes "reported by 5 distinct users" would otherwise dictate
+    the demand its own issue is repaired with, and that is exactly the signal that decides whether a
+    feature is built unattended."""
+    text = body or ""
+    marker = text.find(FILED_PROVENANCE_MARKER)
+    provenance = _PROVENANCE_RE.search(text, max(marker, 0))
     if not provenance:
         return None
     try:
@@ -781,10 +792,12 @@ def parse_filed_issue(title: str, body: str) -> Optional[tuple]:
         confidence = float(provenance.group("confidence"))
     except ValueError:
         return None
-    demand = _DEMAND_RE.search(body or "")
+    # `build_issue_body` puts the demand line in the paragraph immediately BEFORE the provenance
+    # block, so the LAST match in front of it is ours and anything a summary quoted is behind it.
+    demand = list(_DEMAND_RE.finditer(text[:marker] if marker > 0 else text))
     # No demand line means no reporters PROVEN — 0, never 1: floored up, a first-of-its-kind feature
     # would repair itself into `agent:ready` on demand it never had.
-    reporter_count = int(demand.group("reporters")) if demand else 0
+    reporter_count = int(demand[-1].group("reporters")) if demand else 0
     named = _TITLE_RE.match((title or "").strip())
     classification = FeedbackClassification(
         category=category, severity=severity,
@@ -850,13 +863,15 @@ def repair_auto_filed_issues(limit: int = MAX_REPAIR_ISSUES) -> dict:
     calls failed (issue #718). Runs on every filing beat, so a broken window self-heals as soon as
     the token is fixed instead of waiting on a human to hand-label each issue.
 
-    One GET per open cluster and nothing written for a healthy issue. It stops at the FIRST refusal:
-    a permission failure is deterministic, so if one repair is forbidden the next 49 are too, and
-    hammering GitHub would only bury the one error that says why."""
+    One GET per open cluster and nothing written for a healthy issue. It stops at the FIRST refused
+    WRITE: a permission failure is deterministic, so if one repair is forbidden the next 49 are too,
+    and hammering GitHub would only bury the one error that says why. A refused READ gets the same
+    treatment after `REPAIR_READ_FAILURE_STOP` in a row — one unreadable issue is just a deleted
+    issue, but a run of them is the same broken token and must not cost 50 errors every beat."""
     if not github_token():
         return {"scanned": 0, "repaired": 0, "failed": 0}
     seen: set = set()
-    scanned = repaired = failed = 0
+    scanned = repaired = failed = unreadable = 0
     for cluster in get_open_feedback_clusters(max(1, int(limit))):
         number = (cluster or {}).get("github_issue_number")
         if not number or int(number) in seen:
@@ -866,7 +881,14 @@ def repair_auto_filed_issues(limit: int = MAX_REPAIR_ISSUES) -> dict:
         issue = github_request("GET", f"issues/{int(number)}")
         if not isinstance(issue, dict):
             failed += 1
+            unreadable += 1
+            if unreadable >= REPAIR_READ_FAILURE_STOP:
+                log_error(f"Feedback issue repair pass stopped — {unreadable} issue reads in a row "
+                          f"failed, so the rest cannot be checked either. {TOKEN_PERMISSION_HINT}",
+                          api_provider="github")
+                break
             continue
+        unreadable = 0
         action = repair_filed_issue(issue)
         if action == RepairAction.REPAIRED:
             repaired += 1
