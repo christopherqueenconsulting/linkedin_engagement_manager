@@ -30,7 +30,7 @@ from cqc_lem.utilities.ai.content_alignment import humanize_text, split_link_for
     append_link_to_comment, resolve_artifact_delivery, ARTIFACT_KIND_LEAD_MAGNET
 from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, insert_new_log, LogActionType, \
-    CONNECTION_REQUEST_SENT_MESSAGE, ALREADY_CONNECTED_MESSAGE, \
+    CONNECTION_REQUEST_SENT_MESSAGE, ALREADY_CONNECTED_MESSAGE, NO_CONNECT_BUTTON_MESSAGE, \
     get_engagement_preferences, count_comments_today, get_recent_engagers, upsert_engager, \
     get_newsletter_settings, mark_newsletter_published, record_newsletter_subscriber_stat, \
     get_newsletter_edition, mark_edition_published, mark_edition_failed, \
@@ -4884,6 +4884,35 @@ def _profile_is_first_degree(driver) -> bool:
     return False
 
 
+def _click_connect_affordance(driver, wait, user_id: int) -> bool:
+    """Click Connect on an open profile — the direct button first, else the one inside the
+    More-actions overflow. False when NEITHER is there, which is an ordinary outcome (an invite is
+    already pending, LinkedIn only offers Follow/Message on that profile, or the SDUI selector
+    drifted) and is why the miss is a WARNING and not an error (issue #571)."""
+    try:
+        click_element_wait_retry(driver, wait, '//main//button[contains(@aria-label, "Invite ")]',
+                                 "Finding Connect Button", max_retry=1, use_action_chain=True)
+        myprint("Found Connect Button and clicked it")
+        return True
+    except Exception:
+        pass  # No direct Connect button — LinkedIn buries it in the More menu on many profiles.
+
+    try:
+        click_element_wait_retry(driver, wait,
+                                 '//main//button[contains(@aria-label,"More actions")]',
+                                 "Finding More Button", max_retry=1, use_action_chain=True)
+        myprint("Found More Button and clicked it")
+
+        click_element_wait_retry(driver, wait, '//main//div[contains(@aria-label,"connect")]',
+                                 "Finding Connect Button", max_retry=1, use_action_chain=True)
+        myprint("Found Connect Button and clicked it")
+        return True
+    except Exception as e:
+        log_warning("No Connect option on this profile (direct button and More menu both missed)",
+                    exc=e, user_id=user_id, action_type="invite_connect")
+        return False
+
+
 def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -> "tuple[bool, str]":
     """Core connect-invite send: open the profile, click Connect (+ optional note), log the result.
     Returns (sent, result_message) — the message is the failure reason when `sent` is False, which
@@ -4918,36 +4947,13 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -
                            message=ALREADY_CONNECTED_MESSAGE)
             return False, ALREADY_CONNECTED_MESSAGE
 
-        # Locate the connect button
-        try:
-            click_element_wait_retry(driver, wait, '//main//button[contains(@aria-label, "Invite ")]',
-                                     "Finding Connect Button", max_retry=1, use_action_chain=True)
-
-            myprint("Found Connect Button and clicked it")
-
-
-        except Exception as ce:
-            # If it doesn't exist click the more then find the connect button there
-            try:
-                # Click the last more button
-                click_element_wait_retry(driver, wait,
-                                         '//main//button[contains(@aria-label,"More actions")]',
-                                         "Finding More Button", max_retry=1, use_action_chain=True)
-
-                # driver.find_elements(By.XPATH, '//main//button[contains(@aria-label,"More actions")]')[-1].click()
-
-                myprint("Found More Button and clicked it")
-
-                # Click the last connect button
-                click_element_wait_retry(driver, wait, '//main//div[contains(@aria-label,"connect")]',
-                                         "Finding Connect Button", max_retry=1, use_action_chain=True)
-
-                # driver.find_elements(By.XPATH, '//div[contains(@aria-label,"connect")]')[-1].click()
-
-                myprint("Found Connect Button and clicked it")
-            except Exception as e:
-                log_error("Failed to find more or connect button", exc=e, user_id=user_id, action_type="invite_connect")
-                result = f"Failed to find more or connect button: Error: {str(e)}"
+        # Locate the connect button. With no Connect dialog open the note/send steps below can only
+        # fail, and their errors would bury the real reason — so stop here with a named one instead.
+        if not _click_connect_affordance(driver, wait, user_id):
+            insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
+                           result=LogResultType.FAILURE, post_url=profile_url,
+                           message=NO_CONNECT_BUTTON_MESSAGE)
+            return False, NO_CONNECT_BUTTON_MESSAGE
 
         # If connection_message exist click the With note button
         if message:

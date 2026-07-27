@@ -378,6 +378,12 @@ CONNECTION_REQUEST_SENT_MESSAGE = "Connection Request Sent Successfully"
 # failure_reason so the Connections review UI explains a FAILED row instead of just colouring it red.
 ALREADY_CONNECTED_MESSAGE = "Already connected (1st-degree) — no invite to send"
 
+# The profile offered no Connect affordance at all — neither the direct button nor one inside the
+# More-actions menu (issue #571). Usually an invite is already pending or LinkedIn only offers
+# Follow/Message on that profile; either way there is nothing to send, so the invite stops here
+# rather than falling through to the note/send steps that can only fail after it.
+NO_CONNECT_BUTTON_MESSAGE = "No Connect option on this profile (invite may already be pending)"
+
 
 def store_cookies(user_email: str, cookies: list[dict]) -> None:
     connection = get_db_connection()
