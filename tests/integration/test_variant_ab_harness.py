@@ -66,6 +66,10 @@ class _FakeCursor:
                     continue
                 self._result.append((v["variant_key"], self.posts[v["post_id"]]["scheduled_time"],
                                      r["reactions"], r["comments"], r["reposts"], r["impressions"]))
+        elif s.startswith("SELECT post_id, variant_key FROM post_variants"):
+            user_id = params[0]
+            self._result = [(v["post_id"], v["variant_key"]) for v in self.variants.values()
+                            if v["user_id"] == user_id]
         else:  # pragma: no cover - defensive
             raise AssertionError(f"unexpected SQL: {s}")
 
@@ -136,6 +140,28 @@ class TestVariantABHarness:
         assert [r["key"] for r in result["ranking"]] == ["B", "A"]
         assert result["ranking"][0]["samples"] == 2
         assert result["ranking"][0]["metric"] == "engagement_rate"  # every row has impressions
+
+    def test_shipped_variant_lookup_feeds_the_posthog_experiment_label(self):
+        """Issue #652: the stats sweep reads {post_id: variant_key} ONCE and puts each post's arm on
+        its `post_outcome` event, so PostHog can compare variants beside select_variant_winners."""
+        from cqc_lem.utilities.db import get_shipped_variant_keys, record_shipped_variant
+        from cqc_lem.utilities.experiments import POST_MEDIA_VARIANT, experiment_properties
+
+        posts = {1: _post(datetime(2026, 7, 23, 9, 0)), 2: _post(datetime(2026, 7, 22, 9, 0))}
+        variants = {}
+
+        def _conn(*a, **k):
+            return _FakeConn(posts, [], variants)
+
+        with patch(f"{_DB}.get_db_connection", side_effect=_conn):
+            record_shipped_variant(1, 1, "flux-dev|gen4_turbo|1:1")
+            record_shipped_variant(1, 2, "flux-1.1-pro|gen4_turbo|1:1")
+            record_shipped_variant(2, 3, "other-user")  # never leaks across users
+            shipped = get_shipped_variant_keys(1)
+
+        assert shipped == {1: "flux-dev|gen4_turbo|1:1", 2: "flux-1.1-pro|gen4_turbo|1:1"}
+        props = experiment_properties(1, extra={POST_MEDIA_VARIANT: shipped[1]})
+        assert props == {f"$feature/{POST_MEDIA_VARIANT}": "flux-dev-gen4-turbo-1-1"}
 
     def test_re_recording_overwrites_shipped_variant(self):
         from cqc_lem.utilities.db import record_shipped_variant, get_variant_outcome_rows

@@ -352,6 +352,7 @@ class TestScrapeStatsTask:
              patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
              patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://x/urn"), \
              patch(f"{_RA}._post_social_counts", return_value={"reactions": 12, "comments": 3}), \
+             patch(f"{_RA}.get_shipped_variant_keys", return_value={}), \
              patch(f"{_RA}.record_post_stats") as rec, patch(f"{_RA}.quit_gracefully"):
             from cqc_lem.app.run_automation import auto_scrape_post_stats
             result = auto_scrape_post_stats.run(user_id=1)

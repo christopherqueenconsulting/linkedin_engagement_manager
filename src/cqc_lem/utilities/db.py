@@ -5560,6 +5560,25 @@ def record_shipped_variant(user_id: int, post_id: int, variant_key: str,
         connection.close()
 
 
+def get_shipped_variant_keys(user_id: int) -> dict:
+    """``{post_id: variant_key}`` for every A/B variant this user has SHIPPED (issue #396).
+
+    Read once per stats sweep so each `post_outcome` event can carry the variant it belongs to
+    (issue #652) — the per-post alternative would be one query per post inside the Selenium loop.
+    An empty dict on any DB error: a missing experiment label must never cost us the outcome."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT post_id, variant_key FROM post_variants WHERE user_id=%s", (user_id,))
+        return {r[0]: r[1] for r in (cursor.fetchall() or []) if r[1]}
+    except mysql.connector.Error as err:
+        myprint(f"Could not get shipped variant keys for user {user_id} | Error: {err}")
+        return {}
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_variant_outcome_rows(user_id: int) -> list:
     """Realized outcomes for shipped A/B variants (issue #396 / D2). Joins each recorded shipped
     variant (`post_variants`) with its post's LATEST captured `post_stats` row → dicts of

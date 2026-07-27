@@ -179,3 +179,48 @@ def test_redis_url_prefers_the_shared_override(router_module, monkeypatch):
 def test_flag_parsing(router_module, monkeypatch, value, expected):
     monkeypatch.setenv("COST_AWARE_ROUTING_ENABLED", value)
     assert router_module._cost_routing_enabled() is expected
+
+
+# ── the PostHog experiment reaches the router through the document (issue #652) ──
+
+async def test_the_flag_cohort_survives_the_container_boundary(router_module, monkeypatch):
+    """The end-to-end reproducibility criterion: a PostHog answer resolved app-side must come out the
+    other side of Redis's JSON and decide this hook's down-route.
+
+    routing_policy.py cannot call PostHog (it is mounted into a container with no LEM install), so the
+    `arms` map in the policy document IS the hand-off. Building the document with the real
+    `cost_routing` code and serializing it the way `publish_policy` does is what pins that both halves
+    still agree — including that a JSON round-trip turns the int user id into a string key."""
+    from datetime import date
+
+    from cqc_lem.utilities import cost_routing
+
+    monkeypatch.setenv("COST_AWARE_ROUTING_ENABLED", "true")
+    previous = {"version": 1, "enabled": True, "buckets": {"content:lem-complex": {
+        "id": "content:lem-complex#1", "feature": "content", "from_tier": "lem-complex",
+        "to_tier": "lem-medium", "state": "experiment", "cohort_pct": 0.1}}}
+    # PostHog put user 4 in the treatment and user 5 in control; the 10% hash would have spared both.
+    built = cost_routing.build_routing_policy(previous, [], date(2026, 8, 1), enabled=True,
+                                             arms={4: "treatment", 5: "control"})
+    document = json.loads(json.dumps(built["policy"]))
+
+    router = router_module.LEMComplexityRouter()
+    router._policy, router._policy_fetched_at = document, float("inf")
+    assert await _route(router, "lem-complex", metadata={"feature": "content", "user_id": 4}) \
+        == "lem-medium"
+    assert await _route(router, "lem-complex", metadata={"feature": "content", "user_id": 5}) \
+        == "lem-complex"
+    # A user the experiment never answered for still gets the pre-#652 hash cohorting.
+    unenrolled = routing_policy_arm(router_module, document, 99)
+    assert unenrolled == routing_policy_hash_arm(router_module, document, 99)
+
+
+def routing_policy_arm(router_module, document, user_id):
+    bucket = document["buckets"]["content:lem-complex"]
+    return router_module.routing_policy.assign_arm(user_id, bucket)
+
+
+def routing_policy_hash_arm(router_module, document, user_id):
+    """The same bucket with its flag answers stripped — i.e. the hash-only decision."""
+    bucket = {k: v for k, v in document["buckets"]["content:lem-complex"].items() if k != "arms"}
+    return router_module.routing_policy.assign_arm(user_id, bucket)

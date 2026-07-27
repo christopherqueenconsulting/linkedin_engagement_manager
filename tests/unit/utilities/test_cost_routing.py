@@ -399,3 +399,127 @@ def test_main_exits_2_on_a_rollback():
     report["changes"] = []
     with patch.object(cr, "collect_routing_report", return_value=report):
         assert cr.main([]) == 0
+
+
+# ── PostHog cohorting (issue #652) ──
+# The arm now comes from a PostHog experiment flag, resolved here (app-side) and written into the
+# policy document the LiteLLM router reads — routing_policy.py must stay stdlib-only.
+
+def test_normalize_arms_stringifies_ids_and_drops_unusable_values():
+    """The document is JSON in Redis, so `flag_arm` compares STRING keys — an int key written here
+    would survive the round-trip as a string and match nothing on the way back."""
+    assert cr.normalize_arms({7: rp.ARM_TREATMENT, "8": rp.ARM_CONTROL}) == {
+        "7": rp.ARM_TREATMENT, "8": rp.ARM_CONTROL}
+    assert cr.normalize_arms({7: "TREATMENT", 8: None, None: rp.ARM_TREATMENT,
+                              rp.SYSTEM_USER_ID: rp.ARM_TREATMENT, "": rp.ARM_CONTROL}) == {}
+    assert cr.normalize_arms(None) == {}
+
+
+def test_normalize_arms_caps_the_document_and_says_so():
+    arms = {i: rp.ARM_TREATMENT for i in range(cr.ARMS_MAX_USERS + 10)}
+    with patch.object(cr, "log_warning") as warned:
+        capped = cr.normalize_arms(arms)
+    assert len(capped) == cr.ARMS_MAX_USERS
+    warned.assert_called_once()  # a silent truncation would read as full coverage
+
+
+def test_apply_arms_only_stamps_buckets_that_actually_route():
+    routing = cr.apply_arms(_bucket(state=rp.STATE_EXPERIMENT), {7: rp.ARM_TREATMENT})
+    assert routing["arms"] == {"7": rp.ARM_TREATMENT}
+    assert routing["assignment"] == rp.ASSIGNMENT_FLAG
+    parked = cr.apply_arms(_bucket(state=rp.STATE_ROLLED_BACK, arms={"7": rp.ARM_TREATMENT}),
+                           {7: rp.ARM_TREATMENT})
+    assert "arms" not in parked and parked["assignment"] == rp.ASSIGNMENT_HASH
+
+
+def test_apply_arms_clears_a_stale_map_when_posthog_answered_for_nobody():
+    cleared = cr.apply_arms(_bucket(arms={"7": rp.ARM_TREATMENT}), {})
+    assert "arms" not in cleared
+    assert cleared["assignment"] == rp.ASSIGNMENT_HASH
+
+
+def test_arms_summary_separates_nobody_enrolled_from_nobody_treated():
+    assert cr.arms_summary({})["treatment_share"] is None
+    assert cr.arms_summary({})["assignment"] == rp.ASSIGNMENT_HASH
+    summary = cr.arms_summary({7: rp.ARM_CONTROL, 8: rp.ARM_CONTROL})
+    assert summary["assignment"] == rp.ASSIGNMENT_FLAG
+    assert summary["enrolled"] == 2 and summary["treatment_share"] == 0.0
+    assert cr.arms_summary({7: rp.ARM_TREATMENT, 8: rp.ARM_CONTROL})["treatment_share"] == 0.5
+
+
+def test_build_routing_policy_writes_the_cohort_into_every_live_bucket():
+    previous = {"version": 1, "enabled": True,
+                "buckets": {"content:lem-complex": _bucket(cohort_pct=0.1)}}
+    result = cr.build_routing_policy(previous, _rows(3, 10), TODAY, enabled=True,
+                                     arms={7: rp.ARM_TREATMENT})
+    bucket = result["policy"]["buckets"]["content:lem-complex"]
+    assert bucket["arms"] == {"7": rp.ARM_TREATMENT}
+    assert result["cohort"]["enrolled"] == 1
+    # The digest reads the change records, so they must carry the cohort the document carries.
+    records = result["changes"] + result["holds"]
+    assert all(r["bucket_state"].get("arms") == {"7": rp.ARM_TREATMENT} for r in records)
+
+
+def test_build_routing_policy_judges_the_window_on_the_arms_that_were_in_force():
+    """The observed posts were routed under the PREVIOUS document's arms. Applying the fresh cohort
+    before evaluating would grade a post in the arm it is about to be in."""
+    previous_arms = {str(u): rp.ARM_TREATMENT for u in range(5)}
+    previous = {"version": 1, "enabled": True,
+                "buckets": {"content:lem-complex": _bucket(cohort_pct=0.5,
+                                                           arms=dict(previous_arms))}}
+    # Every observed user was treatment last week; this week PostHog would put them all in control.
+    result = cr.build_routing_policy(previous, _rows(5, 10), TODAY, enabled=True,
+                                     arms={u: rp.ARM_CONTROL for u in range(5)})
+    comparison = (result["changes"] + result["holds"])[0]["comparison"]
+    assert comparison["treatment"]["n"] == 5
+    assert comparison["control"]["n"] == 0
+    assert result["policy"]["buckets"]["content:lem-complex"]["arms"] == {
+        str(u): rp.ARM_CONTROL for u in range(5)}
+
+
+def test_cohort_user_ids_unions_active_users_with_the_observed_window():
+    with patch("cqc_lem.utilities.db.get_active_user_ids", return_value=[1, 2]):
+        ids = cr.cohort_user_ids([{"user_id": 2}, {"user_id": 9}, {"user_id": None}])
+    assert ids == [1, 2, 9]
+
+
+def test_cohort_user_ids_survives_an_unreadable_user_table():
+    with patch("cqc_lem.utilities.db.get_active_user_ids", side_effect=RuntimeError("no db")), \
+         patch.object(cr, "log_warning") as warned:
+        assert cr.cohort_user_ids([{"user_id": 4}]) == [4]
+    warned.assert_called_once()
+
+
+def test_resolve_cohort_never_scans_users_when_posthog_cannot_enrol():
+    with patch("cqc_lem.utilities.experiments.enrollment_available", return_value=False), \
+         patch.object(cr, "cohort_user_ids") as listed:
+        assert cr.resolve_cohort(_rows(1, 10)) == {}
+    listed.assert_not_called()
+
+
+def test_resolve_cohort_falls_back_to_hash_cohorting_on_failure():
+    with patch("cqc_lem.utilities.experiments.enrollment_available", return_value=True), \
+         patch.object(cr, "cohort_user_ids", return_value=[1]), \
+         patch("cqc_lem.utilities.experiments.assignments", side_effect=RuntimeError("boom")), \
+         patch.object(cr, "log_warning") as warned:
+        assert cr.resolve_cohort() == {}
+    warned.assert_called_once()
+
+
+def test_collect_routing_report_resolves_no_cohort_while_routing_is_off():
+    with patch.object(cr, "collect_quality_observations", return_value=[]), \
+         patch.object(cr, "resolve_cohort") as resolve, \
+         patch.object(cr, "load_policy", return_value={}):
+        report = cr.collect_routing_report(days=7, today=TODAY, enabled=False)
+    resolve.assert_not_called()
+    assert report["cohort"]["assignment"] == rp.ASSIGNMENT_HASH
+
+
+def test_render_routing_text_reports_which_side_cohorted():
+    report = cr.build_routing_policy(
+        {"version": 1, "enabled": True,
+         "buckets": {"content:lem-complex": _bucket(cohort_pct=0.1)}},
+        [], TODAY, enabled=True, arms={7: rp.ARM_TREATMENT})
+    text = cr.render_routing_text({"date": "2026-08-01", **report})
+    assert "Cohorting: flag" in text and "1 user(s) enrolled" in text
+    assert "flag-assigned" in text

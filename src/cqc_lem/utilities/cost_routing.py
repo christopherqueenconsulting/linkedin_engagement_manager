@@ -23,6 +23,13 @@ mounted into the LiteLLM container and must stay stdlib-only). Either one off me
 exactly as it did before this existed. Only features with a real quality signal
 (`MEASURABLE_FEATURES`) can be auto-experimented; everything else is reported as a human-gated
 recommendation, per §D.3.
+
+**Cohorting is PostHog's** since issue #652: the arm comes from the `cost-routing-arm` multivariate
+experiment flag, resolved HERE (app-side) and written into each routing bucket's `arms` map, because
+`routing_policy.py` is mounted into the LiteLLM container and must stay stdlib-only — the DECISION is
+handed to the router, never imported by it. Users PostHog has no answer for keep the original
+deterministic hash, so a PostHog outage moves no traffic. The ramp is still the optimizer's: the flag
+decides WHO is in the treatment, `cohort_pct` decides WHETHER the bucket routes at all.
 """
 from __future__ import annotations
 
@@ -50,14 +57,18 @@ from cqc_lem.utilities.env_constants import (
 from cqc_lem.utilities.flags import COST_ROUTING, flag_enabled
 from cqc_lem.utilities.logger import log_error, log_info, log_warning
 from cqc_lem.utilities.routing_policy import (
+    ARMS,
     ARM_CONTROL,
     ARM_TREATMENT,
+    ASSIGNMENT_FLAG,
+    ASSIGNMENT_HASH,
     POLICY_REDIS_KEY,
     POLICY_VERSION,
     ROUTING_STATES,
     STATE_ADOPTED,
     STATE_EXPERIMENT,
     STATE_ROLLED_BACK,
+    SYSTEM_USER_ID,
     TIER_COMPLEX,
     TIER_MEDIUM,
     assign_arm,
@@ -290,6 +301,65 @@ def split_observations(observations: Optional[Sequence[Mapping]], bucket: Mappin
     return arms
 
 
+# Most users the arms map may carry. The document is read from Redis on every router cache miss, so
+# it cannot grow unbounded — and a truncation is LOGGED rather than silently applied, because the
+# users left out are silently hash-assigned instead of flag-assigned.
+ARMS_MAX_USERS = 500
+
+
+def normalize_arms(arms: Optional[Mapping]) -> dict:
+    """The `arms` map as the policy document carries it: string user ids → a real arm name.
+
+    JSON has no integer keys, so ids are stringified HERE rather than at read time — `flag_arm` in the
+    stdlib-only core compares strings, and a document written with int keys would round-trip through
+    Redis as strings and match nothing. Anything that isn't a recognized arm is dropped: a bad value
+    must fall back to the hash, not route traffic."""
+    normalized = {}
+    for user_id, arm in (arms or {}).items():
+        if user_id is None or arm not in ARMS:
+            continue
+        key = str(user_id).strip()
+        if key and key.lower() != SYSTEM_USER_ID:
+            normalized[key] = arm
+    if len(normalized) <= ARMS_MAX_USERS:
+        return normalized
+    kept = dict(sorted(normalized.items())[:ARMS_MAX_USERS])
+    log_warning(f"Routing experiment resolved {len(normalized)} arms — only the first "
+                f"{ARMS_MAX_USERS} are carried in the policy document; the rest fall back to hash "
+                f"assignment", task_name="auto_weekly_cost_routing")
+    return kept
+
+
+def apply_arms(bucket: Mapping, arms: Optional[Mapping]) -> dict:
+    """Stamp the flag's cohort onto one bucket. A bucket that isn't routing carries no map — it moves
+    no traffic, so an assignment on it would only be stale data the next run has to reason about."""
+    updated = dict(bucket)
+    routing = updated.get("state") in ROUTING_STATES
+    resolved = normalize_arms(arms) if routing else {}
+    if resolved:
+        updated["arms"] = resolved
+        updated["assignment"] = ASSIGNMENT_FLAG
+    else:
+        updated.pop("arms", None)
+        updated["assignment"] = ASSIGNMENT_HASH
+    return updated
+
+
+def arms_summary(arms: Optional[Mapping]) -> dict:
+    """What the readout says about the cohort: how many users PostHog enrolled and what share of them
+    it put in the treatment. `treatment_share` is None (not 0.0) with nobody enrolled — "the flag
+    answered for nobody" and "the flag put nobody in the treatment" are different facts, and only one
+    of them means the experiment is running."""
+    resolved = normalize_arms(arms)
+    treatment = sum(1 for arm in resolved.values() if arm == ARM_TREATMENT)
+    return {
+        "assignment": ASSIGNMENT_FLAG if resolved else ASSIGNMENT_HASH,
+        "enrolled": len(resolved),
+        "treatment": treatment,
+        "treatment_share": round(treatment / len(resolved), 4) if resolved else None,
+    }
+
+
 def new_bucket(feature: str, from_tier: str, today: date, cohort_pct: float,
                generation: int = 1) -> dict:
     to_tier = cheaper_tier(from_tier)
@@ -356,14 +426,20 @@ def propose_buckets(observations: Optional[Sequence[Mapping]], existing: Mapping
 def build_routing_policy(previous: Optional[Mapping], observations: Optional[Sequence[Mapping]],
                          today: date, spend_by_feature: Optional[Mapping] = None,
                          thresholds: Optional[Mapping] = None,
-                         enabled: Optional[bool] = None) -> dict:
+                         enabled: Optional[bool] = None,
+                         arms: Optional[Mapping] = None) -> dict:
     """Evaluate every live bucket, then open new experiments in whatever slots are left, and return
     `{"policy": ..., "changes": [...], "recommendations": [...]}`.
 
     `enabled` is written INTO the document, so flipping the `cost-routing-enabled` flag off parks
     every bucket at once without erasing the experiment state the next run needs. `None` resolves it
     at CALL time (flag, else COST_ROUTING_ENABLED) rather than at import, which is what makes a flip
-    land on the next weekly run instead of the next deploy."""
+    land on the next weekly run instead of the next deploy.
+
+    `arms` is the PostHog experiment's cohort ({user_id: arm}, resolved by `collect_routing_report`).
+    It is applied AFTER the evaluation loop on purpose: the window being judged was routed under the
+    PREVIOUS document's arms, so evaluating against a freshly-resolved cohort would grade posts in the
+    arm they are about to be in rather than the one they were written in."""
     enabled = routing_enabled() if enabled is None else bool(enabled)
     limits = {**default_thresholds(), **(thresholds or {})}
     policy = normalize_policy(previous)
@@ -375,10 +451,10 @@ def build_routing_policy(previous: Optional[Mapping], observations: Optional[Seq
         if bucket.get("state") not in ROUTING_STATES:
             continue
         feature_rows = [row for row in rows if row.get("feature", "content") == bucket.get("feature")]
-        arms = split_observations(feature_rows, bucket)
-        metric = pick_metric(arms[ARM_TREATMENT] + arms[ARM_CONTROL])
-        comparison = compare_arms(summarize_arm(arms[ARM_TREATMENT], metric),
-                                  summarize_arm(arms[ARM_CONTROL], metric), limits)
+        arm_rows = split_observations(feature_rows, bucket)
+        metric = pick_metric(arm_rows[ARM_TREATMENT] + arm_rows[ARM_CONTROL])
+        comparison = compare_arms(summarize_arm(arm_rows[ARM_TREATMENT], metric),
+                                  summarize_arm(arm_rows[ARM_CONTROL], metric), limits)
         outcome = evaluate_bucket(bucket, comparison, today, limits)
         buckets[key] = outcome["bucket"]
         record = {"bucket": key, "action": outcome["action"], "reason": outcome["reason"],
@@ -394,6 +470,15 @@ def build_routing_policy(previous: Optional[Mapping], observations: Optional[Seq
             changes.append({"bucket": key, "action": ACTION_START, "bucket_state": bucket,
                             "reason": bucket["reason"], "comparison": None})
 
+    for key, bucket in list(buckets.items()):
+        buckets[key] = apply_arms(bucket, arms)
+    # The change records captured the pre-arms bucket, so refresh the ones that are still live —
+    # otherwise the digest and the PostHog event would report a cohort the document does not carry.
+    for record in changes + holds:
+        refreshed = buckets.get(record.get("bucket"))
+        if refreshed is not None:
+            record["bucket_state"] = refreshed
+
     return {
         "policy": {
             "version": POLICY_VERSION,
@@ -403,6 +488,7 @@ def build_routing_policy(previous: Optional[Mapping], observations: Optional[Seq
         },
         "changes": changes,
         "holds": holds,
+        "cohort": arms_summary(arms),
         "recommendations": recommend_unmeasurable(spend_by_feature),
     }
 
@@ -437,12 +523,19 @@ def render_routing_text(report: Mapping) -> str:
         lines.append(f"[{str(change.get('action', '')).upper()}] {change.get('bucket')}"
                      f"{f' → {state}' if state else ''}")
         lines.append(f"    {change.get('reason')}")
+    cohort = dict(report.get("cohort") or {})
+    if cohort:
+        share = cohort.get("treatment_share")
+        lines += ["", f"Cohorting: {cohort.get('assignment')} — {cohort.get('enrolled')} user(s) "
+                      f"enrolled in the PostHog experiment"
+                      + (f", {share * 100:.0f}% in treatment" if share is not None else "")]
     lines += ["", "Buckets:"]
     if not buckets:
         lines.append("  (none)")
     for key, bucket in buckets.items():
         lines.append(f"  {key}: {bucket.get('state')} → {bucket.get('to_tier')} "
-                     f"@ {float(bucket.get('cohort_pct') or 0) * 100:.0f}% cohort")
+                     f"@ {float(bucket.get('cohort_pct') or 0) * 100:.0f}% cohort "
+                     f"({bucket.get('assignment') or ASSIGNMENT_HASH}-assigned)")
     for recommendation in report.get("recommendations") or []:
         lines += ["", f"RECOMMENDATION: {recommendation.get('recommendation')}"]
     return "\n".join(lines)
@@ -532,6 +625,52 @@ def collect_quality_observations(days: int = COST_ROUTING_WINDOW_DAYS,
     return [{**row, "feature": "content"} for row in rows]
 
 
+def cohort_user_ids(observations: Optional[Sequence[Mapping]] = None) -> list:
+    """Who to resolve an arm for: every currently active user, plus anyone who published inside the
+    window. The union matters in both directions — an active user with no posts yet still needs an arm
+    before their first LLM call, and a user who has since gone inactive must keep the arm their
+    already-observed posts were written under, or the window's analysis loses a whole side."""
+    from cqc_lem.utilities.db import get_active_user_ids
+
+    ids = []
+    try:
+        ids = [int(user_id) for user_id in (get_active_user_ids() or [])]
+    except Exception as e:
+        log_warning("Could not list active users for the routing experiment cohort — falling back to "
+                    "the observed users only", exc=e, task_name="auto_weekly_cost_routing")
+    seen = set(ids)
+    for row in observations or []:
+        user_id = row.get("user_id")
+        if user_id is None or user_id in seen:
+            continue
+        seen.add(user_id)
+        ids.append(user_id)
+    return ids
+
+
+def resolve_cohort(observations: Optional[Sequence[Mapping]] = None) -> dict:
+    """`{user_id: arm}` from the PostHog `cost-routing-arm` experiment, or `{}` when it has no answer.
+
+    `{}` is the fail-open path and it is not an error: every bucket then falls back to the hash
+    assignment that shipped before #652, which is the same split it has always used.
+
+    The availability check comes FIRST so a project with no experiment plane doesn't pay for the
+    active-user scan it could never use an answer from."""
+    from cqc_lem.utilities.experiments import COST_ROUTING_ARM, assignments, enrollment_available
+
+    if not enrollment_available():
+        return {}
+    user_ids = cohort_user_ids(observations)
+    if not user_ids:
+        return {}
+    try:
+        return assignments(user_ids, COST_ROUTING_ARM)
+    except Exception as e:
+        log_warning("PostHog routing-experiment assignment failed — using hash cohorting", exc=e,
+                    task_name="auto_weekly_cost_routing")
+        return {}
+
+
 def collect_routing_report(days: int = COST_ROUTING_WINDOW_DAYS, today: Optional[date] = None,
                            thresholds: Optional[Mapping] = None,
                            enabled: Optional[bool] = None) -> dict:
@@ -542,7 +681,11 @@ def collect_routing_report(days: int = COST_ROUTING_WINDOW_DAYS, today: Optional
     the weekly run costs one Redis read/write instead of a cross-user posts+post_stats scan. It still
     republishes the parked (`enabled: false`) document so the proxy sees the flag flip, and any bucket
     left in it is judged on no data, which can only HOLD: turning the flag back on resumes exactly
-    where the loop left off, and no experiment can open while it is off."""
+    where the loop left off, and no experiment can open while it is off.
+
+    The PostHog cohort is resolved on the same condition: with routing off there is nothing to enrol
+    anyone INTO, and an exposure event for an experiment that isn't running would put control-arm
+    traffic in a readout that never had a treatment arm."""
     from cqc_lem.utilities.db import cost_ledger_available, get_cost_rollup
 
     enabled = routing_enabled() if enabled is None else bool(enabled)
@@ -550,7 +693,9 @@ def collect_routing_report(days: int = COST_ROUTING_WINDOW_DAYS, today: Optional
     observations = collect_quality_observations(days, end=today) if enabled else []
     spend = (get_cost_rollup(today - timedelta(days=max(int(days), 1)), today, group_by="feature")
              if enabled and cost_ledger_available() else {})
-    result = build_routing_policy(load_policy(), observations, today, spend, thresholds, enabled)
+    arms = resolve_cohort(observations) if enabled else {}
+    result = build_routing_policy(load_policy(), observations, today, spend, thresholds, enabled,
+                                  arms=arms)
     return {
         "date": today.isoformat(),
         "window_days": int(days),

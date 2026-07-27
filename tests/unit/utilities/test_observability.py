@@ -576,7 +576,9 @@ class TestTrackRoutingPolicy:
         assert props["enabled"] is True and props["observations"] == 42
         assert props["change_count"] == 1 and props["rollback_count"] == 1
         assert props["buckets"][0] == {"bucket": "content:lem-complex", "state": "experiment",
-                                       "to_tier": "lem-medium", "cohort_pct": 0.1}
+                                       "to_tier": "lem-medium", "cohort_pct": 0.1,
+                                       # None until #652's cohort resolution writes one.
+                                       "assignment": None}
         # The full arm statistics stay out of the event body — the verdict is what a tile needs.
         assert "comparison" not in props["changes"][0]
 
@@ -824,3 +826,99 @@ class TestTrackCommentQuality:
 
         props = mock_ph.capture.call_args[1]["properties"]
         assert props["verdict"] is None and props["sample_size"] is None
+
+
+class TestExperimentTelemetry:
+    """Exposure + metric labelling for PostHog Experiments (issue #652)."""
+
+    def test_exposure_uses_posthogs_own_feature_flag_event(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_experiment_exposure
+            track_experiment_exposure("cost-routing-arm", "treatment", user_id=7, post_id=3)
+
+        _, kwargs = mock_ph.capture.call_args
+        # These names are PostHog's, not ours: the experiment engine reads them to decide which
+        # variant a person was in. Renaming them silently empties every readout.
+        assert kwargs["event"] == "$feature_flag_called"
+        assert kwargs["distinct_id"] == "7"
+        props = kwargs["properties"]
+        assert props["$feature_flag"] == "cost-routing-arm"
+        assert props["$feature_flag_response"] == "treatment"
+        assert props["$feature/cost-routing-arm"] == "treatment"
+        assert props["experiment"] == "cost-routing-arm"
+        assert props["post_id"] == 3
+
+    def test_exposure_without_a_user_lands_on_the_system_person(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_experiment_exposure
+            track_experiment_exposure("cost-routing-arm", "control")
+        assert mock_ph.capture.call_args.kwargs["distinct_id"] == "system"
+
+    def test_post_outcome_carries_the_users_routing_arm(self):
+        with patch(f"{_MOD}.posthog") as mock_ph, \
+             patch(f"{_MOD}.experiment_props",
+                   return_value={"$feature/cost-routing-arm": "treatment"}) as props_fn:
+            from cqc_lem.utilities.observability import track_post_outcome
+            track_post_outcome(post_id=9, reactions=1, comments=0, user_id=7)
+
+        assert props_fn.call_args.kwargs["keys"] == ("cost-routing-arm",)
+        assert mock_ph.capture.call_args.kwargs["properties"]["$feature/cost-routing-arm"] \
+            == "treatment"
+
+    def test_post_outcome_reports_the_shipped_media_variant_as_an_arm(self):
+        with patch(f"{_MOD}.posthog") as mock_ph, \
+             patch(f"{_MOD}.experiment_props", return_value={}) as props_fn:
+            from cqc_lem.utilities.observability import track_post_outcome
+            track_post_outcome(post_id=9, reactions=1, comments=0, user_id=7,
+                               variant_key="flux-dev|gen4_turbo|1:1")
+
+        assert props_fn.call_args.kwargs["shipped"] == {"post-media-variant":
+                                                        "flux-dev|gen4_turbo|1:1"}
+        props = mock_ph.capture.call_args.kwargs["properties"]
+        # The raw key stays readable on the event; the slug is what PostHog groups on.
+        assert props["variant_key"] == "flux-dev|gen4_turbo|1:1"
+
+    def test_post_outcome_without_a_variant_reports_none_not_a_label(self):
+        with patch(f"{_MOD}.posthog") as mock_ph, patch(f"{_MOD}.experiment_props") as props_fn:
+            props_fn.return_value = {}
+            from cqc_lem.utilities.observability import track_post_outcome
+            track_post_outcome(post_id=9, reactions=1, comments=0, user_id=7)
+        assert props_fn.call_args.kwargs["shipped"] is None
+        assert mock_ph.capture.call_args.kwargs["properties"]["variant_key"] is None
+
+    def test_comment_outcome_carries_the_prompt_arm(self):
+        with patch(f"{_MOD}.posthog") as mock_ph, \
+             patch(f"{_MOD}.experiment_props",
+                   return_value={"$feature/comment-contract-prompt": "author-question"}) as props_fn:
+            from cqc_lem.utilities.observability import track_comment_outcome
+            track_comment_outcome(7, 11, {"status": "checked", "author_replied": True})
+
+        assert props_fn.call_args.kwargs["keys"] == ("comment-contract-prompt",)
+        props = mock_ph.capture.call_args.kwargs["properties"]
+        assert props["$feature/comment-contract-prompt"] == "author-question"
+        assert props["author_replied"] is True
+
+    def test_experiment_props_never_breaks_the_outcome_event(self):
+        """An experiment plane that is down must cost us the label, not the measurement."""
+        from cqc_lem.utilities.observability import experiment_props
+        with patch("cqc_lem.utilities.experiments.experiment_properties",
+                   side_effect=RuntimeError("boom")):
+            assert experiment_props(7, keys=("cost-routing-arm",)) == {}
+
+    def test_routing_policy_event_reports_which_side_cohorted(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_routing_policy
+            track_routing_policy({
+                "date": "2026-08-01",
+                "policy": {"enabled": True, "buckets": {
+                    "content:lem-complex": {"state": "experiment", "to_tier": "lem-medium",
+                                            "cohort_pct": 0.1, "assignment": "flag"}}},
+                "cohort": {"assignment": "flag", "enrolled": 2, "treatment": 1,
+                           "treatment_share": 0.5},
+            })
+
+        props = mock_ph.capture.call_args.kwargs["properties"]
+        assert props["cohort_assignment"] == "flag"
+        assert props["cohort_enrolled"] == 2
+        assert props["cohort_treatment_share"] == 0.5
+        assert props["buckets"][0]["assignment"] == "flag"

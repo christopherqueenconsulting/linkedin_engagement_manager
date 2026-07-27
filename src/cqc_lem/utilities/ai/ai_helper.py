@@ -300,6 +300,20 @@ def lint_repaired(draft: "str | None", content_type: str, redraft, **log_ctx) ->
     return current
 
 
+def _comment_contract_variant(user_id: int = None) -> "str | None":
+    """This user's arm of the comment-contract prompt experiment (issue #652). Never raises: a
+    PostHog problem must cost us the experiment, not the comment — and `comment_contract_directive`
+    treats None (like any unknown arm) as the control contract, which is the prompt that shipped
+    before the experiment existed."""
+    try:
+        from cqc_lem.utilities.experiments import COMMENT_CONTRACT_PROMPT, resolve_variant
+        return resolve_variant(COMMENT_CONTRACT_PROMPT, user_id)
+    except Exception as e:
+        log_warning("Comment-contract experiment lookup failed — using the control prompt", exc=e,
+                    user_id=user_id, action_type="comment")
+        return None
+
+
 def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=None, post_comment: str = None,
                          prefs: dict = None, profile_synthesis: str = None,
                          blueprint: dict = None, research: dict = None,
@@ -319,7 +333,12 @@ def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=No
     SKIPS the post. A template comment costs reach; a skipped post costs one comment.
 
     Replying to a specific comment (`post_comment`) keeps its own acknowledge-and-answer contract and
-    is not gated here."""
+    is not gated here.
+
+    The contract's closing ask is the pilot LLM prompt experiment (issue #652): `user_id` decides the
+    arm, and it is scoped to FRESH FEED comments only because that is the only surface the #628 T+24h
+    sweep measures author-reply rate on — the seed and second-wave comments would add exposures the
+    metric can never cover."""
     image_attached = "(image attached)" if post_img_url else ""
     _no_hashtags = "" if (prefs and prefs.get("use_hashtags")) else " without using any hashtags"
     user_comment = f"\n\nRespond to this Comment Directly: <comment>{post_comment}</comment>\n\nYou are responding as the author of the LinkedIn Content. Keep your response short and sweet{_no_hashtags}.\n\n" if post_comment else ""
@@ -393,7 +412,8 @@ def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=No
           preamble, no sign-off, no hashtags/emojis unless explicitly allowed below.
 
         Output ONLY the final comment text — no quotes, no labels, no explanation.""" + blueprint_block
-        + (_framework.comment_contract_directive() if post_comment is None else "")
+        + (_framework.comment_contract_directive(_comment_contract_variant(user_id))
+           if post_comment is None else "")
     }
 
     # User prompt to be sent with each API call

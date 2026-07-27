@@ -13,6 +13,11 @@ from urllib.parse import urlparse
 
 import posthog
 
+from cqc_lem.utilities.experiments import (
+    COMMENT_CONTRACT_PROMPT,
+    COST_ROUTING_ARM,
+    POST_MEDIA_VARIANT,
+)
 from cqc_lem.utilities.logger import log_warning
 
 posthog.api_key = os.getenv("POSTHOG_API_KEY", "")
@@ -509,13 +514,22 @@ def track_post_outcome(
 ) -> None:
     """Emit a LinkedIn post-outcome event so content performance (impressions / engagement rate) is
     queryable in PostHog alongside LLM cost. `engagement` / `engagement_rate` are derived with the
-    same weighting `post_stats` uses; `engagement_rate` is None when impressions are unknown."""
+    same weighting `post_stats` uses; `engagement_rate` is None when impressions are unknown.
+
+    This is the success metric of the cost-routing experiment (issue #652), so the user's arm rides
+    along as `$feature/cost-routing-arm` when PostHog enrolled them — `variant_key` (the #396 media
+    combo this post shipped, when the caller knows it) becomes the media experiment's arm the same
+    way."""
     from cqc_lem.utilities.post_stats import engagement_score, engagement_rate
+    shipped = extra.pop("variant_key", None)
     posthog.capture(
         distinct_id=str(user_id or "system"),
         event="post_outcome",
         properties={
+            **experiment_props(user_id, keys=(COST_ROUTING_ARM,),
+                               shipped={POST_MEDIA_VARIANT: shipped} if shipped else None),
             "post_id": post_id,
+            "variant_key": shipped,
             "reactions": int(reactions or 0),
             "comments": int(comments or 0),
             "reposts": int(reposts or 0),
@@ -591,12 +605,18 @@ def track_comment_outcome(
     """Emit one comment-outcome reading (issue #628) so comment→reply rate and the 'Most relevant'
     demotion signal are queryable next to the post outcomes they were meant to drive.
     `visible_most_relevant` stays None when the read was ambiguous — a boolean there would read as
-    a confirmed verdict the DOM never gave us."""
+    a confirmed verdict the DOM never gave us.
+
+    `author_replied` is the metric of the pilot prompt experiment (issue #652), so the user's arm
+    rides along. It is resolved HERE, at read time, rather than stored with the comment: PostHog's
+    assignment is deterministic per person for the life of the flag, and a per-comment copy would
+    still be wrong if the flag were re-rolled — see the attribution caveat in docs/experiments.md."""
     outcome = dict(outcome or {})
     posthog.capture(
         distinct_id=str(user_id or "system"),
         event="comment_outcome",
         properties={
+            **experiment_props(user_id, keys=(COMMENT_CONTRACT_PROMPT,)),
             "user_id": user_id,
             "log_id": log_id,
             "status": outcome.get("status"),
@@ -799,10 +819,55 @@ def track_routing_policy(report: dict) -> None:
             "changes": [{"bucket": c.get("bucket"), "action": c.get("action"),
                          "reason": c.get("reason")} for c in report.get("changes") or []],
             "buckets": [{"bucket": key, "state": b.get("state"), "to_tier": b.get("to_tier"),
-                         "cohort_pct": b.get("cohort_pct")} for key, b in buckets.items()],
+                         "cohort_pct": b.get("cohort_pct"),
+                         "assignment": b.get("assignment")} for key, b in buckets.items()],
+            # Whether the PostHog experiment (issue #652) actually cohorted this run, or the hash
+            # fallback did — a treatment share of None means nobody was enrolled.
+            **{f"cohort_{key}": value for key, value in (report.get("cohort") or {}).items()},
             "recommendations": report.get("recommendations") or [],
         },
     )
+
+
+def track_experiment_exposure(experiment: str, variant: str, user_id: Optional[int] = None,
+                              **extra) -> None:
+    """Emit one PostHog experiment EXPOSURE (issue #652).
+
+    The event name and the two `$feature_flag*` properties are not ours to rename: they are what
+    PostHog's experiment engine reads to decide which variant a person was in, and every metric
+    (post_outcome, comment_outcome, $ai_generation) is attributed to an arm through them. `experiment`
+    is carried as a plain property too so a HogQL readout can group without knowing PostHog's
+    internals.
+
+    Deduping is the CALLER's job (`experiments.track_exposure`) — this stays a dumb emitter like every
+    other tracker here."""
+    posthog.capture(
+        distinct_id=str(user_id if user_id is not None else "system"),
+        event="$feature_flag_called",
+        properties={
+            "$feature_flag": experiment,
+            "$feature_flag_response": variant,
+            f"$feature/{experiment}": variant,
+            "experiment": experiment,
+            "variant": variant,
+            "user_id": user_id,
+            **extra,
+        },
+    )
+
+
+def experiment_props(user_id: Optional[int] = None, keys: Optional[tuple] = None,
+                     shipped: Optional[dict] = None) -> dict:
+    """`$feature/<key>` properties for a metric event, or `{}` when experiments can't be resolved.
+
+    Wrapped here (rather than imported at each tracker) so an experiment plane that is down, missing
+    or misconfigured can never stop an outcome event from being recorded — the outcome is the
+    valuable half; its experiment label is not."""
+    try:
+        from cqc_lem.utilities.experiments import experiment_properties
+        return experiment_properties(user_id, keys=keys, extra=shipped)
+    except Exception:
+        return {}
 
 
 def track_cost_alert(alert: dict, day: Optional[str] = None) -> None:
