@@ -96,15 +96,47 @@ class TestPlanDailyInvites:
             return plan_daily_invites(1, prefs=prefs), rem
 
     def test_the_allowance_comes_from_the_pacing_engine_not_the_raw_cap(self):
-        from cqc_lem.utilities.human_pacing import ACTION_INVITE
+        from cqc_lem.utilities.human_pacing import ACTION_COMPANY_INVITE
         plan, rem = self._plan({"max_company_page_invites_per_day": 5, "max_invites_per_day": 10},
                                remaining=2, sent_today=3)
         assert plan["allowance"] == 2
         assert plan["cap"] == 5
         assert plan["sent_today"] == 3
         args = rem.call_args[0]
-        assert args[1] == ACTION_INVITE and args[2] == 5 and args[3] == 3
+        assert args[1] == ACTION_COMPANY_INVITE and args[2] == 5 and args[3] == 3
         assert rem.call_args[1]["caps"]  # the account-level envelope is engaged
+
+    def test_it_draws_its_own_budget_and_never_the_connection_lanes(self, monkeypatch):
+        """`daily_budget` keys its stored draw on the ACTION alone, so a page-invite draw against
+        ACTION_INVITE would become the budget the connection-request lane reads back — clamping it
+        to this lane's much smaller cap for the rest of the day (10/day -> 5/day or less)."""
+        from cqc_lem.utilities import human_pacing as hp
+        from cqc_lem.utilities.linkedin.company_page_inviter import plan_daily_invites
+
+        monkeypatch.setenv("HUMAN_PACING_ENABLED", "true")
+        store: dict = {}
+
+        class _Redis:
+            def get(self, key):
+                return store.get(key)
+
+            def set(self, key, value, ex=None):
+                store[key] = value
+
+            def hget(self, *_a):
+                return 0
+
+        prefs = {"max_company_page_invites_per_day": 5, "max_invites_per_day": 10,
+                 "max_comments_per_day": 20, "max_dms_per_day": 20}
+        with patch.object(hp, "shared_redis_client", return_value=_Redis()), \
+             patch(f"{_CPI}.count_company_page_invites_sent_today", return_value=0):
+            plan_daily_invites(1, prefs=prefs)                       # page-invite lane runs first
+            connection_budget = hp.daily_budget(1, hp.ACTION_INVITE, 10)  # then the connection lane
+            untouched = hp._draw_budget(1, hp.ACTION_INVITE, 10, hp._today())
+
+        assert any(k.startswith(f"pacing:budget:{hp.ACTION_COMPANY_INVITE}:1:") for k in store)
+        # Unclamped: the connection lane still draws against its own cap of 10, not this lane's 5.
+        assert connection_budget == untouched
 
     def test_a_zero_cap_never_asks_the_pacing_engine(self):
         from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_STATUS_DISABLED
@@ -305,6 +337,26 @@ class TestInviteTask:
             automate_invites_to_company_page_for_user.run(user_id=1)
         quit_driver.assert_called_once()
         assert track.call_args[0][1]["status"] == INVITE_STATUS_FAILED
+
+    def test_a_browser_that_never_comes_up_still_emits_a_run(self):
+        """The whole point of emitting on every run is that a silent day has a CAUSE. A Chrome
+        session that can't be acquired (grid full, container restart) must not be the one path
+        that emits nothing — that reads exactly like a day paced down to zero."""
+        from cqc_lem.app.run_automation import automate_invites_to_company_page_for_user
+        from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_STATUS_SESSION_FAILED
+        with patch(f"{_RA}.is_automation_paused", return_value=False), \
+             patch(f"{_RA}.plan_daily_invites",
+                   return_value={"allowance": 5, "status": "sent", "cap": 5, "sent_today": 0}), \
+             patch(f"{_RA}.get_driver_wait_pair", side_effect=RuntimeError("no session")), \
+             patch(f"{_RA}.quit_gracefully") as quit_driver, \
+             patch(f"{_RA}.automate_invitations") as run, \
+             patch(f"{_RA}.log_error"), \
+             patch(f"{_RA}.track_company_page_invite_run") as track:
+            automate_invites_to_company_page_for_user.run(user_id=1)
+        run.assert_not_called()
+        quit_driver.assert_not_called()  # nothing to quit — an unbound driver would raise here
+        assert track.call_args[0][1]["status"] == INVITE_STATUS_SESSION_FAILED
+        assert track.call_args[0][1]["cap"] == 5
 
 
 class TestDailyBeat:

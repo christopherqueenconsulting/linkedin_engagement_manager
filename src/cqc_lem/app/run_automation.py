@@ -72,7 +72,7 @@ from cqc_lem.utilities.human_pacing import pace_read, record_action, remaining_a
     engagement_caps_from_prefs, \
     ACTION_COMMENT, ACTION_DM, ACTION_INVITE, ACTION_REPLY
 from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations, \
-    plan_daily_invites, INVITE_STATUS_FAILED, INVITE_STATUS_PAUSED
+    plan_daily_invites, INVITE_STATUS_FAILED, INVITE_STATUS_PAUSED, INVITE_STATUS_SESSION_FAILED
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
     load_profile_for_user, clean_person_name, connection_degree, is_first_degree
 from cqc_lem.utilities.linkedin.poster import share_on_linkedin, share_carousel_on_linkedin, \
@@ -6428,7 +6428,17 @@ def automate_invites_to_company_page_for_user(self, user_id: int):
         track_company_page_invite_run(user_id, report)
         return f"No company page invites to send ({plan['status']})"
 
-    driver, wait = get_driver_wait_pair(session_name='Company Page Invites', user_id=user_id)
+    # Session acquisition is INSIDE the reporting path: a run that could not start a browser is the
+    # one failure mode `company_page_invite_run` exists to make visible, and letting the exception
+    # escape here would emit nothing at all — indistinguishable from a day paced down to zero.
+    try:
+        driver, wait = get_driver_wait_pair(session_name='Company Page Invites', user_id=user_id)
+    except Exception as e:
+        log_error("Could not start a browser session for company page invites", exc=e,
+                  user_id=user_id, task_name=task_name, action_type="company_invite")
+        track_company_page_invite_run(user_id, {"status": INVITE_STATUS_SESSION_FAILED,
+                                                "cap": plan["cap"], "sent_today": plan["sent_today"]})
+        return "Company page invites skipped — browser session unavailable"
 
     try:
         report = automate_invitations(driver, wait, user_id, plan=plan)

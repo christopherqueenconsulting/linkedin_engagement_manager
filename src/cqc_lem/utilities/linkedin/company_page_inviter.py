@@ -13,7 +13,9 @@ Three ceilings now bound a run, and the smallest wins:
    brand-account phase policy (which already clamps `max_invites_per_day`) governs the brand user
    with no second ceiling to keep in step. That cap goes through `human_pacing` like every other
    outbound lane: a stable 40-100% daily draw, weekend asymmetry, rest days, and the shared account
-   envelope, minus what today's log rows say was already spent.
+   envelope, minus what today's log rows say was already spent. The draw uses its OWN lane key
+   (`ACTION_COMPANY_INVITE`) — a budget drawn against `ACTION_INVITE` would be the stored budget the
+   connection-request lane reads back, clamping it to this smaller cap for the rest of the day.
 2. **The credit spread** — `credits_remaining / days_left_in_month`, so the pool lasts the month
    instead of being front-loaded. Acceptances refund credits, so a drip can reach MORE people per
    month than a blast can.
@@ -36,8 +38,9 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_company_linke
     insert_new_log, LogActionType, LogResultType, get_engagement_preferences, \
     count_company_page_invites_sent_today, COMPANY_PAGE_INVITE_SENT_MESSAGE, \
     COMPANY_PAGE_INVITES_PER_DAY_DEFAULT
-from cqc_lem.utilities.human_pacing import (ACTION_INVITE, engagement_caps_from_prefs,
-                                            pacing_enabled, record_action, remaining_actions)
+from cqc_lem.utilities.human_pacing import (ACTION_COMPANY_INVITE, ACTION_INVITE,
+                                            engagement_caps_from_prefs, pacing_enabled,
+                                            record_action, remaining_actions)
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin
 from cqc_lem.utilities.logger import myprint, log_info
 from cqc_lem.utilities.selenium_util import get_element_wait_retry, get_elements_as_list_wait_stale, getText, \
@@ -53,6 +56,10 @@ INVITE_STATUS_NO_CANDIDATES = "no_candidates"
 INVITE_STATUS_NO_PAGE = "no_page"
 INVITE_STATUS_FAILED = "failed"
 INVITE_STATUS_PAUSED = "paused"
+# No Chrome session could be started (grid full, container restart). Kept apart from `failed` for the
+# same reason the golden-hour sweep does it: "the browser never came up" and "LinkedIn's UI moved"
+# need different fixes, and a run that emitted nothing at all would read as paced-to-zero.
+INVITE_STATUS_SESSION_FAILED = "session_failed"
 
 # Hand-selecting invitees is not instant. A short randomized pause between checkbox clicks keeps a
 # batch from being N identical machine-timed clicks; the budget is single digits, so the total added
@@ -110,7 +117,11 @@ def plan_daily_invites(user_id: int, prefs: Optional[dict] = None) -> dict:
     if cap <= 0:  # lane switched off — don't spend a DB round-trip proving it
         return {"allowance": 0, "status": INVITE_STATUS_DISABLED, "cap": 0, "sent_today": 0}
     sent_today = count_company_page_invites_sent_today(user_id)
-    allowance = max(0, remaining_actions(user_id, ACTION_INVITE, cap, sent_today,
+    # ACTION_COMPANY_INVITE, not ACTION_INVITE: `daily_budget` stores its draw under the action name,
+    # so drawing this small cap against the connection lane's key would clamp whichever lane ran
+    # second to the other's cap. The `caps` envelope is still the shared one — a page invite spends
+    # the account's outbound allowance, it just no longer redefines the connection lane's budget.
+    allowance = max(0, remaining_actions(user_id, ACTION_COMPANY_INVITE, cap, sent_today,
                                          caps=engagement_caps_from_prefs(prefs)))
     status = INVITE_STATUS_SENT if allowance > 0 else INVITE_STATUS_BUDGET_REACHED
     return {"allowance": allowance, "status": status, "cap": cap, "sent_today": sent_today}
@@ -327,6 +338,8 @@ def automate_invitations(driver, wait, user_id: int, plan: Optional[dict] = None
     insert_new_log(user_id, LogActionType.ENGAGED, LogResultType.SUCCESS,
                    post_url=li_company_page_url,
                    message=f"{COMPANY_PAGE_INVITE_SENT_MESSAGE}: {selected_count}")
+    # Recorded under ACTION_INVITE on purpose: the lane draws its own budget (ACTION_COMPANY_INVITE)
+    # but SPENDS the shared outbound envelope, and ACTION_INVITE is the envelope field.
     record_action(user_id, ACTION_INVITE, selected_count)  # account-level governor (issue #626)
     time.sleep(2)  # Delay to ensure the prompt appears before checking for it
     if dismiss_prompt(driver, wait):
