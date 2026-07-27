@@ -35,6 +35,9 @@ CLI:
   --catalog-apply        Write the planned map additions + snapshot refresh to --map / --snapshot.
   --file-issues          File (or append to) the GitHub issues the catalog scan planned.
 Options:
+  --plan-file PATH       Act on a plan already emitted by --catalog-json ("-" = stdin) instead of
+                         re-scanning. Use it with --file-issues so the filing acts on the SAME
+                         reading the decision to file was made from.
   --config PATH          LiteLLM config to read (default .litellm/config.yaml).
   --map PATH             Upgrade map (default .litellm/model_upgrades.yaml).
   --snapshot PATH        Committed catalog snapshot (default .litellm/ollama_catalog_snapshot.json).
@@ -222,6 +225,15 @@ _MONTHS = {m.lower(): i for i, m in enumerate(
 _DOC_DATE_RE = re.compile(r"([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})")
 _ACCORDION_RE = re.compile(r'<Accordion\b[^>]*title="([^"]+)"')
 _HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.*?)\s*$")
+_MODEL_TAG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*(?::[A-Za-z0-9._-]+)?")
+
+
+def is_model_tag(name: str) -> bool:
+    """Does this cell actually name a model? cloud.md is a REMOTE document whose cells end up as
+    values in model_upgrades.yaml — a file whose entries auto-swap the live LiteLLM config — and
+    that writer emits `"key": "value"` lines, so a cell carrying a quote or a newline would inject
+    extra mappings of its own. Anything that isn't a plain tag is dropped at the parse boundary."""
+    return bool(_MODEL_TAG_RE.fullmatch(str(name or "").strip()))
 
 
 def parse_doc_date(text: str) -> Optional[str]:
@@ -302,8 +314,10 @@ def parse_retirements(md_text: str) -> list[dict]:
             when, model, alternative = parse_doc_date(cells[0]), _cell_model(cells[1]), _cell_model(cells[2])
         else:
             when, model, alternative = accordion_date, _cell_model(cells[0]), _cell_model(cells[1])
-        if not model:
+        if not is_model_tag(model):
             continue
+        if not is_model_tag(alternative):
+            alternative = ""
         rows.append({"model": model, "alternative": alternative or None, "date": when,
                      "upcoming": bool(upcoming)})
     return rows
@@ -354,9 +368,13 @@ def append_upgrade_mappings(map_text: str, additions: dict, today: str) -> tuple
     """Append `"model": "replacement"` lines to the `upgrades:` block, comment-preserving.
 
     Keys already mapped are skipped, so re-running is a no-op and the file never grows duplicates.
+    Anything that isn't a plain model tag is refused here too (not only at the parse boundary):
+    this writer is the last step before a remote-sourced string lands in a file the reactive half
+    applies to the live config, so it never emits a value it didn't check.
     Returns (new_text, keys_added)."""
     existing = load_map(load_map_text(map_text))
-    fresh = {k: v for k, v in sorted((additions or {}).items()) if k not in existing}
+    fresh = {k: v for k, v in sorted((additions or {}).items())
+             if k not in existing and is_model_tag(k) and is_model_tag(v)}
     if not fresh:
         return map_text, []
     lines = map_text.splitlines()
@@ -1028,15 +1046,26 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--catalog-apply", action="store_true")
     ap.add_argument("--file-issues", action="store_true")
     ap.add_argument("--today", default=None)
+    ap.add_argument("--plan-file", metavar="PATH", default=None)
     ap.add_argument("--catalog-fixture", default=None)
     ap.add_argument("--no-usage-levels", action="store_true")
     ap.add_argument("--repo", default=DEFAULT_REPO)
     args = ap.parse_args(argv)
 
     if args.catalog_scan or args.catalog_json or args.catalog_apply or args.file_issues:
-        plan = _catalog_scan(args.config, args.map, args.snapshot,
-                             today=args.today or _today(), fixture=args.catalog_fixture,
-                             usage_levels=not args.no_usage_levels)
+        if args.plan_file:
+            # --catalog-json strips the raw catalog, so a reloaded plan can describe the snapshot
+            # refresh but can never write it. Refuse loudly rather than silently skipping the write.
+            if args.catalog_apply:
+                raise SystemExit("--plan-file cannot drive --catalog-apply "
+                                 "(the emitted plan omits the raw catalog)")
+            plan = json.loads(sys.stdin.read() if args.plan_file == "-"
+                              else _read_text(args.plan_file))
+            plan.setdefault("_catalog", None)
+        else:
+            plan = _catalog_scan(args.config, args.map, args.snapshot,
+                                 today=args.today or _today(), fixture=args.catalog_fixture,
+                                 usage_levels=not args.no_usage_levels)
         if args.catalog_json:
             print(json.dumps({k: v for k, v in plan.items() if k != "_catalog"}))
         else:

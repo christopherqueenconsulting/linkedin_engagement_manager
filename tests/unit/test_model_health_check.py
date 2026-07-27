@@ -1,8 +1,10 @@
 """Unit tests for scripts/model_health_check.py — the pure planning/rewriting logic."""
 
 import importlib.util
+import io
 import json
 import pathlib
+import sys
 
 import pytest
 
@@ -232,6 +234,24 @@ class TestParseRetirements:
         assert mhc.parse_doc_date("February 31, 2026") is None
         assert mhc.parse_doc_date("") is None
 
+    def test_a_cell_that_is_not_a_model_tag_is_dropped(self):
+        """cloud.md is remote and its cells become model_upgrades.yaml values, which the reactive
+        half applies to the live config — a quote or newline there must never reach that writer."""
+        md = ('## Retirements\n\n### Upcoming retirements\n\n'
+              "| Retirement date | Model | Recommended alternative |\n| --- | --- | --- |\n"
+              '| March 3, 2027 | `real-1` | `evil" injected: "yes` |\n'
+              '| March 3, 2027 | `see the migration guide` | `real-2` |\n'
+              '| March 3, 2027 | `real-3` | `real-4` |\n')
+        rows = mhc.parse_retirements(md)
+        assert [(r["model"], r["alternative"]) for r in rows] == [("real-1", None),
+                                                                  ("real-3", "real-4")]
+
+    def test_is_model_tag(self):
+        for good in ("minimax-m2.7", "kimi-k2:1t", "qwen3.5:397b", "REMOVE", "gpt-oss:20b"):
+            assert mhc.is_model_tag(good)
+        for bad in ("", None, 'a" b', "a\nb", "see the docs", "-leading-dash", "a`b"):
+            assert not mhc.is_model_tag(bad)
+
 
 class TestRetirementNotices:
     def _rows(self, *models):
@@ -324,6 +344,14 @@ class TestAppendUpgradeMappings:
         text, _ = mhc.append_upgrade_mappings(src, {"c": "d"}, "2026-07-20")
         assert text.index('"c": "d"') < text.index("other:")
         assert mhc.load_map(mhc.load_map_text(text)) == {"a": "b", "c": "d"}
+
+    def test_a_non_tag_value_can_never_inject_extra_mappings(self):
+        """Last line of defence: the writer refuses anything it hasn't checked, so a poisoned
+        cell that reached this far still cannot add a mapping of its own."""
+        text, added = mhc.append_upgrade_mappings(
+            self.MAP, {"good": "fine", "victim": 'evil"\n  "injected": "yes'}, "2026-07-20")
+        assert added == ["good"]
+        assert mhc.load_map(mhc.load_map_text(text)) == {"kimi-k2:1t": "REMOVE", "good": "fine"}
 
 
 class TestCatalogSnapshot:
@@ -590,6 +618,10 @@ class _FakeGitHub:
         return True
 
 
+def _boom(*a, **k):
+    raise AssertionError("the catalog must not be re-scanned when a plan was supplied")
+
+
 def _plan_with_issues(upgrade_markers=(), eval_markers=()):
     return {"issues": {
         "upgrade": {"markers": list(upgrade_markers), "title": "T-up", "body": "B-up"},
@@ -778,6 +810,44 @@ class TestCatalogScanCLI:
         out = capsys.readouterr().out
         assert "NEW TAG" not in out and "seeding it this run" in out
         assert code == 2  # the snapshot itself still needs writing
+
+    def test_file_issues_acts_on_a_saved_plan_without_rescanning(self, tmp_path, capsys,
+                                                                 monkeypatch):
+        """The orchestrator files from the plan it already read. A second scan would re-fetch
+        docs/api-tags, and an outage there would file NOTHING and say nothing — while the snapshot
+        PR opened in the same run makes those tags no longer 'new', losing the issue for good."""
+        args = self._workspace(tmp_path)
+        mhc.main(["--catalog-json", *args])
+        plan_path = tmp_path / "plan.json"
+        plan_path.write_text(capsys.readouterr().out)
+
+        monkeypatch.setattr(mhc, "_catalog_scan", _boom)  # a re-scan would be a bug
+        gh = _FakeGitHub()
+        monkeypatch.setattr(mhc, "GitHubIssues", lambda repo: gh)
+        assert mhc.main(["--file-issues", f"--plan-file={plan_path}"]) == 3
+        titles = [t for t, _ in gh.created]
+        assert any(t.startswith(mhc.EVAL_TITLE_PREFIX) for t in titles)
+        assert any(t.startswith(mhc.UPGRADE_TITLE_PREFIX) for t in titles)
+
+    def test_a_saved_plan_reads_from_stdin_too(self, tmp_path, capsys, monkeypatch):
+        args = self._workspace(tmp_path)
+        mhc.main(["--catalog-json", *args])
+        monkeypatch.setattr(sys, "stdin", io.StringIO(capsys.readouterr().out))
+        monkeypatch.setattr(mhc, "_catalog_scan", _boom)
+        gh = _FakeGitHub()
+        monkeypatch.setattr(mhc, "GitHubIssues", lambda repo: gh)
+        assert mhc.main(["--file-issues", "--plan-file=-"]) == 3
+        assert gh.created
+
+    def test_a_saved_plan_can_never_drive_the_snapshot_write(self, tmp_path, capsys):
+        """--catalog-json strips the raw catalog, so applying from a saved plan would silently skip
+        the snapshot refresh. Refuse instead."""
+        args = self._workspace(tmp_path)
+        mhc.main(["--catalog-json", *args])
+        plan_path = tmp_path / "plan.json"
+        plan_path.write_text(capsys.readouterr().out)
+        with pytest.raises(SystemExit):
+            mhc.main(["--catalog-apply", f"--plan-file={plan_path}"])
 
     def test_the_repo_config_and_committed_snapshot_are_clean_today(self, tmp_path, capsys):
         """Guards the shipped state: no configured model is scheduled to retire, and the committed

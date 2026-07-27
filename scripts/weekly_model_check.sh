@@ -194,8 +194,16 @@ for n in json.load(sys.stdin)['notices']:
   fi
 
   if [ "${NEWTAG:-0}" -gt 0 ] || [ "${NUPG:-0}" -gt 0 ]; then
-    "${PY[@]}" scripts/model_health_check.py --file-issues --config "$BOX_CFG" --map "$MAP" \
-        --snapshot "$SNAP" >>"$LOG" 2>&1 || log "issue filing failed (non-fatal)"
+    # File from the plan we ALREADY have, not a fresh scan. A second scan re-reads docs.ollama.com
+    # and /api/tags, and a transient outage there would file nothing and say nothing — while the
+    # snapshot PR opened just above makes those tags no longer "new", so the issue would be lost for
+    # good rather than retried next week.
+    PLANF="$(mktemp)"; printf '%s' "$CAT" >"$PLANF"
+    "${PY[@]}" scripts/model_health_check.py --file-issues --plan-file "$PLANF" >>"$LOG" 2>&1
+    RC=$?
+    rm -f "$PLANF"
+    # 0/2/3 are the planner's own nothing/actions/alerts codes — only anything else is a failure.
+    case "$RC" in 0|2|3) ;; *) log "issue filing failed (non-fatal, rc=$RC)";; esac
   fi
 fi
 log "=== weekly model-health check done ==="
