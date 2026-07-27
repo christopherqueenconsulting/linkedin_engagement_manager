@@ -12,19 +12,6 @@ cd "$ROOT_DIR"
 TAG="${1:?Usage: deploy.sh <image-tag>}"
 LAST_GOOD_FILE="${ROOT_DIR}/.last_good_tag"
 ENV_FILE="${ROOT_DIR}/.env"
-
-# Selenium topology. The Grid overlay (hub + N single-session nodes) became the deployed default at
-# the 2026-07-27 cutover; without composing it in here, EVERY deploy would silently revert the box
-# to the single standalone container — the stack would come up healthy and simply have the old
-# topology, which is exactly the kind of drift that is invisible until capacity matters.
-# Set SELENIUM_TOPOLOGY=standalone (env, or in the box's .env) to fall back; the overlay parks the
-# standalone behind a compose profile rather than deleting it, so the fallback stays one flag.
-SELENIUM_TOPOLOGY="${SELENIUM_TOPOLOGY:-$(grep -E '^SELENIUM_TOPOLOGY=' "${ENV_FILE}" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'")}"
-SELENIUM_TOPOLOGY="${SELENIUM_TOPOLOGY:-grid}"
-COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
-if [[ "${SELENIUM_TOPOLOGY}" == "grid" ]]; then
-  COMPOSE="${COMPOSE} -f docker-compose.grid.yml"
-fi
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-180}"
 # Maintenance window (issue #549): how long dispatch stays paused (TTL — it self-clears if this
 # script dies) and how long we wait for in-flight tasks to finish before recreating the workers.
@@ -49,6 +36,28 @@ env_value() {  # $1 = key, $2 = default
 # the Cloudflare tunnel ingress is the fixed `http://web_app:8000`.
 API_PORT="${API_PORT:-$(env_value API_PORT 8000)}"
 EDGE_PORT=8000
+
+# Selenium topology. The Grid overlay (hub + N single-session nodes) became the deployed default at
+# the 2026-07-27 cutover; without composing it in here, EVERY deploy would silently revert the box
+# to the single standalone container — the stack would come up healthy and simply have the old
+# topology, which is exactly the kind of drift that is invisible until capacity matters.
+# Set SELENIUM_TOPOLOGY=standalone (env, or in the box's .env) to fall back; the overlay parks the
+# standalone behind a compose profile rather than deleting it, so the fallback stays one flag.
+# Resolved through env_value (NOT a second hand-rolled .env parser) so an inline comment, quotes or
+# a stray CR can't turn `standalone` into an unrecognised value.
+SELENIUM_TOPOLOGY="${SELENIUM_TOPOLOGY:-$(env_value SELENIUM_TOPOLOGY grid)}"
+SELENIUM_TOPOLOGY="$(printf '%s' "${SELENIUM_TOPOLOGY}" | tr '[:upper:]' '[:lower:]')"
+COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
+case "${SELENIUM_TOPOLOGY}" in
+  standalone) ;;
+  grid) COMPOSE="${COMPOSE} -f docker-compose.grid.yml" ;;
+  # Anything else is a typo. Deploying the OTHER topology on one is precisely the silent drift this
+  # block exists to end, so name it and take the documented default rather than guessing quietly.
+  *) log "WARN: unrecognised SELENIUM_TOPOLOGY='${SELENIUM_TOPOLOGY}' — using 'grid'"
+     SELENIUM_TOPOLOGY="grid"
+     COMPOSE="${COMPOSE} -f docker-compose.grid.yml" ;;
+esac
+log "Selenium topology: ${SELENIUM_TOPOLOGY}"
 
 # Run a maintenance-mode subcommand inside whichever app container is up. Best-effort by design:
 # a stack that can't answer must not block the deploy (warm shutdown + acks_late still protect
@@ -119,6 +128,17 @@ export IMAGE_TAG="${TAG}"
 if [[ "${SELENIUM_TOPOLOGY}" == "grid" ]] && docker ps --format '{{.Names}}' | grep -qx "selenium-chrome"; then
   log "Grid topology: evicting the running standalone selenium-chrome so the hub can bind 4444"
   docker rm -f selenium-chrome >/dev/null 2>&1 || log "WARN: could not remove selenium-chrome (continuing)"
+fi
+# The SAME transition in reverse, which is the rollback path (`SELENIUM_TOPOLOGY=standalone`) and so
+# runs when something is already wrong. Compose only removes the hub/nodes as orphans during the
+# `up` in step 7, and while both exist the hub still answers to the `selenium-chrome` network alias
+# — so that name would resolve to two containers and half the workers would drive a hub with no
+# nodes. Take the Grid down first, by compose (it knows the project-prefixed replica names).
+if [[ "${SELENIUM_TOPOLOGY}" != "grid" ]] && docker ps --format '{{.Names}}' | grep -qx "selenium-hub"; then
+  log "Standalone topology: removing the Grid (hub + nodes) so the standalone can bind 4444"
+  docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.grid.yml \
+    rm -sf selenium-hub selenium-node-chrome selenium-node-debug >/dev/null 2>&1 \
+    || log "WARN: could not remove the grid containers (continuing)"
 fi
 
 # 4. Pull the exact app image tag (+ any updated third-party images).

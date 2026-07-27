@@ -220,6 +220,36 @@ class TestCollectors:
         with patch("requests.get", side_effect=OSError("boom")):
             assert ca.collect_selenium_capacity() is None
 
+    def test_the_debug_node_is_left_out_of_the_pool_it_sits_on_top_of(self):
+        # docker-compose.grid.yml runs a NINTH node the lanes are never sized for. Counting its slot
+        # here dilutes the one signal that says the pool is the constraint: 8 busy of a 9-slot
+        # denominator reads 0.89 and the sample below the peak reads 0.78 — under the 0.85 threshold
+        # that breached at 7/8 before the debug node existed.
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"value": {"nodes": [
+            {"uri": "http://172.20.0.4:5555", "slots": [{"session": {"sessionId": "a"}}]},
+            {"uri": "http://172.20.0.5:5555", "slots": [{"session": None}]},
+            {"uri": "http://selenium-node-debug:5555", "slots": [{"session": {"sessionId": "z"}}]},
+        ]}}
+        with patch("requests.get", return_value=response):
+            assert ca.collect_selenium_capacity() == {"max_sessions": 2, "busy_sessions": 1}
+
+    def test_a_grid_without_a_debug_node_counts_every_slot(self):
+        # The standalone, and any box that never deployed the debug node: nothing matches, so the
+        # exclusion must be a no-op rather than a silently smaller pool.
+        nodes = [{"uri": "http://172.20.0.4:5555", "slots": [{"session": None}, {"session": None}]}]
+        assert len(ca._pool_slots(nodes)) == 2
+
+    def test_the_exclusion_can_be_switched_off(self):
+        nodes = [{"uri": "http://selenium-node-debug:5555", "slots": [{"session": None}]}]
+        assert len(ca._pool_slots(nodes, debug_host="")) == 1
+
+    def test_a_node_named_after_the_debug_host_by_coincidence_is_not_dropped(self):
+        # Matched on the URI's host position, not anywhere in the string — a hub URL or a path that
+        # merely contains the name must not silently shrink the denominator.
+        nodes = [{"uri": "http://gridhost:5555/selenium-node-debug", "slots": [{"session": None}]}]
+        assert len(ca._pool_slots(nodes)) == 1
+
     def test_grid_with_no_slots_returns_none(self):
         response = MagicMock(status_code=200)
         response.json.return_value = {"value": {"nodes": []}}

@@ -116,14 +116,26 @@ Fewer slots than lanes is the one failure this cutover can produce quietly: the 
 hub is healthy, and time-sensitive tasks simply start queueing on session creation. Check it here,
 not from the logs.
 
-The capacity monitor (`auto_capacity_watch`, §5e) reads the same `/status` endpoint and needs no
-change: a hub reports slots exactly like the standalone did.
+The capacity monitor (`auto_capacity_watch`, §5e) reads the same `/status` endpoint, with one
+Grid-only adjustment: it counts the POOL's slots and drops the debug node's
+(`capacity_alerts._pool_slots`, matched on `SELENIUM_DEBUG_NODE_HOST`). Saturation has to be
+measured against the cap the lanes can consume — a 9-slot denominator makes a fully-claimed 8-slot
+pool read 0.89 and the sample below it 0.78, under the 0.85 threshold that used to breach at 7/8.
 
-### What the cutover costs you
+### The watchable node (noVNC)
 
-**noVNC on port 7900 goes away.** The hub has no browser; noVNC lives on the nodes, and replicas
-cannot all publish the same host port. To watch a live session, map 7900 on one node
-(`docker compose port <node-container> 7900`) or keep a single explicitly-mapped node for debugging.
+The pool is unwatchable — noVNC lives on the nodes and replicas cannot all publish the same host
+port — so the overlay runs **`selenium-node-debug`**: a ninth, non-replicated node that publishes
+7900 (`SELENIUM_GRID_VNC_BIND`, loopback by default) and is what the `lemvnc` hostname points at.
+It is deliberately ON TOP of the eight the lanes are sized for, so watching a browser never costs a
+production slot. Two caveats:
+
+- Grid routes a session to **any** free matching node, so this is *a spare node you can watch*, not
+  the node your session lands on. Deterministic pinning needs a distinguishing stereotype plus a
+  matching capability request from the client — not done here.
+- The Grid UI's live-view link is built from `SE_NODE_GRID_URL`; set `SELENIUM_GRID_PUBLIC_URL` to
+  the tunnel hostname or that link points at a host only Docker can resolve.
+
 `tools/selenium_mcp_server.py` is unaffected — it drives 4444, which is still the hub.
 
 Both 4444 and the event bus bind to **loopback** by default (`SELENIUM_GRID_HUB_BIND`,
