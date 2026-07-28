@@ -152,7 +152,6 @@ class TestMysqlErrorFallbacks:
             elif fname == "_count_actions_today":
                 args = (1, db.LogActionType.DM)
             elif fname == "update_scheduled_dm":
-                args = (1,)
                 with patch.object(db, "get_db_connection", return_value=_err_conn()):
                     assert db.update_scheduled_dm(1, message="x") == expected
                 return

@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 pytestmark = pytest.mark.unit
 
-_M = "cqc_lem.utilities.linkedin.notification_email"
+_M = "cqc_lem.utilities.linkedin.notification_email"  # lgtm[py/unused-global-variable]
 
 
 class TestAddress:

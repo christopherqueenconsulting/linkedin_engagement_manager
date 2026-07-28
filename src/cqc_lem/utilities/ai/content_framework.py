@@ -2199,7 +2199,7 @@ _ARTIFACT_RULE_RE = re.compile(
     re.IGNORECASE)
 # A stated CHANGE or a side-by-side, not merely the words "before"/"after"/"from…to" — those are
 # ordinary narrative connectives and would let a claims-only slide pass.
-_ARTIFACT_COMPARISON_RE = re.compile(
+_ARTIFACT_COMPARISON_RE = re.compile(  # lgtm[py/bad-tag-filter]
     r"\bbefore\b[^.!?\n]{0,60}\bafter\b"
     r"|\bafter\b[^.!?\n]{0,60}\bbefore\b"
     r"|\bvs\.?\b|\bversus\b"

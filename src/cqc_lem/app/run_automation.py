@@ -1563,7 +1563,6 @@ def _fill_edition_description(driver, wait, subtitle: str) -> bool:
     never block publishing on it (fail fast: max_try=1, no retries)."""
     if not subtitle:
         return False
-    _lower = "translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz')"
     candidates = []
     for attr in ("@placeholder", "@aria-label"):
         _l = f"translate({attr},'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz')"
@@ -2282,9 +2281,6 @@ def capture_follower_stats(self, user_id: int):
         quit_gracefully(driver)
 
 
-_GROUP_ID_RE = re.compile(r"/groups/(\d+)")
-
-
 def _enumerate_joined_groups(driver) -> list:
     """Scrape the user's joined groups from /groups/ → list of (group_id, name). Best-effort."""
     driver.get("https://www.linkedin.com/groups/")
@@ -2500,10 +2496,7 @@ _MAX_REPLIES_PER_SWEEP = 15
 # env-tunable (GOLDEN_HOUR_REPLY_SWEEPS); each sweep is QueueOnce + 429-safe, so an extra/overlapping
 # run is harmless and a rate-limited session skips cleanly.
 # The timing decisions themselves live in utilities/golden_hour.py (issue #622) so they can be tested
-# without importing the task module; these names stay as the in-module vocabulary.
-_GOLDEN_HOUR_MINUTES = _golden.GOLDEN_HOUR_MINUTES
-_GOLDEN_HOUR_REPLY_SWEEPS = _golden.GOLDEN_HOUR_REPLY_SWEEPS
-_GOLDEN_HOUR_MAX_SWEEPS = _golden.GOLDEN_HOUR_MAX_SWEEPS
+# without importing the task module.
 _golden_hour_sweep_countdowns = _golden.sweep_countdowns
 
 
@@ -3674,8 +3667,6 @@ def automate_reply_commenting(self, user_id: int, post_id: int, loop_for_duratio
     except Exception as e:
         log_error("Error while getting profile for reply commenting", exc=e, user_id=user_id, task_name="automate_reply_commenting")
         return f"Failed to start reply commenting: {e}"
-
-    result = "Automate Reply Commenting Task Started"
 
     try:
 
@@ -5056,7 +5047,6 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -
 
     driver, wait = get_driver_wait_pair(session_name='Invite to Connect', user_id=user_id)
 
-    result = "Invitation to Connect Started"
     invite_sent = False
 
     try:

@@ -175,7 +175,6 @@ def solve_arkose_challenge(driver: WebDriver, wait: WebDriverWait) -> bool:
         if not public_key:
             # Try extracting from page source as fallback
             page = driver.page_source
-            import re
             m = re.search(r'"public_key"\s*:\s*"([^"]+)"', page)
             public_key = m.group(1) if m else ""
 

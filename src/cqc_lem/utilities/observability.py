@@ -130,8 +130,8 @@ def _cost_table() -> dict:
         except (ValueError, TypeError):
             # Malformed override JSON: keep the built-in defaults rather than crash the tracked call.
             pass
-    _cost_table_cache = table
-    _cost_table_raw = raw
+    _cost_table_cache = table  # lgtm[py/unused-global-variable]
+    _cost_table_raw = raw  # lgtm[py/unused-global-variable]
     return table
 
 

@@ -99,8 +99,6 @@ LEADERBOARD_COLUMNS = ("Date", "Run", "Tier", "Model", "Role", "Deterministic", 
 LEADERBOARD_HEADER = "| " + " | ".join(LEADERBOARD_COLUMNS) + " |"
 LEADERBOARD_DIVIDER = "|" + "---|" * len(LEADERBOARD_COLUMNS)
 
-_OLLAMA_MARKER = "OLLAMA_CLOUD_URL"
-
 # Openers that mean the model narrated instead of answering. `lem-simple` outputs are pasted
 # straight into LinkedIn copy, so a preamble is a correctness failure, not a style nit.
 _PREAMBLE_RE = re.compile(
