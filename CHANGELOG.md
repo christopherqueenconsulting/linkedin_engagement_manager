@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.104.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.103.0...v0.104.0) (2026-07-28)
+
+
+### Features
+
+* **infra:** add Ollama-cloud agent lane aliases + LiteLLM gunicorn/resource limits ([0c32d21](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0c32d21687d3eaf6a90e81f7b559637e1054d8fd))
+* **infra:** daily issue triage with impact-first rubric (closes [#748](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/748)) ([4202148](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4202148f4b0e65722f3b7c3d4cff932497586e84))
+* **infra:** daily issue triage with impact-first rubric (closes [#748](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/748)) ([a39db82](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a39db8202d5ab9a4242d2c4dbbb2063fb492e1ee))
+* **infra:** Ollama-cloud agent lane aliases + LiteLLM gunicorn/resource limits ([52908b3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/52908b3e411698f1967df07bff7a67d502b0208f))
+* **outbound:** resolve the brand account as user 1 by convention (closes [#736](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/736)) ([2ea1f65](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2ea1f65c86516a11a234ceaeb2463204a1923d18))
+
+
+### Bug Fixes
+
+* **deps:** regenerate package-lock.json for vitest 4.1.10 + jsdom 30 ([24d3ef4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/24d3ef439d63851c6cb4dc0301a0ddba15734671))
+* **observability:** attribute LLM spend to serving model, add shadow cost, vendor price map (closes [#752](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/752)) ([5af6ac7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5af6ac7985e0aaba67e5d744dd7decd376224ea2))
+* **observability:** attribute LLM spend to serving model, add shadow cost, vendor price map (closes [#752](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/752)) ([8e40ae5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8e40ae5804e670a723cc03840f9a4dbde5593b31))
+
 ## [0.103.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.102.0...v0.103.0) (2026-07-27)
 
 
