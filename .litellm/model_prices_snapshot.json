@@ -1,0 +1,171 @@
+{
+  "_comment": "Committed snapshot of BerriAI/litellm model_prices_and_context_window.json plus LEM shadow-reference mappings for Ollama Cloud models. Source: https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json Fetched: 2026-07-28",
+  "models": {
+    "anthropic/claude-sonnet-4-6": {
+      "input_cost_per_token": 3e-06,
+      "output_cost_per_token": 1.5e-05,
+      "deprecation_date": null,
+      "mode": "chat"
+    },
+    "lem-complex": {
+      "input_cost_per_token": 3e-06,
+      "output_cost_per_token": 1.5e-05,
+      "mode": "chat"
+    },
+    "lem-embedding": {
+      "input_cost_per_token": 2e-08,
+      "output_cost_per_token": 0.0,
+      "mode": "embedding"
+    },
+    "lem-image": {
+      "input_cost_per_token": 0.0,
+      "output_cost_per_token": 0.0,
+      "mode": "image_generation"
+    },
+    "lem-medium": {
+      "input_cost_per_token": 6e-07,
+      "output_cost_per_token": 2.4e-06,
+      "mode": "chat"
+    },
+    "lem-research": {
+      "input_cost_per_token": 1e-06,
+      "output_cost_per_token": 1e-06,
+      "mode": "chat"
+    },
+    "lem-router": {
+      "input_cost_per_token": 6e-07,
+      "output_cost_per_token": 2.4e-06,
+      "mode": "chat"
+    },
+    "lem-simple": {
+      "input_cost_per_token": 1.5e-07,
+      "output_cost_per_token": 6e-07,
+      "mode": "chat"
+    },
+    "lem-tts": {
+      "input_cost_per_token": 0.0,
+      "output_cost_per_token": 0.0,
+      "mode": "audio_generation"
+    },
+    "openai/dall-e-3": {
+      "input_cost_per_token": null,
+      "output_cost_per_token": null,
+      "deprecation_date": null,
+      "mode": "image_generation"
+    },
+    "openai/deepseek-v4-flash": {
+      "input_cost_per_token": 0.0,
+      "output_cost_per_token": 0.0,
+      "deprecation_date": null,
+      "mode": "chat",
+      "shadow_reference": "openai/gpt-4o-mini"
+    },
+    "openai/deepseek-v4-pro": {
+      "input_cost_per_token": 0.0,
+      "output_cost_per_token": 0.0,
+      "deprecation_date": null,
+      "mode": "chat",
+      "shadow_reference": "openai/gpt-4o"
+    },
+    "openai/gemma4:31b": {
+      "input_cost_per_token": 0.0,
+      "output_cost_per_token": 0.0,
+      "deprecation_date": null,
+      "mode": "chat",
+      "shadow_reference": "openai/gpt-4o-mini"
+    },
+    "openai/glm-5.1": {
+      "input_cost_per_token": 0.0,
+      "output_cost_per_token": 0.0,
+      "deprecation_date": null,
+      "mode": "chat",
+      "shadow_reference": "openai/gpt-4o-mini"
+    },
+    "openai/gpt-4o": {
+      "input_cost_per_token": 2.5e-06,
+      "output_cost_per_token": 1e-05,
+      "deprecation_date": null,
+      "mode": "chat"
+    },
+    "openai/gpt-4o-mini": {
+      "input_cost_per_token": 1.5e-07,
+      "output_cost_per_token": 6e-07,
+      "deprecation_date": null,
+      "mode": "chat"
+    },
+    "openai/gpt-oss:120b": {
+      "input_cost_per_token": 0.0,
+      "output_cost_per_token": 0.0,
+      "deprecation_date": null,
+      "mode": "chat",
+      "shadow_reference": "openai/gpt-4o-mini"
+    },
+    "openai/gpt-oss:20b": {
+      "input_cost_per_token": 0.0,
+      "output_cost_per_token": 0.0,
+      "deprecation_date": null,
+      "mode": "chat",
+      "shadow_reference": "openai/gpt-4o-mini"
+    },
+    "openai/kimi-k2.5": {
+      "input_cost_per_token": 0.0,
+      "output_cost_per_token": 0.0,
+      "deprecation_date": null,
+      "mode": "chat",
+      "shadow_reference": "openai/gpt-4o"
+    },
+    "openai/kimi-k2.6": {
+      "input_cost_per_token": 0.0,
+      "output_cost_per_token": 0.0,
+      "deprecation_date": null,
+      "mode": "chat",
+      "shadow_reference": "openai/gpt-4o"
+    },
+    "openai/minimax-m2.5": {
+      "input_cost_per_token": 0.0,
+      "output_cost_per_token": 0.0,
+      "deprecation_date": null,
+      "mode": "chat",
+      "shadow_reference": "openai/gpt-4o-mini"
+    },
+    "openai/minimax-m2.7": {
+      "input_cost_per_token": 0.0,
+      "output_cost_per_token": 0.0,
+      "deprecation_date": null,
+      "mode": "chat",
+      "shadow_reference": "openai/gpt-4o-mini"
+    },
+    "openai/mistral-large-3:675b": {
+      "input_cost_per_token": 0.0,
+      "output_cost_per_token": 0.0,
+      "deprecation_date": null,
+      "mode": "chat",
+      "shadow_reference": "openai/gpt-4o"
+    },
+    "openai/qwen3.5:397b": {
+      "input_cost_per_token": 0.0,
+      "output_cost_per_token": 0.0,
+      "deprecation_date": null,
+      "mode": "chat",
+      "shadow_reference": "openai/gpt-4o"
+    },
+    "openai/text-embedding-3-small": {
+      "input_cost_per_token": 2e-08,
+      "output_cost_per_token": 0.0,
+      "deprecation_date": null,
+      "mode": "embedding"
+    },
+    "openai/tts-1": {
+      "input_cost_per_token": null,
+      "output_cost_per_token": null,
+      "deprecation_date": null,
+      "mode": "audio_speech"
+    },
+    "perplexity/sonar": {
+      "input_cost_per_token": 1e-06,
+      "output_cost_per_token": 1e-06,
+      "deprecation_date": null,
+      "mode": "chat"
+    }
+  }
+}

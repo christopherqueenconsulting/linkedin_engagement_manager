@@ -95,3 +95,83 @@ class TestCallLlmAttribution:
         with patch(f"{_AI}.client", client), \
              patch(f"{_OBS}.track_llm_call", side_effect=RuntimeError("posthog down")):
             assert _call_llm(model="lem-simple", messages=[]) is not None
+
+
+class TestServingModelCapture:
+    def test_serving_model_from_response_model_is_passed_to_tracker(self):
+        resp = SimpleNamespace(
+            usage=SimpleNamespace(prompt_tokens=30, completion_tokens=70),
+            model="openai/gpt-4o-mini",
+        )
+        _, track = _call(model="lem-simple", messages=[], _response=resp)
+
+        kwargs = track.call_args[1]
+        assert kwargs["serving_model"] == "openai/gpt-4o-mini"
+        assert kwargs["model_tier"] == "lem-simple"
+        assert kwargs["model"] == "lem-simple"  # requested alias
+
+    def test_serving_model_from_hidden_params_when_response_model_missing(self):
+        resp = SimpleNamespace(
+            usage=SimpleNamespace(prompt_tokens=30, completion_tokens=70),
+            _hidden_params={"model": "openai/gpt-4o"},
+        )
+        _, track = _call(model="lem-complex", messages=[], _response=resp)
+
+        kwargs = track.call_args[1]
+        assert kwargs["serving_model"] == "openai/gpt-4o"
+
+    def test_down_routed_call_passes_serving_model_separate_from_tier(self):
+        """A lem-complex call that fell back to gpt-4o-mini still reports the original tier."""
+        resp = SimpleNamespace(
+            usage=SimpleNamespace(prompt_tokens=30, completion_tokens=70),
+            model="openai/gpt-4o-mini",
+        )
+        _, track = _call(model="lem-complex", messages=[], _response=resp)
+
+        kwargs = track.call_args[1]
+        assert kwargs["serving_model"] == "openai/gpt-4o-mini"
+        assert kwargs["model_tier"] == "lem-complex"
+
+    def test_ollama_serving_model_is_passed_to_tracker(self):
+        resp = SimpleNamespace(
+            usage=SimpleNamespace(prompt_tokens=30, completion_tokens=70),
+            model="openai/qwen3.5:397b",
+        )
+        _, track = _call(model="lem-complex", messages=[], _response=resp)
+
+        kwargs = track.call_args[1]
+        assert kwargs["serving_model"] == "openai/qwen3.5:397b"
+        assert kwargs["model_tier"] == "lem-complex"
+
+    def test_bare_ollama_model_name_is_passed_to_tracker(self):
+        resp = SimpleNamespace(
+            usage=SimpleNamespace(prompt_tokens=30, completion_tokens=70),
+            model="qwen3.5:397b",
+        )
+        _, track = _call(model="lem-complex", messages=[], _response=resp)
+
+        kwargs = track.call_args[1]
+        assert kwargs["serving_model"] == "qwen3.5:397b"
+
+    def test_serving_model_missing_falls_back_to_requested_alias(self):
+        resp = SimpleNamespace(usage=SimpleNamespace(prompt_tokens=30, completion_tokens=70))
+        _, track = _call(model="lem-simple", messages=[], _response=resp)
+
+        kwargs = track.call_args[1]
+        assert kwargs["serving_model"] == "lem-simple"
+        assert kwargs["model_tier"] == "lem-simple"
+
+    def test_failed_call_reports_requested_alias_as_serving_model(self):
+        from cqc_lem.utilities.ai.ai_helper import _call_llm
+        client = MagicMock()
+        client.chat.completions.create.side_effect = RuntimeError("provider down")
+        with patch(f"{_AI}.client", client), patch(f"{_OBS}.track_llm_call") as track:
+            with pytest.raises(RuntimeError):
+                _call_llm(model="lem-complex", messages=[], _track_user_id=8)
+
+        kwargs = track.call_args[1]
+        assert kwargs["model"] == "lem-complex"
+        # On failure there is no response to extract a serving model from; the function
+        # intentionally passes the requested alias as the model argument so cost attribution
+        # falls back to the tier rate.
+        assert kwargs.get("serving_model", kwargs["model"]) == "lem-complex"

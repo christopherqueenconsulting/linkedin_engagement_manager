@@ -65,12 +65,33 @@ def _attach_routing_metadata(kwargs: dict, user_id, feature) -> None:
     extra_body["metadata"] = attribution_metadata(user_id, feature)
 
 
+def _resolve_serving_model(response, requested_model: str) -> str:
+    """The model LiteLLM actually served the call with, after routing/fallback/down-routing.
+
+    LiteLLM returns the deployed model id in `response.model` (OpenAI SDK shape) or inside
+    `_hidden_params.model` / `_hidden_params.model_id`. When neither is present, the requested
+    alias is the best fallback — spend is then priced by the tier the caller asked for."""
+    if response is None:
+        return requested_model
+    serving = getattr(response, "model", None)
+    if serving:
+        return str(serving)
+    hidden = getattr(response, "_hidden_params", None) or {}
+    for key in ("model", "model_id"):
+        val = hidden.get(key)
+        if val:
+            return str(val)
+    return requested_model
+
+
 def _call_llm(**kwargs):
     """Thin wrapper around client.chat.completions.create that logs model, latency, and token usage.
 
     Cost attribution: pass `_track_user_id` / `_track_feature` to say who and what this call is for —
     both are popped before the LiteLLM call. Omitted values fall back to the ambient
-    `llm_attribution()` scope, then to the running Celery task's name."""
+    `llm_attribution()` scope, then to the running Celery task's name. The serving model (what
+    LiteLLM actually ran) is captured from the response and passed to `track_llm_call` separately
+    from the requested tier alias, so fallback/down-routed calls price by the real model."""
     track_user_id = kwargs.pop("_track_user_id", None)
     track_feature = kwargs.pop("_track_feature", None)
     model = kwargs.get("model", "unknown")
@@ -95,9 +116,12 @@ def _call_llm(**kwargs):
         usage = getattr(response, "usage", None)
         prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
         completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0) if usage else 0
+        serving_model = _resolve_serving_model(response, model)
         log_debug(
-            f"LLM call completed in {duration_ms}ms — {prompt_tokens}+{completion_tokens} tokens",
-            ai_model=model,
+            f"LLM call completed in {duration_ms}ms — {prompt_tokens}+{completion_tokens} tokens"
+            f" (serving: {serving_model})",
+            ai_model=serving_model,
+            model_tier=model,
             duration_ms=duration_ms,
         )
         try:
@@ -105,6 +129,8 @@ def _call_llm(**kwargs):
             user_id, feature = _attribution()
             track_llm_call(
                 model=model,
+                serving_model=serving_model,
+                model_tier=model,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 latency_ms=duration_ms,

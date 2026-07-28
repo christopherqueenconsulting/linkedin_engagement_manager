@@ -64,18 +64,32 @@ product decision, not a default.
 
 ## De-dupe: which stream answers which question
 
-Both streams fire on every call. **Never sum spend across them.**
+Three streams fire around every call. **Never sum spend or token counts across them.**
 
 | | `llm_call` (app, `observability.track_llm_call`) | `$ai_generation` (proxy) |
 |---|---|---|
 | Cost | LEM's *estimate* from `estimate_llm_cost_usd`, zeroed on a cache hit | the provider's own `response_cost` |
-| Model | the tier alias the caller asked for (`model`, plus `model_tier`) | the provider model that served it |
+| Model | the **serving model** LiteLLM actually ran (`model`), with the requested tier alias preserved as `model_tier` | the provider model that served it |
 | Feeds | `cost_ledger` rollups, the margin report, budget alerts (§C/§E of the margin plan) | PostHog's LLM-analytics product: generations, traces, per-model/user breakdowns, evals |
 | Use for | anything a dollar figure is reported from | latency, error rate, model mix, per-user/feature volume |
 
 Rule of thumb: **money questions use `llm_call`** (it is the ledger's source and joins to Stripe);
 **everything else uses `$ai_generation`** (it is the truth about what ran). An insight must pick one
 — a "total LLM spend" chart that unions both double-counts every call.
+
+### The third stream: `shadow_cost_usd`
+
+For subscription-priced models (Ollama Cloud), the real marginal cost is $0, so both `cost_usd`
+and `$ai_total_cost_usd` read $0. That is correct for today's bill, but it hides what the same
+usage would cost if LEM left the subscription. `llm_call` therefore carries a separate
+`shadow_cost_usd` property for those models — a hand-picked metered reference price documented in
+`.litellm/model_prices_snapshot.json`.
+
+| Stream | What it answers | Do NOT use it for |
+|---|---|---|
+| `cost_usd` (`llm_call`) | What LEM's ledger/margin report books today | summing with `shadow_cost_usd` — they're different decisions |
+| `$ai_total_cost_usd` (`$ai_generation`) | The provider's actual metered charge (often $0 for Ollama Cloud) | the "what if we left?" question |
+| `shadow_cost_usd` (`llm_call`) | What the same tokens would cost at a metered reference | billing or the margin report |
 
 Caveat worth knowing when the two are compared: a LiteLLM **cache hit** still emits
 `$ai_generation`, at `$ai_total_cost_usd` 0 like `llm_call`'s `cached` path, but its

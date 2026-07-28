@@ -53,10 +53,12 @@ posthog.enable_exception_autocapture = EXCEPTION_AUTOCAPTURE_ENABLED
 _SESSION_ID_RE = re.compile(r"[A-Za-z0-9._-]{8,64}")
 
 
-# Approximate USD cost per 1K tokens as (input, output), keyed by the model string passed to
-# track_llm_call — the tier alias (lem-*) in normal operation, or a raw model name. These are
-# coarse blended estimates for cost TREND analytics, not billing; override any entry with the
-# LLM_COST_PER_1K env var (JSON: {"lem-complex": [0.003, 0.015], ...}).
+# Approximate USD cost per 1K tokens as (input, output). Sources, in precedence order:
+#   1. LLM_COST_PER_1K env var (JSON override)
+#   2. .litellm/model_prices_snapshot.json (vendored LiteLLM map + LEM shadow references)
+#   3. Hardcoded tier-alias fallbacks below for models absent from the map.
+# The vendored map is keyed by the SERVING model LiteLLM returns (e.g. openai/gpt-4o-mini),
+# not the lem-* tier alias, so fallback/down-routed calls are priced by the model that actually ran.
 _DEFAULT_COST_PER_1K = {
     "lem-simple": (0.00015, 0.00060),
     "lem-medium": (0.00060, 0.00240),
@@ -66,6 +68,11 @@ _DEFAULT_COST_PER_1K = {
     "lem-image": (0.0, 0.0),
 }
 
+_LLM_PRICE_SNAPSHOT_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+    ".litellm", "model_prices_snapshot.json"
+)
+
 
 # Cache the parsed cost table keyed by the raw LLM_COST_PER_1K value so track_llm_call() — which
 # runs on every LLM invocation — doesn't reparse the JSON each call. Rebuilt only when the env var
@@ -73,6 +80,25 @@ _DEFAULT_COST_PER_1K = {
 _UNSET = object()
 _cost_table_cache: Optional[dict] = None
 _cost_table_raw = _UNSET
+_vendored_specs_cache: Optional[dict] = None
+
+
+def _vendored_specs() -> dict:
+    """The vendored price map as {model_id: spec_dict}, or {} when the snapshot is missing.
+
+    The map contains both LiteLLM's metered prices and LEM's hand-picked shadow references for
+    subscription-only models (Ollama Cloud). It is read once per process; a missing file is not
+    fatal — the hardcoded tier fallbacks take over."""
+    global _vendored_specs_cache
+    if _vendored_specs_cache is not None:
+        return _vendored_specs_cache
+    try:
+        with open(_LLM_PRICE_SNAPSHOT_PATH, "r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+        _vendored_specs_cache = dict((doc or {}).get("models") or {})
+    except Exception:
+        _vendored_specs_cache = {}
+    return _vendored_specs_cache
 
 
 def _cost_table() -> dict:
@@ -80,7 +106,22 @@ def _cost_table() -> dict:
     raw = os.getenv("LLM_COST_PER_1K")
     if _cost_table_cache is not None and raw == _cost_table_raw:
         return _cost_table_cache
-    table = dict(_DEFAULT_COST_PER_1K)
+    # Start with vendored map (serving models), then overlay the legacy tier-alias fallbacks.
+    table: dict = {}
+    for model_id, spec in _vendored_specs().items():
+        inp = spec.get("input_cost_per_token")
+        out = spec.get("output_cost_per_token")
+        if inp is None or out is None:
+            continue
+        rates = (float(inp) * 1000.0, float(out) * 1000.0)
+        table[model_id] = rates
+        # Also index by the bare model name so a LiteLLM response like "gpt-oss:20b" resolves when
+        # the snapshot key is "openai/gpt-oss:20b".
+        if "/" in model_id:
+            bare = model_id.split("/", 1)[1]
+            if bare and bare not in table:
+                table[bare] = rates
+    table.update(_DEFAULT_COST_PER_1K)
     if raw:
         try:
             for key, val in json.loads(raw).items():
@@ -95,9 +136,10 @@ def _cost_table() -> dict:
 
 
 def estimate_llm_cost_usd(model: str, prompt_tokens: int, completion_tokens: int) -> float:
-    """Coarse USD cost estimate for a completion from a per-1K-token price table (env-overridable
-    via LLM_COST_PER_1K). Unknown models fall back to a substring match then the lem-medium rate so
-    a real call's cost signal is never silently zero. Returns 0.0 when there are no tokens."""
+    """Coarse USD cost estimate for a completion from the per-1K-token table. The serving model
+    (what LiteLLM actually ran) is looked up first; unknown serving models fall back to a substring
+    match and then the lem-medium rate so a real call's cost signal is never silently zero.
+    Returns 0.0 when there are no tokens."""
     prompt = int(prompt_tokens or 0)
     completion = int(completion_tokens or 0)
     if not prompt and not completion:
@@ -105,11 +147,51 @@ def estimate_llm_cost_usd(model: str, prompt_tokens: int, completion_tokens: int
     table = _cost_table()
     rates = table.get(model)
     if rates is None:
-        key = next((k for k in table if k != "lem-image" and k in (model or "")), None)
+        key = next((k for k in table if k != "lem-image" and (k in (model or "") or
+                    ((model or "").endswith(k) if "/" in k else False))), None)
         rates = table[key] if key else table["lem-medium"]
     # No rounding: a few prompt tokens on a cheap tier round to 0.0 at 6dp, which would erase the
     # non-zero cost signal for real calls. PostHog handles display rounding.
     return (prompt / 1000.0) * rates[0] + (completion / 1000.0) * rates[1]
+
+
+def estimate_shadow_cost_usd(model: str, prompt_tokens: int, completion_tokens: int) -> Optional[float]:
+    """Shadow cost for subscription/zero-priced traffic.
+
+    For models whose own LiteLLM price is 0.0 (Ollama Cloud on a flat-rate subscription), this returns
+    what the same tokens would cost at the hand-picked metered reference documented in
+    .litellm/model_prices_snapshot.json. For already-metered models it returns None — shadow cost
+    is only meaningful where the real marginal cost is hidden by a subscription.
+    """
+    prompt = int(prompt_tokens or 0)
+    completion = int(completion_tokens or 0)
+    if not prompt and not completion:
+        return None
+    specs = _vendored_specs()
+    spec = specs.get(model)
+    if spec is None and "/" in (model or ""):
+        bare = model.split("/", 1)[1]
+        spec = specs.get(bare)
+    if not spec:
+        return None
+    own_in = spec.get("input_cost_per_token")
+    own_out = spec.get("output_cost_per_token")
+    if own_in is not None and own_out is not None and (float(own_in) > 0 or float(own_out) > 0):
+        # Already metered — no shadow needed.
+        return None
+    shadow_ref = spec.get("shadow_reference")
+    if not shadow_ref:
+        return None
+    shadow_spec = specs.get(shadow_ref)
+    if shadow_spec is None and "/" in shadow_ref:
+        shadow_spec = specs.get(shadow_ref.split("/", 1)[1])
+    if not shadow_spec:
+        return None
+    ref_in = shadow_spec.get("input_cost_per_token")
+    ref_out = shadow_spec.get("output_cost_per_token")
+    if ref_in is None or ref_out is None:
+        return None
+    return prompt * float(ref_in) + completion * float(ref_out)
 
 
 def _extract_token_usage(result) -> Tuple[int, int]:
@@ -298,29 +380,44 @@ def track_llm_call(
     feature: Optional[str] = None,
     model_tier: Optional[str] = None,
     cached: bool = False,
+    serving_model: Optional[str] = None,
 ) -> None:
-    cost_usd = 0.0 if cached else estimate_llm_cost_usd(model, prompt_tokens, completion_tokens)
+    """Emit one `llm_call` event and accrue spend to the daily cost rollup.
+
+    `model` is the requested tier alias (or raw model) for backward compatibility.
+    `serving_model`, when provided, is the model LiteLLM actually ran — including after fallback
+    or cost-aware down-routing. Spend is priced by the SERVING model so a fallback to a paid
+    provider is visible in the ledger. The requested alias is preserved as `model_tier` so
+    per-tier reporting survives."""
+    resolved_model = serving_model or model
     tier = model_tier or _model_tier(model)
+    cost_usd = 0.0 if cached else estimate_llm_cost_usd(resolved_model, prompt_tokens, completion_tokens)
+    shadow_cost_usd = None if cached else estimate_shadow_cost_usd(resolved_model, prompt_tokens, completion_tokens)
+    properties = {
+        "model": resolved_model,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+        # A cache hit never reached the provider, so it cost nothing — keeping it at the
+        # estimated rate would inflate summed spend on every repeated prompt.
+        "cost_usd": cost_usd,
+        "latency_ms": latency_ms,
+        "success": success,
+        "user_id": user_id,
+        # Floor the bucket here, not just in the callers: a PostHog breakdown on `feature`
+        # needs every llm_call to carry one, including direct calls that omit it.
+        "feature": feature or FEATURE_SYSTEM,
+        "model_tier": tier,
+        "cached": bool(cached),
+    }
+    if shadow_cost_usd is not None:
+        # Shadow cost is a separate decision signal: what the same call would cost if the
+        # subscription model were billed at the metered reference. It never enters cost_usd.
+        properties["shadow_cost_usd"] = shadow_cost_usd
     posthog.capture(
         distinct_id=str(user_id or "system"),
         event="llm_call",
-        properties={
-            "model": model,
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens,
-            # A cache hit never reached the provider, so it cost nothing — keeping it at the
-            # estimated rate would inflate summed spend on every repeated prompt.
-            "cost_usd": cost_usd,
-            "latency_ms": latency_ms,
-            "success": success,
-            "user_id": user_id,
-            # Floor the bucket here, not just in the callers: a PostHog breakdown on `feature`
-            # needs every llm_call to carry one, including direct calls that omit it.
-            "feature": feature or FEATURE_SYSTEM,
-            "model_tier": tier,
-            "cached": bool(cached),
-        },
+        properties=properties,
     )
     # One ledger row per call would grow unbounded at LEM's call volume, so spend accumulates in a
     # per-day Redis bucket that the daily rollup task collapses into cost_ledger rows.
