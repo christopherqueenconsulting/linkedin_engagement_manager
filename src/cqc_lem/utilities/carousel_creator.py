@@ -417,6 +417,26 @@ def choose_content_layout(
     return rng.choice(image_layouts if image_path else text_layouts)
 
 
+def _insert_picture_into_placeholder(slide: Slide, placeholder, image_path: str) -> None:
+    """Insert *image_path* into a placeholder.
+
+    If *placeholder* is a ``PicturePlaceholder`` (has ``insert_picture``), use its
+    native method. Otherwise fall back to ``slide.shapes.add_picture(...)`` positioned
+    to the placeholder's frame so a non-picture placeholder never crashes the slide.
+    """
+    if hasattr(placeholder, "insert_picture"):
+        placeholder.insert_picture(image_path)
+        return
+
+    slide.shapes.add_picture(
+        image_path,
+        placeholder.left,
+        placeholder.top,
+        placeholder.width,
+        placeholder.height,
+    )
+
+
 def create_ppt_educational_content_carousel(prs: Presentation, carousel: EducationalContentCarousel,
                                             post_id: Optional[int] = None,
                                             user_id: Optional[int] = None) -> Presentation:
@@ -1008,7 +1028,7 @@ def create_one_column_text_layout_slide(prs: Presentation, title: str, body_text
 
     # Insert the image if the path is provided
     if image_path:
-        picture_placeholder.insert_picture(image_path)
+        _insert_picture_into_placeholder(slide, picture_placeholder, image_path)
 
     # Return the slide object for further customization
     return slide
@@ -1068,7 +1088,7 @@ def create_caption_only_layout_slide(prs: Presentation, title: str, image_path: 
     # Insert the image if the path is provided
     picture_placeholder = slide.placeholders[2]
     if image_path:
-        picture_placeholder.insert_picture(image_path)
+        _insert_picture_into_placeholder(slide, picture_placeholder, image_path)
 
     # Return the slide object for further customization
     return slide
@@ -1207,8 +1227,8 @@ def create_one_column_text_1_layout_slide(prs: Presentation, title: str, body_te
 
     # Populate the placeholders
     title_placeholder = slide.placeholders[0]
-    picture_placeholder = slide.placeholders[1]
-    body_placeholder = slide.placeholders[2]
+    body_placeholder = slide.placeholders[1]
+    picture_placeholder = slide.placeholders[2]
 
     # Set the text content
     title_placeholder.text = title
@@ -1216,7 +1236,7 @@ def create_one_column_text_1_layout_slide(prs: Presentation, title: str, body_te
 
     # Insert the image if the path is provided
     if image_path:
-        picture_placeholder.insert_picture(image_path)
+        _insert_picture_into_placeholder(slide, picture_placeholder, image_path)
 
     # Return the slide object for further customization
     return slide

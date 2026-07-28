@@ -22,7 +22,7 @@ class TestCarouselCreator:
             "TestimonialCarousel",
             "ProductDemoCarousel",
         ]
-        
+
         # Verify types are recognized
         for carousel_type in carousel_types:
             assert isinstance(carousel_type, str)
@@ -31,16 +31,16 @@ class TestCarouselCreator:
     def test_create_basic_carousel(self):
         """Test creating a basic carousel."""
         from cqc_lem.utilities.carousel_creator import create_ppt
-        
+
         with patch("cqc_lem.utilities.carousel_creator.create_ppt") as mock_create:
             mock_create.return_value = "/path/to/carousel.pptx"
-            
+
             # Mock carousel data
             from cqc_lem.utilities.carousel_creator import EducationalContentCarousel
             carousel_data = MagicMock(spec=EducationalContentCarousel)
-            
+
             result = mock_create("test_carousel", carousel_data)
-            
+
             assert result is not None
             assert isinstance(result, str)
 
@@ -86,7 +86,7 @@ class TestCarouselLayouts:
 
     def test_two_column_layout(self):
         """Test two-column carousel layout."""
-        # TODO: Figure out if and how to implement this one
+        # TODO: Figure if and how to implement this one
         # Reference: TODO_PROJECT_TIMELINE.md Line 254
         pass
 
@@ -118,11 +118,11 @@ class TestImageIntegration:
         # Mock Photo objects
         mock_photo = MagicMock()
         mock_photo.url = "https://example.com/image1.jpg"
-        
+
         mock_search.return_value = [mock_photo]
-        
+
         results = mock_search("business professional")
-        
+
         assert len(results) == 1
         assert results[0].url.startswith("https://")
 
@@ -146,7 +146,7 @@ class TestCarouselContent:
         # LinkedIn has limits on carousel length
         min_slides = 1
         max_slides = 20  # Typical limit
-        
+
         assert min_slides >= 1
         assert max_slides <= 20
 
@@ -154,6 +154,95 @@ class TestCarouselContent:
         """Test text formatting within slides."""
         # Test proper text wrapping, sizing, and positioning
         pass
+
+
+@pytest.mark.unit
+class TestPicturePlaceholderInsertion:
+    """Tests for the PPTX picture-insertion fallback that prevents non-picture
+    placeholders from crashing carousel export."""
+
+    def test_insert_picture_uses_native_method_for_picture_placeholder(self):
+        """A PicturePlaceholder should receive insert_picture directly."""
+        from cqc_lem.utilities.carousel_creator import _insert_picture_into_placeholder
+
+        slide = MagicMock()
+        placeholder = MagicMock()
+        placeholder.insert_picture = MagicMock()
+
+        _insert_picture_into_placeholder(slide, placeholder, "img.png")
+
+        placeholder.insert_picture.assert_called_once_with("img.png")
+        slide.shapes.add_picture.assert_not_called()
+
+    def test_insert_picture_falls_back_to_add_picture_for_slide_placeholder(self):
+        """A plain SlidePlaceholder (no insert_picture) falls back to add_picture."""
+        from cqc_lem.utilities.carousel_creator import _insert_picture_into_placeholder
+
+        slide = MagicMock()
+        placeholder = MagicMock(spec=["left", "top", "width", "height"])
+        placeholder.left = 1
+        placeholder.top = 2
+        placeholder.width = 3
+        placeholder.height = 4
+
+        _insert_picture_into_placeholder(slide, placeholder, "img.png")
+
+        assert not hasattr(placeholder, "insert_picture")
+        slide.shapes.add_picture.assert_called_once_with("img.png", 1, 2, 3, 4)
+
+
+@pytest.mark.unit
+class TestOneColumnText1Layout:
+    """Tests for the ONE_COLUMN_TEXT_1 layout that had swapped placeholder indices."""
+
+    def test_uses_correct_picture_placeholder_index(self):
+        """The picture placeholder is index 2; body text goes to index 1."""
+        from cqc_lem.utilities.carousel_creator import create_one_column_text_1_layout_slide
+
+        prs = MagicMock()
+        slide = MagicMock()
+        layout = MagicMock()
+        prs.slide_layouts = [MagicMock()] * 14
+        prs.slide_layouts[13] = layout
+        prs.slides.add_slide.return_value = slide
+
+        title_ph = MagicMock()
+        body_ph = MagicMock(spec=["text", "left", "top", "width", "height"])
+        pic_ph = MagicMock()
+        pic_ph.insert_picture = MagicMock()
+        slide.placeholders = [title_ph, body_ph, pic_ph]
+
+        create_one_column_text_1_layout_slide(prs, "Title", "Body text", image_path="img.png")
+
+        prs.slides.add_slide.assert_called_once_with(layout)
+        assert title_ph.text == "Title"
+        assert body_ph.text == "Body text"
+        pic_ph.insert_picture.assert_called_once_with("img.png")
+
+    def test_falls_back_when_picture_placeholder_is_not_picture_type(self):
+        """If index 2 is not a picture placeholder, add_picture is used."""
+        from cqc_lem.utilities.carousel_creator import create_one_column_text_1_layout_slide
+
+        prs = MagicMock()
+        slide = MagicMock()
+        layout = MagicMock()
+        prs.slide_layouts = [MagicMock()] * 14
+        prs.slide_layouts[13] = layout
+        prs.slides.add_slide.return_value = slide
+
+        title_ph = MagicMock()
+        body_ph = MagicMock(spec=["text", "left", "top", "width", "height"])
+        pic_ph = MagicMock(spec=["left", "top", "width", "height"])
+        pic_ph.left = 10
+        pic_ph.top = 20
+        pic_ph.width = 30
+        pic_ph.height = 40
+        slide.placeholders = [title_ph, body_ph, pic_ph]
+
+        create_one_column_text_1_layout_slide(prs, "Title", "Body text", image_path="img.png")
+
+        assert not hasattr(pic_ph, "insert_picture")
+        slide.shapes.add_picture.assert_called_once_with("img.png", 10, 20, 30, 40)
 
 
 @pytest.mark.unit
