@@ -85,7 +85,7 @@ from cqc_lem.utilities.db import (
     get_user_timezone, update_user_timezone,
     get_user_geo, update_user_location, get_user_content_language,
     replace_video_url_base, get_post_type, get_post_buyer_stage, get_post_status,
-    update_db_post_carousel_slides,
+    update_db_post_carousel_slides, update_db_post_rejection_reason,
     get_post_url_from_log_for_user,
     insert_feedback, FeedbackSource,
     get_latest_review_feedback_id, get_early_adopter_grant, extend_trial_for_user,
@@ -286,6 +286,7 @@ class PostRequest(BaseModel):
     carousel_slides: Optional[List[str]] = None
     use_avatar: Optional[bool] = False
     video_quality: Optional[str] = "standard"  # standard | premium | premium_top
+    rejection_reason: Optional[str] = Field(default=None, max_length=1000)
 
 
 class AvatarCreditCheckoutRequest(BaseModel):
@@ -320,6 +321,7 @@ class BulkUpdateRequest(BaseModel):
 
 class BulkDeleteRequest(BaseModel):
     post_ids: List[int]
+    rejection_reason: Optional[str] = Field(default=None, max_length=1000)
 
 
 class UserSettingsRequest(BaseModel):
@@ -1652,6 +1654,8 @@ def get_posts_for_email(
             # Why a draft is being held, and what to do about it (issue #421).
             "authenticity_score": post.get("authenticity_score"),
             "gate_reason": parse_gate_findings(post.get("gate_reason")),
+            # Why the user rejected/deleted this draft (issue #713) — surfaced when regenerating.
+            "rejection_reason": post.get("rejection_reason"),
         }
         for post in posts
     ]
@@ -1685,7 +1689,8 @@ def delete_posts_endpoint(request: BulkDeleteRequest) -> ResponseModel:
     if not request.post_ids:
         raise HTTPException(status_code=400, detail="post_ids is required")
 
-    if soft_delete_posts(request.post_ids):
+    reason = (request.rejection_reason or "").strip() or None
+    if soft_delete_posts(request.post_ids, rejection_reason=reason):
         return ResponseModel(status_code=200, detail="Posts deleted successfully")
     else:
         raise HTTPException(status_code=405, detail="Posts could not be deleted")
@@ -1713,6 +1718,9 @@ def update_post(post_id: int, post: PostRequest) -> ResponseModel:
     myprint(f"Received Post Request: {post}")
 
     if update_db_post(post.content, post.video_url, post.scheduled_datetime, post.post_type, post_id, post.status):
+        reason = (post.rejection_reason or "").strip() or None
+        if reason:
+            update_db_post_rejection_reason(post_id, reason)
         return ResponseModel(status_code=200, detail="Post updated successful")
     else:
         raise HTTPException(status_code=405, detail="Post could not be updated")
@@ -2288,15 +2296,19 @@ def regenerate_post_endpoint(request: PostRegenerateRequest) -> ResponseModel:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     if get_post_user_id(request.post_id) != user_id:
         raise HTTPException(status_code=404, detail="Post not found")
-    # Regeneration resets the post to PENDING — only sensible from the review states. Regenerating
-    # a scheduled/posted/rejected post would silently yank it out of (or back into) the pipeline.
+    # Regeneration resets the post to PENDING — sensible from the review states and from rejected,
+    # where the stored rejection reason becomes the default guidance so the same issue is avoided.
     post_status = get_post_status(request.post_id)
-    if post_status not in (PostStatus.PENDING.value, PostStatus.APPROVED.value):
+    if post_status not in (PostStatus.PENDING.value, PostStatus.APPROVED.value, PostStatus.REJECTED.value):
         raise HTTPException(
             status_code=409,
-            detail=f"Post is '{post_status}' — only pending or approved posts can be regenerated")
+            detail=f"Post is '{post_status}' — only pending, approved, or rejected posts can be regenerated")
     from cqc_lem.app.run_content_plan import regenerate_post_task
+    from cqc_lem.utilities.db import get_post_rejection_reason
     guidance = (request.guidance or "").strip() or None
+    # A rejected post with no explicit guidance inherits its stored rejection reason.
+    if guidance is None and post_status == PostStatus.REJECTED.value:
+        guidance = get_post_rejection_reason(request.post_id)
     regenerate_post_task.apply_async(kwargs={"post_id": request.post_id, "guidance": guidance})
     return ResponseModel(status_code=200, detail="Regeneration started")
 
