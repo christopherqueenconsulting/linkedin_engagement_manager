@@ -327,12 +327,12 @@ export default function ContentStudio() {
   // Regenerate a single post with optional freeform guidance — runs the async generation task
   // server-side (honors saved settings + guidance), then resets the post to PENDING for re-review.
   const regenerateMutation = useMutation({
-    mutationFn: (vars: { post_id: number; guidance: string }) => {
+    mutationFn: (vars: { post_id: number; guidance?: string | null }) => {
       if (!sessionToken) return Promise.reject(new Error('No active session'))
       return api.post('/user/post/regenerate', {
         session_token: sessionToken,
         post_id: vars.post_id,
-        guidance: vars.guidance.trim() || null,
+        guidance: vars.guidance?.trim() || null,
       })
     },
     onSuccess: () => {
