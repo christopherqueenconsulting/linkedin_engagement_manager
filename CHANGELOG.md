@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.105.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.104.0...v0.105.0) (2026-07-28)
+
+
+### Features
+
+* **content-generation:** Add rejection reason field and prompt to regenerate rejected posts (closes [#713](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/713)) ([22d676c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/22d676c7cf9445d8e28c64d80a81cd3bf6bc2d6e))
+* **content-generation:** add rejection reason field and regeneration prompt (closes [#713](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/713)) ([926bd83](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/926bd834267fae0f88a3a5165c27f6733ef93087))
+* **ui:** reorder Story Bank card after Publishing card (closes [#722](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/722)) ([ea55e6c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ea55e6c3016f9b3e32175f0cca4312bc497dbf06))
+* **ui:** reorder Story Bank card after Publishing card on content settings (closes [#722](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/722)) ([b2faa61](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b2faa619ed8fd7a87744f43e7542256f64018a01))
+
+
+### Bug Fixes
+
+* **carousel:** make PPTX picture insertion robust to non-picture placeholders (closes [#729](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/729)) ([704baa3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/704baa38a152812ea1fc307a1f2a9e7b649a9666))
+* **db:** use structured logger instead of myprint in new rejection reason functions ([44577e5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/44577e51506af0bd42c50c505e921798e3451f12))
+* **ui:** allow optional guidance in regenerate mutation (fixes [#713](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/713)) ([e58975f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e58975fd15eaec13b3891c6f9b12039775da4596))
+
 ## [0.104.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.103.0...v0.104.0) (2026-07-28)
 
 
