@@ -124,7 +124,7 @@ def _capture(exc: Optional[BaseException], message: str, level: str, context: di
         props["log_level"] = level
         capture_exception(exc, **props)
     except Exception:
-        pass
+        pass  # Best-effort: avoid recursion if the observability backend is down.
 
 
 def _extra(**kwargs) -> dict:

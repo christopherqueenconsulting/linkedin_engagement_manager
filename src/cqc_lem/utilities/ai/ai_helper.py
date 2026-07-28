@@ -822,8 +822,8 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
                 out_subject = str(data.get("subject") or "").strip()[:500] or _default_subject or title[:500]
                 return {"title": title, "subtitle": subtitle, "subject": out_subject, "body": body,
                         "opening_line": _opening_line(body), **shape}
-        except (ValueError, TypeError, AttributeError):
-            pass
+        except (ValueError, TypeError, AttributeError) as e:
+            log_debug("Could not parse newsletter JSON payload", exc=e)
         parts = content.strip().split("\n", 1)   # fallback: first line = title, remainder = body
         title = normalize_public_text(_humanize_title(
             parts[0].strip(), content_type="newsletter",

@@ -77,7 +77,7 @@ class TestAttributionMetadata:
                                                messages=[{"role": "user", "content": "hi"}],
                                                extra_body={"tags": ["a"]})
             except Exception:
-                pass
+                pass  # Expected: mocked network raises; metadata was already stamped.
         body = recorder.bodies[-1]
         assert body["tags"] == ["a"]
         assert body["metadata"] == {"feature": "dm", "user_id": 3}
@@ -90,7 +90,7 @@ class TestAttributionMetadata:
                 client.chat.completions.create(model="lem-complex",
                                                messages=[{"role": "user", "content": "hi"}])
             except Exception:
-                pass
+                pass  # Expected: mocked network raises; metadata fell back to system sentinel.
         # The generation still went out; it just carries the sentinel instead of a user.
         assert recorder.bodies[-1]["metadata"] == {"feature": "system", "user_id": "system"}
 
@@ -103,7 +103,7 @@ class TestAttributionMetadata:
             try:
                 client.embeddings.create(model="lem-embedding", input=["a"])
             except Exception:
-                pass
+                pass  # Expected: mocked network raises; metadata was already stamped.
         assert recorder.bodies[-1]["metadata"] == {"feature": "comment", "user_id": 5}
 
 

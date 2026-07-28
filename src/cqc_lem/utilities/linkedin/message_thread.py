@@ -38,7 +38,7 @@ from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support.wait import WebDriverWait
 
-from cqc_lem.utilities.logger import log_info, log_warning
+from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 from cqc_lem.utilities.selenium_util import find_first
 
 MESSAGING_URL = "https://www.linkedin.com/messaging/"
@@ -253,8 +253,8 @@ def profile_urn_from_page(driver: WebDriver, profile_url: str = "") -> Optional[
             m = _PROFILE_URN_RE.search(href)
             if m:
                 return m.group(0)
-    except (WebDriverException, StaleElementReferenceException, NoSuchElementException):
-        pass
+    except (WebDriverException, StaleElementReferenceException, NoSuchElementException) as e:
+        log_debug("Could not extract profile URN from page links", exc=e, profile_url=profile_url)
     slug = profile_slug(profile_url)
     if not slug:
         return None

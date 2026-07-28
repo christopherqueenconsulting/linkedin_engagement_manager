@@ -149,8 +149,8 @@ def clear_rate_limit() -> None:
         return
     try:
         client.delete(_COOLDOWN_KEY, _TRIP_COUNT_KEY)
-    except Exception:
-        pass
+    except Exception as e:
+        log_warning("Could not clear rate-limit keys", exc=e)
 
 
 # --- Manual global automation pause -------------------------------------------------
@@ -414,5 +414,5 @@ def release_run_lock(name: str, token: "str | None") -> None:
         current = client.get(f"{_LOCK_PREFIX}{name}")
         if current is not None and current.decode("utf-8", "ignore") == token:
             client.delete(f"{_LOCK_PREFIX}{name}")
-    except Exception:
-        pass
+    except Exception as e:
+        log_warning("Could not release run lock", exc=e, lock_name=name)

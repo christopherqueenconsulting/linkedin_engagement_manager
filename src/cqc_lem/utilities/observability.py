@@ -18,7 +18,7 @@ from cqc_lem.utilities.experiments import (
     COST_ROUTING_ARM,
     POST_MEDIA_VARIANT,
 )
-from cqc_lem.utilities.logger import log_warning
+from cqc_lem.utilities.logger import log_debug, log_warning
 
 posthog.api_key = os.getenv("POSTHOG_API_KEY", "")
 posthog.host = os.getenv("POSTHOG_HOST", "https://us.i.posthog.com")
@@ -1032,8 +1032,8 @@ def track_rate_limit_trip(seconds: int, trips: int, reason: str = "429") -> None
             properties={"cooldown_seconds": int(seconds), "consecutive_trips": int(trips),
                         "reason": reason or "429"},
         )
-    except Exception:
-        pass
+    except Exception as e:
+        log_debug("Could not capture rate-limit trip event", exc=e)
 
 
 def session_replay_url(session_id: Optional[str]) -> Optional[str]:

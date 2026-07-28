@@ -452,7 +452,7 @@ class GitHubClient:
                 try:
                     data.append(json.loads(line))
                 except json.JSONDecodeError:
-                    pass
+                    continue
         issues = [parse_issue(d) for d in data if not d.get("isPullRequest")]
         return [i for i in issues if i.state == "open"][:limit]
 

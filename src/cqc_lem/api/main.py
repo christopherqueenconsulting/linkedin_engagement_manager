@@ -100,7 +100,7 @@ from cqc_lem.utilities.linkedin.token_refresh import (
 from cqc_lem.utilities.env_constants import LI_CLIENT_ID, LI_CLIENT_SECRET, LI_REDIRECT_URL, LI_STATE_SALT, ADMIN_SECRET, API_ACCESS_TOKENS, \
     DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_VIDEO_RATIO
 import requests
-from cqc_lem.utilities.logger import myprint, log_warning, log_info, log_error
+from cqc_lem.utilities.logger import myprint, log_debug, log_warning, log_info, log_error
 from cqc_lem.utilities.mime_type_helper import get_file_mime_type
 from cqc_lem.utilities.quality_gates import (parse_gate_findings, clamp_threshold,
                                              AUTHENTICITY_SCORE_MIN_BOUNDS,
@@ -1353,8 +1353,8 @@ def _handle_gmail_forwarding_confirmation(user_id: int, subject: str, text: str,
             if nested and nested != url:
                 try:
                     confirmed = requests.get(nested, timeout=15).status_code < 400 or confirmed
-                except Exception:
-                    pass
+                except Exception as e:
+                    log_debug("Nested Gmail confirmation check failed", exc=e, user_id=user_id)
         except Exception as e:
             log_warning("Gmail forwarding auto-confirm click failed", exc=e, user_id=user_id)
     # Server-side clicking may not complete Gmail's flow (interstitial / datacenter IP). Forward the
@@ -1378,8 +1378,8 @@ def _handle_gmail_forwarding_confirmation(user_id: int, subject: str, text: str,
                        json.dumps({"code": code, "confirmed": confirmed, "url_found": bool(url),
                                    "forwarded_to_user": forwarded}),
                        ex=7 * 24 * 60 * 60)
-    except Exception:
-        pass
+    except Exception as e:
+        log_warning("Could not store Gmail forwarding confirmation result", exc=e, user_id=user_id)
     log_info(f"Gmail forwarding confirmation: url_found={bool(url)} confirmed={confirmed} "
              f"code={'yes' if code else 'no'} forwarded_to_user={forwarded}", user_id=user_id)
     detail = "confirmed" if confirmed else ("forwarded" if forwarded else ("code_stored" if code else "ignored"))
