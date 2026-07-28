@@ -1,0 +1,96 @@
+name: Stale branches
+
+# Two-layer branch cleanup:
+#   1. Repo setting `delete_branch_on_merge=true` (set 2026-07-28) auto-deletes the head
+#      branch on every merged PR. Covers ~95% of cases.
+#   2. THIS workflow catches what the setting misses: orphan branches (no PR ever),
+#      closed-without-merge PR branches, and any branch the setting didn't catch
+#      because the PR was merged before the setting was flipped.
+#
+# 48-hour grace window on the branch tip's committer date protects active agents
+# (matches `scripts/branch_cleanup.py` + `docs/branch-cleanup.md`).
+#
+# Schedule: Monday 06:00 UTC — after weekend release-please windows, before the
+# Tuesday release-please bot push.
+
+on:
+  schedule:
+    # Every Monday 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  sweep:
+    name: Sweep orphan branches
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Delete orphan and abandoned head branches
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Mirror of `scripts/branch_cleanup.py` EXEMPT_RE + 48h cutoff. Keep them in sync.
+            // Last verified: 2026-07-28.
+            const EXEMPT = /^(?:main|master|develop|release-please--branches--main|release\/.*|feature\/release-please-dedup|ci\/claude-release-token-split|chore\/pipeline-sync-and-release-automerge|fix\/release-pipeline-reliability|hotfix\/dashboard-stats-month-boundary|milestone\/.*|worktree-agent-.*)$/;
+            const GRACE_HOURS = 48;
+            const HOUR_MS = 3600 * 1000;
+            const cutoff = Date.now() - GRACE_HOURS * HOUR_MS;
+
+            const { owner, repo } = context.repo;
+            let deleted = 0, skipped = 0, failed = 0;
+            const log = [];
+
+            for await (const response of github.paginate.iterator(
+              github.rest.repos.listBranches,
+              { owner, repo, per_page: 100 }
+            )) {
+              for (const b of response.data) {
+                if (EXEMPT.test(b.name)) { skipped++; continue; }
+
+                // Open PRs touching this head? Hold it.
+                const open = await github.paginate(github.rest.pulls.list, {
+                  owner, repo, state: "open", head: `${owner}:${b.name}`, per_page: 50,
+                });
+                if (open.length > 0) { skipped++; continue; }
+
+                // Closed PRs for this head — was any merged? If a merged PR exists and the
+                // branch is older than the grace window, the head is stale and safe to drop.
+                const closed = await github.paginate(github.rest.pulls.list, {
+                  owner, repo, state: "closed", head: `${owner}:${b.name}`, per_page: 50,
+                });
+                const mergedPR = closed.find(p => p.merged_at);
+
+                // Age of the branch tip.
+                const commit = await github.rest.repos.getCommit({
+                  owner, repo, ref: b.name,
+                });
+                const age = Date.now() - new Date(commit.data.commit.committer.date).getTime();
+
+                if (age < GRACE_HOURS * HOUR_MS) {
+                  skipped++;  // grace window — could be a fresh agent push
+                  continue;
+                }
+                if (!mergedPR) {
+                  // Orphan (no PR ever) OR closed-without-merge. Surface only — don't delete.
+                  skipped++;
+                  log.push(`hold-orphan: ${b.name} (last commit ${commit.data.commit.committer.date})`);
+                  continue;
+                }
+
+                try {
+                  await github.rest.git.deleteRef({ owner, repo, ref: `heads/${b.name}` });
+                  deleted++;
+                  log.push(`deleted: ${b.name} (PR #${mergedPR.number} merged)`);
+                } catch (e) {
+                  failed++;
+                  log.push(`failed: ${b.name} — ${e.message}`);
+                }
+              }
+            }
+
+            core.info(`summary: deleted=${deleted} skipped=${skipped} failed=${failed}`);
+            for (const line of log) core.info(line);
