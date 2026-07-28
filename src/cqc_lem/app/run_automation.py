@@ -1584,18 +1584,24 @@ def _fill_edition_description(driver, wait, subtitle: str) -> bool:
         return False
 
 
-def _fill_and_publish_article(driver, wait, title: str, body: str, subtitle: str = None) -> "str | None":
+def _fill_and_publish_article(driver, wait, title: str, body: str, subtitle: str = None) -> "tuple[str | None, str | None]":
     """Fill LinkedIn's article editor (title textarea + contenteditable body) and run the
     Next → Publish flow. On the publish dialog, best-effort fills the edition description with
-    `subtitle`. Returns the published article URL, or None. Best-effort — the multi-step publish
-    dialog varies, so this is validated on a supervised first real run."""
+    `subtitle`.
+
+    Best-effort — the multi-step publish dialog varies, so this is validated on a supervised first
+    real run. Returns `(published_url, None)` on success, or `(None, failed_step)` on failure,
+    where `failed_step` names the selector/action that could not be completed so callers can log an
+    actionable error instead of a silent "did not complete"."""
     title_el = find_first(driver, wait, [(By.CSS_SELECTOR, "textarea[placeholder='Title']")],
                           "Article title", required=False)
+    if title_el is None:
+        return (None, "article_title")
     body_el = find_first(driver, wait, [(By.CSS_SELECTOR, "div[role='textbox'][aria-label*='Article editor']"),
                                         (By.CSS_SELECTOR, "div[role='textbox']")],
                          "Article body", visible_only=True, required=False)
-    if title_el is None or body_el is None:
-        return None
+    if body_el is None:
+        return (None, "article_body")
     title_el.click()
     title_el.send_keys(_strip_non_bmp(title))
     time.sleep(random.uniform(1, 2))
@@ -1604,14 +1610,14 @@ def _fill_and_publish_article(driver, wait, title: str, body: str, subtitle: str
     time.sleep(random.uniform(2, 3))
     if click_first(driver, wait, [(By.XPATH, "//button[normalize-space()='Next']")],
                    "Article Next", required=False) is None:
-        return None
+        return (None, "article_next")
     time.sleep(random.uniform(2, 4))
     _fill_edition_description(driver, wait, subtitle)   # best-effort; never blocks publishing
     if click_first(driver, wait, [(By.XPATH, "//button[normalize-space()='Publish']")],
                    "Article Publish", required=False) is None:
-        return None
+        return (None, "article_publish")
     time.sleep(random.uniform(4, 7))
-    return driver.current_url
+    return (driver.current_url, None)
 
 
 def _tagged_edition_body(body: str, edition_id: "int | None" = None) -> str:
@@ -1650,13 +1656,15 @@ def auto_publish_newsletter_edition(self, user_id: int):
             return "No newsletter edition generated"
         driver.get("https://www.linkedin.com/article/new/")
         time.sleep(random.uniform(6, 9))
-        url = _fill_and_publish_article(driver, wait, edition["title"],
-                                        _tagged_edition_body(edition["body"]),
-                                        subtitle=edition.get("subtitle"))
+        url, failed_step = _fill_and_publish_article(driver, wait, edition["title"],
+                                                      _tagged_edition_body(edition["body"]),
+                                                      subtitle=edition.get("subtitle"))
         if url:
             mark_newsletter_published(user_id, url)
             myprint(f"Published newsletter edition for user {user_id}: {edition['title']}")
             return f"Published newsletter: {edition['title']}"
+        log_error("Newsletter publish flow did not complete",
+                  user_id=user_id, task_name="auto_publish_newsletter_edition", failed_step=failed_step)
         return "Newsletter publish flow did not complete"
     except Exception as e:
         log_error("Newsletter publish error", exc=e, user_id=user_id, task_name="auto_publish_newsletter_edition")
@@ -1683,13 +1691,15 @@ def auto_publish_edition(self, edition_id: int):
     try:
         driver.get("https://www.linkedin.com/article/new/")
         time.sleep(random.uniform(6, 9))
-        url = _fill_and_publish_article(driver, wait, edition["title"],
-                                        _tagged_edition_body(edition["body"], edition_id),
-                                        subtitle=edition.get("subtitle"))
+        url, failed_step = _fill_and_publish_article(driver, wait, edition["title"],
+                                                      _tagged_edition_body(edition["body"], edition_id),
+                                                      subtitle=edition.get("subtitle"))
         if url:
             mark_edition_published(edition_id, url)
             myprint(f"Published newsletter edition {edition_id} for user {user_id}: {edition['title']}")
             return f"Published newsletter edition: {edition['title']}"
+        log_error("Newsletter edition publish flow did not complete",
+                  user_id=user_id, task_name="auto_publish_edition", edition_id=edition_id, failed_step=failed_step)
         mark_edition_failed(edition_id)
         return "Newsletter edition publish flow did not complete"
     except Exception as e:

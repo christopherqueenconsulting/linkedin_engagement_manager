@@ -31,7 +31,7 @@ class TestAutoPublishNewsletterEdition:
         with patch(f"{_RA}.get_newsletter_settings", return_value={"enabled": True, "topic": "reach", "align_with_blog": False}), \
              patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
              patch(f"{_RA}.generate_newsletter_edition", return_value=edition), \
-             patch(f"{_RA}._fill_and_publish_article", return_value="https://x/pulse/5-levers") as fill, \
+             patch(f"{_RA}._fill_and_publish_article", return_value=("https://x/pulse/5-levers", None)) as fill, \
              patch(f"{_RA}.mark_newsletter_published") as mark, \
              patch(f"{_RA}.quit_gracefully"):
             result = auto_publish_newsletter_edition.run(user_id=1)
@@ -82,7 +82,7 @@ class TestAutoPublishEdition:
                    "subtitle": "The reach levers.", "body": "Hook\n\nSECTION\n\nBody."}
         with patch(f"{_RA}.get_newsletter_edition", return_value=edition), \
              patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
-             patch(f"{_RA}._fill_and_publish_article", return_value="https://x/pulse/5-levers") as fill, \
+             patch(f"{_RA}._fill_and_publish_article", return_value=("https://x/pulse/5-levers", None)) as fill, \
              patch(f"{_RA}.mark_edition_published") as mark, \
              patch(f"{_RA}.mark_edition_failed") as fail, \
              patch(f"{_RA}.quit_gracefully"):
@@ -97,13 +97,37 @@ class TestAutoPublishEdition:
         edition = {"id": 9, "user_id": 1, "status": "draft", "title": "T", "subtitle": None, "body": "B"}
         with patch(f"{_RA}.get_newsletter_edition", return_value=edition), \
              patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
-             patch(f"{_RA}._fill_and_publish_article", return_value=None), \
+             patch(f"{_RA}._fill_and_publish_article", return_value=(None, "article_publish")), \
              patch(f"{_RA}.mark_edition_published") as mark, \
              patch(f"{_RA}.mark_edition_failed") as fail, \
+             patch(f"{_RA}.log_error") as log_err, \
              patch(f"{_RA}.quit_gracefully"):
             result = auto_publish_edition.run(edition_id=9)
         mark.assert_not_called()
         fail.assert_called_once_with(9)
+        log_err.assert_called_once()
+        assert log_err.call_args.kwargs.get("user_id") == 1
+        assert log_err.call_args.kwargs.get("task_name") == "auto_publish_edition"
+        assert log_err.call_args.kwargs.get("edition_id") == 9
+        assert log_err.call_args.kwargs.get("failed_step") == "article_publish"
+        assert "did not complete" in result
+
+    def test_logs_error_when_flow_incomplete_for_generated_edition(self):
+        from cqc_lem.app.run_automation import auto_publish_newsletter_edition
+        edition = {"title": "5 Levers", "subtitle": "S", "body": "B"}
+        with patch(f"{_RA}.get_newsletter_settings", return_value={"enabled": True, "topic": "reach"}), \
+             patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_RA}.generate_newsletter_edition", return_value=edition), \
+             patch(f"{_RA}._fill_and_publish_article", return_value=(None, "article_title")), \
+             patch(f"{_RA}.mark_newsletter_published") as mark, \
+             patch(f"{_RA}.log_error") as log_err, \
+             patch(f"{_RA}.quit_gracefully"):
+            result = auto_publish_newsletter_edition.run(user_id=1)
+        mark.assert_not_called()
+        log_err.assert_called_once()
+        assert log_err.call_args.kwargs.get("user_id") == 1
+        assert log_err.call_args.kwargs.get("task_name") == "auto_publish_newsletter_edition"
+        assert log_err.call_args.kwargs.get("failed_step") == "article_title"
         assert "did not complete" in result
 
 
