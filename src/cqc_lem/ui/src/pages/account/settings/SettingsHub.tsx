@@ -32,7 +32,7 @@ function SectionBody({ section }: { section: SectionKey }) {
     case 'voice':
       return <VoiceSection />
     case 'content':
-      return <><ContentProfileCard /><StoryBankCard /><ContentSection /></>
+      return <><ContentProfileCard /><ContentSection /><StoryBankCard /></>
     case 'targeting':
       return <><EngagementRosterCard /><TargetingSection /><GroupsCard /></>
     case 'volume':
