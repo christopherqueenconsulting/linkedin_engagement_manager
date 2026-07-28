@@ -26,12 +26,22 @@ jobs:
           # to be reported" forever: GitHub won't accept a context as a
           # required check until the workflow has actually posted it once.
 
-          # subjectPattern is matched against the FULL PR title (subject only).
-          # Conventional Commits: type(scope)?!: subject — types are the 11
-          # the project uses; scope allows word chars + dash + dot + slash;
-          # the `!` breaking-change marker is optional; subject is free text
-          # after `: ` (colon + space).
-          subjectPattern: '^(feat|fix|perf|revert|docs|style|chore|refactor|test|build|ci)(\([\w\-./]+\))?!?: .+'
+          # headerPattern parses the FULL PR title into type/scope/bang/subject.
+          # Convention: type(scope)?!: subject — types are the 11 the project
+          # uses; scope allows word chars + dash + dot + slash; the `!`
+          # breaking-change marker is optional; subject is free text.
+          # headerPatternCorrespondence names the capture groups so the action
+          # can extract them; only `type` is required by the action's own
+          # validity check, scope/bang are kept so future subjectPattern
+          # checks can reference the scope.
+          headerPattern: '^(?<type>feat|fix|perf|revert|docs|style|chore|refactor|test|build|ci)(?<scope>\([\w\-./]+\))?(?<bang>!)?: (?<subject>.+)$'
+          headerPatternCorrespondence: type=type, scope=scope, bang=bang, subject=subject
+
+          # subjectPattern is matched against the SUBJECT portion only (text
+          # after the conventional-commit colon). Required to be non-empty —
+          # this is what blocks `fix(ci)` with no subject, which v4's
+          # `pattern` used to allow.
+          subjectPattern: '^.{1,}$'
 
           # v5 dropped ignorePatterns (title-regex skip list). The supported
           # skip mechanism is ignoreLabels (PR labels). Release-please and
@@ -41,6 +51,7 @@ jobs:
           # headerPattern to back-door title-skip.
           ignoreLabels: |
             autorelease: pending
+            autorelease: tagged
             dependencies
 
           # validateSingleCommit: keep false — squash-merge collapses many
