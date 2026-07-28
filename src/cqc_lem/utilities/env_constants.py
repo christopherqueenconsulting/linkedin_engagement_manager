@@ -102,6 +102,10 @@ TEST_GRID_PROJECT_ARN=get_constant_from_env('TEST_GRID_PROJECT_ARN')
 SELENIUM_HUB_HOST=get_constant_from_env('SELENIUM_HUB_HOST', default_value='selenium-chrome')
 SELENIUM_HUB_PORT=get_constant_from_env('SELENIUM_HUB_PORT', default_value='4444')
 SELENIUM_REGISTRATION_SECRET=get_constant_from_env('SELENIUM_REGISTRATION_SECRET', default_value='secret')
+# The Grid's watchable debug node (docker-compose.grid.yml). It is a NINTH node on top of the pool
+# the lanes are sized for, so its slot must not enter the saturation denominator — see
+# capacity_alerts._pool_slots(). Empty string disables the exclusion (single-topology boxes).
+SELENIUM_DEBUG_NODE_HOST=get_constant_from_env('SELENIUM_DEBUG_NODE_HOST', default_value='selenium-node-debug')
 SELENIUM_KEEP_VIDEOS_X_DAYS=int(get_constant_from_env('SELENIUM_KEEP_VIDEOS_X_DAYS', default_value='7'))
 SELENIUM_RECORD_VIDEOS=isTrue(get_constant_from_env('SELENIUM_RECORD_VIDEOS', default_value='False'))
 STREAMLIT_EMAIL=get_constant_from_env('STREAMLIT_EMAIL')

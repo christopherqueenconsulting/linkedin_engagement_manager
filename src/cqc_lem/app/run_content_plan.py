@@ -24,6 +24,7 @@ from cqc_lem.utilities.db import get_post_type_counts, insert_planned_post, upda
     update_db_post_video_url, update_db_post_status, PostType, get_user_preferences, \
     update_db_post_carousel_slides, get_post_content, get_user_timezone, get_engagement_preferences
 from cqc_lem.utilities.db import count_ready_posts_within_buffer, get_planned_posts_within_buffer, \
+    get_next_planned_posts_after_buffer, get_next_planned_post_date, \
     get_user_ids_with_planned_posts_within_buffer, DEFAULT_CONTENT_BUFFER_DAYS, \
     DEFAULT_CONTENT_BUFFER_MAX_POSTS, MAX_CONTENT_BUFFER_DAYS, MAX_CONTENT_BUFFER_POSTS, \
     DEFAULT_POSTS_PER_WEEK, POSTS_PER_WEEK_MIN, POSTS_PER_WEEK_MAX, \
@@ -40,7 +41,8 @@ from cqc_lem.utilities.quality_gates import (authenticity_finding, similarity_fi
 from cqc_lem.utilities.ai.content_framework import select_blueprint, history_avoidance_directive, \
     find_most_similar, post_similarity_max, has_first_person_proof, shape_for_dwell, dwell_report, \
     dwell_score_min, requires_fact_anchor, fact_grounding_report, fact_retry_directive, \
-    fact_anchored_formats, weekly_post_slots, day_type_stage, day_type_formats, day_type_for_weekday
+    fact_anchored_formats, weekly_post_slots, day_type_stage, day_type_formats, \
+    day_type_for_weekday, deck_slides
 from cqc_lem.utilities.ai.content_alignment import (
     should_include_lead_magnet_cta, lead_magnet_cta_directive, ensure_lead_magnet_cta,
     personal_proof_directive, topic_authority_score, topic_authority_min, profile_topic_dna,
@@ -51,7 +53,7 @@ from cqc_lem.utilities.ai import story_bank as _story_bank
 from cqc_lem.utilities.ai.slop_lint import (lint_report as slop_lint_report,
                                             slop_retry_directive, violation_reasons)
 from cqc_lem.utilities.content_generation_status import mark_in_progress, mark_finished, \
-    record_post_generated, record_post_failed
+    record_post_generated, record_post_failed, mark_empty, ContentGenerationEmptyReason
 from cqc_lem.utilities.notifications import notify_content_generation_ready
 from cqc_lem.utilities.env_constants import API_URL_FINAL, DEFAULT_VIDEO_RATIO, \
     DEFAULT_IMAGE_RATIO, AI_DISCLOSURE_ENABLED, AI_DISCLOSURE_TEXT, \
@@ -431,8 +433,10 @@ def _select_carousel_blueprint(user_id: int, fact_anchors: Optional[list] = None
     verified facts: with none, the fact-anchored archetypes are taken OFF the carousel menu entirely
     (not merely un-preferred), because their no-fabrication contract ships every specific as a
     `[[…]]` placeholder — and a carousel bakes its text into rendered slide IMAGES, which no edit or
-    re-score can ever fix. The caller passes the anchors it already read so the bank is read once per
-    carousel. Never raises — a carousel that loses its archetype still generates from the
+    re-score can ever fix. The caller passes the WRITER's anchors (the one selected story's facts,
+    issue #728) — that, not the size of the whole bank, is what this deck can actually write from;
+    the None fallback reads the bank only because a caller with no story selected has nothing
+    narrower to offer. Never raises — a carousel that loses its archetype still generates from the
     generic slide guidance."""
     try:
         anchors = _fact_anchors(user_id) if fact_anchors is None else fact_anchors
@@ -442,6 +446,31 @@ def _select_carousel_blueprint(user_id: int, fact_anchors: Optional[list] = None
     except Exception as e:
         myprint(f"Could not select a carousel archetype (using generic slide guidance): {e}")
         return None
+
+
+def _report_carousel_fact_grounding(user_id: int, post_id: Optional[int], blueprint: Optional[dict],
+                                    carousel: Optional[dict]) -> None:
+    """Grade a generated DECK's specifics against the user's whole verified bank (issue #728) and log
+    anything it could not back. Only for the fact-anchored archetypes, whose value IS the specifics.
+    Advisory by design: the slides are rendered into images, so there is nothing a hold could fix —
+    the point is that an invented slide number is visible instead of silent. Never raises."""
+    fmt = (blueprint or {}).get("format")
+    if not carousel or not requires_fact_anchor("post", fmt):
+        return
+    try:
+        slides = deck_slides(carousel)
+        deck_text = "\n".join(f"{s['title']} {s['content']}".strip() for s in slides)
+        report = fact_grounding_report(deck_text, _fact_anchors(user_id))
+        if report["unverified_values"]:
+            log_warning("Carousel slides state specifics no verified fact backs: "
+                        + ", ".join(report["unverified_values"][:5]),
+                        user_id=user_id, post_id=post_id, task_name="create_carousel_content")
+        if report["placeholders"]:
+            log_warning("Carousel slides carry unfilled placeholders that will be rendered into the "
+                        "images: " + ", ".join(report["placeholders"][:5]),
+                        user_id=user_id, post_id=post_id, task_name="create_carousel_content")
+    except Exception as e:
+        myprint(f"Could not grade carousel fact grounding for post {post_id}: {e}")
 
 
 @attribute_llm_cost(FEATURE_CONTENT)
@@ -467,17 +496,46 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
         myprint(f"Could not load profile synthesis for carousel: {e}")
         profile_synthesis = None
 
+    # ONE story-bank anchor per piece (issue #728), the same split text posts have always had: the
+    # WRITER gets the single selected entry, the CHECKERS keep the whole bank. Handing the writer
+    # every active entry is what produced a six-receipt greatest-hits deck that spent the account's
+    # best material in one post. Selected BEFORE the blueprint, because whether we HAVE an anchor is
+    # what decides if a fact-anchored archetype is even on the carousel menu.
+    story = _select_story_for_post(user_id, prefs)
+    story_directive = _story_bank.story_directive(story)
+    writer_anchors = _story_bank.fact_sources(story) if story else []
+    if story:
+        myprint(f"Story bank anchor for carousel post_id={post_id}: "
+                f"[{story.get('kind')}] {story.get('title')}")
+
     # Carousels draw their SHAPE from the same shared post menu as text posts (issue #619 / G4) and
     # rotate against the same V51 shape history, so a build receipt can land as a document post —
     # and so a carousel archetype counts against the next text post's rotation.
-    fact_anchors = _fact_anchors(user_id)
-    blueprint = _select_carousel_blueprint(user_id, fact_anchors)
+    blueprint = _select_carousel_blueprint(user_id, writer_anchors)
     post_text, carousel_dict = generate_carousel_content(user_id, stage, prefs=prefs,
                                                          profile_synthesis=profile_synthesis,
                                                          blueprint=blueprint,
-                                                         fact_anchors=fact_anchors)
+                                                         fact_anchors=writer_anchors,
+                                                         story_directive=story_directive)
     myprint(f"Carousel AI content generated for user_id={user_id} stage={stage} "
             f"archetype={(blueprint or {}).get('format')}")
+
+    # The verification half of the split: the SLIDES are checked against EVERY active bank entry,
+    # because a number out of the user's own material is by definition not one the model invented.
+    # Reported, never held — the caption already has its gate (`evaluate_post_gates` runs the same
+    # check with the same full bank), and slide text has no review queue to be held in.
+    _report_carousel_fact_grounding(user_id, post_id, blueprint, carousel_dict)
+
+    # Count the anchor as used so the NEXT piece rotates to different raw material — the same write
+    # create_text_post makes. Without it the carousel reads the bank but never advances it, so
+    # `select_story`'s least-used ordering hands every deck the SAME entry and the next text post
+    # re-uses it too: one anchor per post, but the same anchor every post. Only when a deck really
+    # came out of it — a failed generation must not burn the anecdote.
+    if story and story.get("id") and (post_text or carousel_dict):
+        try:
+            record_story_bank_use(user_id, int(story["id"]))
+        except Exception as e:
+            myprint(f"Could not record story bank use for entry {story.get('id')}: {e}")
 
     # Map stage to carousel model class
     stage_lower = (stage or "").lower()
@@ -2063,18 +2121,59 @@ def auto_create_weekly_content(user_id: int = None):
         _top_up_buffer_for_user(uid, requested=user_id is not None)
 
 
-def _close_out_empty_run(user_id: int, requested: bool) -> None:
-    """Finish a requested run that generated nothing (issue #545).
+def _next_planned_at(user_id: int) -> Optional[datetime]:
+    """When the user's next planning slot is due — best effort, never fails the run (issue #719)."""
+    try:
+        return get_next_planned_post_date(user_id)
+    except Exception as e:
+        log_warning(f"Could not read the next planned post date for user {user_id}", exc=e,
+                    user_id=user_id, task_name="auto_create_weekly_content")
+        return None
+
+
+def _close_out_empty_run(user_id: int, requested: bool,
+                         reason: ContentGenerationEmptyReason,
+                         buffer_days: Optional[int] = None,
+                         ready_count: Optional[int] = None,
+                         buffer_max: Optional[int] = None) -> None:
+    """Finish a requested run that generated nothing, saying WHY (issues #545, #719).
 
     `/create_weekly_content/` publishes 'queued' at dispatch, so a top-up that returns early
     (lock lost, buffer already full, nothing planned) must still close the record out or the SPA
     polls a queued run that never reports anything. The beat run publishes nothing up front, so
-    it has nothing to close.
+    it has nothing to close. The reason rides along because "0 posts are ready to review" on its
+    own reads as a broken button rather than as an answer.
     """
     if not requested:
         return
-    mark_in_progress(user_id, [])
-    mark_finished(user_id)
+    mark_empty(user_id, reason, next_planned_at=_next_planned_at(user_id),
+               buffer_days=buffer_days, ready_count=ready_count, buffer_max=buffer_max)
+
+
+# The pull-forward cap counts EVERY future ready post, not the buffer's own 30-day ceiling:
+# `plan_content_for_user` appends a whole month after the LAST planning row, so a laid-out plan
+# routinely reaches ~60 days out. Counting over MAX_CONTENT_BUFFER_DAYS would not see the posts a
+# pull-forward click just generated past day 30, and each further click would re-earn the full cap
+# further down the calendar — the exact runaway the cap exists to stop.
+_PULL_FORWARD_READY_HORIZON_DAYS = 365
+
+
+def _pull_forward_planned_posts(user_id: int, buffer_days: int,
+                                buffer_max: int) -> Tuple[list[dict], int]:
+    """The next planned posts BEYOND the buffer window, plus how many are already ready ahead.
+
+    An explicit Generate click on a user whose near-term slots were all consumed (posted, or
+    rejected — rejected slots are never re-planned) used to no-op forever, because the plan only
+    ever appends after the last planning row and the top-up only looks `buffer_days` ahead
+    (issue #719). Pulling the next slots forward is bounded by the SAME ceiling, counted across
+    everything already generated ahead rather than the buffer window — otherwise repeated clicks
+    would walk the buffer cap down the calendar and generate the entire plan.
+    """
+    ready_ahead = count_ready_posts_within_buffer(user_id, _PULL_FORWARD_READY_HORIZON_DAYS)
+    limit = buffer_max - ready_ahead
+    if limit <= 0:
+        return [], ready_ahead
+    return get_next_planned_posts_after_buffer(user_id, buffer_days, limit) or [], ready_ahead
 
 
 def _top_up_buffer_for_user(user_id: int, requested: bool = False) -> None:
@@ -2090,7 +2189,7 @@ def _top_up_buffer_for_user(user_id: int, requested: bool = False) -> None:
     lock_token = acquire_run_lock(lock_name, ttl_seconds=_BUFFER_LOCK_TTL_SECONDS)
     if lock_token is None:
         myprint(f"user_id {user_id}: another buffer top-up is in progress — skipping this cycle.")
-        _close_out_empty_run(user_id, requested)
+        _close_out_empty_run(user_id, requested, ContentGenerationEmptyReason.ALREADY_RUNNING)
         return
 
     try:
@@ -2100,14 +2199,33 @@ def _top_up_buffer_for_user(user_id: int, requested: bool = False) -> None:
         if already_ready >= buffer_max:
             myprint(f"user_id {user_id}: buffer already full ({already_ready}/{buffer_max} ready "
                     f"within {buffer_days} days). Skipping content creation.")
-            _close_out_empty_run(user_id, requested)
+            _close_out_empty_run(user_id, requested, ContentGenerationEmptyReason.BUFFER_FULL,
+                                 buffer_days=buffer_days, ready_count=already_ready,
+                                 buffer_max=buffer_max)
             return
 
         planned_posts = get_planned_posts_within_buffer(user_id, buffer_days, buffer_max, already_ready)
+        if not planned_posts and requested:
+            # A user who clicked Generate asked for something to happen — so look past the window
+            # rather than no-opping on an empty one (issue #719). The beat keeps its narrow window:
+            # generating a week early on autopilot is spend nobody asked for.
+            planned_posts, ready_ahead = _pull_forward_planned_posts(user_id, buffer_days, buffer_max)
+            if planned_posts:
+                log_info(f"user_id {user_id}: no planned posts within {buffer_days} days — pulling "
+                         f"{len(planned_posts)} upcoming post(s) forward on explicit request",
+                         user_id=user_id, task_name="auto_create_weekly_content")
+            elif ready_ahead >= buffer_max:
+                myprint(f"user_id {user_id}: {ready_ahead} post(s) already generated ahead "
+                        f"(cap {buffer_max}). Skipping content creation.")
+                _close_out_empty_run(user_id, requested, ContentGenerationEmptyReason.BUFFER_FULL,
+                                     buffer_days=buffer_days, ready_count=ready_ahead,
+                                     buffer_max=buffer_max)
+                return
         if not planned_posts:
             myprint(f"user_id {user_id}: no planned posts within {buffer_days} days. "
                     f"Skipping content creation.")
-            _close_out_empty_run(user_id, requested)
+            _close_out_empty_run(user_id, requested, ContentGenerationEmptyReason.NO_PLANNED_SLOTS,
+                                 buffer_days=buffer_days)
             return
 
         myprint(f"user_id {user_id}: generating {len(planned_posts)} post(s) to top buffer up to "

@@ -426,21 +426,46 @@ class TestClaimDailySlot:
 
 class TestApprovedFanoutDefaults:
     """The three shipped windows are a product decision the owner signed off on in PR #607
-    (`1A 2A 3A`): golden hour 09:00 + 3h, appreciation DMs 08:00 + 2h, groups 12:00 + 2h — each
-    anchored on the USER's clock, not UTC. The rest of the suite exercises a local literal, so
+    (`1A 2A 3A`): golden hour 09:00 + 3h, appreciation DMs centred on 08:00 + 2h, groups 12:00 + 2h —
+    each anchored on the USER's clock, not UTC. The rest of the suite exercises a local literal, so
     without this the constants could drift away from the approved values silently. Retuning is an
     env change (`<NAME>_ANCHOR_HOUR` / `_WINDOW_MINUTES` / `_ANCHOR_TZ`); changing these numbers is
     changing the default every deployment inherits, so it needs the same sign-off again.
+
+    Issue #696 moved the appreciation-DM ANCHOR from 08:00 to 07:00 without moving the batch: a
+    window that OPENS on the approved hour lands its midpoint an hour after it and its tail two, and
+    that tail is what collided with `profile_viewer_engagement` on the shared se_outreach lane. The
+    08:00 the owner approved is now pinned as the window's MIDPOINT instead.
     """
 
     @pytest.mark.parametrize("fanout,expected", [
         ("STAGGER_GOLDEN_HOUR", ("GOLDEN_HOUR", 9, 180)),
-        ("STAGGER_APPRECIATION_DM", ("APPRECIATION_DM", 8, 120)),
+        ("STAGGER_APPRECIATION_DM", ("APPRECIATION_DM", 7, 120)),
         ("STAGGER_GROUP_ENGAGEMENT", ("GROUP_ENGAGEMENT", 12, 120)),
     ])
     def test_anchor_hour_and_window_match_the_approved_decision(self, fanout, expected):
         import cqc_lem.utilities.engagement_window as mod
         assert getattr(mod, fanout) == expected
+
+    def test_the_appreciation_dm_window_stays_centred_on_the_approved_off_peak_hour(self):
+        """Anchor and window have to move together. Widening the window without pulling the anchor
+        back would slide the batch's tail into the afternoon again (#696); narrowing it without
+        pushing the anchor forward would send the DMs earlier than the hour PR #607 approved."""
+        import cqc_lem.utilities.engagement_window as mod
+        _, anchor_hour, window_minutes = mod.STAGGER_APPRECIATION_DM
+        assert anchor_hour * 60 + window_minutes / 2 == mod.APPRECIATION_DM_MIDPOINT_HOUR * 60
+
+    def test_the_average_dm_still_goes_out_on_the_approved_hour(self, monkeypatch):
+        """The invariant above is arithmetic on the constants; this is the behaviour it buys —
+        across a fleet, the mean dispatch minute is the approved 08:00, not an hour after it."""
+        import cqc_lem.utilities.engagement_window as mod
+        name, anchor_hour, window_minutes = mod.STAGGER_APPRECIATION_DM
+        for suffix in ("_ANCHOR_HOUR", "_WINDOW_MINUTES", "_ANCHOR_TZ"):
+            monkeypatch.delenv(f"{name}{suffix}", raising=False)
+        config = mod.stagger_config(mod.STAGGER_APPRECIATION_DM)
+        minutes = [config.anchor_hour * 60 + mod.stagger_offset_minutes(user_id, config.window_minutes, name)
+                   for user_id in range(1, 501)]
+        assert abs(sum(minutes) / len(minutes) - mod.APPRECIATION_DM_MIDPOINT_HOUR * 60) < 15
 
     @pytest.mark.parametrize("fanout", ["STAGGER_GOLDEN_HOUR", "STAGGER_APPRECIATION_DM",
                                         "STAGGER_GROUP_ENGAGEMENT"])
@@ -450,6 +475,68 @@ class TestApprovedFanoutDefaults:
         for suffix in ("_ANCHOR_HOUR", "_WINDOW_MINUTES", "_ANCHOR_TZ"):
             monkeypatch.delenv(f"{name}{suffix}", raising=False)
         assert mod.stagger_config(getattr(mod, fanout)).local is True
+
+    @pytest.fixture(autouse=True)
+    def _forget_drift_warnings(self):
+        import cqc_lem.utilities.engagement_window as mod
+        mod._MIDPOINT_DRIFT_WARNED.clear()
+        yield
+        mod._MIDPOINT_DRIFT_WARNED.clear()
+
+    def test_a_deployment_still_pinning_the_pre_696_anchor_is_called_out(self, monkeypatch):
+        """The failure mode #696 can actually ship into: `.env.example` lists this var explicitly,
+        so every existing deployment's own .env carries `APPRECIATION_DM_ANCHOR_HOUR=8` and the new
+        default never reaches it. Nothing errors — the batch just goes on colliding — so config
+        resolution says it out loud instead."""
+        import cqc_lem.utilities.engagement_window as mod
+        monkeypatch.setenv("APPRECIATION_DM_ANCHOR_HOUR", "8")
+        monkeypatch.delenv("APPRECIATION_DM_WINDOW_MINUTES", raising=False)
+        with patch.object(mod, "log_warning") as warn:
+            config = mod.stagger_config(mod.STAGGER_APPRECIATION_DM)
+        assert config.anchor_hour == 8  # the override still wins — this warns, it does not correct
+        assert warn.called
+        message = warn.call_args[0][0]
+        assert "APPRECIATION_DM_ANCHOR_HOUR" in message and "09:00" in message
+
+    def test_widening_the_window_without_moving_the_anchor_is_called_out(self, monkeypatch):
+        import cqc_lem.utilities.engagement_window as mod
+        monkeypatch.delenv("APPRECIATION_DM_ANCHOR_HOUR", raising=False)
+        monkeypatch.setenv("APPRECIATION_DM_WINDOW_MINUTES", "240")
+        with patch.object(mod, "log_warning") as warn:
+            mod.stagger_config(mod.STAGGER_APPRECIATION_DM)
+        assert warn.called and "APPRECIATION_DM_WINDOW_MINUTES" in warn.call_args[0][0]
+
+    def test_a_matching_retune_of_both_halves_is_silent(self, monkeypatch):
+        """Anchor and window moved together — 05:00 + 6h still centres on 08:00, which is the
+        supported retune. Warning on that would train ops to ignore the line."""
+        import cqc_lem.utilities.engagement_window as mod
+        monkeypatch.setenv("APPRECIATION_DM_ANCHOR_HOUR", "5")
+        monkeypatch.setenv("APPRECIATION_DM_WINDOW_MINUTES", "360")
+        with patch.object(mod, "log_warning") as warn:
+            mod.stagger_config(mod.STAGGER_APPRECIATION_DM)
+        assert not warn.called
+
+    def test_the_shipped_defaults_and_unpinned_fanouts_are_silent(self, monkeypatch):
+        import cqc_lem.utilities.engagement_window as mod
+        for fanout in (mod.STAGGER_GOLDEN_HOUR, mod.STAGGER_APPRECIATION_DM,
+                       mod.STAGGER_GROUP_ENGAGEMENT):
+            for suffix in ("_ANCHOR_HOUR", "_WINDOW_MINUTES", "_ANCHOR_TZ"):
+                monkeypatch.delenv(f"{fanout[0]}{suffix}", raising=False)
+        with patch.object(mod, "log_warning") as warn:
+            for fanout in (mod.STAGGER_GOLDEN_HOUR, mod.STAGGER_APPRECIATION_DM,
+                           mod.STAGGER_GROUP_ENGAGEMENT):
+                mod.stagger_config(fanout)
+        assert not warn.called
+
+    def test_the_drift_warning_is_one_line_per_process_not_one_per_beat_tick(self, monkeypatch):
+        """`stagger_config` resolves once per user per 15-minute tick — an unmemoized warning would
+        be thousands of identical lines a day and PostHog noise, not a signal."""
+        import cqc_lem.utilities.engagement_window as mod
+        monkeypatch.setenv("APPRECIATION_DM_ANCHOR_HOUR", "8")
+        with patch.object(mod, "log_warning") as warn:
+            for _ in range(50):
+                mod.stagger_config(mod.STAGGER_APPRECIATION_DM)
+        assert warn.call_count == 1
 
     def test_every_window_is_wide_enough_to_stagger(self):
         """A window narrower than the beat cadence would put the whole fleet back on one tick."""

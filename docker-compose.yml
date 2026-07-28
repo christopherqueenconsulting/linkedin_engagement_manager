@@ -376,7 +376,10 @@ services:
       # router can never disagree about a bucket (issue #494). Mounted, not copied: this image has
       # no LEM package, and the module is deliberately stdlib-only for exactly that reason.
       - ./src/cqc_lem/utilities/routing_policy.py:/app/.litellm/routing_policy.py:ro
-    command: ["--config", "/app/.litellm/config.yaml", "--port", "4000"]
+    # Gunicorn workers so LiteLLM can handle parallel requests safely (the Quin start.sh
+    # pattern). Worker count is configurable and deliberately conservative for a VPS — see
+    # docker-compose.prod.yml for the prod memory/CPU cap that keeps it from saturating the host.
+    command: ["--config", "/app/.litellm/config.yaml", "--port", "4000", "--num_workers", "${LITELLM_NUM_WORKERS:-3}", "--run_gunicorn"]
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
@@ -400,6 +403,13 @@ services:
       - POSTHOG_API_KEY=${POSTHOG_API_KEY}
       - POSTHOG_API_URL=${POSTHOG_HOST:-https://us.i.posthog.com}
     restart: unless-stopped
+    # VPS guardrail: cap LiteLLM's memory + CPU so gunicorn workers can't starve the host.
+    # Tunable via env; prod overrides memory in docker-compose.prod.yml.
+    deploy:
+      resources:
+        limits:
+          memory: ${LITELLM_MEM_LIMIT:-1500m}
+          cpus: "${LITELLM_CPU_LIMIT:-2.5}"
     healthcheck:
       test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')\" 2>/dev/null || exit 1"]
       interval: 30s

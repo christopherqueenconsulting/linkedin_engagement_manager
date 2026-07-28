@@ -89,6 +89,69 @@ class TestGetPlannedPostsWithinBuffer:
             assert get_planned_posts_within_buffer(1, 5, 5, 0) == []
 
 
+class TestGetNextPlannedPostsAfterBuffer:
+    """The pull-forward list for an explicitly requested run (issue #719)."""
+    _ROWS = [{"user_id": 1, "id": 31, "post_type": "text", "buyer_stage": "awareness"}]
+
+    def test_selects_only_slots_beyond_the_window(self):
+        conn, cur = _mock_conn(fetch_all=self._ROWS)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_next_planned_posts_after_buffer
+            assert get_next_planned_posts_after_buffer(1, 5, 4) == self._ROWS
+        sql, params = cur.execute.call_args[0]
+        assert "status = 'planning'" in sql
+        assert "scheduled_time > NOW() + INTERVAL %s DAY" in sql
+        assert "ORDER BY scheduled_time ASC" in sql
+        assert "scheduled_time FROM posts" in sql  # the day-type key rides along (issue #621)
+        assert params == (1, 5, 4)
+
+    @pytest.mark.parametrize("limit", [0, -1])
+    def test_no_budget_queries_nothing(self, limit):
+        conn, cur = _mock_conn(fetch_all=self._ROWS)
+        with patch(f"{_DB}.get_db_connection", return_value=conn) as get_conn:
+            from cqc_lem.utilities.db import get_next_planned_posts_after_buffer
+            assert get_next_planned_posts_after_buffer(1, 5, limit) == []
+        get_conn.assert_not_called()
+        cur.execute.assert_not_called()
+
+    def test_empty_on_db_error(self):
+        import mysql.connector
+        conn, cur = _mock_conn()
+        cur.execute.side_effect = mysql.connector.Error("boom")
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_next_planned_posts_after_buffer
+            assert get_next_planned_posts_after_buffer(1, 5, 4) == []
+
+
+class TestGetNextPlannedPostDate:
+    def test_returns_the_soonest_upcoming_planning_slot(self):
+        import datetime as dt
+        due = dt.datetime(2026, 8, 3, 13, 30)
+        conn, cur = _mock_conn(fetch_one=(due,))
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_next_planned_post_date
+            assert get_next_planned_post_date(1) == due
+        sql, params = cur.execute.call_args[0]
+        assert "MIN(scheduled_time)" in sql
+        assert "status = 'planning'" in sql
+        assert "scheduled_time > NOW()" in sql
+        assert params == (1,)
+
+    def test_none_when_nothing_is_planned(self):
+        conn, _ = _mock_conn(fetch_one=(None,))
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_next_planned_post_date
+            assert get_next_planned_post_date(1) is None
+
+    def test_none_on_db_error(self):
+        import mysql.connector
+        conn, cur = _mock_conn()
+        cur.execute.side_effect = mysql.connector.Error("boom")
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_next_planned_post_date
+            assert get_next_planned_post_date(1) is None
+
+
 class TestGetUserIdsWithPlannedPostsWithinBuffer:
     def test_returns_distinct_user_ids(self):
         conn, cur = _mock_conn(fetch_all=[(4,), (9,)])

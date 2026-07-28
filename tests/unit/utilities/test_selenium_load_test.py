@@ -55,12 +55,14 @@ class TestBuildWorkload:
     def test_default_stagger_uses_each_fanouts_own_shipped_window(self):
         # No override → each fan-out uses ITS OWN production window (issue #634): golden-hour is
         # staggered across 180 min, appreciation DMs across 120 min — not a single uniform value.
+        from cqc_lem.utilities.engagement_window import STAGGER_APPRECIATION_DM
+        dm_anchor = STAGGER_APPRECIATION_DM[1] * 60
         jobs = slt.build_workload(20)
         golden = [job.ready_at for job in jobs if job.name == "golden_hour_commenting"]
         dms = [job.ready_at for job in jobs if job.name == "appreciation_dms"]
         # <= on the upper bound: tick-quantization can round a slot right up to the window's edge.
         assert min(golden) >= 13 * 60 and max(golden) <= 13 * 60 + 180
-        assert min(dms) >= 8 * 60 and max(dms) <= 8 * 60 + 120
+        assert min(dms) >= dm_anchor and max(dms) <= dm_anchor + 120
         # A single crontab minute would mean everyone lands on one value; staggering spreads them.
         assert len(set(golden)) > 1
         assert len(set(dms)) > 1
@@ -83,7 +85,8 @@ class TestBuildWorkload:
             assert ready_at % STAGGER_TICK_MINUTES == 0
         dms = {job.user_id: job.ready_at for job in jobs if job.name == "appreciation_dms"}
         for user_id, ready_at in dms.items():
-            raw = 8 * 60 + stagger_offset_minutes(user_id, 120, salt=STAGGER_APPRECIATION_DM[0])
+            raw = (STAGGER_APPRECIATION_DM[1] * 60
+                   + stagger_offset_minutes(user_id, 120, salt=STAGGER_APPRECIATION_DM[0]))
             expected = math.ceil(raw / STAGGER_TICK_MINUTES) * STAGGER_TICK_MINUTES
             assert ready_at == expected
 
@@ -94,10 +97,11 @@ class TestBuildWorkload:
                   if job.name == "golden_hour_commenting"]
         dms = [job.ready_at for job in slt.build_workload(20, stagger_hours=4)
                if job.name == "appreciation_dms"]
+        from cqc_lem.utilities.engagement_window import STAGGER_APPRECIATION_DM
         # <= on the upper bound: tick-quantization can round a slot right up to the window's edge
         # (see test_default_stagger_uses_each_fanouts_own_shipped_window).
         assert max(golden) <= 13 * 60 + 4 * 60
-        assert max(dms) <= 8 * 60 + 4 * 60
+        assert max(dms) <= STAGGER_APPRECIATION_DM[1] * 60 + 4 * 60
         assert len(set(golden)) > 1
 
     def test_post_anchored_jobs_ignore_the_stagger_and_keep_their_eta_offset(self):
@@ -234,23 +238,37 @@ class TestRequiredTopology:
         staggered = slt.required_topology(100, slt.default_topology(), specs=spec)["cap"]
         assert staggered < unstaggered
 
-    def test_the_shipped_stagger_can_shift_appreciation_dm_contention_onto_profile_viewer(self):
-        # A real, intentional finding from teaching the model the shipped windows (issue #634), not
-        # a bug: appreciation_dms alone benefits from its 120-min window (fewer sessions needed), but
-        # se_outreach also carries profile_viewer_engagement, whose own arrivals start at the post
-        # band's opening minute. Spreading appreciation_dms' arrivals later in the day does not
-        # shrink the TOTAL se_outreach processing time its burst needs (workload ÷ concurrency is
-        # fixed) — it can instead push the batch's tail later in real time, into
-        # profile_viewer_engagement's window, where the pre-#554 single-instant batch happened to
-        # have already drained. This is why the full-fleet se_outreach requirement can come out
-        # EQUAL OR HIGHER under the real shipped windows than under the pre-#554 baseline, even
-        # though the isolated appreciation_dms burst is strictly better staggered
-        # (see test_staggering_a_fanout_in_isolation_lowers_its_own_requirement).
+    @pytest.mark.parametrize("users", [10, 25, 50, 75, 100, 150, 200])
+    def test_the_shipped_dm_window_costs_se_outreach_nothing_against_its_own_baseline(self, users):
+        # The regression #696 fixed, pinned at every scale. #634 found that se_outreach came out
+        # EQUAL OR WORSE staggered: it carries both the staggered appreciation_dms and the
+        # post-anchored profile_viewer_engagement, and spreading the DM arrivals over a window does
+        # not shrink the total processing time the burst needs (workload ÷ concurrency is fixed) —
+        # it pushed the batch's TAIL a full window later, into the window profile_viewer_engagement
+        # arrives in, where the pre-#554 single-instant batch had already drained. Opening the window
+        # half its width EARLY (STAGGER_APPRECIATION_DM anchored at 07:00 for a 120-min window) puts
+        # the batch back where the unstaggered one sat, so the stagger is now free on this lane
+        # rather than something profile_viewer_engagement pays for.
         outreach_specs = tuple(spec for spec in slt.WORKLOAD if spec.lane == "se_outreach")
-        unstaggered = slt.required_topology(100, slt.default_topology(), stagger_hours=0,
-                                            specs=outreach_specs)["cap"]
-        staggered = slt.required_topology(100, slt.default_topology(), specs=outreach_specs)["cap"]
-        assert staggered >= unstaggered
+        unstaggered = slt.required_topology(users, slt.default_topology(), stagger_hours=0,
+                                            specs=outreach_specs)["lanes"]["se_outreach"]
+        staggered = slt.required_topology(users, slt.default_topology(),
+                                          specs=outreach_specs)["lanes"]["se_outreach"]
+        assert staggered <= unstaggered
+
+    def test_se_outreach_at_fifty_users_needs_no_more_than_the_pre_554_baseline(self):
+        # Issue #696's acceptance criterion, spelled out against the whole fleet's workload rather
+        # than the lane in isolation: 2 sessions, the number the pre-#554 fixed-time fan-out needed.
+        required = slt.required_topology(50, slt.default_topology())
+        assert required["lanes"]["se_outreach"] <= 2
+
+    def test_the_model_reads_the_dm_anchor_off_the_shipped_constant(self):
+        # se_outreach's whole problem was production and the model disagreeing about where the DM
+        # batch starts. A retune of STAGGER_APPRECIATION_DM that left a literal behind here would
+        # re-open that gap silently — the curve would keep reporting the old anchor's numbers.
+        from cqc_lem.utilities.engagement_window import STAGGER_APPRECIATION_DM
+        spec = next(spec for spec in slt.WORKLOAD if spec.name == "appreciation_dms")
+        assert spec.starts == (STAGGER_APPRECIATION_DM[1] * 60,)
 
     def test_an_impossible_window_reports_no_answer_rather_than_a_huge_one(self):
         # A 15-minute loop that must start within 1 minute of a fan-out can never be met for

@@ -57,7 +57,7 @@ All times are in the timezone set by the `TZ` env var (default `America/New_York
 | `clean-up-stale-invites` | `auto_clean_stale_invites` | Daily 2:00 AM |
 | `clen-up-stale-profiles` | `auto_clean_stale_profiles` | Daily 3:00 AM |
 | `invite_to_company_pages` | `auto_invite_to_company_pages` | 1st of month 5:00 AM |
-| `send-appreciation-dms` | `auto_appreciate_dms` | Daily 8:00 AM |
+| `send-appreciation-dms` | `auto_appreciate_dms` | Every 15 min; dispatches each user at their own staggered slot in 7:00–9:00 **user-local** (#554/#696) |
 
 ---
 

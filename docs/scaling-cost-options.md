@@ -60,7 +60,7 @@ assumed does not exist on the current provider (§4, §6).
   (persistent authenticated sessions via a `Profiles`/`Contexts` API, BYOP residential proxy — free
   on Steel, custom extension loading, no session-length ceiling that matters at LEM's scale) and
   both price below every AWS option — Steel.dev ~$33–430/mo and Browserbase ~$47–399/mo across the
-  10→100 user range, vs. AWS Fargate's ~$165–1,156/mo. Each also carried an unresolved blocker:
+  10→100 user range, vs. AWS Fargate's ~$165–1,115/mo. Each also carried an unresolved blocker:
   Steel's actual ToS text (redirects to a Google Doc this research pass couldn't extract), and
   whether either vendor's WebDriver path is a true URL-repoint into `get_docker_driver()` or needs
   a connection wrapper (Browserbase confirmed needs one; Steel's Selenium support is documented but
@@ -88,22 +88,29 @@ Per `docs/SELENIUM_GRID.md` §4, the load test (`selenium_load_test.py`, issue #
 many concurrent Chrome sessions keep 95% of engagement work inside its window, on today's topology
 (8 slots, lanes 3/2/2/1):
 
-| Users | Sessions needed (measured, pre-stagger) | Staggered, **predicted** (what the pricing below used) | Staggered, **measured** (#634, 2026-07-27) |
-|---|---|---|---|
-| 10 | 5 | 4 | 5 |
-| 50 | 14 | 11 | **15** |
-| 100 | 27 | 20 | **28** |
+| Users | Sessions needed (measured, pre-stagger) | Staggered, **predicted** (what the pricing below used) | Staggered, **measured** (#634) | Staggered, **measured after the `se_outreach` fix** (#696, 2026-07-27) |
+|---|---|---|---|---|
+| 10 | 5 | 4 | 5 | 5 |
+| 50 | 14 | 11 | 15 | **14** |
+| 100 | 27 | 20 | 28 | **27** |
 
 Every cost column below is priced at **both** of the first two numbers as `staggered (measured)` —
 e.g. `4 (5)` — because when this spike was written the staggered curve was still a prediction
 pending #634, and pricing the conservative (pre-stagger measured) number avoided under-provisioning
 if #634 came back worse than modeled. **It did, by one session at both tiers:** #634 landed at
 5 / 15 / 28, one above the 5 / 14 / 27 pre-stagger-measured column the tables below were originally
-priced against. That one session doesn't move any verdict, but it does cross a real pricing
-boundary for continuous-billing vendors (Fargate) and a discrete instance boundary for EC2 — both
-have been recomputed below against the corrected 15 / 28 figures, so **read the parenthesised
-(measured) figure in every table below as the live one, and the dollar amounts as already keyed to
-it**, not to the optimistic prediction. Ratio used
+priced against. That one session moved no verdict, but it did cross a real pricing boundary for
+continuous-billing vendors (Fargate) and a discrete instance boundary for EC2 (15 sessions needs a
+third c5.2xlarge where 14 needs two), so the dollar figures were recomputed against it.
+
+**#696 then removed that session again.** It found the cause of #634's regression — the staggered
+appreciation-DM window OPENED on the hour the old crontab fired, pushing its tail into the
+`profile_viewer_engagement` window on the shared `se_outreach` lane — and fixed it by opening the
+window `window/2` early (anchor 08:00 → 07:00, midpoint unchanged). The live curve is **5 / 14 / 27**
+at 100% / 64.3% / 21.6% on-time, i.e. back on the pre-stagger-measured column these tables were
+priced against in the first place, so the AWS dollar figures below are the originals restored, not a
+third recompute. **Read the parenthesised (measured) figure in every table below as the live one,
+and the dollar amounts as keyed to it**, not to the optimistic prediction. Ratio used
 throughout: **~1 vCPU + ~1.2–1.5 GB RAM per concurrent Chrome session** (matches §4's measured 8
 slots ≈ 6.5–8 vCPU / 6–8 GB), and **~65–70 active Selenium-minutes/user/day** (§4's per-user
 workload total) for any vendor billed by browser-minute rather than by concurrency tier.
@@ -148,10 +155,10 @@ instead).
 
 ### 2b. AWS-hosted Grid nodes
 
-| Option | $/mo @ 10 users (4 or 5 sessions) | $/mo @ 50 users (11 or 15) | $/mo @ 100 users (20 or 28) | Setup/ops effort | Residential egress | ToS risk | Session-length fit | Rollback difficulty | Verdict |
+| Option | $/mo @ 10 users (4 or 5 sessions) | $/mo @ 50 users (11 or 14) | $/mo @ 100 users (20 or 27) | Setup/ops effort | Residential egress | ToS risk | Session-length fit | Rollback difficulty | Verdict |
 |---|---|---|---|---|---|---|---|---|---|
-| **ECS/Fargate Grid nodes (on-demand)** | $165–206/mo | $454–620/mo | $826–1,156/mo | **Medium** — real, documented community pattern (not first-party AWS), needs a hub + service discovery + autoscaler on top of the container images LEM already runs | Yes — proxy-auth extension runs inside the Chrome container, host-independent; watch NAT Gateway ($0.045/hr + $0.045/GB) if nodes sit in a private subnet | None found specific to this pattern | Unlimited on-demand; **Spot is not viable** (2-min reclaim kills mid-session login state and risks a half-submitted LinkedIn action) | Low-medium — same Docker images, just repoint the hub URL | **Workable but pricier than self-managed at every tier, plus new ops surface (NAT/ASG/ECS)** |
-| **EC2 Grid nodes (on-demand, c5.2xlarge, ~7 sessions/instance)** | $248/mo (1 instance) | $496–745/mo (2 instances at predicted 11; **measured 15 needs 3**) | $745–993/mo (3–4 instances) | **High** — you own AMI/patching, ASG, health checks; effectively a second, cloud-hosted twin of the existing infra | Same as Fargate | None found | Best AWS fit — unbounded on-demand session length; Spot viable only as a burst/overflow tier with cookies persisted externally | Low-medium | **Cheapest AWS option but most AWS ops burden; still costs more than Option B at every tier** |
+| **ECS/Fargate Grid nodes (on-demand)** | $165–206/mo | $454–578/mo | $826–1,115/mo | **Medium** — real, documented community pattern (not first-party AWS), needs a hub + service discovery + autoscaler on top of the container images LEM already runs | Yes — proxy-auth extension runs inside the Chrome container, host-independent; watch NAT Gateway ($0.045/hr + $0.045/GB) if nodes sit in a private subnet | None found specific to this pattern | Unlimited on-demand; **Spot is not viable** (2-min reclaim kills mid-session login state and risks a half-submitted LinkedIn action) | Low-medium — same Docker images, just repoint the hub URL | **Workable but pricier than self-managed at every tier, plus new ops surface (NAT/ASG/ECS)** |
+| **EC2 Grid nodes (on-demand, c5.2xlarge, ~7 sessions/instance)** | $248/mo (1 instance) | $496/mo (2 instances — the measured 14 fits two exactly; #634's 15 would have needed a third at $745/mo) | $745–993/mo (3–4 instances) | **High** — you own AMI/patching, ASG, health checks; effectively a second, cloud-hosted twin of the existing infra | Same as Fargate | None found | Best AWS fit — unbounded on-demand session length; Spot viable only as a burst/overflow tier with cookies persisted externally | Low-medium | **Cheapest AWS option but most AWS ops burden; still costs more than Option B at every tier** |
 | **AWS Device Farm (Desktop Browser Testing)** | disqualified | disqualified | disqualified | N/A | Unsupported path (AWS datacenter IPs; loading LEM's proxy-auth extension is explicitly "not officially supported") | Not confirmed as a ToS ban, but moot | **Hard 40-min session cap; `--user-data-dir` explicitly blocked** — cannot hold a login at all | N/A | **DISQUALIFIED — cannot hold a session past 40 minutes or persist a login, at any price** |
 
 Fargate on-demand: **$0.04048/vCPU-hr + $0.004445/GB-hr**

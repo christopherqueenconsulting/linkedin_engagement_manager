@@ -1,6 +1,6 @@
 import Toggle from '../../../components/Toggle'
-import { csv, parseCsv } from '../types'
 import type { EngPrefs } from '../types'
+import CsvInput from './CsvInput'
 import { useEngagementPrefs } from './EngagementPrefsContext'
 import { Field, SectionCard, inputClass } from './Field'
 
@@ -62,9 +62,9 @@ export default function TargetingSection() {
       <FeedReachFunnel />
       {FILTERS.map(([field, key]) => (
         <Field key={key} settingKey={key}>
-          <input type="text" value={csv(eng[field] as string[])}
-            onChange={(e) => setEng({ [field]: parseCsv(e.target.value) } as Partial<EngPrefs>)}
-            placeholder="comma, separated, values" className={inputClass} />
+          <CsvInput value={eng[field] as string[]}
+            onChange={(values) => setEng({ [field]: values } as Partial<EngPrefs>)}
+            placeholder="comma, separated, values" />
         </Field>
       ))}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

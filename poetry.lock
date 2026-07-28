@@ -264,36 +264,36 @@ typeguard = "2.13.3"
 
 [[package]]
 name = "aws-cdk-aws-amplify-alpha"
-version = "2.262.0a0"
+version = "2.262.1a0"
 description = "The CDK Construct Library for AWS::Amplify"
 optional = false
 python-versions = ">=3.10"
 groups = ["dev"]
 files = [
-    {file = "aws_cdk_aws_amplify_alpha-2.262.0a0-py3-none-any.whl", hash = "sha256:fc6b0d23005285df06aff129d4ba15068ca3ff42191229c317232254178ecbca"},
-    {file = "aws_cdk_aws_amplify_alpha-2.262.0a0.tar.gz", hash = "sha256:dbab2e598bf020824cd63c9076727e7effc2ce98c207a7bd76b4b35376a21243"},
+    {file = "aws_cdk_aws_amplify_alpha-2.262.1a0-py3-none-any.whl", hash = "sha256:f51293d56141f64d7e1f6395c97051d4b7915d9192ef8b28f6b6fe83573f7514"},
+    {file = "aws_cdk_aws_amplify_alpha-2.262.1a0.tar.gz", hash = "sha256:34dbc70fd40c158f3dd3216716e173bedfa24bc742fb57e4a8f48a2bfc6c3793"},
 ]
 
 [package.dependencies]
-aws-cdk-lib = ">=2.262.0,<3.0.0"
+aws-cdk-lib = ">=2.262.1,<3.0.0"
 constructs = ">=10.5.0,<11.0.0"
 jsii = ">=1.138.0,<2.0.0"
 publication = ">=0.0.3"
 
 [[package]]
 name = "aws-cdk-aws-lambda-python-alpha"
-version = "2.262.0a0"
+version = "2.262.1a0"
 description = "The CDK Construct Library for AWS Lambda in Python"
 optional = false
 python-versions = ">=3.10"
 groups = ["dev"]
 files = [
-    {file = "aws_cdk_aws_lambda_python_alpha-2.262.0a0-py3-none-any.whl", hash = "sha256:8bf18737a780c5e6e95bb60088805518f4ed27b5f0cdb1889bf88919a8d29798"},
-    {file = "aws_cdk_aws_lambda_python_alpha-2.262.0a0.tar.gz", hash = "sha256:cc0240e7bc83a1f122f9de5b64d3227ec0a638e937b69e8a9a588ee38615dcf2"},
+    {file = "aws_cdk_aws_lambda_python_alpha-2.262.1a0-py3-none-any.whl", hash = "sha256:e200a6a1edf40feaf8a9f5ec90c0627988e0a0dff7dd5596e79dadfc914464c5"},
+    {file = "aws_cdk_aws_lambda_python_alpha-2.262.1a0.tar.gz", hash = "sha256:a7c1bd8f0736d8f2fef8794e86e09a6e969403bb4352463e6f44bad88a39e52d"},
 ]
 
 [package.dependencies]
-aws-cdk-lib = ">=2.262.0,<3.0.0"
+aws-cdk-lib = ">=2.262.1,<3.0.0"
 constructs = ">=10.5.0,<11.0.0"
 jsii = ">=1.138.0,<2.0.0"
 publication = ">=0.0.3"
@@ -316,14 +316,14 @@ publication = ">=0.0.3"
 
 [[package]]
 name = "aws-cdk-lib"
-version = "2.262.0"
+version = "2.262.1"
 description = "Version 2 of the AWS Cloud Development Kit library"
 optional = false
 python-versions = ">=3.10"
 groups = ["dev"]
 files = [
-    {file = "aws_cdk_lib-2.262.0-py3-none-any.whl", hash = "sha256:dada56daa1792f74baa4443d8488f0621c1722d6c443d480b5a21f434f2e6410"},
-    {file = "aws_cdk_lib-2.262.0.tar.gz", hash = "sha256:c09d601ac485b7aae895eaa374b94885b74b987dc76f0ac33ab2ea92bb6cb62b"},
+    {file = "aws_cdk_lib-2.262.1-py3-none-any.whl", hash = "sha256:5fe31beed6f22986c66e625e7683087168e780eebf7f001800574ac420af3c9c"},
+    {file = "aws_cdk_lib-2.262.1.tar.gz", hash = "sha256:e9ae7ef2454bd4044f300d6c80df692ecee3fa4d5850013e473e198ebaf6303d"},
 ]
 
 [package.dependencies]
@@ -429,18 +429,18 @@ files = [
 
 [[package]]
 name = "boto3"
-version = "1.43.55"
+version = "1.43.56"
 description = "The AWS SDK for Python"
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "boto3-1.43.55-py3-none-any.whl", hash = "sha256:c8f23355b4eff538a9c04e09666c6defb5013051de23ca826559906787253188"},
-    {file = "boto3-1.43.55.tar.gz", hash = "sha256:ab2d18d00fd0ceb7110c3659176b9306e009a313dbc5fcc5bd8734253f115157"},
+    {file = "boto3-1.43.56-py3-none-any.whl", hash = "sha256:feb699d4ab241ef5c1b80bb58277be2aaad365cd4b672d7817e0bc59ee45131b"},
+    {file = "boto3-1.43.56.tar.gz", hash = "sha256:57c90df9fb026f2e6ae22530861198130203733c5c9ec4e5cca3a4037f5a8db4"},
 ]
 
 [package.dependencies]
-botocore = ">=1.43.55,<1.44.0"
+botocore = ">=1.43.56,<1.44.0"
 jmespath = ">=0.7.1,<2.0.0"
 s3transfer = ">=0.19.0,<0.20.0"
 
@@ -449,14 +449,14 @@ crt = ["botocore[crt] (>=1.21.0,<2.0a0)"]
 
 [[package]]
 name = "botocore"
-version = "1.43.55"
+version = "1.43.56"
 description = "Low-level, data-driven core of boto 3."
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "botocore-1.43.55-py3-none-any.whl", hash = "sha256:b7ceb3070dffb64cc1cfdda3c32db538eb143c46ad9e9e781b0d8f90c9246f37"},
-    {file = "botocore-1.43.55.tar.gz", hash = "sha256:46e8d9f457a804948abf45a22add963ebaaa6c2765c2f1c26ff3b534309d7a58"},
+    {file = "botocore-1.43.56-py3-none-any.whl", hash = "sha256:aafc741f1b10f6fd63253eaf6ea029680c1ff436d87e1b8969d62aefa0c76976"},
+    {file = "botocore-1.43.56.tar.gz", hash = "sha256:6c01f85f0ff9863076f4c761e74ee3aa96c5ccc1ad09fc1efd62ef8f2d22bf57"},
 ]
 
 [package.dependencies]
@@ -552,14 +552,14 @@ ujson = ["ujson (>=5.10.0)"]
 
 [[package]]
 name = "cdk-ecr-deployment"
-version = "4.2.36"
+version = "4.2.38"
 description = "CDK construct to deploy docker image to Amazon ECR"
 optional = false
 python-versions = ">=3.10"
 groups = ["dev"]
 files = [
-    {file = "cdk_ecr_deployment-4.2.36-py3-none-any.whl", hash = "sha256:3a71b714bfd0387d7a269b1ff53985b48d8084e69c957470e03dc875bfec509e"},
-    {file = "cdk_ecr_deployment-4.2.36.tar.gz", hash = "sha256:5bf30a7368e8f0b64870bd4fb9673656330918a3a262eb8351abda9414e974ae"},
+    {file = "cdk_ecr_deployment-4.2.38-py3-none-any.whl", hash = "sha256:1a67638e44b0f6e37406e39ed4b04478859311e52e9aa8b96d4c7d643cb2cdca"},
+    {file = "cdk_ecr_deployment-4.2.38.tar.gz", hash = "sha256:a434ddf52915e3265249f807eed48c9419e09a5e51740e68e1f9aec203d98299"},
 ]
 
 [package.dependencies]
@@ -1366,14 +1366,14 @@ streamlit = ">=1.40.1"
 
 [[package]]
 name = "fastapi"
-version = "0.139.2"
+version = "0.140.0"
 description = "FastAPI framework, high performance, easy to learn, fast to code, ready for production"
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "fastapi-0.139.2-py3-none-any.whl", hash = "sha256:b9ad015a835173d59865e2f5d8296fbc2b317bf56a2ba1a5bfbdd03de2fd4b1c"},
-    {file = "fastapi-0.139.2.tar.gz", hash = "sha256:333145a6891e9b5b3cfceb69baf817e8240cde4d4588ae5a10bf56ffacb6255e"},
+    {file = "fastapi-0.140.0-py3-none-any.whl", hash = "sha256:e951c0a0d9540bf5d9a2a9e078fd415da2ab7e312d435139e7d9e2e7fe9f0b23"},
+    {file = "fastapi-0.140.0.tar.gz", hash = "sha256:f338951b82fd74ca8f843163aec43ea1a1ce84d515415a50fa98fa25572a5544"},
 ]
 
 [package.dependencies]
@@ -5530,14 +5530,14 @@ files = [
 
 [[package]]
 name = "runwayml"
-version = "5.11.0"
+version = "5.12.0"
 description = "The official Python library for the runwayml API"
 optional = false
 python-versions = ">=3.9"
 groups = ["main"]
 files = [
-    {file = "runwayml-5.11.0-py3-none-any.whl", hash = "sha256:f7e6a17482321baeff20774b94e80a82d9f185ce0c1422de3abdfbda0d158485"},
-    {file = "runwayml-5.11.0.tar.gz", hash = "sha256:e44dec54268d408c589d47ba38e853de1715ace80457b15f7cc7f712a450171e"},
+    {file = "runwayml-5.12.0-py3-none-any.whl", hash = "sha256:217c4bbfcebf38c170dc1a6543e8a8e480e1b35e2b7be092968caccdf38d0f90"},
+    {file = "runwayml-5.12.0.tar.gz", hash = "sha256:eca9908e55354f7259eb36a3c07c2dd4364cda89dab47b28e7032e41379a4793"},
 ]
 
 [package.dependencies]
@@ -6615,4 +6615,4 @@ type = ["pytest-mypy (>=1.0.1) ; platform_python_implementation != \"PyPy\""]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<4.0"
-content-hash = "23a039552ec81456a6a48633bfb54c1e7af50faf711e02676972386492bdcae0"
+content-hash = "71bb7ea8d677c0f79b6937d30833fc786c0298951c7764dd0a2cc9ccb78992d3"

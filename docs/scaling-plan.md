@@ -157,7 +157,7 @@ lane, no browser):
 
 ### Fixed off-peak batch (all single crontabs, fan out over active users)
 
-`generate-newsletter-drafts` 10:00 · `send-appreciation-dms` 08:00 local (staggered, #554) ·
+`generate-newsletter-drafts` 10:00 · `send-appreciation-dms` 07:00–09:00 local (staggered, #554/#696) ·
 `group-engagement` 12:00 local (staggered, #554) · `group-posts` Tue 15:00 · `scrape-post-stats` 23:00 ·
 `sync-user-groups` Mon 07:00 · `refresh-profile-syntheses` Mon 04:30 ·
 `invite_to_company_pages` 1st 05:00 · `backfill-missing-assets` `*/3h` ·
@@ -309,8 +309,9 @@ per additional concurrent session**.
 
 ### 5c. Resource plan by scale
 
-> **Measured by the load test (issue #556), 2026-07-26**, then **re-measured against the shipped
-> stagger (issue #634), 2026-07-27.** The #556 table below was the pre-stagger estimate:
+> **Measured by the load test (issue #556), 2026-07-26**, **re-measured against the shipped stagger
+> (issue #634)** and **again after the `se_outreach` fix (issue #696), 2026-07-27.** The #556 table
+> below was the pre-stagger estimate:
 > `python -m cqc_lem.utilities.selenium_load_test --users 10,50,100 --stagger-hours 0` (the deliberate
 > "before" baseline) reproduces it exactly — **10 users 100% on-time, 50 users 57.7%, 100 users
 > 17.7%**, needing **5 / 14 / 27** sessions to hold 95% on-time. #554 shipped a per-user hashed slot
@@ -318,31 +319,43 @@ per additional concurrent session**.
 > 120 min) in place of that single fan-out, and the harness's workload model still assumed the old
 > single-minute fan-out — #634 taught it the real windows (default run, no flags).
 >
-> **The predicted improvement (57.7% → 84.0%, 14 → 11 sessions at 50 users) does NOT hold.** The
-> corrected model measures **50 users at 53.7% on-time, needing 15 sessions** — flat-to-worse than
-> the pre-#554 baseline, not better. Cause: `se_outreach` carries both the now-staggered
-> `appreciation_dms` and the post-anchored `profile_viewer_engagement`. Spreading `appreciation_dms`'
-> arrivals over its window doesn't shrink the total processing time its burst needs at a given
-> concurrency — workload ÷ concurrency is fixed — it can instead push the batch's tail *later* in
-> real time, into the window `profile_viewer_engagement` starts arriving in. Pre-#554 the
-> single-instant DM batch happened to fully drain before that window opened; post-#554 it doesn't
-> always. `se_engage` (golden-hour's own lane) is unaffected — the isolated golden-hour burst is
-> exactly as much better-staggered as predicted, it's the SHARED se_outreach lane where a different
-> job's window absorbs the difference. Filed as **#696** to fix (shrink the DM window, raise
-> `se_outreach` concurrency, or give `appreciation_dms` its own lane) and re-measure again.
+> **The predicted improvement (57.7% → 84.0%, 14 → 11 sessions at 50 users) did NOT hold**: #634
+> measured 53.7% and 15 sessions, flat-to-worse than the baseline. Cause: `se_outreach` carries both
+> the staggered `appreciation_dms` and the post-anchored `profile_viewer_engagement`, and a window
+> that OPENS on the hour the old crontab fired moves the batch's midpoint half a window later and its
+> **tail a full window later** — into the window `profile_viewer_engagement` starts arriving in.
+> Spreading the burst never shrank the processing time it needs (workload ÷ concurrency is fixed), it
+> only moved it. Pre-#554 the single-instant batch happened to drain before that window opened.
+>
+> **#696 fixed it by moving the anchor, not by buying a lane or a slot:**
+> `APPRECIATION_DM_ANCHOR_HOUR` **08:00 → 07:00**, so the 120-minute window's *midpoint* is the 08:00
+> off-peak hour PR #607 approved and the batch sits where the unstaggered one did.
+> `APPRECIATION_DM_MIDPOINT_HOUR` pins `anchor + window/2 = 08:00` so widening the window can't
+> silently re-create the collision: a unit test holds the code defaults to it, and `stagger_config`
+> logs a WARNING (once per process, naming the hour the batch actually centres on) when the
+> RESOLVED env pair drifts off it — which is also what catches a deployment whose own `.env` still
+> pins the pre-#696 `APPRECIATION_DM_ANCHOR_HOUR=8` and therefore never received this fix.
+> Current default run: **50 users at 64.3% on-time, 14 sessions**
+> (`se_outreach` back to **2**, the pre-#554 number and #696's acceptance criterion); 100 users at
+> 21.6% / 27. `se_outreach` is now no worse staggered than unstaggered at any scale from 10 to 200
+> users, pinned per-scale in `tests/unit/utilities/test_selenium_load_test.py`. The generalizable
+> rule: **a fan-out sharing a lane with a tighter-tolerance job opens its window `window/2` early.**
+> The other two options were priced and rejected — raising `se_outreach` concurrency costs a Chrome
+> slot on a box already at its ceiling, and giving `appreciation_dms` its own lane (the #553 shape)
+> needs 4 slots across two lanes at 50 users where the shared lane needs 2.
 >
 > Two standing corrections to the ORIGINAL #556 estimate (both still true): the table below
 > **under-counts at 50+** because it modelled only the commenting loops, not the once-a-day batch
 > fan-outs or the `se_prepost` lane #553 added afterwards; and **`se_prepost` is the first lane to
 > break** (7 slots of its own at 100 users — a 15-minute warm-up with a 5-minute window cannot absorb
 > posts arriving every 2.4 minutes) — staggering never touched `se_prepost` (posts aren't a fan-out,
-> they're per-user ETAs) so it is unaffected by #634's re-run. Full curve, both modes and the reading
-> guide: `docs/SELENIUM_GRID.md` §3–§4.
+> they're per-user ETAs) so it is unaffected by #634's or #696's re-runs. Full curve, both modes and
+> the reading guide: `docs/SELENIUM_GRID.md` §3–§4.
 
 | Active users | Concurrent Chrome sessions | vCPU | RAM | Topology | Verdict on current VPS (8 vCPU / 31 GB) |
 |---|---|---|---|---|---|
 | **10** | 4–6 | ~6–8 used peak | ~10–12 GB peak | Current stack + Phase 1 bumps + staggered golden hour | **Fits comfortably** |
-| **50** | 8–10 | ~12–14 peak | ~20–24 GB peak | Grid hub + 2–3 nodes; lane concurrency 3–4; MySQL pooling; stagger fan-outs | **Exceeds one VPS on the measured curve** (15 sessions, issue #634) — Chrome RAM + 8 vCPU become the limit; move Grid nodes to a **2nd VPS** or upgrade to **16 vCPU / 64 GB**, and see #696 for the se_outreach fix first |
+| **50** | 8–10 | ~12–14 peak | ~20–24 GB peak | Grid hub + 2–3 nodes; lane concurrency 3–4; MySQL pooling; stagger fan-outs | **At the ceiling on the measured curve** (14 sessions after #696, was 15) — Chrome RAM + 8 vCPU are the limit; move Grid nodes to a **2nd VPS** or upgrade to **16 vCPU / 64 GB** |
 | **100** | 12–16 | ~20+ | ~40+ GB | Grid across **2+ boxes**; dedicated Chrome host(s); LLM cost/RPM budget; MySQL pooling mandatory | **Exceeds one VPS** — horizontal (separate app tier + Chrome tier) |
 
 - **MySQL:** ✅ done (#555) — `get_db_connection()` checks out of a
@@ -382,9 +395,15 @@ concurrency rises:
   only the users whose slot has come up: `plan_daily_slot` in
   `utilities/engagement_window.py` gives every user a stable hashed minute inside a window
   that opens at an anchor hour **in that user's own timezone** (golden hour 09:00 local
-  +0–180 min, appreciation DMs 08:00 local +0–120, groups 12:00 local +0–120; all three
+  +0–180 min, appreciation DMs 07:00 local +0–120, groups 12:00 local +0–120; all three
   retunable with `<NAME>_ANCHOR_HOUR` / `<NAME>_WINDOW_MINUTES` / `<NAME>_ANCHOR_TZ`, and a
-  window of `1` restores "everyone at once"). A Redis claim
+  window of `1` restores "everyone at once"). **A window OPENS on its anchor, so it also ends
+  a full window later than the batch it replaced** — a fan-out that shares a lane with a
+  tighter-tolerance job therefore opens `window/2` EARLY so its midpoint stays on the hour it
+  used to fire. That is why appreciation DMs anchor at 07:00 for an 08:00 batch (#696;
+  `PINNED_MIDPOINT_HOURS` keeps the two in step and warns when a retune — or a stale `.env`
+  still on the old anchor — puts them out of step); golden hour and groups own their
+  lanes' peak outright and anchor on the hour itself. A Redis claim
   (`engagement:slot:<NAME>:<user>:<local date>`) keeps it to one run per user per local day
   and lets a slot missed by a beat outage — or by an open 429 breaker — catch up on a later
   tick instead of being lost for the day; keying the claim by the slot's own date is what
@@ -438,7 +457,7 @@ ToS-risk requirements. Full comparison, cost tables and sources: `docs/scaling-c
   minutes. None of these fit a logged-in, cookie-persisted, days-to-weeks LinkedIn session.
 - **AWS Fargate/EC2 Grid nodes are technically workable** (residential-proxy egress layers on
   cleanly regardless of host) **but cost strictly more than self-managed at every tier** — e.g.
-  Fargate on-demand ~$454–620/mo at the 50-user tier vs. a second Hostinger box's ~$52–100/mo —
+  Fargate on-demand ~$454–578/mo at the 50-user tier vs. a second Hostinger box's ~$52–100/mo —
   and add ops surface (NAT/ASG/ECS) the current stack doesn't otherwise carry. Not recommended.
 - **The one correction this spike makes to this plan:** `SELENIUM_GRID.md` §5's "Option A —
   upgrade to 16 vCPU / 64 GB" assumed an in-place resize. **Hostinger's VPS line has no plan above
@@ -452,7 +471,7 @@ ToS-risk requirements. Full comparison, cost tables and sources: `docs/scaling-c
   and Browserbase are purpose-built for persistent authenticated browser sessions over a
   residential/BYOP proxy (`Profiles`/`Contexts` APIs persist cookies/login across sessions the way
   LEM needs) and price well under both AWS and a third/fourth self-managed box at the 100-user tier
-  (~$410–430/mo and ~$374–399/mo respectively vs. Fargate's ~$826–1,156/mo). Each still carried an
+  (~$410–430/mo and ~$374–399/mo respectively vs. Fargate's ~$826–1,115/mo). Each still carried an
   unresolved blocker — whether its Selenium path is a true `get_docker_driver()` URL-repoint or
   needs a connector rewrite, and (Steel only) an actual ToS text this spike could not extract.
   **Owner decision, 2026-07-27 (PR #694): don't spend the engineering time. No vendor spike, no
@@ -497,9 +516,12 @@ survey is kept in `docs/scaling-cost-options.md` as the evidence behind that cal
 - ✅ **Stagger the golden-hour fan-out** (§5d, #554) — the load test's biggest free on-time win, taken
   first. ✅ **Re-verified against the harness** (#634): the model was still assuming the pre-#554
   single fan-out and has been corrected to the shipped windows. The correction **refuted** the
-  original 84.0%/11-session prediction at 50 users — measured is 53.7%/15 sessions, worse than the
-  pre-#554 baseline, because the staggered appreciation-DM tail can now bleed into the pre-post
-  profile-viewer window on the shared `se_outreach` lane. Fix tracked as **#696**.
+  original 84.0%/11-session prediction at 50 users — measured 53.7%/15 sessions, worse than the
+  pre-#554 baseline, because the staggered appreciation-DM tail bled into the pre-post
+  profile-viewer window on the shared `se_outreach` lane. ✅ **Fixed** (#696): the DM window now
+  opens `window/2` early (07:00 for an 08:00 midpoint) so its tail sits where the unstaggered
+  batch's did — **64.3%/14 sessions** at 50 users, `se_outreach` back to its pre-#554 2, and
+  staggering is a net win at every scale. It still does not reach 95% on 8 slots.
 - Lane concurrency 3–4 each; per-user 429 breaker keys; per-user rate pacing.
 - **Hardware/topology: default path set, nothing bought yet** (§5f, #633). The "upgrade to 16
   vCPU / 64 GB" comparison in `docs/SELENIUM_GRID.md` §5 assumed an in-place resize that doesn't

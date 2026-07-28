@@ -286,6 +286,11 @@ Brief description of what this PR does.
 
 ## Issue Reporting
 
+> **This repo is worked primarily by an autonomous agent pipeline.** Whether an issue gets picked
+> up automatically, waits on the owner, or sits invisible is controlled entirely by labels — see
+> **[docs/AGENT_WORKFLOW_PLAYBOOK.md](docs/AGENT_WORKFLOW_PLAYBOOK.md)** for the label state
+> machine, how to write an agent-executable issue, and how to answer a Decision Comment.
+
 ### Bug Reports
 
 Include:

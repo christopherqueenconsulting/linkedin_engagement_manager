@@ -107,12 +107,35 @@ class TestGridOverlay:
         return _service_block(GRID_OVERLAY, "selenium-node-chrome")
 
     def test_default_node_count_equals_the_summed_lane_concurrency(self):
-        # One session per node, so replicas IS the session cap. A Grid that starts with fewer slots
-        # than the lanes request would make the cutover itself a capacity regression.
-        replicas = int(re.search(r"replicas: \$\{SELENIUM_GRID_NODES:-(\d+)\}", self._node_block()).group(1))
+        # One session per node, so the POOL count IS the session cap the lanes may consume. The
+        # debug node is deliberately excluded — it is a ninth node the lanes never size for.
+        pool = int(re.search(r"replicas: \$\{SELENIUM_GRID_NODES:-(\d+)\}", self._node_block()).group(1))
         sessions_per_node = int(re.search(r"SE_NODE_MAX_SESSIONS=(\d+)", self._node_block()).group(1))
         assert sessions_per_node == 1
-        assert replicas * sessions_per_node == sum(_lane_concurrencies(COMPOSE).values())
+        assert pool * sessions_per_node == sum(_lane_concurrencies(COMPOSE).values())
+
+    def test_the_debug_node_is_extra_capacity_not_a_borrowed_lane_slot(self):
+        # Owner decision 2026-07-27: debugging must not cost a production slot. The debug node runs
+        # ONE session like any other node, and sits on top of the pool — so the lane invariant above
+        # stays keyed on the pool alone. If someone ever folds it into the pool, that test breaks.
+        debug = _service_block(GRID_OVERLAY, "selenium-node-debug")
+        assert int(re.search(r"SE_NODE_MAX_SESSIONS=(\d+)", debug).group(1)) == 1
+        assert "replicas" not in debug  # exactly one, never scaled
+
+    def test_the_debug_node_publishes_novnc(self):
+        # The whole reason it exists: lemvnc needs a container that actually serves 7900. A debug
+        # node without the publish is just a pool node with a name.
+        assert "7900:7900" in _service_block(GRID_OVERLAY, "selenium-node-debug")
+
+    def test_the_debug_node_registers_under_a_stable_name(self):
+        # Its ninth slot has to be droppable from the capacity monitor's saturation denominator
+        # (capacity_alerts._pool_slots matches the /status uri host). Without SE_NODE_HOST the node
+        # registers under a per-restart container IP, nothing matches, and the pool silently reads
+        # 9 slots — which is the difference between a breach and an "ok" at full lane load.
+        from cqc_lem.utilities.env_constants import SELENIUM_DEBUG_NODE_HOST
+
+        debug = _config_only(_service_block(GRID_OVERLAY, "selenium-node-debug"))
+        assert f"SE_NODE_HOST={SELENIUM_DEBUG_NODE_HOST}" in debug
 
     def test_the_overlay_does_not_restate_lane_concurrency(self):
         # The lanes stay defined in one place; the overlay only moves where the browsers live.
@@ -172,6 +195,47 @@ class TestGridOverlay:
         # loopback on purpose. A hub published on all interfaces would undo that on the cutover.
         hub = _service_block(GRID_OVERLAY, "selenium-hub")
         assert '"${SELENIUM_GRID_HUB_BIND:-127.0.0.1}:${SELENIUM_HUB_PORT}:4444"' in hub
+
+
+class TestDeployComposesTheDeployedTopology:
+    """The overlay only matters if a deploy actually composes it. Before this, `deploy.sh` used
+    base + prod only, so every release quietly put the box back on the standalone (issue: the
+    2026-07-27 cutover lasted until the next deploy)."""
+
+    DEPLOY = (REPO_ROOT / "scripts" / "deploy.sh").read_text()
+
+    def test_the_grid_overlay_is_composed_by_default(self):
+        assert "-f docker-compose.grid.yml" in self.DEPLOY
+        assert "env_value SELENIUM_TOPOLOGY grid" in self.DEPLOY
+
+    def test_standalone_is_the_one_flag_rollback(self):
+        # Only the exact word falls back, and it must NOT drag the overlay in with it.
+        block = self.DEPLOY.split("case \"${SELENIUM_TOPOLOGY}\" in")[1].split("esac")[0]
+        standalone = block.split("standalone)")[1].split(";;")[0]
+        assert "docker-compose.grid.yml" not in standalone
+
+    def test_an_unrecognised_topology_is_named_not_silently_honoured(self):
+        # A typo'd value used to mean "deploy the standalone" — the same invisible drift this whole
+        # block exists to end. It must warn and take the documented default.
+        assert "unrecognised SELENIUM_TOPOLOGY" in self.DEPLOY
+
+    def test_the_topology_is_read_with_the_shared_env_parser(self):
+        # env_value() strips quotes, inline comments and stray whitespace; a second hand-rolled
+        # grep|cut did not, so `SELENIUM_TOPOLOGY=standalone # rollback` resolved to neither value.
+        assert "grep -E '^SELENIUM_TOPOLOGY=' " not in self.DEPLOY
+        assert self.DEPLOY.index("env_value() {") < self.DEPLOY.index("SELENIUM_TOPOLOGY:-$(env_value")
+
+    def test_both_transition_directions_evict_the_other_topology_first(self):
+        # A compose profile stops a service being STARTED, not one already RUNNING — so whichever
+        # topology is up keeps holding 4444 and the incoming one fails to bind (leaving, in the grid
+        # direction, a hub running with no network attached). The rollback direction is the one that
+        # runs during an incident, and the hub answers to the `selenium-chrome` alias, so leaving it
+        # up would also make that name resolve to two containers.
+        assert "docker rm -f selenium-chrome" in self.DEPLOY
+        assert "rm -sf selenium-hub selenium-node-chrome selenium-node-debug" in self.DEPLOY
+
+    def test_the_eviction_happens_before_anything_is_brought_up(self):
+        assert self.DEPLOY.index("docker rm -f selenium-chrome") < self.DEPLOY.index("${COMPOSE} pull")
 
 
 class TestLoadTestMirrorsTheDeployedTopology:

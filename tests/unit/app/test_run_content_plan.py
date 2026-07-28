@@ -21,16 +21,25 @@ class TestAutoCreateWeeklyContent:
                                  "content_buffer_max_posts": 5}) as prefs:
             yield prefs
 
+    @pytest.fixture
+    def no_pull_forward(self):
+        """Nothing planned beyond the buffer window either (issue #719's pull-forward path)."""
+        with patch(f"{_RCP}.get_next_planned_posts_after_buffer", return_value=[]), \
+             patch(f"{_RCP}.get_next_planned_post_date", return_value=None):
+            yield
+
     @patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0)
     @patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=None)
-    def test_does_not_crash_when_planned_posts_is_none(self, mock_planned, mock_ready):
+    def test_does_not_crash_when_planned_posts_is_none(self, mock_planned, mock_ready,
+                                                       no_pull_forward):
         from cqc_lem.app.run_content_plan import auto_create_weekly_content
         # Should not raise TypeError: 'NoneType' is not iterable
         auto_create_weekly_content(user_id=1)
 
     @patch(f"{_RCP}.count_ready_posts_within_buffer", return_value=0)
     @patch(f"{_RCP}.get_planned_posts_within_buffer", return_value=[])
-    def test_does_not_crash_when_planned_posts_is_empty(self, mock_planned, mock_ready):
+    def test_does_not_crash_when_planned_posts_is_empty(self, mock_planned, mock_ready,
+                                                        no_pull_forward):
         from cqc_lem.app.run_content_plan import auto_create_weekly_content
         auto_create_weekly_content(user_id=1)
 

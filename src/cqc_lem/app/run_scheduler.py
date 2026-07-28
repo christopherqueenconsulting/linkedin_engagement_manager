@@ -31,7 +31,7 @@ from cqc_lem.utilities.engagement_window import (
     PRE_POST_SKIP_PAST_WINDOW, PRE_POST_SKIP_THROTTLED, PRE_POST_SKIP_USER_INACTIVE,
     PRE_POST_TASK_VIEWER,
     claim_daily_slot, plan_daily_slot, stagger_config,
-    STAGGER_APPRECIATION_DM, STAGGER_GOLDEN_HOUR, STAGGER_GROUP_ENGAGEMENT,
+    STAGGER_APPRECIATION_DM, STAGGER_COMPANY_INVITE, STAGGER_GOLDEN_HOUR, STAGGER_GROUP_ENGAGEMENT,
 )
 from cqc_lem.utilities.env_constants import SELENIUM_KEEP_VIDEOS_X_DAYS, CQC_LEM_POST_TIME_DELTA_MINUTES, \
     COST_ROUTING_WINDOW_DAYS
@@ -1496,7 +1496,15 @@ def auto_clean_stale_profiles():
 
 @shared_task.task
 def auto_invite_to_company_pages():
-    """Start invite process for each active user who has a linked in company page"""
+    """DAILY company-page invite drip, at each user's own staggered slot (issue #732).
+
+    This used to be one crontab on the 1st of the month at 05:00 UTC that drained the whole
+    invitation-credit pool in a single sitting — the loudest velocity pattern in the product, and
+    the only outbound lane that consulted neither `max_invites_per_day` nor the #626 pacing engine.
+    Now it ticks every STAGGER_TICK_MINUTES like the other fan-outs and dispatches only the users
+    whose slot has come up, so the fleet spreads across the window instead of landing on
+    `se_outreach` in one minute; the per-run volume is decided inside the task itself
+    (`plan_daily_invites`), which is also what makes a second dispatch today a no-op."""
     if _skip_if_throttled("auto_invite_to_company_pages"):
         return "Automation throttled"
 
@@ -1506,15 +1514,19 @@ def auto_invite_to_company_pages():
     started = 0
     for user_id in users:
         # Only invite for users who have actually set a company page — otherwise the
-        # inviter would build "<None>?invite=true" and fail. Invite credits are limited
-        # and reset monthly, which is why this runs on the 1st.
+        # inviter would build "<None>?invite=true" and fail.
         if not get_company_linked_in_url_for_user(user_id):
             log_debug("Skipping company page invites — no company page set",
                       user_id=user_id, task_name="auto_invite_to_company_pages")
             continue
+        # Page check first: the slot claim is spent for the day, so a user who has nothing to
+        # invite to must not burn theirs — setting a page later still earns that day's run.
+        if not _stagger_due(user_id, STAGGER_COMPANY_INVITE, "auto_invite_to_company_pages"):
+            continue
 
         log_info(f"Starting company page invites", user_id=user_id, task_name="auto_invite_to_company_pages")
         automate_invites_to_company_page_for_user.apply_async(kwargs={'user_id': user_id},
+                                         countdown=dispatch_jitter_seconds(),
                                          retry=True,
                                          retry_policy={
                                              'max_retries': 3,
@@ -1705,11 +1717,19 @@ def auto_file_feedback_issues(self, limit: int = 25):
     """Drain the captured-feedback queue into the work pipeline (issue #498, plan §B.2/B.3): classify
     each new report, dedup it against the open clusters (+1 the existing issue) and open ONE
     `MODE=start`-shaped issue per genuinely new problem. QueueOnce so two beat ticks can never file
-    the same report twice."""
-    from cqc_lem.utilities.feedback.issue_service import process_new_feedback
+    the same report twice.
+
+    The same pass repairs already-filed issues whose labels/assignee/Decision Comment never landed
+    (issue #718) — an unlabeled issue is invisible to the agent pipeline, so filing alone is not the
+    job being done."""
+    from cqc_lem.utilities.feedback.issue_service import (
+        process_new_feedback, repair_auto_filed_issues)
 
     result = process_new_feedback(limit=limit)
-    return f"Feedback filing: {result['processed']} row(s) — {result['counts'] or 'nothing to do'}"
+    repair = repair_auto_filed_issues()
+    return (f"Feedback filing: {result['processed']} row(s) — "
+            f"{result['counts'] or 'nothing to do'}; repair: {repair['scanned']} checked, "
+            f"{repair['repaired']} repaired, {repair['failed']} still broken")
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})

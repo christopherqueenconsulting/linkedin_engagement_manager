@@ -1,0 +1,354 @@
+{
+  "tier": "lem-router",
+  "version": 1,
+  "contract": "The routing tier. Two things are graded here. The `LEMComplexityRouter` contract (`.litellm/complexity_router.py` delegating to `routing_policy.complexity_tier`) must resolve each prompt shape to the tier named on the case — that check is deterministic and model-independent, and it is a regression guard on the router itself. Separately, the model deployed behind the `lem-router` alias must still answer these prompts cleanly: short, no preamble, no markdown fence.",
+  "judge_rubric": "Pass only if the answer is the artefact asked for, with no preamble and no invented specifics.",
+  "thresholds": {
+    "deterministic_pass_rate": 1.0,
+    "judge_pass_rate": 0.8,
+    "min_judged": 3
+  },
+  "cases": [
+    {
+      "id": "router-refine-short",
+      "title": "A refine ask must route simple",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Refine this line so it reads more plainly: 'We are excited to announce our new offering.'"
+        }
+      ],
+      "params": {
+        "temperature": 0,
+        "max_tokens": 60
+      },
+      "assertions": [
+        {
+          "type": "router_tier",
+          "value": "lem-simple"
+        },
+        {
+          "type": "max_chars",
+          "value": 300
+        },
+        {
+          "type": "no_preamble"
+        }
+      ],
+      "judge": false,
+      "canned": {
+        "output": "We shipped something new. Here is what it does.",
+        "latency_ms": 420
+      }
+    },
+    {
+      "id": "router-comma-separated",
+      "title": "A comma-separated list ask must route simple",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Give three tools for tracking deployment frequency, comma separated."
+        }
+      ],
+      "params": {
+        "temperature": 0,
+        "max_tokens": 40
+      },
+      "assertions": [
+        {
+          "type": "router_tier",
+          "value": "lem-simple"
+        },
+        {
+          "type": "comma_list",
+          "min_items": 3,
+          "max_items": 3
+        },
+        {
+          "type": "max_chars",
+          "value": 200
+        },
+        {
+          "type": "no_preamble"
+        }
+      ],
+      "judge": false,
+      "canned": {
+        "output": "GitHub Actions, Grafana, Datadog",
+        "latency_ms": 380
+      }
+    },
+    {
+      "id": "router-shorten-hook",
+      "title": "A shorten ask must route simple",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Shorten this to one line: 'There is a lot to say about why our onboarding took so long, but the short version is that nobody owned it.'"
+        }
+      ],
+      "params": {
+        "temperature": 0,
+        "max_tokens": 50
+      },
+      "assertions": [
+        {
+          "type": "router_tier",
+          "value": "lem-simple"
+        },
+        {
+          "type": "max_chars",
+          "value": 200
+        },
+        {
+          "type": "max_lines",
+          "value": 1
+        },
+        {
+          "type": "no_preamble"
+        }
+      ],
+      "judge": false,
+      "canned": {
+        "output": "Onboarding was slow because nobody owned it.",
+        "latency_ms": 360
+      }
+    },
+    {
+      "id": "router-classify-short",
+      "title": "A short classification ask must route simple",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Is this comment positive or negative? 'Third outage this month.'"
+        }
+      ],
+      "params": {
+        "temperature": 0,
+        "max_tokens": 5
+      },
+      "assertions": [
+        {
+          "type": "router_tier",
+          "value": "lem-simple"
+        },
+        {
+          "type": "max_chars",
+          "value": 40
+        },
+        {
+          "type": "no_preamble"
+        }
+      ],
+      "judge": false,
+      "canned": {
+        "output": "Negative",
+        "latency_ms": 290
+      }
+    },
+    {
+      "id": "router-framework-medium",
+      "title": "One complex signal must route medium",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Give me a framework for deciding when a service is worth deleting."
+        }
+      ],
+      "params": {
+        "temperature": 0.4,
+        "max_tokens": 400
+      },
+      "assertions": [
+        {
+          "type": "router_tier",
+          "value": "lem-medium"
+        },
+        {
+          "type": "min_chars",
+          "value": 80
+        },
+        {
+          "type": "no_preamble"
+        }
+      ],
+      "judge": false,
+      "canned": {
+        "output": "Three questions, in order. Who calls it, and when did they last do so? What breaks if it stops answering for an hour? Who would notice, and how long would that take? A service that no caller misses within an hour is a candidate; one that fails the third question needs an owner before it needs a decision.",
+        "latency_ms": 1800
+      }
+    },
+    {
+      "id": "router-step-by-step-medium",
+      "title": "A step-by-step ask must route medium",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Walk me step-by-step through rotating a leaked API key without downtime."
+        }
+      ],
+      "params": {
+        "temperature": 0.4,
+        "max_tokens": 500
+      },
+      "assertions": [
+        {
+          "type": "router_tier",
+          "value": "lem-medium"
+        },
+        {
+          "type": "min_chars",
+          "value": 120
+        },
+        {
+          "type": "no_preamble"
+        }
+      ],
+      "judge": false,
+      "canned": {
+        "output": "Issue the new key first and deploy it alongside the old one, so both are valid. Move consumers over one at a time, watching authentication failures per consumer rather than in aggregate. Once traffic on the old key is zero for a full cycle, revoke it. Only then remove the dual-key handling, and record when the leak began so the audit has a start date.",
+        "latency_ms": 2400
+      }
+    },
+    {
+      "id": "router-long-prompt-medium",
+      "title": "A long prompt with no signals must route medium on length alone",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Here is the context for a post I want help with, and I am giving you all of it because the details matter. Our team of nine engineers supports three products that were built by three different companies before an acquisition brought them together. Each one has its own deployment process, its own alerting stack, and its own on-call rota, which means a single engineer joining the team has to learn three of everything before they can be useful on any of them. We have talked about consolidating for two years. Every time we start, something urgent arrives and we stop. Last quarter we tried a different approach and picked only the alerting stack to unify, ignoring deployment and on-call entirely, on the theory that one finished thing beats three half-finished ones. It took seven weeks and it worked, and the team is now arguing about whether to do deployment next or on-call next, with reasonable people on both sides. Given all of that, help me think about what a reader would find genuinely useful in a post about it, and what would just be another consolidation story that everybody has already read a version of somewhere else, because I do not want to write the second thing. For what it is worth, the alerting work itself was unglamorous: we agreed on one naming convention, moved every rule into a single repository, and deleted about a quarter of the rules on the way because nobody could name a time they had acted on them. The migration guide we wrote for the second product took longer to write than the migration took to run, and the third product was done in a single afternoon by somebody who had not been involved in either of the first two, which is the strongest evidence I have that the convention was the valuable part rather than the tooling. None of that is interesting on its own, and I am aware that a post which simply lists the steps we followed would be the second thing rather than the first. I would rather write about the argument that is happening now, because it is the honest part and because I genuinely do not know which side is right, but I am not sure whether an unresolved argument makes a good post or just an inconclusive one, and that is really the question I want your help thinking through before I start drafting anything at all."
+        }
+      ],
+      "params": {
+        "temperature": 0.5,
+        "max_tokens": 500
+      },
+      "assertions": [
+        {
+          "type": "router_tier",
+          "value": "lem-medium"
+        },
+        {
+          "type": "min_chars",
+          "value": 120
+        },
+        {
+          "type": "no_preamble"
+        }
+      ],
+      "judge": false,
+      "canned": {
+        "output": "The consolidation is the part every reader has seen. The decision rule is not. What makes this specific is that you picked one of three, finished it, and can now say what finishing bought you that starting three would not have. Write the seven weeks and the argument that followed, and leave the acquisition backstory to one line.",
+        "latency_ms": 2600
+      }
+    },
+    {
+      "id": "router-thought-leadership-complex",
+      "title": "Two complex signals must route complex",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Write a thought leadership post for an awareness buyer stage about why platform consolidation stalls."
+        }
+      ],
+      "params": {
+        "temperature": 0.8,
+        "max_tokens": 900
+      },
+      "assertions": [
+        {
+          "type": "router_tier",
+          "value": "lem-complex"
+        },
+        {
+          "type": "min_chars",
+          "value": 300
+        },
+        {
+          "type": "no_preamble"
+        },
+        {
+          "type": "slop_lint",
+          "content_type": "post"
+        }
+      ],
+      "canned": {
+        "output": "Platform consolidation does not stall because the work is hard. It stalls because the work is invisible until it is finished.\n\nHalf a migration looks exactly like no migration, except with two systems to maintain instead of one. So the first urgent thing that arrives wins, every time, and the team goes back to carrying both.\n\nThe teams that get through it pick something small enough to finish inside one quarter and refuse to start the second thing until the first is done.",
+        "latency_ms": 5200,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "router-personal-story-complex",
+      "title": "A personal-story ask with a second signal must route complex",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Write a personal story post for a consideration buyer stage about the first time I deleted a service."
+        }
+      ],
+      "params": {
+        "temperature": 0.8,
+        "max_tokens": 900
+      },
+      "assertions": [
+        {
+          "type": "router_tier",
+          "value": "lem-complex"
+        },
+        {
+          "type": "min_chars",
+          "value": 300
+        },
+        {
+          "type": "no_preamble"
+        },
+        {
+          "type": "slop_lint",
+          "content_type": "post"
+        }
+      ],
+      "canned": {
+        "output": "The first service I deleted took an afternoon to turn off and three weeks to get permission for.\n\nNobody objected. That was the strange part. Every person I asked agreed it should go, and every one of them wanted somebody else to say so first.\n\nWhat finally moved it was writing down who I had asked and what they had said, and sending that around. The list was the decision. The deletion was just the paperwork afterwards.",
+        "latency_ms": 5000,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "router-comprehensive-industry-news-complex",
+      "title": "A comprehensive industry-news ask must route complex",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Give a comprehensive commentary on this industry news item for a LinkedIn audience: a major cloud provider has deprecated its managed queue service with eighteen months of notice."
+        }
+      ],
+      "params": {
+        "temperature": 0.8,
+        "max_tokens": 900
+      },
+      "assertions": [
+        {
+          "type": "router_tier",
+          "value": "lem-complex"
+        },
+        {
+          "type": "min_chars",
+          "value": 300
+        },
+        {
+          "type": "no_preamble"
+        },
+        {
+          "type": "slop_lint",
+          "content_type": "post"
+        }
+      ],
+      "canned": {
+        "output": "Eighteen months sounds generous until you count the teams who will not start for fifteen of them.\n\nA deprecation notice is not a migration plan, and the gap between the two is where the incidents live. The queue is rarely the hard part; the semantics are. Delivery guarantees, ordering, and what your consumers quietly rely on that was never in the contract.\n\nThe useful move this month is not to migrate. It is to write down what your current queue promises you, and check whether you know.",
+        "latency_ms": 5300,
+        "judge_pass": true
+      }
+    }
+  ]
+}

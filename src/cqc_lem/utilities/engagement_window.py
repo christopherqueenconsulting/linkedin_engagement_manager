@@ -210,9 +210,41 @@ STAGGER_TICK_MINUTES = 15  # beat cadence for the staggered fan-outs; also one s
 
 # Per-fan-out defaults. Each is overridable at runtime with <NAME>_ANCHOR_HOUR /
 # <NAME>_WINDOW_MINUTES / <NAME>_ANCHOR_TZ, read at call time so ops can retune without a restart.
+#
+# Opening a window at the hour the old single crontab fired does NOT leave the batch where it was —
+# it moves the batch's CENTRE OF MASS half a window later, and its TAIL a full window later. That is
+# harmless for a fan-out whose lane carries nothing else, and it is exactly what made `se_outreach`
+# worse under #554 (issue #696): the appreciation-DM tail slid into the window the post-anchored
+# `profile_viewer_engagement` starts arriving in, on the same lane. So a fan-out that SHARES a lane
+# with a tighter-tolerance job opens its window `window_minutes / 2` EARLY, which puts the staggered
+# batch's midpoint back on the unstaggered batch's hour and leaves the drain time it used to have.
+# `APPRECIATION_DM_MIDPOINT_HOUR` below is the invariant that keeps the two numbers in step.
 STAGGER_GOLDEN_HOUR = ("GOLDEN_HOUR", 9, 180)
-STAGGER_APPRECIATION_DM = ("APPRECIATION_DM", 8, 120)
+STAGGER_APPRECIATION_DM = ("APPRECIATION_DM", 7, 120)
 STAGGER_GROUP_ENGAGEMENT = ("GROUP_ENGAGEMENT", 12, 120)
+# Company-page invites (issue #732): a daily drip on the user's OWN clock, replacing the fixed
+# 05:00-UTC monthly blast. It opens after the appreciation-DM window has drained (07:00-09:00) so
+# the two don't queue on `se_outreach` together, and it carries no deadline of its own — a page
+# invite is equally good at 10:00 or 12:30, which is exactly why it gets the wide window.
+STAGGER_COMPANY_INVITE = ("COMPANY_INVITE", 10, 180)
+
+# Where the appreciation-DM batch's midpoint has to land: the 08:00 off-peak hour PR #607 approved,
+# and the hour the pre-#554 `send-appreciation-dms` crontab fired. It is the send time users
+# actually experience on average — the anchor is only where the window OPENS.
+APPRECIATION_DM_MIDPOINT_HOUR = 8
+
+# Fan-outs whose window must stay CENTRED on a given hour because they share a lane with a
+# tighter-tolerance job. The constants above are pinned to this by a unit test, but the SHIPPED
+# retune path is the env vars — and both of #696's failure modes live there, silently: a deployment
+# that still pins the pre-#696 `APPRECIATION_DM_ANCHOR_HOUR=8` never gets this fix at all, and
+# widening `APPRECIATION_DM_WINDOW_MINUTES` without pulling the anchor back re-creates the exact
+# collision. Neither one fails; the batch just drifts back over `profile_viewer_engagement`. So the
+# resolved pair is checked at config time and says so out loud.
+PINNED_MIDPOINT_HOURS = {"APPRECIATION_DM": APPRECIATION_DM_MIDPOINT_HOUR}
+
+# One warning per distinct resolved pair per process — `stagger_config` runs once per user per beat
+# tick, and a per-call warning would be thousands of identical lines a day instead of a signal.
+_MIDPOINT_DRIFT_WARNED: set = set()
 
 _SLOT_CLAIM_PREFIX = "engagement:slot:"
 # The claim key carries the slot's local DATE, so "once per user per day" holds no matter when the
@@ -260,15 +292,40 @@ def _env_int(key: str, default: int, low: int, high: int) -> int:
     return value
 
 
+def _warn_if_midpoint_drifted(name: str, anchor_hour: int, window_minutes: int) -> None:
+    """Log once when a pinned fan-out's RESOLVED anchor/window no longer centre on their hour."""
+    pinned_hour = PINNED_MIDPOINT_HOURS.get(name)
+    if pinned_hour is None:
+        return
+    midpoint = (anchor_hour * 60 + window_minutes / 2) % _MINUTES_PER_DAY
+    # Circular difference — a window that wraps past midnight is still near a small pinned hour.
+    drift = (midpoint - pinned_hour * 60 + _MINUTES_PER_DAY / 2) % _MINUTES_PER_DAY - _MINUTES_PER_DAY / 2
+    if abs(drift) <= STAGGER_TICK_MINUTES:  # under one beat tick is not a drift worth a line
+        return
+    key = (name, anchor_hour, window_minutes)
+    if key in _MIDPOINT_DRIFT_WARNED:
+        return
+    _MIDPOINT_DRIFT_WARNED.add(key)
+    log_warning(
+        f"{name} window is off its pinned midpoint by {drift:+.0f} min: "
+        f"{name}_ANCHOR_HOUR={anchor_hour} + {name}_WINDOW_MINUTES={window_minutes} centres the batch "
+        f"on {int(midpoint) // 60:02d}:{int(midpoint) % 60:02d}, not {pinned_hour:02d}:00 (issue #696). "
+        f"Set {name}_ANCHOR_HOUR so anchor*60 + window/2 == {pinned_hour * 60}."
+    )
+
+
 def stagger_config(fanout: Tuple[str, int, int]) -> StaggerConfig:
     """Resolve one of the STAGGER_* fan-out defaults against the environment."""
     name, anchor_hour, window_minutes = fanout
+    resolved_anchor = _env_int(f"{name}_ANCHOR_HOUR", anchor_hour, 0, 23)
+    # A 1-minute window is the escape hatch: every user lands on the anchor minute, i.e. the
+    # pre-#554 "everyone at once" behavior, without a code change.
+    resolved_window = _env_int(f"{name}_WINDOW_MINUTES", window_minutes, 1, _MINUTES_PER_DAY)
+    _warn_if_midpoint_drifted(name, resolved_anchor, resolved_window)
     return StaggerConfig(
         name=name,
-        anchor_hour=_env_int(f"{name}_ANCHOR_HOUR", anchor_hour, 0, 23),
-        # A 1-minute window is the escape hatch: every user lands on the anchor minute, i.e. the
-        # pre-#554 "everyone at once" behavior, without a code change.
-        window_minutes=_env_int(f"{name}_WINDOW_MINUTES", window_minutes, 1, _MINUTES_PER_DAY),
+        anchor_hour=resolved_anchor,
+        window_minutes=resolved_window,
         local=(os.environ.get(f"{name}_ANCHOR_TZ") or "local").strip().lower() != "utc",
     )
 

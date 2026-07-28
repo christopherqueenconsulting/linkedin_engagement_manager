@@ -1,0 +1,452 @@
+{
+  "tier": "lem-medium",
+  "version": 1,
+  "contract": "Balanced work: LinkedIn feed comments (which must satisfy LEM's comment quality contract — reference a specific claim from the target post, add own experience, a data point, respectful disagreement or a genuine question, run at least two sentences, and never open with validation filler), post refinement, blog summaries and direct messages. Output is published under a real person's name, so it must read as a specific practitioner rather than generic AI filler.",
+  "judge_rubric": "Pass only if the answer engages with the SPECIFIC content it was given (not a template that would fit any post), adds something a reader did not already have, states no fact, number, employer or customer that the prompt did not supply, and contains no preamble, hashtags-as-filler or closing 'let me know if you need anything else'.",
+  "thresholds": {
+    "deterministic_pass_rate": 0.9,
+    "judge_pass_rate": 0.8,
+    "min_judged": 4
+  },
+  "cases": [
+    {
+      "id": "medium-comment-deploy-post",
+      "title": "Feed comment on a deployment-frequency post",
+      "context": {
+        "post_content": "We moved from fortnightly releases to twelve deploys a day. The hard part was never the pipeline. It was convincing the change advisory board that smaller batches are safer than big ones, and rewriting the rollback runbook so an on-call engineer could use it at 3am."
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You write LinkedIn comments in a direct, practitioner voice. Two to four sentences. Reference something specific from the post. Never open with 'Great post' or similar validation filler. Never invent numbers about yourself."
+        },
+        {
+          "role": "user",
+          "content": "Post to comment on:\n\"We moved from fortnightly releases to twelve deploys a day. The hard part was never the pipeline. It was convincing the change advisory board that smaller batches are safer than big ones, and rewriting the rollback runbook so an on-call engineer could use it at 3am.\"\n\nWrite the comment."
+        }
+      ],
+      "params": {
+        "temperature": 0.7,
+        "max_tokens": 220
+      },
+      "assertions": [
+        {
+          "type": "comment_contract"
+        },
+        {
+          "type": "slop_lint",
+          "content_type": "comment"
+        },
+        {
+          "type": "max_chars",
+          "value": 700
+        },
+        {
+          "type": "no_preamble"
+        }
+      ],
+      "canned": {
+        "output": "The change advisory board being the hard part matches what I have seen: in my last two migrations the rollback runbook was what finally moved them, not the deploy numbers. Rewriting it so an on-call engineer could follow it at 3am is the bit most teams skip. How long did the board take to sign off once the runbook was readable?",
+        "latency_ms": 2100,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "medium-comment-hiring-post",
+      "title": "Feed comment on a hiring post",
+      "context": {
+        "post_content": "We stopped asking candidates to complete take-home projects. Instead we pair with them for ninety minutes on a real ticket from our backlog and pay them for the session. Offer acceptance went up and the interview loop got two weeks shorter."
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You write LinkedIn comments in a direct, practitioner voice. Two to four sentences. Reference something specific from the post. Never open with validation filler. Never invent numbers about yourself."
+        },
+        {
+          "role": "user",
+          "content": "Post to comment on:\n\"We stopped asking candidates to complete take-home projects. Instead we pair with them for ninety minutes on a real ticket from our backlog and pay them for the session. Offer acceptance went up and the interview loop got two weeks shorter.\"\n\nWrite the comment."
+        }
+      ],
+      "params": {
+        "temperature": 0.7,
+        "max_tokens": 220
+      },
+      "assertions": [
+        {
+          "type": "comment_contract"
+        },
+        {
+          "type": "slop_lint",
+          "content_type": "comment"
+        },
+        {
+          "type": "max_chars",
+          "value": 700
+        },
+        {
+          "type": "no_preamble"
+        }
+      ],
+      "canned": {
+        "output": "Paying for the pairing session is the part that changes the dynamic. When I ran a loop that used an unpaid take-home, the candidates who dropped out were the ones already working full time, which is exactly the group we said we wanted. Did the shorter loop change who reached the offer stage, or only how fast they got there?",
+        "latency_ms": 2250,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "medium-comment-respectful-disagreement",
+      "title": "Feed comment that disagrees without being rude",
+      "context": {
+        "post_content": "Documentation is a waste of engineering time. If your code needs a document to explain it, rewrite the code. Every hour spent writing docs is an hour not spent shipping."
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You write LinkedIn comments in a direct, practitioner voice. Two to four sentences. Disagree respectfully where you genuinely do. Reference something specific from the post. Never open with validation filler."
+        },
+        {
+          "role": "user",
+          "content": "Post to comment on:\n\"Documentation is a waste of engineering time. If your code needs a document to explain it, rewrite the code. Every hour spent writing docs is an hour not spent shipping.\"\n\nWrite the comment."
+        }
+      ],
+      "params": {
+        "temperature": 0.7,
+        "max_tokens": 220
+      },
+      "assertions": [
+        {
+          "type": "comment_contract"
+        },
+        {
+          "type": "slop_lint",
+          "content_type": "comment"
+        },
+        {
+          "type": "max_chars",
+          "value": 700
+        },
+        {
+          "type": "no_preamble"
+        }
+      ],
+      "canned": {
+        "output": "I disagree on one half of this. Readable code removes the need to explain HOW something works, but it never explains why the previous three approaches were abandoned, and that is the document I have wanted every time I inherited a service. Rewriting the code does not bring back the decision history. What do you do with that context instead?",
+        "latency_ms": 2180,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "medium-seed-comment-own-post",
+      "title": "Seed first comment under the user's own post",
+      "context": {
+        "post_content": "Most incident reviews die in a document nobody opens again. Ours now end with exactly one owned action item and a date, and we read the previous one aloud at the start of the next review."
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You write the author's own first comment under their post. It must add something the post did not already say. Two to four sentences. No validation filler, no restating the post."
+        },
+        {
+          "role": "user",
+          "content": "The post:\n\"Most incident reviews die in a document nobody opens again. Ours now end with exactly one owned action item and a date, and we read the previous one aloud at the start of the next review.\"\n\nWrite the author's first comment."
+        }
+      ],
+      "params": {
+        "temperature": 0.7,
+        "max_tokens": 220
+      },
+      "assertions": [
+        {
+          "type": "comment_contract"
+        },
+        {
+          "type": "slop_lint",
+          "content_type": "comment"
+        },
+        {
+          "type": "max_chars",
+          "value": 700
+        },
+        {
+          "type": "no_preamble"
+        }
+      ],
+      "canned": {
+        "output": "Reading the previous action item aloud is the part I would keep if I could only keep one. In my experience the single owned item survives precisely because someone has to say the name out loud in front of the room. What is the smallest change that made your incident reviews stick?",
+        "latency_ms": 2050,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "medium-comment-similarity-guard",
+      "title": "A fourth comment that must not read like the first three",
+      "context": {
+        "post_content": "We deleted our staging environment. Every change now goes behind a flag straight to production, and the flag is removed within a week or the change is reverted."
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You write LinkedIn comments in a direct, practitioner voice. Two to four sentences. Reference something specific from the post. Do not reuse a sentence shape you have already used today."
+        },
+        {
+          "role": "user",
+          "content": "Post to comment on:\n\"We deleted our staging environment. Every change now goes behind a flag straight to production, and the flag is removed within a week or the change is reverted.\"\n\nWrite the comment."
+        }
+      ],
+      "params": {
+        "temperature": 0.7,
+        "max_tokens": 220
+      },
+      "assertions": [
+        {
+          "type": "comment_contract"
+        },
+        {
+          "type": "slop_lint",
+          "content_type": "comment"
+        },
+        {
+          "type": "max_chars",
+          "value": 700
+        },
+        {
+          "type": "max_similarity",
+          "value": 0.35,
+          "against": [
+            "medium-comment-deploy-post",
+            "medium-comment-hiring-post",
+            "medium-comment-respectful-disagreement"
+          ]
+        }
+      ],
+      "canned": {
+        "output": "The one-week expiry is doing more work here than deleting staging did. Flags that outlive their change become a second configuration surface, and I have inherited codebases where nobody could say which combination was live. Do you enforce the expiry with tooling, or does it rely on someone noticing?",
+        "latency_ms": 2300,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "medium-post-refinement",
+      "title": "Refine a rambling draft post without inventing facts",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You refine LinkedIn drafts. Keep every fact, cut the filler, keep it under 1200 characters. Reply with the refined post only."
+        },
+        {
+          "role": "user",
+          "content": "Refine this draft:\n\"So basically what happened was we had this problem where our onboarding emails were going out late, sometimes days late, and it turned out the queue was fine actually, the issue was a cron job that we set up two years ago and nobody remembered, and once we found it we deleted it and now emails go out in under a minute. Anyway thought that was interesting.\""
+        }
+      ],
+      "params": {
+        "temperature": 0.6,
+        "max_tokens": 600
+      },
+      "assertions": [
+        {
+          "type": "max_chars",
+          "value": 1200
+        },
+        {
+          "type": "min_chars",
+          "value": 200
+        },
+        {
+          "type": "no_preamble"
+        },
+        {
+          "type": "slop_lint",
+          "content_type": "post"
+        },
+        {
+          "type": "required_phrases",
+          "values": [
+            "cron"
+          ],
+          "mode": "all"
+        }
+      ],
+      "canned": {
+        "output": "Our onboarding emails were going out days late.\n\nThe queue was healthy the whole time. The cause was a cron job set up two years earlier that nobody remembered creating, quietly holding messages back.\n\nWe deleted it. Emails now go out in under a minute.\n\nThe uncomfortable part is not the bug. It is that a two-year-old scheduled job was still running and no one could say who owned it.",
+        "latency_ms": 3100,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "medium-blog-summary",
+      "title": "Summarize a blog post for a LinkedIn audience",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You summarize an article for LinkedIn. Under 900 characters. Keep only what the article says. Reply with the summary only."
+        },
+        {
+          "role": "user",
+          "content": "Summarize this article:\n\"Title: The cost of a stale dependency. The team audited 340 direct dependencies across nine services and found 62 had not been updated in over a year. Rather than a big-bang upgrade they added a weekly ten-minute slot to each team's schedule to take one dependency forward. After a quarter the count of year-stale dependencies was 9, and no upgrade required a rollback.\""
+        }
+      ],
+      "params": {
+        "temperature": 0.5,
+        "max_tokens": 400
+      },
+      "assertions": [
+        {
+          "type": "max_chars",
+          "value": 900
+        },
+        {
+          "type": "min_chars",
+          "value": 150
+        },
+        {
+          "type": "no_preamble"
+        },
+        {
+          "type": "required_phrases",
+          "values": [
+            "62",
+            "9"
+          ],
+          "mode": "all"
+        },
+        {
+          "type": "slop_lint",
+          "content_type": "post"
+        }
+      ],
+      "canned": {
+        "output": "An audit of 340 direct dependencies across nine services found 62 that had gone more than a year without an update.\n\nInstead of a single large upgrade, each team took a ten-minute weekly slot and moved one dependency forward. A quarter later the year-stale count was 9, and not one upgrade had to be rolled back.\n\nThe interesting claim is about pace, not tooling: small scheduled maintenance beat the big-bang plan on both risk and throughput.",
+        "latency_ms": 2600,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "medium-thread-reply",
+      "title": "Reply to a commenter on the user's own post",
+      "context": {
+        "post_content": "Our support team now writes the release notes. Ticket volume after each release dropped by a third because the notes finally answer what customers actually ask."
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You reply to a commenter on the author's own post. Answer their specific point. Two to four sentences. No validation filler."
+        },
+        {
+          "role": "user",
+          "content": "The post:\n\"Our support team now writes the release notes. Ticket volume after each release dropped by a third because the notes finally answer what customers actually ask.\"\n\nThe comment you are replying to:\n\"Doesn't this just move the writing burden onto a team that is already the most stretched?\"\n\nWrite the reply."
+        }
+      ],
+      "params": {
+        "temperature": 0.7,
+        "max_tokens": 220
+      },
+      "assertions": [
+        {
+          "type": "comment_contract"
+        },
+        {
+          "type": "slop_lint",
+          "content_type": "comment"
+        },
+        {
+          "type": "max_chars",
+          "value": 700
+        },
+        {
+          "type": "no_preamble"
+        }
+      ],
+      "canned": {
+        "output": "It moves the writing, but it removes the tickets that the writing was causing, and support felt that trade within one release. In practice they spend the time earlier in the week instead of answering the same question forty times after launch. Would that trade hold on your volume, or is your support load driven by something other than releases?",
+        "latency_ms": 2200,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "medium-dm-appreciation",
+      "title": "Appreciation DM with no meeting ask",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You write a short LinkedIn direct message thanking someone for connecting. Under 500 characters. Never ask for a call, a demo or a calendar slot. Never invent a shared history."
+        },
+        {
+          "role": "user",
+          "content": "They accepted a connection request. You know only this: they lead platform engineering at a mid-market retailer and posted last week about cutting their build times. Write the message."
+        }
+      ],
+      "params": {
+        "temperature": 0.7,
+        "max_tokens": 220
+      },
+      "assertions": [
+        {
+          "type": "max_chars",
+          "value": 500
+        },
+        {
+          "type": "min_chars",
+          "value": 80
+        },
+        {
+          "type": "slop_lint",
+          "content_type": "dm"
+        },
+        {
+          "type": "forbidden_phrases",
+          "values": [
+            "book a call",
+            "calendly",
+            "schedule a demo",
+            "hop on a call",
+            "15 minutes"
+          ]
+        }
+      ],
+      "canned": {
+        "output": "Thanks for connecting. Your post on build times landed at a useful moment for me — the part about measuring the wait before the build even starts is the bit most teams leave out. If you write up what you changed, I would read it.",
+        "latency_ms": 1700,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "medium-json-relevance-score",
+      "title": "Structured topic-relevance verdict",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You return a single JSON object and nothing else. No markdown fence."
+        },
+        {
+          "role": "user",
+          "content": "Score how relevant this post is to the topics [platform engineering, developer experience] and return {\"score\": 0-100, \"reason\": \"one short sentence\"}. Post: 'A walkthrough of how we cut our CI feedback loop from 22 minutes to 4 by splitting the test suite by historical failure rate.'"
+        }
+      ],
+      "params": {
+        "temperature": 0,
+        "max_tokens": 120
+      },
+      "assertions": [
+        {
+          "type": "json_object",
+          "required_keys": [
+            "score",
+            "reason"
+          ]
+        },
+        {
+          "type": "max_chars",
+          "value": 400
+        },
+        {
+          "type": "no_preamble"
+        }
+      ],
+      "canned": {
+        "output": "{\"score\": 92, \"reason\": \"CI feedback loops are core developer experience work.\"}",
+        "latency_ms": 900,
+        "judge_pass": true
+      }
+    }
+  ]
+}

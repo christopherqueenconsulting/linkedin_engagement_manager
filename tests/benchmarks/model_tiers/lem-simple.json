@@ -1,0 +1,196 @@
+{
+  "tier": "lem-simple",
+  "version": 1,
+  "contract": "Short outputs of at most 300 characters: refine, summarize briefly, produce comma-separated lists or one-word classifications. The answer is pasted straight into LinkedIn copy or parsed by code, so it must obey the stated length and shape exactly and must never open with a preamble, a restatement of the task, or a markdown fence.",
+  "judge_rubric": "Pass only if the answer is exactly the artefact that was asked for, at or under the stated length, with no preamble, no closing offer of further help, and no fact, number, company or person that the prompt did not supply.",
+  "thresholds": {"deterministic_pass_rate": 0.9, "judge_pass_rate": 0.8, "min_judged": 4},
+  "cases": [
+    {
+      "id": "simple-industries-comma-list",
+      "title": "Three industries as a bare comma-separated list",
+      "messages": [
+        {"role": "system", "content": "You classify LinkedIn profiles. Answer with the requested list and nothing else."},
+        {"role": "user", "content": "Profile: Fractional CTO who ships internal tooling for mid-market logistics operators and speaks about platform reliability. Give exactly 3 industries this person sells into, as a single comma-separated line. No numbering, no explanation."}
+      ],
+      "params": {"temperature": 0, "max_tokens": 60},
+      "assertions": [
+        {"type": "comma_list", "min_items": 3, "max_items": 3},
+        {"type": "max_chars", "value": 120},
+        {"type": "max_lines", "value": 1},
+        {"type": "no_preamble"}
+      ],
+      "canned": {
+        "output": "Logistics, Supply Chain Technology, Enterprise Software",
+        "latency_ms": 640,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "simple-keyword-list",
+      "title": "Five targeting keywords, comma separated",
+      "messages": [
+        {"role": "system", "content": "You extract targeting keywords. Answer with the list only."},
+        {"role": "user", "content": "Topic: reducing deployment risk for teams releasing several times a day. Give 5 short LinkedIn targeting keywords as one comma-separated line."}
+      ],
+      "params": {"temperature": 0, "max_tokens": 80},
+      "assertions": [
+        {"type": "comma_list", "min_items": 5, "max_items": 5},
+        {"type": "max_chars", "value": 160},
+        {"type": "max_lines", "value": 1},
+        {"type": "no_preamble"}
+      ],
+      "canned": {
+        "output": "continuous delivery, deployment risk, release engineering, rollback strategy, feature flags",
+        "latency_ms": 700,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "simple-reaction-choice",
+      "title": "One reaction word from a closed set",
+      "messages": [
+        {"role": "system", "content": "You pick the single best LinkedIn reaction. Reply with one word from the list and nothing else."},
+        {"role": "user", "content": "Allowed: like, celebrate, support, love, insightful, funny. Post: 'After eleven months of interviews, I signed my first enterprise customer this morning.' Which reaction fits best?"}
+      ],
+      "params": {"temperature": 0, "max_tokens": 5},
+      "assertions": [
+        {"type": "max_chars", "value": 20},
+        {"type": "max_lines", "value": 1},
+        {"type": "no_preamble"},
+        {"type": "required_phrases", "values": ["like", "celebrate", "support", "love", "insightful", "funny"], "mode": "any"}
+      ],
+      "canned": {"output": "celebrate", "latency_ms": 380, "judge_pass": true}
+    },
+    {
+      "id": "simple-relevance-yes-no",
+      "title": "Binary topic relevance",
+      "messages": [
+        {"role": "system", "content": "You answer with exactly one word: yes or no."},
+        {"role": "user", "content": "Topics of interest: platform engineering, developer experience. Post: 'Our new office plants have transformed the mood on the third floor.' Is the post relevant to any topic of interest?"}
+      ],
+      "params": {"temperature": 0, "max_tokens": 3},
+      "assertions": [
+        {"type": "max_chars", "value": 10},
+        {"type": "max_lines", "value": 1},
+        {"type": "no_preamble"},
+        {"type": "required_phrases", "values": ["yes", "no"], "mode": "any"}
+      ],
+      "canned": {"output": "no", "latency_ms": 310, "judge_pass": true}
+    },
+    {
+      "id": "simple-hook-shorten",
+      "title": "Shorten an opening line to the mobile hook budget",
+      "messages": [
+        {"role": "system", "content": "You rewrite opening lines. Reply with the rewritten line only."},
+        {"role": "user", "content": "Shorten this to under 140 characters, one line, keeping the same claim: 'We spent the better part of last quarter trying to work out why our deployment pipeline kept failing on Fridays, and the answer turned out to be embarrassingly simple.'"}
+      ],
+      "params": {"temperature": 0.3, "max_tokens": 60},
+      "assertions": [
+        {"type": "max_chars", "value": 140},
+        {"type": "min_chars", "value": 30},
+        {"type": "max_lines", "value": 1},
+        {"type": "no_preamble"}
+      ],
+      "canned": {
+        "output": "Our pipeline failed every Friday for a quarter. The cause was embarrassingly simple.",
+        "latency_ms": 520,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "simple-brief-summary",
+      "title": "Summarize briefly, under the tier's own 300-character ceiling",
+      "messages": [
+        {"role": "system", "content": "You summarize briefly. Reply with the summary only."},
+        {"role": "user", "content": "Summarize in under 300 characters: 'A mid-market insurer moved claims intake from a nightly batch job to an event stream. Handling time dropped from four days to under one. The migration took two engineers eleven weeks and required no change to the underlying claims system.'"}
+      ],
+      "params": {"temperature": 0.3, "max_tokens": 120},
+      "assertions": [
+        {"type": "max_chars", "value": 300},
+        {"type": "min_chars", "value": 60},
+        {"type": "no_preamble"},
+        {"type": "slop_lint", "content_type": "post"}
+      ],
+      "canned": {
+        "output": "An insurer replaced nightly batch claims intake with an event stream. Handling time fell from four days to under one. Two engineers took eleven weeks, and the underlying claims system was left untouched.",
+        "latency_ms": 810,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "simple-json-sentiment",
+      "title": "Structured sentiment verdict as a bare JSON object",
+      "messages": [
+        {"role": "system", "content": "You return a single JSON object and nothing else. No markdown fence."},
+        {"role": "user", "content": "Classify the sentiment of this comment and return {\"sentiment\": \"positive|neutral|negative\", \"confidence\": 0.0-1.0}. Comment: 'This is the third outage this month and nobody has explained why.'"}
+      ],
+      "params": {"temperature": 0, "max_tokens": 60},
+      "assertions": [
+        {"type": "json_object", "required_keys": ["sentiment", "confidence"]},
+        {"type": "max_chars", "value": 200},
+        {"type": "no_preamble"}
+      ],
+      "canned": {
+        "output": "{\"sentiment\": \"negative\", \"confidence\": 0.93}",
+        "latency_ms": 460,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "simple-headline-refine",
+      "title": "Refine a headline with no emoji and no hype",
+      "messages": [
+        {"role": "system", "content": "You refine LinkedIn headlines. Reply with the headline only."},
+        {"role": "user", "content": "Rewrite this headline in under 200 characters, plain text, no emoji and no superlatives: 'Visionary transformation leader unlocking exponential growth and revolutionary synergies for world-class organisations.'"}
+      ],
+      "params": {"temperature": 0.3, "max_tokens": 80},
+      "assertions": [
+        {"type": "max_chars", "value": 200},
+        {"type": "max_lines", "value": 1},
+        {"type": "no_preamble"},
+        {"type": "forbidden_phrases", "values": ["🚀", "✨", "revolutionary", "world-class", "game-changing"]}
+      ],
+      "canned": {
+        "output": "Operations lead helping mid-market teams cut cycle time and ship on a predictable schedule.",
+        "latency_ms": 540,
+        "judge_pass": true
+      }
+    },
+    {
+      "id": "simple-single-value-extract",
+      "title": "Extract one value and say nothing else",
+      "messages": [
+        {"role": "system", "content": "You extract one field. Reply with the value only, no punctuation, no sentence."},
+        {"role": "user", "content": "Profile location line: 'Greater Boston Area, Massachusetts, United States'. Reply with the city name only."}
+      ],
+      "params": {"temperature": 0, "max_tokens": 8},
+      "assertions": [
+        {"type": "max_chars", "value": 40},
+        {"type": "max_lines", "value": 1},
+        {"type": "no_preamble"},
+        {"type": "required_phrases", "values": ["Boston"], "mode": "all"}
+      ],
+      "canned": {"output": "Boston", "latency_ms": 300, "judge_pass": true}
+    },
+    {
+      "id": "simple-no-fabrication",
+      "title": "Refuse to invent a number the prompt never supplied",
+      "messages": [
+        {"role": "system", "content": "You write one short factual line. Never state a statistic that was not given to you."},
+        {"role": "user", "content": "Write one sentence, under 200 characters, describing what this team does. Facts you may use, and no others: they run the internal deploy tooling for a 40-person engineering org. Do not invent metrics."}
+      ],
+      "params": {"temperature": 0.3, "max_tokens": 80},
+      "assertions": [
+        {"type": "max_chars", "value": 200},
+        {"type": "no_preamble"},
+        {"type": "required_phrases", "values": ["40"], "mode": "all"},
+        {"type": "forbidden_phrases", "values": ["%", "million", "billion"]}
+      ],
+      "canned": {
+        "output": "They build and run the internal deploy tooling that a 40-person engineering organisation ships through every day.",
+        "latency_ms": 590,
+        "judge_pass": true
+      }
+    }
+  ]
+}

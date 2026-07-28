@@ -48,6 +48,14 @@ ACTION_COMMENT = "comment"
 ACTION_REPLY = "reply"
 ACTION_DM = "dm"
 ACTION_INVITE = "invite"
+# Company-page invites (issue #732) draw their OWN daily budget: they run on a different, smaller cap
+# (`max_company_page_invites_per_day`) than connection invites, and `daily_budget` keys its stored
+# draw on the action alone — so sharing ACTION_INVITE would let whichever lane ran first that day
+# write the other's budget, silently halving the connection lane whenever page invites drew first.
+# It is deliberately NOT in ENVELOPE_ACTIONS / ACTION_CAP_PREF: page invites still SPEND the account
+# envelope (they `record_action` under ACTION_INVITE, which is also their harder ceiling), they just
+# must not enlarge it with a second cap of their own.
+ACTION_COMPANY_INVITE = "company_invite"
 ENGAGEMENT_ACTIONS = (ACTION_COMMENT, ACTION_REPLY, ACTION_DM, ACTION_INVITE)
 
 # Which preference key caps each lane.
