@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.106.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.105.0...v0.106.0) (2026-07-28)
+
+
+### Features
+
+* **automation:** alert on newsletter publish None path with failed step (closes [#747](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/747)) ([75f1c48](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/75f1c48c7a5652473dfe3a19640fed96658c893c))
+
 ## [0.105.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.104.0...v0.105.0) (2026-07-28)
 
 
