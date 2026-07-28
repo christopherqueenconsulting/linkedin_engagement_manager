@@ -85,7 +85,8 @@ app.conf.update(
         'sync-brand-account': {
             'task': 'cqc_lem.app.run_scheduler.auto_sync_brand_account',
             # Just before the content plan runs, so the brand's phase caps/posture are already in
-            # place for the day's dogfooding run (issue #504). No-ops unless BRAND_ACCOUNT_ENABLED.
+            # place for the day's dogfooding run (issue #504). The brand user is user 1 by
+            # convention (issue #736), so this needs no configuration to do its work.
             'schedule': crontab(hour='0', minute='45')
         },
         'generate-content-plan': {

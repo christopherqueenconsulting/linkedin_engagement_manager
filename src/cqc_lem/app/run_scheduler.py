@@ -1328,14 +1328,14 @@ def auto_sync_brand_account():
     and per-user proxy. So this task adds no outreach of its own: it only re-asserts the phase's caps
     and connect posture onto the brand's engagement preferences, so advancing a phase (or a manual
     cap edit) can never leave brand outbound running hotter than was signed off on.
+
+    The brand user is user 1 by convention (issue #736), so this always has an account to sync — no
+    env var can leave it dormant, and the only reported failure is a failed write.
     """
-    from cqc_lem.utilities.brand_account import current_launch_phase, get_brand_user_id, \
+    from cqc_lem.utilities.brand_account import brand_user_id, current_launch_phase, \
         sync_brand_preferences
 
-    user_id = get_brand_user_id()
-    if user_id is None:
-        return "Brand account not configured"
-
+    user_id = brand_user_id()
     phase = current_launch_phase()
     applied = sync_brand_preferences(phase)
     if applied is None:
