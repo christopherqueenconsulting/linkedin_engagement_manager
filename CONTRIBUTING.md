@@ -225,8 +225,17 @@ which derives the next version and the `CHANGELOG.md` from commit messages on
 - `feat!: ...` or a `BREAKING CHANGE:` footer → major version bump
 - `chore: / docs: / refactor: / test: / ci:` → no release on their own
 
-Scopes are encouraged (e.g. `fix(carousel): ...`). When a PR squash-merges, the
-PR title becomes the commit — make it a valid Conventional Commit.
+Allowed types: `feat`, `fix`, `perf`, `revert`, `docs`, `style`, `chore`, `refactor`,
+`test`, `build`, `ci` (with optional `(scope)` and optional `!` for breaking changes).
+
+Scopes are encouraged (e.g. `fix(carousel): ...`). **PRs must squash-merge**, and the
+PR title is what lands on `main` — make it a valid Conventional Commit. The PR title is
+validated by the **PR Lint** required status check
+(`amannn/action-semantic-pull-request`); a non-conforming title red-blocks the merge.
+
+Dependabot commits use the `chore(deps): ...` prefix and are excluded from the lint,
+so Dependabot's auto-merge continues to work without any title changes.
+`chore(main): release X.Y.Z` (release-please's own release PR) is also excluded.
 
 ### Before Submitting
 
