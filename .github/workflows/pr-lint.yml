@@ -26,29 +26,34 @@ jobs:
           # to be reported" forever: GitHub won't accept a context as a
           # required check until the workflow has actually posted it once.
 
-          # headerPattern parses the FULL PR title into type/scope/bang/subject.
-          # Convention: type(scope)?!: subject — types are the 11 the project
-          # uses; scope allows word chars + dash + dot + slash; the `!`
-          # breaking-change marker is optional; subject is free text.
-          # headerPatternCorrespondence names the capture groups so the action
-          # can extract them; only `type` is required by the action's own
-          # validity check, scope/bang are kept so future subjectPattern
-          # checks can reference the scope.
-          headerPattern: '^(?<type>feat|fix|perf|revert|docs|style|chore|refactor|test|build|ci)(?<scope>\([\w\-./]+\))?(?<bang>!)?: (?<subject>.+)$'
-          headerPatternCorrespondence: type=type, scope=scope, bang=bang, subject=subject
+          # types: the 11 this project uses (conventional-changelog-conventionalcommits
+          # defaults to 9 — feat/fix/docs/style/refactor/perf/test/chore/revert —
+          # so build and ci must be added explicitly).
+          types: |
+            feat
+            fix
+            perf
+            revert
+            docs
+            style
+            chore
+            refactor
+            test
+            build
+            ci
 
           # subjectPattern is matched against the SUBJECT portion only (text
           # after the conventional-commit colon). Required to be non-empty —
-          # this is what blocks `fix(ci)` with no subject, which v4's
-          # `pattern` used to allow.
+          # blocks titles like `fix(ci):` with no subject. The default
+          # headerPattern (conventional-commits-parser's built-in) handles
+          # the type/scope/bang parsing, so we don't ship a custom one.
           subjectPattern: '^.{1,}$'
 
           # v5 dropped ignorePatterns (title-regex skip list). The supported
           # skip mechanism is ignoreLabels (PR labels). Release-please and
           # Dependabot PRs already carry `autorelease: pending` /
           # `dependencies` labels; skip on those instead. If a future bot
-          # needs a new skip, add its label here — do NOT reach for
-          # headerPattern to back-door title-skip.
+          # needs a new skip, add its label here.
           ignoreLabels: |
             autorelease: pending
             autorelease: tagged
