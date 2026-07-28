@@ -5,11 +5,10 @@
 LinkedIn Engagement Manager (LEM) automates LinkedIn engagement end to end: Selenium-based scraping and feed interaction, AI-generated content (via LiteLLM proxy routing to OpenAI / Claude / Ollama / OpenRouter), Celery task queue, React SPA frontend, MySQL persistence, and FastAPI backend.
 
 Two pillars:
+- **Content generation & scheduling** — 30-day plan of buyer-journey posts (thought leadership, industry-news commentary, personal story, engagement prompts, carousels, native video, blog summaries) auto-scheduled around peak/golden hours, with sentiment checks and preview/approval.
+- **Engagement automation** — feed commenting, replies on the user's own posts, seed first comments, appreciation/outreach DMs with multi-touch follow-ups, and a daily throttled company-page invite drip — driven by per-user targeting, voice/tone, per-day cap preferences.
 
-- **Content generation & scheduling** — a 30-day content plan of buyer-journey-staged posts (thought leadership, industry-news commentary, personal story, engagement prompts, carousels, native video, blog summaries) auto-scheduled around peak/golden hours, with sentiment checks and a preview/approval workflow.
-- **Engagement automation** — feed commenting, replies on the user's own posts, seed first comments, appreciation/outreach DMs with multi-touch follow-ups, and a daily throttled company-page invite drip — all driven by per-user targeting, voice/tone, and per-day cap preferences.
-
-See **Feature Areas** below for the code paths behind each capability.
+Code paths in **Feature Areas** below. Subsections end with `docs/*.md` pointers holding the full posture — CLAUDE.md is the map (locations, symbols, constants, invariants, where to find the detail).
 
 ## Tech Stack
 
@@ -30,50 +29,31 @@ See **Feature Areas** below for the code paths behind each capability.
 
 ```
 src/cqc_lem/
-├── api/           FastAPI app (main.py, routers) — engagement_preferences, DM template, PIN endpoints
-├── app/           Celery tasks
-│   ├── run_scheduler.py     post scheduling around golden/peak hours
-│   ├── run_automation.py    feed commenting, replies, seed/pin, DMs + follow-ups
-│   ├── run_content_plan.py  30-day buyer-journey content plan
-│   ├── generate_variants.py media variant generation
-│   └── my_celery.py         Celery app + beat schedule
+├── api/           FastAPI app — engagement_preferences, DM template, PIN endpoints
+├── app/           Celery tasks (run_scheduler, run_automation, run_content_plan, generate_variants, my_celery)
 ├── utilities/
-│   ├── ai/        LiteLLM-backed AI helpers (ai_helper.py, client.py)
-│   │   ├── content_framework.py  ONE blueprint core (archetype/hook/CTA menus per content type + shared variety engine)
-│   │   ├── content_research.py   ONE research layer (lem-research→Perplexity fallback; per-type cost toggles)
-│   │   ├── content_alignment.py  ONE alignment core (voice synthesis + prefs + LEM purpose + promo policy)
-│   │   ├── story_bank.py         ONE fact layer (the user's own anecdotes/numbers — the only permitted specifics)
-│   │   └── slop_lint.py          ONE deterministic AI-slop lint (no LLM) run on every surface
-│   ├── linkedin/  Selenium automation
-│   │   ├── scrapper.py            profile/feed scraping
-│   │   ├── poster.py              publishing posts/carousels/video
-│   │   ├── company_page_inviter.py  paced daily company-page invite drip
-│   │   ├── verification_pin.py    email-PIN LinkedIn verification flow
-│   │   ├── rate_limit.py          429/auth-wall backoff
-│   │   └── helper.py, profile.py, token_refresh.py
-│   ├── marketing/ Outbound production
-│   │   └── video_tutorials.py  automated SPA tutorial videos (capture→script→TTS→ffmpeg→YouTube)
-│   ├── human_pacing.py  ONE cadence engine (read delays, schedule jitter, variable daily volume, account governor)
+│   ├── ai/        LiteLLM helpers (ai_helper.py, client.py) + content_framework/content_research/content_alignment/story_bank/slop_lint
+│   ├── linkedin/  Selenium automation (scrapper, poster, company_page_inviter, verification_pin, rate_limit, helper, profile, token_refresh)
+│   ├── marketing/ video_tutorials.py — automated SPA tutorial videos
+│   ├── human_pacing.py  ONE cadence engine
 │   ├── db.py      All database access (no raw SQL outside this file)
 │   ├── proxy.py   Per-user static residential proxy resolution
 │   ├── geocoding.py  Login Location city/state geocoding
 │   ├── logger.py  Structured logger — log_info/log_error/etc. preferred over myprint()
 │   └── selenium_util.py  get_docker_driver() + MV3 proxy-auth extension builder
-├── ui/            React SPA (src/, dist/ is built output) — Account.tsx holds engagement prefs
+├── ui/            React SPA (Account.tsx holds engagement prefs)
 └── aws/           AWS CDK stacks
 tests/
 ├── unit/          Fast tests — mock all I/O
 ├── integration/   Require MySQL + Redis service containers
 └── e2e/           Require selenium/standalone-chrome
-compose/local/database/migrations/  Flyway migrations (through V50)
-.litellm/
-├── config.yaml    LiteLLM model aliases and routing config
-└── complexity_router.py  Pre-call hook for lem-router model
+compose/local/database/migrations/  Flyway migrations
+.litellm/         config.yaml + complexity_router.py (lem-router pre-call hook)
 ```
 
 ## Code Conventions
 
-- **Logging:** Never use `print()`. Use the structured logger from `cqc_lem.utilities.logger`. Prefer the typed helpers over the legacy `myprint()` shim:
+- **Logging:** Never use `print()`. Use the structured logger from `cqc_lem.utilities.logger`. Prefer typed helpers over the legacy `myprint()` shim:
 
   | Function | Level | When to use |
   |---|---|---|
@@ -84,7 +64,7 @@ compose/local/database/migrations/  Flyway migrations (through V50)
   | `log_critical(msg, exc=None, **ctx)` | CRITICAL | Fatal conditions — automatically sent to PostHog |
   | `myprint(msg, debug=False)` | INFO/DEBUG | Legacy shim — still works, avoid in new code |
 
-  Pass structured context as keyword args. Supported fields: `user_id`, `task_id`, `task_name`, `post_id`, `action_type`, `duration_ms`, `ai_model`, `api_provider`, `http_status`. `log_error` / `log_critical` accept `exc=` to capture the full exception and stack trace.
+  Pass structured context as keyword args. Supported fields: `user_id`, `task_id`, `task_name`, `post_id`, `action_type`, `duration_ms`, `ai_model`, `api_provider`, `http_status`. `log_error` / `log_critical` accept `exc=` for the full exception + stack trace.
 
   ```python
   from cqc_lem.utilities.logger import log_info, log_warning, log_error
@@ -101,7 +81,7 @@ compose/local/database/migrations/  Flyway migrations (through V50)
 - **Type hints:** Required on all function signatures.
 - **Enums:** Use `PostStatus`, `PostType`, `LogActionType` from `db.py` for status fields — never raw strings.
 - **Imports:** Absolute imports from `cqc_lem.*` throughout.
-- **Database:** All DB access goes through functions in `utilities/db.py`. No raw SQL in other modules.
+- **Database:** All DB access goes through functions in `utilities/db.py`. No raw SQL elsewhere.
 - **Secrets:** Never hardcode. Use `.env` with `load_dotenv()`. See `.env.example` for required variables.
 - **Comments:** Only add a comment when the WHY is non-obvious. No docstring blocks.
 
@@ -110,7 +90,6 @@ compose/local/database/migrations/  Flyway migrations (through V50)
 All LLM calls go through LiteLLM proxy via `utilities/ai/client.py`:
 
 ```python
-from cqc_lem.utilities.ai.client import client
 response = client.chat.completions.create(model="lem-simple", messages=[...])
 ```
 
@@ -125,14 +104,7 @@ response = client.chat.completions.create(model="lem-simple", messages=[...])
 | `lem-embedding` | Embeddings for feedback dedup/clustering (`client.embeddings.create`) |
 | `lem-router` | Auto-routes by prompt complexity via `LEMComplexityRouter` |
 
-**Cost-aware down-routing** (`utilities/routing_policy.py`, `utilities/cost_routing.py`): the router
-can additionally route a tier ONE step down for the treatment cohort of an active cost/quality
-experiment. `routing_policy.py` is the shared decision core — the app imports it, and docker-compose
-mounts that same file into the LiteLLM container — so it must stay **stdlib-only** (no `cqc_lem.*`
-imports). Off unless BOTH `COST_ROUTING_ENABLED` and `COST_AWARE_ROUTING_ENABLED` are set. Since
-issue #652 the treatment cohort comes from a PostHog experiment flag resolved app-side and handed to
-the router in the policy document's `arms` map (the hash stays as the fallback) — see
-`docs/experiments.md`. Also `docs/cost-performance-margin-plan.md` §D.1.1.
+**Cost-aware down-routing** (`utilities/routing_policy.py`, `utilities/cost_routing.py`): the router can additionally route a tier ONE step down for the treatment cohort of an active cost/quality experiment. `routing_policy.py` is the shared decision core — the app imports it, and docker-compose mounts that same file into the LiteLLM container — so it must stay **stdlib-only** (no `cqc_lem.*` imports). Off unless BOTH `COST_ROUTING_ENABLED` and `COST_AWARE_ROUTING_ENABLED` are set. Since #652 the treatment cohort comes from a PostHog experiment flag resolved app-side and handed to the router in the policy document's `arms` map (the hash stays as the fallback) — see `docs/experiments.md`. Also `docs/cost-performance-margin-plan.md` §D.1.1.
 
 See `ai_helper.py` for the per-function model assignment.
 
@@ -154,41 +126,23 @@ the on-time/resource curve that sizes it. See `docs/SELENIUM_GRID.md` and `docs/
 ### Content generation & scheduling (`app/run_content_plan.py`, `app/run_scheduler.py`, `utilities/ai/ai_helper.py`)
 - AI content by buyer-journey stage (awareness / consideration / decision): thought-leadership, industry-news commentary, personal-story, engagement-prompt posts, carousels (educational / case-study / product-demo / insights), native video, and blog summaries.
 - 30-day content plan with balanced post-type distribution; auto-scheduling around golden/peak hours.
-- **Cadence (issue #621):** the plan is NOT one post a day. It fills the `posts_per_week` slots (2–7, default 3) of a **fixed day-type calendar** (`POST_DAY_TYPES` in `content_framework.py` — Tue build-receipt / Wed story / Thu spiky POV at the default), which also supplies each post's buyer stage AND narrows its archetype family. Times are clamped to waking hours (`POST_HOUR_MIN/MAX` in `utilities/utils.py`), jittered ±15–30 min, and held ≥24h apart. **Which** weekdays are eligible is the separate `posting_days` pref (issue #581, default Mon–Fri `[0,1,2,3,4]`, all seven selectable): cadence says HOW MANY slots, `posting_days` says which days may carry them, and the calendar's priority order fills from within that set — so weekends are opt-in rather than what raising the cadence to 6–7/week happens to produce, and the allow-list is the harder bound (5 eligible days can only carry 5 posts). Best posting time still decides only the HOUR; an empty/invalid day set is normalized back to Mon–Fri rather than scheduling nothing.
+- **Cadence (issue #621):** the plan is NOT one post a day. It fills the `posts_per_week` slots (2–7, default 3) of a **fixed day-type calendar** (`POST_DAY_TYPES` in `content_framework.py` — Tue build-receipt / Wed story / Thu spiky POV at the default), which also supplies each post's buyer stage AND narrows its archetype family. Times clamped to waking hours, jittered ±15–30 min, held ≥24h apart. **Which** weekdays are eligible is the separate `posting_days` pref (issue #581, default Mon–Fri `[0,1,2,3,4]`, all seven selectable): cadence says HOW MANY slots, `posting_days` says which days may carry them — weekends are opt-in, the allow-list is the harder bound. Best posting time decides only the HOUR; an empty/invalid day set is normalized back to Mon–Fri.
 - Self-healing carousels (stale/errored carousels re-generated into branded slides) and asset backfill.
 - `PostType` is `text` / `carousel` / `video`; `PostStatus` includes `error` for generation/posting failures needing manual fix.
 
 ### Engagement automation (`app/run_automation.py`)
-- **Feed commenting** rebuilt for LinkedIn's SDUI: resilient `find_first`/`click_first`/`find_all_first` selectors (`utilities/linkedin/helper.py`); inline compose + submit; **recency-dominant scoring matrix** (`_score_feed_post` = recency + relevance + reciprocity + activity) with post-age (`_post_age_minutes`) and social-count (`_post_social_counts`) extraction, best-effort "Recent" feed sort (`_switch_feed_to_recent`); targeting filters + per-day caps + voice/tone. Runs pre-post (≈15 min before each scheduled post) and daily at a golden hour.
+- **Feed commenting** rebuilt for LinkedIn's SDUI: resilient `find_first`/`click_first`/`find_all_first` selectors (`utilities/linkedin/helper.py`); inline compose + submit; **recency-dominant scoring matrix** (`_score_feed_post` = recency + relevance + reciprocity + activity) with post-age (`_post_age_minutes`) and social-count extraction; best-effort "Recent" feed sort (`_switch_feed_to_recent`); targeting filters + per-day caps + voice/tone. Runs pre-post (≈15 min before each scheduled post) and daily at a golden hour.
 - **Replies** to comments on the user's own posts (`automate_reply_commenting`); **seed a first comment** on own posts (`auto_seed_comment_on_post`).
-- **Golden-hour presence** (`utilities/golden_hour.py`, issue #622): the ONE place the first-hour amplifier's timing is decided, and the place it finally became MEASURABLE. #401 spread several reply sweeps across the hour after publish and nothing recorded whether they fired — 14 days of logs held two replies with no way to tell late from rate-limited from nothing-to-reply-to. Every swept post now emits ONE `golden_hour_report` (comments found, replies sent, minutes since the REAL publish time from the POST log — not `scheduled_time`, or a late publish would read as a late sweep), logged at INFO in-window and WARNING out of it, and shipped to PostHog by `track_golden_hour_report`. Posts older than a day emit nothing (the sweep walks them by design; they'd only add permanent out-of-window noise), and an unknown publish time is `latency_minutes=None` + `within_window=False` — unmeasured is never counted as on-time. A sweep that could NOT run (429, session failure) emits its OWN report (`status=rate_limited` / `session_failed`, so a silent hour has a cause instead of an absence) and retries (`sweep_retry_countdown`), bounded twice — by attempts AND by the window, so a retry that would land past minute 90 is never scheduled. Reports are scoped to twice the phase's window (`report_horizon_minutes`): every sweep also walks yesterday's posts, and grading those routine revisits would bury the on-time rate under permanent out-of-window readings. The **second wave** is the other half: ONE self-comment 6–8h after publish (`auto_second_wave_comment`) that must ADD substance — it runs the same #617 quality contract, similarity gate and slop lint as a feed comment (`_gated_comment`, shared with `generate_ai_response`) and ships NOTHING when no draft passes, draws its specifics from the story bank (#620) so nothing is invented, and posts through the socialActions API like the seed comment (no browser, so it holds no Selenium lane and is 429-immune). Its 6–8h wait is served in HOPS (`second_wave_due_minutes` seeded on (user, post) so every re-arm recomputes the same target, `second_wave_hop_seconds` sized off `CELERY_VISIBILITY_TIMEOUT`) — with `task_acks_late` the broker redelivers anything unacked past that timeout, so one 8h countdown would become several self-comments — but unlike the seed it is discretionary amplification, so it stands down under `is_automation_paused()`. Seed + second wave can never stack: the cap is enforced on the COUNT of our own comments on that post URL (`count_user_comments_on_post_url`, `SELF_COMMENT_MAX_PER_POST=2`), so neither task has to know the other ran.
+- **Golden-hour presence** (`utilities/golden_hour.py`, issue #622): the ONE place the first-hour amplifier's timing is decided. ONE `golden_hour_report` per swept post (comments found, replies sent, minutes since REAL publish time from the POST log — not `scheduled_time`, or a late publish reads as a late sweep), INFO in-window and WARNING out, shipped via `track_golden_hour_report`. Posts older than a day emit nothing. `latency_minutes=None` + `within_window=False` when publish time unknown — unmeasured is never on-time. A sweep that could NOT run (429, session failure) emits its OWN report (`status=rate_limited`/`session_failed`) and retries (`sweep_retry_countdown`), bounded twice — by attempts AND by the window, so a retry past minute 90 is never scheduled. Reports scoped to twice the phase's window: every sweep walks yesterday's posts too, and grading revisits would bury the on-time rate. **Second wave**: ONE self-comment 6–8h after publish (`auto_second_wave_comment`) that must ADD substance — same #617 contract + similarity gate + slop lint as a feed comment (`_gated_comment`, shared with `generate_ai_response`); ships NOTHING when no draft passes; specifics from story bank (#620); posts through socialActions API like the seed (no browser, 429-immune). 6–8h wait in HOPS (`second_wave_due_minutes` seeded on (user, post); `second_wave_hop_seconds` off `CELERY_VISIBILITY_TIMEOUT`) — `task_acks_late` would redeliver an 8h countdown. Discretionary → stands down under `is_automation_paused()`. Seed + second wave can never stack: cap on COUNT of our own comments on that post URL (`count_user_comments_on_post_url`, `SELF_COMMENT_MAX_PER_POST=2`), so neither task has to know the other ran.
+- **DM conversation auto-nurture** (`_nurture_after_reply`, `utilities/ai/dm_nurture.py`): a reply used to END a sequence — now it's classified (interested / objection / not-now / disinterest / neutral) and becomes an **approval-gated** context-aware next message queued as a `pending` row in `scheduled_dms` (`source='nurture'`), one open draft per thread, per-day draft cap, explicit disinterest stops the thread for good.
 - **Reciprocity tracking** via the `post_engagers` table — boosts commenting back on people who engaged with us (`get_recent_engagers`).
 - **DMs**: appreciation (connection / recommendation / collaboration), profile-viewer outreach, and **multi-touch follow-up sequences** — all templated and voice-aligned (`build_dm_from_template`, `dm_templates`, `dm_followups`, `process_user_followups`).
-- **DM conversation auto-nurture** (`_nurture_after_reply`, `utilities/ai/dm_nurture.py`): a reply used to END a sequence — now it's classified (interested / objection / not-now / disinterest / neutral) and becomes an **approval-gated** context-aware next message queued as a `pending` row in `scheduled_dms` (`source='nurture'`), one open draft per thread, per-day draft cap, explicit disinterest stops the thread for good.
-- **Message-thread resolution ladder** (`utilities/linkedin/message_thread.py`, issue #731): the ONE way LEM opens (and reads) a 1:1 thread, and the reason reply detection can survive LinkedIn rotating its messaging entry point. `check_dm_replied` used to look for `button[aria-label^='Message']`; on live LinkedIn that control is now an `<a href='/messaging/compose/…'>`, so the detector returned "no reply" for everybody and `process_user_followups` kept messaging people who had already answered. Swapping the selector would just move the breakage, so `open_message_thread` walks SIX routes in order — profile anchor → legacy button → tag-agnostic 'Message' text node → the top-card **More** menu → the direct compose URL built from the profile URN (captured BEFORE any route navigates away) → messaging search — and **a route only counts when the thread is provably open** (`msg-s-*` events readable or a compose form present), on either surface: opening from a profile may yield the bottom-right `msg-overlay-*` chat rather than `/messaging/`. Class names are never keyed on — every locator is href / aria-label / TEXT. Identifying the RIGHT person is part of the contract on the two routes that could get it wrong: the compose URN comes from the person's own compose anchor or from the URN sitting beside their `/in/<slug>` in the page model (never "the first URN in the document" — that is routinely the viewer's own Me menu), and a messaging-search row that links to a different slug is rejected outright rather than matched on its label. Names are compared WHOLE-WORD everywhere (`name_matches`), because 'Chris' is a substring of 'Christine Baker' and reading her reply as our own message sends the follow-up anyway. A bare compose form never ends the render wait either — LinkedIn paints the composer before the message list, and a thread reported with zero events is UNKNOWN. The winning route is logged (`action_type='followup'`) so the NEXT rotation shows up in telemetry, and `scripts/linkedin_live_validation.py --dm-thread-url` reports it live. The verdict is **three-valued**: `ThreadState.REPLIED` / `NOT_REPLIED` / `UNKNOWN`, and UNKNOWN — no route opened, nothing readable, or no self-name to compare against — makes the caller SKIP the follow-up and leave the row due, because a missed follow-up is recoverable and a follow-up to someone who already replied is not. The self-name half of that verdict is a **required setting**, not a scrape: `users.linkedin_display_name` (Settings → Setup & Connection, `GET/PUT /user/linkedin-display-name`, its own `account-readiness` item) is what `resolve_self_name` compares the last sender against, with the scraped `profiles.data.full_name` only as the fallback — the same value the migration backfills from. One field, not first/last, because the message-group label is the full display name as ONE string; the SPA says "exactly as it appears on your LinkedIn profile" for the same reason, since a name that doesn't match what LinkedIn renders reads as UNKNOWN and silently parks that person's sequence. `--dm-thread-url` reports the resulting `reply_state`, so a mismatch is visible live rather than as an absence of follow-ups.
-- **Owned-asset CTA loop** (`resolve_artifact_delivery` in `content_alignment.py` + `_queue_artifact_delivery`, issue #624): #618 made every promo CTA an artifact ask; this is what makes the ask DELIVER. `resolve_artifact_delivery` is the ONE map from a CTA to the asset behind it, and it names the CHANNEL because the two assets arrive completely differently — the **lead magnet** is the comment-keyword mechanic whose payload is a DM, the **newsletter** is a subscribe LINK. So the newsletter's `newsletter_url` now rides in `artifact_cta_line`, and #392's `split_link_for_first_comment` (the single choke point in `post_to_linkedin`) decides where it lands: an OFF-platform newsletter is carried into the first comment rather than the body, where a link costs 19–60% reach, while a linkedin.com newsletter (what `mark_newsletter_published` records) is deliberately left in the body — the penalty is off-platform only. Attribution has to match on BOTH halves for that reason (`content` OR `first_comment_link`); a first-comment-only count would read 0 forever for the mainline LinkedIn newsletter. `deliverable` is the honest half: an enabled newsletter with no URL saved can be NAMED but delivers nothing, and a generated resource (a build-receipt checklist as PDF) is deliberately NOT a kind — LEM has no public asset host to link one from. The keyword delivery is **approval-gated** and no longer a direct `send_private_dm`: it lands as a `pending` `scheduled_dms` row (`source='artifact'`) beside the #485 nurture drafts, blocked by an open draft from EITHER mechanic in BOTH directions (two queued messages on one thread is spam, so `_nurture_after_reply` checks for an open artifact draft too), capped per day on `max_dms_per_day` at drafting AND re-checked by `send_scheduled_dm` at send. `record_lead_magnet_sent` fires on QUEUE, not on send — its job is to stop the next sweep re-drafting the same resource. Attribution rides on `GET /user/newsletter-subscribers` (`count_artifact_cta_deliveries`): lead-magnet DMs queued and posts that carried the subscribe link, so subscriber growth can be read against the CTAs that actually delivered. `newsletter_links` is None (not 0) with no URL configured — nothing to carry is not the same fact as carried nothing.
-- **Human pacing** (`utilities/human_pacing.py`, issue #626): the ONE place cadence is decided, consumed by commenting, replies, DMs and invites. Read-time delay before any comment (`pace_read` — length-scaled, floored at `PACING_READ_MIN_SECONDS`, ceilinged below `MAX_INLINE_SLEEP_SECONDS` so no worker ever parks >5 min); `dispatch_jitter_seconds` countdowns on every beat-dispatched engagement task (own-post replies use `PACE_RESPONSIVE` — jittered by seconds, not delayed by an hour); and `daily_budget`/`remaining_actions`, which turn each per-day cap into a stable random draw (weekend asymmetry + occasional account-wide rest days) under one account-level envelope, so the lanes can't each spend a full cap on the same day. Seeded on (user, action, date) and persisted in Redis, so a retry never re-rolls the day's budget. Fails open — no Redis, or `HUMAN_PACING_ENABLED=false`, restores the pre-#626 behaviour. Pacing only ever slows us down; the 429 breaker in `rate_limit.py` is the separate, harder gate.
-- **Comment outcome tracking** (`sweep_comment_outcomes` + `utilities/comment_outcomes.py`, issue #628): commenting used to be write-only — LEM posted and never looked back. A read-only sweep revisits each posted comment at T+24h (work list = un-checked `logs` comment rows with a navigable `feedurn://` key), locates it via the same #478 thread map, and writes ONE `comment_outcomes` row: author replies, thread replies, likes, whether we replied, and `visible_most_relevant`. That last one is **three-valued on purpose** — 1 present under the default 'Most relevant' sort, 0 absent there but present under 'Most recent' (the May-2026 demotion signal), NULL when the sort control couldn't be read or flipped. NULL rows are excluded from the demotion denominator, never counted as healthy. A comment that can't be found in either sort is a SKIPPED row with a reason, so an unfindable comment is never re-walked. The weekly report (`auto_weekly_comment_quality`) ships the rates to PostHog + `/user/engagement-analytics`, and a demotion rate over `COMMENT_DEMOTION_HOLD_RATE` on ≥`COMMENT_QUALITY_MIN_SAMPLE` readable readings **holds that user's feed commenting** (`hold_commenting` in `rate_limit.py` — narrower than the global `pause_automation`; posting/replies/DMs are untouched) and escalates as CRITICAL. Live selector grounding: `scripts/linkedin_live_validation.py --comment-outcome-url`.
-- **Suppression tripwire** (`auto_suppression_tripwire` + `utilities/suppression.py`, issue #629): 2026 LinkedIn penalties are SILENT — a flagged account just sees its reach step-collapse (the documented 8,500→340 pattern) and stays collapsed for 60–90 days, with no notification. A daily beat reads each user's own `build_engagement_trend` series and compares **impressions per post** (or engagement per post, when impressions weren't captured — a single impression-less day switches the whole comparison, it never mixes scales) against their OWN trailing 14-day median. Days with no posts are dropped BEFORE anything is measured, so `SUPPRESSION_CONSECUTIVE_DAYS` means consecutive **posting** days and a weekend off is never a collapse. A ≥`SUPPRESSION_DROP_RATIO` drop sustained across that run — or #628's comment-demotion verdict — `pause_automation()`s **engagement only** — posting is API-driven and never gated, and the read-only stat-capture lanes (`auto_scrape_stats`, `auto_capture_follower_stats`) are exempted from THIS pause specifically via `is_measurement_paused`, because the daily scrape is what produces the readings the tripwire re-evaluates: freeze it and a recovered account could never be seen to recover. It records the WHY in Redis (`record_suppression_trip`, no TTL), emails the user in plain language and escalates as CRITICAL. Cold start, a thin baseline (<`SUPPRESSION_MIN_BASELINE_POSTS`) or a zero baseline are `unknown` and never actioned; one bad day is `watch` and stops nothing. The pause is **re-armed daily while the trip stands** and only ever refreshed when the standing pause is the tripwire's own, so it never self-resumes and never extends a maintenance/429 pause. The only way back is the human one: `POST /user/automation-resume` behind the Account banner (`SuppressionBanner.tsx` off `GET /user/automation-status`), which reports a recovered reading beside the standing trip but leaves the decision to the user.
-- **Company-page invitations** (`utilities/linkedin/company_page_inviter.py`, issue #732): a paced
-  DAILY drip, not the once-a-month blast it used to be. The old path read the Page's remaining
-  invitation credits, selected that many invitees, and recursed into itself until the pool was
-  empty — dozens-to-hundreds of identical actions in one 05:00-UTC window, and the only outbound
-  lane that consulted neither `max_invites_per_day` nor #626's pacing. A run is now bounded by the
-  SMALLEST of three ceilings: the user's own `max_company_page_invites_per_day` clamped by
-  `max_invites_per_day` (so `brand_account`'s phase policy still governs the brand user through the
-  one cap it already sets) and run through `human_pacing` like every other lane; the **credit
-  spread** `credits_remaining / days_left_in_month`, because a Page's credit pool renews on the 1st
-  and is REFUNDED when an invite is accepted, so a drip reaches more people per month than a blast;
-  and the live credit count itself, a hard stop at 0. `plan_daily_invites` decides all of that
-  BEFORE a Chrome session is opened — on most days the allowance is zero and a browser spent
-  discovering that is a lane another task needed. Idempotency is durable, not Redis: today's spend
-  is SUMMED out of the `logs` rows (`count_company_page_invites_sent_today` — one batched row
-  carries a count, so the trailing number is summed rather than rows counted), so a second run the
-  same day sends nothing beyond the budget. The beat is the staggered per-user daily tick
-  (`STAGGER_COMPANY_INVITE`, 10:00 local + 3h window) the other fan-outs use, and every run emits
-  `company_page_invite_run` — including the ones that send nothing, since a series carrying only
-  sends can't tell "paced to zero" from "silently broken".
+- **Message-thread resolution ladder** (`utilities/linkedin/message_thread.py`, issue #731): the ONE way LEM opens (and reads) a 1:1 thread. `open_message_thread` walks SIX routes in order — profile anchor → legacy button → tag-agnostic 'Message' text node → top-card **More** menu → direct compose URL from the profile URN (captured BEFORE any route navigates away) → messaging search — and **a route only counts when the thread is provably open** (`msg-s-*` events readable or compose form present), on either surface (profile may yield bottom-right `msg-overlay-*` chat, not `/messaging/`). Class names never keyed on — every locator is href / aria-label / TEXT. RIGHT person: compose URN comes from the person's own compose anchor or the URN beside their `/in/<slug>` in the page model (never "first URN in the document" — that's the viewer's own Me menu); messaging-search row that links to a different slug is rejected outright. Names WHOLE-WORD (`name_matches`) — 'Chris' is a substring of 'Christine Baker' and reading her reply as ours sends the follow-up anyway. Bare compose form never ends the render wait (LinkedIn paints composer before message list); zero events = UNKNOWN. Verdict is **three-valued**: `ThreadState.REPLIED` / `NOT_REPLIED` / `UNKNOWN` — UNKNOWN makes the caller SKIP and leave the row due (missed follow-up is recoverable, follow-up to a reply is not). Self-name is a **required setting**, not a scrape: `users.linkedin_display_name` (Settings → Setup & Connection, its own `account-readiness` item) is what `resolve_self_name` compares against; scraped `profiles.data.full_name` is the fallback. One field, not first/last — message-group label is the full display name as ONE string. Winning route logged (`action_type='followup'`); `--dm-thread-url` reports the `reply_state` live.
+- **Owned-asset CTA loop** (`resolve_artifact_delivery` in `content_alignment.py` + `_queue_artifact_delivery`, issue #624): the ONE map from a CTA to its asset, and it names the CHANNEL — **lead magnet** is the comment-keyword mechanic whose payload is a DM; **newsletter** is a subscribe LINK. Newsletter's `newsletter_url` rides in `artifact_cta_line`; #392's `split_link_for_first_comment` decides where it lands — OFF-platform newsletter → first comment (link in body costs 19–60% reach), linkedin.com newsletter → body (penalty is off-platform only). Attribution matches on BOTH halves (`content` OR `first_comment_link`); a first-comment-only count reads 0 forever for the mainline LinkedIn newsletter. Keyword delivery is **approval-gated**: lands as `pending` `scheduled_dms` row (`source='artifact'`); blocked by an open draft from EITHER mechanic in BOTH directions; capped on `max_dms_per_day` at drafting AND re-checked at send. `record_lead_magnet_sent` fires on QUEUE. Attribution rides on `GET /user/newsletter-subscribers` (`count_artifact_cta_deliveries`): subscriber growth reads against the CTAs that actually delivered. `newsletter_links` is None (not 0) with no URL.
+- **Human pacing** (`utilities/human_pacing.py`, issue #626): the ONE place cadence is decided. Read-time delay (`pace_read` — length-scaled, floored at `PACING_READ_MIN_SECONDS`, ceilinged below `MAX_INLINE_SLEEP_SECONDS`); `dispatch_jitter_seconds` countdowns on every beat-dispatched engagement task (own-post replies use `PACE_RESPONSIVE`); `daily_budget`/`remaining_actions` turn each per-day cap into a stable random draw (weekend asymmetry + occasional rest days) under one account-level envelope. Seeded on (user, action, date) and persisted in Redis — a retry never re-rolls. Fails open — no Redis, or `HUMAN_PACING_ENABLED=false`, restores pre-#626 behaviour. Pacing only slows us down; the 429 breaker in `rate_limit.py` is the separate, harder gate.
+- **Comment outcome tracking** (`sweep_comment_outcomes` + `utilities/comment_outcomes.py`, issue #628): commenting used to be write-only. Read-only T+24h sweep revisits each un-checked `logs` comment row, locates it via the #478 thread map, writes ONE `comment_outcomes` row: author replies, thread replies, likes, whether we replied, `visible_most_relevant` — **three-valued on purpose**: 1 present under 'Most relevant', 0 absent there but present under 'Most recent' (the May-2026 demotion signal), NULL when sort control couldn't be read. NULL rows excluded from the demotion denominator. Unfindable comment = SKIPPED. Weekly report (`auto_weekly_comment_quality`) ships rates to PostHog + `/user/engagement-analytics`; demotion rate > `COMMENT_DEMOTION_HOLD_RATE` on ≥`COMMENT_QUALITY_MIN_SAMPLE` readable readings **holds that user's feed commenting** (`hold_commenting` in `rate_limit.py` — narrower than `pause_automation`) and escalates as CRITICAL. Live: `scripts/linkedin_live_validation.py --comment-outcome-url`.
+- **Suppression tripwire** (`auto_suppression_tripwire` + `utilities/suppression.py`, issue #629): 2026 LinkedIn penalties are SILENT — a flagged account sees its reach step-collapse (8,500→340 pattern) and stays collapsed 60–90 days, no notification. A daily beat reads each user's own `build_engagement_trend` series and compares **impressions per post** (or engagement per post when impressions weren't captured — a single impression-less day switches the whole comparison, never mixes scales) against their OWN trailing 14-day median. Days with no posts dropped BEFORE measurement — `SUPPRESSION_CONSECUTIVE_DAYS` means consecutive **posting** days, a weekend off is never a collapse. ≥`SUPPRESSION_DROP_RATIO` drop sustained, or #628's demotion verdict, `pause_automation()`s **engagement only** (posting is API-driven and never gated); read-only stat-capture lanes exempted via `is_measurement_paused` (freeze them and a recovered account can never be seen to recover). WHY recorded in Redis (`record_suppression_trip`, no TTL), emails the user, escalates as CRITICAL. Cold start / thin baseline (<`SUPPRESSION_MIN_BASELINE_POSTS`) / zero baseline = `unknown`, never actioned; one bad day = `watch`. Pause re-armed daily while the trip stands; only refreshed when the standing pause is the tripwire's own. Recovery is human: `POST /user/automation-resume` behind `SuppressionBanner.tsx` off `GET /user/automation-status` — reports a recovered reading beside the standing trip but leaves the decision to the user.
+- **Company-page invitations** (`utilities/linkedin/company_page_inviter.py`, issue #732): a paced DAILY drip, not the once-a-month blast it used to be. Run bounded by the SMALLEST of three ceilings: `max_company_page_invites_per_day` clamped by `max_invites_per_day` and run through `human_pacing`; **credit spread** `credits_remaining / days_left_in_month` (renews on the 1st, REFUNDED on accept); live credit count (hard stop at 0). `plan_daily_invites` decides all of that BEFORE a Chrome session opens — most days the allowance is zero. Idempotency is durable, not Redis: today's spend SUMMED out of `logs` rows (`count_company_page_invites_sent_today` — one batched row carries a count). Every run emits `company_page_invite_run` — including the ones that send nothing, since a series carrying only sends can't tell "paced to zero" from "silently broken".
 
 ### Engagement configuration (`engagement_preferences` table, API in `api/main.py`, SPA in `ui/.../Account.tsx`)
 - Targeting: include/exclude topics/keywords/authors, `min_reactions`, `max_post_age_hours`, plus LLM topic-relevance scoring.
@@ -196,7 +150,7 @@ the on-time/resource curve that sizes it. See `docs/SELENIUM_GRID.md` and `docs/
 - Caps: `max_comments_per_day`, `max_dms_per_day`; DM template editor with follow-up steps; Login Location (city/state geocoding via `utilities/geocoding.py`, with admin override).
 
 ### Marketing video tutorials (`utilities/marketing/video_tutorials.py`, beat `produce-feature-tutorial`)
-- One declarative `TutorialFlow` per feature (routes + the CSS anchors that prove the screen rendered) → headless SPA capture via `get_docker_driver()` → grounded script (`lem-medium`) → TTS voice-over (OpenAI `lem-tts` by default, ElevenLabs behind `TUTORIAL_TTS_PROVIDER`) → ffmpeg MP4 with branded intro/outro + `.srt` → 9:16 clip → YouTube Data API v3 upload.
+- One declarative `TutorialFlow` per feature (routes + the CSS anchors that prove the screen rendered) → headless SPA capture via `get_docker_driver()` → grounded script (`lem-medium`) → TTS (OpenAI `lem-tts` default, ElevenLabs behind `TUTORIAL_TTS_PROVIDER`) → ffmpeg MP4 with branded intro/outro + `.srt` → 9:16 clip → YouTube Data API v3 upload.
 - **Fail-closed**: a missing UI anchor, an unparseable script, profanity, an over-cap narration or a fabricated number aborts BEFORE any TTS/publish spend. Cost is attributed per part (script tokens, TTS characters, render minutes) and totalled on the manifest record.
 - State lives in `assets/videos/tutorials/manifest.json` (no schema change); the SPA embeds it via `TutorialVideos.tsx`. Weekly cadence, and a flow is re-filmed only when its captured UI fingerprint changes. OFF unless `TUTORIAL_VIDEOS_ENABLED`.
 
@@ -219,366 +173,99 @@ the on-time/resource curve that sizes it. See `docs/SELENIUM_GRID.md` and `docs/
 
 ## Observability
 
-Track events via `utilities/observability.py`:
+Track events via `utilities/observability.py` (`track_llm_call` / `track_task` / `track_api_call`).
+Each subsection below is a one-paragraph invariant; rationale, contracts, sample code, and edge
+cases live in the pointed-to doc. Plan with this section, drill in with the doc.
 
-```python
-from cqc_lem.utilities.observability import track_llm_call, track_task, track_api_call
-```
+### LLM analytics (issue #647)
+Two streams, never summed: `llm_call` (app, cost ESTIMATE — every money question reads this) vs
+`$ai_generation`/`$ai_embedding` (proxy-native, post-fallback, provider-priced — latency/error/
+volume). Attribution lives in `utilities/ai/client.py` (the ONE client); `_attach_routing_metadata`
+must stay. Full posture: `docs/llm-analytics.md`.
 
-PostHog receives LLM usage (model, tokens, latency, cost) and Celery task metrics for fine-tuning decisions.
+### Error tracking (issue #648)
+Logs (`logger.py` → PostHog Logs) carry message+context; `$exception` is the grouped/fingerprinted
+ISSUE alerting + the error→GitHub-issue cron file on — NOT redundant. Use
+`observability.capture_exception(...)` for caught-and-not-reraised; `posthog.capture_exception` is
+idempotent. Never capture `HTTPException` (4xx is a response, not an issue). Full posture:
+`docs/error-tracking.md`.
 
-### LLM analytics (LiteLLM → PostHog, issue #647)
-
-There are TWO LLM streams in PostHog and they must never be summed together — see
-`docs/llm-analytics.md` for the full split.
-
-- **`llm_call`** (app, `track_llm_call`) — LEM's cost ESTIMATE, keyed by the tier alias the caller
-  asked for. It is what `cost_ledger`, the margin report and the budget alerts are built on, so
-  **every money question uses this one**.
-- **`$ai_generation`** / **`$ai_embedding`** (proxy) — LiteLLM's native `posthog` callback emits one
-  per call with the model that ACTUALLY served it (post-fallback, post-down-route), the provider's
-  own `response_cost`, tokens and latency. This is PostHog's LLM-analytics product; **use it for
-  latency, error rate, model mix and volume**.
-
-`utilities/ai/client.py` stamps `metadata: {user_id, feature}` on every `lem-*` request — attribution
-lives in the ONE client, not at the ~10 call sites, because a call that skips it is invisible to both
-cost routing and analytics. `metadata.user_id` becomes the event's distinct_id and falls back to the
-`"system"` sentinel (same one `observability.py` uses, same person the SPA's `String(user_id)`
-resolves to), so a user's browser, Celery and proxy events land on ONE PostHog person. Don't remove
-`_attach_routing_metadata` from `_call_llm`: it is what lets an explicit `_track_user_id` beat the
-ambient `llm_attribution()` scope.
-
-Prompts and completions are redacted (`litellm_settings.turn_off_message_logging`) — they are the
-user's own LinkedIn material, and the SPA masks the same content.
-
-### Error tracking (`$exception` → issues, issue #648)
-
-Errors reach PostHog TWICE on purpose, and the two are not redundant — see `docs/error-tracking.md`.
-
-- **Logs** (`logger.py` → PostHog Logs) keep the message and its structured context. Unchanged.
-- **`$exception`** is the grouped, fingerprinted ISSUE — what alerting and the error→GitHub-issue
-  cron are built on. Emitted by `posthog.enable_exception_autocapture` (uncaught), by
-  `log_error`/`log_critical` **when `exc=` is passed**, by the `task_failure`/`task_retry` handlers in
-  `my_celery.py`, by the unhandled branch of `api/main.py`'s `observability_middleware`, and by
-  `posthog-js` in the SPA.
-
-Use `observability.capture_exception(exc, user_id=..., **context)` for anything you catch and do NOT
-re-raise; everything else is already covered. It is safe to call twice with the same exception
-object — `posthog.capture_exception` is idempotent per instance, so the log call and the Celery
-signal do not double-count. A route's own `HTTPException` is NEVER captured: a 4xx is a response,
-not an issue.
-
-`scripts/posthog_error_issues.py` (cron: `scripts/error_to_issues.sh`) files ONE `agent:ready` GitHub
-issue per ACTIVE PostHog issue, deduped on `posthog-issue-<issue_id>` across open AND closed issues.
-It replaced the old log-grep scan, whose sha1-of-the-message dedup refiled any error with an id in
-its text every single day. Don't add a second dedup layer — the fingerprint IS the dedup.
-
-### Browser-side analytics (SPA, issue #646)
-
-The SPA has ONE PostHog surface — `ui/src/utils/analytics.ts`. Never call `posthog` directly from a
-component; import from there so the key, the privacy defaults and the distinct_id convention stay
-in one place.
-
-```ts
-import { EVENTS, capture, maskProps } from '../utils/analytics'
-
-capture(EVENTS.postApproved, { post_id, post_type, archetype })
-
-// Any editor holding the user's own content (DM, story, draft post):
-<textarea {...maskProps('w-full border rounded-lg px-3 py-2 text-sm')} />
-```
-
-- **distinct_id is `String(user_id)`** — identical to `observability.py`'s server-side convention,
-  so a user's browser and Celery/API events land on ONE PostHog person. `$identify` fires from
-  `AuthContext` off `GET /auth/session` (plan, plan_status, timezone; `created_at` as `$set_once`)
-  and `posthog.reset()` fires on logout. Never put credentials or LinkedIn data on the person.
-- **Env-gated at BUILD time.** `VITE_POSTHOG_KEY` / `VITE_POSTHOG_HOST` are baked into the bundle by
-  Vite (docker build-arg / CI secret `UI_POSTHOG_KEY`), not read from the running container. With no
-  key, `posthog-js` is never imported — it is a lazy chunk the browser never fetches — and every
-  `capture`/`identify` is a no-op.
-- **Autocapture is on**, with `mask_all_element_attributes` and pageviews owned by the router
-  (`capture_pageview: false` + a `usePageviews()` hook, so in-app navigation is counted). Web vitals
-  ride on `capture_performance`.
-- `maskProps()` adds BOTH the `ph-no-capture` class (autocapture skips the element) and
-  `data-ph-mask` (replay's `maskTextSelector`). Use it on every new content editor.
-- New product events go in `EVENTS` — that vocabulary is what PostHog insights key off, so add to it
-  rather than passing a bare string.
+### Browser-side analytics (issue #646)
+ONE SPA surface: `ui/src/utils/analytics.ts` — never call `posthog` directly. `distinct_id =
+String(user_id)` matches `observability.py` so browser+Celery+proxy share ONE PostHog person.
+Env-gated at BUILD time (`VITE_POSTHOG_KEY`); no key → lazy chunk never fetched → no-op.
+`maskProps()` adds `ph-no-capture` + `data-ph-mask`; use it on every content editor. Full posture:
+`docs/posthog-advanced-surface.md`.
 
 ### Session replay (issue #649)
-
-The recording RULES live in the SDK, not in PostHog's project settings, so they are one testable
-place: a `VITE_POSTHOG_REPLAY_SAMPLE` slice (default 10%) of ordinary sessions, **plus every session
-that produces an `$exception` or opens the feedback widget**. Both go through one
-`ensureSessionRecorded()` in `analytics.ts`; the error one is wired to a single
-`posthog.on('eventCaptured')` hook, which catches both posthog's own unhandled-error autocapture and
-`captureException()`. Never gate that override on `posthog.sessionRecordingStarted()` — posthog
-attaches rrweb for EVERY session and sampling only decides whether the buffer is sent, so it reads
-`true` in exactly the sampled-out case the override is for. Leave the project's own sampling at 100%
-(and Record user sessions ON, or nothing records at all): the local `sampleRate` takes
-precedence, and configuring both multiplies them. Only **minimum duration** (the bounce filter) is
-remote config; `strictMinimumDuration: true` in code makes it measure the buffer, not session age.
-
-Inputs are masked wholesale, `data-ph-mask` masks non-input text, and network capture is timings
-only — never headers (session token) or bodies (the user's LinkedIn content). Canvas is off.
-`VITE_POSTHOG_REPLAY=false` ships a bundle that never records.
-
-Every report links its recording: `session_replay_url()` in `observability.py` turns the widget's
-`posthog_session_id` into the link on auto-filed feedback issues and their `+1` comments, and
-`scripts/posthog_error_issues.py` does the same from the exception's `$session_id`. An id that isn't
-uuid-ish, or a missing `POSTHOG_PROJECT_ID`, omits the line rather than guessing a URL. Full posture
-(who is recorded, what is masked, how to verify): `docs/session-replay.md`.
+Rules live in the SDK: `VITE_POSTHOG_REPLAY_SAMPLE` slice + EVERY `$exception`/feedback session,
+both via one `ensureSessionRecorded()`. Local `sampleRate` takes precedence — never set project
+sampling (multiplies). Canvas off; inputs masked; network capture timings only. Full posture:
+`docs/session-replay.md`.
 
 ### KPI funnels, dashboards, alerts + weekly report (issue #650)
+`scripts/posthog_provision.py` owns Health + Growth dashboards, four threshold alerts, weekly Growth
+email. Alert tiles must be native single-series `TrendsQuery` filtering on STRING props (boolean
+filters match nothing → silent alerts). Money tiles read `$ai_generation`, never `llm_call`.
+`mark_rate_limited()` emits `rate_limit_trip` (WARNING log never reaches PostHog). Full posture:
+`docs/kpi-dashboards.md`.
 
-`scripts/posthog_provision.py` is the ONE place the business-KPI surface is defined — two
-consolidated dashboards (**LEM Health**: task failures, 429 trips, LLM spend/day, posts/day,
-follower delta, API errors · **LEM Growth**: the content-loop and signup→subscription funnels,
-onboarding drop-off, the comment→reply loop, ER/audience trends), four threshold alerts, and one
-weekly email subscription of Growth that replaces the hand-run perf-report cron. `--dry-run`
-(default) diffs, `--apply` converges, `--simulate 'NAME=VALUE'` proves an alert's threshold without
-waiting for a real breach. Details: `docs/kpi-dashboards.md`.
+### Experiments (issue #652)
+`utilities/experiments.py` is the adapter onto PostHog Experiments, NOT a third implementation.
+**Unresolvable experiment = CONTROL arm** (no key, `EXPERIMENTS_ENABLED=false`, inconclusive, SDK
+raises — no env fallback per experiment). Flags must use rollout-% / distinct-ID only (person-
+property can't be decided locally). Three registered: `cost-routing-arm`, `comment-contract-prompt`,
+`post-media-variant`. Full posture: `docs/experiments.md`.
 
-It sits ON TOP of the cost/margin set (`scripts/posthog_dashboards.py`), which it does not replace.
-Both plan by insight NAME against the same project, so **insight names must stay unique across the
-two scripts** — a unit test fails the build if they collide. Alert-bearing tiles must stay native
-single-series `TrendsQuery` insights (a threshold is evaluated against one `series_index`), and they filter on STRING
-properties (`celery_task.state = 'FAILURE'`) rather than booleans: a boolean filter that matches
-nothing yields an alert that never fires. Money tiles read `$ai_generation`, never `llm_call`.
-`mark_rate_limited()` emits `rate_limit_trip` (issue #650) because the breaker's WARNING log never
-reaches PostHog at the default `POSTHOG_LOG_LEVEL`.
+### Marketing attribution — UTMs (issue #658)
+`utilities/marketing/attribution.py` is the ONE place. Two rules: only OWNED destinations tagged
+(`is_owned_link`); existing UTMs never overwritten (`build_utm_url` fills missing only;
+`mark_placement` is the exception — replaces `utm_content` only). `signup_completed_web` (browser)
+≠ `signup_completed` (API) — never summed. Full posture: `docs/marketing-attribution.md`.
 
-### Experiments (`utilities/experiments.py`, issue #652)
-
-LEM hand-rolled experimentation twice — the cost/quality down-routing cohort and the #396 media A/B
-harness — and neither could say whether a difference was real, or render anywhere a human looks. This
-module is the **adapter onto PostHog Experiments**, NOT a third implementation: the homegrown loops
-keep running, PostHog gets the arms, the exposures and the outcome labels. Full posture:
-`docs/experiments.md`.
-
-**An unresolvable experiment is the CONTROL arm** — no key, no flag, inconclusive evaluation,
-`EXPERIMENTS_ENABLED=false`, SDK raises. There is deliberately NO env fallback per experiment (a
-toggle has a default worth honouring, an arm does not), and `_raw_variant()` keeps "PostHog said
-control" apart from "PostHog said nothing" so `experiment_properties()` never stamps
-`$feature/x=control` on a metric event from someone who was never enrolled — a fabricated control arm
-makes a readout look populated. Assignment reuses `flags.py`'s ONE local-evaluation bootstrap (no
-second poller, zero network calls per lookup), so every experiment flag must use rollout-percentage /
-distinct-ID conditions only. Exposure is `$feature_flag_called` — PostHog's own event name and
-properties, not ours — emitted explicitly (flags.py suppresses it for hot toggles) and deduped per
-(experiment, person, arm) per process.
-
-Three registered experiments. **`cost-routing-arm`**: the arm is resolved app-side and written into
-each routing bucket as `arms: {"<user_id>": "treatment"}` INSIDE the policy document Redis already
-carries to the LiteLLM router — `routing_policy.py` is mounted into that container and must stay
-stdlib-only, so the decision is handed to it, never imported by it. `flag_arm()` reads the map,
-`assign_arm()` falls back to the original hash for anyone PostHog has no answer for, and a run that
-could not ASK PostHog at all carries the PREVIOUS document's map forward rather than wiping it
-(`resolve_cohort()` returns None for "couldn't ask" vs `{}` for "PostHog enrolled nobody") — so an
-outage moves no traffic instead of re-splitting a live cohort under the hash for a week.
-`resolve_tier()` reports `assignment` so a live-experiment down-route is
-distinguishable from a fallback one. The flag decides WHO, `cohort_pct` decides WHETHER: a parked
-bucket can never be started by a flag, and the arms map is applied AFTER the weekly evaluation because
-the window being judged was routed under the PREVIOUS document's arms. **`comment-contract-prompt`**:
-the pilot LLM prompt experiment — the #617 contract's closing ask, measured on author-reply rate from
-#628's sweep, scoped to FRESH FEED comments only (the seed/second-wave/reply surfaces are never
-measured by that sweep) and with the six deterministically-graded rules IDENTICAL in both arms, or
-"passes the gate" would mean two different things. **`post-media-variant`**: the #396 adapter, whose
-arms are data (the combo that shipped) rather than a flag — `select_variant_winners` is untouched.
-
-`scripts/posthog_experiments.py` provisions the multivariate flags + experiment records
-(`--print-specs` / dry-run / `--apply` / `--rollout KEY=PCT`). It NEVER resets an existing flag's
-rollout: PostHog owns the ramp once an experiment runs, and an `--apply` that reverted it would
-re-cohort a live experiment. Read a readout honestly — at current volume everything here is
-underpowered by design (the small-sample caveat is in the doc), and never re-roll a running
-experiment's variants: that re-cohorts people and invalidates the attribution already collected.
-
-### Marketing attribution — UTMs at the source (issue #658)
-
-`utilities/marketing/attribution.py` is the ONE place an outbound LEM link gets its UTMs. #503 built
-the CAPTURE half (funnel events + `resolve_channel`) and it reported almost everything as `direct`,
-because nothing tagged the links we publish. Two rules make the helper safe to call everywhere:
-**only OUR OWN destinations are tagged** (`is_owned_link` — `PUBLIC_BASE_URL` / `BRAND_SIGNUP_URL` /
-`MARKETING_OWNED_DOMAINS` and their subdomains; a cited third-party article is somebody else's
-analytics and comes back bare, and with none of those configured tagging is a no-op everywhere), and
-**an existing UTM is never overwritten** (`build_utm_url` only fills in what is missing, so it is
-idempotent and more than one choke point can tag the same link). `mark_placement` is the one
-deliberate exception — it replaces `utm_content` ONLY, because a promo CTA is written days before
-publish assuming its link stays in the body and #392's split decides otherwise at publish time.
-Every value is slugged on the way onto a URL, so the placement constants are spelled in their
-already-slugged form (`post-body` / `first-comment` / `video-description`) — that is what a PostHog
-filter has to match, and a `MARKETING_OWNED_DOMAINS` entry is host-normalized (`www.`/port stripped)
-for the same reason: a shape mismatch there tags nothing and looks exactly like the pre-#658 state.
-
-Applied at: `artifact_cta_line` (post body), `first_comment_link_text` (the carried link),
-`brand_account.brand_preference_overrides` (the seeded goal URL), `video_tutorials.description_with_cta`
-(YouTube), and `run_automation._tagged_edition_body` (newsletter). A LinkedIn newsletter EDITION
-carries no links by design, so that last one is a no-op on the mainline — it exists for a draft the
-author edited. DM templates are NOT tagged: their links are the user's own copy, not ours.
-Campaign names come from `campaign_for_post`/`_edition`/`_tutorial`, never spelled at a call site.
-
-Capture side: `ref` (`?ref=<user id>`, the referral-link groundwork) is allow-listed through
-`FunnelAttribution` → `normalize_attribution`, a bare `ref` resolves to the `referral` channel, and
-`youtube` got its own channel (YouTube passes no usable referrer). The SPA writes the SAME
-`initial_<key>` `$set_once` person properties the server does, so browser and Celery converge on one
-person — that is what makes `activated`, which knows no UTMs, attributable. `recordSignup()` emits
-`signup_completed_web` from the browser; it is **not** the API's `signup_completed` and the two must
-never be summed — one signup produces both. `scripts/posthog_provision.py` provisions the **LEM
-Channels** dashboard plus the two web-analytics conversion goals (as PostHog *actions*: signup →
-the browser event, activation → `activated`). Full posture: `docs/marketing-attribution.md`.
-
-### Model-tier evaluation harness (`scripts/benchmark_models.py`, issue #721)
-
-#716 taught the weekly model-health cron to SEE change coming (advance retirements, new Ollama
-Cloud tags, a family we trail); it could never say whether a candidate was any GOOD, so #717's
-roster refresh was decided on spec sheets. This is the measurement half. Each LiteLLM tier is a
-CONTRACT encoded as a fixed suite of synthetic prompts in `tests/benchmarks/model_tiers/<tier>.json`
-(10–20 cases, drawn from LEM's real prompt shapes, **no user data**), and every cron-detected
-candidate runs it **beside the tier's current champion** — a verdict is always a comparison.
-
-Two scoring layers, in this order. **Deterministic** is the source of truth and it is the in-repo
-linters, not a second copy of them: `slop_lint.lint_report`, `content_framework.comment_contract_report`,
-`routing_policy.complexity_tier` (the `lem-router` contract — deterministic and model-independent
-on purpose, so it is a regression guard on the ROUTER), plus length/shape/JSON/burstiness/
-self-similarity assertions. A case that fails here never spends a judge call. **LLM judge** is
-PostHog Evaluations scoring the harness's OWN tagged `$ai_generation` events (emitted independently
-of #647's prod callback, because the harness calls Ollama Cloud directly), whose `conditions` filter
-on `benchmark_run_id` — a property production traffic never carries, so an enabled evaluation can
-never bill against a customer. No judge-provider key degrades to an in-runner `lem-medium` judge
-emitting `$ai_metric`; a verdict that never lands is `judge:timeout`, never a fabricated score, and
-the report names the mode it ran in.
-
-The gate is champion/challenger and only `recommend` (clears the tier's absolute floors AND
-meets-or-beats the champion on every graded expectation) becomes a swap recommendation —
-`recommend-deterministic-only` / `no-baseline` / `reject` are reported and go no further. A
-recommendation is deliberately **rendered, never written**: `.litellm/model_upgrades.yaml` is the
-RETIREMENT map that `model_health_check.py` auto-swaps into the live config, so a benchmark win must
-not walk itself into production. Reports land in `docs/model-benchmarks/<date>-<run_id>.md` plus a
-rolling leaderboard, committed through the same ephemeral-worktree `open_pr` flow — and
-`render_report` runs `assert_benchmark_only` first, so a run that isn't provably benchmark output
-never reaches disk. OFF unless `BENCHMARK_ENABLED`; judge calls are capped per run; a benchmark
-failure alerts but never blocks the retirement-swap safety path. `--dry-run` renders a full report
-from each case's committed canned output with zero network calls. Full posture:
+### Model-tier evaluation harness (issue #721)
+`scripts/benchmark_models.py` measures candidates vs each tier's contract suite (NO user data),
+always beside the current champion. Deterministic is source of truth (in-repo linters, not a
+copy); LLM judge is PostHog Evaluations filtered on `benchmark_run_id` (production never carries
+it → customer never billed). Only `recommend` becomes a swap; recommendations are RENDERED, never
+written (`.litellm/model_upgrades.yaml` is the retirement map). Full posture:
 `docs/model-benchmarks/README.md`.
 
-### Content-quality telemetry (`utilities/content_quality.py`, issue #630)
+### Content-quality telemetry (issue #630)
+`auto_nightly_content_quality` is the TREND LINE (other gates are one-time verdicts). Scores
+posts/comments/editions into `content_quality_scores`: weighted slop (HARD ×3), self-similarity,
+**stored** authenticity (no fresh judge call), hook length, impression-weighted ER. **Unscored is
+never zero** — each dimension has its own sample size. Never pauses (drift → go look at prompts;
+safety is #629). Similarity batches into ONE `lem-embedding` per surface under
+`llm_attribution(user_id=…)`; dominant measure only.
 
-Every other quality gate is a one-time verdict — the slop lint (#625) blocks a draft, the comment
-contract (#617) throws one away, `score_authenticity` (#382) grades a post once. None of them can
-answer *is the writing getting worse*, and it silently can: the weekly model-retirement cron swaps
-models under unchanged prompts. This is the TREND LINE. `auto_nightly_content_quality` scores
-everything SHIPPED in `CONTENT_QUALITY_WINDOW_DAYS` across all three writing surfaces (posts, feed
-comments, newsletter editions) into `content_quality_scores` + one `content_quality` PostHog event
-each: the weighted slop score (HARD violations count triple), self-similarity, #382's **stored**
-`posts.authenticity_score` (never a fresh judge call — the gate already paid for it), hook length vs
-`MOBILE_HOOK_MAX_CHARS`, and engagement per impression. `auto_weekly_content_quality` reads TWO
-periods back out and emits `content_quality_rollup` with the deltas plus any of three alerts —
-slop regression, ER under `CONTENT_QUALITY_ENGAGEMENT_FLOOR`, similarity creep — each raised through
-`log_error` (the existing PostHog pipeline) and rendered on `/user/engagement-analytics` +
-the Dashboard. Nothing is ever paused: quality drift is "go look at the prompts", account safety is
-#629's job.
+### Feature flags (issue #651)
+`utilities/flags.py` is the ONE place; **fail open to env var** (no key, disabled, undefined,
+inconclusive, SDK raises → all return the flag's env var). `only_evaluate_locally=True` →
+ZERO network per check, flip lands without restart. Flags must use rollout-% / distinct-ID only.
+Read at CALL SITE, never at import. **Safety controls are NOT flags** (429 breaker, holds, pauses,
+per-day caps stay in Redis/env). SPA bootstraps from `GET /api/flags` (server-resolved) — not
+through posthog-js. Full posture: `docs/feature-flags.md`.
 
-Load-bearing details. **Unscored is never zero** — no impressions yet, lint disabled, no history to
-compare against are each None and excluded from their own denominator, so every dimension carries its
-OWN sample size. ER is impression-WEIGHTED, so a post seen by 50 people can't outvote one seen by
-5,000. A regression is measured against the account's own prior period (the ER floor is the one
-absolute, set deliberately below the ~3.6% B2B benchmark so it catches a collapse rather than firing
-forever on a below-average account) and needs `CONTENT_QUALITY_MIN_SAMPLE` on BOTH sides — except the
-ER floor, which counts against the smaller `CONTENT_QUALITY_MIN_ER_SAMPLE` (default 3, the weekly
-posting cadence) because impressions come from POSTS alone and a piece-count threshold would gate it
-on comment volume it can never reach. The nightly
-window is 2 days, not 1: a missed night self-heals AND a post scored the night it shipped gets its ER
-once the 23:00 scrape lands — the write is an upsert. Self-similarity is batched into ONE
-`lem-embedding` call per surface (under an `llm_attribution(user_id=…)` scope — the task loops over
-users rather than taking a `user_id` kwarg, so without it the spend bills to `system`) and graded
-WITHIN that surface (a post compared against the user's comments looks unique no matter how templated
-it is), with the item's own text excluded from its history and a token-overlap fallback when
-embeddings are unavailable. Because each surface embeds in its own batch, one failed call can leave a
-lexical minority inside a cosine period, so `similarity_avg` is taken over the DOMINANT measure only —
-the two scales are never averaged together, within a period or across two. The optional external
-AI-detector (`AI_DETECTOR_*`) is OFF by default, sampled on a stable per-item draw, capped per run,
-and a REGRESSION SIGNAL ONLY per the #416 policy — it never rewrites or holds anything, and a missing
-key is a silent no-op.
-
-### Feature flags — runtime toggles (issue #651)
-
-`utilities/flags.py` is the ONE place a runtime toggle is read, and its contract is **fail open to
-the env var**: no personal API key, `POSTHOG_FLAGS_ENABLED=false`, definitions unloaded, flag
-undefined, evaluation inconclusive, SDK raises — every one of those returns the flag's own env var,
-so a deployment with no PostHog flags behaves exactly as it did before. Each registered flag keeps
-its env var as BOTH default and fallback; the registry (`FLAGS`, a `FlagSpec` per toggle with key /
-env var / default / owner) is the whole vocabulary, and call sites use the exported constant so a
-typo raises instead of silently reading `False` inside a Celery task.
-
-Lookups are `only_evaluate_locally=True` + `send_feature_flag_events=False`: definitions are polled
-into the process (`POSTHOG_FLAG_POLL_SECONDS`, default 30) and evaluated in memory, so a feed loop
-checking a flag per post makes ZERO network requests and a flip lands on a long-running worker
-without a restart. The one fetch is at a process's first check, and a failed fetch retries no more
-than once per poll interval. The price is a hard registry constraint: **flags must use rollout-%
-/ distinct-ID conditions only** — a person-property condition can't be decided locally and would
-silently fall back to env everywhere. distinct_id is `str(user_id)` / `"system"`, same as
-`observability.py`.
-
-Read the toggle at the CALL SITE, never into a module constant at import — an import-time read is
-exactly how a flag ends up doing nothing. Migrated so far: `comment-research-enabled`,
-`tutorial-videos-enabled`, `feed-fallback-when-empty-default` (fleet default only — a user's saved
-row always wins), `cost-routing-enabled`. **Safety controls are NOT flags**: the 429 breaker,
-`hold_commenting`, `pause_automation`/the suppression tripwire and every per-day cap stay in
-Redis/env, and `COST_AWARE_ROUTING_ENABLED` stays env-only because `routing_policy.py` must remain
-stdlib-only. The SPA bootstraps from `GET /api/flags` (server-resolved, so no flag flicker and no
-disagreement between browser, API and workers) via `hooks/useFeatureFlags.ts` — NOT through
-posthog-js, which stays the analytics surface. Full posture: `docs/feature-flags.md`.
-
-### Surveys — NPS/CSAT via PostHog (issue #653)
-
-LEM's four asks now have TWO owners, and the line between them is what an answer can DO. PostHog
-Surveys owns the two general-purpose ones — the **NPS** at 30 days past ACTIVATION (not signup; a
-stalled user's score is about onboarding) and the **post-quality CSAT** triggered by `post_approved`
-once `posts_approved >= 5` — because their targeting and cadence should be tunable without a deploy.
-`utilities/surveys.py` keeps the two bespoke ones: the trial-T-3d **review** (it is the #499
-extended-trial gate, which PostHog cannot unlock) and the per-issue **fix CSAT** (#502).
-
-Both PostHog surveys are type **`api`** and rendered headless in `PostHogSurveyModal.tsx`, not as
-PostHog's popover — a popover answer is a PostHog event and NOTHING ELSE, and the reason LEM asks for
-scores at all is the feedback→auto-work loop. So one answer takes two paths and is counted ONCE: the
-browser emits PostHog's own `survey sent` (native `$survey_response`/`$survey_questions` shape, so it
-shows up in the Surveys product), and the same answer POSTs to `/api/survey/posthog` where it becomes
-a `feedback` row that the classifier files as an issue. `track_survey_response` is deliberately NOT
-emitted on that path — two events per answer would double every response-rate number. A detractor
-(NPS ≤6 / CSAT ≤2) or ANY free text stays `new` so the loop files it; a happy score with no comment
-is stamped `resolved` on the spot rather than burning an LLM call per promoter.
-
-Rendering it ourselves means posthog-js never sees the ask, so `markSurveySeen()` is what advances
-its seen/wait-period bookkeeping — drop it and the 30-day `seenSurveyWaitPeriodInDays` throttle
-silently stops working. Targeting reads person properties the SPA sets at `$identify` off
-`GET /auth/session` (`onboarding_completed_at`, `posts_approved` — counted across
-approved/scheduled/posted, because an approved post moves on and a current-status count would reset
-the tally). `scripts/posthog_surveys.py` is the ONE place the surveys are defined (`--dry-run` diffs,
-`--apply` converges, `--launch` is a separate opt-in so an apply never starts collecting from a
-definition nobody read). The `posthog-surveys-enabled` flag stands the homegrown NPS asks down
-(`select_survey(nps_enabled=False)`) so nobody is prompted twice; the review offer is untouched.
+### Surveys — NPS/CSAT (issue #653)
+TWO owners. PostHog Surveys: NPS (30d past ACTIVATION, not signup) + post-quality CSAT (on
+`post_approved` once `posts_approved >= 5`). `utilities/surveys.py` keeps the bespoke ones:
+trial-T-3d review (#499, PostHog can't unlock) + fix CSAT (#502). Type **`api`**, rendered
+headless in `PostHogSurveyModal.tsx`. ONE answer = TWO paths (browser native `$survey_response`
++ POST `/api/survey/posthog` → `feedback` row), counted ONCE — `track_survey_response`
+deliberately NOT emitted. Detractor (NPS ≤6 / CSAT ≤2) or any free text stays `new`; happy+blank
+→ `resolved`. `markSurveySeen()` advances the 30d wait — drop it and the throttle silently stops.
 Full posture: `docs/surveys.md`.
 
 ### Endpoints panel + release annotations (issue #654)
-
-Two cheap wins riding on the same `scripts/posthog_provision.py` that already owns Health/Growth.
-**Endpoints** (PostHog beta) publishes a HogQL query as a versioned, cached HTTP route — the fast
-path to the Dashboard's own "Live stats" card (posts/engagement per week, comment activity per
-week, LLM cost by feature over 30d) without a bespoke MySQL reporting layer. Every query is scoped
-with `distinct_id = {variables.distinct_id}` — PostHog is ONE project shared by every LEM account,
-so an un-scoped query would leak one customer's numbers into another's Dashboard. The placeholder
-resolves against a single provisioned `InsightVariable`; an endpoint is `blocked_endpoint`, not
-creatable, until that variable exists, mirroring `plan_alerts`'s missing-insight shape.
-`utilities/posthog_endpoints.py` is the runtime half — `GET /user/posthog-stats` calls each
-endpoint's `/run` with the CALLER's own `str(user_id)`, server-side only, so the personal API key
-never reaches the browser. Every failure mode (no key, endpoint not provisioned yet, PostHog
-unreachable) degrades to `available: false` for that one panel; `PostHogStatsPanel.tsx` renders
-nothing at all if every panel comes back unavailable.
-
-**Release annotations**: `scripts/posthog_annotate.py`, called from `build-and-push.yml`'s deploy
-job right after `deploy.sh`'s own health check passes, posts one project-scoped annotation —
-`"vX.Y.Z deployed"` — so every insight graph explains its own step-changes; LEM ships multiple
-releases a day and no graph showed when before this. Needs its own GH Actions secret,
-`POSTHOG_PERSONAL_API_KEY` (scope: `annotation` read+write). Absent key or a PostHog outage is a
-no-op (`continue-on-error: true` on the step, exit 0 in the script) — never a failed release.
+**Endpoints** (PostHog beta): HogQL as a versioned cached HTTP route — Dashboard "Live stats"
+without a MySQL reporting layer. Every query scoped with `distinct_id = {variables.distinct_id}`
+(ONE shared project → un-scoped leaks across customers). Resolves against ONE `InsightVariable`;
+endpoint is `blocked_endpoint` until it exists. `GET /user/posthog-stats` server-side only;
+personal API key never reaches browser. Failure modes → `available: false` for that panel.
+**Release annotations**: `scripts/posthog_annotate.py` posts `"vX.Y.Z deployed"` per deploy;
+needs `POSTHOG_PERSONAL_API_KEY` GH secret (annotation R+W); absent/outage → no-op, never a
+failed release.
 
 ## CI Gates
 
@@ -607,9 +294,9 @@ local dev → PR to main → CI gates pass → release-please tags vX.Y.Z
 ```
 
 - The stack is launched with **both** compose files: `docker compose -f docker-compose.yml -f docker-compose.prod.yml`. `docker-compose.yml` alone is the DEV config (it bind-mounts `./src:/app/src`); **`docker-compose.prod.yml` overrides that away**, so in PRODUCTION every app service runs the code baked into the image — editing files on disk does nothing until a new image ships. Code lives at `/app/src/cqc_lem/...` inside the image.
-- Image ref is `${DOCKER_IMAGE_NAME}:${IMAGE_TAG:-latest}`, both set in `/opt/lem/.env` (git-ignored, lives on the box); `scripts/deploy.sh` exports `IMAGE_TAG` per-deploy. App services sharing the image: `web_api_blue`/`web_api_green` (the FastAPI app — blue/green pair), `celery_worker`, `celery_worker_selenium`, `celery_worker_selenium_prepost`, `celery_worker_selenium_outreach`, `celery_worker_selenium_content`, `celery_beat`, `flower`. In PROD, `web_app` is a tiny nginx **edge** (the stable name the Cloudflare tunnel targets) that routes to the active color; deploys are zero-downtime blue/green flips and releases batch 4x daily (05/11/17/23 UTC) — see `docs/zero-downtime-deploys.md`. In DEV, `web_app` is still the FastAPI container directly. Infra services (`mysql`, `redis`, `selenium-chrome`, `litellm`, `cloudflared`, `flyway`) use their own upstream images.
+- Image ref is `${DOCKER_IMAGE_NAME}:${IMAGE_TAG:-latest}`, both set in `/opt/lem/.env` (git-ignored); `scripts/deploy.sh` exports `IMAGE_TAG` per-deploy. App services sharing the image: `web_api_blue`/`web_api_green` (FastAPI blue/green), `celery_worker`, `celery_worker_selenium{,_prepost,_outreach,_content}`, `celery_beat`, `flower`. In PROD, `web_app` is a tiny nginx **edge** that routes to the active color; deploys are zero-downtime blue/green flips, releases batch 4x daily (05/11/17/23 UTC) — see `docs/zero-downtime-deploys.md`. Infra (`mysql`, `redis`, `selenium-chrome`, `litellm`, `cloudflared`, `flyway`) uses its own upstream images.
 - **Runtime state (429 breaker, manual automation pause, reply-sweep cadence keys) lives in Redis**, not the DB or containers — it survives deploys. Inspect/repair it by calling the real functions in the container, e.g. `docker exec celery_worker_selenium python -c "from cqc_lem.utilities.linkedin.rate_limit import clear_rate_limit, pause_automation; ..."`, so the correct Redis URL is used.
-- **Local hotfix deploy (fallback when CI/release is too slow or blocked):** build a thin overlay image `FROM` the running release tag that only `COPY`s the changed `src` files (guarantees identical deps, seconds not minutes), then on the box set `/opt/lem/.env` `IMAGE_TAG=<hotfix-tag>` and `cd /opt/lem && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --no-deps --pull never <app-services>`. Keep the prior release image locally for instant rollback (`IMAGE_TAG=vX.Y.Z`). **This diverges prod from `main`** — the fix MUST still land via PR→release, or the next release will REVERT it. Requires `sudo` for the Docker socket on this box.
+- **Local hotfix deploy (fallback when CI/release is too slow or blocked):** build a thin overlay image `FROM` the running release tag that only `COPY`s the changed `src` files (identical deps, seconds not minutes), then on the box set `/opt/lem/.env` `IMAGE_TAG=<hotfix-tag>` and `cd /opt/lem && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --no-deps --pull never <app-services>`. Keep the prior release image locally for instant rollback (`IMAGE_TAG=vX.Y.Z`). **This diverges prod from `main`** — the fix MUST still land via PR→release, or the next release will REVERT it. Requires `sudo` for the Docker socket on this box.
 
 ## Known Gotchas
 
@@ -620,12 +307,12 @@ local dev → PR to main → CI gates pass → release-please tags vX.Y.Z
 - `linkedin-preview` service (external) was removed — preview is now the native `LinkedInPostPreview.tsx` component.
 - **LinkedIn SDUI:** the old `urn:`, `feed-shared-*`, and `comments-comment-*` DOM anchors are gone. Prefer `data-testid` / `aria-label` selectors via `find_first`/`click_first`. The comment composer has NO `<form>` — "submit" means clicking the Comment/Post button next to the composer (`_composer_submitted`), and the comment overflow "…" menu is hover-hidden.
 - **Emoji in Selenium:** ChromeDriver `send_keys` throws on non-BMP emoji — strip them before typing with `_strip_non_bmp()`.
-- **ENUM columns:** `logs.action_type` (and other status columns) are MySQL ENUMs. Adding a new value requires a migration — e.g. V37 added `'followup'` to `logs.action_type`. Migrations live in `compose/local/database/migrations/` and currently run through **V52** (V48 added `profiles.synthesis`/`synthesis_generated_at` — the cached durable voice brief, V49 added `newsletter_editions.subject` for topic dedup, V50 added `newsletter_editions.format`/`hook_style`/`opening_line`/`blueprint` — the edition SHAPE history for format/hook/opener rotation, V51 added `posts.archetype`/`hook_style` — the post-side shape history for the same rotation, V52 widened `engagement_preferences.tone` VARCHAR(64)→VARCHAR(255): the whole engagement upsert is one row, so an over-long tone raised MySQL 1406 and silently rolled back ALL sections — DM templates persisted only because they're a separate table, V53 added the `scheduled_dms` table for the DM scheduler — issue #306). New migrations use **TIMESTAMP** versions (`V<YYYYMMDDHHMMSS>__name.sql`, `date -u +%Y%m%d%H%M%S`) so two branches can never collide — e.g. `V20260726170427__add_comment_outcomes.sql` (issue #628) and
+- **ENUM columns:** `logs.action_type` (and other status columns) are MySQL ENUMs. Adding a new value requires a migration — e.g. V37 added `'followup'` to `logs.action_type`. Migrations live in `compose/local/database/migrations/`. New migrations use **TIMESTAMP** versions (`V<YYYYMMDDHHMMSS>__name.sql`, `date -u +%Y%m%d%H%M%S`) so two branches can never collide — e.g. `V20260726170427__add_comment_outcomes.sql` (issue #628) and
 `V20260726230423__add_content_quality_scores.sql` (issue #630).
-- **Unified content core:** newsletters, posts, AND comments all draw framework (blueprints/variety), research, and alignment from `utilities/ai/content_framework.py` / `content_research.py` / `content_alignment.py`. Do NOT add parallel per-content-type prompt helpers — extend the shared menus/engine instead. Comment research is OFF by default (`COMMENT_RESEARCH_ENABLED`) because comments run at high volume; the target post is their grounding. Comments also carry their own **quality contract + similarity gate** (issue #617, same module): a draft must reference a specific claim from the target post, add one of {own experience, data point, respectful disagreement, genuine question}, run ≥2 sentences, and never open with validation filler — and must not near-duplicate the user's last 50 posted comments (`COMMENT_SIMILARITY_MAX`, embedding cosine via `lem-embedding`, token-overlap fallback). A failing draft is regenerated up to `COMMENT_GATE_MAX_ATTEMPTS` times and then the post is SKIPPED — `generate_ai_response` returns `None`, never a failing comment. The post-history uniqueness engine (opener/subject avoidance steering + the deterministic `POST_SIMILARITY_MAX` review gate in `create_text_post`, mirroring the newsletter's V49/V50 dedup) also lives in `content_framework.py` — and trend-based post subjects are ANCHORED to the user's `focus_topics` (rotated per post_id via `select_focus_topic` in `content_alignment.py`), not just their profile industry. The **story bank** (issue #620, `story_bank.py` + the `story_bank` table) is the FACT half of that core: `create_text_post` selects ONE of the user's own entries per post (relevance, then least-used/longest-unused rotation) and its facts are the only personal specifics the writer may state — an empty or irrelevant bank ships an explicit no-fabrication fallback (industry observation) instead of an invented anecdote, and a first-person specific that traces to no supplied source regenerates once (`POST_FABRICATION_REGEN_ENABLED`). `profiles.synthesis` still feeds VOICE; the bank feeds FACTS. Two **save-targeted** post archetypes live in the same `POST_FORMATS` menu (issue #619): `build_receipt` and `resource_compendium`. They are marked `save_targeted` (so scheduling can prefer them via `select_blueprint(prefer_save_targeted=True)`) and `fact_anchored`, which narrows their hook menu to `NUMBER_LED_HOOK_STYLES` (lead with a real number, ~140-char mobile budget) and turns on the **no-fabrication guard**: the writer may only state a specific that a VERIFIED fact backs, otherwise it must ship as a `[[LABEL: …]]` placeholder. Those verified facts are the story bank's, at two different widths on purpose — the WRITER's allow-list is only the ONE entry this post was anchored to (carried on the blueprint as `fact_anchors`, since a number from some other entry was never in its prompt), while the CHECKERS (`_review_generated_post` and the `fact_grounding` gate, via `run_content_plan._fact_anchors`) count EVERY active entry, because a number out of the user's own material is by definition not one the model invented. `fact_grounding_report` grades the draft deterministically; an invented number costs one regeneration and then holds the post PENDING behind the `fact_grounding` quality gate, and unfilled placeholders hold it too until the author fills them in (a re-score of human-EDITED text treats the author's own numbers as verified, or the hold could never clear). An empty bank means every such draft is placeholder-only and approval-gated. Carousels draw from the same menu via `carousel_blueprint_directive` and persist their shape into the same V51 rotation history — and since issue #728 they run the SAME two-width split: `create_carousel_content` selects ONE entry (`_select_story_for_post`) and hands the writer only that entry's `fact_sources` plus its `story_directive`, while `_report_carousel_fact_grounding` grades the finished SLIDES against every active entry. The carousel used to pass `_fact_anchors(user_id)` — the whole bank — straight to the writer, which is how one deck spent six of the account's receipts at once. Whether a fact-anchored archetype is on the carousel menu at all now follows the WRITER's anchor, not the bank's size: with none, those archetypes are taken off entirely (`select_blueprint(exclude_formats=fact_anchored_formats("post"))`), because a carousel bakes its text into rendered slide IMAGES and a `[[…]]` placeholder there can never be edited away. The **deck reference gate** (#728, same module) is the save-worthiness half: `deck_reference_report` grades a generated deck deterministically — every BODY slide (cover/CTA/testimonial exempt) of a `save_targeted` archetype, or of ANY deck whose caption promises a checklist/stack/framework/numbers, must carry ≥1 reusable artifact (step, command, metric, threshold, config line, checklist item, decision rule, before/after), and a promise the slides never deliver fails the deck on its own. A failure regenerates with the exact slides named (`deck_retry_directive`, `DECK_REFERENCE_MAX_ATTEMPTS`, default one retry) and then ships with a logged reason — rendered images have no review queue. `reference_slide_directive` gives the writer the shapes that ARE inherently save-worthy up front. Tool/model version numbers ("GPT-4o", "Postgres 16") are NOT graded as claims — the receipt's structure asks for the exact stack by name. The **deterministic slop lint** (issue #625, `slop_lint.py`) is the cheap explainable layer under the two LLM passes (`humanize_text` #416, `score_authenticity` #382): pure regex/statistics, ~0.5ms, run on posts AND comments AND DMs AND newsletter editions AND group posts after humanization. Five HARD checks (banned lexicon pileup, the "it's not X, it's Y" contrastive frame, "here's the kicker" ta-da transitions, bait/reflex closers, emoji-bullet listicles) are regenerated up to `SLOP_LINT_MAX_ATTEMPTS` and then BLOCK — a post is held at PENDING behind the `ai_slop` quality gate with the exact constructions named, a feed comment is SKIPPED (it shares the comment gate's retry budget), and a DM/newsletter/group post ships with a logged reason because those have no review queue and dropping them breaks the sequence. Four WARN checks (em-dash density, rule-of-three, burstiness, rhetorical hook) are advisory and never hold anything — they have real false positives (a genuine list of three tools reads like a rule-of-three). The wordbank is `content_alignment.AI_TELL_WORDS`, NOT a second copy, and the bait check honours the same lead-magnet `exempt_keyword` `strip_engagement_bait` does, or every "Comment YES" CTA would hold its own post.
-- **Content mix (70/20/10) governor:** every planned post carries a mix class in `posts.content_mix` — `value` (70%, audience value, sells nothing) / `authority` (20%, expertise education, sells nothing) / `promo` (10%). The classes are assigned deterministically in `content_alignment.assign_content_mix` (promo cadence `PROMO_EVERY_N_POSTS`, clamped to 10–30 so promo can never exceed 10%), the promo slot claims a TEXT post and is forced into the `case_snapshot` blueprint, and the class rides into the prompt via `alignment_directive(..., content_mix=)`. **Promo CTAs are always an ARTIFACT** (lead magnet / newsletter) — a meeting ask is banned in the prompts (`ARTIFACT_CTA_POLICY`, injected by `cta_policy_directive`), repaired deterministically by `replace_meeting_ask_cta`, and any that survives HOLDS the post at PENDING via the `meeting_cta` quality gate. Compliance is reported on `/user/engagement-analytics` (`content_mix`) and rendered on the Dashboard.
+- **Unified content core:** newsletters, posts, AND comments draw framework (blueprints/variety), research, and alignment from `utilities/ai/content_framework.py` / `content_research.py` / `content_alignment.py`. Do NOT add parallel per-content-type prompt helpers — extend the shared menus/engine. Comment research is OFF by default (`COMMENT_RESEARCH_ENABLED`); the target post is their grounding. Comments carry their own **quality contract + similarity gate** (issue #617): reference a specific claim, add one of {own experience, data point, respectful disagreement, genuine question}, ≥2 sentences, no validation-filler opener, no near-duplicate of the user's last 50 posted comments (`COMMENT_SIMILARITY_MAX`, embedding cosine via `lem-embedding`, token-overlap fallback). A failing draft regenerates up to `COMMENT_GATE_MAX_ATTEMPTS`, then the post is SKIPPED — `generate_ai_response` returns `None`. The **story bank** (issue #620) is the FACT half: `create_text_post` selects ONE entry per post. The TWO save-targeted archetypes (`build_receipt`, `resource_compendium` — issue #619) are `fact_anchored` with WRITER's allow-list = the ONE anchored entry, CHECKERS counting EVERY active entry — the carousel used to pass the whole bank to the writer, which is how one deck spent six receipts at once (#728). The **deck reference gate** (#728) is the save-worthiness half — every BODY slide of a `save_targeted` archetype, or any deck whose caption promises a checklist/stack/framework/numbers, must carry ≥1 reusable artifact. The **deterministic slop lint** (issue #625, `slop_lint.py`) is the cheap explainable layer under the two LLM passes (`humanize_text` #416, `score_authenticity` #382): pure regex/statistics, ~0.5ms. Five HARD checks regenerate up to `SLOP_LINT_MAX_ATTEMPTS` then BLOCK (post held PENDING behind `ai_slop`; feed comment SKIPPED; DM/newsletter/group post ships with a logged reason). Four WARN checks (em-dash density, rule-of-three, burstiness, rhetorical hook) are advisory and never hold anything. Full posture: `docs/content-core.md`.
+- **Content mix (70/20/10) governor:** every planned post carries a mix class in `posts.content_mix` — `value` (70%, audience value, sells nothing) / `authority` (20%, expertise education, sells nothing) / `promo` (10%). Classes assigned deterministically in `content_alignment.assign_content_mix` (promo cadence `PROMO_EVERY_N_POSTS`, clamped to 10–30 so promo can never exceed 10%); the promo slot claims a TEXT post and is forced into the `case_snapshot` blueprint; the class rides into the prompt via `alignment_directive(..., content_mix=)`. **Promo CTAs are always an ARTIFACT** (lead magnet / newsletter) — a meeting ask is banned in the prompts (`ARTIFACT_CTA_POLICY`, injected by `cta_policy_directive`), repaired deterministically by `replace_meeting_ask_cta`, and any that survives HOLDS the post at PENDING via the `meeting_cta` quality gate. Compliance is reported on `/user/engagement-analytics` (`content_mix`) and rendered on the Dashboard.
 - **Proxy auth:** proxies are authenticated by the runtime MV3 extension (`_build_proxy_auth_extension_b64`), not by URL-embedded credentials — MV2 background pages that used to do this are disabled in Chrome 149+.
-- **Stale lazy chunks after a deploy (issue #743):** zero-downtime covers the server; a browser tab is the other half. It holds the content-hashed chunk names of the build it loaded, and a code-split chunk (jszip in avatar training, any `React.lazy` route) is only fetched when the user triggers the feature — so at 4 releases/day a tab open across one 404s on a hash the new image no longer has, and it reads as "the feature is broken", not "reload me". Two layers, and they cover different windows. **Retention** (`api/spa_assets.py`): both colors mount the named `spa_asset_archive` volume at `SPA_ASSET_ARCHIVE_DIR`, each container syncs its own `ui/dist/assets` in at startup, keeps `SPA_ASSET_ARCHIVE_KEEP` builds (default 5) and serves a live-bundle miss out of the archive — safe because a content-hashed name resolves to one file forever, so `immutable` is preserved rather than weakened. It lives in the app, NOT `deploy.sh`, so archive maintenance can never fail a deploy; an unwritable volume logs a warning and serves the live bundle only. **One reload** (`ui/src/utils/chunkReload.ts`) is the fallback for anything older: `importWithChunkRecovery` / `lazyWithChunkRecovery` wrap a dynamic import (react-query and error boundaries CATCH the rejection, so the window-level `vite:preloadError`/`unhandledrejection` handlers would never see it), and a failure reloads once — `index.html` is `no-store`, so a reload always lands on the current build. The loop guard is a sessionStorage marker: a tab that can't PERSIST it never reloads at all, and a second failure inside the cooldown shows `NewVersionNotice` instead. An OFFLINE tab is never reloaded either (`navigator.onLine === false`) — a disconnected dynamic import reports the SAME message a stale chunk does, and a reload with no network turns a working app into the browser's offline page. The `no-store` shell is load-bearing for both layers.
+- **Stale lazy chunks after a deploy (issue #743):** zero-downtime covers the server; a browser tab is the other half. It holds the content-hashed chunk names of the build it loaded, and a code-split chunk (jszip in avatar training, any `React.lazy` route) is only fetched when the user triggers the feature — so at 4 releases/day a tab open across one 404s on a hash the new image no longer has, and it reads as "the feature is broken", not "reload me". Two layers cover different windows. **Retention** (`api/spa_assets.py`): both colors mount the named `spa_asset_archive` volume at `SPA_ASSET_ARCHIVE_DIR`, each container syncs its own `ui/dist/assets` in at startup, keeps `SPA_ASSET_ARCHIVE_KEEP` builds (default 5) and serves a live-bundle miss out of the archive — a content-hashed name resolves to one file forever, so `immutable` is preserved. Lives in the app, NOT `deploy.sh`, so archive maintenance can never fail a deploy; an unwritable volume logs a warning and serves the live bundle only. **One reload** (`ui/src/utils/chunkReload.ts`) is the fallback for anything older: `importWithChunkRecovery` / `lazyWithChunkRecovery` wrap a dynamic import (react-query and error boundaries CATCH the rejection, so the window-level `vite:preloadError`/`unhandledrejection` handlers would never see it), and a failure reloads once — `index.html` is `no-store`, so a reload always lands on the current build. The loop guard is a sessionStorage marker: a tab that can't PERSIST it never reloads at all, and a second failure inside the cooldown shows `NewVersionNotice` instead. An OFFLINE tab is never reloaded (`navigator.onLine === false`) — a disconnected dynamic import reports the SAME message a stale chunk does, and a reload with no network turns a working app into the browser's offline page.
 
 ## Git Safety & Multi-Agent Concurrency Rules
 - **Fresh State Enforcement**: Before executing or generating any code edit, you MUST explicitly run `git status` and a file read command (e.g., `cat <filename>`) to verify no hidden or uncommitted upstream modifications exist. Never rely on your internal conversation memory for file contents.

@@ -1,0 +1,32 @@
+name: CLAUDE.md size guard
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+    # Only run when CLAUDE.md (or the guard script itself) is in the diff. The
+    # the script itself reads the post-merge file (always the source of truth)
+    # so this filter is just a perf optimization — unrelated PRs don't pay it.
+    paths:
+      - CLAUDE.md
+      - scripts/check_claude_md_size.py
+
+permissions:
+  pull-requests: read
+
+jobs:
+  size:
+    name: CLAUDE.md ≤ 40,000 chars
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the script reads the post-merge file state.
+          fetch-depth: 0
+      - name: Check CLAUDE.md is within the harness cap
+        # scripts/check_claude_md_size.py is stdlib-only and exits 1 over the cap.
+        # Required status check — gates merges.
+        run: python3 scripts/check_claude_md_size.py
+      - name: Annotate where the relocated detail goes
+        if: failure()
+        run: |
+          echo "::error::CLAUDE.md exceeded the 40,000-char harness cap. Move detail to docs/*.md and leave CLAUDE.md as the map (locations, symbols, constants, invariants, where to find the detail). See CONTRIBUTING.md."
