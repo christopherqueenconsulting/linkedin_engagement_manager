@@ -47,7 +47,7 @@ Every recurring cost, how it is incurred, and how we capture it:
 
 | # | Cost driver | Unit | Variable/Fixed | Scales with | Capture mechanism |
 |---|---|---|---|---|---|
-| 1 | **LLM inference** (OpenAI / Claude / Ollama Cloud / OpenRouter via LiteLLM) | per call (tokens) | Variable | usage volume × tier | `track_llm_call` `cost_usd` (already) + **add `user_id`, `feature`, `model_tier`** |
+| 1 | **LLM inference** (OpenAI / Claude / Ollama Cloud / OpenRouter via LiteLLM) | per call (tokens) | Variable | usage volume × tier | `track_llm_call` `cost_usd`, keyed by the **serving model** with the tier alias preserved as `model_tier`; plus `shadow_cost_usd` for subscription-priced models |
 | 2 | **Research** (Perplexity Sonar `lem-research`) | per edition/call | Variable | newsletters; comments OFF by default (`COMMENT_RESEARCH_ENABLED`) | Same `llm_call` path, `feature="research"` |
 | 3 | **Media — video** (RunwayML gen4/gen4.5/premium) | per render (sec × rate) | Variable, spiky | video posts | **New** `track_media_cost` using existing `estimate_video_cost` |
 | 4 | **Media — image** (DALL-E 3 `lem-image`) | per image | Variable | carousels/posts w/ imagery | `track_media_cost`, priced per image (add to cost table) |
@@ -462,13 +462,14 @@ Quality guardrail (must hold): cohort engagement_rate · median authenticity_sco
 
 | Risk | Mitigation |
 |---|---|
-| **Unattributed / runaway LLM spend** | Fix (1) makes all cost attributable; unattributed-spend alert; per-user ceiling |
+| **Unattributed / runaway LLM spend** | Serving-model attribution + unattributed-spend alert + per-user ceiling |
+| **Subscription traffic hides true unit cost** | `shadow_cost_usd` is tracked separately for Ollama Cloud models so the "what if we left?" decision has a number |
 | **Proxy cost linear in users** | Prefer regional egress pools (`EGRESS_AT_SCALE.md`); reserve per-user residential for users whose trust needs it; accrue + monitor |
 | **Media cost spikes** | Keep premium video credit-gated (already, `video_credit_ledger`); media reuse; spike alert |
 | **PostHog ingestion cost** | Roll high-volume LLM events into daily `cost_ledger` rollups; sample verbose events; watch our own event count |
 | **Over-aggressive cost cutting degrades engagement** | Quality gate on every auto-change; `risk:product-decision` gate; cohort-scoped + auto-rollback |
 | **Privacy of per-user cost/revenue data** | Cost/margin dashboards are internal-only; per-user financials access-controlled; never surfaced in user-facing UI |
-| **Estimated vs. actual LLM cost drift** | `estimate_llm_cost_usd` is coarse; periodically reconcile against LiteLLM/provider actuals and refresh `LLM_COST_PER_1K` |
+| **Estimated vs. actual LLM cost drift** | `estimate_llm_cost_usd` now derives from `.litellm/model_prices_snapshot.json`; refresh the snapshot periodically and override via `LLM_COST_PER_1K` if needed |
 
 ---
 
