@@ -607,12 +607,12 @@ def build_upgrade_issue_body(upgrades: list[dict], today: str) -> str:
             ]
         lines.append("")
     lines += ["## Scope",
-              "- Evaluate each candidate against the tier it would serve (quality on the real "
-              "prompts, latency, and quota cost at the new usage level).",
-              "- If a swap is worth it, change `.litellm/config.yaml` — do NOT add it to "
-              "`.litellm/model_upgrades.yaml`, which is the RETIREMENT map and auto-swaps.",
-              "- Leave anything that jumps a usage tier alone unless the quality win justifies the "
-              "extra quota burn.",
+              ("- Evaluate each candidate against the tier it would serve (quality on the real " +
+               "prompts, latency, and quota cost at the new usage level)."),
+              ("- If a swap is worth it, change `.litellm/config.yaml` — do NOT add it to " +
+               "`.litellm/model_upgrades.yaml`, which is the RETIREMENT map and auto-swaps."),
+              ("- Leave anything that jumps a usage tier alone unless the quality win justifies the " +
+               "extra quota burn."),
               "",
               "## Acceptance",
               "- A decision per candidate above (adopt or explicitly decline, with the reason).",
@@ -650,18 +650,18 @@ def build_eval_issue_body(new_tags: list[str], catalog: dict, today: str) -> str
         lines.append(f"- `{name}` — {'; '.join(bits)}")
     lines += ["",
               "## Scope",
-              "- Read each model's page (https://ollama.com/library/<name>) for its usage level "
-              "and capabilities; a higher usage level costs more Ollama Cloud quota per call.",
-              "- Decide whether any belongs in a `lem-simple` / `lem-medium` / `lem-complex` "
-              "deployment in `.litellm/config.yaml`. Adopting one is a config change, not a "
-              "`model_upgrades.yaml` entry (that map is retirement-only and auto-swaps).",
-              "- Declining is a valid outcome — say so on the issue so the next scan's reader "
-              "knows it was considered.",
+              ("- Read each model's page (https://ollama.com/library/<name>) for its usage level " +
+               "and capabilities; a higher usage level costs more Ollama Cloud quota per call."),
+              ("- Decide whether any belongs in a `lem-simple` / `lem-medium` / `lem-complex` " +
+               "deployment in `.litellm/config.yaml`. Adopting one is a config change, not a " +
+               "`.litellm/model_upgrades.yaml` entry (that map is retirement-only and auto-swaps)."),
+              ("- Declining is a valid outcome — say so on the issue so the next scan's reader " +
+               "knows it was considered."),
               "",
               "## Acceptance",
               "- A decision per tag above.",
-              "- If a model is adopted, `scripts/weekly_model_check.sh`'s tier smoke test still "
-              "passes and `poetry run pytest tests/unit -q` is green.",
+              ("- If a model is adopted, `scripts/weekly_model_check.sh`'s tier smoke test still " +
+               "passes and `poetry run pytest tests/unit -q` is green."),
               "",
               "Auto-filed by `scripts/model_health_check.py --file-issues` (issue #716). Dedup "
               "markers (do not remove): " + ", ".join(f"`{n}`" for n in new_tags)]

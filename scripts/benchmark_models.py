@@ -697,8 +697,8 @@ def render_report(run: dict) -> str:
         f"- **Judge calls spent:** {run.get('judge_calls', 0)}"
         f" (cap {run.get('judge_call_cap', 0)})",
         "",
-        "Inputs are synthetic prompt templates from `tests/benchmarks/model_tiers/`; no customer "
-        "content, credentials or production logs appear in this report.",
+        ("Inputs are synthetic prompt templates from `tests/benchmarks/model_tiers/`; no customer " +
+         "content, credentials or production logs appear in this report."),
         "",
         "## Scorecard",
         "",
@@ -750,15 +750,15 @@ def render_report(run: dict) -> str:
     recommendations = run.get("recommendations") or []
     lines += ["## Swap recommendations", ""]
     if not recommendations:
-        lines += ["None. No candidate met its tier's thresholds *and* beat the champion on every "
-                  "graded expectation.", ""]
+        lines += [("None. No candidate met its tier's thresholds *and* beat the champion on every " +
+                   "graded expectation."), ""]
     else:
         for rec in recommendations:
             lines.append(f"- **{rec['tier']}**: `{rec['champion']}` → `{rec['model']}`")
         lines += ["",
-                  "These are recommendations, not changes. `.litellm/model_upgrades.yaml` is the "
-                  "RETIREMENT map and auto-swaps into the live config, so adopting one of these is "
-                  "a deliberate edit (config change or a #717-style PR):",
+                  ("These are recommendations, not changes. `.litellm/model_upgrades.yaml` is the " +
+                   "RETIREMENT map and auto-swaps into the live config, so adopting one of these is " +
+                   "a deliberate edit (config change or a #717-style PR):"),
                   "", "```yaml"] + recommendation_mapping_lines(recommendations) + ["```", ""]
 
     lines += ["---", "",
