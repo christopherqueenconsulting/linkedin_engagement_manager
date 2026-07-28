@@ -12,7 +12,7 @@ from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited, clear_rat
     mark_rate_limited, rate_limit_cooldown_remaining, is_automation_paused, \
     automation_pause_remaining, is_measurement_paused
 from cqc_lem.utilities.linkedin.scrapper import returnProfileInfo
-from cqc_lem.utilities.logger import myprint, log_warning, log_error
+from cqc_lem.utilities.logger import myprint, log_warning
 from cqc_lem.utilities.selenium_util import load_cookies, get_element_wait_retry, \
     get_visible_element_wait_retry, getText
 from selenium.common.exceptions import WebDriverException

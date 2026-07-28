@@ -46,7 +46,7 @@ from cqc_lem.utilities.ai.content_framework import select_blueprint, history_avo
 from cqc_lem.utilities.ai.content_alignment import (
     should_include_lead_magnet_cta, lead_magnet_cta_directive, ensure_lead_magnet_cta,
     personal_proof_directive, topic_authority_score, topic_authority_min, profile_topic_dna,
-    content_matches_focus, score_authenticity, authenticity_gate_enabled, authenticity_score_min,
+    score_authenticity, authenticity_gate_enabled, authenticity_score_min,
     humanize_text, ContentMix, assign_content_mix, contains_meeting_ask, meeting_ask_excerpts,
     normalize_content_mix, replace_meeting_ask_cta)
 from cqc_lem.utilities.ai import story_bank as _story_bank
@@ -66,7 +66,7 @@ from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.logger import myprint, log_info, log_warning, log_error
 from cqc_lem.utilities.observability import attribute_llm_cost, llm_attribution, FEATURE_CONTENT
 from cqc_lem.utilities.selenium_util import get_driver_wait_pair, quit_gracefully
-from cqc_lem.utilities.utils import get_best_posting_time, get_post_time, create_folder_if_not_exists, \
+from cqc_lem.utilities.utils import get_post_time, create_folder_if_not_exists, \
     save_video_url_to_dir, apply_schedule_jitter
 from requests.adapters import HTTPAdapter
 from urllib3 import Retry
@@ -480,8 +480,7 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
     from cqc_lem.utilities.ai.ai_helper import generate_carousel_content
     from cqc_lem.utilities.carousel_creator import (
         create_ppt, create_carousel_slide_images,
-        EducationalContentCarousel, CaseStudyCarousel, PersonalStoryCarousel,
-        IndustryInsightsCarousel, EventRecapCarousel, TestimonialCarousel, ProductDemoCarousel,
+        EducationalContentCarousel, CaseStudyCarousel, IndustryInsightsCarousel, ProductDemoCarousel,
     )
 
     # Same alignment inputs as text posts (best-effort — carousel generation never blocks on them).

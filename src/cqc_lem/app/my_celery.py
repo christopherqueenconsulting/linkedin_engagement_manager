@@ -3,11 +3,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from celery import Celery
-from celery import current_app
 from celery.schedules import crontab
 from celery.signals import (worker_process_init, task_received, task_success, task_sent,
                             task_prerun, task_postrun, task_failure, task_retry)
-from celery.app.control import Inspect
 
 from cqc_lem.app import celeryconfig
 from cqc_lem.app.celeryconfig import broker_url

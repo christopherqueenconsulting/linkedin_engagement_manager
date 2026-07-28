@@ -461,9 +461,7 @@ def create_ppt_educational_content_carousel(prs: Presentation, carousel: Educati
         "subtitle": carousel.cover.content,
         "body_text": carousel.cover.content
     }
-    cover_slide = random.choice(cover_layouts)(
-        **cover_slide_args
-    )
+    random.choice(cover_layouts)(**cover_slide_args)
 
     # Slide 2-5: Content/Tips — structured, deterministic image selection + layout
     # routing so image-bearing slides land on an image-capable layout.
@@ -489,9 +487,7 @@ def create_ppt_educational_content_carousel(prs: Presentation, carousel: Educati
         "subtitle": carousel.call_to_action.content,
         "image_path": cta_image_path,
     }
-    conclusion_slide = random.choice(conclusion_layouts)(
-        **conclusion_slide_args
-    )
+    random.choice(conclusion_layouts)(**conclusion_slide_args)
 
     return prs  # Return the presentation for further modifications or saving
 
@@ -515,7 +511,7 @@ def create_ppt_case_study_carousel(prs: Presentation, case_study_carousel: CaseS
         'title': case_study_carousel.cover.title,
         'subtitle': getattr(case_study_carousel.cover, 'subtitle', case_study_carousel.cover.content)
     }
-    cover_slide = random.choice(cover_layouts)(**cover_kwargs)
+    random.choice(cover_layouts)(**cover_kwargs)
 
     default_image_path = get_default_image_path()
 
@@ -567,7 +563,7 @@ def create_ppt_case_study_carousel(prs: Presentation, case_study_carousel: CaseS
         'author': getattr(case_study_carousel.testimonial, 'author',
                           getattr(case_study_carousel.testimonial, 'title', "Happy Client"))
     }
-    testimonial_slide = random.choice(testimonial_layouts)(**testimonial_kwargs)
+    random.choice(testimonial_layouts)(**testimonial_kwargs)
 
     # Slide 6: Call to Action
     cta_layouts = [create_section_title_and_description_layout_slide, create_custom_3_1_layout_slide]
@@ -577,7 +573,7 @@ def create_ppt_case_study_carousel(prs: Presentation, case_study_carousel: CaseS
         'subtitle': case_study_carousel.call_to_action.content,
         'description': case_study_carousel.call_to_action.content
     }
-    cta_slide = random.choice(cta_layouts)(**cta_kwargs)
+    random.choice(cta_layouts)(**cta_kwargs)
 
     return prs  # Return the presentation for further modifications or saving
 

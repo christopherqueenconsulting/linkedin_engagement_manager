@@ -37,10 +37,10 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 DEFAULT_REPO = "christopherqueenconsulting/linkedin_engagement_manager"
 DEFAULT_LLM_MODEL = "lem-medium"

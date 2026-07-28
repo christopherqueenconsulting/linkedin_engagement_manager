@@ -626,7 +626,6 @@ class TestGetMainBlogUrlContent:
     @patch("cqc_lem.app.run_content_plan.get_session_for_response")
     def test_returns_post_from_wordpress_api(self, mock_session_fn):
         from cqc_lem.app.run_content_plan import get_main_blog_url_content
-        from unittest.mock import MagicMock
         mock_session = MagicMock()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -644,7 +643,6 @@ class TestGetMainBlogUrlContent:
     def test_falls_back_to_scraping_on_http_error(self, mock_session_fn, mock_scrape):
         from cqc_lem.app.run_content_plan import get_main_blog_url_content
         import requests
-        from unittest.mock import MagicMock
         mock_session = MagicMock()
         mock_resp = MagicMock()
         mock_resp.raise_for_status.side_effect = requests.exceptions.HTTPError("404")

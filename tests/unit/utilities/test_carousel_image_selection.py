@@ -1,7 +1,6 @@
 """Unit tests for the structured, deterministic carousel content-slide image
 selection + layout routing (cqc_lem.utilities.carousel_creator)."""
 
-import os
 import tempfile
 
 import pytest

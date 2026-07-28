@@ -8,7 +8,7 @@ import zipfile
 import pytest
 from unittest.mock import MagicMock
 
-from cqc_lem.utilities.selenium_util import apply_proxy, _build_proxy_auth_extension_b64
+from cqc_lem.utilities.selenium_util import apply_proxy
 
 pytestmark = pytest.mark.unit
 

@@ -984,7 +984,6 @@ class TestOrganizeVideosByNameAndTimestamp:
 
     def test_mp4_file_in_non_cqc_folder_is_moved(self):
         from datetime import datetime
-        from unittest.mock import call as mock_call
 
         fake_mtime = datetime(2024, 1, 15, 10, 30, 0).timestamp()
 
@@ -1007,7 +1006,7 @@ class TestOrganizeVideosByNameAndTimestamp:
 
 
 @pytest.mark.unit
-class TestAutoInviteToCompanyPages:
+class TestAutoInviteToCompanyPagesFiltered:
     """auto_invite_to_company_pages must only invite users who have a company page set."""
 
     def test_only_users_with_company_page_are_invited(self):

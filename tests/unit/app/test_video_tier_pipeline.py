@@ -171,7 +171,7 @@ class TestDefaultVideoQualityPreference:
              patch("cqc_lem.app.run_content_plan.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
              patch("cqc_lem.app.run_content_plan.create_runway_video", return_value="https://x.mp4") as crv:
             from cqc_lem.app.run_content_plan import _generate_video_src
-            src = _generate_video_src(1, "text", None, post_id=9)
+            _generate_video_src(1, "text", None, post_id=9)
         ded.assert_not_called()
         assert crv.call_args[1]["model"] == "gen4_turbo"
 

@@ -1,7 +1,6 @@
 """Coverage tests for cqc_lem.utilities.utils helpers (debug wrapper, prompts, file/AWS
 helpers, asset purging)."""
 
-import os
 import pytest
 from unittest.mock import MagicMock, patch
 
