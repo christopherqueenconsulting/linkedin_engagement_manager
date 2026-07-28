@@ -1,0 +1,33 @@
+name: PR Lint
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  validate:
+    name: Validate PR title (Conventional Commits)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Conventional Commits: type(scope)?!: subject
+          # Allowed types: feat, fix, perf, revert, docs, style, chore, refactor, test, build, ci
+          # Scope is bracketed by (), may contain word chars + dash + dot + slash, and the
+          # breaking-change marker `!` is optional. Subject is free text after the colon+space.
+          pattern: '^(feat|fix|perf|revert|docs|style|chore|refactor|test|build|ci)(\([\w\-./]+\))?!?: .+'
+          # Allow Dependabot (chore(deps): ...) and the release-please bot's own release
+          # commits (chore(main): release X.Y.Z) through the lint. Without this, release-please
+          # would lint-block its own release PR.
+          ignorePatterns: '^(chore\(deps\)|chore\(main\): release ).+'
+          validateSingleCommit: false
+          # Don't try to parse the subject of merge commits or revert commits — release-please
+          # is what cares about commit subjects, not the PR title lint.
+          subjectOptions: 'ignoreMergeCommits,ignoreRevertCommits'
+          # Promote this from a comment to a required status check so it gates merges.
+          requireStatusCheck: true

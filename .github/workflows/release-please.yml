@@ -19,6 +19,7 @@ jobs:
         id: release
         with:
           release-type: python
+          config-file: release-please-config.json
           # RELEASE_DISPATCH_TOKEN (user PAT, Contents+PRs write) must author the release PR:
           # a real-user author means the PR's CI runs automatically. With the default
           # GITHUB_TOKEN the PR is bot-authored and EVERY check sits in action_required until
