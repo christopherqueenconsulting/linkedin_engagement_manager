@@ -256,3 +256,62 @@ def test_signup_without_a_ref_attributes_nothing():
     result, calls = _run_attribute(9, {"utm_source": "linkedin"})
     assert result is None
     assert "record" not in calls
+
+
+# --- edge-case coverage for uncovered branches ------------------------------------------------------
+
+def test_program_disabled_short_circuits_everything():
+    with patch(f"{_AFF}.AFFILIATE_PROGRAM_ENABLED", False):
+        assert affiliate.enroll_user(1) == {}
+        assert affiliate.attribute_referral(1, {"ref": "2"}) is None
+        assert affiliate.convert_referral(1) is None
+
+
+def test_has_disclosure_returns_false_for_empty_text():
+    assert affiliate.has_disclosure(None) is False
+    assert affiliate.has_disclosure("") is False
+
+
+def test_apply_disclosure_is_a_no_op_without_configured_sentence(owned_site):
+    with patch(f"{_AFF}.AFFILIATE_DISCLOSURE_TEXT", ""):
+        body = "Try it: https://app.lem.test/signup?ref=42"
+        assert affiliate.apply_disclosure(body) == body
+
+
+def test_company_page_query_only_runs_when_boundary_is_on():
+    with patch(f"{_AFF}.AFFILIATE_PROGRAM_ENABLED", True), \
+         patch(f"{_AFF}.AFFILIATE_REQUIRE_COMPANY_PAGE", True), \
+         patch("cqc_lem.utilities.db.get_company_linked_in_url_for_user", return_value="https://li/c") as mock_url:
+        assert affiliate._company_page(1) is True
+        mock_url.assert_called_once_with(1)
+
+    with patch(f"{_AFF}.AFFILIATE_PROGRAM_ENABLED", True), \
+         patch(f"{_AFF}.AFFILIATE_REQUIRE_COMPANY_PAGE", True), \
+         patch("cqc_lem.utilities.db.get_company_linked_in_url_for_user", side_effect=RuntimeError("db")):
+        assert affiliate._company_page(1) is False
+
+    # Boundary off: no query at all, regardless of what the DB would do.
+    with patch(f"{_AFF}.AFFILIATE_PROGRAM_ENABLED", True), \
+         patch(f"{_AFF}.AFFILIATE_REQUIRE_COMPANY_PAGE", False), \
+         patch("cqc_lem.utilities.db.get_company_linked_in_url_for_user") as mock_url:
+        assert affiliate._company_page(1) is True
+        mock_url.assert_not_called()
+
+
+def test_enroll_user_is_a_no_op_when_ineligible():
+    with patch(f"{_AFF}.AFFILIATE_PROGRAM_ENABLED", True), \
+         patch(f"{_AFF}.AFFILIATE_REQUIRE_COMPANY_PAGE", True), \
+         patch("cqc_lem.utilities.db.get_company_linked_in_url_for_user", return_value=None):
+        assert affiliate.enroll_user(1) == {}
+
+
+def test_affiliate_state_reports_ineligible_when_company_page_required_and_missing():
+    with patch(f"{_AFF}.AFFILIATE_PROGRAM_ENABLED", True), \
+         patch(f"{_AFF}.AFFILIATE_REQUIRE_COMPANY_PAGE", True), \
+         patch("cqc_lem.utilities.db.get_company_linked_in_url_for_user", return_value=None), \
+         patch("cqc_lem.utilities.db.get_affiliate_enrollment", return_value=None), \
+         patch("cqc_lem.utilities.db.get_affiliate_referral_counts", return_value={}), \
+         patch("cqc_lem.utilities.db.get_affiliate_reward_totals", return_value={}):
+        state = affiliate.affiliate_state(1)
+        assert state["status"] == affiliate.STATUS_INELIGIBLE
+        assert state["eligible"] is False
