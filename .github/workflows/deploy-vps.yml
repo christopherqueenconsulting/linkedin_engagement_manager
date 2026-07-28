@@ -28,9 +28,9 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          script_stop: true
           envs: GHCR_USER,GHCR_PAT
           script: |
+            set -e
             cd /opt/lem
             if [ "${{ github.event.inputs.rollback }}" = "true" ]; then
               ./scripts/rollback.sh "${{ github.event.inputs.tag }}"
