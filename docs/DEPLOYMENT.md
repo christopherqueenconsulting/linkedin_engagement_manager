@@ -187,6 +187,21 @@ The script reads MySQL directly and shells into `web_app` for the `margin` block
 (`python -m cqc_lem.utilities.margin --daily-json`), so it needs `sudo -n docker` and a deployed
 image that contains `cqc_lem.utilities.margin`. Overridable: `PERF_DIR`, `LEM_ENV_FILE`,
 `MARGIN_CONTAINER`. `"margin": {"ledger_available": false}` means `cost_ledger` isn't capturing yet.
+## Daily issue triage
+
+Organizes uncategorized open issues into milestones with an impact-first rubric (issue #748).
+Runs as `lem` from a dedicated cron clone, writes a dated report to `docs/triage/<date>.md`, and
+optionally applies safe label/milestone edits when invoked with `--apply`:
+
+```cron
+0 9 * * * /home/lem/<repo-clone>/scripts/triage_issues.sh --apply
+```
+
+Default mode is `--dry-run`, so a bare invocation prints the plan without mutating GitHub. The
+script uses `lem-medium` for priority/milestone grouping but still adds value if the LLM is
+unavailable (deterministic missing-label, staleness, and phase-drop checks). Env overrides:
+`TRIAGE_REPO`, `TRIAGE_DIR`, `REPO`, `LITELLM_MASTER_KEY`/`OPENAI_API_KEY`.
+
 The weekly margin report needs no cron — Celery beat runs it (`weekly-margin-report`, Mon 12:00 UTC).
 
 ## Persistent state
