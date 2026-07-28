@@ -100,6 +100,94 @@ class TestUpdateDbPostContent:
 
 
 @pytest.mark.unit
+class TestUpdateDbPostRejectionReason:
+    def test_executes_update_with_reason(self, mock_database_connection):
+        from cqc_lem.utilities.db import update_db_post_rejection_reason
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].rowcount = 1
+
+            result = update_db_post_rejection_reason(19, "Too promotional")
+
+            assert result is True
+            args = mock_database_connection["cursor"].execute.call_args[0]
+            assert "UPDATE" in args[0].upper()
+            assert "rejection_reason" in args[0].lower()
+            assert "Too promotional" in args[1]
+            assert 19 in args[1]
+
+    def test_blank_reason_stored_as_null(self, mock_database_connection):
+        from cqc_lem.utilities.db import update_db_post_rejection_reason
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].rowcount = 1
+
+            update_db_post_rejection_reason(19, "   ")
+
+            args = mock_database_connection["cursor"].execute.call_args[0]
+            assert args[1][0] is None
+
+    def test_returns_false_on_db_error(self, mock_database_connection):
+        from cqc_lem.utilities.db import update_db_post_rejection_reason
+        import mysql.connector
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("err")
+
+            assert update_db_post_rejection_reason(19, "reason") is False
+
+
+@pytest.mark.unit
+class TestGetPostRejectionReason:
+    def test_returns_reason_when_present(self, mock_database_connection):
+        from cqc_lem.utilities.db import get_post_rejection_reason
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].fetchone.return_value = ("Too salesy",)
+
+            assert get_post_rejection_reason(19) == "Too salesy"
+
+    def test_returns_none_when_missing(self, mock_database_connection):
+        from cqc_lem.utilities.db import get_post_rejection_reason
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].fetchone.return_value = (None,)
+
+            assert get_post_rejection_reason(19) is None
+
+    def test_returns_none_on_db_error(self, mock_database_connection):
+        from cqc_lem.utilities.db import get_post_rejection_reason
+        import mysql.connector
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("err")
+
+            assert get_post_rejection_reason(19) is None
+
+
+@pytest.mark.unit
+class TestSoftDeletePosts:
+    def test_passes_rejection_reason_to_bulk_update(self, mock_database_connection):
+        from cqc_lem.utilities.db import soft_delete_posts, PostStatus
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].rowcount = 1
+
+            soft_delete_posts([7, 8], rejection_reason="Too long")
+
+            args = mock_database_connection["cursor"].execute.call_args[0]
+            assert PostStatus.REJECTED.value in args[1]
+            assert "Too long" in args[1]
+
+
+@pytest.mark.unit
 class TestUpdateDbPostVideoUrl:
     def test_executes_update_with_url(self, mock_database_connection):
         from cqc_lem.utilities.db import update_db_post_video_url

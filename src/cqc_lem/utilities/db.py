@@ -1045,7 +1045,7 @@ def get_posts(user_id: int, limit: int = 10, offset: int = 0,
 
         cursor.execute(
             f"SELECT id, content, video_url, scheduled_time, post_type, status, carousel_slides, "
-            f"authenticity_score, gate_reason, archetype "
+            f"authenticity_score, gate_reason, rejection_reason, archetype "
             f"FROM posts {where} ORDER BY {sort_col} {order}, id {order} LIMIT %s OFFSET %s",
             params + [limit, offset]
         )
@@ -1380,11 +1380,12 @@ def get_carousel_slides(post_id: int) -> list[str]:
     return []
 
 
-_ALLOWED_POST_CLAUSES = frozenset({"status = %s", "scheduled_time = %s"})
+_ALLOWED_POST_CLAUSES = frozenset({"status = %s", "scheduled_time = %s", "rejection_reason = %s"})
 
 
 def bulk_update_posts(post_ids: list[int], status: Optional[PostStatus] = None,
-                      scheduled_time: Optional[datetime] = None) -> bool:
+                      scheduled_time: Optional[datetime] = None,
+                      rejection_reason: Optional[str] = None) -> bool:
     if not post_ids:
         return False
 
@@ -1402,6 +1403,9 @@ def bulk_update_posts(post_ids: list[int], status: Optional[PostStatus] = None,
         if scheduled_time is not None:
             sets.append("scheduled_time = %s")
             params.append(to_naive_utc(scheduled_time))
+        if rejection_reason is not None:
+            sets.append("rejection_reason = %s")
+            params.append((rejection_reason or "").strip() or None)
 
         if not sets:
             return False
@@ -1420,7 +1424,8 @@ def bulk_update_posts(post_ids: list[int], status: Optional[PostStatus] = None,
         connection.commit()
         success = cursor.rowcount > 0
     except mysql.connector.Error as e:
-        myprint(f"Could not bulk update posts. An error occurred: {e}")
+        from cqc_lem.utilities.logger import log_error
+        log_error("Could not bulk update posts", exc=e)
         success = False
     finally:
         cursor.close()
@@ -1429,8 +1434,48 @@ def bulk_update_posts(post_ids: list[int], status: Optional[PostStatus] = None,
     return success
 
 
-def soft_delete_posts(post_ids: list[int]) -> bool:
-    return bulk_update_posts(post_ids, status=PostStatus.REJECTED)
+def soft_delete_posts(post_ids: list[int], rejection_reason: Optional[str] = None) -> bool:
+    return bulk_update_posts(post_ids, status=PostStatus.REJECTED, rejection_reason=rejection_reason)
+
+
+def update_db_post_rejection_reason(post_id: int, rejection_reason: Optional[str]) -> bool:
+    """Persist WHY a post was rejected (issue #713) so a later regeneration can avoid the same issue.
+
+    Empty or whitespace-only input is stored as NULL so the UI doesn't render a blank reason."""
+    from cqc_lem.utilities.logger import log_error
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE posts SET rejection_reason = %s WHERE id = %s",
+            ((rejection_reason or "").strip() or None, post_id)
+        )
+        connection.commit()
+        success = cursor.rowcount == 1
+    except mysql.connector.Error as e:
+        success = False
+        log_error(f"Could not update rejection reason for post {post_id}", exc=e, post_id=post_id)
+    finally:
+        cursor.close()
+        connection.close()
+    return success
+
+
+def get_post_rejection_reason(post_id: int) -> Optional[str]:
+    """The persisted rejection reason for a post (issue #713), or None when it has none."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT rejection_reason FROM posts WHERE id = %s", (post_id,))
+        row = cursor.fetchone()
+        return row[0] if row else None
+    except mysql.connector.Error as err:
+        from cqc_lem.utilities.logger import log_error
+        log_error(f"Could not get rejection reason for post {post_id}", exc=err, post_id=post_id)
+        return None
+    finally:
+        cursor.close()
+        connection.close()
 
 
 def update_db_post_carousel_slides(post_id: int, slides: list[str]) -> bool:
