@@ -9,25 +9,46 @@ permissions:
 
 jobs:
   validate:
+    # Job name doubles as the check status context name — branch protection
+    # references this exact string. Changing it orphans the required-check
+    # entry in the protection rules and forces a re-add.
     name: Validate PR title (Conventional Commits)
     runs-on: ubuntu-latest
     steps:
-      - uses: amannn/action-semantic-pull-request@v5
+      - uses: amannn/action-semantic-pull-request@v5.5.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          # Conventional Commits: type(scope)?!: subject
-          # Allowed types: feat, fix, perf, revert, docs, style, chore, refactor, test, build, ci
-          # Scope is bracketed by (), may contain word chars + dash + dot + slash, and the
-          # breaking-change marker `!` is optional. Subject is free text after the colon+space.
-          pattern: '^(feat|fix|perf|revert|docs|style|chore|refactor|test|build|ci)(\([\w\-./]+\))?!?: .+'
-          # Allow Dependabot (chore(deps): ...) and the release-please bot's own release
-          # commits (chore(main): release X.Y.Z) through the lint. Without this, release-please
-          # would lint-block its own release PR.
-          ignorePatterns: '^(chore\(deps\)|chore\(main\): release ).+'
-          validateSingleCommit: false
-          # Don't try to parse the subject of merge commits or revert commits — release-please
-          # is what cares about commit subjects, not the PR title lint.
-          subjectOptions: 'ignoreMergeCommits,ignoreRevertCommits'
-          # Promote this from a comment to a required status check so it gates merges.
-          requireStatusCheck: true
+          # v5 input set (the v4 names this workflow used to ship — pattern /
+          # ignorePatterns / subjectOptions / requireStatusCheck — are silently
+          # dropped on v5, so the action ran with no pattern and posted no
+          # status. That's why the check sat "Expected — Waiting for status
+          # to be reported" forever: GitHub won't accept a context as a
+          # required check until the workflow has actually posted it once.
+
+          # subjectPattern is matched against the FULL PR title (subject only).
+          # Conventional Commits: type(scope)?!: subject — types are the 11
+          # the project uses; scope allows word chars + dash + dot + slash;
+          # the `!` breaking-change marker is optional; subject is free text
+          # after `: ` (colon + space).
+          subjectPattern: '^(feat|fix|perf|revert|docs|style|chore|refactor|test|build|ci)(\([\w\-./]+\))?!?: .+'
+
+          # v5 dropped ignorePatterns (title-regex skip list). The supported
+          # skip mechanism is ignoreLabels (PR labels). Release-please and
+          # Dependabot PRs already carry `autorelease: pending` /
+          # `dependencies` labels; skip on those instead. If a future bot
+          # needs a new skip, add its label here — do NOT reach for
+          # headerPattern to back-door title-skip.
+          ignoreLabels: |
+            autorelease: pending
+            dependencies
+
+          # validateSingleCommit: keep false — squash-merge collapses many
+          # commits into one and we still want to lint the PR title, not the
+          # squashed commit subject. (v5 only validates the PR title, never
+          # commit subjects, so subjectOptions is gone.)
+
+          # v5 always posts a check status under the job's `name:`. The
+          # "promote to required check" behavior moved out of the action and
+          # into GitHub branch protection settings — add the context
+          # "Validate PR title (Conventional Commits)" there.
