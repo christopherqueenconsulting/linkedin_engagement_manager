@@ -586,7 +586,13 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
                 ppt_name = f"carousel_{post_id}"
                 create_ppt(ppt_name, carousel_obj, post_id=post_id, user_id=user_id)
             except Exception as ppt_err:
-                myprint(f"PPTX generation failed (non-fatal): {ppt_err}")
+                log_warning(
+                    "PPTX generation failed (non-fatal)",
+                    exc=ppt_err,
+                    post_id=post_id,
+                    user_id=user_id,
+                    task_name="create_carousel_content",
+                )
         except Exception as img_err:
             myprint(f"Carousel image generation failed: {img_err}")
             # Do NOT fall back to text/placeholder images — that produced carousels of a
