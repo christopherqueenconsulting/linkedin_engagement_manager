@@ -267,6 +267,58 @@ class TestEstimateLlmCost:
         assert cost > 0.0
         assert cost == pytest.approx(3 / 1000.0 * 0.00015)
 
+    def test_vendored_map_prices_by_serving_model(self):
+        from cqc_lem.utilities.observability import estimate_llm_cost_usd
+        # openai/gpt-4o-mini from the vendored LiteLLM map: 1.5e-7 in / 6e-7 out per token.
+        assert estimate_llm_cost_usd("openai/gpt-4o-mini", 1000, 1000) == pytest.approx(0.00075)
+
+    def test_bare_serving_model_name_resolves_via_vendored_map(self):
+        from cqc_lem.utilities.observability import estimate_llm_cost_usd
+        # LiteLLM may return just "gpt-4o-mini"; the snapshot is keyed by "openai/gpt-4o-mini".
+        assert estimate_llm_cost_usd("gpt-4o-mini", 1000, 1000) == pytest.approx(0.00075)
+
+    def test_ollama_serving_model_is_zero_marginal_cost(self):
+        from cqc_lem.utilities.observability import estimate_llm_cost_usd
+        assert estimate_llm_cost_usd("openai/qwen3.5:397b", 1000, 1000) == 0.0
+
+    def test_map_miss_falls_back_to_legacy_tier_alias(self):
+        from cqc_lem.utilities.observability import estimate_llm_cost_usd
+        # An unknown serving model that contains a tier alias substring still resolves.
+        assert estimate_llm_cost_usd("openai/lem-simple-v2", 1000, 0) == pytest.approx(0.00015)
+
+    def test_env_override_takes_precedence_over_vendored_map(self):
+        with patch.dict("os.environ", {"LLM_COST_PER_1K": '{"openai/gpt-4o-mini": [1.0, 2.0]}'}):
+            from cqc_lem.utilities.observability import estimate_llm_cost_usd
+            assert estimate_llm_cost_usd("openai/gpt-4o-mini", 1000, 1000) == pytest.approx(3.0)
+
+
+class TestEstimateShadowCost:
+    def test_zero_tokens_no_shadow(self):
+        from cqc_lem.utilities.observability import estimate_shadow_cost_usd
+        assert estimate_shadow_cost_usd("openai/qwen3.5:397b", 0, 0) is None
+
+    def test_ollama_model_emits_shadow_at_reference(self):
+        from cqc_lem.utilities.observability import estimate_shadow_cost_usd
+        # qwen3.5:397b maps to openai/gpt-4o as the hand-picked metered reference.
+        assert estimate_shadow_cost_usd("openai/qwen3.5:397b", 1000, 1000) == pytest.approx(0.0125)
+
+    def test_small_ollama_model_emits_shadow_at_cheaper_reference(self):
+        from cqc_lem.utilities.observability import estimate_shadow_cost_usd
+        # gpt-oss:20b maps to openai/gpt-4o-mini.
+        assert estimate_shadow_cost_usd("openai/gpt-oss:20b", 1000, 1000) == pytest.approx(0.00075)
+
+    def test_metered_model_has_no_shadow(self):
+        from cqc_lem.utilities.observability import estimate_shadow_cost_usd
+        assert estimate_shadow_cost_usd("openai/gpt-4o-mini", 1000, 1000) is None
+
+    def test_tier_alias_has_no_shadow(self):
+        from cqc_lem.utilities.observability import estimate_shadow_cost_usd
+        assert estimate_shadow_cost_usd("lem-simple", 1000, 1000) is None
+
+    def test_unknown_model_has_no_shadow(self):
+        from cqc_lem.utilities.observability import estimate_shadow_cost_usd
+        assert estimate_shadow_cost_usd("some-unknown", 1000, 1000) is None
+
 
 class TestTrackPrePostEngagement:
     def test_captures_pre_post_engagement_event(self):
@@ -385,6 +437,91 @@ class TestCostAttributionDimensions:
         assert llm_cache_hit(SimpleNamespace(_hidden_params={"cache_hit": True})) is True
         assert llm_cache_hit(SimpleNamespace(_hidden_params={"cache_hit": False})) is False
         assert llm_cache_hit(SimpleNamespace()) is False
+
+    def test_serving_model_prices_cost_and_preserves_tier(self):
+        with patch(f"{_MOD}.posthog") as mock_ph, patch(f"{_MOD}._accrue_llm_cost") as accrue:
+            from cqc_lem.utilities.observability import track_llm_call
+            track_llm_call(
+                model="lem-simple",
+                serving_model="openai/gpt-4o-mini",
+                prompt_tokens=1000,
+                completion_tokens=1000,
+                latency_ms=100,
+                user_id=7,
+                feature="content",
+            )
+
+        props = mock_ph.capture.call_args[1]["properties"]
+        assert props["model"] == "openai/gpt-4o-mini"  # serving model is the event model
+        assert props["model_tier"] == "lem-simple"      # requested alias preserved
+        # Cost priced by serving model, not the lem-simple fallback.
+        assert props["cost_usd"] == pytest.approx(0.00075)
+        # Accrual is keyed by the tier alias (model_tier) and passes only cost_usd.
+        usd, tokens, user_id, feature, model_tier = accrue.call_args[0]
+        assert model_tier == "lem-simple"
+        assert usd == pytest.approx(0.00075)
+
+    def test_down_routed_call_to_metered_provider_changes_cost(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_llm_call
+            track_llm_call(
+                model="lem-complex",
+                serving_model="openai/gpt-4o-mini",
+                prompt_tokens=1000,
+                completion_tokens=1000,
+                latency_ms=100,
+            )
+
+        props = mock_ph.capture.call_args[1]["properties"]
+        assert props["model_tier"] == "lem-complex"
+        assert props["cost_usd"] == pytest.approx(0.00075)
+
+    def test_ollama_serving_model_emits_shadow_cost(self):
+        with patch(f"{_MOD}.posthog") as mock_ph, patch(f"{_MOD}._accrue_llm_cost") as accrue:
+            from cqc_lem.utilities.observability import track_llm_call
+            track_llm_call(
+                model="lem-complex",
+                serving_model="openai/qwen3.5:397b",
+                prompt_tokens=1000,
+                completion_tokens=1000,
+                latency_ms=100,
+            )
+
+        props = mock_ph.capture.call_args[1]["properties"]
+        assert props["model"] == "openai/qwen3.5:397b"
+        assert props["cost_usd"] == 0.0
+        assert props["shadow_cost_usd"] == pytest.approx(0.0125)
+        # Shadow cost never enters the durable ledger.
+        usd = accrue.call_args[0][0]
+        assert usd == 0.0
+
+    def test_cache_hit_zeroes_cost_and_shadow(self):
+        with patch(f"{_MOD}.posthog") as mock_ph, patch(f"{_MOD}._accrue_llm_cost") as accrue:
+            from cqc_lem.utilities.observability import track_llm_call
+            track_llm_call(
+                model="lem-complex",
+                serving_model="openai/qwen3.5:397b",
+                prompt_tokens=1000,
+                completion_tokens=1000,
+                latency_ms=100,
+                cached=True,
+            )
+
+        props = mock_ph.capture.call_args[1]["properties"]
+        assert props["cost_usd"] == 0.0
+        assert "shadow_cost_usd" not in props
+        assert accrue.call_args[0][0] == 0.0
+
+    def test_no_serving_model_uses_requested_alias(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_llm_call
+            track_llm_call(model="lem-simple", prompt_tokens=1000, completion_tokens=1000,
+                           latency_ms=10)
+
+        props = mock_ph.capture.call_args[1]["properties"]
+        assert props["model"] == "lem-simple"
+        assert props["model_tier"] == "lem-simple"
+        assert props["cost_usd"] == pytest.approx(0.00075)
 
 
 class TestFeatureFromTaskName:

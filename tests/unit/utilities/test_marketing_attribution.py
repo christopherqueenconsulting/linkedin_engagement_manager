@@ -231,9 +231,18 @@ class TestSignupAndReferralUrls:
         assert out.startswith("https://lem.test/trial?")
         assert _params(out)["utm_campaign"] == "brand-profile"
 
-    def test_no_signup_url_configured_yields_nothing_to_publish(self):
+    def test_no_signup_url_falls_back_to_the_public_base(self):
+        """Issue #736: the landing page IS the signup surface, so the brand's CTA needs no extra
+        config — `BRAND_SIGNUP_URL` is an override, not a requirement."""
         from cqc_lem.utilities.marketing.attribution import signup_url
         with _Patched(_owned(signup="")):
+            out = signup_url("linkedin", "profile", "brand-profile")
+        assert out.startswith("https://app.lem.test?")
+        assert _params(out)["utm_campaign"] == "brand-profile"
+
+    def test_no_landing_page_at_all_yields_nothing_to_publish(self):
+        from cqc_lem.utilities.marketing.attribution import signup_url
+        with _Patched(_owned(public="", signup="")):
             assert signup_url("linkedin", "profile", "brand-profile") == ""
 
     def test_referral_url_shape(self):
@@ -247,8 +256,13 @@ class TestSignupAndReferralUrls:
         from cqc_lem.utilities.marketing.attribution import referral_url
         with _Patched(_owned()):
             assert referral_url(None) == ""
-        with _Patched(_owned(signup="")):
+        with _Patched(_owned(public="", signup="")):
             assert referral_url(7) == ""
+
+    def test_referral_url_falls_back_to_the_public_base(self):
+        from cqc_lem.utilities.marketing.attribution import referral_url
+        with _Patched(_owned(signup="")):
+            assert referral_url(7).startswith("https://app.lem.test?")
 
     def test_referral_code_rejects_a_non_numeric_user(self):
         from cqc_lem.utilities.marketing.attribution import referral_code

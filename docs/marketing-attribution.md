@@ -23,7 +23,9 @@ This closes the loop at the **source**: one helper, applied at every surface tha
   params the destination's analytics reads — stamping them on a Reuters article we cited pollutes
   someone else's reporting and attributes nothing to us. The owned set is `PUBLIC_BASE_URL`,
   `BRAND_SIGNUP_URL` and anything in the new `MARKETING_OWNED_DOMAINS` env (comma-separated, bare
-  host or full URL), plus their subdomains. A bare entry is normalized the same way a parsed URL's
+  host or full URL), plus their subdomains. `BRAND_SIGNUP_URL` itself defaults to `PUBLIC_BASE_URL`
+  (issue #736) — the landing page is the signup surface, so the CTA needs no extra config. A bare
+  entry is normalized the same way a parsed URL's
   host is (`www.` and any port stripped), or the comparison would silently never match and the
   domain you configured would go untagged. With none of them configured **nothing is tagged** —
   the pre-#658 behaviour exactly.
@@ -109,8 +111,10 @@ skips the goals (`blocked_goal`) rather than failing the whole provisioning run.
 
 ## Verifying end to end
 
-1. `MARKETING_OWNED_DOMAINS` and `BRAND_SIGNUP_URL` are set in the environment. Without them nothing
-   is tagged and every tile reads `(none)` — that row against a campaign you are running is the tell.
+1. `PUBLIC_BASE_URL` is set (the trial CTA falls back to it when `BRAND_SIGNUP_URL` is unset — issue
+   #736), and `MARKETING_OWNED_DOMAINS` lists any marketing site/blog/docs host. With none of them
+   set nothing is tagged and every tile reads `(none)` — that row against a campaign you are running
+   is the tell.
 2. `poetry run python scripts/posthog_provision.py --dry-run` → the Channels dashboard and both goals
    appear as pending; `--apply` converges them.
 3. Open a brand post's CTA link. `$pageview` should carry `utm_source=linkedin` and the post campaign.

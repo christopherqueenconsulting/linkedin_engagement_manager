@@ -37,7 +37,7 @@ re-file work that already exists. Sections A–D remain the plan of record for e
 | Onboarding/activation checklist + stalled-user nudges (A.3) | **Shipped** | `OnboardingChecklist.tsx`, `onboarding_state` (`V20260725090900__add_onboarding_state.sql`), `onboarding-nudges` beat |
 | Extended-trial endpoint + cohort slots (A.2) | **Shipped** | `POST /trial/extend`, `extend_trial_for_user`, `early_adopter_slots` / `early_adopter_grants`, `EARLY_ADOPTER_*` + `LAUNCH_PHASE` env |
 | Funnel instrumentation (C.5) | **Shipped** | `track_funnel_event` in `observability.py` |
-| Brand-account dogfooding (C.2) | **Partial** | `sync-brand-account` beat (`auto_sync_brand_account`), gated by `BRAND_ACCOUNT_ENABLED`; the brand runs the existing content/engagement/newsletter tasks |
+| Brand-account dogfooding (C.2) | **Partial** | `sync-brand-account` beat (`auto_sync_brand_account`); the brand user is **user 1 by convention** (issue #736, no env var required) and runs the existing content/engagement/newsletter tasks |
 | Passive-signal mining (B.1) | **Planned** | — |
 | SEO, email-nurture, referral, lead-magnet, retargeting and partner/affiliate agents (C.3, C.4) | **Planned** | — |
 | Analytics agent: CAC / channel-ROI rollups + optimization loop (C.5) | **Planned** | — |
@@ -232,9 +232,15 @@ economics, brand-voice guardrails) — never pressing "post."
 
 ### C.2 Dogfooding as the flagship channel — **LEM markets LEM**
 
-The single most credible proof that LEM works is LEM growing its own audience with LEM. A dedicated **LEM brand
-LinkedIn account** is onboarded as a first-class user of the product and runs the exact same automation users
-pay for:
+The single most credible proof that LEM works is LEM growing its own audience with LEM. The **LEM brand
+LinkedIn account** is a first-class user of the product and runs the exact same automation users pay for.
+
+**Who the brand account is: user 1, by convention (issue #736).** The first account on the box is the owner's
+own, it doubles as the brand account permanently, and `brand_account.brand_user_id()` resolves it with **zero
+configuration** — the earlier `BRAND_ACCOUNT_ENABLED` / `BRAND_ACCOUNT_EMAIL` pair was wiring that only ever
+failed closed, and kept this whole engine dormant in prod because two env vars were never set. An optional
+`BRAND_USER_ID` seats the brand elsewhere; blank or invalid falls back to user 1 rather than switching
+self-marketing off. What the brand does:
 
 1. **Content about the problem LEM solves.** The brand account's `focus_topics` are set to the ICP's pains
    ("consistent LinkedIn presence without the grind", "solo-founder pipeline", "AI content that sounds like
@@ -259,6 +265,16 @@ pay for:
 (`utilities/linkedin/rate_limit.py`), per-user proxy (`utilities/proxy.py`), and per-day caps as any user — so
 self-marketing can never exceed ToS-safe volume. Outbound cadence for the brand is a `risk:product-decision`
 config (daily connect/DM caps) the owner signs off once.
+
+**The collision guard (issue #736).** Because the brand user is *also* the owner's ordinary LEM account, the
+nightly `sync_brand_preferences` applies the phase policy as a **ceiling, not an assignment**: it can only pull
+`max_comments_per_day` / `max_dms_per_day` / `max_invites_per_day` DOWN to the phase's number, and only tighten
+`connection_request_mode` / `connection_targeting_mode` (strictness order `pre_review` > `auto_approve`, `off` >
+`suggest` > `auto_queue`). A value the owner tuned STRICTER by hand survives the sync — honouring it can never
+widen outbound, and stomping it every night is the one real risk this convention introduces. The seeded content
+fields (`focus_topics`, `business_goals`) stay fill-only-when-empty as before, everything else on the row is
+untouched (only the policy fields are sent — issue #639), and any field the sync does change is named
+before → after in one INFO line, so an edit to the owner's own settings is never silent.
 
 ### C.3 Other automated channels (each agent-run)
 

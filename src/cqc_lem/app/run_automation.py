@@ -75,6 +75,8 @@ from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations
     plan_daily_invites, INVITE_STATUS_FAILED, INVITE_STATUS_PAUSED, INVITE_STATUS_SESSION_FAILED
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
     load_profile_for_user, clean_person_name, connection_degree, is_first_degree
+from cqc_lem.utilities.linkedin.message_thread import ThreadState, name_matches, \
+    open_message_thread, read_last_message, read_last_sender, resolve_self_name
 from cqc_lem.utilities.linkedin.poster import share_on_linkedin, share_carousel_on_linkedin, \
     share_document_on_linkedin, comment_on_linkedin_post, object_urn_from_post_url
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
@@ -3943,60 +3945,45 @@ def enqueue_next_followup(user_id: int, profile_url: str, first_name: str, event
         log_warning("Failed to enqueue next follow-up", exc=e, action_type="followup", user_id=user_id)
 
 
-# JS: walk the message list backwards for the most recent group's sender name. LinkedIn tags
-# each message *group* with .msg-s-message-group__name; the outer li.msg-s-message-list__event
-# carries no inbound/outbound marker, so the sender name is the reliable signal (confirmed on a
-# live thread 2026-07-04). Continuation bubbles have no name → we scan back to the last named one.
-_LAST_SENDER_JS = (
-    "const ev=[...document.querySelectorAll('li.msg-s-message-list__event, .msg-s-event-listitem')];"
-    "for(let i=ev.length-1;i>=0;i--){const n=ev[i].querySelector('.msg-s-message-group__name');"
-    "if(n&&n.innerText.trim())return n.innerText.trim();}return null;")
-
-# The BODY of the most recent message bubble in the open thread — same DOM the reply-detector above
-# already reads. Inbound-intent detection (#483) rides that read; it never opens a thread of its own.
-_LAST_MESSAGE_JS = (
-    "const ev=[...document.querySelectorAll('li.msg-s-message-list__event, .msg-s-event-listitem')];"
-    "for(let i=ev.length-1;i>=0;i--){const b=ev[i].querySelector('.msg-s-event-listitem__body, "
-    ".msg-s-event__content');if(b&&b.innerText.trim())return b.innerText.trim();}return null;")
-
-
 def _last_inbound_message(driver) -> str:
     """Text of the newest message in the ALREADY-OPEN thread. Best-effort — returns '' when the DOM
     doesn't match (detection simply finds nothing rather than breaking the follow-up run)."""
-    try:
-        return (driver.execute_script(_LAST_MESSAGE_JS) or "").strip()
-    except Exception as e:
-        log_warning("Could not read the last DM body", exc=e, action_type="dm")
-        return ""
+    return read_last_message(driver)
 
 
-def check_dm_replied(driver, wait, profile_url: str, my_name: str = None) -> bool:
-    """Best-effort: has this person replied since our last message? Opens their message thread
-    and finds the sender of the most recent message group — if it isn't us, they replied.
-    Defensive — returns False (proceed with the follow-up) when it can't tell, logging a miss.
-    DOM structure confirmed live; the full profile->Message->detect flow (and self-name match)
-    still needs E2E validation before this is trusted to suppress follow-ups (see tracking issue)."""
+def check_dm_replied(driver, wait, profile_url: str, my_name: str = None,
+                     person_name: str = None, user_id: int = None) -> ThreadState:
+    """Has this person replied since our last message? Opens their thread through the #731
+    resolution ladder (`open_message_thread`) and reads the sender of the most recent message group.
+
+    Returns THREE states, never a bool. UNKNOWN — no route opened a thread, nothing readable in it,
+    or we don't know our own name to compare against — means *we could not tell*, and the caller
+    must skip the follow-up. Before #731 that case collapsed into False ('no reply → keep sending'),
+    which is how a live selector rotation turned into follow-ups sent to people who had answered.
+    """
     try:
-        driver.get(profile_url)
-        time.sleep(random.uniform(2, 4))
-        msg_btn = find_first(driver, wait,
-                             [(By.CSS_SELECTOR, "button[aria-label^='Message']"),
-                              (By.XPATH, "//button[normalize-space()='Message']")],
-                             "Open message thread", required=False)
-        if msg_btn is None:
-            return False
-        driver.execute_script("arguments[0].click();", msg_btn)
-        time.sleep(random.uniform(3, 5))
-        last_sender = driver.execute_script(_LAST_SENDER_JS)
+        opened = open_message_thread(driver, wait, profile_url, person_name=person_name,
+                                     user_id=user_id)
+        if not opened.opened:
+            return ThreadState.UNKNOWN
+        last_sender = read_last_sender(driver)
         if not last_sender:
-            log_warning("Reply-detection: no message sender found", action_type="followup")
-            return False
-        if my_name and my_name.strip().lower() in last_sender.strip().lower():
-            return False  # we spoke last → no reply yet
-        return True  # someone other than us spoke last → they replied
+            log_warning(f"Reply-detection: thread opened via '{opened.route}' but no message sender "
+                        f"could be read — treating as UNKNOWN, not as 'no reply'",
+                        user_id=user_id, action_type="followup")
+            return ThreadState.UNKNOWN
+        if not (my_name or "").strip():
+            log_warning("Reply-detection: no self-name to compare the last sender against — "
+                        "treating as UNKNOWN, not as 'no reply'",
+                        user_id=user_id, action_type="followup")
+            return ThreadState.UNKNOWN
+        if name_matches(my_name, last_sender):
+            return ThreadState.NOT_REPLIED  # we spoke last → no reply yet
+        return ThreadState.REPLIED  # someone other than us spoke last → they replied
     except Exception as e:
-        log_warning("Reply-detection failed (assuming no reply)", exc=e, action_type="followup")
-        return False
+        log_warning("Reply-detection failed (treating as UNKNOWN)", exc=e, user_id=user_id,
+                    action_type="followup")
+        return ThreadState.UNKNOWN
 
 
 # --- DM conversation auto-nurture (issue #485) --------------------------------------------------
@@ -4149,10 +4136,31 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
         return f"Failed to start follow-ups: {e}"
     sent = 0
     nurtured = 0
+    skipped = 0
     lead_ctx: dict = {}  # voice context for lead drafts — fetched lazily, only if someone replies
+    # Resolved ONCE per run: the saved display name (Settings, required) with the scraped profile as
+    # the fallback. Empty means every thread reads UNKNOWN and nothing is sent — which is the point.
+    self_name = resolve_self_name(user_id, my_profile)
+    if not self_name:
+        log_warning("No LinkedIn display name saved and none on the cached profile — every "
+                    "follow-up in this run will be skipped as unreadable. Set it under "
+                    "Settings > Setup & Connection.", user_id=user_id, action_type="followup",
+                    task_name="process_user_followups")
     try:
         for f in due[:max_per_run]:
-            if check_dm_replied(driver, wait, f["profile_url"], my_name=getattr(my_profile, "full_name", None)):
+            state = check_dm_replied(driver, wait, f["profile_url"], my_name=self_name,
+                                     person_name=f.get("first_name"), user_id=user_id)
+            if state is ThreadState.UNKNOWN:
+                # We could not read the thread, so we do NOT know whether they answered. Sending
+                # anyway is the one irreversible mistake here (issue #731) — leave the row due so
+                # the next run re-reads it, and let the miss be greppable.
+                skipped += 1
+                log_warning(f"Follow-up skipped: could not read the thread with "
+                            f"{f.get('first_name') or f['profile_url']} — deferring to the next run",
+                            user_id=user_id, action_type="followup",
+                            task_name="process_user_followups")
+                continue
+            if state is ThreadState.REPLIED:
                 # Their reply is on screen already — read it once and use it twice: buying-intent
                 # detection (#483) and the auto-nurture next message (#485).
                 if not lead_ctx:
@@ -4195,7 +4203,8 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
             time.sleep(random.uniform(5, 12))
     finally:
         quit_gracefully(driver)
-    return f"Sent {sent} follow-up(s); drafted {nurtured} nurture reply(ies)"
+    return (f"Sent {sent} follow-up(s); drafted {nurtured} nurture reply(ies); "
+            f"skipped {skipped} unreadable thread(s)")
 
 
 def _dispatch_appreciation_dms(user_id: int, my_profile: LinkedInProfile, event_type: str,

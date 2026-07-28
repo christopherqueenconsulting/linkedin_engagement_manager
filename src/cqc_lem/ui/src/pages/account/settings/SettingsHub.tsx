@@ -5,6 +5,7 @@ import AffiliateCard from '../AffiliateCard'
 import TimezoneCard from '../TimezoneCard'
 import LoginLocationCard from '../LoginLocationCard'
 import LinkedInLoginCard from '../LinkedInLoginCard'
+import LinkedInDisplayNameCard from '../LinkedInDisplayNameCard'
 import CompanyPageCard from '../CompanyPageCard'
 import ContentProfileCard from '../ContentProfileCard'
 import StoryBankCard from '../StoryBankCard'
@@ -28,11 +29,11 @@ import SafetyCard from './SafetyCard'
 function SectionBody({ section }: { section: SectionKey }) {
   switch (section) {
     case 'setup':
-      return <><LinkedInLoginCard /><CompanyPageCard /><TimezoneCard /><LoginLocationCard /><SafetyCard /></>
+      return <><LinkedInLoginCard /><LinkedInDisplayNameCard /><CompanyPageCard /><TimezoneCard /><LoginLocationCard /><SafetyCard /></>
     case 'voice':
       return <VoiceSection />
     case 'content':
-      return <><ContentProfileCard /><StoryBankCard /><ContentSection /></>
+      return <><ContentProfileCard /><ContentSection /><StoryBankCard /></>
     case 'targeting':
       return <><EngagementRosterCard /><TargetingSection /><GroupsCard /></>
     case 'volume':

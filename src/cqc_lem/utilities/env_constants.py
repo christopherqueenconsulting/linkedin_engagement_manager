@@ -102,6 +102,10 @@ TEST_GRID_PROJECT_ARN=get_constant_from_env('TEST_GRID_PROJECT_ARN')
 SELENIUM_HUB_HOST=get_constant_from_env('SELENIUM_HUB_HOST', default_value='selenium-chrome')
 SELENIUM_HUB_PORT=get_constant_from_env('SELENIUM_HUB_PORT', default_value='4444')
 SELENIUM_REGISTRATION_SECRET=get_constant_from_env('SELENIUM_REGISTRATION_SECRET', default_value='secret')
+# The Grid's watchable debug node (docker-compose.grid.yml). It is a NINTH node on top of the pool
+# the lanes are sized for, so its slot must not enter the saturation denominator — see
+# capacity_alerts._pool_slots(). Empty string disables the exclusion (single-topology boxes).
+SELENIUM_DEBUG_NODE_HOST=get_constant_from_env('SELENIUM_DEBUG_NODE_HOST', default_value='selenium-node-debug')
 SELENIUM_KEEP_VIDEOS_X_DAYS=int(get_constant_from_env('SELENIUM_KEEP_VIDEOS_X_DAYS', default_value='7'))
 SELENIUM_RECORD_VIDEOS=isTrue(get_constant_from_env('SELENIUM_RECORD_VIDEOS', default_value='False'))
 STREAMLIT_EMAIL=get_constant_from_env('STREAMLIT_EMAIL')
@@ -201,11 +205,13 @@ EARLY_ADOPTER_COUPON_ID   = get_constant_from_env('EARLY_ADOPTER_COUPON_ID', def
 # P2 GA. It is the single knob that sets the brand account's outbound volume (see brand_account.py);
 # anything unrecognized falls back to P0 so a typo can never widen outbound.
 LAUNCH_PHASE              = get_constant_from_env('LAUNCH_PHASE', default_value='P0')
-# Dogfooding self-marketing (issue #504): the LEM brand LinkedIn account onboarded as a first-class
-# user. OFF by default — it sends real outbound, so each environment opts in explicitly.
-BRAND_ACCOUNT_ENABLED     = isTrue(get_constant_from_env('BRAND_ACCOUNT_ENABLED', default_value='False'))
-BRAND_ACCOUNT_EMAIL       = get_constant_from_env('BRAND_ACCOUNT_EMAIL', default_value='')
-# Trial signup URL the brand's content/DMs steer toward. Empty = no CTA seeded.
+# Dogfooding self-marketing (issue #504): the LEM brand LinkedIn account IS user 1 by convention
+# (issue #736) — the first account on the box is the owner's own, and it always will be. No env var
+# is required for the brand engine to run; this is an OPTIONAL override for a deployment that
+# genuinely seats the brand elsewhere. Empty/unparseable = the convention (see brand_account.py).
+BRAND_USER_ID             = get_constant_from_env('BRAND_USER_ID', default_value='')
+# Trial signup URL the brand's content/DMs steer toward. Empty falls back to PUBLIC_BASE_URL (the
+# landing page IS the signup surface), so a normal deployment needs no extra config.
 BRAND_SIGNUP_URL          = get_constant_from_env('BRAND_SIGNUP_URL', default_value='')
 # Extra hosts whose analytics we own (marketing site, blog, docs) — comma separated, bare host or
 # full URL. UTM tagging is applied to these and to PUBLIC_BASE_URL/BRAND_SIGNUP_URL ONLY: stamping

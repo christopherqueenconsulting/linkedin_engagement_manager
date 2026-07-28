@@ -141,6 +141,56 @@ class TestUserSettingsWrites:
             "UPDATE users SET password = %s WHERE id = %s", ("dummy-test-value", 1))
         conn.commit.assert_called_once()
 
+    def test_get_linkedin_display_name(self):
+        conn, _ = _conn(fetch_one=("  Christopher Queen  ",))
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_user_linkedin_display_name
+            assert get_user_linkedin_display_name(1) == "Christopher Queen"
+
+    def test_get_linkedin_display_name_blank_is_none(self):
+        # A blank string must read as "not set", or the required field would look satisfied and
+        # every reply check would compare against '' (issue #731).
+        conn, _ = _conn(fetch_one=("   ",))
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_user_linkedin_display_name
+            assert get_user_linkedin_display_name(1) is None
+
+    def test_get_linkedin_display_name_no_row(self):
+        conn, _ = _conn(fetch_one=None)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_user_linkedin_display_name
+            assert get_user_linkedin_display_name(99) is None
+
+    def test_get_linkedin_display_name_db_error(self):
+        conn, cur = _conn()
+        cur.execute.side_effect = mysql.connector.Error("boom")
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_user_linkedin_display_name
+            assert get_user_linkedin_display_name(1) is None
+
+    def test_update_linkedin_display_name(self):
+        conn, cur = _conn(rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_user_linkedin_display_name
+            assert update_user_linkedin_display_name(1, " Christopher Queen ") is True
+        assert cur.execute.call_args[0] == (
+            "UPDATE users SET linkedin_display_name = %s WHERE id = %s", ("Christopher Queen", 1))
+        conn.commit.assert_called_once()
+
+    def test_update_linkedin_display_name_clears_on_empty(self):
+        conn, cur = _conn(rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_user_linkedin_display_name
+            assert update_user_linkedin_display_name(1, "   ") is True
+        assert cur.execute.call_args[0][1] == (None, 1)
+
+    def test_update_linkedin_display_name_db_error(self):
+        conn, cur = _conn()
+        cur.execute.side_effect = mysql.connector.Error("boom")
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_user_linkedin_display_name
+            assert update_user_linkedin_display_name(1, "Jordan") is False
+
     def test_update_user_settings(self):
         conn, cur = _conn(rowcount=1)
         with patch(f"{_DB}.get_db_connection", return_value=conn):

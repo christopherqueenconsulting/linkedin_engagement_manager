@@ -87,6 +87,8 @@ interface Post {
   // Quality-gate verdict (issue #421) — why a PENDING post is being held, and its A1 score.
   authenticity_score?: number | null
   gate_reason?: GateFinding[] | null
+  // Why the user rejected/deleted this draft (issue #713) — used when regenerating.
+  rejection_reason?: string | null
 }
 
 // What POST /user/post/rescore returns after re-running the gates on the saved content.
@@ -157,6 +159,7 @@ export default function ContentStudio() {
 
   // Quick-delete confirmation + regenerate-with-suggestions state
   const [confirmDeletePost, setConfirmDeletePost] = useState<Post | null>(null)
+  const [deleteRejectionReason, setDeleteRejectionReason] = useState('')
   const [regenGuidance, setRegenGuidance] = useState('')
   const [regenNotice, setRegenNotice] = useState<string | null>(null)
 
@@ -283,13 +286,39 @@ export default function ContentStudio() {
     },
   })
 
+  // Regenerate a rejected post, seeding guidance with its stored rejection reason.
+  const regenerateRejectedMutation = useMutation({
+    mutationFn: (post_id: number) => {
+      if (!sessionToken) return Promise.reject(new Error('No active session'))
+      return api.post('/user/post/regenerate', {
+        session_token: sessionToken,
+        post_id,
+        // Pass the stored reason explicitly so the API uses it as guidance.
+        guidance: editingPost?.rejection_reason || undefined,
+      })
+    },
+    onSuccess: () => {
+      setRegenNotice('Regenerating… this post will return to PENDING with fresh content shortly.')
+      setEditingPost(null)
+      setTimeout(() => qc.invalidateQueries({ queryKey: ['posts', email] }), 2500)
+      setTimeout(() => setRegenNotice(null), 8000)
+    },
+    onError: () => setRegenNotice('Could not start regeneration — please try again.'),
+  })
+
   // Quick per-post delete (reuses the same soft-delete endpoint as the bulk flow, one id).
   const deleteMutation = useMutation({
-    mutationFn: (post_id: number) => api.delete('/posts/', { data: { post_ids: [post_id] } }),
+    mutationFn: (post_id: number) => api.delete('/posts/', {
+      data: { post_ids: [post_id], rejection_reason: deleteRejectionReason.trim() || undefined },
+    }),
     onSuccess: (_res, post_id) => {
-      capturePostDecision(post_id, 'rejected', { source: 'delete' })
+      capturePostDecision(post_id, 'rejected', {
+        source: 'delete',
+        has_rejection_reason: deleteRejectionReason.trim().length > 0,
+      })
       qc.invalidateQueries({ queryKey: ['posts', email] })
       setConfirmDeletePost(null)
+      setDeleteRejectionReason('')
       setSelectedIds((prev) => { const n = new Set(prev); n.delete(post_id); return n })
       if (editingPost?.post_id === post_id) setEditingPost(null)
     },
@@ -298,12 +327,12 @@ export default function ContentStudio() {
   // Regenerate a single post with optional freeform guidance — runs the async generation task
   // server-side (honors saved settings + guidance), then resets the post to PENDING for re-review.
   const regenerateMutation = useMutation({
-    mutationFn: (vars: { post_id: number; guidance: string }) => {
+    mutationFn: (vars: { post_id: number; guidance?: string | null }) => {
       if (!sessionToken) return Promise.reject(new Error('No active session'))
       return api.post('/user/post/regenerate', {
         session_token: sessionToken,
         post_id: vars.post_id,
-        guidance: vars.guidance.trim() || null,
+        guidance: vars.guidance?.trim() || null,
       })
     },
     onSuccess: () => {
@@ -790,6 +819,11 @@ export default function ContentStudio() {
                       ⏸ {gateHold(post.gate_reason).map((f) => f.label).join(' · ')} — click to see why
                     </p>
                   )}
+                  {post.status === 'rejected' && post.rejection_reason && (
+                    <p className="text-xs text-red-700 mt-1 truncate">
+                      ✎ {post.rejection_reason}
+                    </p>
+                  )}
                   {isDeckType(post.post_type) && post.carousel_slides && (
                     <p className="text-xs text-gray-400 mt-1">{post.carousel_slides.length} slides</p>
                   )}
@@ -988,7 +1022,7 @@ export default function ContentStudio() {
                 {/* Regenerate with suggestions — mirrors the newsletter flow. Runs the generation
                     pipeline server-side (honors saved voice/tone, focus/goals, emoji/hashtag prefs)
                     PLUS the optional guidance, then resets the post to PENDING for re-review. */}
-                {editingPost.post_type === 'text' && (
+                {(editingPost.post_type === 'text' || editingPost.status === 'rejected') && (
                   <div className="border-t border-gray-100 pt-4 space-y-2">
                     <label className="block text-xs font-medium text-gray-600">
                       Added Guidance <span className="font-normal text-gray-400">(optional)</span>
@@ -1001,7 +1035,10 @@ export default function ContentStudio() {
                       className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
                     />
                     <button
-                      onClick={() => regenerateMutation.mutate({ post_id: editingPost.post_id, guidance: regenGuidance })}
+                      onClick={() => {
+                        const guidance = regenGuidance.trim() || editingPost.rejection_reason || undefined
+                        regenerateMutation.mutate({ post_id: editingPost.post_id, guidance })
+                      }}
                       disabled={regenerateMutation.isPending}
                       className="w-full bg-indigo-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
                     >
@@ -1009,6 +1046,26 @@ export default function ContentStudio() {
                     </button>
                     <p className="text-xs text-gray-400">
                       Regeneration replaces this post's content and returns it to PENDING for review.
+                    </p>
+                  </div>
+                )}
+
+                {/* Rejected posts get a one-click "regenerate with the reason" prompt (issue #713). */}
+                {editingPost.status === 'rejected' && editingPost.rejection_reason && (
+                  <div className="border-t border-gray-100 pt-4 space-y-2">
+                    <p className="text-xs text-gray-600">
+                      This post was rejected because:
+                      <span className="block mt-1 text-red-700 font-medium">{editingPost.rejection_reason}</span>
+                    </p>
+                    <button
+                      onClick={() => regenerateRejectedMutation.mutate(editingPost.post_id)}
+                      disabled={regenerateRejectedMutation.isPending}
+                      className="w-full bg-indigo-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                    >
+                      {regenerateRejectedMutation.isPending ? 'Starting…' : 'Regenerate using this feedback'}
+                    </button>
+                    <p className="text-xs text-gray-400">
+                      We'll use the rejection reason as guidance so the new draft avoids the same issue.
                     </p>
                   </div>
                 )}
@@ -1042,6 +1099,21 @@ export default function ContentStudio() {
               and will disappear from all views. You can't undo this from the UI.
             </p>
             <p className="text-xs text-gray-500 line-clamp-3 bg-gray-50 rounded p-2">{confirmDeletePost.content}</p>
+            <div className="space-y-2">
+              <label className="block text-xs font-medium text-gray-600">
+                Why are you removing this? <span className="font-normal text-gray-400">(optional)</span>
+              </label>
+              <textarea
+                value={deleteRejectionReason}
+                onChange={(e) => setDeleteRejectionReason(e.target.value)}
+                rows={2}
+                placeholder="e.g. too salesy, wrong tone, not relevant to my audience"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+              />
+              <p className="text-xs text-gray-400">
+                Your reason will help future drafts avoid the same issue.
+              </p>
+            </div>
             <div className="flex gap-2 justify-end">
               <button
                 onClick={() => setConfirmDeletePost(null)}

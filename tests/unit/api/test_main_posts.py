@@ -279,7 +279,34 @@ class TestDeletePostsEndpoint:
                 "/api/posts/",
                 json={"post_ids": [7, 8, 9]},
             )
-        mock_delete.assert_called_once_with([7, 8, 9])
+        mock_delete.assert_called_once_with([7, 8, 9], rejection_reason=None)
+
+    def test_passes_rejection_reason_to_soft_delete(self, client):
+        with patch(f"{_DB}.soft_delete_posts", return_value=True) as mock_delete:
+            resp = client.request(
+                "DELETE",
+                "/api/posts/",
+                json={"post_ids": [7], "rejection_reason": "Too salesy"},
+            )
+        assert resp.status_code == 200
+        mock_delete.assert_called_once_with([7], rejection_reason="Too salesy")
+
+    def test_blank_rejection_reason_becomes_none(self, client):
+        with patch(f"{_DB}.soft_delete_posts", return_value=True) as mock_delete:
+            client.request(
+                "DELETE",
+                "/api/posts/",
+                json={"post_ids": [7], "rejection_reason": "   "},
+            )
+        mock_delete.assert_called_once_with([7], rejection_reason=None)
+
+    def test_rejection_reason_too_long_returns_422(self, client):
+        resp = client.request(
+            "DELETE",
+            "/api/posts/",
+            json={"post_ids": [7], "rejection_reason": "x" * 1001},
+        )
+        assert resp.status_code == 422
 
 
 # ---------------------------------------------------------------------------
@@ -337,3 +364,27 @@ class TestUpdatePost:
         assert resp.status_code == 200
         call_args = mock_update.call_args
         assert call_args.args[1] == "https://example.com/video.mp4"
+
+    def test_rejection_reason_persisted_on_update(self, client):
+        body = dict(_POST_BODY, status="rejected", rejection_reason="Not relevant")
+        with patch(f"{_DB}.update_db_post", return_value=True), \
+             patch(f"{_DB}.update_db_post_rejection_reason", return_value=True) as mock_reason:
+            resp = client.post(
+                "/api/update_post/",
+                params={"post_id": 10},
+                json=body,
+            )
+        assert resp.status_code == 200
+        mock_reason.assert_called_once_with(10, "Not relevant")
+
+    def test_blank_rejection_reason_not_persisted(self, client):
+        body = dict(_POST_BODY, status="rejected", rejection_reason="   ")
+        with patch(f"{_DB}.update_db_post", return_value=True), \
+             patch(f"{_DB}.update_db_post_rejection_reason") as mock_reason:
+            resp = client.post(
+                "/api/update_post/",
+                params={"post_id": 10},
+                json=body,
+            )
+        assert resp.status_code == 200
+        mock_reason.assert_not_called()

@@ -115,6 +115,55 @@ model_list:
       model: openai/gpt-4o-mini
       api_key: os.environ/OPENAI_API_KEY
 
+  # ── AGENT TIERS: Ollama Cloud models that back the agent-pipeline's Ollama lane ─
+  # The agent-pipeline (scripts/agent-pipeline/tick.sh) runs the Claude Code CLI headless to
+  # work GitHub issues. Its PRIMARY lane is the owner's Claude Max subscription (no LiteLLM).
+  # When that subscription is constrained/exhausted, or to run issues in PARALLEL, the Ollama
+  # lane points the SAME `claude -p` CLI at LiteLLM (ANTHROPIC_BASE_URL=http://127.0.0.1:4000,
+  # ANTHROPIC_AUTH_TOKEN=$LITELLM_MASTER_KEY) with --model = one of these aliases. LiteLLM serves
+  # the Anthropic /v1/messages endpoint and translates to the underlying Ollama Cloud model.
+  # CLOUD-ONLY by policy (Ollama Max subscription) — no local models on this path.
+  #   tier1   glm-5.2:cloud        hardest long-horizon / architecture / multi-step plans
+  #   tier2   kimi-k2.7-code:cloud  default coding / patches / tests / multi-file edits
+  #   tier2a  minimax-m3:cloud      premium parallel / vision-capable alternate
+  #   tier3   nemotron-3-super:cloud fallback / reviewer / reasoning lane
+  # See docs/agent-pipeline-routing.md for the capacity-aware lane-selection rule.
+  - model_name: lem-agent-tier1
+    litellm_params:
+      model: openai/glm-5.2:cloud
+      api_base: os.environ/OLLAMA_CLOUD_URL
+      api_key: os.environ/OLLAMA_CLOUD_API_KEY
+      max_parallel_requests: 2
+      request_timeout: 300
+      rpm: 20
+
+  - model_name: lem-agent-tier2
+    litellm_params:
+      model: openai/kimi-k2.7-code:cloud
+      api_base: os.environ/OLLAMA_CLOUD_URL
+      api_key: os.environ/OLLAMA_CLOUD_API_KEY
+      max_parallel_requests: 4
+      request_timeout: 240
+      rpm: 40
+
+  - model_name: lem-agent-tier2-alt
+    litellm_params:
+      model: openai/minimax-m3:cloud
+      api_base: os.environ/OLLAMA_CLOUD_URL
+      api_key: os.environ/OLLAMA_CLOUD_API_KEY
+      max_parallel_requests: 4
+      request_timeout: 240
+      rpm: 40
+
+  - model_name: lem-agent-tier3
+    litellm_params:
+      model: openai/nemotron-3-super:cloud
+      api_base: os.environ/OLLAMA_CLOUD_URL
+      api_key: os.environ/OLLAMA_CLOUD_API_KEY
+      max_parallel_requests: 4
+      request_timeout: 180
+      rpm: 40
+
 router_settings:
   routing_strategy: latency-based-routing
   num_retries: 2
@@ -125,6 +174,14 @@ router_settings:
         - lem-simple
     - lem-medium:
         - lem-simple
+    # Ollama lane degrades a hard task through cheaper cloud tiers before failing.
+    - lem-agent-tier1:
+        - lem-agent-tier2
+        - lem-agent-tier3
+    - lem-agent-tier2:
+        - lem-agent-tier3
+    - lem-agent-tier2-alt:
+        - lem-agent-tier3
 
 litellm_settings:
   cache: true

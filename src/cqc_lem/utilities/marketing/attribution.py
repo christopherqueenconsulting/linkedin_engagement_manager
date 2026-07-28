@@ -233,11 +233,18 @@ def campaign_for_tutorial(flow_key: Optional[str] = None) -> str:
 
 # --- LEM's own destinations -----------------------------------------------------------------------
 
+def signup_landing() -> str:
+    """Where a trial CTA points. `BRAND_SIGNUP_URL` when the deployment names one, otherwise this
+    deployment's own public base URL — the landing page IS the signup surface, so the brand engine
+    needs no extra configuration to have a link to publish (issue #736). Empty only when neither is
+    set, which every caller reads as "there is no CTA link to publish"."""
+    return str(BRAND_SIGNUP_URL or "").strip() or str(PUBLIC_BASE_URL or "").strip()
+
+
 def signup_url(source: str, medium: str, campaign: str, content: Optional[str] = None,
                ref: Optional[str] = None) -> str:
-    """The trial signup URL, tagged. Empty string when BRAND_SIGNUP_URL is unset — every caller
-    treats that as "there is no CTA link to publish", exactly as it did before this module."""
-    base = str(BRAND_SIGNUP_URL or "").strip()
+    """The trial signup URL, tagged. Empty string when there is no landing page configured at all."""
+    base = signup_landing()
     if not base:
         return ""
     return build_utm_url(base, source, medium, campaign, content=content, ref=ref)
@@ -261,7 +268,7 @@ def referral_url(user_id: Optional[int], base: Optional[str] = None) -> str:
     code = referral_code(user_id)
     if not code:
         return ""
-    landing = str(base or BRAND_SIGNUP_URL or "").strip()
+    landing = str(base or "").strip() or signup_landing()
     if not landing:
         return ""
     return build_utm_url(landing, SOURCE_REFERRAL, MEDIUM_REFERRAL, CAMPAIGN_REFERRAL, ref=code)

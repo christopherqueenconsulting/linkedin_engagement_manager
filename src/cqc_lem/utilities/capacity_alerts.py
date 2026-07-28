@@ -46,6 +46,7 @@ from cqc_lem.utilities.env_constants import (
     CAPACITY_SUSTAINED_PCT,
     CAPACITY_WAIT_SECONDS,
     CAPACITY_WINDOW_SAMPLES,
+    SELENIUM_DEBUG_NODE_HOST,
     SELENIUM_HUB_HOST,
     SELENIUM_HUB_PORT,
 )
@@ -360,6 +361,28 @@ def selenium_lane_queues() -> tuple:
     return tuple(q for q in queue_names() if q.startswith("se_"))
 
 
+def _pool_slots(nodes: Sequence[Mapping], debug_host: str = SELENIUM_DEBUG_NODE_HOST) -> list:
+    """The slots the LANES are sized for — i.e. every slot except the debug node's.
+
+    The Grid overlay runs one node the lanes never size for (the watchable `selenium-node-debug`,
+    on top of the pool). Counting its slot here would be a silent DESENSITISATION of the whole
+    check: with 8 lane slots and a 9-slot denominator a fully-claimed pool reads 0.89, and the
+    sample below the peak reads 7/9 = 0.78 — under the 0.85 saturation threshold that used to
+    breach at 7/8. The signal exists to say "the cap is the constraint, buy the second box", so it
+    has to be measured against the cap the lanes can actually consume.
+
+    Matching is on the node's advertised URI host (the overlay pins it with `SE_NODE_HOST`). A Grid
+    that reports no such node — the standalone, or a box that never deployed the debug node — is
+    unchanged: nothing matches and every slot counts."""
+    keep = []
+    for node in nodes:
+        uri = str(node.get("uri") or "")
+        if debug_host and f"//{debug_host}:" in uri:
+            continue
+        keep.extend(node.get("slots") or [])
+    return keep
+
+
 def collect_selenium_capacity() -> Optional[dict]:
     """Busy vs total Chrome slots from the Grid `/status` endpoint. None when it is unreachable —
     which the checks report as missing samples, never as an idle pool."""
@@ -374,7 +397,7 @@ def collect_selenium_capacity() -> Optional[dict]:
         log_warning("Selenium /status unreadable — capacity sample skipped", exc=e,
                     task_name="auto_capacity_watch")
         return None
-    slots = [slot for node in nodes for slot in (node.get("slots") or [])]
+    slots = _pool_slots(nodes)
     if not slots:
         return None
     return {"max_sessions": len(slots),

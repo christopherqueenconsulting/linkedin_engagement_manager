@@ -56,14 +56,44 @@ gh workflow run deploy-vps.yml -f tag=vX.Y.Z     # redeploy/rollback an existing
 gh workflow run deploy-vps.yml -f tag=vX.Y.Z -f rollback=true   # rollback.sh path (no migrations)
 ```
 
+## Stale lazy chunks in already-open tabs (issue #743)
+
+Zero-downtime is about the SERVER. A browser tab is the other half: it holds the content-hashed
+chunk filenames of the build it loaded, and a lazily-imported chunk (jszip in avatar training,
+anything code-split) is only fetched when the user triggers the feature. At 4 releases a day, a tab
+open across one asks for a hash the new image no longer has — a 404 that presents as "the feature is
+broken", not "reload me".
+
+Two layers, in this order:
+
+1. **Asset retention (the user sees nothing).** Both colors mount the named `spa_asset_archive`
+   volume at `SPA_ASSET_ARCHIVE_DIR=/app/spa_asset_archive`. On startup each FastAPI container syncs
+   its own `ui/dist/assets` into it and prunes past `SPA_ASSET_ARCHIVE_KEEP` builds (default 5 —
+   more than a day of releases). A miss in the live bundle falls back to the archive
+   (`api/spa_assets.py`). Serving an old hash is always safe: the names are content-hashed, so the
+   `immutable` cache contract is preserved rather than weakened. This lives in the app, not in
+   `deploy.sh`, precisely so archive maintenance can never fail a deploy — a container that cannot
+   write the volume logs a warning and serves the live bundle only.
+2. **One silent reload (the fallback).** For anything older than the archive, the SPA reloads once
+   on a chunk-load failure (`ui/src/utils/chunkReload.ts`). `index.html` is `no-store`, so the
+   reload always lands on the current build. A `sessionStorage` marker caps it at one attempt per
+   minute; a second failure inside that window shows "A new version was released — please refresh"
+   (`NewVersionNotice.tsx`) instead of looping. An OFFLINE tab is never reloaded: a disconnected
+   dynamic import reports the same message a stale chunk does, and reloading a `no-store` shell with
+   no network replaces a working app with the browser's offline page.
+
+The `no-store` shell is load-bearing for BOTH layers — if a CDN rule ever caches `index.html`, the
+reload lands on the same broken build. `tests/unit/api/test_spa_asset_archive.py` guards the header
+contract and the compose wiring.
+
 ## Operational notes
 
 - `/opt/lem/deploy/` and `/opt/lem/.active_color` are runtime state (git-ignored). If routing ever
   needs a manual flip: render the conf by hand from `compose/prod/nginx/default.conf.tmpl`
   (substitute all three placeholders — `__ACTIVE_COLOR__`, `__EDGE_PORT__`, `__BACKEND_PORT__`),
   then `docker exec web_app nginx -t && docker exec web_app nginx -s reload`.
-- Both colors mount the same `./logs` and `assets` volume; the standby serves no traffic but is
-  warm, so a flip is instant.
+- Both colors mount the same `./logs`, `assets` and `spa_asset_archive` volumes; the standby serves
+  no traffic but is warm, so a flip is instant.
 - RAM cost of the standby ≈ one FastAPI container (~0.5-1 GB), well within the box's headroom.
 - If a migration is ever NOT backward-compatible (rename/drop), it must ship in two releases
   (expand → migrate → contract) — the old color serves during migration.
