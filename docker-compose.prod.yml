@@ -221,11 +221,16 @@ services:
 
   litellm:
     # already restart: unless-stopped in the base file
-    ports: !reset []
+    # Loopback-only publish so the Ollama agent lane (claude -p with ANTHROPIC_BASE_URL pointed
+    # here) can reach the proxy from the host without exposing it on the WAN — same pattern as
+    # the selenium-chrome 4444 bind above. !override replaces the base 4000:4000 (all-interfaces)
+    # rather than merging into a double bind.
+    ports: !override ["127.0.0.1:4000:4000"]
     deploy:
       resources:
         limits:
-          memory: 1g
+          memory: ${LITELLM_MEM_LIMIT:-1500m}
+          cpus: "${LITELLM_CPU_LIMIT:-2.5}"
 
   cloudflared:
     image: cloudflare/cloudflared:latest
