@@ -2496,7 +2496,10 @@ _MAX_REPLIES_PER_SWEEP = 15
 # env-tunable (GOLDEN_HOUR_REPLY_SWEEPS); each sweep is QueueOnce + 429-safe, so an extra/overlapping
 # run is harmless and a rate-limited session skips cleanly.
 # The timing decisions themselves live in utilities/golden_hour.py (issue #622) so they can be tested
-# without importing the task module.
+# without importing the task module; these names stay as the in-module vocabulary.
+_GOLDEN_HOUR_MINUTES = _golden.GOLDEN_HOUR_MINUTES  # lgtm[py/unused-global-variable]
+_GOLDEN_HOUR_REPLY_SWEEPS = _golden.GOLDEN_HOUR_REPLY_SWEEPS  # lgtm[py/unused-global-variable]
+_GOLDEN_HOUR_MAX_SWEEPS = _golden.GOLDEN_HOUR_MAX_SWEEPS  # lgtm[py/unused-global-variable]
 _golden_hour_sweep_countdowns = _golden.sweep_countdowns
 
 

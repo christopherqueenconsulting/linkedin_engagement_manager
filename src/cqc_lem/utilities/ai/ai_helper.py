@@ -12,8 +12,10 @@ from cqc_lem.utilities.ai import content_framework as _framework
 # posts, and comments. The underscore aliases keep this module's long-standing internal API
 # (and the tests that import it) stable while the definitions live in exactly one place.
 from cqc_lem.utilities.ai.content_alignment import (
+    COMMENT_LENGTH_CHARS as _COMMENT_LENGTH_CHARS,  # lgtm[py/unused-global-variable]
     NO_SELF_PROMO_GUARDRAIL as _NO_SELF_PROMO_GUARDRAIL,
     NEWSLETTER_SOFT_PROMO_NOTE as _NEWSLETTER_SOFT_PROMO_NOTE,
+    DEFAULT_ENGAGEMENT_INTENTION as _DEFAULT_ENGAGEMENT_INTENTION,  # lgtm[py/unused-global-variable]
     style_directive as _style_directive,
     focus_directive as _focus_directive,
     intention_directive as _intention_directive,
