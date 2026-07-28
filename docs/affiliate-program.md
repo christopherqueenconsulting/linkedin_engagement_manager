@@ -1,6 +1,6 @@
 # Affiliate / Ambassador Program
 
-**Issue:** #737 · **Status:** built, reward sizes pending owner decision · **Created:** 2026-07-27
+**Issue:** #737 · **Status:** built, owner decision applied (1A 2A 3A) · **Created:** 2026-07-27
 
 LEM's marketing arm is its own users. Every account joins the referral program by default, gets a
 referral link, and earns extra free-trial time for people they bring in who actually get set up.
@@ -84,9 +84,10 @@ rather than a dark pattern:
   render as a granted reward that isn't one.
 - A lapsed trial is extended from **today**, not from its past end date.
 
-### 3.1 Why these numbers (recommendation — the owner picks at merge)
+### 3.1 Why these numbers (owner decision: 1A 2A 3A)
 
-The owner has not fixed a reward size, so these are defaults with reasoning, not decisions.
+These defaults were confirmed by the owner at merge. They remain overridable per environment, but the
+production values are fixed below.
 
 **What a trial day costs us.** A trial day is variable COGS (LLM + proxy + render) against **zero**
 MRR. It is not lost revenue — a trialling user was not paying — but it is real spend and it delays
@@ -106,12 +107,14 @@ it costs COGS, not cash, it needs no payout rail, and it has no tax/1099 exposur
 - **90-day ceiling** — roughly the point at which someone is using LEM indefinitely for free.
   Anyone who drove 6 activations is a real advocate; a conversation with them beats an unbounded grant.
 
-**Alternatives the owner may prefer** (each is a one-line env change, no code):
+**Alternatives the owner explicitly rejected** (kept here for reference; each is still a one-line env
+change if policy changes later):
 - *Enrollment-only* (`REFERRAL=0`): the owner's literal phrasing — affiliates simply get a longer
-  trial. Simplest to explain; rewards nothing.
+  trial. Simplest to explain; rewards nothing. Rejected in favor of outcome-based rewards.
 - *Performance-only* (`ENROLLMENT=0`): nothing is given away by default, so nothing is revoked on
-  opt-out, and the whole "reduced trial" framing disappears. Weakest enrollment hook.
-- *Bigger per-referral* (e.g. 30): stronger incentive, but 3 referrals ≈ a free quarter.
+  opt-out, and the whole "reduced trial" framing disappears. Weakest enrollment hook. Rejected.
+- *Bigger per-referral* (e.g. 30): stronger incentive, but 3 referrals ≈ a free quarter. Rejected
+  because the 90-day cap is the intended guardrail, not the per-referral size.
 
 ## 4. Abuse guards
 
