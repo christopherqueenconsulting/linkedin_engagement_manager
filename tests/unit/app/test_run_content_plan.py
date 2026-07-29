@@ -528,7 +528,7 @@ class TestPlanContentForUser:
     """
 
     @patch("cqc_lem.app.run_content_plan.save_content_plan")
-    @patch("cqc_lem.app.run_content_plan.get_best_posting_time", return_value=__import__("datetime").time(9, 0))
+    @patch("cqc_lem.utilities.utils.get_best_posting_time", return_value=__import__("datetime").time(9, 0))
     @patch("cqc_lem.app.run_content_plan.get_last_planned_post_date_for_user", return_value=None)
     @patch("cqc_lem.app.run_content_plan.get_post_type_counts", return_value={"carousel": 5, "text": 5, "video": 5})
     def test_calls_save_content_plan(self, mock_counts, mock_last, mock_time, mock_save):
@@ -540,7 +540,7 @@ class TestPlanContentForUser:
         assert isinstance(call_args.args[1], list)
 
     @patch("cqc_lem.app.run_content_plan.save_content_plan")
-    @patch("cqc_lem.app.run_content_plan.get_best_posting_time", return_value=__import__("datetime").time(9, 0))
+    @patch("cqc_lem.utilities.utils.get_best_posting_time", return_value=__import__("datetime").time(9, 0))
     @patch("cqc_lem.app.run_content_plan.get_last_planned_post_date_for_user", return_value=None)
     @patch("cqc_lem.app.run_content_plan.get_post_type_counts", return_value={"carousel": 0, "text": 0, "video": 0})
     def test_new_user_no_posts(self, mock_counts, mock_last, mock_time, mock_save):
@@ -552,7 +552,7 @@ class TestPlanContentForUser:
         assert len(plan) > 0
 
     @patch("cqc_lem.app.run_content_plan.save_content_plan")
-    @patch("cqc_lem.app.run_content_plan.get_best_posting_time", return_value=__import__("datetime").time(9, 0))
+    @patch("cqc_lem.utilities.utils.get_best_posting_time", return_value=__import__("datetime").time(9, 0))
     @patch("cqc_lem.app.run_content_plan.get_last_planned_post_date_for_user")
     @patch("cqc_lem.app.run_content_plan.get_post_type_counts", return_value={"carousel": 3, "text": 5, "video": 2})
     def test_skips_when_last_planned_date_beyond_30_days(self, mock_counts, mock_last, mock_time, mock_save):
@@ -566,7 +566,7 @@ class TestPlanContentForUser:
 
     @freeze_time(_PLAN_WINDOW_CLOCK)
     @patch("cqc_lem.app.run_content_plan.save_content_plan")
-    @patch("cqc_lem.app.run_content_plan.get_best_posting_time", return_value=__import__("datetime").time(9, 0))
+    @patch("cqc_lem.utilities.utils.get_best_posting_time", return_value=__import__("datetime").time(9, 0))
     @patch("cqc_lem.app.run_content_plan.get_last_planned_post_date_for_user")
     @patch("cqc_lem.app.run_content_plan.get_post_type_counts", return_value={"carousel": 3, "text": 5, "video": 2})
     def test_uses_last_planned_date_when_recent(self, mock_counts, mock_last, mock_time, mock_save):
@@ -580,7 +580,7 @@ class TestPlanContentForUser:
         mock_save.assert_called_once()
 
     @patch("cqc_lem.app.run_content_plan.save_content_plan")
-    @patch("cqc_lem.app.run_content_plan.get_best_posting_time", return_value=__import__("datetime").time(9, 0))
+    @patch("cqc_lem.utilities.utils.get_best_posting_time", return_value=__import__("datetime").time(9, 0))
     @patch("cqc_lem.app.run_content_plan.get_last_planned_post_date_for_user", return_value=None)
     @patch("cqc_lem.app.run_content_plan.get_post_type_counts", return_value={"carousel": 3, "text": 5, "video": 2})
     def test_plan_contains_valid_post_types(self, mock_counts, mock_last, mock_time, mock_save):
@@ -593,7 +593,7 @@ class TestPlanContentForUser:
             assert entry["post_type"] in valid_types
 
     @patch("cqc_lem.app.run_content_plan.save_content_plan")
-    @patch("cqc_lem.app.run_content_plan.get_best_posting_time", return_value=__import__("datetime").time(9, 0))
+    @patch("cqc_lem.utilities.utils.get_best_posting_time", return_value=__import__("datetime").time(9, 0))
     @patch("cqc_lem.app.run_content_plan.get_last_planned_post_date_for_user", return_value=None)
     @patch("cqc_lem.app.run_content_plan.get_post_type_counts", return_value={"carousel": 3, "text": 5, "video": 2})
     def test_plan_contains_valid_buyer_stages(self, mock_counts, mock_last, mock_time, mock_save):
