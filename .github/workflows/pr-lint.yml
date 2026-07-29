@@ -1,0 +1,70 @@
+name: PR Lint
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  validate:
+    # Job name doubles as the check status context name — branch protection
+    # references this exact string. Changing it orphans the required-check
+    # entry in the protection rules and forces a re-add.
+    name: Validate PR title (Conventional Commits)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5.5.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # v5 input set (the v4 names this workflow used to ship — pattern /
+          # ignorePatterns / subjectOptions / requireStatusCheck — are silently
+          # dropped on v5, so the action ran with no pattern and posted no
+          # status. That's why the check sat "Expected — Waiting for status
+          # to be reported" forever: GitHub won't accept a context as a
+          # required check until the workflow has actually posted it once.
+
+          # types: the 11 this project uses (conventional-changelog-conventionalcommits
+          # defaults to 9 — feat/fix/docs/style/refactor/perf/test/chore/revert —
+          # so build and ci must be added explicitly).
+          types: |
+            feat
+            fix
+            perf
+            revert
+            docs
+            style
+            chore
+            refactor
+            test
+            build
+            ci
+
+          # subjectPattern is matched against the SUBJECT portion only (text
+          # after the conventional-commit colon). Required to be non-empty —
+          # blocks titles like `fix(ci):` with no subject. The default
+          # headerPattern (conventional-commits-parser's built-in) handles
+          # the type/scope/bang parsing, so we don't ship a custom one.
+          subjectPattern: '^.{1,}$'
+
+          # v5 dropped ignorePatterns (title-regex skip list). The supported
+          # skip mechanism is ignoreLabels (PR labels). Release-please and
+          # Dependabot PRs already carry `autorelease: pending` /
+          # `dependencies` labels; skip on those instead. If a future bot
+          # needs a new skip, add its label here.
+          ignoreLabels: |
+            autorelease: pending
+            autorelease: tagged
+            dependencies
+
+          # validateSingleCommit: keep false — squash-merge collapses many
+          # commits into one and we still want to lint the PR title, not the
+          # squashed commit subject. (v5 only validates the PR title, never
+          # commit subjects, so subjectOptions is gone.)
+
+          # v5 always posts a check status under the job's `name:`. The
+          # "promote to required check" behavior moved out of the action and
+          # into GitHub branch protection settings — add the context
+          # "Validate PR title (Conventional Commits)" there.
