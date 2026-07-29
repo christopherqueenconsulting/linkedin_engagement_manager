@@ -214,6 +214,30 @@ poetry run ruff check --fix src/ tests/
 
 ## Pull Request Process
 
+### CLAUDE.md size cap (40,000 chars — enforced)
+
+`CLAUDE.md` is the context window every Claude Code session loads. Keep it under
+**40,000 chars** — over that, the harness 413s the load and the session restarts
+cold. Move detail to `docs/*.md` and leave CLAUDE.md as the map (locations,
+symbols, constants, invariants, where to find the detail). Subsections already
+follow this `Full posture: docs/<file>.md` pattern.
+
+The guard is two layers, both enforced:
+
+- **CI check** (`.github/workflows/claude-md-size.yml`): required status check on
+  every PR touching `CLAUDE.md` or `scripts/check_claude_md_size.py`. Fails the
+  build, blocks the merge.
+- **`scripts/check_claude_md_size.py`**: stdlib-only Python script, prints the
+  current size, exits 1 over the cap. Run it locally before pushing:
+  ```bash
+  python3 scripts/check_claude_md_size.py
+  ```
+
+Bumping the cap is NOT a code change to make here — it's a harness-level decision
+on context-window budgets. If 40k is genuinely no longer enough, raise it in
+both `scripts/check_claude_md_size.py` and `.github/workflows/claude-md-size.yml`
+in the same PR.
+
 ### Commit Messages (Conventional Commits — required)
 
 Releases are automated by [release-please](https://github.com/googleapis/release-please),
