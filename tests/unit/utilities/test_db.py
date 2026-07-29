@@ -320,6 +320,55 @@ class TestGetPosts:
 
             assert posts == [] and total == 0
 
+    def test_start_date_filter_adds_lower_bound(self, mock_database_connection):
+        from cqc_lem.utilities.db import get_posts
+        from datetime import datetime, timezone
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].fetchone.return_value = {"total": 0}
+            mock_database_connection["cursor"].fetchall.return_value = []
+
+            start = datetime(2026, 7, 1, 0, 0, 0, tzinfo=timezone.utc)
+            get_posts(42, start_date=start)
+
+            count_sql, count_params = mock_database_connection["cursor"].execute.call_args_list[0][0]
+            assert "scheduled_time >= %s" in count_sql
+            assert datetime(2026, 7, 1, 0, 0, 0) in count_params
+
+    def test_end_date_filter_adds_upper_bound(self, mock_database_connection):
+        from cqc_lem.utilities.db import get_posts
+        from datetime import datetime, timezone
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].fetchone.return_value = {"total": 0}
+            mock_database_connection["cursor"].fetchall.return_value = []
+
+            end = datetime(2026, 7, 31, 12, 30, 0, tzinfo=timezone.utc)
+            get_posts(42, end_date=end)
+
+            count_sql, count_params = mock_database_connection["cursor"].execute.call_args_list[0][0]
+            assert "scheduled_time <= %s" in count_sql
+            assert datetime(2026, 7, 31, 12, 30, 0) in count_params
+
+    def test_date_range_converts_offset_to_naive_utc(self, mock_database_connection):
+        from cqc_lem.utilities.db import get_posts
+        from datetime import datetime, timezone, timedelta
+
+        with patch("cqc_lem.utilities.db.get_db_connection") as mock_conn:
+            mock_conn.return_value = mock_database_connection["connection"]
+            mock_database_connection["cursor"].fetchone.return_value = {"total": 0}
+            mock_database_connection["cursor"].fetchall.return_value = []
+
+            # EDT (UTC-4) midnight -> 04:00 UTC naive
+            edt = timezone(timedelta(hours=-4))
+            start = datetime(2026, 7, 15, 0, 0, 0, tzinfo=edt)
+            get_posts(42, start_date=start)
+
+            count_params = mock_database_connection["cursor"].execute.call_args_list[0][0][1]
+            assert datetime(2026, 7, 15, 4, 0, 0) in count_params
+
 
 @pytest.mark.unit
 class TestBuildContentSearchClause:
@@ -419,6 +468,7 @@ class TestGetPostByEmail:
         mock_gp.assert_called_once_with(
             7, limit=5, offset=10, sort_order='desc', status_filter='approved',
             post_type_filter='video', search='ai OR ml', sort_by='status',
+            start_date=None, end_date=None,
         )
 
 

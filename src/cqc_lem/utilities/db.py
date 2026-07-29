@@ -1043,7 +1043,9 @@ def build_content_search_clause(search: Optional[str], column: str = 'content') 
 def get_posts(user_id: int, limit: int = 10, offset: int = 0,
               sort_order: str = 'asc', status_filter: Optional[str] = None,
               post_type_filter: Optional[str] = None, search: Optional[str] = None,
-              sort_by: str = 'scheduled_time') -> tuple[list, int]:
+              sort_by: str = 'scheduled_time',
+              start_date: Optional[datetime] = None,
+              end_date: Optional[datetime] = None) -> tuple[list, int]:
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
@@ -1059,6 +1061,12 @@ def get_posts(user_id: int, limit: int = 10, offset: int = 0,
         if post_type_filter:
             where += " AND post_type = %s"
             params.append(post_type_filter.lower())
+        if start_date is not None:
+            where += " AND scheduled_time >= %s"
+            params.append(to_naive_utc(start_date))
+        if end_date is not None:
+            where += " AND scheduled_time <= %s"
+            params.append(to_naive_utc(end_date))
         search_sql, search_params = build_content_search_clause(search)
         if search_sql:
             where += f" AND ({search_sql})"
@@ -1236,7 +1244,9 @@ def get_posted_posts(user_id: int):
 def get_post_by_email(email: str, limit: int = 10, offset: int = 0,
                       sort_order: str = 'asc', status_filter: Optional[str] = None,
                       post_type_filter: Optional[str] = None, search: Optional[str] = None,
-                      sort_by: str = 'scheduled_time') -> tuple[list, int]:
+                      sort_by: str = 'scheduled_time',
+                      start_date: Optional[datetime] = None,
+                      end_date: Optional[datetime] = None) -> tuple[list, int]:
     user_id = get_user_id(email)
 
     if not user_id:
@@ -1245,7 +1255,8 @@ def get_post_by_email(email: str, limit: int = 10, offset: int = 0,
 
     return get_posts(user_id, limit=limit, offset=offset, sort_order=sort_order,
                      status_filter=status_filter, post_type_filter=post_type_filter,
-                     search=search, sort_by=sort_by)
+                     search=search, sort_by=sort_by,
+                     start_date=start_date, end_date=end_date)
 
 
 def get_post_content(post_id: int):

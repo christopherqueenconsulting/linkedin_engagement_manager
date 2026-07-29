@@ -98,6 +98,8 @@ class TestGetPostsForEmail:
             post_type_filter=None,
             search=None,
             sort_by="scheduled_time",
+            start_date=None,
+            end_date=None,
         )
 
     def test_sort_order_desc(self, client):
@@ -116,6 +118,8 @@ class TestGetPostsForEmail:
             post_type_filter=None,
             search=None,
             sort_by="scheduled_time",
+            start_date=None,
+            end_date=None,
         )
 
     def test_status_filter_forwarded(self, client):
@@ -134,6 +138,8 @@ class TestGetPostsForEmail:
             post_type_filter=None,
             search=None,
             sort_by="scheduled_time",
+            start_date=None,
+            end_date=None,
         )
 
     def test_post_type_and_search_and_sort_by_forwarded(self, client):
@@ -157,6 +163,8 @@ class TestGetPostsForEmail:
             post_type_filter="carousel",
             search="ai AND marketing",
             sort_by="status",
+            start_date=None,
+            end_date=None,
         )
 
     def test_invalid_post_type_filter_422(self, client):
@@ -188,6 +196,29 @@ class TestGetPostsForEmail:
         assert resp.status_code == 200
         assert resp.json()["detail"]["total"] == 0
         assert resp.json()["detail"]["posts"] == []
+
+    def test_date_range_params_forwarded(self, client):
+        with patch(f"{_DB}.get_post_by_email", return_value=([], 0)) as mock_get:
+            resp = client.get(
+                "/api/posts/",
+                params={
+                    "email": "test@example.com",
+                    "start_date": "2026-07-01T00:00:00Z",
+                    "end_date": "2026-07-31T23:59:59Z",
+                },
+            )
+        assert resp.status_code == 200
+        mock_get.assert_called_once()
+        _, kwargs = mock_get.call_args
+        assert kwargs["start_date"] is not None
+        assert kwargs["end_date"] is not None
+
+    def test_malformed_start_date_returns_422(self, client):
+        resp = client.get(
+            "/api/posts/",
+            params={"email": "test@example.com", "start_date": "not-a-date"},
+        )
+        assert resp.status_code == 422
 
 
 # ---------------------------------------------------------------------------

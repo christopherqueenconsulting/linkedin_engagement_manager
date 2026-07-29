@@ -84,3 +84,34 @@ export function zonedInputToUtcIso(value: string | null | undefined, tz: string)
     return new Date(wallClockAsUtc).toISOString()
   }
 }
+
+// Convert a user-timezone wall date (YYYY-MM-DD) to an explicit-UTC ISO string at the
+// START of that day in the user's timezone. The backend stores naive UTC, so we strip the
+// trailing 'Z' and offset — the API layer re-attaches UTC interpretation where needed.
+export function zonedDateToUtcStart(value: string | null | undefined, tz: string): string | null {
+  if (!value) return null
+  const wallClockAsUtc = Date.parse(`${value}T00:00:00Z`)
+  if (isNaN(wallClockAsUtc)) return null
+  try {
+    let instant = wallClockAsUtc - tzOffsetMs(new Date(wallClockAsUtc), tz)
+    instant = wallClockAsUtc - tzOffsetMs(new Date(instant), tz)
+    return new Date(instant).toISOString()
+  } catch {
+    return new Date(wallClockAsUtc).toISOString()
+  }
+}
+
+// Convert a user-timezone wall date (YYYY-MM-DD) to an explicit-UTC ISO string at the
+// END of that day in the user's timezone. Used for inclusive end-date filters.
+export function zonedDateToUtcEnd(value: string | null | undefined, tz: string): string | null {
+  if (!value) return null
+  const wallClockAsUtc = Date.parse(`${value}T23:59:59.999Z`)
+  if (isNaN(wallClockAsUtc)) return null
+  try {
+    let instant = wallClockAsUtc - tzOffsetMs(new Date(wallClockAsUtc), tz)
+    instant = wallClockAsUtc - tzOffsetMs(new Date(instant), tz)
+    return new Date(instant).toISOString()
+  } catch {
+    return new Date(wallClockAsUtc).toISOString()
+  }
+}
