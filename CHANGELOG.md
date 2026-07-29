@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.110.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.109.0...v0.110.0) (2026-07-29)
+
+
+### Features
+
+* **content-generation:** add date selector for filtering posts by date range (closes [#727](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/727)) ([#795](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/795)) ([8cc08ff](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8cc08ffc062a49b5c1a4130e722b12de75975885))
+
 ## [0.109.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.108.0...v0.109.0) (2026-07-29)
 
 
