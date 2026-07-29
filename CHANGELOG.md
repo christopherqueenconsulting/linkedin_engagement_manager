@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.108.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.107.0...v0.108.0) (2026-07-29)
+
+
+### Features
+
+* **marketing:** affiliate program Part 1 — default-enrolled status, opt-IN promo consent, FTC disclosure gate ([#750](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/750)) ([ff61ee8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ff61ee8817e2a8b14ae2f5ed28e34f97701f0478))
+
 ## [0.107.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.106.0...v0.107.0) (2026-07-29)
 
 
