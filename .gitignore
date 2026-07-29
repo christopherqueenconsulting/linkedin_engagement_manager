@@ -201,6 +201,11 @@ src/cqc_lem/ui/dist/
 .vscode/mcp.json
 .mcp.json
 
+# Claude Code local worktrees are created outside normal git worktrees and should never be tracked.
+# They are ephemeral per-agent-session copies; tracking them pollutes the repo and risks merging
+# stale .claude state into releases.
+.claude/worktrees/
+
 # VPS deploy runtime state (written by scripts/deploy.sh on the box; never tracked so a release
 # checkout can't clobber live blue/green routing)
 .last_good_tag
