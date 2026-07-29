@@ -1021,8 +1021,10 @@ export default function ContentStudio() {
 
                 {/* Regenerate with suggestions — mirrors the newsletter flow. Runs the generation
                     pipeline server-side (honors saved voice/tone, focus/goals, emoji/hashtag prefs)
-                    PLUS the optional guidance, then resets the post to PENDING for re-review. */}
-                {(editingPost.post_type === 'text' || editingPost.status === 'rejected') && (
+                    PLUS the optional guidance, then resets the post to PENDING for re-review.
+                    Available for pending/rejected text posts so users can fix drafts that still
+                    need a decision; approved posts already have acceptance (issue #778). */}
+                {editingPost.post_type === 'text' && (editingPost.status === 'pending' || editingPost.status === 'rejected') && (
                   <div className="border-t border-gray-100 pt-4 space-y-2">
                     <label className="block text-xs font-medium text-gray-600">
                       Added Guidance <span className="font-normal text-gray-400">(optional)</span>
