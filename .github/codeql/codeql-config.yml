@@ -1,0 +1,9 @@
+name: "LEM CodeQL PR gate verification"
+queries:
+  - uses: security-extended
+  - uses: security-and-quality
+paths:
+  - src/cqc_lem
+paths-ignore:
+  - tests
+  - src/cqc_lem/ui/dist

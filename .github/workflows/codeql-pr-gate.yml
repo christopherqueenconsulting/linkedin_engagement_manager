@@ -1,0 +1,111 @@
+name: CodeQL PR Gate
+
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+  workflow_call:
+    inputs:
+      head-ref:
+        description: "Head commit SHA to analyze"
+        required: true
+        type: string
+      base-ref:
+        description: "Base commit SHA to compare against"
+        required: true
+        type: string
+      pr-number:
+        description: "PR number to post comments to (optional)"
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  codeql-pr-gate:
+    name: CodeQL PR Quality Gate
+    runs-on: ubuntu-latest
+    # Dependabot PRs have no new code of ours to gate.
+    if: github.actor != 'dependabot[bot]'
+    permissions:
+      actions: read
+      contents: write      # push auto-fix commits back to the PR branch
+      pull-requests: write # post the judgment/security alert summary
+      security-events: read  # query code-scanning/alerts
+    steps:
+      - name: Determine refs
+        id: refs
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "head_ref=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+            echo "base_ref=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
+            echo "pr_number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+            echo "branch=${{ github.event.pull_request.head.ref }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "merge_group" ]; then
+            echo "head_ref=${{ github.event.merge_group.head_sha }}" >> "$GITHUB_OUTPUT"
+            echo "base_ref=${{ github.event.merge_group.base_sha }}" >> "$GITHUB_OUTPUT"
+            echo "pr_number=0" >> "$GITHUB_OUTPUT"
+            echo "branch=" >> "$GITHUB_OUTPUT"
+          else
+            echo "head_ref=${{ inputs.head-ref }}" >> "$GITHUB_OUTPUT"
+            echo "base_ref=${{ inputs.base-ref }}" >> "$GITHUB_OUTPUT"
+            echo "pr_number=${{ inputs.pr-number || '0' }}" >> "$GITHUB_OUTPUT"
+            echo "branch=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.refs.outputs.head_ref }}
+
+      - name: Set up Poetry and dependencies
+        uses: ./.github/actions/poetry_setup
+        with:
+          python-version: "3.12"
+          install-args: --with lint
+
+      - name: Run CodeQL PR gate
+        id: gate
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          HEAD_REF="${{ steps.refs.outputs.head_ref }}"
+          BASE_REF="${{ steps.refs.outputs.base_ref }}"
+          PR_NUMBER="${{ steps.refs.outputs.pr_number }}"
+          BRANCH="${{ steps.refs.outputs.branch }}"
+
+          [ -z "$PR_NUMBER" ] && PR_NUMBER="0"
+
+          args=(
+            --repo "${{ github.repository }}"
+            --head-ref "$HEAD_REF"
+            --base-ref "$BASE_REF"
+            --pr-number "$PR_NUMBER"
+            --fix
+          )
+          [ -n "$BRANCH" ] && args+=(--branch "$BRANCH")
+
+          poetry run python scripts/codeql_pr_gate.py "${args[@]}"
+
+      # If mechanical alerts were found, re-run CodeQL on the fixed code to verify
+      # the auto-fixes actually removed them. Upload is disabled because the existing
+      # CodeQL workflows own the project's SARIF uploads; this step is purely for
+      # verification inside the gate run.
+      - name: Initialize CodeQL verification
+        if: steps.gate.outputs.mechanical_count != '0'
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Autobuild verification
+        if: steps.gate.outputs.mechanical_count != '0'
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Analyze verification
+        if: steps.gate.outputs.mechanical_count != '0'
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:python/pr-gate"
+          upload: false
