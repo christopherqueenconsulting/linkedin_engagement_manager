@@ -1,7 +1,16 @@
 from unittest.mock import patch, MagicMock
 
 import pytest
+from freezegun import freeze_time
 
+
+# Wall-clock MUST be frozen mid-month here: the plan window derives its length from
+# `days_left_in_month`, and on the last 1-2 days of any month a `last_planned_date = now + 1`
+# test lands at or past the month boundary, where `_cadence_slots` returns 0 slots and the
+# function early-returns without calling `save_content_plan` — making `assert_called_once()`
+# fail. Freezing at a Monday three weeks from the month end guarantees an 8-slot eligible
+# window for `TestPlanContentForUser.test_uses_last_planned_date_when_recent`.
+_PLAN_WINDOW_CLOCK = "2026-07-13 12:00:00"
 
 _RCP = "cqc_lem.app.run_content_plan"
 
@@ -555,6 +564,7 @@ class TestPlanContentForUser:
         plan_content_for_user.run(user_id=1)
         mock_save.assert_not_called()
 
+    @freeze_time(_PLAN_WINDOW_CLOCK)
     @patch("cqc_lem.app.run_content_plan.save_content_plan")
     @patch("cqc_lem.app.run_content_plan.get_best_posting_time", return_value=__import__("datetime").time(9, 0))
     @patch("cqc_lem.app.run_content_plan.get_last_planned_post_date_for_user")

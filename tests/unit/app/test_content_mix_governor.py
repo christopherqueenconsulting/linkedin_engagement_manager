@@ -7,8 +7,18 @@ from datetime import time
 from unittest.mock import MagicMock, patch
 
 import pytest
+from freezegun import freeze_time
 
 pytestmark = pytest.mark.unit
+
+# Wall-clock MUST be frozen mid-month here: the plan window derives its length from
+# `days_left_in_month`, and on the last 1-2 days of any month the eligible-weekday slice collapses
+# to 1 slot, where the unit-allocation loop at run_content_plan.py:243 can produce a 1-element
+# `post_types` list and the promo-text preference silently fails (text isn't even in the bag, so
+# `_take_planned_post_type` falls through to `pop()`). Freezing at a Monday three weeks from the
+# month end guarantees ~9 eligible cadence slots, which is wide enough that every post type shows
+# up in the shuffled bag and the promo-text branch is exercised.
+_PLAN_WINDOW_CLOCK = "2026-07-13 12:00:00"
 
 _RCP = "cqc_lem.app.run_content_plan"
 
@@ -42,17 +52,20 @@ def _plan(user_id=1, counts=None, mixes=None):
 
 
 class TestPlanGovernor:
+    @freeze_time(_PLAN_WINDOW_CLOCK)
     def test_every_planned_post_is_classified(self):
         from cqc_lem.utilities.ai.content_alignment import CONTENT_MIX_TARGET
         plan = _plan()
         assert plan and all(entry["content_mix"] in CONTENT_MIX_TARGET for entry in plan)
 
+    @freeze_time(_PLAN_WINDOW_CLOCK)
     def test_promo_stays_within_the_ceiling(self):
         from cqc_lem.utilities.ai.content_alignment import PROMO_MAX_RATIO
         plan = _plan()
         promo = [p for p in plan if p["content_mix"] == "promo"]
         assert len(promo) / len(plan) <= PROMO_MAX_RATIO
 
+    @freeze_time(_PLAN_WINDOW_CLOCK)
     def test_promo_slots_prefer_text_posts(self):
         """The promo body has to be case-study shaped, which is steered in the text-post prompt."""
         plan = _plan(mixes=["promo"] + ["value"] * 40)
@@ -60,6 +73,7 @@ class TestPlanGovernor:
         assert len(promo) == 1
         assert promo[0]["post_type"] == "text"
 
+    @freeze_time(_PLAN_WINDOW_CLOCK)
     def test_post_type_balance_is_preserved(self):
         """Claiming a text post for the promo slot must not change the plan's length or its types."""
         baseline = _plan(mixes=["value"] * 40)
@@ -73,6 +87,7 @@ class TestPlanGovernor:
         assert _take_planned_post_type(["carousel", "video"], "promo") == "video"
         assert _take_planned_post_type(["text", "carousel"], "value") == "carousel"
 
+    @freeze_time(_PLAN_WINDOW_CLOCK)
     def test_existing_posts_offset_the_cadence(self):
         counts = {"carousel": 2, "text": 2, "video": 1, "document": 0}
         with patch(f"{_RCP}.assign_content_mix", return_value=["value"] * 40) as assign:
