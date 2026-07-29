@@ -156,7 +156,23 @@ def sync_onboarding_state(user_id: int) -> dict:
             continue
         if mark_onboarding_step(user_id, step):
             _track_step(user_id, step, state.get("started_at"))
+            if step == OnboardingStep.ACTIVATED:
+                _convert_referral(user_id)
     return get_onboarding_state(user_id)
+
+
+def _convert_referral(user_id: int) -> None:
+    """Pay the member who referred this user, now that the user has ACTIVATED (issue #737).
+
+    Activation is the trigger — not signup and certainly not a click — because that is what makes a
+    referral farm worthless: dormant accounts never reach the aha moment. It rides on
+    `mark_onboarding_step` returning True, which happens exactly once per user, so a repeated sync
+    cannot pay twice. Never fatal: a reward is a perk, and onboarding must complete regardless."""
+    try:
+        from cqc_lem.utilities.marketing.affiliate import convert_referral
+        convert_referral(user_id)
+    except Exception as e:
+        log_warning("Could not convert affiliate referral on activation", exc=e, user_id=user_id)
 
 
 def _track_step(user_id: int, step: "OnboardingStep", started_at: Optional[datetime]) -> None:

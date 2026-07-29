@@ -370,4 +370,8 @@ export const EVENTS = {
   storyBankEntryAdded: 'story_bank_entry_added',
   contentPlanGenerated: 'content_plan_generated',
   feedbackOpened: 'feedback_opened',
+  // Affiliate program (issue #737). The browser owns `referral_link_copied` because it is the only
+  // place that can see it — the server never learns a link was copied, only that somebody arrived.
+  referralLinkCopied: 'referral_link_copied',
+  affiliateNoticeAcknowledged: 'affiliate_notice_acknowledged',
 } as const

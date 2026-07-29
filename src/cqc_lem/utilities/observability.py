@@ -1340,6 +1340,50 @@ def track_funnel_event(
         log_warning(f"Could not track funnel event '{event}'", exc=e, user_id=user_id)
 
 
+AFFILIATE_ENROLLED = "affiliate_enrolled"
+AFFILIATE_OPTED_OUT = "affiliate_opted_out"
+AFFILIATE_PROMO_CONSENT = "affiliate_promo_consent"
+AFFILIATE_REFERRAL_ATTRIBUTED = "affiliate_referral_attributed"
+AFFILIATE_REFERRAL_REJECTED = "affiliate_referral_rejected"
+AFFILIATE_REFERRAL_CONVERTED = "affiliate_referral_converted"
+AFFILIATE_REWARD_GRANTED = "affiliate_reward_granted"
+AFFILIATE_REWARD_REVOKED = "affiliate_reward_revoked"
+AFFILIATE_DISCLOSURE_BLOCKED = "affiliate_disclosure_blocked"
+
+AFFILIATE_EVENTS = (
+    AFFILIATE_ENROLLED,
+    AFFILIATE_OPTED_OUT,
+    AFFILIATE_PROMO_CONSENT,
+    AFFILIATE_REFERRAL_ATTRIBUTED,
+    AFFILIATE_REFERRAL_REJECTED,
+    AFFILIATE_REFERRAL_CONVERTED,
+    AFFILIATE_REWARD_GRANTED,
+    AFFILIATE_REWARD_REVOKED,
+    AFFILIATE_DISCLOSURE_BLOCKED,
+)
+
+
+def track_affiliate_event(event: str, user_id: Optional[int] = None, **extra) -> None:
+    """Emit one affiliate-program event (issue #737) so the marketing arm is measurable on the same
+    #650/#658 dashboards as the rest of the funnel.
+
+    Deliberately NOT a `track_funnel_event`: the acquisition funnel is one ordered path per person,
+    and an affiliate event is about the REFERRER, not about the person moving through the funnel.
+    Emitting them there would put one person's referral conversions inside another person's journey.
+    Never raises — analytics must not fail an opt-out."""
+    from cqc_lem.utilities.logger import log_warning
+    try:
+        if event not in AFFILIATE_EVENTS:
+            log_warning(f"Unknown affiliate event '{event}' — emitting anyway")
+        posthog.capture(
+            distinct_id=str(user_id) if user_id is not None else "system",
+            event=event,
+            properties={"user_id": user_id, **extra},
+        )
+    except Exception as e:
+        log_warning(f"Could not track affiliate event '{event}'", exc=e, user_id=user_id)
+
+
 def track_task(
     task_name: str,
     duration_ms: int,
