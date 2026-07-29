@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from enum import IntEnum
 from typing import Dict, List, Union
 from typing import Optional, Any
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 
 from cqc_lem import assets_dir
 from cqc_lem.api.spa_assets import ArchivedStaticFiles, spa_index_headers, sync_build_to_archive
@@ -23,10 +23,10 @@ from celery import chain as celery_chain
 from cqc_lem.app.run_content_plan import auto_create_weekly_content, plan_content_for_user
 from cqc_lem.utilities.db import (
     insert_post, get_post_by_email, get_user_id, update_db_post, get_post_user_id,
-    add_user_with_access_token, update_user, PostType, PostStatus, get_posts, get_dashboard_counts,
+    add_user_with_access_token, update_user, PostType, PostStatus, get_dashboard_counts,
     get_planned_tasks,
     get_recent_logs, bulk_update_posts, soft_delete_posts,
-    insert_scheduled_dm, get_scheduled_dms, get_scheduled_dm, get_scheduled_dm_user_id,
+    insert_scheduled_dm, get_scheduled_dms, get_scheduled_dm_user_id,
     update_scheduled_dm, update_scheduled_dm_status, ScheduledDmStatus,
     insert_connection_request, get_connection_requests, get_connection_request_user_id,
     update_connection_request, update_connection_request_status, ConnectionRequestStatus,
@@ -59,7 +59,6 @@ from cqc_lem.utilities.db import (
     get_newsletter_settings, update_newsletter_settings,
     get_pending_newsletter_editions,
     get_latest_edition_scheduled_for, update_newsletter_edition, get_newsletter_edition,
-    get_user_timezone,
     get_user_groups, set_groups_enabled, get_post_engagement_rows, get_post_performance_rows,
     get_content_mix_counts, get_comment_outcomes,
     get_follower_stats, get_daily_action_counts,
@@ -71,7 +70,6 @@ from cqc_lem.utilities.db import (
     get_story_bank_entries, upsert_story_bank_entries, delete_story_bank_entry,
     STORY_BANK_KINDS, STORY_BANK_TARGET_ENTRIES,
     update_subscription_from_stripe, update_user_linkedin_token,
-    get_users_with_stripe_subscriptions,
     update_user_linkedin_password,
     get_user_linkedin_display_name, update_user_linkedin_display_name,
     get_user_blog_url, get_user_sitemap_url, get_linkedin_profile_url_by_user_id,
@@ -85,7 +83,7 @@ from cqc_lem.utilities.db import (
     get_user_timezone, update_user_timezone,
     get_user_geo, update_user_location, get_user_content_language,
     replace_video_url_base, get_post_type, get_post_buyer_stage, get_post_status,
-    update_db_post_carousel_slides, update_db_post_rejection_reason,
+    update_db_post_rejection_reason,
     get_post_url_from_log_for_user,
     insert_feedback, FeedbackSource,
     get_latest_review_feedback_id, get_early_adopter_grant, extend_trial_for_user,
@@ -102,7 +100,7 @@ from cqc_lem.utilities.linkedin.token_refresh import (
 from cqc_lem.utilities.env_constants import LI_CLIENT_ID, LI_CLIENT_SECRET, LI_REDIRECT_URL, LI_STATE_SALT, ADMIN_SECRET, API_ACCESS_TOKENS, \
     DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_VIDEO_RATIO
 import requests
-from cqc_lem.utilities.logger import myprint, log_warning, log_info, log_error
+from cqc_lem.utilities.logger import myprint, log_debug, log_warning, log_info, log_error
 from cqc_lem.utilities.mime_type_helper import get_file_mime_type
 from cqc_lem.utilities.quality_gates import (parse_gate_findings, clamp_threshold,
                                              AUTHENTICITY_SCORE_MIN_BOUNDS,
@@ -1355,8 +1353,8 @@ def _handle_gmail_forwarding_confirmation(user_id: int, subject: str, text: str,
             if nested and nested != url:
                 try:
                     confirmed = requests.get(nested, timeout=15).status_code < 400 or confirmed
-                except Exception:
-                    pass
+                except Exception as e:
+                    log_debug("Nested Gmail confirmation check failed", exc=e, user_id=user_id)
         except Exception as e:
             log_warning("Gmail forwarding auto-confirm click failed", exc=e, user_id=user_id)
     # Server-side clicking may not complete Gmail's flow (interstitial / datacenter IP). Forward the
@@ -1380,8 +1378,8 @@ def _handle_gmail_forwarding_confirmation(user_id: int, subject: str, text: str,
                        json.dumps({"code": code, "confirmed": confirmed, "url_found": bool(url),
                                    "forwarded_to_user": forwarded}),
                        ex=7 * 24 * 60 * 60)
-    except Exception:
-        pass
+    except Exception as e:
+        log_warning("Could not store Gmail forwarding confirmation result", exc=e, user_id=user_id)
     log_info(f"Gmail forwarding confirmation: url_found={bool(url)} confirmed={confirmed} "
              f"code={'yes' if code else 'no'} forwarded_to_user={forwarded}", user_id=user_id)
     detail = "confirmed" if confirmed else ("forwarded" if forwarded else ("code_stored" if code else "ignored"))
@@ -3279,7 +3277,7 @@ def get_user_linkedin_profile_endpoint(session_token: str) -> ResponseModel:
 
 @router.put("/user/timezone")
 def update_user_timezone_endpoint(request: TimezoneRequest) -> ResponseModel:
-    from zoneinfo import available_timezones, ZoneInfoNotFoundError
+    from zoneinfo import available_timezones
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")

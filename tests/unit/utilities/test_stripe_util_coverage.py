@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
-_S = "cqc_lem.utilities.stripe_util"
+_S = "cqc_lem.utilities.stripe_util"  # lgtm[py/unused-global-variable]
 
 
 class TestValidateWebhookGenericError:

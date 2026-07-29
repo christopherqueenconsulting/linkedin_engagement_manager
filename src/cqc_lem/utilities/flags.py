@@ -203,7 +203,7 @@ def _ensure_loaded() -> bool:
         now = _now()
         if _last_load_attempt is not None and now - _last_load_attempt < _poll_interval():
             return False
-        _last_load_attempt = now
+        _last_load_attempt = now  # lgtm[py/unused-global-variable]
         try:
             # observability.py is the ONE place posthog's module config (api key, host, disabled)
             # lives. Imported lazily HERE — not at module import — so this module can't create an

@@ -12,7 +12,7 @@ from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited, clear_rat
     mark_rate_limited, rate_limit_cooldown_remaining, is_automation_paused, \
     automation_pause_remaining, is_measurement_paused
 from cqc_lem.utilities.linkedin.scrapper import returnProfileInfo
-from cqc_lem.utilities.logger import myprint, log_warning, log_error
+from cqc_lem.utilities.logger import myprint, log_debug, log_warning
 from cqc_lem.utilities.selenium_util import load_cookies, get_element_wait_retry, \
     get_visible_element_wait_retry, getText
 from selenium.common.exceptions import WebDriverException
@@ -175,7 +175,6 @@ def solve_arkose_challenge(driver: WebDriver, wait: WebDriverWait) -> bool:
         if not public_key:
             # Try extracting from page source as fallback
             page = driver.page_source
-            import re
             m = re.search(r'"public_key"\s*:\s*"([^"]+)"', page)
             public_key = m.group(1) if m else ""
 
@@ -324,8 +323,8 @@ def drive_email_pin_challenge(driver, user_email: str, is_logged_in) -> bool:
         try:
             if cb.is_displayed() and not cb.is_selected():
                 cb.click()
-        except WebDriverException:
-            pass
+        except WebDriverException as e:
+            log_debug("Could not click remember-device checkbox", exc=e)
     otp = _find_visible_otp_input(driver) or otp
     try:
         otp.clear()

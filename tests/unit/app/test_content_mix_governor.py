@@ -33,7 +33,7 @@ def _plan(user_id=1, counts=None, mixes=None):
     from cqc_lem.app.run_content_plan import plan_content_for_user
     patches = [
         patch(f"{_RCP}.save_content_plan"),
-        patch(f"{_RCP}.get_best_posting_time", return_value=time(9, 0)),
+        patch("cqc_lem.utilities.utils.get_best_posting_time", return_value=time(9, 0)),
         patch(f"{_RCP}.get_last_planned_post_date_for_user", return_value=None),
         patch(f"{_RCP}.get_post_type_counts",
               return_value=counts or {"carousel": 0, "text": 0, "video": 0, "document": 0}),

@@ -26,7 +26,7 @@ from starlette.responses import FileResponse, Response
 from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
 
-from cqc_lem.utilities.logger import log_info, log_warning
+from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 
 ARCHIVE_DIR_ENV = "SPA_ASSET_ARCHIVE_DIR"
 ARCHIVE_KEEP_ENV = "SPA_ASSET_ARCHIVE_KEEP"
@@ -105,8 +105,8 @@ def _write_manifest(archive: str, manifest: Dict[str, Any]) -> None:
     except BaseException:
         try:
             os.unlink(tmp)
-        except OSError:
-            pass
+        except OSError as e:
+            log_debug("Could not remove temporary manifest file", exc=e, archive=archive)
         raise
 
 
@@ -125,8 +125,8 @@ def _copy_asset(src: str, archive: str, rel: str) -> None:
     except BaseException:
         try:
             os.unlink(tmp)
-        except OSError:
-            pass
+        except OSError as e:
+            log_debug("Could not remove temporary asset file", exc=e, tmp=tmp)
         raise
 
 
@@ -139,8 +139,8 @@ def _prune(archive: str, manifest: Dict[str, Any]) -> int:
         try:
             os.unlink(os.path.join(archive, rel))
             removed += 1
-        except OSError:
-            pass
+        except OSError as e:
+            log_debug("Could not prune archived asset", exc=e, rel=rel)
     return removed
 
 

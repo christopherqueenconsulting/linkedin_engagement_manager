@@ -37,10 +37,10 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 DEFAULT_REPO = "christopherqueenconsulting/linkedin_engagement_manager"
 DEFAULT_LLM_MODEL = "lem-medium"
@@ -452,7 +452,7 @@ class GitHubClient:
                 try:
                     data.append(json.loads(line))
                 except json.JSONDecodeError:
-                    pass
+                    continue
         issues = [parse_issue(d) for d in data if not d.get("isPullRequest")]
         return [i for i in issues if i.state == "open"][:limit]
 

@@ -2057,8 +2057,8 @@ def fact_retry_directive(report: dict) -> str:
     """The regeneration steer after a draft invented specifics: name the exact numbers it may not
     keep, and how to defer them instead."""
     offenders = [str(c.get("raw")) for c in (report or {}).get("unverified", []) if c.get("raw")]
-    lines = ["\n\nYOUR PREVIOUS DRAFT INVENTED SPECIFICS AND WAS REJECTED. Rewrite it with every "
-             "unverified number replaced by a placeholder:"]
+    lines = [("\n\nYOUR PREVIOUS DRAFT INVENTED SPECIFICS AND WAS REJECTED. Rewrite it with every " +
+              "unverified number replaced by a placeholder:")]
     if offenders:
         lines.append("- These numbers are not backed by any verified fact and must NOT appear: "
                      + ", ".join(dict.fromkeys(offenders)))
@@ -2199,7 +2199,7 @@ _ARTIFACT_RULE_RE = re.compile(
     re.IGNORECASE)
 # A stated CHANGE or a side-by-side, not merely the words "before"/"after"/"from…to" — those are
 # ordinary narrative connectives and would let a claims-only slide pass.
-_ARTIFACT_COMPARISON_RE = re.compile(
+_ARTIFACT_COMPARISON_RE = re.compile(  # lgtm[py/bad-tag-filter]
     r"\bbefore\b[^.!?\n]{0,60}\bafter\b"
     r"|\bafter\b[^.!?\n]{0,60}\bbefore\b"
     r"|\bvs\.?\b|\bversus\b"
@@ -2266,13 +2266,13 @@ def reference_slide_directive() -> str:
     """The writer-side injection for a save-targeted deck: the slide SHAPES that are inherently
     reusable, plus the one-artifact-per-slide rule the gate below enforces."""
     lines = [
-        "EVERY BODY SLIDE MUST CARRY SOMETHING REUSABLE (this is checked, and a deck of claims is "
-        "regenerated):",
-        "- Each slide between the cover and the closing slide must contain at least ONE of: a "
-        "numbered step, a command or flag, a real number, a threshold, a config/setting line, a "
-        "checklist item, a decision rule, or a before/after comparison.",
-        "- A slide that only restates a claim, an opinion, or the narrative is a FAILED slide. "
-        "Test each one: with the post text deleted, could the reader act from this slide alone?",
+        ("EVERY BODY SLIDE MUST CARRY SOMETHING REUSABLE (this is checked, and a deck of claims is " +
+         "regenerated):"),
+        ("- Each slide between the cover and the closing slide must contain at least ONE of: a " +
+         "numbered step, a command or flag, a real number, a threshold, a config/setting line, a " +
+         "checklist item, a decision rule, or a before/after comparison."),
+        ("- A slide that only restates a claim, an opinion, or the narrative is a FAILED slide. " +
+         "Test each one: with the post text deleted, could the reader act from this slide alone?"),
         "- Pick a shape per slide from this family and fill it with real material:",
     ]
     lines += [f"  * {name}: {how}." for name, how in REFERENCE_SLIDE_SHAPES]

@@ -159,5 +159,5 @@ def clear_pin(user_id: int) -> None:
         return
     try:
         client.delete(_PIN_KEY.format(user_id=user_id))
-    except Exception:
-        pass
+    except Exception as e:
+        log_warning("Could not clear stored PIN", exc=e, user_id=user_id)

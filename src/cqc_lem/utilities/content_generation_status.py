@@ -32,11 +32,11 @@ class RedisLike(Protocol):
     doubles both satisfy it without importing `redis` at module scope (it is imported lazily so
     the module keeps working, no-opping, when the client is unavailable)."""
 
-    def get(self, name: str) -> Any: ...
+    def get(self, name: str) -> Any: ...  # lgtm[py/ineffectual-statement]
 
-    def set(self, name: str, value: str, ex: Optional[int] = None) -> Any: ...
+    def set(self, name: str, value: str, ex: Optional[int] = None) -> Any: ...  # lgtm[py/ineffectual-statement]
 
-    def delete(self, *names: str) -> Any: ...
+    def delete(self, *names: str) -> Any: ...  # lgtm[py/ineffectual-statement]
 
 
 class ContentGenerationState(StrEnum):

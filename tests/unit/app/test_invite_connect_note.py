@@ -83,8 +83,7 @@ class TestNoteIsBestEffort:
 
     def test_the_note_is_stripped_of_non_bmp_characters_before_typing(self):
         box = MagicMock()
-        _sent, _reason, _click, _log, _err, _warn, _r, _rec = _invite(
-            found=_NOTE_DIALOG, message="hi jane \U0001F600", box=box)
+        _invite(found=_NOTE_DIALOG, message="hi jane \U0001F600", box=box)
         typed = box.send_keys.call_args.args[0]
         assert "\U0001F600" not in typed and typed.startswith("hi jane")
 

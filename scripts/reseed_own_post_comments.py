@@ -21,7 +21,6 @@ Env: USER_ID (default 1), POST_IDS (default "10,11,13,78"), MODE (default report
 """
 import os
 import random
-import re
 import time
 
 USER_ID = int(os.getenv("USER_ID", "1"))
@@ -71,7 +70,6 @@ def _api_post():
 
 
 def _delete_old():
-    from selenium.webdriver.common.by import By
     from cqc_lem.app.run_automation import get_current_profile
     from cqc_lem.utilities.db import get_post_url_from_log_for_user
     from cqc_lem.utilities.selenium_util import wait_for_ajax, quit_gracefully

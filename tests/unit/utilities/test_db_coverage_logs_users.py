@@ -2,7 +2,6 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
-from datetime import datetime
 
 import mysql.connector
 from mysql.connector import errorcode

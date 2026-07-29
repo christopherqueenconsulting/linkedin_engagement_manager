@@ -105,7 +105,7 @@ def geocode_city(city: str, state: Optional[str] = None, country: Optional[str] 
         wait = _MIN_INTERVAL_S - (time.time() - _last_call)
         if wait > 0:
             time.sleep(wait)
-        _last_call = time.time()
+        _last_call = time.time()  # lgtm[py/unused-global-variable]
 
     try:
         resp = requests.get(_NOMINATIM_URL, params=params,

@@ -5,8 +5,8 @@ from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
-_RA = "cqc_lem.app.run_automation"
-_RS = "cqc_lem.app.run_scheduler"
+_RA = "cqc_lem.app.run_automation"  # lgtm[py/unused-global-variable]
+_RS = "cqc_lem.app.run_scheduler"  # lgtm[py/unused-global-variable]
 
 
 @pytest.fixture(autouse=True)

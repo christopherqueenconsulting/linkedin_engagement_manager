@@ -2,7 +2,7 @@
 handlers/queue metrics, and the AWS test task."""
 
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit

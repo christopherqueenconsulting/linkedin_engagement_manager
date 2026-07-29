@@ -204,7 +204,7 @@ def _flag_surface():
             from cqc_lem.utilities import flags
             _flags_module = flags
         except Exception as exc:
-            _flags_unavailable = True
+            _flags_unavailable = True  # lgtm[py/unused-global-variable]
             log_warning("Feature-flag surface unavailable — every experiment reads its control arm",
                         exc=exc, api_provider="posthog")
     return _flags_module

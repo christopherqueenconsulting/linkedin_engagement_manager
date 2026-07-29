@@ -189,10 +189,10 @@ def build_body(row: dict, hours: int = DEFAULT_HOURS, project_id: str = DEFAULT_
                   f"exceptions was thrown in.", ""]
     lines += ["## Scope",
               "- Fix the root cause of the exception, not the symptom.",
-              "- If it is an EXPECTED best-effort failure that already degrades gracefully (a "
-              "Selenium selector miss, a third-party timeout the caller retries), stop raising it "
-              "into error tracking: catch it and `log_warning(...)` instead, or add a suppression "
-              "rule in PostHog.",
+              ("- If it is an EXPECTED best-effort failure that already degrades gracefully (a " +
+               "Selenium selector miss, a third-party timeout the caller retries), stop raising it " +
+               "into error tracking: catch it and `log_warning(...)` instead, or add a suppression " +
+               "rule in PostHog."),
               "- Keep the change scoped to this exception — no unrelated refactors.",
               "",
               "## Files",

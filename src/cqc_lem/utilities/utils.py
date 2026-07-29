@@ -165,8 +165,9 @@ def get_post_time(selected_date: date, user_id: int = None):
         for r in recs:
             if r["weekday_num"] == selected_date.weekday():
                 return clamp_to_waking_hours(time(r["hour"], default.minute))
-    except Exception:
-        pass
+    except Exception as e:
+        from cqc_lem.utilities.logger import log_debug
+        log_debug("Could not compute recommended post time", exc=e, user_id=user_id)
     return default
 
 

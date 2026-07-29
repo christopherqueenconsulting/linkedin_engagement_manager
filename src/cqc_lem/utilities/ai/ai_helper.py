@@ -12,10 +12,10 @@ from cqc_lem.utilities.ai import content_framework as _framework
 # posts, and comments. The underscore aliases keep this module's long-standing internal API
 # (and the tests that import it) stable while the definitions live in exactly one place.
 from cqc_lem.utilities.ai.content_alignment import (
-    COMMENT_LENGTH_CHARS as _COMMENT_LENGTH_CHARS,
+    COMMENT_LENGTH_CHARS as _COMMENT_LENGTH_CHARS,  # lgtm[py/unused-global-variable]
     NO_SELF_PROMO_GUARDRAIL as _NO_SELF_PROMO_GUARDRAIL,
     NEWSLETTER_SOFT_PROMO_NOTE as _NEWSLETTER_SOFT_PROMO_NOTE,
-    DEFAULT_ENGAGEMENT_INTENTION as _DEFAULT_ENGAGEMENT_INTENTION,
+    DEFAULT_ENGAGEMENT_INTENTION as _DEFAULT_ENGAGEMENT_INTENTION,  # lgtm[py/unused-global-variable]
     style_directive as _style_directive,
     focus_directive as _focus_directive,
     intention_directive as _intention_directive,
@@ -28,7 +28,7 @@ from cqc_lem.utilities.ai.content_alignment import (
 )
 from cqc_lem.utilities.ai import slop_lint as _slop
 from cqc_lem.utilities.ai.content_research import research_topic
-from cqc_lem.utilities.ai.tools import search_recent_news, search_with_perplexity
+from cqc_lem.utilities.ai.tools import search_recent_news
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text, PLAIN_PUNCTUATION_DIRECTIVE, \
     linkedin_post_format_directive, enforce_post_readability
@@ -824,8 +824,8 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
                 out_subject = str(data.get("subject") or "").strip()[:500] or _default_subject or title[:500]
                 return {"title": title, "subtitle": subtitle, "subject": out_subject, "body": body,
                         "opening_line": _opening_line(body), **shape}
-        except (ValueError, TypeError, AttributeError):
-            pass
+        except (ValueError, TypeError, AttributeError) as e:
+            log_debug("Could not parse newsletter JSON payload", exc=e)
         parts = content.strip().split("\n", 1)   # fallback: first line = title, remainder = body
         title = normalize_public_text(_humanize_title(
             parts[0].strip(), content_type="newsletter",

@@ -14,8 +14,7 @@ from cqc_lem.app.run_automation import automate_commenting, automate_profile_vie
     sweep_reply_comments, sweep_comment_followups, sweep_comment_outcomes, send_catchup_touch
 from cqc_lem.utilities.db import (
     get_ready_to_post_posts, get_orphaned_scheduled_posts, update_db_post_status,
-    get_active_user_ids, PostStatus, has_linkedin_session, has_scheduled_post_today,
-    get_company_linked_in_url_for_user,
+    get_active_user_ids, PostStatus, has_linkedin_session, get_company_linked_in_url_for_user,
     get_users_with_stripe_subscriptions, update_subscription_from_stripe,
     get_due_scheduled_dms, get_orphaned_scheduled_dms, update_scheduled_dm_status, ScheduledDmStatus,
     get_approved_connection_requests, get_orphaned_connection_requests,
@@ -39,7 +38,7 @@ from cqc_lem.utilities.human_pacing import (
     dispatch_jitter_seconds, engagement_caps_from_prefs, remaining_actions,
     ACTION_INVITE, PACE_RESPONSIVE,
 )
-from cqc_lem.utilities.logger import myprint, log_info, log_debug, log_warning
+from cqc_lem.utilities.logger import log_info, log_debug, log_warning
 from cqc_lem.utilities.linkedin.rate_limit import is_automation_paused, automation_pause_remaining, \
     rate_limit_cooldown_remaining, is_measurement_paused
 from cqc_lem.utilities.notifications import notify_linkedin_session
