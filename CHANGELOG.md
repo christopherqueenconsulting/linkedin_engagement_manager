@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.109.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.108.0...v0.109.0) (2026-07-29)
+
+
+### Features
+
+* **ui:** allow regenerate-with-guidance on pending/rejected text posts (closes [#778](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/778)) ([#790](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/790)) ([4a50b8c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4a50b8ccd1c30b8bdac1a1a3fa52cf1c2d047920))
+
 ## [0.108.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.107.0...v0.108.0) (2026-07-29)
 
 
