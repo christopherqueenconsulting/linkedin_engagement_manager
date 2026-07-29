@@ -334,6 +334,22 @@ def message_thread_verdict(reading: Optional[dict]) -> str:
     return f"opened via {route}"
 
 
+def probe_article_editor(driver, editor_url: str = "https://www.linkedin.com/article/new/",
+                         sleep=time.sleep) -> dict:
+    """#771: open LinkedIn's article editor (read-only) and report which selector routes resolve for
+    each of the four publish steps: title, body, next, publish. The editor is left untouched; nothing
+    is typed or published."""
+    from cqc_lem.utilities.linkedin.article_editor import (find_article_editor_elements,
+                                                           article_editor_verdict)
+    from selenium.webdriver.support.ui import WebDriverWait
+
+    wait = WebDriverWait(driver, 10)
+    driver.get(editor_url)
+    sleep(6)
+    editor_map = find_article_editor_elements(driver, wait)
+    return article_editor_verdict(editor_map)
+
+
 def probe_message_thread(driver, profile_url: str, person_name: str = "", self_name: str = "",
                          sleep=time.sleep) -> dict:
     """#731: walk the message-thread resolution ladder against a REAL profile and report which route
@@ -399,11 +415,16 @@ def main(argv: Optional[list] = None) -> int:
                              "route resolves (#731)")
     parser.add_argument("--dm-thread-name", default="",
                         help="that person's name, for the messaging-search fallback route")
+    parser.add_argument("--article-editor-url", default=None, const="https://www.linkedin.com/article/new/",
+                        nargs="?",
+                        help="open LinkedIn's article editor and report each publish step's selector "
+                             "state (#771); pass a custom URL or use the default")
     args = parser.parse_args(argv)
 
-    if not (args.post_url or args.probe_composer or args.comment_outcome_url or args.dm_thread_url):
-        parser.error("nothing to probe — pass --post-url, --comment-outcome-url, --dm-thread-url "
-                     "and/or --probe-composer")
+    if not (args.post_url or args.probe_composer or args.comment_outcome_url or args.dm_thread_url
+            or args.article_editor_url):
+        parser.error("nothing to probe — pass --post-url, --comment-outcome-url, --dm-thread-url, "
+                     "--article-editor-url and/or --probe-composer")
 
     from cqc_lem.app.run_automation import get_current_profile
     from cqc_lem.utilities.selenium_util import quit_gracefully
@@ -430,6 +451,8 @@ def main(argv: Optional[list] = None) -> int:
                 self_name=resolve_self_name(args.user_id, profile))
         if args.probe_composer:
             report["composer"] = probe_composer(driver)
+        if args.article_editor_url:
+            report["article_editor"] = probe_article_editor(driver, args.article_editor_url)
     finally:
         quit_gracefully(driver)
 

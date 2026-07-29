@@ -71,6 +71,7 @@ from cqc_lem.utilities import golden_hour as _golden
 from cqc_lem.utilities.human_pacing import pace_read, record_action, remaining_actions, \
     engagement_caps_from_prefs, \
     ACTION_COMMENT, ACTION_DM, ACTION_INVITE, ACTION_REPLY
+from cqc_lem.utilities.linkedin.article_editor import fill_article_editor
 from cqc_lem.utilities.linkedin.company_page_inviter import automate_invitations, \
     plan_daily_invites, INVITE_STATUS_FAILED, INVITE_STATUS_PAUSED, INVITE_STATUS_SESSION_FAILED
 from cqc_lem.utilities.linkedin.helper import login_to_linkedin, get_my_profile, get_linkedin_profile_from_url, \
@@ -1583,40 +1584,22 @@ def _fill_edition_description(driver, wait, subtitle: str) -> bool:
         return False
 
 
-def _fill_and_publish_article(driver, wait, title: str, body: str, subtitle: str = None) -> "tuple[str | None, str | None]":
+def _fill_and_publish_article(driver, wait, title: str, body: str, subtitle: str = None,
+                              user_id: "int | None" = None) -> "tuple[str | None, str | None]":
     """Fill LinkedIn's article editor (title textarea + contenteditable body) and run the
     Next → Publish flow. On the publish dialog, best-effort fills the edition description with
     `subtitle`.
 
-    Best-effort — the multi-step publish dialog varies, so this is validated on a supervised first
-    real run. Returns `(published_url, None)` on success, or `(None, failed_step)` on failure,
-    where `failed_step` names the selector/action that could not be completed so callers can log an
-    actionable error instead of a silent "did not complete"."""
-    title_el = find_first(driver, wait, [(By.CSS_SELECTOR, "textarea[placeholder='Title']")],
-                          "Article title", required=False)
-    if title_el is None:
-        return (None, "article_title")
-    body_el = find_first(driver, wait, [(By.CSS_SELECTOR, "div[role='textbox'][aria-label*='Article editor']"),
-                                        (By.CSS_SELECTOR, "div[role='textbox']")],
-                         "Article body", visible_only=True, required=False)
-    if body_el is None:
-        return (None, "article_body")
-    title_el.click()
-    title_el.send_keys(_strip_non_bmp(title))
-    time.sleep(random.uniform(1, 2))
-    body_el.click()
-    body_el.send_keys(_strip_non_bmp(body))
-    time.sleep(random.uniform(2, 3))
-    if click_first(driver, wait, [(By.XPATH, "//button[normalize-space()='Next']")],
-                   "Article Next", required=False) is None:
-        return (None, "article_next")
-    time.sleep(random.uniform(2, 4))
-    _fill_edition_description(driver, wait, subtitle)   # best-effort; never blocks publishing
-    if click_first(driver, wait, [(By.XPATH, "//button[normalize-space()='Publish']")],
-                   "Article Publish", required=False) is None:
-        return (None, "article_publish")
-    time.sleep(random.uniform(4, 7))
-    return (driver.current_url, None)
+    Uses the selector ladder in `cqc_lem.utilities.linkedin.article_editor` so a rotated entry point
+    is caught by a fallback route and `failed_step` names the exact missing action. Returns
+    `(published_url, None)` on success, or `(None, failed_step)` on failure.
+    """
+    return fill_article_editor(
+        driver, wait, _strip_non_bmp(title), _strip_non_bmp(body),
+        user_id=user_id,
+        subtitle=subtitle,
+        fill_description_fn=_fill_edition_description,
+    )
 
 
 def _tagged_edition_body(body: str, edition_id: "int | None" = None) -> str:
@@ -1657,7 +1640,8 @@ def auto_publish_newsletter_edition(self, user_id: int):
         time.sleep(random.uniform(6, 9))
         url, failed_step = _fill_and_publish_article(driver, wait, edition["title"],
                                                       _tagged_edition_body(edition["body"]),
-                                                      subtitle=edition.get("subtitle"))
+                                                      subtitle=edition.get("subtitle"),
+                                                      user_id=user_id)
         if url:
             mark_newsletter_published(user_id, url)
             myprint(f"Published newsletter edition for user {user_id}: {edition['title']}")
@@ -1692,7 +1676,8 @@ def auto_publish_edition(self, edition_id: int):
         time.sleep(random.uniform(6, 9))
         url, failed_step = _fill_and_publish_article(driver, wait, edition["title"],
                                                       _tagged_edition_body(edition["body"], edition_id),
-                                                      subtitle=edition.get("subtitle"))
+                                                      subtitle=edition.get("subtitle"),
+                                                      user_id=user_id)
         if url:
             mark_edition_published(edition_id, url)
             myprint(f"Published newsletter edition {edition_id} for user {user_id}: {edition['title']}")
