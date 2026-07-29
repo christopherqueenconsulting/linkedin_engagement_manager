@@ -1,6 +1,7 @@
 """Unit tests for the feedback DB helper (issue #496)."""
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 from unittest.mock import MagicMock, patch
@@ -296,3 +297,127 @@ class TestUpdateFeedbackTriage:
             with patch(f"{_DB}.get_db_connection", return_value=conn):
                 assert update_feedback_triage(3, status=member) is True
             assert cur.execute.call_args[0][1] == (member.value, 3)
+
+
+class TestIsUserAdmin:
+    def test_true_when_row_has_is_admin(self):
+        conn, cur = _dict_conn(one={"is_admin": 1})
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import is_user_admin
+            assert is_user_admin(5) is True
+        sql, params = cur.execute.call_args[0]
+        assert "SELECT is_admin FROM users" in sql
+        assert params == (5,)
+
+    def test_false_when_row_missing(self):
+        conn, cur = _dict_conn(one=None)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import is_user_admin
+            assert is_user_admin(5) is False
+
+    def test_false_when_row_is_zero(self):
+        conn, cur = _dict_conn(one={"is_admin": 0})
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import is_user_admin
+            assert is_user_admin(5) is False
+
+    def test_none_user_id_is_false(self):
+        with patch(f"{_DB}.get_db_connection") as get_conn:
+            from cqc_lem.utilities.db import is_user_admin
+            assert is_user_admin(None) is False
+        get_conn.assert_not_called()
+
+    def test_db_error_is_false(self):
+        import mysql.connector
+        conn, cur = _dict_conn()
+        cur.execute.side_effect = mysql.connector.Error("boom")
+        with patch(f"{_DB}.get_db_connection", return_value=conn), patch(f"{_DB}.log_error"):
+            from cqc_lem.utilities.db import is_user_admin
+            assert is_user_admin(5) is False
+
+
+class TestGetFeedbackList:
+    def test_returns_rows_joined_with_user_email(self):
+        conn, cur = _dict_conn(rows=[{"id": 1, "email": "a@x.com", "is_admin": 1,
+                                     "status": "new", "source": "widget"}])
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_feedback_list
+            got = get_feedback_list(limit=5, offset=10)
+        assert got == [{"id": 1, "email": "a@x.com", "is_admin": 1,
+                        "status": "new", "source": "widget"}]
+        sql, params = cur.execute.call_args[0]
+        assert "FROM feedback f LEFT JOIN users u" in sql
+        assert "ORDER BY f.created_at DESC" in sql
+        assert "LIMIT %s OFFSET %s" in sql
+        assert params == (5, 10)
+
+    def test_status_filter_is_validated_and_bound(self):
+        conn, cur = _dict_conn(rows=[])
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_feedback_list, FeedbackStatus
+            from cqc_lem.utilities.db import FeedbackSource
+            get_feedback_list(status=FeedbackStatus.NEW, source=FeedbackSource.WIDGET, limit=2)
+        sql, params = cur.execute.call_args[0]
+        assert "f.status = %s" in sql
+        assert "f.source = %s" in sql
+        assert params == ("new", "widget", 2, 0)
+
+    def test_invalid_status_returns_empty(self):
+        with patch(f"{_DB}.get_db_connection") as get_conn:
+            from cqc_lem.utilities.db import get_feedback_list
+            assert get_feedback_list(status="not-a-status") == []
+        get_conn.assert_not_called()
+
+    def test_db_error_returns_empty_list(self):
+        import mysql.connector
+        conn, cur = _dict_conn()
+        cur.execute.side_effect = mysql.connector.Error("boom")
+        with patch(f"{_DB}.get_db_connection", return_value=conn), patch(f"{_DB}.log_error"):
+            from cqc_lem.utilities.db import get_feedback_list
+            assert get_feedback_list() == []
+
+
+class TestRecordFeedbackReview:
+    def test_records_reviewer_and_status(self):
+        conn, cur = _dict_conn()
+        with patch(f"{_DB}.get_db_connection", return_value=conn), \
+                patch(f"{_DB}.datetime") as dt:
+            from cqc_lem.utilities.db import record_feedback_review, FeedbackStatus
+            now = datetime(2026, 7, 29, 12, 0, 0, tzinfo=timezone.utc)
+            dt.now.return_value = now
+            assert record_feedback_review(7, 3, status=FeedbackStatus.DISMISSED) is True
+        sql, params = cur.execute.call_args[0]
+        assert "reviewed_by=%s, reviewed_at=%s, status=%s" in sql
+        assert params[:3] == (3, now.replace(tzinfo=None), "dismissed")
+        assert params[3] == 7
+        conn.commit.assert_called_once()
+
+    def test_can_record_reviewer_without_status(self):
+        conn, cur = _dict_conn()
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import record_feedback_review
+            assert record_feedback_review(7, 3) is True
+        sql, params = cur.execute.call_args[0]
+        assert "status" not in sql
+        assert params[:1] == (3,)
+        assert params[2] == 7
+
+    def test_unknown_status_never_reaches_enum(self):
+        with patch(f"{_DB}.get_db_connection") as get_conn, patch(f"{_DB}.log_error") as log:
+            from cqc_lem.utilities.db import record_feedback_review
+            assert record_feedback_review(7, 3, status="pending") is False
+        get_conn.assert_not_called()
+        assert "pending" in log.call_args[0][0]
+
+    def test_missing_feedback_or_reviewer_is_false(self):
+        from cqc_lem.utilities.db import record_feedback_review
+        assert record_feedback_review(None, 3) is False
+        assert record_feedback_review(7, None) is False
+
+    def test_db_error_returns_false(self):
+        import mysql.connector
+        conn, cur = _dict_conn()
+        cur.execute.side_effect = mysql.connector.Error("boom")
+        with patch(f"{_DB}.get_db_connection", return_value=conn), patch(f"{_DB}.log_error"):
+            from cqc_lem.utilities.db import record_feedback_review
+            assert record_feedback_review(7, 3) is False

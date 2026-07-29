@@ -836,6 +836,7 @@ class TestProcessNewFeedback:
                 {"id": 2, "user_id": 2, "body": "feed commenting stops after one comment"}]
         with patch(f"{_SVC}.get_unprocessed_feedback", return_value=rows), \
                 patch(f"{_SVC}.get_open_feedback_clusters", return_value=[]), \
+                patch(f"{_SVC}.is_user_admin", return_value=True), \
                 patch(f"{_SVC}.classify_feedback", return_value=_classification()), \
                 patch(f"{_SVC}.create_github_issue", return_value=900) as create, \
                 patch(f"{_SVC}.comment_on_issue", return_value=True) as comment, \
@@ -852,10 +853,25 @@ class TestProcessNewFeedback:
         rows = [{"id": 1, "user_id": 1, "body": "a"}, {"id": 2, "user_id": 2, "body": "b"}]
         with patch(f"{_SVC}.get_unprocessed_feedback", return_value=rows), \
                 patch(f"{_SVC}.get_open_feedback_clusters", return_value=[]), \
+                patch(f"{_SVC}.is_user_admin", return_value=True), \
                 patch(f"{_SVC}.file_feedback_issue",
                       side_effect=[RuntimeError("boom"), {"action": "filed"}]):
             result = svc.process_new_feedback()
         assert result == {"processed": 2, "counts": {"error": 1, "filed": 1}}
+
+    def test_non_admin_feedback_is_held_for_review(self):
+        svc = _mod()
+        rows = [{"id": 1, "user_id": 1, "body": "admin feedback"},
+                {"id": 2, "user_id": 2, "body": "user feedback"},
+                {"id": 3, "user_id": None, "body": "anonymous feedback"}]
+        with patch(f"{_SVC}.get_unprocessed_feedback", return_value=rows), \
+                patch(f"{_SVC}.get_open_feedback_clusters", return_value=[]), \
+                patch(f"{_SVC}.is_user_admin",
+                      side_effect=lambda uid: uid == 1), \
+                patch(f"{_SVC}.file_feedback_issue", return_value={"action": "filed"}) as filer:
+            result = svc.process_new_feedback(limit=10)
+        assert result == {"processed": 3, "counts": {"filed": 1, "pending_review": 2}}
+        filer.assert_called_once_with(rows[0], clusters=[])
 
     def test_empty_queue_is_a_no_op(self):
         svc = _mod()
@@ -874,6 +890,7 @@ class TestReclusterFeedback:
         rows = [{"id": 30, "user_id": 5, "body": "replies do not post", "embedding": [1.0, 0.0]}]
         with patch(f"{_SVC}.get_open_feedback_clusters", return_value=clusters), \
                 patch(f"{_SVC}.get_unprocessed_feedback", return_value=rows), \
+                patch(f"{_SVC}.is_user_admin", return_value=True), \
                 patch(f"{_SVC}.comment_on_issue", return_value=True) as comment, \
                 patch(f"{_SVC}.update_feedback_triage") as triage, \
                 patch(f"{_SVC}.embed_text") as embed:
@@ -889,6 +906,7 @@ class TestReclusterFeedback:
         rows = [{"id": 31, "user_id": 5, "body": "billing charged me twice"}]
         with patch(f"{_SVC}.get_open_feedback_clusters", return_value=[]), \
                 patch(f"{_SVC}.get_unprocessed_feedback", return_value=rows), \
+                patch(f"{_SVC}.is_user_admin", return_value=True), \
                 patch(f"{_SVC}.embed_text", return_value=[0.0, 1.0]), \
                 patch(f"{_SVC}.update_feedback_triage") as triage:
             result = svc.recluster_feedback()
@@ -901,6 +919,7 @@ class TestReclusterFeedback:
         rows = [{"id": 32, "user_id": 5, "body": "something brand new"}]
         with patch(f"{_SVC}.get_open_feedback_clusters", return_value=[]), \
                 patch(f"{_SVC}.get_unprocessed_feedback", return_value=rows), \
+                patch(f"{_SVC}.is_user_admin", return_value=True), \
                 patch(f"{_SVC}.embed_text", return_value=None), \
                 patch(f"{_SVC}.create_github_issue") as create, \
                 patch(f"{_SVC}.update_feedback_triage"):
@@ -911,7 +930,8 @@ class TestReclusterFeedback:
         from cqc_lem.utilities.db import FeedbackStatus
         svc = _mod()
         with patch(f"{_SVC}.get_open_feedback_clusters", return_value=[]), \
-                patch(f"{_SVC}.get_unprocessed_feedback", return_value=[]) as loader:
+                patch(f"{_SVC}.get_unprocessed_feedback", return_value=[]) as loader, \
+                patch(f"{_SVC}.is_user_admin", return_value=True):
             svc.recluster_feedback(limit=50)
         assert loader.call_args[0][0] == 50
         assert loader.call_args.kwargs["statuses"] == (FeedbackStatus.NEW, FeedbackStatus.TRIAGED)
@@ -922,6 +942,7 @@ class TestReclusterFeedback:
         rows = [{"id": 33, "user_id": 5, "body": "replies do not post", "embedding": [1.0, 0.0]}]
         with patch(f"{_SVC}.get_open_feedback_clusters", return_value=clusters), \
                 patch(f"{_SVC}.get_unprocessed_feedback", return_value=rows), \
+                patch(f"{_SVC}.is_user_admin", return_value=True), \
                 patch(f"{_SVC}.comment_on_issue", return_value=False), \
                 patch(f"{_SVC}.update_feedback_triage") as triage:
             result = svc.recluster_feedback()
@@ -933,10 +954,25 @@ class TestReclusterFeedback:
         with patch(f"{_SVC}.get_open_feedback_clusters", return_value=[]), \
                 patch(f"{_SVC}.get_unprocessed_feedback",
                       return_value=[{"id": 34, "body": "  "}]), \
+                patch(f"{_SVC}.is_user_admin", return_value=True), \
                 patch(f"{_SVC}.embed_text") as embed:
             result = svc.recluster_feedback()
         assert result == {"scanned": 1, "attached": 0, "embedded": 0, "clusters": 0}
         embed.assert_not_called()
+
+    def test_non_admin_feedback_is_not_silently_reclustered(self):
+        svc = _mod()
+        clusters = [_cluster(7, "comments never post", 101, embedding=[1.0, 0.0])]
+        rows = [{"id": 35, "user_id": 2, "body": "replies do not post", "embedding": [1.0, 0.0]}]
+        with patch(f"{_SVC}.get_open_feedback_clusters", return_value=clusters), \
+                patch(f"{_SVC}.get_unprocessed_feedback", return_value=rows), \
+                patch(f"{_SVC}.is_user_admin", return_value=False), \
+                patch(f"{_SVC}.comment_on_issue") as comment, \
+                patch(f"{_SVC}.update_feedback_triage") as triage:
+            result = svc.recluster_feedback()
+        assert result == {"scanned": 1, "attached": 0, "embedded": 0, "clusters": 1}
+        comment.assert_not_called()
+        triage.assert_not_called()
 
 
 class TestEnvReaders:

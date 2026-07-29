@@ -50,7 +50,7 @@ from typing import Optional
 from cqc_lem.utilities.ai.content_framework import as_vector, cosine_similarity, text_similarity
 from cqc_lem.utilities.db import (
     FeedbackStatus, count_feedback_filed_by_user, get_open_feedback_clusters,
-    get_unprocessed_feedback, update_feedback_triage,
+    get_unprocessed_feedback, is_user_admin, update_feedback_triage,
 )
 from cqc_lem.utilities.feedback.classifier import (
     MAX_BODY_CHARS, NEEDS_HUMAN_LABEL, RISK_LABELS, FeedbackCategory, FeedbackClassification,
@@ -693,14 +693,27 @@ def file_feedback_issue(feedback: dict, classification: FeedbackClassification =
                             "reporter_count": reporter_count})
 
 
+def _row_is_admin(row: dict) -> bool:
+    """Issue #793: only feedback from designated admin users may be auto-triaged into the GitHub
+    work cycle. Anonymous feedback is treated as non-admin and stays pending review."""
+    user_id = row.get("user_id")
+    return is_user_admin(user_id) if user_id is not None else False
+
+
 def process_new_feedback(limit: int = 25) -> dict:
     """Drain the capture queue: classify, dedup, and file each unprocessed feedback row. The open
     clusters are loaded ONCE and grown in memory as issues are filed, so a burst of identical
-    reports in one pass produces one issue and N-1 +1 comments."""
+    reports in one pass produces one issue and N-1 +1 comments.
+
+    Issue #793: only rows from admin users are filed automatically. Non-admin feedback is left in
+    `new` status so the admin triage panel can approve or dismiss it."""
     rows = get_unprocessed_feedback(limit)
     clusters = get_open_feedback_clusters()
     counts: dict = {}
     for row in rows:
+        if not _row_is_admin(row):
+            counts["pending_review"] = counts.get("pending_review", 0) + 1
+            continue
         try:
             result = file_feedback_issue(row, clusters=clusters)
         except Exception as e:
@@ -729,6 +742,10 @@ def recluster_feedback(limit: int = 200) -> dict:
     attached = 0
     embedded = 0
     for row in rows:
+        # Issue #793: non-admin feedback must not be silently clustered (and therefore accepted)
+        # before an admin reviews it.
+        if not _row_is_admin(row):
+            continue
         body = row.get("body") or ""
         if not body.strip():
             continue

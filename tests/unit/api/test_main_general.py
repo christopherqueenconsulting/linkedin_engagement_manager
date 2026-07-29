@@ -239,12 +239,14 @@ class TestAuthCheckSession:
     def test_valid_session_returns_user_id_and_email(self, client):
         with patch(f"{_MAIN}.get_session_user_id", return_value=7), \
              patch(f"{_MAIN}.get_user_email", return_value="me@example.com"), \
-             patch(f"{_MAIN}.get_user_analytics_profile", return_value={}):
+             patch(f"{_MAIN}.get_user_analytics_profile", return_value={}), \
+             patch(f"{_MAIN}.is_user_admin", return_value=False):
             resp = client.get(self.BASE, params={"session_token": "valid-token-abc"})
         assert resp.status_code == 200
         detail = resp.json()["detail"]
         assert detail["user_id"] == 7
         assert detail["email"] == "me@example.com"
+        assert detail["is_admin"] is False
 
     def test_returns_person_facts_for_posthog_identify(self, client):
         profile = {
@@ -257,7 +259,8 @@ class TestAuthCheckSession:
         }
         with patch(f"{_MAIN}.get_session_user_id", return_value=7), \
              patch(f"{_MAIN}.get_user_email", return_value="me@example.com"), \
-             patch(f"{_MAIN}.get_user_analytics_profile", return_value=profile):
+             patch(f"{_MAIN}.get_user_analytics_profile", return_value=profile), \
+             patch(f"{_MAIN}.is_user_admin", return_value=True):
             resp = client.get(self.BASE, params={"session_token": "valid-token-abc"})
         detail = resp.json()["detail"]
         assert detail["plan"] == "premium"
@@ -267,11 +270,13 @@ class TestAuthCheckSession:
         # What PostHog Surveys target on (issue #653).
         assert detail["onboarding_completed_at"] == "2026-02-03T04:05:06Z"
         assert detail["posts_approved"] == 12
+        assert detail["is_admin"] is True
 
     def test_missing_profile_row_leaves_person_facts_null(self, client):
         with patch(f"{_MAIN}.get_session_user_id", return_value=7), \
              patch(f"{_MAIN}.get_user_email", return_value="me@example.com"), \
-             patch(f"{_MAIN}.get_user_analytics_profile", return_value={}):
+             patch(f"{_MAIN}.get_user_analytics_profile", return_value={}), \
+             patch(f"{_MAIN}.is_user_admin", return_value=False):
             resp = client.get(self.BASE, params={"session_token": "valid-token-abc"})
         detail = resp.json()["detail"]
         assert detail["plan"] is None
@@ -281,6 +286,7 @@ class TestAuthCheckSession:
         assert detail["onboarding_completed_at"] is None
         # A user who has approved nothing is 0, never null — the survey rule is a `>=` comparison.
         assert detail["posts_approved"] == 0
+        assert detail["is_admin"] is False
 
 
 # ---------------------------------------------------------------------------

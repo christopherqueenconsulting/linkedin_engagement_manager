@@ -8484,7 +8484,7 @@ def insert_feedback(body: str, user_id: int = None,
 # copies that cluster_id and the seed's github_issue_number. No extra table, so "one recurring
 # problem = one issue" is a self-join instead of a schema change.
 _FEEDBACK_COLUMNS = ("id, user_id, source, type_hint, body, context_json, embedding, cluster_id, "
-                     "github_issue_number, status, sentiment, created_at")
+                     "github_issue_number, status, sentiment, reviewed_by, reviewed_at, created_at")
 
 
 def get_feedback_by_id(feedback_id: int) -> Optional[dict]:
@@ -8628,6 +8628,109 @@ def update_feedback_triage(feedback_id: int,
         columns = ", ".join(u.split("=")[0] for u in updates)
         log_error(f"Could not update feedback triage for {feedback_id} (columns: {columns})",
                   exc=err)
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def is_user_admin(user_id: int) -> bool:
+    """Whether this user is designated as an admin (issue #793).
+
+    Fails CLOSED — a missing user or DB error is never interpreted as admin rights."""
+    if user_id is None:
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT is_admin FROM users WHERE id = %s", (int(user_id),))
+        row = cursor.fetchone()
+        return bool(row and row.get("is_admin"))
+    except mysql.connector.Error as err:
+        log_error(f"Could not check admin status for user_id {user_id}", exc=err)
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_feedback_list(status: Optional[Union["FeedbackStatus", str]] = None,
+                      source: Optional[Union["FeedbackSource", str]] = None,
+                      limit: int = 50, offset: int = 0) -> list:
+    """All feedback rows, newest first, with the submitter's email and admin flag (issue #793).
+
+    Optional status/source filters are validated against the enum vocabularies before they reach
+    the query, so a bad value returns an empty list instead of a MySQL 1265."""
+    filters: list = []
+    params: list = []
+    if status is not None:
+        try:
+            status = FeedbackStatus(str(status).strip().lower())
+        except ValueError:
+            return []
+        filters.append("f.status = %s")
+        params.append(str(status))
+    if source is not None:
+        try:
+            source = FeedbackSource(str(source).strip().lower())
+        except ValueError:
+            return []
+        filters.append("f.source = %s")
+        params.append(str(source))
+
+    where = f"WHERE {' AND '.join(filters)}" if filters else ""
+    sql = (
+        f"SELECT f.id, f.user_id, f.source, f.type_hint, f.body, f.context_json, "
+        f"f.embedding, f.cluster_id, f.github_issue_number, f.status, f.sentiment, "
+        f"f.reviewed_by, f.reviewed_at, f.created_at, u.email, u.is_admin "
+        f"FROM feedback f LEFT JOIN users u ON u.id = f.user_id "
+        f"{where} ORDER BY f.created_at DESC LIMIT %s OFFSET %s"
+    )
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(sql, (*params, int(limit), int(offset)))
+        return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error("Could not list feedback for admin panel", exc=err)
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def record_feedback_review(feedback_id: int, reviewer_user_id: int,
+                           status: Optional[Union["FeedbackStatus", str]] = None,
+                           reviewed_at: Optional[datetime] = None) -> bool:
+    """Stamp who reviewed a feedback row and when, optionally updating its status (issue #793).
+
+    Status is validated the same way as `update_feedback_triage` so a typo can never corrupt the
+    ENUM column."""
+    if feedback_id is None or reviewer_user_id is None:
+        return False
+    updates: list = ["reviewed_by=%s", "reviewed_at=%s"]
+    params: list = [int(reviewer_user_id),
+                    (reviewed_at or datetime.now(timezone.utc)).replace(tzinfo=None)]
+    if status is not None:
+        try:
+            status = FeedbackStatus(str(status).strip().lower())
+        except ValueError as err:
+            log_error(f"Refusing to write unknown feedback status {str(status)!r} for feedback "
+                      f"{feedback_id} — expected one of "
+                      f"{', '.join(s.value for s in FeedbackStatus)}", exc=err)
+            return False
+        updates.append("status=%s")
+        params.append(str(status))
+    params.append(int(feedback_id))
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(f"UPDATE feedback SET {', '.join(updates)} WHERE id=%s", tuple(params))
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        log_error(f"Could not record feedback review for {feedback_id}", exc=err,
+                  user_id=reviewer_user_id)
         return False
     finally:
         cursor.close()
