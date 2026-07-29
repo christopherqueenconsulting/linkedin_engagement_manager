@@ -287,7 +287,7 @@ def _type_safely(element: WebElement, text: str) -> None:
         try:
             element.clear()
         except (WebDriverException, StaleElementReferenceException):
-            pass
+            pass  # contenteditable / custom fields may not implement clear(); send_keys overwrites below.
         element.send_keys(text)
     except (WebDriverException, StaleElementReferenceException) as e:
         log_warning("Article editor field interaction failed", exc=e, action_type="article_editor")
@@ -360,6 +360,7 @@ def fill_article_editor(
         return None, STEP_PUBLISH
 
     if not _click_safely(driver, publish_step.element):
+        # The element was found and enabled, but the click itself failed (intercepted/stale).
         return None, STEP_PUBLISH
     time.sleep(5)
     return driver.current_url, None
