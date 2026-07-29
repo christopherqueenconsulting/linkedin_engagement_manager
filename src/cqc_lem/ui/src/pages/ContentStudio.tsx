@@ -16,7 +16,7 @@ import CatchupTouches from './review/CatchupTouches'
 import ComposePost from './content/ComposePost'
 import { useAuth } from '../contexts/AuthContext'
 import { useUserTimezone } from '../hooks/useUserTimezone'
-import { formatInTimezone, toZonedInputValue, zonedInputToUtcIso } from '../utils/datetime'
+import { formatInTimezone, toZonedInputValue, zonedInputToUtcIso, zonedDateToUtcStart, zonedDateToUtcEnd } from '../utils/datetime'
 import { emptyRunExplanation, isGenerationRunning } from '../utils/generationStatus'
 import type { GenerationStatus } from '../utils/generationStatus'
 import { EVENTS, capture, maskProps, recordPostApproval } from '../utils/analytics'
@@ -63,6 +63,18 @@ const POST_TYPE_FILTERS: { label: string; value: PostTypeFilter }[] = [
 // is published as a single PDF instead of a multi-image share.
 const isDeckType = (postType: string) => postType === 'carousel' || postType === 'document'
 
+type DateRangeFilter = 'ALL' | 'today' | 'yesterday' | 'last7days' | 'last30days' | 'thisMonth' | 'next30days' | 'custom'
+const DATE_RANGE_FILTERS: { label: string; value: DateRangeFilter }[] = [
+  { label: 'All dates', value: 'ALL' },
+  { label: 'Today', value: 'today' },
+  { label: 'Yesterday', value: 'yesterday' },
+  { label: 'Last 7 days', value: 'last7days' },
+  { label: 'Last 30 days', value: 'last30days' },
+  { label: 'This month', value: 'thisMonth' },
+  { label: 'Next 30 days', value: 'next30days' },
+  { label: 'Custom', value: 'custom' },
+]
+
 type SortBy = 'scheduled_time' | 'status' | 'post_type' | 'id'
 const SORT_BY_OPTIONS: { label: string; value: SortBy }[] = [
   { label: 'Scheduled time', value: 'scheduled_time' },
@@ -72,6 +84,65 @@ const SORT_BY_OPTIONS: { label: string; value: SortBy }[] = [
 ]
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50]
+
+// Return YYYY-MM-DD for *today* in the user's configured timezone so preset ranges
+// line up with the wall clock the rest of the UI uses.
+export function getTodayInTz(tz: string): string {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date())
+    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '0'
+    return `${get('year')}-${get('month')}-${get('day')}`
+  } catch {
+    return new Date().toISOString().slice(0, 10)
+  }
+}
+
+// Given a preset (or custom) date range, return the user-timezone wall dates that bound it.
+export function resolveDateRange(
+  preset: DateRangeFilter,
+  tz: string,
+  customStart?: string,
+  customEnd?: string,
+): { start: string | null; end: string | null } {
+  const today = getTodayInTz(tz)
+  const [year, month, day] = today.split('-').map(Number)
+  switch (preset) {
+    case 'ALL':
+      return { start: null, end: null }
+    case 'today':
+      return { start: today, end: today }
+    case 'yesterday': {
+      const d = new Date(Date.UTC(year, month - 1, day - 1))
+      return { start: d.toISOString().slice(0, 10), end: d.toISOString().slice(0, 10) }
+    }
+    case 'last7days': {
+      const d = new Date(Date.UTC(year, month - 1, day - 6))
+      return { start: d.toISOString().slice(0, 10), end: today }
+    }
+    case 'last30days': {
+      const d = new Date(Date.UTC(year, month - 1, day - 29))
+      return { start: d.toISOString().slice(0, 10), end: today }
+    }
+    case 'thisMonth': {
+      const start = `${year}-${String(month).padStart(2, '0')}-01`
+      const end = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10)
+      return { start, end }
+    }
+    case 'next30days': {
+      const d = new Date(Date.UTC(year, month - 1, day + 29))
+      return { start: today, end: d.toISOString().slice(0, 10) }
+    }
+    case 'custom':
+      return { start: customStart || null, end: customEnd || null }
+    default:
+      return { start: null, end: null }
+  }
+}
 
 interface Post {
   post_id: number
@@ -131,6 +202,9 @@ export default function ContentStudio() {
   // Filter / sort / pagination state
   const [filterStatus, setFilterStatus] = useState<Status>('ALL')
   const [filterPostType, setFilterPostType] = useState<PostTypeFilter>('ALL')
+  const [dateRange, setDateRange] = useState<DateRangeFilter>('ALL')
+  const [customStartDate, setCustomStartDate] = useState<string>('')
+  const [customEndDate, setCustomEndDate] = useState<string>('')
   const [sortBy, setSortBy] = useState<SortBy>('scheduled_time')
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
   const [page, setPage] = useState(1)
@@ -170,7 +244,14 @@ export default function ContentStudio() {
   const editingPostId = editingPost?.post_id ?? null
   useEffect(() => { setRescoreResult(null) }, [editingPostId])
 
-  const queryKey = ['posts', email, page, pageSize, sortOrder, sortBy, filterStatus, filterPostType, searchQuery]
+  const { start: filterStartDate, end: filterEndDate } = resolveDateRange(
+    dateRange, userTimezone, customStartDate, customEndDate
+  )
+
+  const queryKey = [
+    'posts', email, page, pageSize, sortOrder, sortBy,
+    filterStatus, filterPostType, dateRange, filterStartDate, filterEndDate, searchQuery,
+  ]
 
   const { data, isLoading } = useQuery<{ detail: PostsResponse }>({
     queryKey,
@@ -184,6 +265,8 @@ export default function ContentStudio() {
       })
       if (filterStatus !== 'ALL') params.set('status_filter', filterStatus)
       if (filterPostType !== 'ALL') params.set('post_type_filter', filterPostType)
+      if (filterStartDate) params.set('start_date', zonedDateToUtcStart(filterStartDate, userTimezone) ?? '')
+      if (filterEndDate) params.set('end_date', zonedDateToUtcEnd(filterEndDate, userTimezone) ?? '')
       if (searchQuery) params.set('search', searchQuery)
       return api.get(`/posts/?${params.toString()}`).then((r) => r.data)
     },
@@ -427,11 +510,18 @@ export default function ContentStudio() {
     if (newFilter !== undefined) setFilterStatus(newFilter)
   }
 
-  const hasActiveFilters = filterStatus !== 'ALL' || filterPostType !== 'ALL' || searchQuery !== ''
+  const hasActiveFilters =
+    filterStatus !== 'ALL' ||
+    filterPostType !== 'ALL' ||
+    dateRange !== 'ALL' ||
+    searchQuery !== ''
 
   function clearFilters() {
     setFilterStatus('ALL')
     setFilterPostType('ALL')
+    setDateRange('ALL')
+    setCustomStartDate('')
+    setCustomEndDate('')
     setSearchInput('')
     setSearchQuery('')
     setSortBy('scheduled_time')
@@ -620,7 +710,7 @@ export default function ContentStudio() {
         </p>
       </div>
 
-      {/* Sort + type filter + page-size controls */}
+      {/* Sort + type filter + date range + page-size controls */}
       <div className="flex items-center gap-3 flex-wrap text-sm">
         <label className="flex items-center gap-1.5 text-xs text-gray-600">
           <span>Type</span>
@@ -634,6 +724,38 @@ export default function ContentStudio() {
             ))}
           </select>
         </label>
+        <label className="flex items-center gap-1.5 text-xs text-gray-600">
+          <span>Date</span>
+          <select
+            value={dateRange}
+            onChange={(e) => { setDateRange(e.target.value as DateRangeFilter); setPage(1); setSelectedIds(new Set()) }}
+            aria-label="Date range preset"
+            className="border border-gray-300 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+          >
+            {DATE_RANGE_FILTERS.map((d) => (
+              <option key={d.value} value={d.value}>{d.label}</option>
+            ))}
+          </select>
+        </label>
+        {dateRange === 'custom' && (
+          <div className="flex items-center gap-1.5 text-xs text-gray-600">
+            <input
+              type="date"
+              value={customStartDate}
+              onChange={(e) => { setCustomStartDate(e.target.value); setPage(1); setSelectedIds(new Set()) }}
+              aria-label="Custom start date"
+              className="border border-gray-300 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <span>to</span>
+            <input
+              type="date"
+              value={customEndDate}
+              onChange={(e) => { setCustomEndDate(e.target.value); setPage(1); setSelectedIds(new Set()) }}
+              aria-label="Custom end date"
+              className="border border-gray-300 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
+        )}
         <label className="flex items-center gap-1.5 text-xs text-gray-600">
           <span>Sort by</span>
           <select
