@@ -11,6 +11,21 @@ function toUtcDate(isoString: string): Date {
   return new Date(hasOffset ? isoString : isoString + 'Z')
 }
 
+// Increment a `YYYY-MM-DD` string by exactly one calendar day using UTC date arithmetic so the
+// result is independent of the browser's local timezone.
+function _nextDateString(value: string): string | null {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!match) return null
+  const y = Number(match[1])
+  const m = Number(match[2]) - 1
+  const d = Number(match[3])
+  const next = new Date(Date.UTC(y, m, d + 1))
+  const yy = next.getUTCFullYear()
+  const mm = String(next.getUTCMonth() + 1).padStart(2, '0')
+  const dd = String(next.getUTCDate()).padStart(2, '0')
+  return `${yy}-${mm}-${dd}`
+}
+
 // Milliseconds `tz` is ahead of UTC at the given instant (DST-correct, because it asks Intl for the
 // wall clock that timezone actually shows at that instant).
 function tzOffsetMs(date: Date, tz: string): number {
@@ -105,13 +120,12 @@ export function zonedDateToUtcStart(value: string | null | undefined, tz: string
 // END of that day in the user's timezone. Used for inclusive end-date filters.
 export function zonedDateToUtcEnd(value: string | null | undefined, tz: string): string | null {
   if (!value) return null
-  const wallClockAsUtc = Date.parse(`${value}T23:59:59.999Z`)
-  if (isNaN(wallClockAsUtc)) return null
-  try {
-    let instant = wallClockAsUtc - tzOffsetMs(new Date(wallClockAsUtc), tz)
-    instant = wallClockAsUtc - tzOffsetMs(new Date(instant), tz)
-    return new Date(instant).toISOString()
-  } catch {
-    return new Date(wallClockAsUtc).toISOString()
-  }
+  // End-of-day is one millisecond before the start of the next wall day. Reusing the start-of-day
+  // conversion keeps DST transitions correct and avoids the millisecond drift the offset-based
+  // approach introduced when it rounded fractional seconds.
+  const nextDay = _nextDateString(value)
+  if (!nextDay) return null
+  const nextDayStart = zonedDateToUtcStart(nextDay, tz)
+  if (!nextDayStart) return null
+  return new Date(new Date(nextDayStart).getTime() - 1).toISOString()
 }

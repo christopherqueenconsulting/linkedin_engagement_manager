@@ -85,15 +85,11 @@ function harness(ui: ReactNode) {
 beforeEach(() => {
   get.mockReset()
   post.mockReset()
-  vi.useFakeTimers()
-  // Pin system time to 2026-07-29 12:00 UTC -> 08:00 EDT
-  vi.setSystemTime(new Date('2026-07-29T12:00:00Z'))
 })
 
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
-  vi.useRealTimers()
 })
 
 function mockPosts(posts: unknown[]) {
@@ -106,6 +102,16 @@ function mockPosts(posts: unknown[]) {
 }
 
 describe('ContentStudio date range helpers', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    // Pin system time to 2026-07-29 12:00 UTC -> 08:00 EDT
+    vi.setSystemTime(new Date('2026-07-29T12:00:00Z'))
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('getTodayInTz returns the wall date in the user timezone', () => {
     expect(getTodayInTz('America/New_York')).toBe('2026-07-29')
     expect(getTodayInTz('UTC')).toBe('2026-07-29')
