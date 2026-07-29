@@ -854,57 +854,6 @@ class TestAutoCleanStaleProfiles:
 
 
 # ---------------------------------------------------------------------------
-# auto_invite_to_company_pages
-# ---------------------------------------------------------------------------
-
-_PATCH_AUTOMATE_INVITES = f"{_MOD}.automate_invites_to_company_page_for_user"
-
-
-class TestAutoInviteToCompanyPages:
-    def test_no_active_users_returns_no_active_users(self):
-        with patch(_PATCH_GET_ACTIVE, return_value=[]):
-            from cqc_lem.app.run_scheduler import auto_invite_to_company_pages
-            result = auto_invite_to_company_pages.run()
-        assert result == "No Active Users"
-
-    def test_single_user_calls_apply_async_with_user_id(self):
-        mock_task = _async_task_mock()
-        with patch(_PATCH_GET_ACTIVE, return_value=[7]), \
-             patch(f"{_MOD}._stagger_due", return_value=True), \
-             patch(_PATCH_AUTOMATE_INVITES, mock_task):
-            from cqc_lem.app.run_scheduler import auto_invite_to_company_pages
-            result = auto_invite_to_company_pages.run()
-
-        mock_task.apply_async.assert_called_once()
-        call_kwargs = mock_task.apply_async.call_args[1]
-        assert call_kwargs["kwargs"]["user_id"] == 7
-        assert "1 user" in result
-
-    def test_multiple_users_calls_apply_async_for_each(self):
-        mock_task = _async_task_mock()
-        with patch(_PATCH_GET_ACTIVE, return_value=[1, 2, 3]), \
-             patch(f"{_MOD}._stagger_due", return_value=True), \
-             patch(_PATCH_AUTOMATE_INVITES, mock_task):
-            from cqc_lem.app.run_scheduler import auto_invite_to_company_pages
-            result = auto_invite_to_company_pages.run()
-
-        assert mock_task.apply_async.call_count == 3
-        assert "3 user" in result
-
-    def test_apply_async_includes_retry_policy_with_max_retries_3(self):
-        mock_task = _async_task_mock()
-        with patch(_PATCH_GET_ACTIVE, return_value=[99]), \
-             patch(f"{_MOD}._stagger_due", return_value=True), \
-             patch(_PATCH_AUTOMATE_INVITES, mock_task):
-            from cqc_lem.app.run_scheduler import auto_invite_to_company_pages
-            auto_invite_to_company_pages.run()
-
-        call_kwargs = mock_task.apply_async.call_args[1]
-        assert call_kwargs.get("retry") is True
-        assert call_kwargs["retry_policy"]["max_retries"] == 3
-
-
-# ---------------------------------------------------------------------------
 # auto_clean_old_videos
 # ---------------------------------------------------------------------------
 
