@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.107.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.106.0...v0.107.0) (2026-07-29)
+
+
+### Features
+
+* **ci:** add per-PR CodeQL quality gate (Option B) ([d0b9431](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d0b943141a8dbba1df82cd469553c291feceb3f6))
+* **ci:** per-PR CodeQL quality gate (Option B prevention) ([#782](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/782)) ([d0b9431](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d0b943141a8dbba1df82cd469553c291feceb3f6))
+
+
+### Bug Fixes
+
+* **ci:** replace removed appleboy/ssh-action script_stop with set -e ([#776](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/776)) ([59c985e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/59c985e2ed72ce5ababe8e345e3db288bb978bcf))
+* **ci:** use v5 input names on amannn/action-semantic-pull-request ([#783](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/783)) ([19503ed](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/19503ed7f9b203b03b213dac055d8443a79c3e96))
+* **tests:** freeze time on plan-window tests so the last 1-2 days of every month don't break them ([#784](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/784)) ([ad333e9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ad333e9906abcd905bceace2fa4a4b965aa61f44))
+
+
+### Documentation
+
+* recompress CLAUDE.md under 40k chars + add size guard ([#779](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/779)) ([f0bd883](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f0bd88325088283ae8eb5357c45ce5842333e699))
+
 ## [0.106.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.105.0...v0.106.0) (2026-07-28)
 
 
