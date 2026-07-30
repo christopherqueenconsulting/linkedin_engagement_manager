@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.111.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.111.0...v0.111.1) (2026-07-30)
+
+
+### Bug Fixes
+
+* **db:** guard empty POST log rows for post_url lookup (closes [#800](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/800)) ([#801](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/801)) ([36f1c2a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/36f1c2a0da00d0289baec28e57b24310f0197d0d))
+* **db:** guard empty POST log rows in get_post_url_from_log_for_user and get_post_message_from_log_for_user (closes [#800](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/800)) ([36f1c2a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/36f1c2a0da00d0289baec28e57b24310f0197d0d))
+
 ## [0.111.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.110.0...v0.111.0) (2026-07-30)
 
 
