@@ -24,7 +24,7 @@ describe('TermsAndConditions (issue #772)', () => {
 
   it('links back to the home page', () => {
     harness()
-    expect(screen.getByRole('link', { name: 'Back to home' })).toHaveAttribute('href', '/')
+    expect(screen.getByRole('link', { name: 'Back to home' }).getAttribute('href')).toBe('/')
   })
 
   it('includes the LinkedIn terms section', () => {

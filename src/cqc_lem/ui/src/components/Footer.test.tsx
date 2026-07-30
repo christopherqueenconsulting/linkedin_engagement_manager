@@ -24,12 +24,12 @@ describe('Footer (issue #772)', () => {
   it('links to the privacy policy', () => {
     harness()
     const link = screen.getByRole('link', { name: 'Privacy Policy' })
-    expect(link).toHaveAttribute('href', '/privacy-policy')
+    expect(link.getAttribute('href')).toBe('/privacy-policy')
   })
 
   it('links to the terms and conditions', () => {
     harness()
     const link = screen.getByRole('link', { name: 'Terms and Conditions' })
-    expect(link).toHaveAttribute('href', '/terms-and-conditions')
+    expect(link.getAttribute('href')).toBe('/terms-and-conditions')
   })
 })
