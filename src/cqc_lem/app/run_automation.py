@@ -85,7 +85,7 @@ from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited, _redis_cl
     acquire_run_lock, release_run_lock, commenting_hold_reason, is_commenting_held, \
     is_automation_paused, automation_pause_reason
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
-from cqc_lem.utilities.logger import myprint, log_error, log_info, log_warning
+from cqc_lem.utilities.logger import myprint, log_error, log_info, log_warning, log_debug
 from cqc_lem.utilities.observability import track_post_outcome, track_audience_snapshot, \
     track_comment_outcome, track_golden_hour_report, track_company_page_invite_run, \
     attribute_llm_cost, llm_attribution, \
@@ -2501,6 +2501,47 @@ def _profile_slug(profile_url: str) -> str:
     return (m.group(1).lower() if m else "")
 
 
+def _reply_target_key(user_id: int, post_id: int, commenter_slug: str, comment_text: str) -> str:
+    """Stable Redis key for a specific comment on a specific post so the reply sweep never replies
+    to the SAME comment twice across golden-hour sweeps. Keyed on identity (commenter slug) + a
+    normalized prefix of the comment text — the same inputs the follow-up path uses for its dedup.
+    If we cannot resolve the commenter we fall back to a text-only hash so the dedup still has a
+    chance to prevent duplicates."""
+    text_norm = _normalize_post_text(comment_text)[:200]
+    who = (commenter_slug or "").strip().lower()
+    if not who:
+        who = hashlib.sha1(text_norm.encode("utf-8", "ignore")).hexdigest()[:16]
+    digest = hashlib.sha1(f"{who}|{text_norm}".encode("utf-8", "ignore")).hexdigest()[:20]
+    return f"linkedin:replied_to_own_comment:{user_id}:{post_id}:{digest}"
+
+
+def _has_replied_to_comment(user_id: int, post_id: int, commenter_slug: str, comment_text: str) -> bool:
+    """True if we have already recorded a reply to this comment (best-effort Redis check; fails
+    open when Redis is unavailable)."""
+    client = _redis_client()
+    if client is None:
+        return False
+    try:
+        return bool(client.get(_reply_target_key(user_id, post_id, commenter_slug, comment_text)))
+    except Exception:
+        return False
+
+
+def _record_replied_to_comment(user_id: int, post_id: int, commenter_slug: str, comment_text: str,
+                               ttl_days: int = 3) -> None:
+    """Mark a comment as replied-to in Redis so later sweeps skip it. TTL covers the reply look-back
+    window plus a small buffer; clamped so a misconfigured value can't pin keys forever."""
+    client = _redis_client()
+    if client is None:
+        return
+    ttl_seconds = max(1, min(15 * 24 * 60 * 60, int(ttl_days) * 24 * 60 * 60))
+    try:
+        client.set(_reply_target_key(user_id, post_id, commenter_slug, comment_text), "1", ex=ttl_seconds)
+    except Exception as e:
+        log_warning("Could not record replied-to-comment marker", exc=e, user_id=user_id,
+                    post_id=post_id, action_type="reply")
+
+
 def _lead_thread_key(source: str, thread_ref: str, person_profile_url: str, person_name: str = "") -> str:
     """Stable dedup id for ONE conversation with ONE person, so a re-scan (or a second buying-intent
     line in the same thread) never re-flags a lead the operator has already seen. Keyed on identity
@@ -2637,7 +2678,7 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
     # Ground replies in the canonical post body (posts table); fall back to the log message.
     post_message = get_post_content(post_id) or get_post_message_from_log_for_user(user_id, post_id)
 
-    myprint(f"Replying to Comments of Post ID:{post_id} ...")
+    log_info("Replying to Comments of Post ID", post_id=post_id)
     if driver.current_url != post_url:
         driver.get(post_url)
 
@@ -2657,11 +2698,10 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
     myprint(f"Comments Found: {len(comments)}")
 
     # our profile slug — used to detect comments we AUTHORED or already replied to (the loop-breaker).
-    path = urlparse(str(my_profile.profile_url)).path
-    unique_url_name = path.split("/")[2] if len(path.split("/")) > 2 else None
+    our_slug = _profile_slug(str(my_profile.profile_url))
     # LOOP SAFETY: without our slug we can't tell our own comments / already-replied ones apart, so a
     # sweep could reply to our own comments and re-reply every run. Fail SAFE — skip replying entirely.
-    if not unique_url_name:
+    if not our_slug:
         log_warning("Reply sweep: could not resolve own profile slug — skipping replies to avoid "
                     "duplicate/self replies", user_id=user_id, post_id=post_id, action_type="reply")
         return _reply_outcome("no_profile_slug", "Skipped — no profile slug for dedup",
@@ -2672,6 +2712,9 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
     prefs = get_engagement_preferences(user_id)
     lead_magnet = get_lead_magnet_settings(user_id)
     lead_magnet_blog_url = get_user_blog_url(user_id) if lead_magnet.get("enabled") else ""
+    # Redis dedup TTL covers the configured look-back window plus one day so a comment that stays
+    # alive across sweeps is only ever replied to once. Clamped to a sensible max.
+    reply_dedup_ttl_days = min(14, max(1, int(prefs.get("reply_max_post_age_days") or 2) + 1))
     for comment in comments:
         # Per-post volume backstop: never fire an unbounded burst of replies from one sweep.
         if comments_replied_count >= _MAX_REPLIES_PER_SWEEP:
@@ -2685,6 +2728,7 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
         short_comment_text = comment_text[:75]
         # Reciprocity + lead-magnet: read the commenter, record them as an engager, and
         # (if enabled) DM them the resource when their comment contains the trigger keyword.
+        commenter_slug = ""
         try:
             _link = comment.find_element(By.CSS_SELECTOR, "a[href*='/in/']")
             # SDUI packs "Name Verified Profile 1st" into one link — keep the name, keep the badge
@@ -2693,6 +2737,12 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
             _ename = clean_person_name(_eraw)
             _edegree = connection_degree(_eraw)
             _eprofile = (_link.get_attribute("href") or "").split("?")[0]
+            commenter_slug = _profile_slug(_eprofile)
+            # Never reply to a comment WE authored (seed, second-wave, or manual). It reads as the
+            # user talking to themselves in the activity feed and stacks "responses" on their own post.
+            if _href_is_profile(_eprofile, our_slug):
+                log_debug("Skipping own comment", user_id=user_id, post_id=post_id, comment_text=short_comment_text)
+                continue
             if _ename and _ename.lower() != (my_profile.full_name or "").lower():
                 upsert_engager(user_id, _ename, _eprofile, connection_degree=_edegree)
                 # Inbound intent (#483): this commenter may be raising their hand — flag + draft.
@@ -2709,28 +2759,40 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
         except Exception:
             pass
         # Already replied if our own profile link already appears in this comment's replies.
+        # Use exact slug matching rather than a raw substring so a short slug does not match every
+        # longer slug that contains it.
         already_replied = False
-        if unique_url_name:
+        if our_slug:
             try:
-                already_replied = bool(comment.find_elements(By.CSS_SELECTOR, f"a[href*='{unique_url_name}']"))
+                for a in comment.find_elements(By.CSS_SELECTOR, "a[href*='/in/']"):
+                    if _href_is_profile(a.get_attribute("href") or "", our_slug):
+                        already_replied = True
+                        break
             except Exception:
                 already_replied = False
+        # Cross-sweep backstop: even if the DOM does not show our previous reply (collapsed thread,
+        # re-render, etc.), Redis remembers we already replied to this commenter+text on this post.
+        if not already_replied and _has_replied_to_comment(user_id, post_id, commenter_slug, comment_text):
+            log_debug("Already replied to this comment in a previous sweep", user_id=user_id, post_id=post_id, comment_text=short_comment_text)
+            already_replied = True
         if already_replied:
-            myprint(f"We already replied to this comment: {short_comment_text}...")
+            log_debug("Already replied to this comment", user_id=user_id, post_id=post_id, comment_text=short_comment_text)
             continue
-        myprint(f"Responding to this comment: {short_comment_text}...")
+        log_debug("Responding to this comment", user_id=user_id, post_id=post_id, comment_text=short_comment_text)
         # Thread-builder: reply in a way that ends with a follow-up question so the commenter
         # replies again — first-hour thread depth is the top 2026 reach signal.
         with llm_attribution(user_id=user_id, feature=FEATURE_COMMENT):
             response = generate_thread_reply(post_message, comment_text, my_profile,
                                              prefs=prefs,
                                              profile_synthesis=profile_synthesis)
-        myprint(f"AI Generated Response to Comment: {response}")
+        log_debug("AI Generated Response to Comment", user_id=user_id, post_id=post_id, response=response)
         if response and _reply_to_comment_inline(driver, wait, comment, response, user_id=user_id):
             insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.REPLY,
                            result=LogResultType.SUCCESS, post_url=post_url, message=response)
             record_action(user_id, ACTION_REPLY)  # tracked, but outside the outbound envelope (#626)
             comments_replied_count += 1
+            _record_replied_to_comment(user_id, post_id, commenter_slug, comment_text,
+                                       ttl_days=reply_dedup_ttl_days)
             time.sleep(random.uniform(5, 12))
         else:
             insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.REPLY,

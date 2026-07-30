@@ -405,6 +405,71 @@ class TestReplyToCommentsOnOpenPost:
         assert result["summary"] == "No post URL"
         assert result["status"] == "no_post_url"
 
+    def test_skips_own_comment(self):
+        """A seed or second-wave self-comment must never be treated as a target for a reply;
+        replying to our own comment looks like the user talking to themselves in the activity feed."""
+        from cqc_lem.app.run_automation import _reply_to_comments_on_open_post
+        driver = MagicMock(); driver.current_url = "x"
+        own = _FakeComment("Here is my seed comment insight", author="Me Myself",
+                           href="https://www.linkedin.com/in/me")
+        with patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
+             patch(f"{_RA}.get_post_content", return_value="post body"), \
+             patch(f"{_RA}.click_first", return_value=None), \
+             patch(f"{_RA}._comment_items_from_thread", return_value=[own]), \
+             patch(f"{_RA}.get_lead_magnet_settings", return_value={"enabled": False}), \
+             patch(f"{_RA}.generate_thread_reply") as gen, \
+             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
+             patch(f"{_RA}._reply_to_comment_inline") as rep:
+            result = _reply_to_comments_on_open_post(driver, MagicMock(), 1, 9, self._profile(), "synth")
+        gen.assert_not_called()
+        rep.assert_not_called()
+        assert result == {"status": "ok", "summary": "Replied to 0 comments",
+                          "comments_found": 1, "replies_sent": 0}
+
+    def test_redis_dedup_prevents_cross_sweep_duplicate(self):
+        """Issue #775: even if the DOM no longer shows our previous reply, Redis remembers we already
+        replied to this commenter+text on this post and stops a second reply."""
+        from cqc_lem.app.run_automation import _reply_to_comments_on_open_post
+        driver = MagicMock(); driver.current_url = "x"
+        redis = MagicMock(); redis.get.return_value = b"1"
+        with patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
+             patch(f"{_RA}.get_post_content", return_value="post body"), \
+             patch(f"{_RA}.click_first", return_value=None), \
+             patch(f"{_RA}._comment_items_from_thread", return_value=[_FakeComment("Great post")]), \
+             patch(f"{_RA}.get_lead_magnet_settings", return_value={"enabled": False}), \
+             patch(f"{_RA}.generate_thread_reply") as gen, \
+             patch(f"{_RA}.get_engagement_preferences", return_value={"reply_max_post_age_days": 2}), \
+             patch(f"{_RA}._redis_client", return_value=redis), \
+             patch(f"{_RA}._reply_to_comment_inline") as rep, \
+             patch(f"{_RA}.insert_new_log"):
+            result = _reply_to_comments_on_open_post(driver, MagicMock(), 1, 9, self._profile(), "synth")
+        gen.assert_not_called()
+        rep.assert_not_called()
+        assert result == {"status": "ok", "summary": "Replied to 0 comments",
+                          "comments_found": 1, "replies_sent": 0}
+
+    def test_records_replied_to_comment_after_successful_post(self):
+        """After a reply lands, a Redis marker is written so later sweeps deduplicate the target."""
+        from cqc_lem.app.run_automation import _reply_to_comments_on_open_post
+        driver = MagicMock(); driver.current_url = "x"
+        redis = MagicMock(); redis.get.return_value = None
+        with patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
+             patch(f"{_RA}.get_post_content", return_value="post body"), \
+             patch(f"{_RA}.click_first", return_value=None), \
+             patch(f"{_RA}._comment_items_from_thread", return_value=[_FakeComment("Nice post")]), \
+             patch(f"{_RA}.get_lead_magnet_settings", return_value={"enabled": False}), \
+             patch(f"{_RA}.generate_thread_reply", return_value="Thanks!"), \
+             patch(f"{_RA}.get_engagement_preferences", return_value={"reply_max_post_age_days": 3}), \
+             patch(f"{_RA}._redis_client", return_value=redis), \
+             patch(f"{_RA}._reply_to_comment_inline", return_value=True), \
+             patch(f"{_RA}.insert_new_log"):
+            _reply_to_comments_on_open_post(driver, MagicMock(), 1, 9, self._profile(), "synth")
+        assert redis.set.call_count == 1
+        key = redis.set.call_args.args[0]
+        assert key.startswith("linkedin:replied_to_own_comment:1:9:")
+        # TTL = (look-back days + 1) * 24h, clamped; 3 + 1 = 4 days.
+        assert redis.set.call_args.kwargs["ex"] == 4 * 24 * 60 * 60
+
 
 class TestAutomateReplyCommenting:
     def test_rate_limited_returns_clean_skip(self):
