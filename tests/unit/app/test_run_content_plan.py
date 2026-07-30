@@ -3,6 +3,8 @@ from unittest.mock import patch, MagicMock
 import pytest
 from freezegun import freeze_time
 
+import pydantic.v1.types  # noqa: F401
+
 
 # Wall-clock MUST be frozen mid-month here: the plan window derives its length from
 # `days_left_in_month`, and on the last 1-2 days of any month a `last_planned_date = now + 1`
@@ -527,6 +529,7 @@ class TestPlanContentForUser:
     function directly (bypassing Celery task machinery in unit tests).
     """
 
+    @freeze_time(_PLAN_WINDOW_CLOCK)
     @patch("cqc_lem.app.run_content_plan.save_content_plan")
     @patch("cqc_lem.utilities.utils.get_best_posting_time", return_value=__import__("datetime").time(9, 0))
     @patch("cqc_lem.app.run_content_plan.get_last_planned_post_date_for_user", return_value=None)
@@ -539,6 +542,7 @@ class TestPlanContentForUser:
         assert call_args.args[0] == 1
         assert isinstance(call_args.args[1], list)
 
+    @freeze_time(_PLAN_WINDOW_CLOCK)
     @patch("cqc_lem.app.run_content_plan.save_content_plan")
     @patch("cqc_lem.utilities.utils.get_best_posting_time", return_value=__import__("datetime").time(9, 0))
     @patch("cqc_lem.app.run_content_plan.get_last_planned_post_date_for_user", return_value=None)
@@ -579,6 +583,7 @@ class TestPlanContentForUser:
         # start_date would be tomorrow + 1 day; plan should still be generated
         mock_save.assert_called_once()
 
+    @freeze_time(_PLAN_WINDOW_CLOCK)
     @patch("cqc_lem.app.run_content_plan.save_content_plan")
     @patch("cqc_lem.utilities.utils.get_best_posting_time", return_value=__import__("datetime").time(9, 0))
     @patch("cqc_lem.app.run_content_plan.get_last_planned_post_date_for_user", return_value=None)
@@ -592,6 +597,7 @@ class TestPlanContentForUser:
         for entry in plan:
             assert entry["post_type"] in valid_types
 
+    @freeze_time(_PLAN_WINDOW_CLOCK)
     @patch("cqc_lem.app.run_content_plan.save_content_plan")
     @patch("cqc_lem.utilities.utils.get_best_posting_time", return_value=__import__("datetime").time(9, 0))
     @patch("cqc_lem.app.run_content_plan.get_last_planned_post_date_for_user", return_value=None)
