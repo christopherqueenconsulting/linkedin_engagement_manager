@@ -84,7 +84,7 @@ from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited, _redis_cl
     acquire_run_lock, release_run_lock, commenting_hold_reason, is_commenting_held, \
     is_automation_paused, automation_pause_reason
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
-from cqc_lem.utilities.logger import myprint, log_error, log_info, log_warning
+from cqc_lem.utilities.logger import myprint, log_error, log_info, log_warning, log_debug
 from cqc_lem.utilities.observability import track_post_outcome, track_audience_snapshot, \
     track_comment_outcome, track_golden_hour_report, track_company_page_invite_run, \
     attribute_llm_cost, llm_attribution, \
@@ -2693,7 +2693,7 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
     # Ground replies in the canonical post body (posts table); fall back to the log message.
     post_message = get_post_content(post_id) or get_post_message_from_log_for_user(user_id, post_id)
 
-    myprint(f"Replying to Comments of Post ID:{post_id} ...")
+    log_info("Replying to Comments of Post ID", post_id=post_id)
     if driver.current_url != post_url:
         driver.get(post_url)
 
@@ -2756,7 +2756,7 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
             # Never reply to a comment WE authored (seed, second-wave, or manual). It reads as the
             # user talking to themselves in the activity feed and stacks "responses" on their own post.
             if _href_is_profile(_eprofile, our_slug):
-                myprint(f"Skipping own comment: {short_comment_text}...")
+                log_debug("Skipping own comment", user_id=user_id, post_id=post_id, comment_text=short_comment_text)
                 continue
             if _ename and _ename.lower() != (my_profile.full_name or "").lower():
                 upsert_engager(user_id, _ename, _eprofile, connection_degree=_edegree)
@@ -2788,19 +2788,19 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
         # Cross-sweep backstop: even if the DOM does not show our previous reply (collapsed thread,
         # re-render, etc.), Redis remembers we already replied to this commenter+text on this post.
         if not already_replied and _has_replied_to_comment(user_id, post_id, commenter_slug, comment_text):
-            myprint(f"Already replied to this comment in a previous sweep: {short_comment_text}...")
+            log_debug("Already replied to this comment in a previous sweep", user_id=user_id, post_id=post_id, comment_text=short_comment_text)
             already_replied = True
         if already_replied:
-            myprint(f"We already replied to this comment: {short_comment_text}...")
+            log_debug("Already replied to this comment", user_id=user_id, post_id=post_id, comment_text=short_comment_text)
             continue
-        myprint(f"Responding to this comment: {short_comment_text}...")
+        log_debug("Responding to this comment", user_id=user_id, post_id=post_id, comment_text=short_comment_text)
         # Thread-builder: reply in a way that ends with a follow-up question so the commenter
         # replies again — first-hour thread depth is the top 2026 reach signal.
         with llm_attribution(user_id=user_id, feature=FEATURE_COMMENT):
             response = generate_thread_reply(post_message, comment_text, my_profile,
                                              prefs=prefs,
                                              profile_synthesis=profile_synthesis)
-        myprint(f"AI Generated Response to Comment: {response}")
+        log_debug("AI Generated Response to Comment", user_id=user_id, post_id=post_id, response=response)
         if response and _reply_to_comment_inline(driver, wait, comment, response, user_id=user_id):
             insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.REPLY,
                            result=LogResultType.SUCCESS, post_url=post_url, message=response)
