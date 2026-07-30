@@ -11,6 +11,8 @@ import Account from './pages/Account'
 import Avatars from './pages/Avatars'
 import ContentStudio from './pages/ContentStudio'
 import Landing from './pages/Landing'
+import PrivacyPolicy from './pages/PrivacyPolicy'
+import TermsAndConditions from './pages/TermsAndConditions'
 import { capturePageview } from './utils/analytics'
 
 const queryClient = new QueryClient()
@@ -55,6 +57,9 @@ function AppRoutes() {
             path="content"
             element={<ProtectedRoute><ContentStudio /></ProtectedRoute>}
           />
+          {/* Public legal pages — reachable from the footer and from logged-out landing pages */}
+          <Route path="privacy-policy" element={<PrivacyPolicy />} />
+          <Route path="terms-and-conditions" element={<TermsAndConditions />} />
           {/* Legacy routes → consolidated Content Studio */}
           <Route path="schedule" element={<Navigate to="/content" replace />} />
           <Route path="review" element={<ProtectedRoute><LegacyReviewRedirect /></ProtectedRoute>} />

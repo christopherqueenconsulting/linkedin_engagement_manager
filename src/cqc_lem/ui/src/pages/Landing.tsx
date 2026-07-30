@@ -252,6 +252,14 @@ export default function Landing() {
       <footer className="bg-gray-900 text-gray-400 text-center py-8 px-4">
         <p className="text-sm">© 2024 Christopher Queen Consulting LLC. All rights reserved.</p>
         <p className="text-xs mt-1 opacity-70">Transform your LinkedIn presence with AI-powered automation.</p>
+        <div className="flex items-center justify-center gap-4 mt-4 text-xs">
+          <Link to="/privacy-policy" className="hover:text-white transition-colors">
+            Privacy Policy
+          </Link>
+          <Link to="/terms-and-conditions" className="hover:text-white transition-colors">
+            Terms and Conditions
+          </Link>
+        </div>
       </footer>
     </div>
   )
