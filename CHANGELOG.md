@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.112.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.111.1...v0.112.0) (2026-07-30)
+
+
+### Features
+
+* **linkedin:** article editor selector ladder + live validation (refs [#771](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/771)) ([#789](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/789)) ([b96cd60](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b96cd608ea1c0a06e58300638a9a38e753dd71f3))
+
+
+### Bug Fixes
+
+* **replies:** prevent duplicate replies to own posts (closes [#775](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/775)) ([#797](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/797)) ([503faad](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/503faad900115179acd0ad70a49aee4836e2bc03))
+
 ## [0.111.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.111.0...v0.111.1) (2026-07-30)
 
 
