@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.111.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.110.0...v0.111.0) (2026-07-30)
+
+
+### Features
+
+* **ui:** add Privacy Policy and Terms pages with footer links (closes [#772](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/772)) ([#798](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/798)) ([0a364bb](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0a364bb20f4a8b966ad3f57098adf72dd0c18b8c))
+
 ## [0.110.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.109.0...v0.110.0) (2026-07-29)
 
 
