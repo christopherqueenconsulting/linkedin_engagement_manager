@@ -2538,19 +2538,21 @@ def get_post_age_minutes(user_id: int, post_id: int):
     return None if seconds is None else max(0.0, float(seconds) / 60.0)
 
 
-def get_post_url_from_log_for_user(user_id: int, post_id: int):
+def get_post_url_from_log_for_user(user_id: int, post_id: int) -> Optional[str]:
     connection = get_db_connection()
     cursor = connection.cursor()
 
     try:
-        cursor.execute("""SELECT post_url FROM logs 
-            WHERE user_id = %s AND post_id = %s AND action_type = %s AND result = %s  
-            ORDER BY created_at DESC 
+        cursor.execute("""SELECT post_url FROM logs
+            WHERE user_id = %s AND post_id = %s AND action_type = %s AND result = %s
+            ORDER BY created_at DESC
             LIMIT 1""",
                        (user_id, post_id, LogActionType.POST.value, LogResultType.SUCCESS.value))
-        post_url = cursor.fetchone()[0]
+        row = cursor.fetchone()
+        post_url = row[0] if row else None
     except mysql.connector.Error as err:
-        myprint(f"Could not get post url from log for user | Error: {err}")
+        log_warning("Could not get post url from log for user", exc=err,
+                    user_id=user_id, post_id=post_id)
         post_url = None
     finally:
         cursor.close()
@@ -2559,19 +2561,21 @@ def get_post_url_from_log_for_user(user_id: int, post_id: int):
     return post_url
 
 
-def get_post_message_from_log_for_user(user_id: int, post_id: int):
+def get_post_message_from_log_for_user(user_id: int, post_id: int) -> Optional[str]:
     connection = get_db_connection()
     cursor = connection.cursor()
 
     try:
-        cursor.execute("""SELECT message FROM logs 
+        cursor.execute("""SELECT message FROM logs
             WHERE user_id = %s AND post_id = %s AND action_type = %s AND result = %s
-            ORDER BY created_at DESC 
+            ORDER BY created_at DESC
             LIMIT 1""",
                        (user_id, post_id, LogActionType.POST.value, LogResultType.SUCCESS.value))
-        message = cursor.fetchone()[0]
+        row = cursor.fetchone()
+        message = row[0] if row else None
     except mysql.connector.Error as err:
-        myprint(f"Could not get post message from log for user | Error: {err}")
+        log_warning("Could not get post message from log for user", exc=err,
+                    user_id=user_id, post_id=post_id)
         message = None
     finally:
         cursor.close()

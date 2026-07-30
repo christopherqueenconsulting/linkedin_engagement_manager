@@ -5,6 +5,79 @@ from unittest.mock import MagicMock, patch, call
 from datetime import datetime, timezone
 
 
+_GET_CONN = "cqc_lem.utilities.db.get_db_connection"
+
+
+@pytest.mark.unit
+class TestPostUrlFromLogForUser:
+    """Issue #800: missing POST success log used to raise TypeError on cursor.fetchone()[0]."""
+
+    def test_returns_url_when_log_row_exists(self, mock_database_connection):
+        from cqc_lem.utilities.db import get_post_url_from_log_for_user
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].fetchone.return_value = ("https://www.linkedin.com/feed/update/urn:li:ugcPost:123",)
+
+            result = get_post_url_from_log_for_user(7, 42)
+
+        assert result == "https://www.linkedin.com/feed/update/urn:li:ugcPost:123"
+
+    def test_returns_none_when_no_log_row_exists(self, mock_database_connection):
+        from cqc_lem.utilities.db import get_post_url_from_log_for_user
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].fetchone.return_value = None
+
+            result = get_post_url_from_log_for_user(7, 42)
+
+        assert result is None
+
+    def test_returns_none_on_db_error(self, mock_database_connection):
+        from cqc_lem.utilities.db import get_post_url_from_log_for_user
+        import mysql.connector
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("boom")
+
+            result = get_post_url_from_log_for_user(7, 42)
+
+        assert result is None
+
+
+@pytest.mark.unit
+class TestPostMessageFromLogForUser:
+    def test_returns_message_when_log_row_exists(self, mock_database_connection):
+        from cqc_lem.utilities.db import get_post_message_from_log_for_user
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].fetchone.return_value = ("Hello world",)
+
+            result = get_post_message_from_log_for_user(7, 42)
+
+        assert result == "Hello world"
+
+    def test_returns_none_when_no_log_row_exists(self, mock_database_connection):
+        from cqc_lem.utilities.db import get_post_message_from_log_for_user
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].fetchone.return_value = None
+
+            result = get_post_message_from_log_for_user(7, 42)
+
+        assert result is None
+
+    def test_returns_none_on_db_error(self, mock_database_connection):
+        from cqc_lem.utilities.db import get_post_message_from_log_for_user
+        import mysql.connector
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("boom")
+
+            result = get_post_message_from_log_for_user(7, 42)
+
+        assert result is None
+
+
 @pytest.mark.unit
 class TestPostStatusEnum:
     def test_enum_values(self):
