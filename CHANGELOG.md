@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.113.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.113.0...v0.113.1) (2026-07-31)
+
+
+### Bug Fixes
+
+* **dms:** make every LinkedIn Catch-up run reportable (refs [#792](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/792)) ([#825](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/825)) ([a64d231](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a64d231ffdbce25b9e78df4495bd3ff570f9e6fb))
+* **scheduling:** never convert a picked time against a guessed timezone (closes [#774](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/774)) ([#819](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/819)) ([3ffc741](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3ffc7411154b1843313793aad027583a87c283b6))
+
 ## [0.113.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.112.1...v0.113.0) (2026-07-31)
 
 
