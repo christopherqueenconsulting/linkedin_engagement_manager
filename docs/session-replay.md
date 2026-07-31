@@ -118,6 +118,15 @@ is access-controlled and masks the same fields the SPA does.
 3. **Feedback links through.** File a report from the widget; the auto-filed issue body carries a
    "Watch the session replay" link that opens that session.
 
+Run all three from an ordinary browser. In LEM's Selenium grid Chrome the SDK silently sends nothing
+while every local config check still reads healthy — a false negative nobody has root-caused — see
+`docs/posthog-advanced-surface.md` § Verifying the SPA surface (issue #834).
+
+Confirmed end to end on 2026-07-31 against the production build: two recordings exist, each starting
+within ~150 ms of the `feedback_opened` event that triggered it — i.e. `ensureSessionRecorded()`
+forced a session that the 10% sample would otherwise have dropped, which is the one rule here that
+config alone can't demonstrate.
+
 ## Quota
 
 The free tier is 5,000 recordings/month. At a 10% sample plus every errored session and every

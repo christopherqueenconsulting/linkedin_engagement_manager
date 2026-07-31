@@ -204,3 +204,43 @@ through OUR gate instead of around it.
 Set `POSTHOG_OPS_WEBHOOK_URL` in `/opt/lem/.env` to a Slack incoming-webhook URL (or any other
 `https://` endpoint) and run `scripts/posthog_ops_destination.py --apply` to make the realtime
 429-breaker ping live.
+
+---
+
+## Verifying the SPA surface: never in the Selenium grid Chrome (issue #834)
+
+**Do not test browser-side analytics in LEM's own Selenium Chrome.** That browser drops the SDK's
+sends while leaving every piece of local config looking healthy — which reads, wrongly, as "SPA
+analytics is broken".
+
+That is exactly what happened once posthog-js first shipped to production with `UI_POSTHOG_KEY` in
+v0.113.x. In the grid browser the SDK initialized cleanly (correct token and `api_host`, `__loaded`,
+not opted out, no `before_send`, replay assets all fetched, `startSessionRecording()` flipping
+`disabled` → `sampled`) yet transmitted **nothing** over ~60s of `posthog.capture()` calls — while a
+hand-rolled `fetch` POST of plain JSON to the same `/i/v0/e/` endpoint, from that same browser,
+returned `200` and landed. The one difference between the two paths is the body: posthog-js sends
+`compression: "gzip-js"`, the manual probe did not.
+
+**Verified in real browsers on 2026-07-31: the SDK transmits fine.** Same production build
+(posthog-js 1.407.3, `https://lem.christopherqueenconsulting.com`), two independent unproxied
+clients — desktop Chrome and Mobile Safari — produced `$pageview`, `$autocapture`, `$web_vitals`,
+`$pageleave`, `$identify` and the named `feedback_opened` product event, all within seconds. So the
+grid result is an artifact of that browser's environment, **not** a defect in the SPA: no code
+change was made, and `compression` stays at the posthog-js default.
+
+**Why the grid browser stayed silent is still a guess.** The leading suspect is its egress proxy
+mangling the gzipped POST body, but that session differs from a real browser in more than one way —
+the MV3 proxy-auth extension is injected into every proxied session, and Chrome runs headless under
+automation flags. Nobody has re-run the check in the grid with the proxy off, which is the test that
+would settle it. Don't read the caveat as "proxied = silent" either: `get_docker_driver()` applies
+whatever `resolve_proxy()` returns (explicit user proxy → regional → global default → **none**), and
+a session built without `user_id` egresses straight from the host.
+
+Two things follow for anyone re-checking this:
+
+- Verify from an ordinary browser (yours, or any everyday one) — not the grid, whatever its egress.
+- A quiet project is not proof either way — with `capture_pageview: false` the router owns pageviews
+  (`ui/src/utils/analytics.ts`), and with no `VITE_POSTHOG_KEY` in the build the posthog-js chunk is
+  never even fetched. Confirm the build first, then look for events.
+
+The replay half of the same check is in `docs/session-replay.md` § Verifying it.
