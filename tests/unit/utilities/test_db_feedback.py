@@ -131,9 +131,10 @@ class TestGetUnprocessedFeedback:
             from cqc_lem.utilities.db import get_unprocessed_feedback
             assert get_unprocessed_feedback(limit=5) == [{"id": 1}]
         sql, params = cur.execute.call_args[0]
-        assert "status IN (%s)" in sql
-        assert "cluster_id IS NULL" in sql
-        assert "ORDER BY created_at ASC, id ASC" in sql
+        assert "f.status IN (%s)" in sql
+        assert "f.cluster_id IS NULL" in sql
+        assert "ORDER BY f.created_at ASC, f.id ASC" in sql
+        assert "JOIN users" not in sql                    # no admin filter unless asked for
         assert params == ("new", 5)
 
     def test_widened_statuses_are_all_bound_as_parameters(self):
@@ -143,8 +144,33 @@ class TestGetUnprocessedFeedback:
             get_unprocessed_feedback(limit=9, statuses=(FeedbackStatus.NEW,
                                                         FeedbackStatus.TRIAGED))
         sql, params = cur.execute.call_args[0]
-        assert "status IN (%s,%s)" in sql
+        assert "f.status IN (%s,%s)" in sql
         assert params == ("new", "triaged", 9)
+
+    def test_admin_only_filters_in_sql_not_in_the_caller(self, monkeypatch):
+        """Issue #793: parked non-admin rows stay `new` with a NULL cluster forever, so if the
+        filter lived in the caller's loop they would fill `limit` every pass and starve admin
+        feedback out of the queue permanently."""
+        monkeypatch.setattr("cqc_lem.utilities.env_constants.ADMIN_USER_EMAILS", "")
+        conn, cur = _dict_conn(rows=[])
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_unprocessed_feedback
+            get_unprocessed_feedback(limit=7, admin_only=True)
+        sql, params = cur.execute.call_args[0]
+        assert "LEFT JOIN users au ON au.id = f.user_id AND (au.is_admin = 1)" in sql
+        assert "AND au.id IS NOT NULL" in sql
+        assert params == ("new", 7)
+
+    def test_admin_only_honours_the_email_allowlist(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.utilities.env_constants.ADMIN_USER_EMAILS",
+                            " Owner@Example.com , second@example.com ")
+        conn, cur = _dict_conn(rows=[])
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_unprocessed_feedback
+            get_unprocessed_feedback(limit=3, admin_only=True)
+        sql, params = cur.execute.call_args[0]
+        assert "LOWER(au.email) IN (%s,%s)" in sql
+        assert params == ("owner@example.com", "second@example.com", "new", 3)
 
     def test_unknown_status_values_are_rejected_without_touching_db(self):
         with patch(f"{_DB}.get_db_connection") as get_conn:
@@ -301,12 +327,12 @@ class TestUpdateFeedbackTriage:
 
 class TestIsUserAdmin:
     def test_true_when_row_has_is_admin(self):
-        conn, cur = _dict_conn(one={"is_admin": 1})
+        conn, cur = _dict_conn(one={"is_admin": 1, "email": "someone@example.com"})
         with patch(f"{_DB}.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import is_user_admin
             assert is_user_admin(5) is True
         sql, params = cur.execute.call_args[0]
-        assert "SELECT is_admin FROM users" in sql
+        assert "SELECT is_admin, email FROM users" in sql
         assert params == (5,)
 
     def test_false_when_row_missing(self):
@@ -315,8 +341,26 @@ class TestIsUserAdmin:
             from cqc_lem.utilities.db import is_user_admin
             assert is_user_admin(5) is False
 
-    def test_false_when_row_is_zero(self):
-        conn, cur = _dict_conn(one={"is_admin": 0})
+    def test_false_when_row_is_zero(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.utilities.env_constants.ADMIN_USER_EMAILS", "")
+        conn, cur = _dict_conn(one={"is_admin": 0, "email": "someone@example.com"})
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import is_user_admin
+            assert is_user_admin(5) is False
+
+    def test_email_allowlist_grants_admin_when_the_column_is_zero(self, monkeypatch):
+        """Bootstrap path (#793): with no flagged user the auto-filer parks everything and nobody
+        can reach the panel to release it."""
+        monkeypatch.setattr("cqc_lem.utilities.env_constants.ADMIN_USER_EMAILS",
+                            "owner@example.com")
+        conn, _ = _dict_conn(one={"is_admin": 0, "email": " Owner@Example.com "})
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import is_user_admin
+            assert is_user_admin(5) is True
+
+    def test_empty_allowlist_grants_nobody(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.utilities.env_constants.ADMIN_USER_EMAILS", "  ,  ")
+        conn, _ = _dict_conn(one={"is_admin": 0, "email": ""})
         with patch(f"{_DB}.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import is_user_admin
             assert is_user_admin(5) is False
@@ -334,6 +378,39 @@ class TestIsUserAdmin:
         with patch(f"{_DB}.get_db_connection", return_value=conn), patch(f"{_DB}.log_error"):
             from cqc_lem.utilities.db import is_user_admin
             assert is_user_admin(5) is False
+
+
+class TestCountPendingAdminReview:
+    def test_counts_the_rows_the_auto_filer_skipped(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.utilities.env_constants.ADMIN_USER_EMAILS", "")
+        conn, cur = _dict_conn(one=(4,))
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import count_pending_admin_review
+            assert count_pending_admin_review() == 4
+        sql, params = cur.execute.call_args[0]
+        assert "AND au.id IS NULL" in sql                 # the NON-admin half of the same join
+        assert "f.cluster_id IS NULL" in sql
+        assert params == ("new",)
+
+    def test_no_row_is_zero(self):
+        conn, _ = _dict_conn(one=None)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import count_pending_admin_review
+            assert count_pending_admin_review() == 0
+
+    def test_unknown_status_never_touches_the_db(self):
+        with patch(f"{_DB}.get_db_connection") as get_conn:
+            from cqc_lem.utilities.db import count_pending_admin_review
+            assert count_pending_admin_review(statuses=("'; DROP TABLE feedback; --",)) == 0
+        get_conn.assert_not_called()
+
+    def test_db_error_is_zero(self):
+        import mysql.connector
+        conn, cur = _dict_conn()
+        cur.execute.side_effect = mysql.connector.Error("boom")
+        with patch(f"{_DB}.get_db_connection", return_value=conn), patch(f"{_DB}.log_error"):
+            from cqc_lem.utilities.db import count_pending_admin_review
+            assert count_pending_admin_review() == 0
 
 
 class TestGetFeedbackList:

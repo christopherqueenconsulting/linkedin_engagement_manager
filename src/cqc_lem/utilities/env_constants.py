@@ -369,6 +369,12 @@ else:
 
 ADMIN_SECRET = get_constant_from_env('ADMIN_SECRET')
 
+# --- Feedback triage admins (issue #793) ---
+# Comma-separated emails that count as admins on top of the users.is_admin column. This is the
+# bootstrap path: without at least one admin, non-admin feedback parks forever and nobody can reach
+# the triage panel to release it. Empty adds nobody — the gate stays closed, never open.
+ADMIN_USER_EMAILS = get_constant_from_env('ADMIN_USER_EMAILS', default_value='')
+
 # Comma-separated bearer tokens accepted on /api routes. Empty disables the gate
 # (local/dev) so only deployments that set it enforce token auth.
 API_ACCESS_TOKENS = get_constant_from_env('API_ACCESS_TOKENS', default_value='')

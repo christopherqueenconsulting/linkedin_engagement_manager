@@ -8502,26 +8502,77 @@ def get_feedback_by_id(feedback_id: int) -> Optional[dict]:
         connection.close()
 
 
-def get_unprocessed_feedback(limit: int = 25, statuses: tuple = (FeedbackStatus.NEW,)) -> list:
+def _prefixed_feedback_columns(alias: str = "f") -> str:
+    return ", ".join(f"{alias}.{c.strip()}" for c in _FEEDBACK_COLUMNS.split(","))
+
+
+def _admin_reporter_join(alias: str = "f") -> tuple:
+    """LEFT JOIN + params that mark whether a feedback row was submitted by an admin (#793).
+
+    LEFT so it can express both halves: `au.id IS NOT NULL` is admin, `au.id IS NULL` is pending."""
+    allow = sorted(admin_email_allowlist())
+    email_clause = f" OR LOWER(au.email) IN ({','.join(['%s'] * len(allow))})" if allow else ""
+    join = (f"LEFT JOIN users au ON au.id = {alias}.user_id "
+            f"AND (au.is_admin = 1{email_clause})")
+    return join, tuple(allow)
+
+
+def get_unprocessed_feedback(limit: int = 25, statuses: tuple = (FeedbackStatus.NEW,),
+                             admin_only: bool = False) -> list:
     """Captured-but-unclustered feedback, oldest first so the queue drains FIFO (issue #498).
 
     Defaults to `new` only — the auto-filer must not re-classify (and re-pay for) rows it already
-    parked in `triaged`. The nightly reclustering pass widens `statuses` to reconsider those."""
+    parked in `triaged`. The nightly reclustering pass widens `statuses` to reconsider those.
+
+    `admin_only` (issue #793) restricts the result to reports from admin users. It filters in SQL,
+    NOT in the caller's loop: non-admin rows keep their `new`/NULL-cluster shape forever while they
+    wait on the panel, so a caller-side skip would let `limit` fill with the same parked rows every
+    pass and admin feedback would never be reached again."""
     wanted = [str(s) for s in (statuses or ()) if str(s) in tuple(FeedbackStatus)]
     if not wanted:
         return []
+    join, join_params = _admin_reporter_join() if admin_only else ("", ())
+    admin_filter = "AND au.id IS NOT NULL " if admin_only else ""
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute(
-            f"SELECT {_FEEDBACK_COLUMNS} FROM feedback "
-            f"WHERE status IN ({','.join(['%s'] * len(wanted))}) AND cluster_id IS NULL "
-            "ORDER BY created_at ASC, id ASC LIMIT %s",
-            (*wanted, int(limit)))
+            f"SELECT {_prefixed_feedback_columns()} FROM feedback f {join} "
+            f"WHERE f.status IN ({','.join(['%s'] * len(wanted))}) AND f.cluster_id IS NULL "
+            f"{admin_filter}"
+            "ORDER BY f.created_at ASC, f.id ASC LIMIT %s",
+            (*join_params, *wanted, int(limit)))
         return cursor.fetchall() or []
     except mysql.connector.Error as err:
         log_error("Could not fetch unprocessed feedback", exc=err)
         return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def count_pending_admin_review(statuses: tuple = (FeedbackStatus.NEW,)) -> int:
+    """How many un-clustered reports are waiting on an admin decision (issue #793).
+
+    The inverse of `get_unprocessed_feedback(admin_only=True)`: everything the auto-filer skipped.
+    Reported by `process_new_feedback` so a silent backlog is visible without opening the panel."""
+    wanted = [str(s) for s in (statuses or ()) if str(s) in tuple(FeedbackStatus)]
+    if not wanted:
+        return 0
+    join, join_params = _admin_reporter_join()
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            f"SELECT COUNT(*) FROM feedback f {join} "
+            f"WHERE f.status IN ({','.join(['%s'] * len(wanted))}) AND f.cluster_id IS NULL "
+            "AND au.id IS NULL",
+            (*join_params, *wanted))
+        row = cursor.fetchone()
+        return int(row[0]) if row else 0
+    except mysql.connector.Error as err:
+        log_error("Could not count feedback pending admin review", exc=err)
+        return 0
     finally:
         cursor.close()
         connection.close()
@@ -8634,8 +8685,18 @@ def update_feedback_triage(feedback_id: int,
         connection.close()
 
 
+def admin_email_allowlist() -> set:
+    """Emails from ADMIN_USER_EMAILS, lowercased (issue #793). Empty adds nobody."""
+    from cqc_lem.utilities.env_constants import ADMIN_USER_EMAILS
+    return {e.strip().lower() for e in (ADMIN_USER_EMAILS or "").split(",") if e.strip()}
+
+
 def is_user_admin(user_id: int) -> bool:
     """Whether this user is designated as an admin (issue #793).
+
+    Admin is the users.is_admin column OR a match in the ADMIN_USER_EMAILS allowlist — the latter
+    exists so a deploy with no flagged user yet can still reach the triage panel and release the
+    feedback the auto-filer is now parking.
 
     Fails CLOSED — a missing user or DB error is never interpreted as admin rights."""
     if user_id is None:
@@ -8643,9 +8704,13 @@ def is_user_admin(user_id: int) -> bool:
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT is_admin FROM users WHERE id = %s", (int(user_id),))
+        cursor.execute("SELECT is_admin, email FROM users WHERE id = %s", (int(user_id),))
         row = cursor.fetchone()
-        return bool(row and row.get("is_admin"))
+        if not row:
+            return False
+        if row.get("is_admin"):
+            return True
+        return (row.get("email") or "").strip().lower() in admin_email_allowlist()
     except mysql.connector.Error as err:
         log_error(f"Could not check admin status for user_id {user_id}", exc=err)
         return False
