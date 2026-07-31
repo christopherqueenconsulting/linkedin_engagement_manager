@@ -99,7 +99,19 @@ def _keyring() -> tuple[Optional[int], dict[int, bytes]]:
     keys[current_version] = current
     previous = _parse_master_key(os.environ.get("LEM_SECRET_KEY_PREVIOUS"))
     if previous is not None:
-        keys[_int_env("LEM_SECRET_KEY_PREVIOUS_VERSION", current_version - 1)] = previous
+        previous_version = _int_env("LEM_SECRET_KEY_PREVIOUS_VERSION", current_version - 1)
+        if previous_version == current_version:
+            # Two keys claiming one version is unrecoverable, not just confusing: the previous key
+            # would take the current slot, so every NEW write is sealed under the OLD key while
+            # tagged with the current version. needs_reencrypt() calls those rows done, and step 5
+            # of the documented rotation (drop LEM_SECRET_KEY_PREVIOUS) then makes them
+            # permanently undecryptable. Ignore the previous key instead — stale rows failing to
+            # read is recoverable, fresh rows sealed under a key about to be deleted is not.
+            log_error(f"LEM_SECRET_KEY_PREVIOUS_VERSION equals LEM_SECRET_KEY_VERSION "
+                      f"({current_version}) — ignoring the previous key. Bump "
+                      f"LEM_SECRET_KEY_VERSION so rotation can tell the two keys apart.")
+        else:
+            keys[previous_version] = previous
     return current_version, keys
 
 
@@ -165,7 +177,9 @@ def encrypt_secret(value: Optional[str], user_id: Optional[int], field: str) -> 
     instead, because silently writing plaintext is the failure this whole PR exists to prevent.
 
     `user_id=None` cannot be bound to a row, so the value is left as-is with a warning rather than
-    encrypted under a shared key that would defeat the AAD guarantee.
+    encrypted under a shared key that would defeat the AAD guarantee — unless
+    `ENCRYPTION_REQUIRED=true`, where the same rule as a missing key applies: raise, never write
+    plaintext.
     """
     if not value:
         return value
@@ -181,6 +195,13 @@ def encrypt_secret(value: Optional[str], user_id: Optional[int], field: str) -> 
         log_debug(f"No LEM_SECRET_KEY configured — {field} stored as-is")
         return value
     if user_id is None:
+        # Fail-closed has to cover this branch too, or an unbindable row (a cookie stored for an
+        # email with no user) writes a live li_at in the clear while the operator believes
+        # ENCRYPTION_REQUIRED forbids exactly that.
+        if encryption_required():
+            raise SecretEncryptionError(
+                f"ENCRYPTION_REQUIRED is set but {field} has no user_id to bind to — refusing to "
+                f"store it as plaintext")
         log_warning(f"Cannot encrypt {field} without a user_id — value stored unencrypted")
         return value
 

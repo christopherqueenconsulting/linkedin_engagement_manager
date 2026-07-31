@@ -91,7 +91,11 @@ No downtime, no schema change, no separate code path — rotation is the same pa
 4. Wait for the next nightly run (or trigger it) until it reports `0 still unprotected`.
 5. Remove `LEM_SECRET_KEY_PREVIOUS`.
 
-Skipping step 1 makes every existing row undecryptable — the key version is not guessed.
+Skipping step 1 makes every existing row undecryptable — the key version is not guessed. Skipping
+step 2's version bump is caught: if `LEM_SECRET_KEY_PREVIOUS_VERSION` ends up equal to
+`LEM_SECRET_KEY_VERSION` the previous key is **ignored** and the collision logged as an ERROR,
+because the alternative is worse — new writes would be sealed under the key you are about to
+delete in step 5, and the backfill would report them as already current.
 
 ## Fail-closed switch
 

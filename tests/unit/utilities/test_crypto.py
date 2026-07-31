@@ -166,6 +166,13 @@ class TestFailClosedMode:
         with pytest.raises(SecretEncryptionError):
             encrypt_secret("secret", 7, FIELD)
 
+    def test_missing_user_id_raises_rather_than_writing_plaintext(self, keyed, monkeypatch):
+        """An unbindable row is the other way plaintext could reach MySQL in fail-closed mode —
+        a cookie stored for an email with no user row would otherwise land in the clear."""
+        monkeypatch.setenv("ENCRYPTION_REQUIRED", "true")
+        with pytest.raises(SecretEncryptionError):
+            encrypt_secret("orphan-cookie", None, FIELD)
+
 
 class TestRotation:
     def test_previous_key_still_decrypts_after_rotation(self, keyed, monkeypatch):
@@ -188,6 +195,21 @@ class TestRotation:
         monkeypatch.setenv("LEM_SECRET_KEY_VERSION", "2")
         monkeypatch.setenv("LEM_SECRET_KEY_PREVIOUS", KEY_A)
         assert decrypt_secret(old_blob, 7, FIELD) == "secret"
+
+    def test_previous_key_never_takes_the_current_version_slot(self, keyed, monkeypatch):
+        """A misconfigured rotation that leaves both keys claiming one version must not seal NEW
+        writes under the OLD key: needs_reencrypt() would call them current, and removing
+        LEM_SECRET_KEY_PREVIOUS would then make every one of them undecryptable forever."""
+        monkeypatch.setenv("LEM_SECRET_KEY", KEY_B)
+        monkeypatch.setenv("LEM_SECRET_KEY_VERSION", "1")
+        monkeypatch.setenv("LEM_SECRET_KEY_PREVIOUS", KEY_A)
+        monkeypatch.setenv("LEM_SECRET_KEY_PREVIOUS_VERSION", "1")
+        fresh = encrypt_secret("secret", 7, FIELD)
+
+        # Step 5 of the documented rotation: the previous key goes away.
+        monkeypatch.delenv("LEM_SECRET_KEY_PREVIOUS")
+        monkeypatch.delenv("LEM_SECRET_KEY_PREVIOUS_VERSION")
+        assert decrypt_secret(fresh, 7, FIELD) == "secret"
 
     def test_unknown_key_version_is_not_guessed(self, keyed, monkeypatch):
         old_blob = encrypt_secret("secret", 7, FIELD)

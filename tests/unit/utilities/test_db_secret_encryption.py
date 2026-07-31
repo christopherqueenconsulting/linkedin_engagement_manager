@@ -223,6 +223,19 @@ class TestOAuthTokens:
         assert decrypt_secret(params[0], 77, SECRET_FIELD_ACCESS_TOKEN) == "a-tok"
         assert decrypt_secret(params[3], 77, SECRET_FIELD_REFRESH_TOKEN) == "r-tok"
 
+    def test_upsert_pins_the_existing_row_id_for_the_duplicate_branch(
+            self, keyed, mock_database_connection):
+        """Without `id = LAST_INSERT_ID(id)`, MySQL's lastrowid on the ON DUPLICATE KEY UPDATE
+        branch can be the auto-increment value burned by the failed insert — a row that does not
+        exist. The tokens would then be sealed against that id and the UPDATE would touch nothing,
+        silently leaving the reconnecting user with no OAuth token at all."""
+        cur = mock_database_connection["cursor"]
+        cur.lastrowid = 5
+        add_user_with_access_token("existing@example.com", "sub", "a-tok", 3600)
+        insert_sql = _executed(cur)[0][0]
+        assert "ON DUPLICATE KEY UPDATE" in insert_sql
+        assert "id = LAST_INSERT_ID(id)" in insert_sql
+
     def test_existing_oauth_user_resolves_its_id_by_email(self, keyed, mock_database_connection):
         cur = mock_database_connection["cursor"]
         cur.lastrowid = 0  # MySQL returns 0 for the ON DUPLICATE KEY UPDATE branch

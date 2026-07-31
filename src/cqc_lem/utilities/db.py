@@ -693,9 +693,15 @@ def add_user_with_access_token(email: str, linked_sub_id: str, access_token: str
         # Two statements on purpose (issue #745): the OAuth tokens are encrypted under a key
         # derived from users.id, which does not exist yet for a brand-new user. Upsert the
         # non-secret identity columns first, then write the ciphertext against the settled id.
+        # `id = LAST_INSERT_ID(id)` is load-bearing: on the ON DUPLICATE KEY UPDATE branch MySQL
+        # does NOT report the existing row's id in lastrowid — it can hand back the auto-increment
+        # value that was allocated and burned by the failed insert. Sealing the tokens against that
+        # id would bind them to a row that does not exist (silently storing no token at all), so
+        # the id is pinned explicitly here and still cross-checked by email below.
         cursor.execute("""INSERT INTO users (email, linked_sub_id, last_login, linkedin_connection_status)
         VALUES (%s, %s, %s, 'connected')
         ON DUPLICATE KEY UPDATE
+                id = LAST_INSERT_ID(id),
                 linked_sub_id = VALUES(linked_sub_id),
                 last_login = VALUES(last_login),
                 linkedin_connection_status = 'connected'
