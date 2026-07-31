@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.113.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.113.1...v0.113.2) (2026-07-31)
+
+
+### Bug Fixes
+
+* **build:** install ca-certificates so posthog-cli can upload source maps ([#827](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/827)) ([48832db](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/48832dba9a2ef3396b4f25b74859589c5fcdecbf))
+* **newsletter:** article editor is two screens — stop gating publish on the editor screen (closes [#804](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/804)) ([#828](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/828)) ([24cf213](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/24cf21347f6d858c561a364e7a1b5ad255304e4d))
+
+
+### Performance Improvements
+
+* **ci:** cut time-to-production from ~3h to minutes — deploy reorder, working CodeQL gate, release fast lane ([#829](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/829)) ([520194c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/520194cafde27a929cb64920a5fdeb34ea81e231))
+
 ## [0.113.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.113.0...v0.113.1) (2026-07-31)
 
 
