@@ -190,6 +190,23 @@ A new service `utilities/feedback/issue_service.py` creates the issue via `gh` /
 structured body (Why / Scope / Files-hint / Acceptance) that the RUNBOOK's `MODE=start` expects, and stamps the
 issue number back onto the `feedback` row. It references this plan doc in every issue it files.
 
+**Admin gate (issue #793).** Auto-filing is not open to everyone: `process_new_feedback` and
+`auto_recluster_feedback` only act on reports from **admin** users (`users.is_admin`, or the
+`ADMIN_USER_EMAILS` allowlist). Everything else stays `new` until an admin approves or dismisses it in the
+in-app triage panel (`/admin/feedback`, `GET|POST /api/admin/feedback…`), where approve runs the normal
+classifier/filer path and stamps `feedback.reviewed_by/reviewed_at`. Two consequences worth knowing:
+- The gate is applied **in the query** (`get_unprocessed_feedback(admin_only=True)`), not in the caller's
+  loop. Parked rows keep their `new` + NULL-cluster shape forever, so a caller-side skip would refill the
+  `limit` window with the same rows every pass and admin feedback would never be reached again.
+- At least one admin has to exist or the loop parks everything with nobody able to release it. The migration
+  seeds the founding account; `ADMIN_USER_EMAILS` is the no-SQL bootstrap for any other deploy.
+- A row that already reached GitHub (`clustered` / `issue_created` / `resolved`, or any row carrying an issue
+  number) is **not re-reviewable** — the review endpoint answers 409. A filed row IS its own open cluster, so
+  re-running the filer on it would match it to itself at similarity 1.0 and post a false "+1 another report"
+  on the very issue it created. The panel's buttons alone are not the guard: its list is cached, and the
+  filing beat or a second admin can settle a row between render and click.
+`count_pending_admin_review()` reports the backlog on every filing pass so it can't grow silently.
+
 ### B.3 Deduplication / clustering (one recurring problem = one issue)
 
 - Each item is embedded (cheap embedding model via LiteLLM). Before filing, `issue_service` cosine-compares

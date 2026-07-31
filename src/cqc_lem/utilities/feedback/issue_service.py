@@ -49,8 +49,8 @@ from typing import Optional
 
 from cqc_lem.utilities.ai.content_framework import as_vector, cosine_similarity, text_similarity
 from cqc_lem.utilities.db import (
-    FeedbackStatus, count_feedback_filed_by_user, get_open_feedback_clusters,
-    get_unprocessed_feedback, update_feedback_triage,
+    FeedbackStatus, count_feedback_filed_by_user, count_pending_admin_review,
+    get_open_feedback_clusters, get_unprocessed_feedback, update_feedback_triage,
 )
 from cqc_lem.utilities.feedback.classifier import (
     MAX_BODY_CHARS, NEEDS_HUMAN_LABEL, RISK_LABELS, FeedbackCategory, FeedbackClassification,
@@ -696,10 +696,17 @@ def file_feedback_issue(feedback: dict, classification: FeedbackClassification =
 def process_new_feedback(limit: int = 25) -> dict:
     """Drain the capture queue: classify, dedup, and file each unprocessed feedback row. The open
     clusters are loaded ONCE and grown in memory as issues are filed, so a burst of identical
-    reports in one pass produces one issue and N-1 +1 comments."""
-    rows = get_unprocessed_feedback(limit)
+    reports in one pass produces one issue and N-1 +1 comments.
+
+    Issue #793: only rows from admin users are filed automatically. Non-admin feedback is left in
+    `new` status so the admin triage panel can approve or dismiss it — the filter is applied by the
+    query (`admin_only`), not here, so parked rows can never crowd admin rows out of `limit`."""
+    rows = get_unprocessed_feedback(limit, admin_only=True)
     clusters = get_open_feedback_clusters()
     counts: dict = {}
+    pending = count_pending_admin_review()
+    if pending:
+        counts["pending_review"] = pending
     for row in rows:
         try:
             result = file_feedback_issue(row, clusters=clusters)
@@ -725,7 +732,11 @@ def recluster_feedback(limit: int = 200) -> dict:
     clusters = get_open_feedback_clusters()
     # Unlike the filing pass, this one also reconsiders rows already parked in `triaged` — a report
     # a human never got to may well be the same problem as an issue filed since.
-    rows = get_unprocessed_feedback(limit, statuses=(FeedbackStatus.NEW, FeedbackStatus.TRIAGED))
+    # Issue #793: admin_only — non-admin feedback must not be silently clustered (and therefore
+    # accepted) before an admin reviews it, and filtering in SQL keeps parked rows from consuming
+    # the whole `limit` window pass after pass.
+    rows = get_unprocessed_feedback(limit, statuses=(FeedbackStatus.NEW, FeedbackStatus.TRIAGED),
+                                    admin_only=True)
     attached = 0
     embedded = 0
     for row in rows:

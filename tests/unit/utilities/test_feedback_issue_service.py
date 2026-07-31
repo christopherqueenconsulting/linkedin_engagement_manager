@@ -836,6 +836,7 @@ class TestProcessNewFeedback:
                 {"id": 2, "user_id": 2, "body": "feed commenting stops after one comment"}]
         with patch(f"{_SVC}.get_unprocessed_feedback", return_value=rows), \
                 patch(f"{_SVC}.get_open_feedback_clusters", return_value=[]), \
+                patch(f"{_SVC}.count_pending_admin_review", return_value=0), \
                 patch(f"{_SVC}.classify_feedback", return_value=_classification()), \
                 patch(f"{_SVC}.create_github_issue", return_value=900) as create, \
                 patch(f"{_SVC}.comment_on_issue", return_value=True) as comment, \
@@ -852,15 +853,32 @@ class TestProcessNewFeedback:
         rows = [{"id": 1, "user_id": 1, "body": "a"}, {"id": 2, "user_id": 2, "body": "b"}]
         with patch(f"{_SVC}.get_unprocessed_feedback", return_value=rows), \
                 patch(f"{_SVC}.get_open_feedback_clusters", return_value=[]), \
+                patch(f"{_SVC}.count_pending_admin_review", return_value=0), \
                 patch(f"{_SVC}.file_feedback_issue",
                       side_effect=[RuntimeError("boom"), {"action": "filed"}]):
             result = svc.process_new_feedback()
         assert result == {"processed": 2, "counts": {"error": 1, "filed": 1}}
 
+    def test_only_admin_rows_are_asked_for_and_the_backlog_is_reported(self):
+        """Issue #793: the admin filter must be pushed into the query. Non-admin rows keep their
+        new/NULL-cluster shape forever, so a caller-side skip would refill `limit` with the same
+        parked rows every pass and admin feedback would never be reached again."""
+        svc = _mod()
+        rows = [{"id": 1, "user_id": 1, "body": "admin feedback"}]
+        with patch(f"{_SVC}.get_unprocessed_feedback", return_value=rows) as loader, \
+                patch(f"{_SVC}.get_open_feedback_clusters", return_value=[]), \
+                patch(f"{_SVC}.count_pending_admin_review", return_value=2), \
+                patch(f"{_SVC}.file_feedback_issue", return_value={"action": "filed"}) as filer:
+            result = svc.process_new_feedback(limit=10)
+        assert loader.call_args.kwargs["admin_only"] is True
+        assert result == {"processed": 1, "counts": {"filed": 1, "pending_review": 2}}
+        filer.assert_called_once_with(rows[0], clusters=[])
+
     def test_empty_queue_is_a_no_op(self):
         svc = _mod()
         with patch(f"{_SVC}.get_unprocessed_feedback", return_value=[]), \
                 patch(f"{_SVC}.get_open_feedback_clusters", return_value=[]), \
+                patch(f"{_SVC}.count_pending_admin_review", return_value=0), \
                 patch(f"{_SVC}.create_github_issue") as create:
             assert svc.process_new_feedback() == {"processed": 0, "counts": {}}
         create.assert_not_called()
@@ -937,6 +955,15 @@ class TestReclusterFeedback:
             result = svc.recluster_feedback()
         assert result == {"scanned": 1, "attached": 0, "embedded": 0, "clusters": 0}
         embed.assert_not_called()
+
+    def test_non_admin_feedback_is_not_silently_reclustered(self):
+        """Issue #793: reclustering accepts a report into an existing issue, so it must be gated
+        the same way filing is — and gated in SQL, not by skipping rows the query returned."""
+        svc = _mod()
+        with patch(f"{_SVC}.get_open_feedback_clusters", return_value=[]), \
+                patch(f"{_SVC}.get_unprocessed_feedback", return_value=[]) as loader:
+            svc.recluster_feedback()
+        assert loader.call_args.kwargs["admin_only"] is True
 
 
 class TestEnvReaders:

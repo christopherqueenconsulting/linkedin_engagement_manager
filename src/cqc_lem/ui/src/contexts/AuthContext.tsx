@@ -19,12 +19,14 @@ interface SessionDetail {
   // What PostHog Surveys target on (issue #653).
   onboarding_completed_at?: string | null
   posts_approved?: number | null
+  is_admin?: boolean
 }
 
 interface AuthContextValue {
   user: AuthUser | null
   sessionToken: string | null
   isLoading: boolean
+  isAdmin: boolean
   login: (token: string, email: string) => void
   logout: () => Promise<void>
   openLoginModal: () => void
@@ -40,6 +42,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null)
   const [sessionToken, setSessionToken] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [isAdmin, setIsAdmin] = useState(false)
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false)
   // Identify once per user per page load — re-identifying on every session check would burn a
   // $identify on each mount for no new information.
@@ -48,6 +51,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   function applySession(detail: SessionDetail, token: string) {
     setSessionToken(token)
     setUser({ email: detail.email, userId: detail.user_id })
+    setIsAdmin(!!detail.is_admin)
     if (detail.user_id && identifiedUserId.current !== detail.user_id) {
       identifiedUserId.current = detail.user_id
       identifyUser({
@@ -108,6 +112,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem('lem_sitemap_url')
     setSessionToken(null)
     setUser(null)
+    setIsAdmin(false)
     // Break the browser↔person link, or the next person to sign in on this machine inherits it.
     identifiedUserId.current = null
     resetAnalytics()
@@ -119,6 +124,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         user,
         sessionToken,
         isLoading,
+        isAdmin,
         login,
         logout,
         openLoginModal: () => setIsLoginModalOpen(true),

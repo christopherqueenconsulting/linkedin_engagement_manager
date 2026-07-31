@@ -5,7 +5,7 @@ import os
 import time
 import zipfile
 from datetime import datetime, timedelta, timezone
-from enum import IntEnum
+from enum import IntEnum, StrEnum
 from typing import Dict, List, Union
 from typing import Optional, Any
 from urllib.parse import urlparse
@@ -89,8 +89,9 @@ from cqc_lem.utilities.db import (
     replace_video_url_base, get_post_type, get_post_buyer_stage, get_post_status,
     update_db_post_rejection_reason,
     get_post_url_from_log_for_user,
-    insert_feedback, FeedbackSource,
+    insert_feedback, FeedbackSource, FeedbackStatus,
     get_latest_review_feedback_id, get_early_adopter_grant, extend_trial_for_user,
+    is_user_admin, get_feedback_list, record_feedback_review, get_feedback_by_id,
 )
 from cqc_lem.utilities.content_generation_status import mark_queued, get_generation_status, \
     clear_generation_status
@@ -892,6 +893,17 @@ class LinkedInCookieRequest(BaseModel):
     session_token: str
     li_at: str
     jsessionid: Optional[str] = None
+
+
+class FeedbackReviewAction(StrEnum):
+    APPROVE = 'approve'
+    DISMISS = 'dismiss'
+
+
+class FeedbackReviewRequest(BaseModel):
+    """Admin triage decision for a single feedback row (issue #793)."""
+    session_token: str
+    action: FeedbackReviewAction
 
 
 class LinkedInCompanyPageRequest(BaseModel):
@@ -1979,6 +1991,7 @@ def auth_check_session(session_token: str) -> ResponseModel:
         # own round trip would be a survey that never fired on the first page view.
         "onboarding_completed_at": _utc_iso(profile.get("onboarding_completed_at")),
         "posts_approved": int(profile.get("posts_approved") or 0),
+        "is_admin": is_user_admin(user_id),
     })
 
 
@@ -4713,6 +4726,118 @@ def admin_task_status(
     if res.ready():
         detail["result"] = str(res.result)[:500]
     return ResponseModel(status_code=200, detail=detail)
+
+
+# ---------------------------------------------------------------------------
+# Feedback admin triage panel (issue #793) — user-level admin role, not the
+# operational X-Admin-Secret endpoints above.
+# ---------------------------------------------------------------------------
+
+# A row that already reached GitHub must never be re-reviewed. `file_feedback_issue` re-classifies
+# (LLM spend) and dedups against the OPEN clusters — and a filed row IS its own open cluster, so a
+# second approve matches it to itself at similarity 1.0 and posts a false "+1 another report" on the
+# very issue it created. Dismissing one would mark it not-actionable while its issue stays open.
+_REVIEW_SETTLED_STATUSES = (FeedbackStatus.CLUSTERED, FeedbackStatus.ISSUE_CREATED,
+                            FeedbackStatus.RESOLVED)
+
+
+def _require_user_admin(session_token: str) -> int:
+    """Validate the session and ensure the user is designated as an admin.
+
+    Returns the user_id on success; raises HTTPException 401/403 otherwise."""
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if not is_user_admin(user_id):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user_id
+
+
+@router.get("/admin/feedback", responses={
+    200: {"description": "Feedback list returned"},
+    401: {"description": "Invalid or expired session"},
+    403: {"description": "Admin access required"},
+})
+def admin_feedback_list(
+    session_token: str,
+    status: Optional[str] = None,
+    source: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> ResponseModel:
+    """List feedback submissions for the admin triage panel."""
+    _require_user_admin(session_token)
+    rows = get_feedback_list(status=status, source=source, limit=limit, offset=offset)
+    return ResponseModel(status_code=200, detail={
+        "items": [
+            {
+                "id": r.get("id"),
+                "user_id": r.get("user_id"),
+                "email": r.get("email"),
+                "is_admin_reporter": bool(r.get("is_admin")),
+                "source": r.get("source"),
+                "type_hint": r.get("type_hint"),
+                "body": r.get("body"),
+                "context_json": r.get("context_json"),
+                "status": r.get("status"),
+                "cluster_id": r.get("cluster_id"),
+                "github_issue_number": r.get("github_issue_number"),
+                "reviewed_by": r.get("reviewed_by"),
+                "reviewed_at": _utc_iso(r.get("reviewed_at")),
+                "created_at": _utc_iso(r.get("created_at")),
+            }
+            for r in rows
+        ],
+        "limit": limit,
+        "offset": offset,
+    })
+
+
+@router.post("/admin/feedback/{feedback_id}/review", responses={
+    200: {"description": "Review recorded"},
+    401: {"description": "Invalid or expired session"},
+    403: {"description": "Admin access required"},
+    404: {"description": "Feedback row not found"},
+    409: {"description": "Feedback already triaged"},
+    422: {"description": "Invalid action"},
+})
+def admin_feedback_review(
+    feedback_id: int,
+    request: FeedbackReviewRequest,
+) -> ResponseModel:
+    """Approve a feedback row for auto-triage or dismiss it."""
+    reviewer_user_id = _require_user_admin(request.session_token)
+    from cqc_lem.utilities.feedback.issue_service import file_feedback_issue
+    row = get_feedback_by_id(feedback_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Feedback not found")
+
+    # The panel only offers the buttons on `new` rows, but its list is cached and two admins (or the
+    # auto-filer beat) can settle a row between render and click.
+    row_status = str(row.get("status") or "")
+    if row_status in _REVIEW_SETTLED_STATUSES or row.get("github_issue_number"):
+        raise HTTPException(status_code=409,
+                            detail=f"Feedback already triaged (status {row_status or 'unknown'})")
+
+    if request.action == FeedbackReviewAction.DISMISS:
+        if not record_feedback_review(feedback_id, reviewer_user_id,
+                                      status=FeedbackStatus.DISMISSED):
+            raise HTTPException(status_code=500, detail="Could not dismiss feedback")
+        log_info("Feedback dismissed by admin", feedback_id=feedback_id,
+                 user_id=reviewer_user_id)
+        return ResponseModel(status_code=200, detail={"reviewed": True, "action": "dismissed"})
+
+    # approve: run the normal classifier/filer path now.
+    result = file_feedback_issue(row)
+    # Stamp the reviewer even when the filer itself dropped/FAQ'd/human-routed the row.
+    record_feedback_review(feedback_id, reviewer_user_id)
+    log_info("Feedback approved by admin", feedback_id=feedback_id,
+             user_id=reviewer_user_id, action=result.get("action"))
+    return ResponseModel(status_code=200, detail={
+        "reviewed": True,
+        "action": "approved",
+        "filing_result": result,
+    })
 
 
 @router.get("/carousel-templates", responses={200: {"description": "Available carousel templates"}})

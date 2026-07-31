@@ -4,12 +4,14 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import Layout from './components/Layout'
 import ProtectedRoute from './components/ProtectedRoute'
+import AdminRoute from './components/AdminRoute'
 import LoginModal from './components/LoginModal'
 import NewVersionNotice from './components/NewVersionNotice'
 import Dashboard from './pages/Dashboard'
 import Account from './pages/Account'
 import Avatars from './pages/Avatars'
 import ContentStudio from './pages/ContentStudio'
+import AdminFeedbackPage from './pages/AdminFeedbackPage'
 import Landing from './pages/Landing'
 import PrivacyPolicy from './pages/PrivacyPolicy'
 import TermsAndConditions from './pages/TermsAndConditions'
@@ -56,6 +58,10 @@ function AppRoutes() {
           <Route
             path="content"
             element={<ProtectedRoute><ContentStudio /></ProtectedRoute>}
+          />
+          <Route
+            path="admin/feedback"
+            element={<AdminRoute><AdminFeedbackPage /></AdminRoute>}
           />
           {/* Public legal pages — reachable from the footer and from logged-out landing pages */}
           <Route path="privacy-policy" element={<PrivacyPolicy />} />
