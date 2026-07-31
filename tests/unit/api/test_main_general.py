@@ -563,6 +563,104 @@ class TestGmailForwardConfirmationStorage:
         assert resp.json()["detail"] == "confirmed"
 
 
+class TestForwardingConfirmedByDelivery:
+    """Issue #813: our server-side click of Gmail's verify link often fails, so a user who finished
+    the confirmation by hand was stuck at confirmed=False forever. Mail actually ARRIVING on their
+    private reply+<token> address is the real end-to-end proof, so record it."""
+    BASE = "/api/linkedin/comment-notification/inbound"
+    _RL = "cqc_lem.utilities.linkedin.rate_limit._redis_client"
+
+    @staticmethod
+    def _redis(existing=None):
+        from unittest.mock import MagicMock
+        import json as _json
+        r = MagicMock()
+        r.get.return_value = _json.dumps(existing) if existing is not None else None
+        return r
+
+    def _post(self, client, redis, **data):
+        with patch("cqc_lem.utilities.db.get_user_id_by_reply_token", return_value=7), \
+             patch(f"{_MAIN}._reply_sweep_debounced", return_value=True), \
+             patch(f"{_MAIN}.sweep_reply_comments"), \
+             patch(self._RL, return_value=redis):
+            return client.post(self.BASE, data={"to": "reply+tok9@parse.example.com", **data})
+
+    def test_forwarded_comment_email_confirms_forwarding(self, client):
+        import json
+        redis = self._redis()
+        resp = self._post(client, redis, **{
+            "from": "LinkedIn <messages-noreply@linkedin.com>",
+            "subject": "Jane commented on your post"})
+        assert resp.json()["detail"] == "accepted"
+        stored = json.loads(redis.set.call_args.args[1])
+        assert stored == {"confirmed": True, "source": "forwarded_email"}
+
+    def test_confirmed_record_never_expires(self, client):
+        # The Gmail filter is set up once and forwards indefinitely — a TTL would re-raise the
+        # "not confirmed" warning a week later on a setup that is working fine.
+        redis = self._redis()
+        self._post(client, redis, **{"from": "messages-noreply@linkedin.com",
+                                     "subject": "Jane commented on your post"})
+        assert "ex" not in redis.set.call_args.kwargs
+
+    def test_forwarded_reaction_email_confirms_but_starts_no_sweep(self, client):
+        redis = self._redis()
+        with patch("cqc_lem.utilities.db.get_user_id_by_reply_token", return_value=7), \
+             patch(f"{_MAIN}.sweep_reply_comments") as sweep, \
+             patch(self._RL, return_value=redis):
+            resp = client.post(self.BASE, data={
+                "to": "reply+tok9@parse.example.com",
+                "from": "messages-noreply@linkedin.com",
+                "subject": "Jane liked your post"})
+        assert resp.json()["detail"] == "ignored"
+        sweep.apply_async.assert_not_called()
+        redis.set.assert_called_once()
+
+    def test_unrelated_mail_is_not_evidence(self, client):
+        redis = self._redis()
+        resp = self._post(client, redis, **{"from": "spam@example.com",
+                                            "subject": "Your invoice is ready"})
+        assert resp.json()["detail"] == "ignored"
+        redis.set.assert_not_called()
+
+    def test_already_confirmed_is_not_rewritten(self, client):
+        redis = self._redis({"confirmed": True, "source": "auto_click"})
+        self._post(client, redis, **{"from": "messages-noreply@linkedin.com",
+                                     "subject": "Jane commented on your post"})
+        redis.set.assert_not_called()
+
+    def test_pending_confirmation_never_downgrades_a_confirmed_one(self, client):
+        # A second Gmail confirmation email (re-added address, new code) whose auto-click fails must
+        # not undo forwarding we have already seen working.
+        redis = self._redis({"confirmed": True, "source": "forwarded_email"})
+        body = "verify permission https://mail.google.com/mail/vf-x\nConfirmation code: 55667788"
+        with patch("cqc_lem.utilities.db.get_user_id_by_reply_token", return_value=7), \
+             patch(f"{_MAIN}.requests.get", side_effect=RuntimeError("net")), \
+             patch(f"{_MAIN}.log_warning"), \
+             patch("cqc_lem.utilities.db.get_user_email", return_value=None), \
+             patch(self._RL, return_value=redis):
+            resp = client.post(self.BASE, data={
+                "to": "reply+tok9@parse.example.com",
+                "from": "forwarding-noreply@google.com",
+                "subject": "Gmail Forwarding Confirmation", "text": body})
+        assert resp.status_code == 200
+        redis.set.assert_not_called()
+
+    def test_pending_confirmation_still_stored_with_a_ttl(self, client):
+        redis = self._redis()
+        body = "verify permission https://mail.google.com/mail/vf-x\nConfirmation code: 55667788"
+        with patch("cqc_lem.utilities.db.get_user_id_by_reply_token", return_value=7), \
+             patch(f"{_MAIN}.requests.get", side_effect=RuntimeError("net")), \
+             patch(f"{_MAIN}.log_warning"), \
+             patch("cqc_lem.utilities.db.get_user_email", return_value=None), \
+             patch(self._RL, return_value=redis):
+            client.post(self.BASE, data={
+                "to": "reply+tok9@parse.example.com",
+                "from": "forwarding-noreply@google.com",
+                "subject": "Gmail Forwarding Confirmation", "text": body})
+        assert redis.set.call_args.kwargs["ex"] == 7 * 24 * 60 * 60
+
+
 class TestSharedInboundRouting:
     """SendGrid posts ALL parse-host mail to the PIN URL, so that endpoint must also route
     reply+<token> mail (Gmail confirmations + comment notifications)."""

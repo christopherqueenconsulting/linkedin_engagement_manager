@@ -135,11 +135,18 @@ export function evaluateConflicts(ctx: ConflictContext): Finding[] {
       message: 'Your reply-check cadence is only used in Scheduled mode — it is ignored right now.',
     })
   }
-  // C6 — event mode without confirmed Gmail forwarding replies to nothing, silently.
+  // C6 — event mode without confirmed Gmail forwarding replies to nothing, silently. Confirmation is
+  // EVIDENCE-based (issue #813): a LinkedIn email actually reaching the forwarding address proves the
+  // chain, and Gmail asking us to verify proves the user got as far as adding the address. Telling
+  // someone mid-setup to "finish the 3-step setup" sends them back to step 1 over the one step that
+  // is genuinely outstanding, so name what is actually missing.
   if (eng.reply_check_mode === 'event' && !eng.gmail_forward_confirmation?.confirmed) {
+    const started = !!eng.gmail_forward_confirmation
     out.push({
       id: 'C6', severity: 'warn', section: 'volume', anchor: 'reply_check_mode',
-      message: 'Email forwarding is not confirmed yet, so replies to comments on your posts will never fire. Finish the 3-step setup below.',
+      message: started
+        ? 'Gmail has asked us to verify your forwarding address, but no forwarded LinkedIn email has arrived yet — until one does, replies to comments on your posts will not fire. Finish the confirmation in Gmail (step 3) and check your filter matches LinkedIn comment emails; this clears itself the moment the first one lands.'
+        : 'Email forwarding is not confirmed yet, so replies to comments on your posts will never fire. Finish the 3-step setup below.',
     })
   }
   // C7 — scheduled sweeps open a browser session per run.

@@ -1377,6 +1377,46 @@ async def linkedin_verification_pin_inbound(request: Request) -> ResponseModel:
 
 
 _GMAIL_CONFIRM_KEY = "linkedin:gmail_forward_confirm:{user_id}"
+# A pending record is transient (the code fallback goes stale); a CONFIRMED one is not. The Gmail
+# filter is set up ONCE and forwards indefinitely, so expiring a proven-working record re-raised the
+# "forwarding is not confirmed" warning a week later on a setup that was fine (issue #813).
+_GMAIL_PENDING_TTL_SECONDS = 7 * 24 * 60 * 60
+
+
+def _store_gmail_forward_confirmation(user_id: int, record: "dict") -> bool:
+    """Persist forwarding status; True when something was written. Confirmed records never expire and
+    are never downgraded by a later pending one — evidence that the chain worked does not stop being
+    evidence."""
+    try:
+        from cqc_lem.utilities.linkedin.rate_limit import _redis_client
+        client = _redis_client()
+        if client is None:
+            return False
+        if record.get("confirmed"):
+            client.set(_GMAIL_CONFIRM_KEY.format(user_id=user_id), json.dumps(record))
+            return True
+        if (get_gmail_forward_confirmation(user_id) or {}).get("confirmed"):
+            return False
+        client.set(_GMAIL_CONFIRM_KEY.format(user_id=user_id), json.dumps(record),
+                   ex=_GMAIL_PENDING_TTL_SECONDS)
+        return True
+    except Exception as e:
+        log_warning("Could not store Gmail forwarding confirmation result", exc=e, user_id=user_id)
+        return False
+
+
+def _record_forwarding_confirmed_by_delivery(user_id: int) -> None:
+    """A LinkedIn notification arriving at the user's private reply+<token> address is end-to-end
+    proof the forwarding chain works — stronger proof than our server-side click of Gmail's verify
+    link, which routinely fails from a datacenter IP. Without this, a user who finished Gmail's
+    confirmation by hand (the path we explicitly ask them to take when the auto-click fails) stayed
+    at confirmed=False forever and kept being told replies would never fire (issue #813)."""
+    if (get_gmail_forward_confirmation(user_id) or {}).get("confirmed"):
+        return
+    # Only announce a real state change — with Redis down the store is a no-op, and logging per
+    # inbound email would turn one unavailable dependency into a flood.
+    if _store_gmail_forward_confirmation(user_id, {"confirmed": True, "source": "forwarded_email"}):
+        log_info("Gmail forwarding confirmed by an arriving LinkedIn notification", user_id=user_id)
 
 
 def _handle_gmail_forwarding_confirmation(user_id: int, subject: str, text: str, html: str) -> ResponseModel:
@@ -1420,16 +1460,10 @@ def _handle_gmail_forwarding_confirmation(user_id: int, subject: str, text: str,
                 forwarded = send_reply_forward_confirmation_email(user_email, url, code)
         except Exception as e:
             log_warning("Could not forward Gmail confirmation to user", exc=e, user_id=user_id)
-    try:
-        from cqc_lem.utilities.linkedin.rate_limit import _redis_client
-        client = _redis_client()
-        if client is not None:
-            client.set(_GMAIL_CONFIRM_KEY.format(user_id=user_id),
-                       json.dumps({"code": code, "confirmed": confirmed, "url_found": bool(url),
-                                   "forwarded_to_user": forwarded}),
-                       ex=7 * 24 * 60 * 60)
-    except Exception as e:
-        log_warning("Could not store Gmail forwarding confirmation result", exc=e, user_id=user_id)
+    _store_gmail_forward_confirmation(user_id, {
+        "code": code, "confirmed": confirmed, "url_found": bool(url),
+        "forwarded_to_user": forwarded, **({"source": "auto_click"} if confirmed else {}),
+    })
     log_info(f"Gmail forwarding confirmation: url_found={bool(url)} confirmed={confirmed} "
              f"code={'yes' if code else 'no'} forwarded_to_user={forwarded}", user_id=user_id)
     detail = "confirmed" if confirmed else ("forwarded" if forwarded else ("code_stored" if code else "ignored"))
@@ -1471,7 +1505,8 @@ def _process_reply_inbound(form) -> ResponseModel:
     debounced recent-posts reply sweep). Reactions/unknown tokens are ignored. Always 200. Called
     from BOTH inbound endpoints because SendGrid Inbound Parse posts all parse-host mail to one URL."""
     from cqc_lem.utilities.linkedin.notification_email import (
-        extract_reply_token_from_address, is_comment_notification, is_gmail_forwarding_confirmation)
+        extract_reply_token_from_address, is_comment_notification, is_gmail_forwarding_confirmation,
+        is_linkedin_notification)
     from cqc_lem.utilities.db import get_user_id_by_reply_token
     to_field = str(form.get("to") or "")
     envelope = str(form.get("envelope") or "")
@@ -1488,7 +1523,13 @@ def _process_reply_inbound(form) -> ResponseModel:
     # Gmail forwarding confirmation: the address is ours + token-gated, so auto-click the verify link.
     if is_gmail_forwarding_confirmation(from_field, subject, text or html):
         return _handle_gmail_forwarding_confirmation(user_id, subject, text, html)
-    if not is_comment_notification(subject, text or html):
+    comment = is_comment_notification(subject, text or html)
+    # Record the proof BEFORE the comment/reaction split — a forwarded reaction email shows the
+    # forwarding rule is live just as well as a comment one does, and the status chip is about the
+    # chain working, not about this particular email being actionable (issue #813).
+    if comment or is_linkedin_notification(from_field, subject, text or html):
+        _record_forwarding_confirmed_by_delivery(user_id)
+    if not comment:
         return ResponseModel(status_code=200, detail="ignored")
     if not _reply_sweep_debounced(user_id):
         return ResponseModel(status_code=200, detail="debounced")

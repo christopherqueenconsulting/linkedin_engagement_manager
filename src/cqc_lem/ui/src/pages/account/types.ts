@@ -72,6 +72,10 @@ export type GmailForwardConfirmation = {
   code?: string | null
   confirmed?: boolean
   url_found?: boolean
+  forwarded_to_user?: boolean
+  /** How it was proven: `auto_click` (we clicked Gmail's verify link) or `forwarded_email` (a
+   *  LinkedIn notification actually reached the forwarding address). */
+  source?: string | null
 }
 
 export type FeedReach = {

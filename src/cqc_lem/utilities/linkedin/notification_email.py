@@ -58,6 +58,19 @@ def is_comment_notification(subject: str, text: str = "") -> bool:
     return False
 
 
+def is_linkedin_notification(sender: str, subject: str, text: str = "") -> bool:
+    """True when mail arriving on a reply+<token> address is a forwarded LinkedIn notification of ANY
+    kind. This is the evidence that a user's forwarding rule is actually live (issue #813), so it is
+    deliberately broader than is_comment_notification — a forwarded reaction email proves the chain
+    works just as well — but not blanket: unrelated mail must not stand in as proof. A Gmail
+    auto-forward preserves the original From header, so LinkedIn's sending domain survives the hop.
+    """
+    if "linkedin.com" in (sender or "").lower():
+        return True
+    hay = f"{subject or ''}\n{(text or '')[:2000]}".lower()
+    return "linkedin" in hay
+
+
 # --- Gmail forwarding auto-confirmation -------------------------------------------
 # When the user adds our reply+<token>@parse-domain address as a Gmail forwarding address, Gmail
 # emails a CONFIRMATION to it ("verify permission"). Since that address is ours and token-gated, we

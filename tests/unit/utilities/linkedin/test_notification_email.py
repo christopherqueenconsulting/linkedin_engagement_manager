@@ -61,6 +61,34 @@ class TestIsCommentNotification:
         assert is_comment_notification("Weekly digest", body) is False
 
 
+class TestIsLinkedInNotification:
+    """The evidence test for issue #813 — broader than is_comment_notification (a forwarded
+    reaction email proves the forwarding chain too) but not blanket."""
+
+    def test_true_for_linkedin_sender(self):
+        from cqc_lem.utilities.linkedin.notification_email import is_linkedin_notification
+        assert is_linkedin_notification("LinkedIn <messages-noreply@linkedin.com>",
+                                        "Jane liked your post") is True
+
+    def test_true_for_reactions_and_mentions(self):
+        from cqc_lem.utilities.linkedin.notification_email import is_linkedin_notification
+        assert is_linkedin_notification("news@linkedin.com", "Jane mentioned you in a comment") is True
+
+    def test_true_from_body_when_sender_rewritten(self):
+        from cqc_lem.utilities.linkedin.notification_email import is_linkedin_notification
+        assert is_linkedin_notification("chris@example.com", "Fwd: new activity",
+                                        "View this on LinkedIn to reply") is True
+
+    def test_false_for_unrelated_mail(self):
+        from cqc_lem.utilities.linkedin.notification_email import is_linkedin_notification
+        assert is_linkedin_notification("billing@vendor.com", "Your invoice is ready",
+                                        "Payment due in 14 days") is False
+
+    def test_false_for_empty_input(self):
+        from cqc_lem.utilities.linkedin.notification_email import is_linkedin_notification
+        assert is_linkedin_notification("", "", "") is False
+
+
 _GMAIL_BODY = (
     "forwarding-noreply@google.com has requested to automatically forward mail to your address.\n"
     "Confirmation code: 987654321\n\n"
