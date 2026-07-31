@@ -14,22 +14,65 @@ name: Auto-merge Release PRs
 # this repo's merge queue; the built-in GITHUB_TOKEN from a bot action does not). No strategy flag —
 # the merge queue fixes the strategy.
 
+#
+# FAST LANE (`release:now`): batching costs a median ~168 minutes of wait per change, which is the
+# right trade for routine work and the wrong one for a user-visible break. Labelling a PR
+# `release:now` releases it as soon as it merges instead of at the next window. Who may apply it,
+# and when, is documented in docs/release-fast-lane.md — agents included.
+
 on:
   schedule:
     # 4x daily: 05/11/17/23 UTC (~01/07/13/19 ET). Auto-merge is enqueued at the window and the PR
     # merges as soon as its CI is green, so a window never ships a red build.
     - cron: "0 5,11,17,23 * * *"
   workflow_dispatch:
+  # Fires when any PR closes; the job below no-ops unless it MERGED and carried `release:now`.
+  # pull_request_target (not pull_request) so the run has the token needed to enqueue the release
+  # PR. Safe here because this job never checks out or executes PR code — it only calls `gh`.
+  pull_request_target:
+    types: [closed]
 
 permissions:
   contents: write
   pull-requests: write
 
+# One release enqueue at a time. Without this, three `release:now` PRs merging together would race
+# to auto-merge the same release PR.
+concurrency:
+  group: release-auto-merge
+  cancel-in-progress: false
+
 jobs:
   merge-pending-release:
     name: Merge the pending release PR
     runs-on: ubuntu-latest
+    if: >-
+      github.event_name != 'pull_request_target' ||
+      (github.event.pull_request.merged == true &&
+       contains(github.event.pull_request.labels.*.name, 'release:now'))
     steps:
+      # release-please reacts to the same merge this job does, so on the fast lane the release PR
+      # may not exist or may not yet include this commit. Wait for it rather than racing.
+      - name: Wait for release-please to update the release PR
+        if: github.event_name == 'pull_request_target'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          for i in $(seq 1 20); do
+            PR="$(gh pr list --repo "$REPO" --state open --json number,headRefName \
+                  --jq '[.[] | select(.headRefName | startswith("release-please--"))][0].number // empty')"
+            if [ -n "$PR" ]; then
+              echo "Release PR #$PR is open (attempt $i)."
+              exit 0
+            fi
+            echo "No release PR yet (attempt $i/20) — waiting 15s for release-please."
+            sleep 15
+          done
+          echo "::warning title=Fast lane timed out::release-please never opened a release PR; this change will ship in the next scheduled window."
+          exit 0
+
       - name: Find and auto-merge the open release-please PR
         env:
           GH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN || secrets.GITHUB_TOKEN }}

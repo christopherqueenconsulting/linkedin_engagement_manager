@@ -16,7 +16,12 @@ HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-180}"
 # Maintenance window (issue #549): how long dispatch stays paused (TTL — it self-clears if this
 # script dies) and how long we wait for in-flight tasks to finish before recreating the workers.
 MAINT_PAUSE_SECONDS="${MAINT_PAUSE_SECONDS:-1800}"
-DRAIN_TIMEOUT="${DRAIN_TIMEOUT:-480}"
+# 180s, down from 480s. The old value was almost always spent in full — v0.113.0 burned the entire
+# 480s waiting on a SINGLE task — and a drain that times out is not a failure: `task_acks_late`
+# re-queues whatever is still running when the worker shuts down. So the timeout only buys the
+# chance to finish cleanly, and the marginal value of minutes 3-8 is very low. Raise it per-deploy
+# with DRAIN_TIMEOUT=... if a release lands during a long video-generation run.
+DRAIN_TIMEOUT="${DRAIN_TIMEOUT:-180}"
 
 log() { echo "[deploy $(date -u +%H:%M:%S)] $*"; }
 
@@ -73,6 +78,24 @@ maint() {
   done
   log "WARN: no running app container — skipping maintenance ${sub}"
   return 0
+}
+
+# Quiesce the workers before anything recreates them: stop beat so no new schedule fires, pause
+# dispatch, cancel each worker's queue consumers, then wait for what is already running (video
+# generation, commenting loops, DM sweeps) to finish. Issue #549: without this, the recreate killed
+# live tasks mid-flight.
+#
+# A FUNCTION, not inline, because there are TWO paths that recreate workers — the normal deploy and
+# the legacy full rollback — and only one of them used to be covered. When the drain moved after the
+# blue/green flip (see §5) the rollback path was left recreating workers with no drain at all;
+# tests/unit/app/test_worker_shutdown.py caught it.
+drain_workers() {
+  log "Entering maintenance mode (pause ${MAINT_PAUSE_SECONDS}s); stopping celery_beat"
+  ${COMPOSE} stop celery_beat || log "WARN: could not stop celery_beat (continuing)"
+  maint begin --pause-seconds "${MAINT_PAUSE_SECONDS}" || log "WARN: maintenance begin failed (continuing)"
+  log "Draining in-flight Celery tasks (up to ${DRAIN_TIMEOUT}s)"
+  maint drain --timeout "${DRAIN_TIMEOUT}" \
+    || log "WARN: drain timed out — remaining tasks get re-queued on shutdown (task_acks_late)"
 }
 
 # Persist IMAGE_TAG into .env so a reboot or a manual `compose up` (run without
@@ -145,18 +168,22 @@ fi
 log "Pulling images for IMAGE_TAG=${TAG}"
 ${COMPOSE} pull
 
-# 4b. Enter maintenance mode BEFORE anything touches the workers: stop beat so no new schedule
-#     fires, pause dispatch, cancel each worker's queue consumers, then wait for what is already
-#     running (video generation, commenting loops, DM sweeps) to finish. Without this the
-#     recreate below killed live tasks mid-flight (issue #549).
-log "Entering maintenance mode (pause ${MAINT_PAUSE_SECONDS}s); stopping celery_beat"
-${COMPOSE} stop celery_beat || log "WARN: could not stop celery_beat (continuing)"
-maint begin --pause-seconds "${MAINT_PAUSE_SECONDS}" || log "WARN: maintenance begin failed (continuing)"
-log "Draining in-flight Celery tasks (up to ${DRAIN_TIMEOUT}s)"
-maint drain --timeout "${DRAIN_TIMEOUT}" \
-  || log "WARN: drain timed out — remaining tasks get re-queued on shutdown (task_acks_late)"
-
-# 5. Migrations first — Flyway is idempotent (repair + migrate, baselineOnMigrate).
+# 5. Migrations before the flip — the new web code may depend on the new schema. Flyway is
+#    idempotent (repair + migrate, baselineOnMigrate).
+#
+#    Ordering note (2026-07-31): the Celery drain used to run HERE, before migrations and the flip,
+#    which meant the web cutover waited on it. Measured on v0.113.0: drain 482s (the full timeout,
+#    blocking on ONE task) and the flip itself 22s — so 96% of a ~9-minute deploy was the web tier
+#    waiting for workers it does not depend on. The drain now runs AFTER the flip, immediately
+#    before the worker recreate it actually protects (issue #549's contract is unchanged: nothing
+#    recreates a worker until its in-flight tasks have drained).
+#
+#    This does mean migrations now run while OLD workers are still processing. That is the same
+#    risk the OLD order already accepted for the web tier — the drain never drained web_api, so the
+#    old FastAPI code has always served traffic against the new schema during a deploy. The standing
+#    requirement is unchanged and applies to workers too: migrations must be backward-compatible
+#    (expand/contract) — add columns/tables, never rename or drop in the same release as the code
+#    that stops using them.
 log "Running database migrations"
 ${COMPOSE} up -d mysql
 ${COMPOSE} run --rm flyway
@@ -216,12 +243,14 @@ if ! color_healthy "${TARGET}" "${HEALTH_TIMEOUT}"; then
     maint end || log "WARN: could not clear maintenance mode (pause TTL will expire it)"
     exit 1
   fi
-  # No serving color to fall back behind (first cutover) — legacy full rollback.
+  # No serving color to fall back behind (first cutover) — legacy full rollback. This recreates the
+  # workers, so it has to drain first, exactly like the success path (issue #549).
   if [[ -n "${PREV_TAG}" ]]; then
     log "Rolling back to ${PREV_TAG}"
     git checkout --quiet "${PREV_TAG}" 2>/dev/null || git checkout --quiet "tags/${PREV_TAG}" || true
     export IMAGE_TAG="${PREV_TAG}"
     persist_image_tag "${PREV_TAG}"
+    drain_workers
     ${COMPOSE} up -d --remove-orphans
   fi
   maint end || log "WARN: could not clear maintenance mode (pause TTL will expire it)"
@@ -262,6 +291,14 @@ if [[ "${edge_ok}" != true ]]; then
 fi
 echo "${TARGET}" > "${STATE_FILE}"
 log "Edge now routing to web_api_${TARGET}"
+log "Web tier is LIVE on ${TAG} — the rest of this deploy is workers and is not user-facing."
+
+# 6b. Only NOW enter maintenance mode and drain: stop beat so no new schedule fires, pause dispatch,
+#     cancel each worker's queue consumers, then wait for what is already running (video generation,
+#     commenting loops, DM sweeps) to finish before the recreate below kills them mid-flight
+#     (issue #549). Everything from here on is invisible to users — the site is already on the new
+#     code — so a slow drain costs deploy duration, not availability.
+drain_workers
 
 # 7. Converge the rest of the stack on the new tag (workers, beat, the standby color). The active
 #    color and the edge are already at their target state, so this doesn't touch routing.

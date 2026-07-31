@@ -27,13 +27,14 @@ Env:
 
 CLI:
   --repo OWNER/REPO
-  --head-ref SHA         PR head commit SHA.
-  --base-ref SHA         PR base commit SHA.
+  --head-ref REF         Git REF the code-scanning API resolves (e.g. refs/pull/<n>/merge).
+                         NOT a commit SHA — the API returns zero analyses for a bare SHA.
+  --base-ref REF         Git REF to diff against (e.g. refs/heads/main).
   --pr-number NUMBER     PR to post comments to (optional).
   --branch BRANCH        Branch to push fixes to (optional; no push if
                          omitted).
   --fix                  Apply mechanical auto-fixes.
-  --wait-timeout SEC     Max seconds to wait for CodeQL (default 900).
+  --wait-timeout SEC     Max seconds to wait for CodeQL (default 300).
   --wait-interval SEC    Seconds between polls (default 30).
   --ruff-cmd CMD         Ruff command (default `ruff`).
 
@@ -84,8 +85,10 @@ GITHUB_API = "https://api.github.com"
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="CodeQL per-PR quality gate.")
     parser.add_argument("--repo", required=True, help="Owner/repo slug.")
-    parser.add_argument("--head-ref", required=True, help="PR head SHA.")
-    parser.add_argument("--base-ref", required=True, help="PR base SHA.")
+    parser.add_argument("--head-ref", required=True,
+                        help="Git REF for code-scanning (refs/pull/<n>/merge), NOT a SHA.")
+    parser.add_argument("--base-ref", required=True,
+                        help="Git REF to diff against (refs/heads/main), NOT a SHA.")
     parser.add_argument(
         "--pr-number", type=int, default=0, help="PR number for comments."
     )
@@ -98,7 +101,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--wait-timeout",
         type=int,
-        default=900,
+        default=300,
         help="Seconds to wait for CodeQL.",
     )
     parser.add_argument(
@@ -702,6 +705,24 @@ def main(argv: Optional[list[str]] = None) -> int:
         client, args.head_ref, args.wait_timeout, args.wait_interval
     )
     if not head_ready:
+        # LOUD, not a quiet warning. This gate silently timed out on all 24 of its runs and reported
+        # success every time, so the repo believed it had per-PR alert diffing that had never once
+        # executed. Failing open is still right — a flaky analysis must not block a merge — but it
+        # has to be visible in the job summary, not buried in a log line nobody reads.
+        message = (
+            f"::warning title=CodeQL gate did not run::No CodeQL analysis for {args.head_ref} "
+            f"after {args.wait_timeout}s — alerts were NOT compared. Failing open. If this "
+            f"repeats, the ref is probably wrong (the code-scanning API needs a git ref such as "
+            f"refs/pull/<n>/merge, not a commit SHA)."
+        )
+        print(message, flush=True)
+        summary = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary:
+            try:
+                with open(summary, "a", encoding="utf-8") as handle:
+                    handle.write(f"\n> [!WARNING]\n> {message.split('::')[-1]}\n")
+            except OSError:
+                pass
         log_warning(
             "CodeQL analysis not available for head ref; failing open",
             head_ref=args.head_ref,

@@ -36,19 +36,33 @@ jobs:
         id: refs
         shell: bash
         run: |
+          # TWO different identifiers, deliberately. `head_ref`/`base_ref` are COMMIT SHAs, used by
+          # actions/checkout and for the auto-fix commit. `analysis_ref`/`analysis_base` are GIT
+          # REFS, used for the code-scanning API — which returns ZERO analyses for a bare SHA and
+          # only resolves a ref. Conflating them is why this gate timed out on all 24 of its runs
+          # and failed open every time (verified against the live API 2026-07-31:
+          # `?ref=<sha>` -> 0 analyses, `?ref=refs/pull/824/merge` -> 5).
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "head_ref=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
             echo "base_ref=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
+            echo "analysis_ref=refs/pull/${{ github.event.pull_request.number }}/merge" >> "$GITHUB_OUTPUT"
+            echo "analysis_base=refs/heads/${{ github.event.pull_request.base.ref }}" >> "$GITHUB_OUTPUT"
             echo "pr_number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
             echo "branch=${{ github.event.pull_request.head.ref }}" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event_name }}" = "merge_group" ]; then
             echo "head_ref=${{ github.event.merge_group.head_sha }}" >> "$GITHUB_OUTPUT"
             echo "base_ref=${{ github.event.merge_group.base_sha }}" >> "$GITHUB_OUTPUT"
+            # merge_group head_ref/base_ref are already full refs (refs/heads/gh-readonly-queue/...
+            # and refs/heads/main), so they are used verbatim.
+            echo "analysis_ref=${{ github.event.merge_group.head_ref }}" >> "$GITHUB_OUTPUT"
+            echo "analysis_base=${{ github.event.merge_group.base_ref }}" >> "$GITHUB_OUTPUT"
             echo "pr_number=0" >> "$GITHUB_OUTPUT"
             echo "branch=" >> "$GITHUB_OUTPUT"
           else
             echo "head_ref=${{ inputs.head-ref }}" >> "$GITHUB_OUTPUT"
             echo "base_ref=${{ inputs.base-ref }}" >> "$GITHUB_OUTPUT"
+            echo "analysis_ref=${{ inputs.head-ref }}" >> "$GITHUB_OUTPUT"
+            echo "analysis_base=${{ inputs.base-ref }}" >> "$GITHUB_OUTPUT"
             echo "pr_number=${{ inputs.pr-number || '0' }}" >> "$GITHUB_OUTPUT"
             echo "branch=" >> "$GITHUB_OUTPUT"
           fi
@@ -70,8 +84,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          HEAD_REF="${{ steps.refs.outputs.head_ref }}"
-          BASE_REF="${{ steps.refs.outputs.base_ref }}"
+          # The code-scanning API needs REFS, not SHAs — see the "Determine refs" step.
+          HEAD_REF="${{ steps.refs.outputs.analysis_ref }}"
+          BASE_REF="${{ steps.refs.outputs.analysis_base }}"
           PR_NUMBER="${{ steps.refs.outputs.pr_number }}"
           BRANCH="${{ steps.refs.outputs.branch }}"
 
