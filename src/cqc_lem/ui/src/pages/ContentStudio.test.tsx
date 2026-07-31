@@ -22,6 +22,7 @@ vi.mock('../contexts/AuthContext', () => ({
 
 vi.mock('../hooks/useUserTimezone', () => ({
   useUserTimezone: () => 'America/New_York',
+  useUserTimezoneState: () => ({ timezone: 'America/New_York', isResolved: true }),
 }))
 
 vi.mock('../utils/analytics', () => ({

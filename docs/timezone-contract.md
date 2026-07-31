@@ -65,6 +65,22 @@ only the last-resort fallback while the query is in flight. A user whose Login L
 their device (travel, VPN, or deliberately targeting an audience in another zone) must still see and
 set times in their configured zone.
 
+**Never convert against the fallback.** Rendering a value in the browser's zone for the few
+milliseconds before the real one lands is cosmetic; converting a wall clock the user *typed* against
+it is not — that instant is stored, and the post fires by the difference between the two zones
+(issue #774: a post picked for 9am ET was stored as `09:00Z` and published at 5am ET). So every
+surface that WRITES a scheduled time reads `useUserTimezoneState()` instead, which reports
+`isResolved: false` until `/user/timezone` has actually answered — in flight, disabled because the
+session token hasn't hydrated, or failed. While it is false the picker is disabled, labelled
+`loading your timezone…` rather than named with the guess, and the submit path refuses. `ComposePost`,
+the `ContentStudio` editor and bulk-reschedule bar, `ScheduledDMs` and `NewsletterQueue` all hold to
+this; `useUserTimezone()` (bare string, browser fallback) is for display-only callers.
+
+Server-side, a scheduling write that arrives with **no** offset is still interpreted as UTC — that is
+the contract and legacy callers rely on it — but `api.main._warn_if_naive_schedule()` logs a WARNING
+on `/schedule_post/`, `/update_post/` and `/posts/bulk_update/` so the next occurrence is diagnosable
+from logs rather than only from a post that went out at the wrong hour.
+
 `src/utils/datetime.ts` owns all three conversions:
 
 | Helper | Direction |

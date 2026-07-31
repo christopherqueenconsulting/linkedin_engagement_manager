@@ -15,7 +15,9 @@ const STATUS_COLORS: Record<string, string> = {
 // e.g. "case_study" -> "Case Study" for the format/hook badges.
 const prettyKey = (k: string) => k.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 
-export default function NewsletterQueue({ userTimezone }: { userTimezone: string }) {
+export default function NewsletterQueue(
+  { userTimezone, timezoneResolved }: { userTimezone: string; timezoneResolved: boolean },
+) {
   const { user, sessionToken } = useAuth()
   const qc = useQueryClient()
   const [selectedId, setSelectedId] = useState<number | null>(null)
@@ -213,15 +215,21 @@ export default function NewsletterQueue({ userTimezone }: { userTimezone: string
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Publish date &amp; time <span className="font-normal text-gray-400">({userTimezone})</span>
+                Publish date &amp; time{' '}
+                <span className="font-normal text-gray-400">
+                  ({timezoneResolved ? userTimezone : 'loading your timezone…'})
+                </span>
               </label>
+              {/* Locked until the user's own zone has loaded — converting the typed wall clock
+                  against the browser's guess would store an instant hours off (issue #774). */}
               <input
                 type="datetime-local"
-                value={toZonedInputValue(draftEdit.scheduled_for, userTimezone)}
+                value={timezoneResolved ? toZonedInputValue(draftEdit.scheduled_for, userTimezone) : ''}
+                disabled={!timezoneResolved}
                 onChange={(e) =>
                   setDe({ scheduled_for: zonedInputToUtcIso(e.target.value, userTimezone) ?? draftEdit.scheduled_for })
                 }
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
               />
             </div>
 

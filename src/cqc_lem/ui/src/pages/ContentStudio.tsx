@@ -15,7 +15,7 @@ import LeadsPipeline from './review/LeadsPipeline'
 import CatchupTouches from './review/CatchupTouches'
 import ComposePost from './content/ComposePost'
 import { useAuth } from '../contexts/AuthContext'
-import { useUserTimezone } from '../hooks/useUserTimezone'
+import { useUserTimezoneState } from '../hooks/useUserTimezone'
 import { formatInTimezone, toZonedInputValue, zonedInputToUtcIso, zonedDateToUtcStart, zonedDateToUtcEnd } from '../utils/datetime'
 import { emptyRunExplanation, isGenerationRunning } from '../utils/generationStatus'
 import type { GenerationStatus } from '../utils/generationStatus'
@@ -191,7 +191,11 @@ export default function ContentStudio() {
   const { user, sessionToken } = useAuth()
   const email = user?.email ?? ''
   const qc = useQueryClient()
-  const userTimezone = useUserTimezone()
+  const { timezone: userTimezone, isResolved: timezoneResolved } = useUserTimezoneState()
+  // Say which clock a typed time is read in. Until the user's own zone has loaded we say so rather
+  // than naming the browser's guess — a picker silently labelled with the wrong zone is how a post
+  // meant for 9am local got stored as 09:00 UTC and published four hours early (issue #774).
+  const timezoneLabel = timezoneResolved ? userTimezone : 'loading your timezone…'
 
   // Top-level view (Posts / Newsletters), synced to the ?tab= query param for deep-linking.
   const [searchParams, setSearchParams] = useSearchParams()
@@ -642,9 +646,11 @@ export default function ContentStudio() {
         <ComposePost onNavigateTab={(t) => setView(t as View)} />
       </div>
 
-      {view === 'newsletters' && <NewsletterQueue userTimezone={userTimezone} />}
+      {view === 'newsletters' && (
+        <NewsletterQueue userTimezone={userTimezone} timezoneResolved={timezoneResolved} />
+      )}
 
-      {view === 'dms' && <ScheduledDMs userTimezone={userTimezone} />}
+      {view === 'dms' && <ScheduledDMs userTimezone={userTimezone} timezoneResolved={timezoneResolved} />}
 
       {view === 'connections' && <ConnectionRequests userTimezone={userTimezone} />}
 
@@ -823,10 +829,14 @@ export default function ContentStudio() {
               type="datetime-local"
               value={bulkDate}
               onChange={(e) => setBulkDate(e.target.value)}
+              aria-label={`Bulk schedule date and time (${timezoneLabel})`}
               className="border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
+            <span className="text-xs text-gray-400">{timezoneLabel}</span>
             <button
               onClick={() => {
+                // Never convert a typed wall clock against a guessed zone (issue #774).
+                if (!timezoneResolved) return
                 const utc = zonedInputToUtcIso(bulkDate, userTimezone)
                 if (!utc) return
                 bulkUpdateMutation.mutate({
@@ -834,7 +844,7 @@ export default function ContentStudio() {
                   scheduled_datetime: utc,
                 })
               }}
-              disabled={!bulkDate || bulkUpdateMutation.isPending}
+              disabled={!bulkDate || !timezoneResolved || bulkUpdateMutation.isPending}
               className="bg-blue-600 text-white px-3 py-1 rounded text-xs font-semibold hover:bg-blue-700 disabled:opacity-50"
             >
               Apply Date
@@ -1109,10 +1119,14 @@ export default function ContentStudio() {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-xs font-medium text-gray-600 mb-1">Scheduled Time</label>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">
+                      Scheduled Time <span className="font-normal text-gray-400">({timezoneLabel})</span>
+                    </label>
                     <input
                       type="datetime-local"
-                      value={toZonedInputValue(editingPost.scheduled_time, userTimezone)}
+                      value={timezoneResolved ? toZonedInputValue(editingPost.scheduled_time, userTimezone) : ''}
+                      disabled={!timezoneResolved}
+                      aria-label={`Scheduled Time (${timezoneLabel})`}
                       onChange={(e) =>
                         setEditingPost({
                           ...editingPost,
@@ -1120,7 +1134,7 @@ export default function ContentStudio() {
                             zonedInputToUtcIso(e.target.value, userTimezone) ?? editingPost.scheduled_time,
                         })
                       }
-                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
                     />
                   </div>
                 </div>
