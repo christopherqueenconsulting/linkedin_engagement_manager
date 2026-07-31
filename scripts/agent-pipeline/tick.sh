@@ -67,7 +67,7 @@ capacity_preflight 2>/dev/null || true  # sets CLAUDE_PCT/OLLAMA_PCT/CLAUDE_AVAI
 
 # --- guards ---
 # DRY_RUN is inert (no pushes, no Claude, no merges) so it may validate even while paused.
-if [ -f "$PAUSED" ] && [ "$DRY_RUN" != "1" ]; then log "PAUSED file present — skipping."; exit 0; fi
+if [ -f "$PAUSED" ] && [ "$DRY_RUN" != "1" ]; then log "PAUSED file present — skipping."; TICK_OUTCOME="skipped"; TICK_REASON="paused"; exit 0; fi
 # Usage-limit pause is now LANE-SPECIFIC (CLAUDE_PAUSED_UNTIL / OLLAMA_PAUSED_UNTIL, written by
 # run_lane and the probe in capacity.sh) and gated per-lane inside capacity_preflight + dispatch_lane
 # — a Claude usage-limit no longer idles the Ollama lane, and the probe loop resumes Claude the
@@ -82,7 +82,7 @@ if [ -f "$PAUSED" ] && [ "$DRY_RUN" != "1" ]; then log "PAUSED file present — 
 case "${CLAUDE_STATUS:-}:${OLLAMA_STATUS:-}" in
   exhausted:exhausted|exhausted:unavailable|exhausted:disabled)
     log "both lanes exhausted/unavailable (claude=${CLAUDE_STATUS} ollama=${OLLAMA_STATUS}) — idling until a probe/liveliness recovers one."
-    exit 0 ;;
+    TICK_OUTCOME="skipped"; TICK_REASON="both_lanes_exhausted"; exit 0 ;;
 esac
 
 # --- concurrency: slots scale with the backlog (1 + ready/SCALE_PER_ISSUES, capped) ---
@@ -113,7 +113,8 @@ for _s in $(seq 1 "$CAP"); do
   eval "exec $((10 + _s))>\"$BASE/locks/slot-${_s}.lock\""
   if flock -n $((10 + _s)); then SLOT="$_s"; break; fi
 done
-if [ -z "$SLOT" ]; then log "all $CAP agent slot(s) busy — skipping."; exit 0; fi
+if [ -z "$SLOT" ]; then log "all $CAP agent slot(s) busy — skipping."; TICK_OUTCOME="skipped"; TICK_REASON="all_slots_busy"; exit 0; fi
+export WORKER_ID="$SLOT"   # so posthog_capture events tagged with this slot
 [ "$CAP" -gt 1 ] && log "slot $SLOT/$CAP (ready issues: $READY_COUNT)"
 
 # Per-branch work claim so concurrent slots never touch the same PR/issue. Re-opening fd 10
@@ -122,6 +123,72 @@ claim_branch() {  # $1=branch -> 0 claimed, 1 busy
   exec 10>"$BASE/locks/br-$(echo "$1" | tr '/' '_').lock"
   flock -n 10
 }
+
+# --- tick outcome → PostHog ---
+# One tick_outcome event per tick lifecycle, emitted via an EXIT trap so every code path is
+# captured (success, skip, error, kill). Vars are set by the caller before `exit`; the trap
+# reads them, builds a JSON dict, and fires posthog_capture. Telemetry is best-effort —
+# posthog_capture is fire-and-forget and never breaks a tick.
+TICK_T0="$SECONDS"                       # wall-clock seconds since shell start
+TICK_OUTCOME="unknown"                   # dispatched | skipped | error | nothing_to_do
+TICK_REASON=""                           # free-form: "both_lanes_exhausted", "no_ready", "all_slots_busy", "paused", "all_prs_clean", "mode_start", "mode_fix", "mode_review", "mode_merge", "mode_selfreview", "mode_rebase", "mode_depfix", "mode_revise", "escalate"
+TICK_MODE=""                             # mode name if a Claude run was dispatched
+TICK_ISSUE=""                            # issue number dispatched
+TICK_PR=""                               # PR number processed
+TICK_BRANCH=""                           # branch
+TICK_LANE="${LANE:-}"                    # claude | ollama
+TICK_MODEL="${AGENT_MODEL:-${AGENT_TIER:-}}"  # model or tier alias
+TICK_ROUTE_REASON="${ROUTE_REASON:-}"    # healthy | fallback | degraded
+TICK_CLAUDE_PCT="${CLAUDE_PCT:-}"
+TICK_OLLAMA_PCT="${OLLAMA_PCT:-}"
+TICK_READY_COUNT="${READY_COUNT:-0}"
+TICK_CAP="${CAP:-1}"
+export TICK_OUTCOME TICK_REASON TICK_MODE TICK_ISSUE TICK_PR TICK_BRANCH TICK_LANE TICK_MODEL TICK_ROUTE_REASON TICK_CLAUDE_PCT TICK_OLLAMA_PCT TICK_READY_COUNT TICK_CAP
+
+# Build and emit the tick_outcome event. Reads the var block above; called once by the EXIT
+# trap below so every code path (success, skip, error, kill) emits exactly one event.
+#
+# We also write the event to a local NDJSON mirror at $LOGDIR/tick-outcomes.ndjson in ADDITION
+# to PostHog — the local file is the source of truth for FAILURE MODES PostHog can't see (no key,
+# network down, project rate-limited). Inspect with:
+#   tail -f /home/lem/agent-pipeline/logs/tick-outcomes.ndjson
+#   jq -c 'select(.tick_outcome=="dispatched")' .../tick-outcomes.ndjson
+TICK_OUTCOMES_LOG="${LOGDIR}/tick-outcomes.ndjson"
+emit_tick_outcome() {
+  local dur_ms=$(( (SECONDS - TICK_T0) * 1000 ))
+  local ts; ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local payload
+  payload="$(__TICK_DUR_MS="$dur_ms" __TICK_TS="$ts" python3 -c '
+import json, os
+out = {
+  "tick_outcome": os.environ.get("TICK_OUTCOME","unknown"),
+  "reason":       os.environ.get("TICK_REASON",""),
+  "mode":         os.environ.get("TICK_MODE",""),
+  "slot":         os.environ.get("WORKER_ID","") or os.environ.get("SLOT",""),
+  "ready_count":  int(os.environ.get("TICK_READY_COUNT","0") or 0),
+  "cap":          int(os.environ.get("TICK_CAP","1") or 1),
+  "lane":         os.environ.get("TICK_LANE",""),
+  "model":        os.environ.get("TICK_MODEL",""),
+  "route_reason": os.environ.get("TICK_ROUTE_REASON",""),
+  "claude_pct":   int(os.environ.get("TICK_CLAUDE_PCT","0") or 0),
+  "ollama_pct":   int(os.environ.get("TICK_OLLAMA_PCT","0") or 0),
+  "issue_number": int(os.environ.get("TICK_ISSUE","0") or 0),
+  "pr_number":    int(os.environ.get("TICK_PR","0") or 0),
+  "branch":       os.environ.get("TICK_BRANCH",""),
+  "duration_ms":  int(os.environ.get("__TICK_DUR_MS","0") or 0),
+  "ts":           os.environ.get("__TICK_TS",""),
+}
+print(json.dumps(out))
+' 2>/dev/null)" || payload="{\"tick_outcome\":\"error\"}"
+  # Mirror to local NDJSON so the owner can inspect tick outcomes even when PostHog is down.
+  [ -n "$TICK_OUTCOMES_LOG" ] && echo "$payload" >> "$TICK_OUTCOMES_LOG" 2>/dev/null || true
+  posthog_capture "tick_outcome" "agent-pipeline" "$payload" 2>/dev/null || true
+}
+
+# Emit on every exit (success, explicit exit, error). The trap fires LAST; if a code path already
+# called emit_tick_outcome inline, the trap call is a no-op for repeat emission (PostHog accepts
+# duplicates — the duplicate is harmless and the inline call gives us a single clean event).
+trap '__TICK_DUR_MS=$(( (SECONDS - TICK_T0) * 1000 )); emit_tick_outcome' EXIT
 
 # --- helpers ---
 epoch() { date -d "$1" +%s 2>/dev/null || echo 0; }
@@ -394,7 +461,21 @@ add_worktree() {  # $1=branch  $2=base(ref)  -> path on stdout
     git -C "$REPO" worktree add "$wt" "origin/$branch" >/dev/null 2>&1
     git -C "$wt" checkout -B "$branch" "origin/$branch" >/dev/null 2>&1
   else
+    # Origin ref missing. If a stale local branch already exists (tip is on $base), `git worktree
+    # add -b` would silently fail and cd would break — delete the stale ref first.
+    if git -C "$REPO" show-ref --verify --quiet "refs/heads/$branch"; then
+      local tip
+      tip="$(git -C "$REPO" rev-parse --verify "$branch" 2>/dev/null)" || tip=""
+      if [ -n "$tip" ] && git -C "$REPO" merge-base --is-ancestor "$tip" "$base" 2>/dev/null; then
+        log "add_worktree: deleting stale local $branch (tip on $base) before creating worktree." >&2
+        git -C "$REPO" branch -D "$branch" >/dev/null 2>&1 || true
+      fi
+    fi
     git -C "$REPO" worktree add -b "$branch" "$wt" "$base" >/dev/null 2>&1
+  fi
+  if [ ! -d "$wt" ]; then
+    log "add_worktree: FAILED to create $wt (branch=$branch base=$base). Check git worktree list." >&2
+    return 1
   fi
   echo "$wt"
 }
@@ -433,6 +514,74 @@ run_claude() {  # $1=worktree  $2=prompt  $3=model (optional; empty = CLI defaul
 # --- state machine ---
 git -C "$REPO" fetch origin --prune >/dev/null 2>&1
 
+# ---- STALE-CLAIM REAPER: return abandoned agent:working issues to the queue ----------------
+# `agent:working` is stamped the moment a run STARTS, and select_next_issue excludes it. So any run
+# that dies before opening a PR — a killed worktree, a 400 from the proxy, a timeout, a reboot —
+# parks its issue in a state nothing ever leaves. There is no other exit from that state: on
+# 2026-07-29/30 sixteen issues accumulated there and the queue drained to zero while every tick
+# cheerfully logged "Pipeline idle" with both lanes green. Silence looked identical to done.
+#
+# An issue is reaped only when ALL of these hold, so live work is never yanked out from under a run:
+#   - no OPEN PR is linked to it (pr_for_issue) — a PR means the run got far enough to hand off
+#   - its branch claim lock is FREE — a concurrent slot working it holds that flock
+#   - it has not been touched for STALE_CLAIM_MINUTES (label edits count as touches)
+# Bounded: after STALE_CLAIM_MAX_REQUEUES round trips the issue is parked for a human instead of
+# cycling forever on whatever keeps killing it.
+STALE_CLAIM_MINUTES="${STALE_CLAIM_MINUTES:-120}"
+STALE_CLAIM_MAX_REQUEUES="${STALE_CLAIM_MAX_REQUEUES:-3}"
+reap_stale_claims() {
+  local now cutoff n upd pr lockf cnt drop
+  now="$(date +%s)"
+  cutoff=$(( now - STALE_CLAIM_MINUTES * 60 ))
+  for n in $(gh issue list --repo "$SLUG" --state open --limit 100 --label "agent:working" \
+               --json number,labels \
+               --jq '.[] | select((.labels|map(.name)) | (index("needs-human")|not) and (index("agent:blocked")|not)) | .number' 2>/dev/null); do
+    upd="$(gh issue view "$n" --repo "$SLUG" --json updatedAt --jq .updatedAt 2>/dev/null)"
+    [ -n "$upd" ] || continue
+    [ "$(epoch "$upd")" -lt "$cutoff" ] || continue
+    pr="$(pr_for_issue "$n" 2>/dev/null)"
+    # A PR means the run handed off — clear any requeue history so a future stall starts from zero
+    # rather than inheriting a count from a problem that has since been solved.
+    [ -n "$pr" ] && { rm -f "$BASE/state/requeue-$n.count"; continue; }
+    # A slot actively working this issue holds the branch claim. Probe it on a throwaway fd so we
+    # never disturb this tick's own claim on fd 10. Both branch prefixes the pipeline creates.
+    for lockf in "$BASE/locks/br-feature_claude-issue-$n.lock" "$BASE/locks/br-fix_claude-issue-$n.lock"; do
+      [ -e "$lockf" ] || continue
+      exec 9>"$lockf"
+      if ! flock -n 9; then exec 9>&-; continue 2; fi
+      exec 9>&-
+    done
+    cnt="$(cat "$BASE/state/requeue-$n.count" 2>/dev/null || echo 0)"
+    cnt=$((cnt + 1))
+    if [ "$cnt" -gt "$STALE_CLAIM_MAX_REQUEUES" ]; then
+      log "REAPER: issue #$n abandoned $((cnt - 1))x with no PR — parking for a human."
+      gh issue edit "$n" --repo "$SLUG" --add-label needs-human --add-label agent:blocked \
+        --add-assignee "$ASSIGNEE" --remove-label agent:working >/dev/null 2>&1
+      gh issue comment "$n" --repo "$SLUG" --body "🧹 Pipeline reaper: this issue was claimed \`agent:working\` and abandoned without a PR $((cnt - 1)) times (limit \`STALE_CLAIM_MAX_REQUEUES\`). Something is killing the run before it can hand off, so re-queueing it again would just burn slots. Parked for a human — check \`$LOGDIR\` for the failing run." >/dev/null 2>&1
+      posthog_capture "issue_reaped" "agent-pipeline" "{\"issue_number\":$n,\"action\":\"parked\",\"requeue_count\":$((cnt - 1))}" 2>/dev/null || true
+      continue
+    fi
+    # Drop the stale ai:* routing labels too: they describe the lane of the run that DIED, and
+    # leaving them makes the next run's labels a lie about which provider did the work. Read the
+    # list OFF THE ISSUE instead of hardcoding it — `gh issue edit` rejects the ENTIRE edit if any
+    # named label is unknown to the repo, so one drifted name in a static list silently undoes the
+    # whole requeue. That is not hypothetical: a hardcoded 'ai:claude' (the real label is
+    # 'ai:claude-subscription') failed exactly this way in testing, leaving the issue claimed.
+    drop="$(gh issue view "$n" --repo "$SLUG" --json labels \
+              --jq '[.labels[].name | select(startswith("ai:"))] | join(",")' 2>/dev/null)"
+    if ! gh issue edit "$n" --repo "$SLUG" --add-label agent:ready --remove-label agent:working \
+           ${drop:+--remove-label "$drop"} >/dev/null 2>&1; then
+      log "REAPER: label update FAILED for issue #$n — leaving the claim in place for the next tick."
+      continue
+    fi
+    # Count only a requeue that actually landed, so a failing edit can't exhaust the retry budget.
+    echo "$cnt" > "$BASE/state/requeue-$n.count"
+    log "REAPER: issue #$n stale in agent:working since $upd with no PR — returned to agent:ready (requeue $cnt/$STALE_CLAIM_MAX_REQUEUES)."
+    posthog_capture "issue_reaped" "agent-pipeline" "{\"issue_number\":$n,\"action\":\"requeued\",\"requeue_count\":$cnt}" 2>/dev/null || true
+  done
+}
+[ "$DRY_RUN" = "1" ] || reap_stale_claims
+
 # ---- PRIORITY LANE: Dependabot CI failures (labeled agent:depfix by the router workflow) ----
 # Handled before roadmap work so dependency PRs get unblocked fast. One Claude call per tick.
 DEPFIX="$(gh pr list --repo "$SLUG" --state open --label "agent:depfix" \
@@ -444,6 +593,7 @@ if [ -n "$DEPFIX" ]; then
   CLAUDE_TRIES="$(git -C "$REPO" log "origin/$DBR" --grep='Co-Authored-By: Claude' --format=%h 2>/dev/null | wc -l | tr -d ' ')"
   if [ "${CLAUDE_TRIES:-0}" -ge 3 ]; then
     log "Dependabot PR #$DPR still failing after $CLAUDE_TRIES Claude attempts — escalating."
+    TICK_OUTCOME="escalated"; TICK_REASON="depfix_exhausted"; TICK_PR="$DPR"; TICK_BRANCH="$DBR"
     if [ "$DRY_RUN" != "1" ]; then
       gh pr edit "$DPR" --repo "$SLUG" --add-label needs-human --remove-label agent:depfix >/dev/null 2>&1
       gh issue comment "$DPR" --repo "$SLUG" --body "🚧 Claude couldn't fix CI after $CLAUDE_TRIES attempts on this Dependabot PR. Assigning @$ASSIGNEE." >/dev/null 2>&1
@@ -452,6 +602,7 @@ if [ -n "$DEPFIX" ]; then
     exit 0
   fi
   log "Dependabot PR #$DPR failing — invoking depfix (priority lane, try $((CLAUDE_TRIES+1)))."
+  TICK_OUTCOME="dispatched"; TICK_REASON="mode_depfix"; TICK_MODE="depfix"; TICK_PR="$DPR"; TICK_BRANCH="$DBR"
   if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would run MODE=depfix for #$DPR ($DBR)."; exit 0; fi
   if ! claim_branch "$DBR"; then
     log "Dependabot PR #$DPR already claimed by another slot — moving on."
@@ -561,8 +712,9 @@ for MPR in $(gh pr list --repo "$SLUG" --state open --label "agent:working" \
   if [ "$(epoch "$MBEST")" -lt "$(epoch "$MHD")" ] \
      && [ "$(( $(date +%s) - $(epoch "$MHD") ))" -lt "${REVIEW_GRACE_SECONDS:-1200}" ]; then continue; fi
   # Last gate before any merge: closing an issue must not drop a declared later phase.
-  phase_guard_ok "$MPR" || exit 0
+  phase_guard_ok "$MPR" || { TICK_OUTCOME="skipped"; TICK_REASON="phase_guard_parked"; TICK_PR="$MPR"; exit 0; }
   log "MERGE-READY FAST PATH: PR #$MPR fully passes the gate — merging ahead of revise/fix work."
+  TICK_OUTCOME="dispatched"; TICK_REASON="mode_merge_fastpath"; TICK_MODE="merge"; TICK_PR="$MPR"
   if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would fast-path merge #$MPR."; exit 0; fi
   gh pr merge --auto "$(gh pr view "$MPR" --repo "$SLUG" --json url --jq .url)" >/dev/null 2>&1 \
     && gh pr comment "$MPR" --repo "$SLUG" --body "✅ CI green, review satisfied & all threads resolved — merging (fast path)." >/dev/null 2>&1
@@ -581,6 +733,7 @@ for RJSON in $(gh pr list --repo "$SLUG" --state open --label "agent:revise" \
     continue
   fi
   log "PR #$RPR — owner requested changes (agent:revise) — implementing their feedback."
+  TICK_OUTCOME="dispatched"; TICK_REASON="mode_revise"; TICK_MODE="revise"; TICK_PR="$RPR"; TICK_BRANCH="$RBR"
   if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would run MODE=revise for #$RPR ($RBR)."; exit 0; fi
   WT="$(add_worktree "$RBR" origin/main)"
   export MODE=revise PR="$RPR" BRANCH="$RBR" WORKTREE="$WT"
@@ -615,6 +768,7 @@ for PR_JSON in $(gh pr list --repo "$SLUG" --state open --label "agent:working" 
     if git -C "$WT" rebase origin/main >/dev/null 2>&1; then
       if git -C "$WT" push --force-with-lease origin "$BRANCH" >/dev/null 2>&1; then
         log "PR #$PR — scripted clean rebase onto main (no Claude); CI/Copilot re-triggered."
+        TICK_OUTCOME="dispatched"; TICK_REASON="mode_rebase_scripted"; TICK_MODE="rebase"; TICK_PR="$PR"; TICK_BRANCH="$BRANCH"
         exit 0
       fi
       log "PR #$PR — scripted rebase clean but push rejected — falling back to Claude MODE=rebase."
@@ -622,6 +776,7 @@ for PR_JSON in $(gh pr list --repo "$SLUG" --state open --label "agent:working" 
       git -C "$WT" rebase --abort >/dev/null 2>&1
       log "PR #$PR — real conflicts — invoking Claude MODE=rebase."
     fi
+    TICK_OUTCOME="dispatched"; TICK_REASON="mode_rebase"; TICK_MODE="rebase"; TICK_PR="$PR"; TICK_BRANCH="$BRANCH"
     export MODE=rebase PR ISSUE WORKTREE="$WT" BRANCH
     run_claude "$WT" "Read $RUNBOOK and follow MODE=rebase. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH."
     exit 0
@@ -642,6 +797,7 @@ for PR_JSON in $(gh pr list --repo "$SLUG" --state open --label "agent:working" 
     if ! claim_branch "$BRANCH"; then log "PR #$PR claimed by another slot — trying next."; continue; fi
     if [ "${ATTEMPTS:-1}" -ge "$MAX_FIX_ATTEMPTS" ]; then
       log "PR #$PR failing after $ATTEMPTS attempts — escalating to human."
+      TICK_OUTCOME="escalated"; TICK_REASON="fix_exhausted"; TICK_PR="$PR"; TICK_BRANCH="$BRANCH"
       if [ "$DRY_RUN" != "1" ]; then
         gh pr edit "$PR" --repo "$SLUG" --add-label needs-human --add-label agent:blocked --remove-label agent:working >/dev/null 2>&1
         gh pr ready --undo "$PR" --repo "$SLUG" >/dev/null 2>&1
@@ -653,6 +809,7 @@ for PR_JSON in $(gh pr list --repo "$SLUG" --state open --label "agent:working" 
       exit 0
     fi
     log "PR #$PR CI failing (attempt $ATTEMPTS) — invoking fix."
+    TICK_OUTCOME="dispatched"; TICK_REASON="mode_fix"; TICK_MODE="fix"; TICK_PR="$PR"; TICK_BRANCH="$BRANCH"
     WT="$(add_worktree "$BRANCH" origin/main)"
     export MODE=fix PR ISSUE WORKTREE="$WT" BRANCH ATTEMPTS
     run_claude "$WT" "Read $RUNBOOK and follow MODE=fix. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH ATTEMPTS=$ATTEMPTS." "$(model_for_issue "$ISSUE")"
@@ -663,6 +820,7 @@ for PR_JSON in $(gh pr list --repo "$SLUG" --state open --label "agent:working" 
   if [ "${UNRESOLVED:-0}" -gt 0 ]; then
     if ! claim_branch "$BRANCH"; then log "PR #$PR claimed by another slot — trying next."; continue; fi
     log "PR #$PR — $UNRESOLVED unresolved Copilot thread(s) — invoking review-address."
+    TICK_OUTCOME="dispatched"; TICK_REASON="mode_review"; TICK_MODE="review"; TICK_PR="$PR"; TICK_BRANCH="$BRANCH"
     WT="$(add_worktree "$BRANCH" origin/main)"
     export MODE=review PR ISSUE WORKTREE="$WT" BRANCH
     run_claude "$WT" "Read $RUNBOOK and follow MODE=review. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH." "$(model_for_issue "$ISSUE")"
@@ -703,7 +861,7 @@ for PR_JSON in $(gh pr list --repo "$SLUG" --state open --label "agent:working" 
           log "PR #$PR — Copilot review overdue; REVIEW_FALLBACK=hold — waiting."
           continue ;;
         merge)
-          phase_guard_ok "$PR" || exit 0
+          phase_guard_ok "$PR" || { TICK_OUTCOME="skipped"; TICK_REASON="phase_guard_parked"; TICK_PR="$PR"; exit 0; }
           log "PR #$PR — Copilot review overdue; REVIEW_FALLBACK=merge — merging with warning."
           if [ "$DRY_RUN" != "1" ]; then
             gh pr merge --auto "$(gh pr view "$PR" --repo "$SLUG" --json url --jq .url)" >/dev/null 2>&1 \
@@ -720,6 +878,7 @@ for PR_JSON in $(gh pr list --repo "$SLUG" --state open --label "agent:working" 
     else
       if ! claim_branch "$BRANCH"; then log "PR #$PR claimed by another slot — trying next."; continue; fi
       log "PR #$PR — green, no fresh review — invoking Claude adversarial review."
+      TICK_OUTCOME="dispatched"; TICK_REASON="mode_selfreview"; TICK_MODE="selfreview"; TICK_PR="$PR"; TICK_BRANCH="$BRANCH"
       if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would run MODE=selfreview for #$PR."; exit 0; fi
       WT="$(add_worktree "$BRANCH" origin/main)"
       export MODE=selfreview PR ISSUE WORKTREE="$WT" BRANCH
@@ -729,9 +888,10 @@ for PR_JSON in $(gh pr list --repo "$SLUG" --state open --label "agent:working" 
   fi
 
   # 5) Green + fresh review (Copilot or Claude marker) + all threads resolved -> merge.
-  # Same last gate as the fast path: never close an issue that still declares a later phase.
-  phase_guard_ok "$PR" || exit 0
+  # Same last gate as the fast path: never close an issue that still declares a declared later phase.
+  phase_guard_ok "$PR" || { TICK_OUTCOME="skipped"; TICK_REASON="phase_guard_parked"; TICK_PR="$PR"; TICK_BRANCH="$BRANCH"; exit 0; }
   log "PR #$PR — merge gate satisfied. Merging."
+  TICK_OUTCOME="dispatched"; TICK_REASON="mode_merge"; TICK_MODE="merge"; TICK_PR="$PR"; TICK_BRANCH="$BRANCH"
   if [ "$DRY_RUN" != "1" ]; then
     gh pr merge --auto "$(gh pr view "$PR" --repo "$SLUG" --json url --jq .url)" >/dev/null 2>&1 \
       && gh pr comment "$PR" --repo "$SLUG" --body "✅ CI green, review satisfied & all threads resolved — merging." >/dev/null 2>&1
@@ -749,12 +909,12 @@ fi
 # prioritize triage/merge/answer work (already done above). Hold new starts until a lane recovers.
 if [ "${DEGRADED:-0}" = "1" ]; then
   log "DEGRADED: holding new issue start (both lanes constrained). Triage/merge/answer lanes ran."
-  exit 0
+  TICK_OUTCOME="skipped"; TICK_REASON="degraded_hold_new_start"; exit 0
 fi
 ISSUE="$(select_next_issue)"
 if [ -z "$ISSUE" ]; then
   log "No agent:ready issues remaining. Pipeline idle."
-  exit 0
+  TICK_OUTCOME="nothing_to_do"; TICK_REASON="no_ready"; exit 0
 fi
 RISK="$(gh issue view "$ISSUE" --repo "$SLUG" --json labels \
         | jq -r '[.labels[].name|select(startswith("risk:"))|sub("risk:";"")]|join(" ")')"
@@ -767,12 +927,22 @@ fi
 MODEL="$(model_for_issue "$ISSUE")"
 log "Starting issue #$ISSUE (risk=$RISK${MODEL:+, model=$MODEL}) on $BRANCH."
 posthog_capture "issue_queued" "agent-pipeline" "{\"issue_number\":$ISSUE,\"issue_url\":\"https://github.com/$SLUG/issues/$ISSUE\",\"worker_id\":\"${WORKER_ID:-}\",\"issue_priority\":\"${ISSUE_PRIORITY:-}\",\"issue_type\":\"start\"}" 2>/dev/null || true
+TICK_OUTCOME="dispatched"; TICK_REASON="mode_start"; TICK_MODE="start"; TICK_ISSUE="$ISSUE"; TICK_BRANCH="$BRANCH"
 if [ "$DRY_RUN" = "1" ]; then
   log "DRY_RUN: would create worktree $BRANCH and run MODE=start for #$ISSUE."
   exit 0
 fi
 gh issue edit "$ISSUE" --repo "$SLUG" --add-label agent:working --remove-label agent:ready >/dev/null 2>&1
 WT="$(add_worktree "$BRANCH" origin/main)"
+# add_worktree returning empty means it could not build the tree. Handing that to run_claude would
+# `cd ""` — i.e. run the agent in $HOME, against the wrong repo — while the issue sits claimed as
+# agent:working. Give the claim straight back instead; the reaper is the backstop, not the plan.
+if [ -z "$WT" ] || [ ! -d "$WT" ]; then
+  log "Issue #$ISSUE — worktree creation failed for $BRANCH; returning it to agent:ready."
+  gh issue edit "$ISSUE" --repo "$SLUG" --add-label agent:ready --remove-label agent:working >/dev/null 2>&1
+  TICK_OUTCOME="failed"; TICK_REASON="worktree_create_failed"
+  exit 1
+fi
 export MODE=start ISSUE WORKTREE="$WT" BRANCH RISK
 run_claude "$WT" "Read $RUNBOOK and follow MODE=start. ISSUE=$ISSUE BRANCH=$BRANCH RISK=$RISK WORKTREE=$WT." "$MODEL"
 exit 0
