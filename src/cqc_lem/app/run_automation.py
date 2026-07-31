@@ -899,8 +899,12 @@ def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = No
 
 
 def react_to_post_inline(driver, wait, card, post_content: str = None, comment_text: str = None,
-                         user_id: int = None) -> bool:
+                         user_id: int = None) -> Optional[bool]:
     """Leave a single reaction on the card's post via the SDUI reaction fly-out.
+
+    Three-valued on purpose: True = a reaction registered, False = we tried and failed, None = the
+    post already carried our reaction (a no-op, not a failure). None is falsy, so callers that only
+    care whether a reaction landed keep working unchanged.
 
     The 2026 SDUI reaction controls carry obfuscated hashed classes, so the stable anchors are
     aria-labels (verified live): the per-card 'Open reactions menu' trigger, the 'Reaction button
@@ -912,7 +916,7 @@ def react_to_post_inline(driver, wait, card, post_content: str = None, comment_t
         state = find_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label^='Reaction button state']")],
                            "Reaction state", parent_element=card, required=False, visible_only=True, user_id=user_id)
         if state is not None and "no reaction" not in (state.get_attribute("aria-label") or "").lower():
-            return False  # already reacted on this post
+            return None  # already reacted on this post — a no-op, not a failure
 
         reaction = choose_post_reaction(post_content, comment_text)
         # The reaction fly-out is hover-revealed off the card's primary Like/React toggle. Hover it
@@ -1177,8 +1181,15 @@ def _engage_card(driver, wait, my_profile: LinkedInProfile, user_id: int, card, 
     # the old post-comment reaction attempt silently failed. Skip our OWN posts. Non-fatal — a
     # missed reaction never blocks the comment.
     if not _author_is_me(author, my_profile):
-        if react_to_post_inline(driver, wait, card, post_content=content,
-                                comment_text=comment_text, user_id=user_id):
+        outcome = react_to_post_inline(driver, wait, card, post_content=content,
+                                       comment_text=comment_text, user_id=user_id)
+        if outcome is None:
+            # Already reacted is a no-op, not a failure. Reporting it as one made a benign skip
+            # indistinguishable from a broken selector, and now that repeated warnings escalate it
+            # would file a defect for working behaviour.
+            log_debug("Post already carried our reaction — skipping", user_id=user_id,
+                      action_type="comment")
+        elif outcome:
             mark_post_reacted(user_id, key)
         else:
             log_warning("Could not leave a reaction on post", user_id=user_id, action_type="comment")

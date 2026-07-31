@@ -109,8 +109,28 @@ _PRIMITIVE_TYPES = (bool, str, bytes, int, float)
 _CAPTURE_EXCEPTIONS = (os.getenv("POSTHOG_EXCEPTION_CAPTURE", "") or "").strip().lower() not in (
     "0", "false", "no", "off")
 
+# Recurrence escalation (see log_escalation.py). Imported defensively: a partial deploy that lacks
+# the module must degrade to the pre-escalation behaviour, not break every log call in the app.
+try:
+    from cqc_lem.utilities import log_escalation
+    _ESCALATION_AVAILABLE = True
+except Exception:  # pragma: no cover - import guard
+    log_escalation = None  # type: ignore[assignment]
+    _ESCALATION_AVAILABLE = False
 
-def _capture(exc: Optional[BaseException], message: str, level: str, context: dict) -> None:
+
+def _caller_origin() -> str:
+    """`module.function` of whoever called the public log helper — part of the escalation key so a
+    generic message emitted from two places stays two problems."""
+    try:
+        frame = sys._getframe(2)
+        return f"{frame.f_globals.get('__name__', '?')}.{frame.f_code.co_name}"
+    except Exception:
+        return "?"
+
+
+def _capture(exc: Optional[BaseException], message: str, level: str, context: dict,
+             fingerprint: Optional[str] = None) -> None:
     """Forward a logged exception to PostHog Error Tracking. Imported lazily because
     observability.py imports this module — and swallowing everything (including a caller's context
     key colliding with a named argument), since a telemetry failure must never turn a logged error
@@ -122,6 +142,8 @@ def _capture(exc: Optional[BaseException], message: str, level: str, context: di
         props = dict(context)
         props["log_message"] = message
         props["log_level"] = level
+        if fingerprint:
+            props["fingerprint"] = fingerprint
         capture_exception(exc, **props)
     except Exception:
         pass  # lgtm[py/empty-except] Best-effort: avoid recursion if the observability backend is down.
@@ -166,10 +188,33 @@ def log_warning(
 ) -> None:
     """Log at WARNING level with optional structured context. Pass exc= to capture the
     exception's stack trace (via exc_info) instead of passing it as a raw attribute."""
+    escalation = None
+    if _ESCALATION_AVAILABLE:
+        # note() swallows its own errors, but this is the logging path: if escalation ever raises,
+        # every warning in the app would raise with it. Belt and braces.
+        try:
+            escalation = log_escalation.note(message, "WARNING", _caller_origin(), context)
+        except Exception:  # pragma: no cover - defensive
+            escalation = None
+
+    if escalation is None:
+        # Fail-open path: byte-identical to the pre-escalation behaviour.
+        if exc is not None:
+            logger.warning(message, exc_info=exc, extra=_extra(**context))
+        else:
+            logger.warning(message, extra=_extra(**context))
+        return
+
+    # Crossed the threshold: emit at ERROR so it reaches PostHog Logs even at POSTHOG_LOG_LEVEL=ERROR
+    # and lands in the `logs` table as severity `error`, then file it as a grouped $exception.
+    escalated = _extra(**context, escalated_from="WARNING",
+                       occurrence_count=escalation["count"],
+                       log_fingerprint=escalation["fingerprint"])
     if exc is not None:
-        logger.warning(message, exc_info=exc, extra=_extra(**context))
+        logger.error(message, exc_info=exc, extra=escalated)
     else:
-        logger.warning(message, extra=_extra(**context))
+        logger.error(message, extra=escalated)
+    log_escalation.escalate(escalation, context, exc=exc)
 
 
 def log_error(

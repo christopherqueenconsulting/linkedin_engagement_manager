@@ -380,7 +380,9 @@ def init_celery_tracing(*args, **kwargs):
         except ImportError:
             logger.debug("Celery tracing dependencies not found. Tracing Disabled")
     else:
-        myprint("Tracing is disabled")
+        # DEBUG, not INFO: this is a configuration statement, not an event, and it fires once per
+        # worker process init — 354 identical rows in 48h of PostHog Logs, all saying nothing changed.
+        logger.debug("Tracing is disabled")
 
 
 def get_queue_metric(name_space: str = 'cqc-lem/celery_queue/celery', metric_name: str = 'QueueLength',

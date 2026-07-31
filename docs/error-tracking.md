@@ -15,6 +15,7 @@ issue id ↔ one GitHub issue".
 |---|---|
 | Any Python process | `posthog.enable_exception_autocapture` — set in `utilities/observability.py`, catches UNCAUGHT exceptions via the excepthook |
 | Anything logged with `exc=` | `log_error` / `log_critical` also call `capture_exception` (`utilities/logger.py`) |
+| A **repeated** `log_warning` | `utilities/log_escalation.py` — see [Recurrence escalation](#recurrence-escalation-once-is-a-warning-repeatedly-is-a-defect) |
 | Celery tasks | `task_failure` + `task_retry` handlers in `app/my_celery.py`, with `task_name`, `task_id` and the dispatched `user_id` |
 | FastAPI routes | the unhandled-exception branch of `observability_middleware` in `api/main.py`, with `route` + `method` |
 | The SPA | `posthog-js` `capture_exceptions` (unhandled errors + rejections), plus `captureException()` from `ui/src/utils/analytics.ts` for anything the app catches itself |
@@ -38,6 +39,82 @@ Kill switches (both default ON, both read at import):
 | `POSTHOG_EXCEPTION_CAPTURE=false` | `log_error`/`log_critical` stop forwarding |
 
 With no `POSTHOG_API_KEY` at all, `posthog.disabled` is already True and nothing is sent.
+
+## Recurrence escalation: once is a warning, repeatedly is a defect
+
+`log_warning` never called `_capture()` — only `log_error`/`log_critical` did, and only with `exc=`.
+So a warning could not become an `$exception`, could not become an Error Tracking issue, and could
+not become a GitHub issue. A LinkedIn selector that had been missing for three straight days and a
+one-off network blip were, to PostHog, the same thing: a log line nobody was paged about.
+
+The state that produced this design, measured 2026-07-31 over 48h: **2,185 `info` + 172 `warn` +
+zero `error`** rows in PostHog Logs, and **zero `$exception` events**. The daily error→issue cron ran
+every day and correctly filed nothing, because its input was empty. Meanwhile
+`Selector miss: Open reactions menu` had fired 30 times, `Inline comment post failed` 26 times, and
+`PostHog endpoint call failed` 27 times — all invisible.
+
+`utilities/log_escalation.py` counts occurrences and promotes the repeat offenders.
+
+**The dedup key.** The logger only ever sees the *interpolated* string, so volatile tokens are masked
+before hashing — URLs, emails, UUIDs, URNs, hex ids, `[...]` lists, quoted strings, bare numbers —
+then combined with the **call site** (`module.function`, never the line number: a line moving during
+an unrelated edit must not reset the counter and fork a new issue). The masking is tuned so that
+`Re-queueing orphaned connection request 41` and `... 42` are ONE problem, while
+`Selector miss: Feed sort control` and `Selector miss: Reaction state` stay TWO — they are two
+different broken selectors and collapsing them would hide one behind the other.
+
+**The counter.** Redis (`shared_redis_client()`, the same handle the 429 breaker uses), one
+non-transactional pipeline per warning. The window is **tumbling, not sliding** — `INCR` + `EXPIRE`
+is one round trip with self-expiring memory, where a true sliding window would need a sorted set and
+unbounded per-fingerprint storage. The cost is that a fault straddling a window boundary defers one
+window; that is an acceptable trade for a logging hot path.
+
+**Why 3-in-24h.** `LOG_ESCALATE_WINDOW_SECONDS` defaults to 24h to match the cron's own 24h lookback,
+so an escalation always lands inside the next cron run. It is not arbitrary: `Selector miss: Feed
+sort control` fires ~5×/day, so a 1-hour window at threshold 3 would *never* trip on exactly the
+class of slow-burn breakage this exists to catch. `LOG_ESCALATE_REPEAT_EVERY` (10) re-escalates
+periodically past the threshold so the issue's occurrence count tracks real magnitude — escalating
+exactly once per window would make every issue read "1x" regardless of whether it happened 3 times
+or 300.
+
+**Grouping is pinned explicitly.** PostHog's default fingerprint is exception type + first in-app
+stack frame. Every `Selector miss: *` is raised from the same line of `find_first`, so the default
+would collapse all of them into ONE issue. `capture_exception(..., fingerprint=...)` sets
+`$exception_fingerprint` to `lem-log:<hash>`, which is what keeps distinct breakages distinct and
+what makes grouping survive a refactor of `find_first`'s internals.
+
+**The exception object.** When the call site passed `exc=`, that real exception is reused — a genuine
+stack groups and debugs better. Otherwise a `RecurringWarning` is constructed (never raised) whose
+message is the masked text, so the PostHog issue title reads as the problem itself.
+
+**It fails open at every step.** No Redis, `LOG_ESCALATION_ENABLED=false`, an excluded prefix, or any
+internal error → `note()` returns `None` and `log_warning` behaves exactly as it did before. Two
+extra guards matter in production:
+
+- **A Redis-outage circuit.** `redis.Redis.from_url` does not connect eagerly, so a dead Redis would
+  otherwise cost the 2s `socket_connect_timeout` on *every* warning across ~400 call sites. After
+  `LOG_ESCALATE_REDIS_FAILURES` consecutive failures the process stops calling Redis until
+  `LOG_ESCALATE_REDIS_COOLDOWN_SECONDS` passes.
+- **Re-entrancy.** `capture_exception`'s own failure handler calls `log_warning`. A thread-local flag
+  makes recursion structurally impossible, and `LOG_ESCALATE_EXCLUDE` defaults to that message as a
+  second layer.
+
+**What this means when you write a call site.** A warning you emit on a benign, expected path will
+now file a defect. Log those at DEBUG instead. The pattern is `react_to_post_inline`, which used to
+return `False` both for "already reacted" (a no-op) and for genuine failure, so the caller reported a
+working skip as `Could not leave a reaction on post`; it now returns `None` for the no-op — still
+falsy, so truthiness callers are unaffected — and only real failures warn.
+
+| Env | Default | Purpose |
+|---|---|---|
+| `LOG_ESCALATION_ENABLED` | `true` | master switch; false → zero Redis calls |
+| `LOG_ESCALATE_THRESHOLD` | `3` | occurrences in the window that promote to ERROR |
+| `LOG_ESCALATE_WINDOW_SECONDS` | `86400` | tumbling window; matches the cron lookback |
+| `LOG_ESCALATE_REPEAT_EVERY` | `10` | re-escalate every Nth past the threshold (0 = once) |
+| `LOG_ESCALATE_MAX_PER_WINDOW` | `50` | ceiling across all fingerprints |
+| `LOG_ESCALATE_EXCLUDE` | capture-failure message | comma-separated never-escalate prefixes |
+| `LOG_ESCALATE_LOCAL_CAP` | `200` | per-process per-fingerprint cap on Redis calls |
+| `LOG_ESCALATE_REDIS_FAILURES` / `_COOLDOWN_SECONDS` | `3` / `300` | the outage circuit |
 
 ## Readable stack traces (source maps)
 

@@ -1833,8 +1833,13 @@ def get_ready_to_post_posts(pre_post_time: datetime = None, post_time_delta_minu
                 """,
             (yesterday, pre_post_time,))
         posts = cursor.fetchall()
-        # Print the id's ready to post
-        myprint(f"Posts ready to post: {[post[0] for post in posts]}")
+        # A non-empty poll is a real state transition worth keeping at INFO; an empty one is the
+        # scheduler idling and was 220 identical rows in 48h of PostHog Logs.
+        ready = [post[0] for post in posts]
+        if ready:
+            log_info(f"Posts ready to post: {ready}")
+        else:
+            log_debug("Posts ready to post: []")
     except mysql.connector.Error as err:
         myprint(f"Could not get ready to post posts| Error: {err}")
         posts = None
@@ -1867,7 +1872,13 @@ def get_orphaned_scheduled_posts(lookback_hours: int = 2) -> list:
             (cutoff,),
         )
         posts = cursor.fetchall()
-        myprint(f"Orphaned scheduled posts to re-queue: {[p[0] for p in posts]}")
+        # Orphans found means the queue lost work — that stays at INFO. Finding none is the healthy
+        # case and was 221 identical rows in 48h.
+        orphaned = [p[0] for p in posts]
+        if orphaned:
+            log_info(f"Orphaned scheduled posts to re-queue: {orphaned}")
+        else:
+            log_debug("Orphaned scheduled posts to re-queue: []")
     except mysql.connector.Error as err:
         myprint(f"Could not get orphaned scheduled posts | Error: {err}")
         posts = []

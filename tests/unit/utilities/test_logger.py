@@ -119,6 +119,56 @@ class TestLogLevelFunctions:
         assert extra["task_name"] == "t"
 
 
+class TestWarningEscalation:
+    """Recurring warnings become ERRORs so they can reach PostHog Error Tracking."""
+
+    def test_below_threshold_is_unchanged(self):
+        from cqc_lem.utilities import logger as mod
+
+        with patch.object(mod.log_escalation, "note", return_value=None), \
+             patch.object(mod.logger, "warning") as mock_warn, \
+             patch.object(mod.logger, "error") as mock_err:
+            mod.log_warning("still just a warning", post_id=1)
+
+        mock_warn.assert_called_once()
+        mock_err.assert_not_called()
+
+    def test_escalated_warning_is_emitted_at_error(self):
+        from cqc_lem.utilities import logger as mod
+
+        record = {"count": 3, "fingerprint": "deadbeefcafe", "display": "boom",
+                  "window": 86400, "origin": "m.f", "level": "WARNING"}
+        with patch.object(mod.log_escalation, "note", return_value=record), \
+             patch.object(mod.log_escalation, "escalate") as mock_esc, \
+             patch.object(mod.logger, "warning") as mock_warn, \
+             patch.object(mod.logger, "error") as mock_err:
+            mod.log_warning("boom", post_id=1)
+
+        mock_warn.assert_not_called()
+        mock_err.assert_called_once()
+        extra = mock_err.call_args[1]["extra"]
+        assert extra["escalated_from"] == "WARNING"
+        assert extra["occurrence_count"] == 3
+        assert extra["log_fingerprint"] == "deadbeefcafe"
+        mock_esc.assert_called_once()
+
+    def test_escalation_failure_never_breaks_logging(self):
+        from cqc_lem.utilities import logger as mod
+
+        with patch.object(mod.log_escalation, "note", side_effect=RuntimeError("redis")), \
+             patch.object(mod.logger, "warning") as mock_warn:
+            mod.log_warning("boom")  # must not raise
+
+        mock_warn.assert_called_once()  # falls back to the plain warning
+
+    def test_capture_forwards_fingerprint(self):
+        from cqc_lem.utilities import logger as mod
+
+        with patch("cqc_lem.utilities.observability.capture_exception") as cap:
+            mod._capture(ValueError("x"), "msg", "ERROR", {}, fingerprint="lem-log:abc")
+        assert cap.call_args[1]["fingerprint"] == "lem-log:abc"
+
+
 # ---------------------------------------------------------------------------
 # log_error / log_critical
 # ---------------------------------------------------------------------------
