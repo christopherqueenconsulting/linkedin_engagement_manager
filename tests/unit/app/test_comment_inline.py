@@ -103,7 +103,10 @@ class TestReactToPostInline:
              patch(f"{_RA}.find_first", return_value=_state("Reaction button state: Celebrate reaction")), \
              patch(f"{_RA}.click_first") as cf:
             ok = ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
-        assert ok is False
+        # None, not False: already-reacted is a no-op, and reporting it as a failure made a benign
+        # skip indistinguishable from a broken selector. Still falsy, so truthiness callers are safe.
+        assert ok is None
+        assert not ok
         cpr.assert_not_called()      # no AI spend when we've already reacted
         cf.assert_not_called()       # and we never open the menu
 

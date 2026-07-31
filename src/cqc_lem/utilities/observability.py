@@ -335,7 +335,7 @@ def current_llm_attribution() -> Tuple[Optional[int], Optional[str]]:
 # a task or a request fails.
 
 def capture_exception(exc: Optional[BaseException] = None, user_id: Optional[int] = None,
-                      **context) -> None:
+                      fingerprint: Optional[str] = None, **context) -> None:
     """Send one caught exception to PostHog Error Tracking with LEM's context on it.
 
     `posthog.capture_exception` is idempotent per exception INSTANCE, so a task that logs
@@ -354,6 +354,13 @@ def capture_exception(exc: Optional[BaseException] = None, user_id: Optional[int
         if user_id is None:
             user_id = task_user_id
         properties["user_id"] = user_id
+        # Explicit grouping override. PostHog's default fingerprint is exception type + first in-app
+        # stack frame, so every escalated warning raised from the same helper (e.g. find_first) would
+        # otherwise collapse into ONE issue — "Feed sort control" and "Open reactions menu" are
+        # different breakages and have to stay different issues. `$`-prefixed keys aren't valid
+        # Python identifiers, hence a named parameter rather than a **context key.
+        if fingerprint:
+            properties["$exception_fingerprint"] = fingerprint
         posthog.capture_exception(
             exc,
             distinct_id=str(user_id if user_id is not None else "system"),
