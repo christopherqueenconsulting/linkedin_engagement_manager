@@ -332,8 +332,8 @@ def comment_on_post(self, user_id: int, post_link: str, comment_text: str):
                                      '//button[contains(@class, "comments-comment-box__submit-button--cr")]',
                                      "Clicking Post Button", max_retry=1, use_action_chain=True)
 
-            myprint(f"Added Comment via Post Button")
-            method_result = f"Added Comment via Post Button"
+            myprint("Added Comment via Post Button")
+            method_result = "Added Comment via Post Button"
 
             # Promote the claim to 'commented' and record the log.
             mark_post_commented(user_id, post_link)
@@ -347,8 +347,8 @@ def comment_on_post(self, user_id: int, post_link: str, comment_text: str):
             # Update database with record of comment to this post
             insert_new_log(user_id=user_id, action_type=LogActionType.COMMENT, result=LogResultType.FAILURE,
                            post_url=post_link, message=comment_text)
-            myprint(f"Added Comment via return key. This might not have worked")
-            method_result = f"Added Comment via return key. This might not have worked"
+            myprint("Added Comment via return key. This might not have worked")
+            method_result = "Added Comment via return key. This might not have worked"
 
         try:
 
@@ -395,8 +395,8 @@ def comment_on_post(self, user_id: int, post_link: str, comment_text: str):
                         button_to_click).click().perform()
                     wait_for_ajax(driver)
                     time.sleep(2)
-                    myprint(f"Added Post Reaction")
-                    method_result += f" | Added Post Reaction"
+                    myprint("Added Post Reaction")
+                    method_result += " | Added Post Reaction"
                     break  # Exit loop if click is successful
                 except Exception as e:
                     if attempt < max_retries - 1:
@@ -4487,7 +4487,7 @@ def generate_and_post_comment(driver, wait, post_link, my_profile: LinkedInProfi
 def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: int = None, future_forward: int = 60):
     global stop_all_thread
 
-    myprint(f"Starting Profile Viewer DMs")
+    myprint("Starting Profile Viewer DMs")
 
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Profile Viewer DMs")
@@ -4692,7 +4692,7 @@ def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: in
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['user_id', 'viewer_url']},
                   reject_on_worker_lost=True, rate_limit='2/m', queue='se_outreach')
 def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
-    myprint(f"Starting Profile Viewer Engagement")
+    myprint("Starting Profile Viewer Engagement")
 
     result = "Profile Viewer Engagement Started"
     engagement_successful = False
@@ -6421,7 +6421,7 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
     suppression tripwire's own pause (and only that one) so recovery stays measurable — see
     rate_limit.is_measurement_paused."""
 
-    myprint(f"Getting Updated Profile")
+    myprint("Getting Updated Profile")
 
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
@@ -6679,7 +6679,7 @@ def post_to_linkedin(self, user_id: int, post_id: int):
                 kwargs={'user_id': user_id, 'post_id': post_id},
                 countdown=_golden.second_wave_first_countdown(user_id, post_id))
 
-        return f"Post successfully created"
+        return "Post successfully created"
 
     else:
         log_error("Failed to create post using /posts API endpoint", user_id=user_id, post_id=post_id, action_type="post", api_provider="linkedin")
@@ -6687,7 +6687,7 @@ def post_to_linkedin(self, user_id: int, post_id: int):
         insert_new_log(user_id=user_id, action_type=LogActionType.POST, result=LogResultType.FAILURE, post_id=post_id,
                        message="Failed to create post using /posts API endpoint.")
 
-        return f"Failed to create post using /posts API endpoint"
+        return "Failed to create post using /posts API endpoint"
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': False}, reject_on_worker_lost=True,
