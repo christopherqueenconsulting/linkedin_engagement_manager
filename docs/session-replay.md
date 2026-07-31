@@ -118,9 +118,9 @@ is access-controlled and masks the same fields the SPA does.
 3. **Feedback links through.** File a report from the widget; the auto-filed issue body carries a
    "Watch the session replay" link that opens that session.
 
-Run all three from an ordinary browser. LEM's Selenium grid Chrome egresses through the residential
-proxy, and a proxied session silently sends nothing while every local config check still reads
-healthy — see `docs/posthog-advanced-surface.md` § Verifying the SPA surface (issue #834).
+Run all three from an ordinary browser. In LEM's Selenium grid Chrome the SDK silently sends nothing
+while every local config check still reads healthy — a false negative nobody has root-caused — see
+`docs/posthog-advanced-surface.md` § Verifying the SPA surface (issue #834).
 
 Confirmed end to end on 2026-07-31 against the production build: two recordings exist, each starting
 within ~150 ms of the `feedback_opened` event that triggered it — i.e. `ensureSessionRecorded()`
