@@ -14,7 +14,7 @@ from cqc_lem.app.run_automation import automate_commenting, automate_profile_vie
     sweep_reply_comments, sweep_comment_followups, sweep_comment_outcomes, send_catchup_touch, \
     report_catchup_run, CATCHUP_PHASE_SCAN, CATCHUP_PHASE_SEND, CATCHUP_STATUS_THROTTLED, \
     CATCHUP_STATUS_DISABLED, CATCHUP_STATUS_DISPATCHED, CATCHUP_STATUS_CAPPED, \
-    CATCHUP_STATUS_NOTHING_TO_SEND, CATCHUP_STATUS_INACTIVE
+    CATCHUP_STATUS_NOTHING_TO_SEND, CATCHUP_STATUS_INACTIVE, CATCHUP_STATUS_AWAITING_APPROVAL
 from cqc_lem.utilities.db import (
     get_ready_to_post_posts, get_orphaned_scheduled_posts, update_db_post_status,
     get_active_user_ids, PostStatus, has_linkedin_session, get_company_linked_in_url_for_user,
@@ -24,7 +24,8 @@ from cqc_lem.utilities.db import (
     update_connection_request_status, ConnectionRequestStatus, count_invites_sent_today,
     get_users_with_reply_mode, get_engagement_preferences,
     get_approved_catchup_touches, get_orphaned_catchup_touches, update_catchup_touch_status,
-    count_catchup_touches_sent_today, CatchupTouchStatus, max_catchup_touches_allowed,
+    count_catchup_touches_sent_today, count_pending_catchup_touches, CatchupTouchStatus,
+    max_catchup_touches_allowed,
     get_user_timezone,
 )
 from cqc_lem.utilities.engagement_window import (
@@ -1333,17 +1334,24 @@ def auto_check_catchup_touches():
         update_catchup_touch_status(touch_id, CatchupTouchStatus.SENDING)
         send_catchup_touch.apply_async(kwargs={'touch_id': touch_id})
 
+    # The drafted-but-unapproved backlog, counted on EVERY beat (issue #792). The scan reports its
+    # `drafted` count once a day; for the other 23 hours a full approval queue and an empty lane both
+    # looked like `nothing_to_send` — which is the reported symptom ("not sending, not in any queue").
+    pending = count_pending_catchup_touches()
+
     if dispatched or orphaned:
         status = CATCHUP_STATUS_DISPATCHED
     elif capped:
         status = CATCHUP_STATUS_CAPPED
     elif inactive:
         status = CATCHUP_STATUS_INACTIVE  # a queue that exists but whose owners can't be sent for
+    elif pending:
+        status = CATCHUP_STATUS_AWAITING_APPROVAL  # working as designed — the user has to approve
     else:
         status = CATCHUP_STATUS_NOTHING_TO_SEND
     report_catchup_run(None, {"phase": CATCHUP_PHASE_SEND, "status": status,
                               "dispatched": dispatched, "capped": capped, "inactive": inactive,
-                              "requeued": len(orphaned)}, task_name)
+                              "pending": pending, "requeued": len(orphaned)}, task_name)
     if dispatched == 0 and len(orphaned) == 0:
         return "No Catch-up Touches to Send"
     return f"Dispatched {dispatched} catch-up touch(es); re-queued {len(orphaned)} orphaned"

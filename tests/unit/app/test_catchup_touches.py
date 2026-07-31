@@ -12,6 +12,14 @@ _RA = "cqc_lem.app.run_automation"
 _RS = "cqc_lem.app.run_scheduler"
 
 
+@pytest.fixture(autouse=True)
+def _no_pending_backlog():
+    """The send drip counts the drafted-but-unapproved backlog on every beat (issue #792). Default it
+    to an empty queue so only the tests that care about it have to say so."""
+    with patch(f"{_RS}.count_pending_catchup_touches", return_value=0):
+        yield
+
+
 def _prefs(**kw):
     base = {"max_comments_per_day": 50, "max_dms_per_day": 20, "max_catchup_touches_per_day": 5,
             "catchup_touch_mode": "pre_review", "catchup_message_source": "linkedin",
@@ -1005,6 +1013,77 @@ class TestCatchupRunReport:
              patch(f"{_RA}.track_catchup_run") as track:
             auto_check_catchup_touches()
         assert track.call_args.args[1]["status"] == "nothing_to_send"
+        assert track.call_args.args[1]["pending"] == 0
+
+    def test_send_drip_separates_an_unapproved_backlog_from_an_empty_queue(self):
+        """The reported symptom: drafts exist, none were approved, so nothing ever sends. The scan
+        reports its `drafted` count once a day — for the other 23 hours this beat is the only
+        evidence, and it read `nothing_to_send` exactly like a lane that had drafted nothing."""
+        from cqc_lem.app.run_scheduler import auto_check_catchup_touches
+        with patch(f"{_RS}._skip_if_throttled", return_value=False), \
+             patch(f"{_RS}.get_approved_catchup_touches", return_value=[]), \
+             patch(f"{_RS}.get_orphaned_catchup_touches", return_value=[]), \
+             patch(f"{_RS}.count_pending_catchup_touches", return_value=6), \
+             patch(f"{_RS}.send_catchup_touch") as task, \
+             patch(f"{_RA}.track_catchup_run") as track:
+            out = auto_check_catchup_touches()
+        report = track.call_args.args[1]
+        assert report["status"] == "awaiting_approval"
+        assert report["pending"] == 6
+        assert report["dispatched"] == 0
+        task.apply_async.assert_not_called()
+        assert out == "No Catch-up Touches to Send"
+
+    def test_a_dispatching_beat_still_reports_the_backlog_behind_it(self):
+        """`pending` rides on every beat, not just the idle ones — a lane sending its cap while a
+        backlog piles up unapproved is a different story from one that has cleared its queue."""
+        from cqc_lem.app.run_scheduler import auto_check_catchup_touches
+        with patch(f"{_RS}._skip_if_throttled", return_value=False), \
+             patch(f"{_RS}.get_approved_catchup_touches", return_value=[(1, 7)]), \
+             patch(f"{_RS}.get_active_user_ids", return_value=[7]), \
+             patch(f"{_RS}.get_engagement_preferences", return_value=_prefs()), \
+             patch(f"{_RS}.max_catchup_touches_allowed", return_value=5), \
+             patch(f"{_RS}.count_catchup_touches_sent_today", return_value=0), \
+             patch(f"{_RS}.get_orphaned_catchup_touches", return_value=[]), \
+             patch(f"{_RS}.count_pending_catchup_touches", return_value=4), \
+             patch(f"{_RS}.update_catchup_touch_status"), \
+             patch(f"{_RS}.send_catchup_touch"), \
+             patch(f"{_RA}.track_catchup_run") as track:
+            auto_check_catchup_touches()
+        report = track.call_args.args[1]
+        assert report["status"] == "dispatched"
+        assert report["pending"] == 4
+
+    def test_an_unapproved_backlog_never_outranks_a_real_send_blocker(self):
+        """Precedence check: a cap that is spent is the actionable reading, not the drafts behind it."""
+        from cqc_lem.app.run_scheduler import auto_check_catchup_touches
+        with patch(f"{_RS}._skip_if_throttled", return_value=False), \
+             patch(f"{_RS}.get_approved_catchup_touches", return_value=[(1, 7)]), \
+             patch(f"{_RS}.get_active_user_ids", return_value=[7]), \
+             patch(f"{_RS}.get_engagement_preferences", return_value=_prefs()), \
+             patch(f"{_RS}.max_catchup_touches_allowed", return_value=5), \
+             patch(f"{_RS}.count_catchup_touches_sent_today", return_value=5), \
+             patch(f"{_RS}.get_orphaned_catchup_touches", return_value=[]), \
+             patch(f"{_RS}.count_pending_catchup_touches", return_value=3), \
+             patch(f"{_RS}.update_catchup_touch_status"), \
+             patch(f"{_RS}.send_catchup_touch"), \
+             patch(f"{_RA}.track_catchup_run") as track:
+            auto_check_catchup_touches()
+        report = track.call_args.args[1]
+        assert report["status"] == "capped"
+        assert report["pending"] == 3
+
+    def test_an_unapproved_backlog_stays_debug_not_a_repeating_warning(self):
+        """This beats 72x a day. A steady, working state must not log at INFO/WARNING — the
+        recurrence escalation would re-emit it at ERROR and file a grouped $exception."""
+        from cqc_lem.app.run_automation import report_catchup_run
+        with patch(f"{_RA}.track_catchup_run"), \
+             patch(f"{_RA}.log_debug") as dbg, patch(f"{_RA}.log_info") as info:
+            report_catchup_run(None, {"phase": "send", "status": "awaiting_approval", "pending": 6},
+                               "auto_check_catchup_touches")
+        info.assert_not_called()
+        dbg.assert_called_once()
+        assert "pending=6" in dbg.call_args.args[0]
 
     def test_send_drip_reports_a_queue_stuck_behind_a_disconnected_account(self):
         """Approved touches whose owner isn't connected used to be counted nowhere, so the report

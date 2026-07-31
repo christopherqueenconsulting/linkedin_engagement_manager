@@ -5751,6 +5751,7 @@ CATCHUP_STATUS_DISPATCHED = "dispatched"
 CATCHUP_STATUS_NOTHING_TO_SEND = "nothing_to_send"
 CATCHUP_STATUS_CAPPED = "capped"                    # approved touches exist, today's cap is spent
 CATCHUP_STATUS_INACTIVE = "inactive_users"          # queue exists but its owners aren't connected
+CATCHUP_STATUS_AWAITING_APPROVAL = "awaiting_approval"  # drafts exist, none approved yet
 # Terminal (deliver) outcomes. `dispatched` is NOT delivery: a touch the DM cap or the breaker defers
 # goes back to 'approved' and the drip re-dispatches it on the next beat, so a lane that never sends
 # anything reads as a healthy rising `dispatched` count unless the send itself reports.
@@ -6105,7 +6106,8 @@ def _draft_catchup_message(user_id: int, moment: dict, my_profile: LinkedInProfi
 # carries them, and that's the series a "catch-up never sends" report has to be answered from.
 _CATCHUP_QUIET_STATUSES = frozenset({CATCHUP_STATUS_NOTHING_TO_SEND, CATCHUP_STATUS_CAPPED,
                                      CATCHUP_STATUS_THROTTLED, CATCHUP_STATUS_DISABLED,
-                                     CATCHUP_STATUS_DM_CAPPED, CATCHUP_STATUS_NOT_SENDABLE})
+                                     CATCHUP_STATUS_DM_CAPPED, CATCHUP_STATUS_NOT_SENDABLE,
+                                     CATCHUP_STATUS_AWAITING_APPROVAL})
 
 
 def report_catchup_run(user_id: Optional[int], report: dict, task_name: str) -> None:
@@ -6114,8 +6116,8 @@ def report_catchup_run(user_id: Optional[int], report: dict, task_name: str) -> 
     otherwise worked."""
     summary = ", ".join(f"{k}={report[k]}" for k in
                         ("moments", "classified", "enabled_type", "excluded", "duplicate",
-                         "below_bar", "drafted", "dispatched", "capped", "inactive", "requeued",
-                         "touch_id")
+                         "below_bar", "drafted", "dispatched", "capped", "inactive", "pending",
+                         "requeued", "touch_id")
                         if k in report)
     status = report.get("status")
     emit = log_debug if status in _CATCHUP_QUIET_STATUSES else log_info
