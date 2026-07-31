@@ -1089,6 +1089,17 @@ class TestTrackCatchupRun:
         assert kwargs["properties"]["capped"] == 3
         assert kwargs["properties"]["dispatched"] == 0  # absent counts read 0, never missing
 
+    def test_the_unapproved_backlog_reaches_the_event(self):
+        """The property dict is an explicit whitelist — a counter the send beat reports but this
+        never lists is dropped silently, which is how a lane looks quiet while a queue piles up."""
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_catchup_run
+            track_catchup_run(None, {"phase": "send", "status": "awaiting_approval", "pending": 6})
+
+        props = mock_ph.capture.call_args.kwargs["properties"]
+        assert props["status"] == "awaiting_approval"
+        assert props["pending"] == 6
+
     def test_an_empty_report_still_emits(self):
         with patch(f"{_MOD}.posthog") as mock_ph:
             from cqc_lem.utilities.observability import track_catchup_run
