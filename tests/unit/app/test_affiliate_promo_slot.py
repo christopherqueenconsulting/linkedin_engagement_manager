@@ -56,8 +56,8 @@ class TestPromoSlotClaim:
             stack.enter_context(patch(f"{_AC}.claims_promo_slot", return_value=False))
             promo = stack.enter_context(patch(f"{_AC}.generate_promo_post"))
             prefs = stack.enter_context(patch(f"{_RCP}._engagement_prefs_or_empty"))
-            text_post = stack.enter_context(patch(f"{_RCP}.create_text_post",
-                                                  return_value="  Ordinary post.  "))
+            stack.enter_context(patch(f"{_RCP}.create_text_post",
+                                      return_value="  Ordinary post.  "))
             content, _ = create_content(1, "text", "decision", post_id=10, content_mix="promo")
         assert content == "Ordinary post."
         promo.assert_not_called()
