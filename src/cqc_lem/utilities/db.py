@@ -8725,7 +8725,12 @@ def get_feedback_list(status: Optional[Union["FeedbackStatus", str]] = None,
     """All feedback rows, newest first, with the submitter's email and admin flag (issue #793).
 
     Optional status/source filters are validated against the enum vocabularies before they reach
-    the query, so a bad value returns an empty list instead of a MySQL 1265."""
+    the query, so a bad value returns an empty list instead of a MySQL 1265.
+
+    `embedding` is deliberately NOT selected — the panel never shows it, and a page of 50 rows would
+    drag 50 full vectors out of MySQL to be thrown away. `is_admin` answers the same question the
+    auto-filer's join does, so it honours ADMIN_USER_EMAILS too: an allowlisted reporter's feedback
+    IS auto-filed, and the panel must not label it as awaiting review."""
     filters: list = []
     params: list = []
     if status is not None:
@@ -8746,7 +8751,7 @@ def get_feedback_list(status: Optional[Union["FeedbackStatus", str]] = None,
     where = f"WHERE {' AND '.join(filters)}" if filters else ""
     sql = (
         f"SELECT f.id, f.user_id, f.source, f.type_hint, f.body, f.context_json, "
-        f"f.embedding, f.cluster_id, f.github_issue_number, f.status, f.sentiment, "
+        f"f.cluster_id, f.github_issue_number, f.status, f.sentiment, "
         f"f.reviewed_by, f.reviewed_at, f.created_at, u.email, u.is_admin "
         f"FROM feedback f LEFT JOIN users u ON u.id = f.user_id "
         f"{where} ORDER BY f.created_at DESC LIMIT %s OFFSET %s"
@@ -8755,7 +8760,13 @@ def get_feedback_list(status: Optional[Union["FeedbackStatus", str]] = None,
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute(sql, (*params, int(limit), int(offset)))
-        return cursor.fetchall() or []
+        rows = cursor.fetchall() or []
+        allow = admin_email_allowlist()
+        for row in rows:
+            if allow and not row.get("is_admin") and \
+                    (row.get("email") or "").strip().lower() in allow:
+                row["is_admin"] = 1
+        return rows
     except mysql.connector.Error as err:
         log_error("Could not list feedback for admin panel", exc=err)
         return []

@@ -88,4 +88,29 @@ describe('AdminFeedbackPage (issue #793)', () => {
       })
     )
   })
+
+  it('surfaces a failed review instead of swallowing it', async () => {
+    get.mockResolvedValue(listPayload([
+      {
+        id: 1,
+        email: 'user@x.com',
+        is_admin_reporter: false,
+        source: 'widget',
+        type_hint: 'bug',
+        body: 'Something is broken',
+        status: 'new',
+        github_issue_number: null,
+        created_at: '2026-07-29T12:00:00Z',
+      },
+    ]))
+    // 409: the beat filed this row between render and click.
+    post.mockRejectedValue({ response: { data: { detail: 'Feedback already triaged (status issue_created)' } } })
+
+    harness(<AdminFeedbackPage />)
+    await waitFor(() => expect(screen.getByRole('button', { name: /approve/i })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: /approve/i }))
+    await waitFor(() =>
+      expect(screen.getByText(/Feedback already triaged/)).toBeTruthy()
+    )
+  })
 })

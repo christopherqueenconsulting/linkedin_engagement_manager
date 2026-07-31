@@ -28,7 +28,6 @@ def client():
             p.stop()
 
 
-_SECRET = "admin-s3cret"
 _ADMIN_USER = {"id": 7, "email": "admin@example.com", "is_admin": True}
 _NON_ADMIN_USER = {"id": 8, "email": "user@example.com", "is_admin": False}
 
@@ -103,6 +102,42 @@ class TestReviewFeedback:
         assert r.json()["detail"]["filing_result"]["issue_number"] == 101
         filer.assert_called_once_with({"id": 5})
         recorder.assert_called_once_with(5, 7)
+
+    def test_already_filed_row_cannot_be_re_approved(self, client):
+        """A filed row IS its own open cluster, so re-running the filer would match it to itself
+        and post a false "+1 another report" on the issue it created."""
+        row = {"id": 9, "status": "issue_created", "github_issue_number": 404}
+        with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
+             patch("cqc_lem.api.main.get_feedback_by_id", return_value=row), \
+             patch("cqc_lem.utilities.feedback.issue_service.file_feedback_issue") as filer, \
+             patch("cqc_lem.api.main.record_feedback_review") as recorder:
+            r = client.post("/api/admin/feedback/9/review", json={
+                "session_token": "tok", "action": "approve",
+            })
+        assert r.status_code == 409
+        filer.assert_not_called()
+        recorder.assert_not_called()
+
+    def test_already_clustered_row_cannot_be_dismissed(self, client):
+        row = {"id": 10, "status": "clustered", "github_issue_number": None}
+        with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
+             patch("cqc_lem.api.main.get_feedback_by_id", return_value=row), \
+             patch("cqc_lem.api.main.record_feedback_review") as recorder:
+            r = client.post("/api/admin/feedback/10/review", json={
+                "session_token": "tok", "action": "dismiss",
+            })
+        assert r.status_code == 409
+        recorder.assert_not_called()
+
+    def test_new_row_is_still_reviewable(self, client):
+        row = {"id": 11, "status": "new", "github_issue_number": None}
+        with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \
+             patch("cqc_lem.api.main.get_feedback_by_id", return_value=row), \
+             patch("cqc_lem.api.main.record_feedback_review", return_value=True):
+            r = client.post("/api/admin/feedback/11/review", json={
+                "session_token": "tok", "action": "dismiss",
+            })
+        assert r.status_code == 200
 
     def test_404_when_feedback_row_missing(self, client):
         with _auth(_ADMIN_USER)["get_session"], _auth(_ADMIN_USER)["is_admin"], \

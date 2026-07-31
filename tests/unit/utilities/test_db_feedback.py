@@ -439,6 +439,28 @@ class TestGetFeedbackList:
         assert "f.source = %s" in sql
         assert params == ("new", "widget", 2, 0)
 
+    def test_embedding_is_not_dragged_into_the_panel(self):
+        """A page of 50 rows would pull 50 full vectors MySQL-side for a column the panel never
+        renders."""
+        conn, cur = _dict_conn(rows=[])
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_feedback_list
+            get_feedback_list()
+        assert "embedding" not in cur.execute.call_args[0][0]
+
+    def test_allowlisted_reporter_reads_as_admin(self, monkeypatch):
+        """The auto-filer's join counts ADMIN_USER_EMAILS as admin, so their reports ARE filed
+        automatically — the panel must not show them as still awaiting review."""
+        monkeypatch.setattr("cqc_lem.utilities.env_constants.ADMIN_USER_EMAILS",
+                            "owner@example.com")
+        conn, _ = _dict_conn(rows=[{"id": 1, "email": " Owner@Example.com ", "is_admin": 0},
+                                   {"id": 2, "email": "someone@example.com", "is_admin": 0},
+                                   {"id": 3, "email": None, "is_admin": None}])
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_feedback_list
+            got = get_feedback_list()
+        assert [r["is_admin"] for r in got] == [1, 0, None]
+
     def test_invalid_status_returns_empty(self):
         with patch(f"{_DB}.get_db_connection") as get_conn:
             from cqc_lem.utilities.db import get_feedback_list

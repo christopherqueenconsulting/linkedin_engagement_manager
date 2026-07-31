@@ -43,12 +43,18 @@ export default function AdminFeedbackPage() {
 
   const review = useFeedbackReview()
 
-  async function handleAction(id: number, action: 'approve' | 'dismiss') {
-    await review.mutateAsync({ feedbackId: id, action, sessionToken: sessionToken || '' })
-    void refetch()
+  // `mutate`, not `mutateAsync`: an awaited rejection here had nobody to catch it, so a failed
+  // approve (GitHub down, row already triaged by the beat) showed the admin nothing at all — the
+  // row just stayed put. The hook invalidates the list on success, so no manual refetch either.
+  function handleAction(id: number, action: 'approve' | 'dismiss') {
+    review.mutate({ feedbackId: id, action, sessionToken: sessionToken || '' })
   }
 
   const items = data?.items ?? []
+  const reviewError = review.error
+    ? ((review.error as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+       || (review.error instanceof Error ? review.error.message : 'unknown error'))
+    : null
 
   return (
     <div className="max-w-5xl space-y-6">
@@ -102,6 +108,22 @@ export default function AdminFeedbackPage() {
       {error && (
         <p className="text-sm text-red-600">
           Could not load feedback: {error instanceof Error ? error.message : 'unknown error'}
+        </p>
+      )}
+
+      {reviewError && (
+        <p className="text-sm text-red-600">Could not record the review: {reviewError}</p>
+      )}
+
+      {/* Approving does not guarantee an issue: the filer can rate-limit, drop, or fail on GitHub
+          and leave the row where it was. Show what actually happened. */}
+      {review.isSuccess && !reviewError && (
+        <p className="text-sm text-gray-600">
+          Last review: {String(review.data?.action ?? 'done')}
+          {review.data?.filing_result?.action ? ` — filer: ${review.data.filing_result.action}` : ''}
+          {review.data?.filing_result?.issue_number
+            ? ` (issue #${review.data.filing_result.issue_number})`
+            : ''}
         </p>
       )}
 
@@ -167,14 +189,14 @@ export default function AdminFeedbackPage() {
                   {item.status === 'new' && (
                     <div className="flex items-center justify-end gap-2">
                       <button
-                        onClick={() => void handleAction(item.id, 'approve')}
+                        onClick={() => handleAction(item.id, 'approve')}
                         disabled={review.isPending}
                         className="text-xs bg-blue-600 text-white px-2.5 py-1 rounded hover:bg-blue-700 disabled:opacity-50"
                       >
                         Approve
                       </button>
                       <button
-                        onClick={() => void handleAction(item.id, 'dismiss')}
+                        onClick={() => handleAction(item.id, 'dismiss')}
                         disabled={review.isPending}
                         className="text-xs bg-gray-100 text-gray-700 px-2.5 py-1 rounded hover:bg-gray-200 disabled:opacity-50"
                       >

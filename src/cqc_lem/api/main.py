@@ -4733,6 +4733,14 @@ def admin_task_status(
 # operational X-Admin-Secret endpoints above.
 # ---------------------------------------------------------------------------
 
+# A row that already reached GitHub must never be re-reviewed. `file_feedback_issue` re-classifies
+# (LLM spend) and dedups against the OPEN clusters — and a filed row IS its own open cluster, so a
+# second approve matches it to itself at similarity 1.0 and posts a false "+1 another report" on the
+# very issue it created. Dismissing one would mark it not-actionable while its issue stays open.
+_REVIEW_SETTLED_STATUSES = (FeedbackStatus.CLUSTERED, FeedbackStatus.ISSUE_CREATED,
+                            FeedbackStatus.RESOLVED)
+
+
 def _require_user_admin(session_token: str) -> int:
     """Validate the session and ensure the user is designated as an admin.
 
@@ -4790,6 +4798,7 @@ def admin_feedback_list(
     401: {"description": "Invalid or expired session"},
     403: {"description": "Admin access required"},
     404: {"description": "Feedback row not found"},
+    409: {"description": "Feedback already triaged"},
     422: {"description": "Invalid action"},
 })
 def admin_feedback_review(
@@ -4802,6 +4811,13 @@ def admin_feedback_review(
     row = get_feedback_by_id(feedback_id)
     if not row:
         raise HTTPException(status_code=404, detail="Feedback not found")
+
+    # The panel only offers the buttons on `new` rows, but its list is cached and two admins (or the
+    # auto-filer beat) can settle a row between render and click.
+    row_status = str(row.get("status") or "")
+    if row_status in _REVIEW_SETTLED_STATUSES or row.get("github_issue_number"):
+        raise HTTPException(status_code=409,
+                            detail=f"Feedback already triaged (status {row_status or 'unknown'})")
 
     if request.action == FeedbackReviewAction.DISMISS:
         if not record_feedback_review(feedback_id, reviewer_user_id,
