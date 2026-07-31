@@ -138,6 +138,9 @@ RATE_LIMIT_TRIPS_PER_DAY_CEILING = 5
 # Weekly report cadence: Monday 09:00 UTC, matching the other weekly LEM crons.
 REPORT_WEEKDAY = "monday"
 REPORT_HOUR_UTC = 9
+# PostHog caps a dashboard subscription's export at 6 insights and rejects the whole request past it
+# ("Cannot select more than 6 insights"). LEM Growth carries 7 tiles, so the list is truncated.
+SUBSCRIPTION_MAX_INSIGHTS = 6
 
 
 # ── query-node builders ──────────────────────────────────────────────────────────────
@@ -1046,6 +1049,13 @@ class PostHogClient:
     def create_subscription(self, payload: dict) -> int:
         return self._request("POST", "/subscriptions/", json=payload).get("id")
 
+    def dashboard_insight_ids(self, dashboard_id: int) -> list:
+        """Insight ids currently tiled on a dashboard, in tile order. The dashboard LIST endpoint
+        returns no tiles, so this has to read the detail route."""
+        detail = self._request("GET", f"/dashboards/{dashboard_id}/")
+        ids = [(tile.get("insight") or {}).get("id") for tile in (detail.get("tiles") or [])]
+        return [i for i in ids if i]
+
     def list_insight_variables(self) -> dict:
         """Maps variable name -> {"id", "code_name"}. `code_name` is PostHog-derived (read-only on
         write), so callers always read it back here rather than assuming it matches `name`."""
@@ -1151,7 +1161,19 @@ def apply_actions(client: PostHogClient, actions: list, dry_run: bool = True) ->
             if dry_run:
                 log.append(f"[dry-run] create subscription '{action['subscription']}'")
                 continue
-            subscription_id = client.create_subscription(action["payload"])
+            payload = dict(action["payload"])
+            # PostHog rejects a dashboard subscription that doesn't name its insights explicitly
+            # ("Select at least one insight"), even when the dashboard already has tiles — and caps
+            # the list at SUBSCRIPTION_MAX_INSIGHTS. The ids aren't knowable at plan time (the
+            # insights may be created in this same run), so they're resolved here.
+            if not payload.get("dashboard_export_insights"):
+                insight_ids = client.dashboard_insight_ids(payload["dashboard"])
+                if not insight_ids:
+                    log.append(f"skipped subscription '{action['subscription']}': its dashboard has "
+                               f"no insights yet — re-run once the tiles exist")
+                    continue
+                payload["dashboard_export_insights"] = insight_ids[:SUBSCRIPTION_MAX_INSIGHTS]
+            subscription_id = client.create_subscription(payload)
             log.append(f"created subscription '{action['subscription']}' -> {subscription_id}")
         elif kind == "create_variable":
             if dry_run:
@@ -1281,8 +1303,16 @@ def main(argv: Optional[list] = None) -> int:
     if email:
         subscription_actions = plan_subscriptions([subscription_spec(email)], subscriptions,
                                                   dashboards)
-        for line in apply_actions(client, subscription_actions, dry_run=dry_run):
-            print(line)
+        # The weekly email is the least important thing this script provisions, and it is the LAST
+        # thing before the endpoints pass. Letting it raise meant one PostHog validation change took
+        # the endpoints — and therefore the /user/posthog-stats panels — down with it. Report and
+        # carry on instead.
+        try:
+            for line in apply_actions(client, subscription_actions, dry_run=dry_run):
+                print(line)
+        except Exception as exc:
+            print(f"Could not provision the weekly report subscription ({exc}) — continuing.",
+                  file=sys.stderr)
     else:
         print("No recipient (set POSTHOG_REPORT_EMAIL or --email) — weekly report not provisioned.",
               file=sys.stderr)
