@@ -283,5 +283,32 @@ as, don't grind — escalate with `needs-human` and say the model tier may be th
 CREATING side-instruction issues you may suggest a tier in a comment, but leave labeling to the owner
 (exception: trivial docs-only issues you create may carry `agent:model:sonnet` from the start).
 
+## Release fast lane (`release:now`) — YOUR call to make
+
+Releases batch 4× daily, so a merged PR waits a median of ~168 minutes (p90 ~5.5h) before it reaches
+users. For a docs tweak that is correct. For a bug someone is hitting right now it is not.
+
+**You may add `release:now` to your own PR, without asking, when the change is:**
+- **high priority** — the issue has `priority:high`, or is `bug` + `feedback-loop` (a real user
+  reported it); **or**
+- **high visibility** — a user notices on their next visit: broken/incorrect UI, a failing core loop
+  (posting, commenting, DMs), broken auth, a data-integrity bug, or a fix for something currently
+  erroring in production.
+
+**Do NOT add it for:** docs/comments/tests/refactors with no behaviour change; dependency bumps;
+`priority:low`/`cleanup`/`chore`; anything behind a disabled flag; a change you could NOT verify; or
+when you have already fast-laned another PR in this session — batch the rest.
+
+**Always allowed:** a revert, or a fix for something actively broken in production.
+
+```bash
+gh pr edit <PR> --repo "$SLUG" --add-label 'release:now'
+```
+
+Apply it BEFORE the PR merges — the label is read at merge time. Say why in one line in the PR body
+("Labelled `release:now`: user-visible commenting failure, priority:high") so the call is auditable.
+It skips the WAIT, never a check: the release PR still runs full CI and the merge queue. Full
+policy: `docs/release-fast-lane.md`.
+
 Keep each tick focused and finite. Prefer correctness and convention-compliance over speed — a clean PR that
 passes CI and review the first time is the goal.
