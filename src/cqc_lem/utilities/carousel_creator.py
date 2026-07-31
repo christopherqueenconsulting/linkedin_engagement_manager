@@ -315,21 +315,43 @@ def _should_include_slide_image(post_id: Optional[int], slide_index: int) -> boo
     return _seeded_unit(post_id, slide_index, "include") < CAROUSEL_IMAGE_RATE
 
 
-def _user_has_active_avatar(user_id: Optional[int]) -> bool:
+def _user_has_active_avatar(user_id: Optional[int], post_id: Optional[int] = None) -> bool:
+    """Is the user's avatar usable for a CAROUSEL slide right now? (issue #744 guardrails)"""
     if user_id is None:
         return False
-    try:
-        from cqc_lem.utilities.db import get_active_avatar
-        avatar = get_active_avatar(user_id)
-        return bool(avatar and avatar.get("status") == "succeeded" and avatar.get("model_ref"))
-    except Exception:
-        return False
+    from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_CAROUSEL, avatar_allowed_for
+    return avatar_allowed_for(user_id, surface=AVATAR_SURFACE_CAROUSEL, post_id=post_id)
+
+
+# A derived slide query is usually a THING, not a scene the author stands in. Only queries that
+# read as a person get the avatar; everything else goes to base Flux / Pexels, because prepending
+# the LoRA trigger word to "quarterly dashboard metrics" asked it to insert the user's face into a
+# scene never written to contain a person (issue #744).
+_PERSON_QUERY_TERMS: set[str] = {
+    "person", "people", "team", "founder", "leader", "leadership", "colleague", "colleagues",
+    "client", "clients", "customer", "customers", "candidate", "mentor", "manager", "employee",
+    "employees", "speaker", "audience", "meeting", "interview", "conversation", "handshake",
+    "portrait", "headshot", "founder's", "coworker", "coworkers", "presenter", "presentation",
+    "teacher", "student", "engineer", "developer", "designer", "consultant", "recruiter",
+}
+
+
+def _query_depicts_person(query: Optional[str], content_type: Optional[str]) -> bool:
+    """True when the slide's scene plausibly contains the author.
+
+    ``personal_story`` slides are about the author by definition, so they qualify regardless of
+    the derived keywords — that is precisely the narrative the avatar exists to illustrate.
+    """
+    if (content_type or "") in CAROUSEL_AVATAR_RELEVANT_TYPES:
+        return True
+    words = {w.strip(".,:;!?\"'()[]").lower() for w in (query or "").split()}
+    return bool(words & _PERSON_QUERY_TERMS)
 
 
 def _should_generate_with_replicate(post_id: Optional[int], slide_index: int,
                                     user_id: Optional[int], content_type: Optional[str]) -> bool:
     """Replicate generation is gated: globally enabled, avatar-relevant content type,
-    a deterministic low-rate sample, AND the user actually has an active avatar."""
+    a deterministic low-rate sample, AND the user's guardrails allow the avatar here."""
     from cqc_lem.utilities.env_constants import CAROUSEL_REPLICATE_ENABLED, CAROUSEL_REPLICATE_RATE
     if not CAROUSEL_REPLICATE_ENABLED or user_id is None:
         return False
@@ -337,15 +359,19 @@ def _should_generate_with_replicate(post_id: Optional[int], slide_index: int,
         return False
     if _seeded_unit(post_id, slide_index, "source") >= CAROUSEL_REPLICATE_RATE:
         return False
-    return _user_has_active_avatar(user_id)
+    return _user_has_active_avatar(user_id, post_id)
 
 
-def _generate_avatar_slide_image(query: str, user_id: int) -> Optional[str]:
+def _generate_avatar_slide_image(query: str, user_id: int, post_id: Optional[int] = None,
+                                 content_type: Optional[str] = None) -> Optional[str]:
     from cqc_lem.utilities.logger import log_warning
     try:
         from cqc_lem.utilities.ai.ai_helper import generate_post_image
+        from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_CAROUSEL
         prompt = f"{query}, professional, clean minimal background, high quality, editorial"
-        path = generate_post_image(prompt, user_id)
+        path = generate_post_image(prompt, user_id, surface=AVATAR_SURFACE_CAROUSEL,
+                                   post_id=post_id,
+                                   depicts_person=_query_depicts_person(query, content_type))
         return path or None
     except Exception as e:
         log_warning("Carousel avatar image generation failed, falling back to Pexels",
@@ -378,7 +404,7 @@ def select_slide_image(
     query = derive_image_query(title, content, content_type)
 
     if _should_generate_with_replicate(post_id, slide_index, user_id, content_type):
-        generated = _generate_avatar_slide_image(query, user_id)
+        generated = _generate_avatar_slide_image(query, user_id, post_id, content_type)
         if generated:
             return generated
         # fall through to Pexels on generation failure

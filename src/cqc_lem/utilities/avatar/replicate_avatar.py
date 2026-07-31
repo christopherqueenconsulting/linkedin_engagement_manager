@@ -128,15 +128,26 @@ def poll_training_status(training_id: str) -> tuple[str, Optional[str]]:
         return "processing", None
 
 
-def generate_image_with_avatar(prompt: str, model_ref: str) -> str:
-    """Run inference on a trained avatar LoRA model. Returns a local file path.
+def generate_image_with_avatar(prompt: str, model_ref: str, *,
+                               ratio: str = "1:1",
+                               fallback_prompt: Optional[str] = None) -> tuple[str, bool]:
+    """Run inference on a trained avatar LoRA model. Returns ``(local_file_path, used_avatar)``.
 
-    Delegates to the existing get_flux_image_via_replicate utility so all
-    file-saving logic stays in one place.
+    ``ratio`` is threaded through to Replicate's ``aspect_ratio`` — it used to be dropped here, so
+    the 9:16 source frame for premium avatar video was rendered square and then cropped by the
+    video model (issue #744).
+
+    ``used_avatar`` is False when inference raised and the base Flux fallback produced the image.
+    The caller must not claim avatar provenance (AI disclosure, C2PA) for an image the avatar
+    never touched, and the fallback runs on ``fallback_prompt`` so the LoRA trigger word — a
+    nonsense token to the base model — is not fed to it.
+
+    Delegates to the existing get_flux_image_via_replicate utility so all file-saving logic
+    stays in one place.
     """
     from cqc_lem.utilities.ai.ai_helper import get_flux_image_via_replicate
     try:
-        return get_flux_image_via_replicate(prompt, ref=model_ref)
+        return get_flux_image_via_replicate(prompt, ref=model_ref, aspect_ratio=ratio), True
     except Exception as exc:
         log_warning(
             "Avatar inference failed, falling back to base Flux model",
@@ -144,4 +155,4 @@ def generate_image_with_avatar(prompt: str, model_ref: str) -> str:
             action_type="avatar_inference_fallback",
         )
         from cqc_lem.utilities.ai.ai_helper import generate_flux1_image_from_prompt
-        return generate_flux1_image_from_prompt(prompt)
+        return generate_flux1_image_from_prompt(fallback_prompt or prompt, ratio=ratio), False

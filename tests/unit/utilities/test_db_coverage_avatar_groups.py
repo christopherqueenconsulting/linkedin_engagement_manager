@@ -58,7 +58,7 @@ class TestAvatarLedger:
 
 class TestAvatarTrainings:
     def test_set_active_avatar_validates_then_deactivates_then_activates(self):
-        conn, cur = _conn(rowcount=1, fetch_one={"id": 11})
+        conn, cur = _conn(rowcount=1, fetch_one={"id": 11, "approval_status": "approved"})
         with patch(f"{_DB}.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_active_avatar
             assert set_active_avatar(3, 11) is True
@@ -75,6 +75,17 @@ class TestAvatarTrainings:
         with patch(f"{_DB}.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import set_active_avatar
             assert set_active_avatar(3, 999) is False
+        executed = [c[0][0] for c in cur.execute.call_args_list]
+        assert len(executed) == 1 and "SELECT id" in executed[0]
+        conn.commit.assert_not_called()
+
+    def test_set_active_avatar_refuses_unapproved(self):
+        """The approval gate (issue #744): activation is no longer reachable from 'succeeded'
+        alone, and refusing must leave the current active avatar untouched."""
+        conn, cur = _conn(rowcount=1, fetch_one={"id": 11, "approval_status": "pending"})
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import set_active_avatar
+            assert set_active_avatar(3, 11) is False
         executed = [c[0][0] for c in cur.execute.call_args_list]
         assert len(executed) == 1 and "SELECT id" in executed[0]
         conn.commit.assert_not_called()
@@ -97,6 +108,13 @@ class TestAvatarTrainings:
             result = get_avatar_trainings(3)
         assert result == [{"id": 1, "training_id": "t1", "model_ref": "m",
                            "trigger_word": "TOK", "status": "succeeded", "is_active": True,
+                           "gender_presentation": None, "age_band": None,
+                           "attributes_confirmed_at": None,
+                           # A row that predates the migration reads as un-approved, which is the
+                           # safe direction: it cannot be activated until the user reviews it.
+                           "approval_status": "pending", "approved_at": None,
+                           "sample_paths": [], "samples_generated_at": None,
+                           "sample_regen_count": 0,
                            "created_at": created.isoformat(), "updated_at": None}]
 
     def test_get_avatar_trainings_error_returns_empty(self):

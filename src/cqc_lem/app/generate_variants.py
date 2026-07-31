@@ -146,10 +146,17 @@ def _generate_one_variant(idx: int, combo: dict, source_text: str, profile, user
     }
 
     # 1. Image prompt + image
-    image_prompt = get_flux_image_prompt_from_ai(source_text, profile=profile, ratio=img_ratio)
+    # The declared subject clause has to reach the prompt author, not just the Replicate call —
+    # otherwise the LLM invents a person for the LoRA to contradict (issue #744).
+    from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_POST_IMAGE, resolve_avatar_for
+    avatar = resolve_avatar_for(user_id, surface=AVATAR_SURFACE_POST_IMAGE, post_id=post_id)
+    image_prompt = get_flux_image_prompt_from_ai(source_text, profile=profile, ratio=img_ratio,
+                                                 avatar=avatar)
     result["image_prompt"] = image_prompt
     if user_id:
-        image_path = generate_post_image(image_prompt, user_id, ratio=img_ratio, image_model=image_model)
+        image_path = generate_post_image(image_prompt, user_id, ratio=img_ratio,
+                                         image_model=image_model,
+                                         surface=AVATAR_SURFACE_POST_IMAGE, post_id=post_id)
     else:
         image_path = generate_flux1_image_from_prompt(image_prompt, ratio=img_ratio, image_model=image_model)
 

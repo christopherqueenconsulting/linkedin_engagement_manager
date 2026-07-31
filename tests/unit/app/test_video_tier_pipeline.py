@@ -84,7 +84,8 @@ class TestGenerateVideoSrc:
         assert crv.call_args[1]["model"] == "gen4_turbo"
 
 
-_ACTIVE_AVATAR = {"status": "succeeded", "model_ref": "owner/lora:v1", "trigger_word": "TOK"}
+_ACTIVE_AVATAR = {"status": "succeeded", "model_ref": "owner/lora:v1", "trigger_word": "TOK",
+                  "approval_status": "approved"}
 
 
 class TestAvatarOnStandardTier:
@@ -92,7 +93,7 @@ class TestAvatarOnStandardTier:
         """Avatar appears on the standard (free) tier too — frame goes through generate_post_image."""
         with patch("cqc_lem.utilities.db.get_post_video_quality", return_value="standard"), \
              patch("cqc_lem.utilities.db.get_default_video_quality", return_value="standard"), \
-             patch("cqc_lem.utilities.db.get_active_avatar", return_value=_ACTIVE_AVATAR), \
+             patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=_ACTIVE_AVATAR), \
              patch("cqc_lem.app.run_content_plan.get_flux_image_prompt_from_ai", return_value="scene"), \
              patch("cqc_lem.utilities.ai.ai_helper.generate_post_image", return_value="/tmp/avatar.png") as gpi, \
              patch("cqc_lem.app.run_content_plan.generate_flux1_image_from_prompt") as flux, \
@@ -129,7 +130,7 @@ class TestAvatarOnStandardTier:
         with patch("cqc_lem.utilities.db.get_post_video_quality", return_value="premium"), \
              patch("cqc_lem.utilities.db.get_video_credit_balance", return_value=5), \
              patch("cqc_lem.utilities.db.deduct_video_credits", return_value=True), \
-             patch("cqc_lem.utilities.db.get_active_avatar", return_value=_ACTIVE_AVATAR), \
+             patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=_ACTIVE_AVATAR), \
              patch("cqc_lem.app.run_content_plan.get_flux_image_prompt_from_ai", return_value="scene"), \
              patch("cqc_lem.utilities.ai.ai_helper.generate_post_image", return_value="/tmp/avatar.png") as gpi, \
              patch("cqc_lem.app.run_content_plan.get_runway_ml_video_prompt_from_ai", return_value="motion"), \

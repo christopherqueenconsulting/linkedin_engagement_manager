@@ -322,7 +322,7 @@ class TestGenerateVideoSrcPremium:
              patch("cqc_lem.utilities.db.get_video_credit_balance", return_value=10), \
              patch("cqc_lem.utilities.db.deduct_video_credits", return_value=True), \
              patch("cqc_lem.utilities.db.refund_video_credits") as refund, \
-             patch("cqc_lem.utilities.db.get_active_avatar", return_value=avatar), \
+             patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=avatar), \
              patch("cqc_lem.utilities.ai.video_models.is_premium", return_value=True), \
              patch(f"{_RCP}.get_flux_image_prompt_from_ai", return_value="image prompt"), \
              patch(f"{_RCP}.get_runway_ml_video_prompt_from_ai", return_value="motion"), \
@@ -340,7 +340,8 @@ class TestGenerateVideoSrcPremium:
         avatar = {"status": "succeeded", "model_ref": "owner/m:v1"}
         result, gen_img, create_video, refund, _ = self._run(avatar)
         assert result == "https://runway/v.mp4"
-        gen_img.assert_called_once_with("image prompt", 1, ratio="9:16")
+        gen_img.assert_called_once_with("image prompt", 1, ratio="9:16",
+                                        surface="video", post_id=9)
         assert create_video.call_args[0][0] == "/tmp/avatar.png"
         assert create_video.call_args[1]["audio"] is True
         refund.assert_not_called()

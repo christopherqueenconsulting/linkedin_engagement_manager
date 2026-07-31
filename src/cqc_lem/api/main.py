@@ -79,7 +79,11 @@ from cqc_lem.utilities.db import (
     get_video_credit_ledger_entry_by_session, update_post_video_quality,
     deduct_avatar_credit, insert_avatar_training,
     update_avatar_training_status, set_active_avatar,
-    get_avatar_trainings, get_active_avatar,
+    get_avatar_trainings, get_active_avatar, get_avatar_training,
+    update_avatar_attributes, set_avatar_approval,
+    claim_avatar_sample_render, release_avatar_sample_render,
+    get_avatar_preferences, update_avatar_preferences, update_post_use_avatar,
+    AVATAR_APPROVAL_APPROVED, AVATAR_APPROVAL_REJECTED,
     get_user_timezone, update_user_timezone,
     get_user_geo, update_user_location, get_user_content_language,
     replace_video_url_base, get_post_type, get_post_buyer_stage, get_post_status,
@@ -282,7 +286,9 @@ class PostRequest(BaseModel):
     email: Optional[str] = None
     status: Optional[PostStatus] = PostStatus.PENDING
     carousel_slides: Optional[List[str]] = None
-    use_avatar: Optional[bool] = False
+    # None = no compose-time choice, so the user's per-content-type avatar opt-ins decide
+    # (issue #744). True/False is an explicit override for this post.
+    use_avatar: Optional[bool] = None
     video_quality: Optional[str] = "standard"  # standard | premium | premium_top
     rejection_reason: Optional[str] = Field(default=None, max_length=1000)
 
@@ -309,6 +315,23 @@ class UpgradeVideoRequest(BaseModel):
 
 class AvatarActivateRequest(BaseModel):
     session_token: str
+
+
+class AvatarAttributesRequest(BaseModel):
+    """Self-declared likeness attributes (issue #744, decision 3A). Both fields are optional and
+    a null clears the declaration — an undeclared attribute renders no subject clause at all."""
+    session_token: str
+    gender_presentation: Optional[str] = None
+    age_band: Optional[str] = None
+
+
+class AvatarPreferencesRequest(BaseModel):
+    """Per-user avatar guardrails. Every flag is optional so the SPA can PATCH one toggle."""
+    session_token: str
+    avatar_disabled: Optional[bool] = None
+    avatar_use_post_image: Optional[bool] = None
+    avatar_use_carousel: Optional[bool] = None
+    avatar_use_video: Optional[bool] = None
 
 
 class BulkUpdateRequest(BaseModel):
@@ -1520,7 +1543,8 @@ def schedule_post(post: PostRequest) -> ResponseModel:
     if insert_post(post.email, post.content, post.scheduled_datetime, post.post_type,
                    video_url=post.video_url, carousel_slides=post.carousel_slides,
                    video_quality=post.video_quality or "standard",
-                   status=post.status or PostStatus.PENDING):
+                   status=post.status or PostStatus.PENDING,
+                   use_avatar=post.use_avatar):
         return ResponseModel(status_code=200, detail="Post scheduled successfully")
     else:
         raise HTTPException(status_code=404, detail="Could not schedule post")
@@ -1722,6 +1746,10 @@ def update_post(post_id: int, post: PostRequest) -> ResponseModel:
         reason = (post.rejection_reason or "").strip() or None
         if reason:
             update_db_post_rejection_reason(post_id, reason)
+        # Only on an explicit value: omitting the field means "leave my choice alone", not
+        # "clear it" (issue #744 — use_avatar is three-valued).
+        if post.use_avatar is not None:
+            update_post_use_avatar(post_id, post.use_avatar)
         return ResponseModel(status_code=200, detail="Post updated successful")
     else:
         raise HTTPException(status_code=405, detail="Post could not be updated")
@@ -4088,6 +4116,7 @@ def sync_avatar_training_status(avatar_db_id: int, session_token: str) -> Respon
         raise HTTPException(status_code=404, detail="Training not found")
 
     if match["status"] in ("succeeded", "failed", "canceled"):
+        _queue_avatar_samples_if_due(match, user_id)
         return ResponseModel(status_code=200, detail=match)
 
     from cqc_lem.utilities.avatar.replicate_avatar import poll_training_status
@@ -4096,7 +4125,196 @@ def sync_avatar_training_status(avatar_db_id: int, session_token: str) -> Respon
     match["status"] = new_status
     if model_ref:
         match["model_ref"] = model_ref
+    _queue_avatar_samples_if_due(match, user_id)
     return ResponseModel(status_code=200, detail=match)
+
+
+def _queue_avatar_samples_if_due(avatar: dict, user_id: int) -> None:
+    """Kick off the preview renders the moment a training reaches 'succeeded' (issue #744).
+
+    The claim is what makes this idempotent: a repeated (or double-clicked) status poll arriving
+    while the first render is still running loses the claim and queues nothing, so polling cannot
+    spend inference money over and over. Best-effort: a broker hiccup must not fail the status
+    read — the claim is handed back so the next poll can try again.
+    """
+    if avatar.get("status") != "succeeded" or not avatar.get("model_ref"):
+        return
+    if avatar.get("sample_paths"):
+        return
+    if not claim_avatar_sample_render(user_id, avatar["id"]):
+        return
+    try:
+        from cqc_lem.app.run_avatar import render_avatar_samples_task
+        # retry=False: this is a side-effect of a status poll the SPA makes every 20s. A broker
+        # outage must fail it in one attempt, not hold the HTTP response open through a retry
+        # ladder — the next poll (or the explicit Regenerate button) queues it again.
+        render_avatar_samples_task.apply_async(
+            kwargs={"avatar_id": avatar["id"], "user_id": user_id}, retry=False)
+    except Exception as e:
+        release_avatar_sample_render(user_id, avatar["id"])
+        log_error("Could not queue avatar sample rendering", exc=e, user_id=user_id)
+
+
+def _require_own_avatar(user_id: int, avatar_db_id: int) -> dict:
+    avatar = get_avatar_training(user_id, avatar_db_id)
+    if not avatar:
+        raise HTTPException(status_code=404, detail="Training not found")
+    return avatar
+
+
+@router.get("/avatar/training/{avatar_db_id}/samples", responses={
+    200: {"description": "Avatar samples returned"},
+    **{k: v for k, v in error_responses.items() if k in [401, 404]}
+})
+def get_avatar_samples(avatar_db_id: int, session_token: str) -> ResponseModel:
+    """The rendered preview set plus everything the approval UI needs to decide."""
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    avatar = _require_own_avatar(user_id, avatar_db_id)
+    from cqc_lem.utilities.avatar.samples import sample_payload
+    from cqc_lem.utilities.env_constants import AVATAR_SAMPLE_REGEN_MAX
+    return ResponseModel(status_code=200, detail={
+        "avatar_id": avatar["id"],
+        "status": avatar["status"],
+        "approval_status": avatar["approval_status"],
+        "samples": sample_payload(avatar),
+        "samples_generated_at": avatar["samples_generated_at"],
+        "sample_regen_count": avatar["sample_regen_count"],
+        "sample_regen_remaining": max(0, AVATAR_SAMPLE_REGEN_MAX - avatar["sample_regen_count"]),
+        "gender_presentation": avatar["gender_presentation"],
+        "age_band": avatar["age_band"],
+        "attributes_confirmed_at": avatar["attributes_confirmed_at"],
+    })
+
+
+@router.post("/avatar/training/{avatar_db_id}/samples", responses={
+    200: {"description": "Sample regeneration queued"},
+    **{k: v for k, v in error_responses.items() if k in [400, 401, 404, 429, 500]}
+})
+def regenerate_avatar_samples(avatar_db_id: int, request: AvatarActivateRequest) -> ResponseModel:
+    """Re-roll the preview set. Capped by AVATAR_SAMPLE_REGEN_MAX on top of the credit ledger —
+    samples cost inference money but no training credit, so without a cap this is unbounded."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    avatar = _require_own_avatar(user_id, avatar_db_id)
+    if avatar["status"] != "succeeded" or not avatar["model_ref"]:
+        raise HTTPException(status_code=400, detail="Only a succeeded training can render samples")
+
+    from cqc_lem.utilities.env_constants import AVATAR_SAMPLE_REGEN_MAX
+    # Reserve the re-roll in the same statement that checks the cap. Reading the counter and
+    # queueing separately let a double-click (the counter only moves when a render FINISHES)
+    # queue two full three-image renders against one reading — an unbounded spend is exactly
+    # what the cap exists to stop. The task hands the reservation back if it renders nothing.
+    if not claim_avatar_sample_render(user_id, avatar_db_id, regeneration=True,
+                                      max_regenerations=AVATAR_SAMPLE_REGEN_MAX):
+        raise HTTPException(
+            status_code=429,
+            detail=f"Sample regeneration limit reached ({AVATAR_SAMPLE_REGEN_MAX}). "
+                   f"Train a new avatar with better photos instead.")
+
+    try:
+        from cqc_lem.app.run_avatar import render_avatar_samples_task
+        render_avatar_samples_task.apply_async(
+            kwargs={"avatar_id": avatar_db_id, "user_id": user_id, "count_regeneration": True})
+    except Exception as e:
+        release_avatar_sample_render(user_id, avatar_db_id, regeneration=True)
+        log_error("Could not queue avatar sample regeneration", exc=e, user_id=user_id)
+        raise HTTPException(status_code=500, detail="Could not queue sample regeneration")
+    return ResponseModel(status_code=200, detail="Sample regeneration queued")
+
+
+@router.put("/avatar/training/{avatar_db_id}/attributes", responses={
+    200: {"description": "Attributes saved"},
+    **{k: v for k, v in error_responses.items() if k in [401, 404, 500]}
+})
+def update_avatar_attributes_endpoint(avatar_db_id: int,
+                                      request: AvatarAttributesRequest) -> ResponseModel:
+    """Store the user's SELF-DECLARED likeness attributes (issue #744, decision 3A).
+
+    Nothing here inspects the user's photos — an unrecognized value is stored as NULL, which
+    renders an empty subject clause rather than a guess.
+    """
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    _require_own_avatar(user_id, avatar_db_id)
+    if not update_avatar_attributes(user_id, avatar_db_id,
+                                    request.gender_presentation, request.age_band):
+        raise HTTPException(status_code=500, detail="Could not save avatar attributes")
+    return ResponseModel(status_code=200, detail=get_avatar_training(user_id, avatar_db_id))
+
+
+@router.post("/avatar/training/{avatar_db_id}/approve", responses={
+    200: {"description": "Avatar approved"},
+    **{k: v for k, v in error_responses.items() if k in [400, 401, 404, 500]}
+})
+def approve_avatar(avatar_db_id: int, request: AvatarActivateRequest) -> ResponseModel:
+    """Approve an avatar for use. Requires samples to exist — approving an avatar nobody has
+    seen is the exact blind activation this gate was added to remove."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    avatar = _require_own_avatar(user_id, avatar_db_id)
+    if avatar["status"] != "succeeded":
+        raise HTTPException(status_code=400, detail="Only succeeded trainings can be approved")
+    if not avatar["sample_paths"]:
+        raise HTTPException(status_code=400,
+                            detail="Render preview samples before approving this avatar")
+
+    if not set_avatar_approval(user_id, avatar_db_id, AVATAR_APPROVAL_APPROVED):
+        raise HTTPException(status_code=500, detail="Could not approve avatar")
+    return ResponseModel(status_code=200, detail="Avatar approved")
+
+
+@router.post("/avatar/training/{avatar_db_id}/reject", responses={
+    200: {"description": "Avatar rejected"},
+    **{k: v for k, v in error_responses.items() if k in [401, 404, 500]}
+})
+def reject_avatar(avatar_db_id: int, request: AvatarActivateRequest) -> ResponseModel:
+    """Reject an avatar. Also deactivates it — leaving a rejected likeness active would keep
+    publishing exactly the media the user just rejected."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    _require_own_avatar(user_id, avatar_db_id)
+    if not set_avatar_approval(user_id, avatar_db_id, AVATAR_APPROVAL_REJECTED):
+        raise HTTPException(status_code=500, detail="Could not reject avatar")
+    return ResponseModel(status_code=200, detail="Avatar rejected")
+
+
+@router.get("/avatar/preferences", responses={
+    200: {"description": "Avatar guardrail preferences returned"},
+    **{k: v for k, v in error_responses.items() if k in [401]}
+})
+def get_avatar_preferences_endpoint(session_token: str) -> ResponseModel:
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return ResponseModel(status_code=200, detail=get_avatar_preferences(user_id))
+
+
+@router.put("/avatar/preferences", responses={
+    200: {"description": "Avatar guardrail preferences updated"},
+    **{k: v for k, v in error_responses.items() if k in [400, 401, 500]}
+})
+def update_avatar_preferences_endpoint(request: AvatarPreferencesRequest) -> ResponseModel:
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    prefs = request.model_dump(exclude={"session_token"}, exclude_none=True)
+    if not prefs:
+        raise HTTPException(status_code=400, detail="No preferences supplied")
+    if not update_avatar_preferences(user_id, prefs):
+        raise HTTPException(status_code=500, detail="Could not update avatar preferences")
+    return ResponseModel(status_code=200, detail=get_avatar_preferences(user_id))
 
 
 @router.put("/avatar/training/{avatar_db_id}/activate", responses={
@@ -4108,12 +4326,12 @@ def activate_avatar(avatar_db_id: int, request: AvatarActivateRequest) -> Respon
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
 
-    trainings = get_avatar_trainings(user_id)
-    match = next((t for t in trainings if t["id"] == avatar_db_id), None)
-    if not match:
-        raise HTTPException(status_code=404, detail="Training not found")
+    match = _require_own_avatar(user_id, avatar_db_id)
     if match["status"] != "succeeded":
         raise HTTPException(status_code=400, detail="Only succeeded trainings can be activated")
+    if match["approval_status"] != AVATAR_APPROVAL_APPROVED:
+        raise HTTPException(status_code=400,
+                            detail="Review the preview samples and approve this avatar first")
 
     if set_active_avatar(user_id, avatar_db_id):
         return ResponseModel(status_code=200, detail="Avatar activated")

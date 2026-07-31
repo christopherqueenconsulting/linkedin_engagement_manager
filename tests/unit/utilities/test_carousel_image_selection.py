@@ -145,16 +145,37 @@ class TestAvatarGating:
         assert _user_has_active_avatar(None) is False
 
     def test_active_avatar_true(self):
-        avatar = {"status": "succeeded", "model_ref": "user/model:v1"}
-        with patch("cqc_lem.utilities.db.get_active_avatar", return_value=avatar):
+        avatar = {"status": "succeeded", "model_ref": "user/model:v1",
+                  "approval_status": "approved"}
+        with patch("cqc_lem.utilities.db.get_avatar_preferences",
+                   return_value={"avatar_use_carousel": True}), \
+             patch("cqc_lem.utilities.db.get_post_use_avatar", return_value=None), \
+             patch("cqc_lem.utilities.db.get_active_avatar", return_value=avatar):
             assert _user_has_active_avatar(5) is True
 
     def test_incomplete_avatar_false(self):
-        with patch("cqc_lem.utilities.db.get_active_avatar", return_value={"status": "training"}):
+        with patch("cqc_lem.utilities.db.get_avatar_preferences",
+                   return_value={"avatar_use_carousel": True}), \
+             patch("cqc_lem.utilities.db.get_post_use_avatar", return_value=None), \
+             patch("cqc_lem.utilities.db.get_active_avatar", return_value={"status": "training"}):
             assert _user_has_active_avatar(5) is False
 
     def test_avatar_lookup_error_false(self):
-        with patch("cqc_lem.utilities.db.get_active_avatar", side_effect=Exception("db down")):
+        with patch("cqc_lem.utilities.db.get_avatar_preferences",
+                   return_value={"avatar_use_carousel": True}), \
+             patch("cqc_lem.utilities.db.get_post_use_avatar", return_value=None), \
+             patch("cqc_lem.utilities.db.get_active_avatar", side_effect=Exception("db down")):
+            assert _user_has_active_avatar(5) is False
+
+    def test_carousel_opt_in_off_false(self):
+        """Guardrail (issue #744): an approved avatar is still not used until the user opts
+        carousels in."""
+        avatar = {"status": "succeeded", "model_ref": "user/model:v1",
+                  "approval_status": "approved"}
+        with patch("cqc_lem.utilities.db.get_avatar_preferences",
+                   return_value={"avatar_use_carousel": False}), \
+             patch("cqc_lem.utilities.db.get_post_use_avatar", return_value=None), \
+             patch("cqc_lem.utilities.db.get_active_avatar", return_value=avatar):
             assert _user_has_active_avatar(5) is False
 
     def test_replicate_disabled_false(self):
@@ -167,9 +188,13 @@ class TestAvatarGating:
             assert _should_generate_with_replicate(1, 2, 5, "educational") is False
 
     def test_replicate_all_gates_pass_true(self):
-        avatar = {"status": "succeeded", "model_ref": "user/model:v1"}
+        avatar = {"status": "succeeded", "model_ref": "user/model:v1",
+                  "approval_status": "approved"}
         with patch(f"{ENV}.CAROUSEL_REPLICATE_ENABLED", True), \
              patch(f"{ENV}.CAROUSEL_REPLICATE_RATE", 1.0), \
+             patch("cqc_lem.utilities.db.get_avatar_preferences",
+                   return_value={"avatar_use_carousel": True}), \
+             patch("cqc_lem.utilities.db.get_post_use_avatar", return_value=None), \
              patch("cqc_lem.utilities.db.get_active_avatar", return_value=avatar):
             assert _should_generate_with_replicate(1, 2, 5, "personal_story") is True
 
@@ -188,6 +213,39 @@ class TestGenerateAvatarSlideImage:
     def test_failure_returns_none(self):
         with patch("cqc_lem.utilities.ai.ai_helper.generate_post_image", side_effect=Exception("api")):
             assert _generate_avatar_slide_image("team", 5) is None
+
+    def test_routes_through_the_carousel_surface_with_the_post_id(self):
+        with patch("cqc_lem.utilities.ai.ai_helper.generate_post_image",
+                   return_value="/tmp/gen.png") as gen:
+            _generate_avatar_slide_image("team retro", 5, 9, "personal_story")
+        assert gen.call_args.kwargs["surface"] == "carousel"
+        assert gen.call_args.kwargs["post_id"] == 9
+        assert gen.call_args.kwargs["depicts_person"] is True
+
+    def test_object_query_is_not_routed_to_the_lora(self):
+        """Prepending the trigger word to 'quarterly dashboard metrics' asked the LoRA to insert
+        the user's face into a scene never written to contain a person (issue #744)."""
+        with patch("cqc_lem.utilities.ai.ai_helper.generate_post_image",
+                   return_value="/tmp/gen.png") as gen:
+            _generate_avatar_slide_image("quarterly dashboard metrics", 5, 9, "educational")
+        assert gen.call_args.kwargs["depicts_person"] is False
+
+
+@pytest.mark.unit
+class TestQueryDepictsPerson:
+    def test_personal_story_always_depicts_the_author(self):
+        assert cc._query_depicts_person("quarterly dashboard", "personal_story") is True
+
+    @pytest.mark.parametrize("query", ["a team retro", "client meeting", "founder portrait"])
+    def test_person_terms_detected(self, query):
+        assert cc._query_depicts_person(query, "educational") is True
+
+    @pytest.mark.parametrize("query", ["dashboard metrics", "server rack", "", None])
+    def test_object_queries_rejected(self, query):
+        assert cc._query_depicts_person(query, "educational") is False
+
+    def test_punctuation_does_not_hide_a_person_term(self):
+        assert cc._query_depicts_person("(team), retro", "educational") is True
 
 
 @pytest.mark.unit

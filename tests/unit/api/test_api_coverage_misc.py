@@ -684,11 +684,63 @@ class TestAvatarEndpoints:
         assert resp.json()["detail"] == trainings
 
     def test_sync_training_status_terminal_state_returns_as_is(self, client):
-        trainings = [{"id": 5, "training_id": "t5", "status": "succeeded"}]
+        trainings = [{"id": 5, "training_id": "t5", "status": "succeeded",
+                      "model_ref": "owner/m:v1", "sample_paths": [{"label": "headshot",
+                                                                   "path": "images/a/h.webp"}]}]
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.get_avatar_trainings", return_value=trainings):
             resp = client.get(f"/api/avatar/training/5/status?session_token={_TOK}")
         assert resp.json()["detail"]["status"] == "succeeded"
+
+    def test_sync_training_status_queues_samples_on_first_success(self, client):
+        trainings = [{"id": 5, "training_id": "t5", "status": "processing", "model_ref": None,
+                      "sample_paths": []}]
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.get_avatar_trainings", return_value=trainings), \
+             patch("cqc_lem.utilities.avatar.replicate_avatar.poll_training_status",
+                   return_value=("succeeded", "owner/model:v1")), \
+             patch(f"{_M}.update_avatar_training_status"), \
+             patch(f"{_M}.claim_avatar_sample_render", return_value=True) as claim, \
+             patch("cqc_lem.app.run_avatar.render_avatar_samples_task.apply_async") as queued:
+            resp = client.get(f"/api/avatar/training/5/status?session_token={_TOK}")
+        assert resp.status_code == 200
+        assert queued.call_args.kwargs["kwargs"] == {"avatar_id": 5, "user_id": _UID}
+        claim.assert_called_once_with(_UID, 5)
+
+    def test_sync_training_status_second_poll_mid_render_queues_nothing(self, client):
+        """A double-clicked Refresh used to queue a second full three-image render."""
+        trainings = [{"id": 5, "training_id": "t5", "status": "succeeded",
+                      "model_ref": "owner/m:v1", "sample_paths": []}]
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.get_avatar_trainings", return_value=trainings), \
+             patch(f"{_M}.claim_avatar_sample_render", return_value=False), \
+             patch("cqc_lem.app.run_avatar.render_avatar_samples_task.apply_async") as queued:
+            resp = client.get(f"/api/avatar/training/5/status?session_token={_TOK}")
+        assert resp.status_code == 200
+        queued.assert_not_called()
+
+    def test_sync_training_status_broker_failure_releases_the_claim(self, client):
+        trainings = [{"id": 5, "training_id": "t5", "status": "succeeded",
+                      "model_ref": "owner/m:v1", "sample_paths": []}]
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.get_avatar_trainings", return_value=trainings), \
+             patch(f"{_M}.claim_avatar_sample_render", return_value=True), \
+             patch(f"{_M}.release_avatar_sample_render") as released, \
+             patch("cqc_lem.app.run_avatar.render_avatar_samples_task.apply_async",
+                   side_effect=RuntimeError("broker down")):
+            resp = client.get(f"/api/avatar/training/5/status?session_token={_TOK}")
+        assert resp.status_code == 200
+        released.assert_called_once_with(_UID, 5)
+
+    def test_sync_training_status_does_not_requeue_when_samples_exist(self, client):
+        trainings = [{"id": 5, "training_id": "t5", "status": "succeeded",
+                      "model_ref": "owner/m:v1",
+                      "sample_paths": [{"label": "headshot", "path": "images/a/h.webp"}]}]
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.get_avatar_trainings", return_value=trainings), \
+             patch("cqc_lem.app.run_avatar.render_avatar_samples_task.apply_async") as queued:
+            client.get(f"/api/avatar/training/5/status?session_token={_TOK}")
+        queued.assert_not_called()
 
     def test_sync_training_status_polls_replicate_for_running(self, client):
         trainings = [{"id": 5, "training_id": "t5", "status": "processing",
@@ -697,6 +749,8 @@ class TestAvatarEndpoints:
              patch(f"{_M}.get_avatar_trainings", return_value=trainings), \
              patch("cqc_lem.utilities.avatar.replicate_avatar.poll_training_status",
                    return_value=("succeeded", "owner/model:v1")), \
+             patch(f"{_M}.claim_avatar_sample_render", return_value=True), \
+             patch("cqc_lem.app.run_avatar.render_avatar_samples_task.apply_async"), \
              patch(f"{_M}.update_avatar_training_status") as upd:
             resp = client.get(f"/api/avatar/training/5/status?session_token={_TOK}")
         detail = resp.json()["detail"]
@@ -710,26 +764,40 @@ class TestAvatarEndpoints:
         assert resp.status_code == 404
 
     def test_activate_avatar_success(self, client):
-        trainings = [{"id": 5, "training_id": "t5", "status": "succeeded"}]
+        avatar = {"id": 5, "training_id": "t5", "status": "succeeded",
+                  "approval_status": "approved"}
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_avatar_trainings", return_value=trainings), \
+             patch(f"{_M}.get_avatar_training", return_value=avatar), \
              patch(f"{_M}.set_active_avatar", return_value=True) as act:
             resp = client.put("/api/avatar/training/5/activate",
                               json={"session_token": _TOK})
         assert resp.status_code == 200
         act.assert_called_once_with(_UID, 5)
 
-    def test_activate_avatar_rejects_unfinished_training(self, client):
-        trainings = [{"id": 5, "training_id": "t5", "status": "processing"}]
+    def test_activate_avatar_rejects_unapproved(self, client):
+        """The approval gate (issue #744): a succeeded-but-unreviewed avatar cannot go live."""
+        avatar = {"id": 5, "training_id": "t5", "status": "succeeded",
+                  "approval_status": "pending"}
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_avatar_trainings", return_value=trainings):
+             patch(f"{_M}.get_avatar_training", return_value=avatar), \
+             patch(f"{_M}.set_active_avatar") as act:
+            resp = client.put("/api/avatar/training/5/activate",
+                              json={"session_token": _TOK})
+        assert resp.status_code == 400
+        act.assert_not_called()
+
+    def test_activate_avatar_rejects_unfinished_training(self, client):
+        avatar = {"id": 5, "training_id": "t5", "status": "processing",
+                  "approval_status": "pending"}
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.get_avatar_training", return_value=avatar):
             resp = client.put("/api/avatar/training/5/activate",
                               json={"session_token": _TOK})
         assert resp.status_code == 400
 
     def test_activate_avatar_404(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_avatar_trainings", return_value=[]):
+             patch(f"{_M}.get_avatar_training", return_value=None):
             resp = client.put("/api/avatar/training/99/activate",
                               json={"session_token": _TOK})
         assert resp.status_code == 404

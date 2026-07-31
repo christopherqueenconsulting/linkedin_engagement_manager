@@ -116,10 +116,12 @@ class TestGenerateImageWithAvatar:
         ) as mock_flux:
             from cqc_lem.utilities.avatar.replicate_avatar import generate_image_with_avatar
 
-            result = generate_image_with_avatar("a portrait photo", "testuser/model:v1")
+            result = generate_image_with_avatar("a portrait photo", "testuser/model:v1",
+                                                ratio="9:16")
 
-            mock_flux.assert_called_once_with("a portrait photo", ref="testuser/model:v1")
-            assert result == "/assets/images/replicate/test/out.webp"
+            mock_flux.assert_called_once_with("a portrait photo", ref="testuser/model:v1",
+                                              aspect_ratio="9:16")
+            assert result == ("/assets/images/replicate/test/out.webp", True)
 
     def test_falls_back_to_base_flux_on_error(self):
         with patch(
@@ -131,10 +133,14 @@ class TestGenerateImageWithAvatar:
         ) as mock_fallback:
             from cqc_lem.utilities.avatar.replicate_avatar import generate_image_with_avatar
 
-            result = generate_image_with_avatar("a portrait photo", "testuser/model:v1")
+            result = generate_image_with_avatar("LEMAVTR42, a portrait photo",
+                                                "testuser/model:v1",
+                                                fallback_prompt="a portrait photo")
 
-            mock_fallback.assert_called_once()
-            assert result == "/assets/images/replicate/fallback/out.webp"
+            # The base model gets the CLEAN prompt — the LoRA trigger word is a nonsense token
+            # to it — and used_avatar is False so the caller can't claim avatar provenance.
+            mock_fallback.assert_called_once_with("a portrait photo", ratio="1:1")
+            assert result == ("/assets/images/replicate/fallback/out.webp", False)
 
 
 @pytest.mark.unit
@@ -149,11 +155,13 @@ class TestGeneratePostImage:
         }
         # Patch generate_image_with_avatar at its source module so the lazy import
         # inside generate_post_image picks up the mock.
-        with patch("cqc_lem.utilities.db.get_active_avatar", return_value=active_avatar), \
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for",
+                   return_value=active_avatar), \
              patch(
                  "cqc_lem.utilities.avatar.replicate_avatar.generate_image_with_avatar",
-                 return_value="/avatar/image.webp",
-             ) as mock_gen:
+                 return_value=("/avatar/image.webp", True),
+             ) as mock_gen, \
+             patch("cqc_lem.utilities.ai.ai_helper._record_avatar_media"):
             from cqc_lem.utilities.ai.ai_helper import generate_post_image
 
             result = generate_post_image("professional headshot", 42)
@@ -163,7 +171,7 @@ class TestGeneratePostImage:
             assert "LEMAVTR42" in called_prompt
 
     def test_falls_back_when_no_active_avatar(self):
-        with patch("cqc_lem.utilities.db.get_active_avatar", return_value=None), \
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=None), \
              patch(
                  "cqc_lem.utilities.ai.ai_helper.generate_flux1_image_from_prompt",
                  return_value="/flux/image.webp",
