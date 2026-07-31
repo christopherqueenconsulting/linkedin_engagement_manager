@@ -1377,31 +1377,35 @@ async def linkedin_verification_pin_inbound(request: Request) -> ResponseModel:
 
 
 _GMAIL_CONFIRM_KEY = "linkedin:gmail_forward_confirm:{user_id}"
-# A pending record is transient (the code fallback goes stale); a CONFIRMED one is not. The Gmail
-# filter is set up ONCE and forwards indefinitely, so expiring a proven-working record re-raised the
-# "forwarding is not confirmed" warning a week later on a setup that was fine (issue #813).
-_GMAIL_PENDING_TTL_SECONDS = 7 * 24 * 60 * 60
+# What goes stale is the CODE fallback, not the fact that Gmail asked us to verify the address. The
+# record itself is what the UI reads to tell "never started" apart from "waiting on the first
+# forwarded email", and neither the Gmail filter nor the user's progress through it expires — an
+# expiring record put a fine setup back on "Forwarding not confirmed yet" (issue #813). So no record
+# carries a TTL; only the code is dropped once it is too old to be worth offering.
+_GMAIL_CODE_FRESH_SECONDS = 7 * 24 * 60 * 60
 
 
-def _store_gmail_forward_confirmation(user_id: int, record: "dict") -> bool:
-    """Persist forwarding status; True when something was written. Confirmed records never expire and
-    are never downgraded by a later pending one — evidence that the chain worked does not stop being
-    evidence."""
+def _store_gmail_forward_confirmation(user_id: int, record: "dict", quiet: bool = False) -> bool:
+    """Persist forwarding status; True when something was written. Confirmed records are never
+    downgraded by a later pending one — evidence that the chain worked does not stop being evidence.
+    Pass quiet=True on per-email paths so one Redis outage can't turn into a warning flood."""
     try:
         from cqc_lem.utilities.linkedin.rate_limit import _redis_client
         client = _redis_client()
         if client is None:
             return False
-        if record.get("confirmed"):
-            client.set(_GMAIL_CONFIRM_KEY.format(user_id=user_id), json.dumps(record))
-            return True
-        if (get_gmail_forward_confirmation(user_id) or {}).get("confirmed"):
-            return False
-        client.set(_GMAIL_CONFIRM_KEY.format(user_id=user_id), json.dumps(record),
-                   ex=_GMAIL_PENDING_TTL_SECONDS)
+        if not record.get("confirmed"):
+            if (get_gmail_forward_confirmation(user_id) or {}).get("confirmed"):
+                return False
+            if record.get("code"):
+                record = {**record, "code_expires_at": int(time.time()) + _GMAIL_CODE_FRESH_SECONDS}
+        client.set(_GMAIL_CONFIRM_KEY.format(user_id=user_id), json.dumps(record))
         return True
     except Exception as e:
-        log_warning("Could not store Gmail forwarding confirmation result", exc=e, user_id=user_id)
+        # A repeated log_warning is re-emitted at ERROR and files a defect (utilities/CLAUDE.md), so
+        # the path that runs on every inbound email must not warn per email.
+        (log_debug if quiet else log_warning)(
+            "Could not store Gmail forwarding confirmation result", exc=e, user_id=user_id)
         return False
 
 
@@ -1415,7 +1419,8 @@ def _record_forwarding_confirmed_by_delivery(user_id: int) -> None:
         return
     # Only announce a real state change — with Redis down the store is a no-op, and logging per
     # inbound email would turn one unavailable dependency into a flood.
-    if _store_gmail_forward_confirmation(user_id, {"confirmed": True, "source": "forwarded_email"}):
+    if _store_gmail_forward_confirmation(user_id, {"confirmed": True, "source": "forwarded_email"},
+                                         quiet=True):
         log_info("Gmail forwarding confirmed by an arriving LinkedIn notification", user_id=user_id)
 
 
@@ -1480,7 +1485,13 @@ def get_gmail_forward_confirmation(user_id: int) -> "dict | None":
         raw = client.get(_GMAIL_CONFIRM_KEY.format(user_id=user_id))
         if not raw:
             return None
-        return json.loads(raw.decode() if isinstance(raw, (bytes, bytearray)) else raw)
+        record = json.loads(raw.decode() if isinstance(raw, (bytes, bytearray)) else raw)
+        # The record outlives the code on purpose: keep reporting where the user got to, but stop
+        # offering a code Gmail no longer accepts.
+        expires_at = record.get("code_expires_at") if isinstance(record, dict) else None
+        if expires_at and time.time() > expires_at:
+            record.pop("code", None)
+        return record
     except Exception:
         return None
 

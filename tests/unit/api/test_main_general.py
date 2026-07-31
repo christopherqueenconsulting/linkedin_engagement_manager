@@ -1,5 +1,7 @@
 """Unit tests for general FastAPI endpoints in cqc_lem.api.main."""
 
+import time
+
 import pytest
 from unittest.mock import patch
 from datetime import datetime
@@ -646,7 +648,11 @@ class TestForwardingConfirmedByDelivery:
         assert resp.status_code == 200
         redis.set.assert_not_called()
 
-    def test_pending_confirmation_still_stored_with_a_ttl(self, client):
+    def test_pending_confirmation_outlives_the_code_it_carries(self, client):
+        # A TTL on the PENDING record is the same bug one step later: the user who added the address
+        # and is waiting on their first forwarded comment email would drop back to "Forwarding not
+        # confirmed yet — finish the 3-step setup" after a quiet week. Only the CODE goes stale.
+        import json
         redis = self._redis()
         body = "verify permission https://mail.google.com/mail/vf-x\nConfirmation code: 55667788"
         with patch("cqc_lem.utilities.db.get_user_id_by_reply_token", return_value=7), \
@@ -658,7 +664,42 @@ class TestForwardingConfirmedByDelivery:
                 "to": "reply+tok9@parse.example.com",
                 "from": "forwarding-noreply@google.com",
                 "subject": "Gmail Forwarding Confirmation", "text": body})
-        assert redis.set.call_args.kwargs["ex"] == 7 * 24 * 60 * 60
+        assert "ex" not in redis.set.call_args.kwargs
+        stored = json.loads(redis.set.call_args.args[1])
+        assert stored["confirmed"] is False
+        assert stored["code_expires_at"] > time.time()
+
+    def test_stale_code_is_dropped_but_the_record_survives(self):
+        from cqc_lem.api.main import get_gmail_forward_confirmation
+        redis = self._redis({"code": "55667788", "confirmed": False, "url_found": True,
+                             "code_expires_at": int(time.time()) - 1})
+        with patch(self._RL, return_value=redis):
+            record = get_gmail_forward_confirmation(7)
+        # Still "pending" for the UI (the record exists), but no code Gmail would reject.
+        assert record is not None and "code" not in record
+
+    def test_fresh_code_is_still_offered(self):
+        from cqc_lem.api.main import get_gmail_forward_confirmation
+        redis = self._redis({"code": "55667788", "confirmed": False,
+                             "code_expires_at": int(time.time()) + 60})
+        with patch(self._RL, return_value=redis):
+            assert get_gmail_forward_confirmation(7)["code"] == "55667788"
+
+    def test_redis_outage_on_the_delivery_path_does_not_warn(self, client):
+        # Runs per inbound email — a repeated log_warning re-emits at ERROR and files a defect.
+        redis = self._redis()
+        redis.set.side_effect = ConnectionError("redis down")
+        with patch("cqc_lem.utilities.db.get_user_id_by_reply_token", return_value=7), \
+             patch(f"{_MAIN}._reply_sweep_debounced", return_value=True), \
+             patch(f"{_MAIN}.sweep_reply_comments"), \
+             patch(f"{_MAIN}.log_warning") as warn, \
+             patch(self._RL, return_value=redis):
+            resp = client.post(self.BASE, data={
+                "to": "reply+tok9@parse.example.com",
+                "from": "messages-noreply@linkedin.com",
+                "subject": "Jane commented on your post"})
+        assert resp.status_code == 200
+        warn.assert_not_called()
 
 
 class TestSharedInboundRouting:
