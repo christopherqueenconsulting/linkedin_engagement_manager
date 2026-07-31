@@ -875,7 +875,7 @@ def _scroll_into_center(driver, element) -> None:
         driver.execute_script("arguments[0].scrollIntoView({block:'center'});", element)
         time.sleep(random.uniform(0.3, 0.8))
     except Exception:
-        pass
+        pass  # a stale element or a rejected scroll is not a failure — the click below decides
 
 
 def _focus_composer(driver, composer) -> None:
