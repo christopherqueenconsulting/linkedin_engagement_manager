@@ -1356,6 +1356,13 @@ AFFILIATE_REFERRAL_CONVERTED = "affiliate_referral_converted"
 AFFILIATE_REWARD_GRANTED = "affiliate_reward_granted"
 AFFILIATE_REWARD_REVOKED = "affiliate_reward_revoked"
 AFFILIATE_DISCLOSURE_BLOCKED = "affiliate_disclosure_blocked"
+# The (B) generator's own three moments (issue #770). `blocked` is the GENERATION-time refusal (a
+# draft that could not be made compliant), which is a different event from
+# `affiliate_disclosure_blocked` — that one is the publish gate catching content that arrived
+# undisclosed. Summing them would double-count one piece of content that failed twice.
+AFFILIATE_PROMO_GENERATED = "affiliate_promo_generated"
+AFFILIATE_PROMO_PUBLISHED = "affiliate_promo_published"
+AFFILIATE_PROMO_BLOCKED = "affiliate_promo_blocked"
 
 AFFILIATE_EVENTS = (
     AFFILIATE_ENROLLED,
@@ -1367,6 +1374,9 @@ AFFILIATE_EVENTS = (
     AFFILIATE_REWARD_GRANTED,
     AFFILIATE_REWARD_REVOKED,
     AFFILIATE_DISCLOSURE_BLOCKED,
+    AFFILIATE_PROMO_GENERATED,
+    AFFILIATE_PROMO_PUBLISHED,
+    AFFILIATE_PROMO_BLOCKED,
 )
 
 

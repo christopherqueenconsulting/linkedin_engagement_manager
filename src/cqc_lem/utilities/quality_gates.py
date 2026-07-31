@@ -20,6 +20,7 @@ GATE_MISSING_ASSET = "missing_asset"
 GATE_MEETING_CTA = "meeting_cta"
 GATE_FACT_GROUNDING = "fact_grounding"
 GATE_SLOP = "ai_slop"
+GATE_AFFILIATE_PROMO = "affiliate_promo"
 
 GATE_LABELS = {
     GATE_AUTHENTICITY: "Authenticity",
@@ -29,6 +30,7 @@ GATE_LABELS = {
     GATE_MEETING_CTA: "Meeting-ask CTA",
     GATE_FACT_GROUNDING: "Unverified specifics",
     GATE_SLOP: "AI-slop patterns",
+    GATE_AFFILIATE_PROMO: "Affiliate promotion",
 }
 
 # The user-tunable thresholds behind these gates, in the units the SPA edits them in. Bounds are
@@ -178,6 +180,26 @@ def slop_finding(hard_reasons: Optional[list] = None,
                      "invented specifics for what you cut."),
         score=float(len(hard)), threshold=0.0,
         details=hard[:10] + [f"(advisory) {w}" for w in warn[:5]])
+
+
+def affiliate_promo_finding(disclosure: Optional[str] = None) -> dict:
+    """Affiliate promotion published from the author's own account (issue #770).
+
+    This is the one gate that is not a quality verdict — the draft may be perfect and it is still
+    held. Consent to the program is a standing yes to LEM WRITING promotion; it is not a yes to any
+    particular sentence going out over the author's name, and an endorsement is the one post type
+    where "I never saw it before it published" is the outcome that costs them something. So every
+    affiliate post waits for an explicit approval, and re-scoring cannot clear it: only the author
+    pressing approve (or deleting the referral link) can."""
+    return build_finding(
+        GATE_AFFILIATE_PROMO,
+        explanation=("This post promotes LinkedIn Engagement Manager and carries your referral link, "
+                     "so it is a paid endorsement published under your name. Affiliate posts are "
+                     "never auto-scheduled — this one is waiting for you to read it and approve it."),
+        remediation=("Read it as your audience will. Approve it to schedule it, edit anything that "
+                     "does not sound like you, or delete the referral link and the disclosure line "
+                     "to turn it back into an ordinary post."),
+        details=[d for d in [str(disclosure or "").strip()] if d])
 
 
 def parse_gate_findings(raw: Any) -> list[dict]:

@@ -37,7 +37,8 @@ from cqc_lem.utilities.db import get_story_bank_entries, record_story_bank_use
 from cqc_lem.utilities.quality_gates import (authenticity_finding, similarity_finding,
                                              focus_finding, missing_asset_finding,
                                              meeting_cta_finding, fact_grounding_finding,
-                                             slop_finding, demoting_findings)
+                                             slop_finding, affiliate_promo_finding,
+                                             demoting_findings)
 from cqc_lem.utilities.ai.content_framework import select_blueprint, history_avoidance_directive, \
     find_most_similar, post_similarity_max, has_first_person_proof, shape_for_dwell, dwell_report, \
     dwell_score_min, requires_fact_anchor, fact_grounding_report, fact_retry_directive, \
@@ -361,12 +362,50 @@ def create_content(user_id: int, post_type: str, stage: str, post_id: int = None
         # native PDF instead of a multi-image share (see share_document_on_linkedin).
         content = create_carousel_content(user_id, stage, post_id)
     else:
-        content = create_text_post(user_id, stage, post_id=post_id, content_mix=content_mix,
-                                   day_weekday=day_weekday)
+        # Affiliate promotion (issue #770) CLAIMS this promo slot rather than adding a post beside
+        # it, which is what keeps LEM promotion inside the same 10% ceiling the author's own case
+        # studies live under. It writes only for a user who recorded (B) consent, on 1 in N promo
+        # slots; every other slot falls through to the ordinary case-study post unchanged.
+        content = _affiliate_promo_content(user_id, post_id, content_mix)
+        if content is None:
+            content = create_text_post(user_id, stage, post_id=post_id, content_mix=content_mix,
+                                       day_weekday=day_weekday)
         if content:
             content = content.strip()
 
     return content, video_url
+
+
+def _affiliate_promo_content(user_id: int, post_id: Optional[int],
+                             content_mix: Optional[str]) -> Optional[str]:
+    """The LEM-promotional post for this slot, or None to write the author's own post instead.
+
+    Never raises: the (B) writer is an opt-in extra, and a user who consented to it must not lose
+    the post they would otherwise have had because it failed."""
+    try:
+        from cqc_lem.utilities.marketing.affiliate_content import (claims_promo_slot,
+                                                                   generate_promo_post)
+        # Asked BEFORE the prefs/synthesis reads: the answer is no on almost every post, and a
+        # voice-synthesis read per planned post is a real cost to pay for an answer of "not this one".
+        if not claims_promo_slot(user_id, post_id, content_mix):
+            return None
+        return generate_promo_post(user_id, post_id=post_id, content_mix=content_mix,
+                                   prefs=_engagement_prefs_or_empty(user_id),
+                                   profile_synthesis=_profile_synthesis_or_none(user_id))
+    except Exception as e:
+        log_warning("Affiliate promo generation failed — writing the ordinary promo post instead",
+                    exc=e, user_id=user_id, post_id=post_id, task_name="create_content")
+        return None
+
+
+def _profile_synthesis_or_none(user_id: int) -> Optional[str]:
+    """The user's cached voice synthesis with no Selenium fallback — promotional copy is worth
+    matching the author's voice, never worth a browser session."""
+    try:
+        return get_or_create_profile_synthesis(user_id, load_profile_for_user(user_id))
+    except Exception as e:
+        myprint(f"No profile synthesis for user {user_id}: {e}")
+        return None
 
 
 def _fact_anchors(user_id: int) -> list:
@@ -1025,6 +1064,26 @@ def _score_and_persist_authenticity(user_id: int, post_id: int, content: str,
         myprint(f"Authenticity scoring skipped for post {post_id}: {e}")
 
 
+def _is_affiliate_promo(content: str, post_id: Optional[int]) -> bool:
+    """Whether this draft is affiliate promotion — scoped to the post's OWN author's referral code,
+    the same way the publish gate grades it, so a post that quotes somebody else's link is not held
+    as if it were this author's paid endorsement. Unreadable ownership reads as 'not affiliate': the
+    hold is a review courtesy, and the publish gate is what actually enforces the disclosure."""
+    try:
+        from cqc_lem.utilities.db import get_post_user_id
+        from cqc_lem.utilities.marketing.affiliate import is_affiliate_content
+        owner = get_post_user_id(post_id) if post_id is not None else None
+        # An owner we could not resolve must NOT fall through to `user_id=None`, which matches ANY
+        # member's referral code: that would hold somebody's post with "this is your paid
+        # endorsement" over a link that is not theirs.
+        if owner is None:
+            return False
+        return is_affiliate_content(content, user_id=owner)
+    except Exception as e:
+        myprint(f"Could not evaluate affiliate promotion for post {post_id}: {e}")
+        return False
+
+
 def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, str, None],
                         video_url: Optional[str] = None,
                         engagement_prefs: Optional[dict] = None,
@@ -1059,6 +1118,13 @@ def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, s
     # create_text_post only covers text posts, and a user can edit a meeting ask back in.
     if content and contains_meeting_ask(content):
         findings.append(meeting_cta_finding(meeting_ask_excerpts(content)))
+
+    # Affiliate promotion (issue #770): a paid endorsement under the author's name is never
+    # auto-scheduled, however well it scores. Derived from the CONTENT (the referral link), not from
+    # which generator wrote it, so a post the user pasted their own link into is held too.
+    if content and _is_affiliate_promo(content, post_id):
+        from cqc_lem.utilities.marketing.affiliate import disclosure_text
+        findings.append(affiliate_promo_finding(disclosure_text()))
 
     # Deterministic AI-slop lint (issue #625 / D1): the regeneration in `_review_generated_post`
     # gets first crack at these; anything still standing here HOLDS the post, with the exact

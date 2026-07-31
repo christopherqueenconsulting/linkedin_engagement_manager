@@ -258,6 +258,23 @@ AFFILIATE_DISCLOSURE_TEXT = get_constant_from_env(
 # Bumped whenever the (B) consent copy materially changes, so a stored consent can be told apart
 # from consent to a different ask.
 AFFILIATE_PROMO_CONSENT_VERSION = get_constant_from_env('AFFILIATE_PROMO_CONSENT_VERSION', default_value='v1')
+# The (B) GENERATOR (issue #770). This is a kill switch for the writer, NOT a way to turn (B) on:
+# recorded per-user consent is still the only thing that authorises promotional content, so with
+# this True and nobody consented, nothing is written. It exists so ops can stop the writer without
+# revoking anybody's consent.
+AFFILIATE_PROMO_CONTENT_ENABLED = isTrue(get_constant_from_env('AFFILIATE_PROMO_CONTENT_ENABLED', default_value='True'))
+# How many of the 70/20/10 governor's promo slots an affiliate post may claim: 1 in N. Affiliate
+# promotion never ADDS a post — it claims a slot the promo cadence already allowed — so the 10%
+# ceiling holds by construction and this only makes LEM promotion rarer than the author's own
+# case studies. 1 = every promo slot (still ≤10% of posts).
+AFFILIATE_PROMO_EVERY_N_PROMO_SLOTS = int(get_constant_from_env('AFFILIATE_PROMO_EVERY_N_PROMO_SLOTS', default_value='3'))
+# Per-day ceiling on generated promotional pieces, drawn through human_pacing like every other
+# per-day cap (so a pacing rest day writes none).
+AFFILIATE_PROMO_MAX_PER_DAY = int(get_constant_from_env('AFFILIATE_PROMO_MAX_PER_DAY', default_value='1'))
+# What the promotional copy is allowed to call the product. The writer may state NOTHING about it
+# that is not in affiliate_content.PRODUCT_FACTS, and this is the name those facts are about.
+AFFILIATE_PROMO_PRODUCT_NAME = get_constant_from_env('AFFILIATE_PROMO_PRODUCT_NAME',
+                                                     default_value='LinkedIn Engagement Manager')
 
 # Unit-economics inputs for the margin report (docs/cost-performance-margin-plan.md §C.1). Monthly
 # tier prices mirror the SPA pricing table — override per environment instead of editing code so a
