@@ -59,10 +59,20 @@ RUN npm run build
 # Best-effort by construction: no token (dev/local builds) or a failed upload must never fail a
 # release build — it only costs readable stack traces. The .map files are deleted either way, so a
 # build that skips the upload still never serves them.
+#
+# ca-certificates is installed inside the conditional, not in the stage setup, so a build with no
+# token doesn't pay for it. It is REQUIRED: posthog-cli is a Rust binary and node:22-slim carries no
+# system CA store, so its HTTP client panics before it ever authenticates —
+#   panicked ... reqwest::Error { kind: Builder, source: General("No CA certificates were loaded
+#   from the system") }
+# The `|| echo` swallowed that into a one-line "upload failed", which read like a bad token and hid
+# the real cause for an entire release. npm works regardless because it does its own TLS.
 RUN --mount=type=secret,id=posthog_cli_token \
     if [ -s /run/secrets/posthog_cli_token ] && [ -n "$POSTHOG_CLI_ENV_ID" ]; then \
       POSTHOG_CLI_TOKEN="$(cat /run/secrets/posthog_cli_token)"; export POSTHOG_CLI_TOKEN; \
-      ( npm install -g @posthog/cli \
+      ( apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates \
+        && rm -rf /var/lib/apt/lists/* \
+        && npm install -g @posthog/cli \
         && posthog-cli sourcemap inject --directory dist \
         && posthog-cli sourcemap upload --directory dist ) \
         || echo "posthog-cli source-map upload failed — shipping minified stacks"; \
