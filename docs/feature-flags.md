@@ -70,6 +70,30 @@ instead of silently evaluating to `False` inside a Celery task.
 | `tutorial-videos-enabled` | `TUTORIAL_VIDEOS_ENABLED` | `false` | marketing | The weekly tutorial producer (`video_tutorials.py`) AND the SPA section that embeds its output — one toggle covers both. System-scoped. |
 | `feed-fallback-when-empty-default` | `FEED_FALLBACK_WHEN_EMPTY_DEFAULT` | `true` | engagement | Fleet default for `feed_fallback_when_empty` for users with no SAVED engagement row. A saved per-user setting always wins. |
 | `cost-routing-enabled` | `COST_ROUTING_ENABLED` | `false` | cost | App side of cost-aware down-routing (`cost_routing.py`) — written into the published routing policy. System-scoped. |
+| `posthog-surveys-enabled` | `POSTHOG_SURVEYS_ENABLED` | `false` | growth | Gates the headless PostHog survey renderer (issue #653, `docs/surveys.md`). Keep OFF until the SPA bundle carries a `VITE_POSTHOG_KEY` and the surveys are launched. |
+
+## Provisioning
+
+`scripts/posthog_flags.py` creates these in PostHog from the registry itself — `utilities/flags.py`
+is the source of truth, so a new flag is one registry entry, not two edits that drift.
+
+```bash
+python scripts/posthog_flags.py --print-spec   # no key needed; shows the planned rollouts
+python scripts/posthog_flags.py --dry-run      # exit 2 when changes are pending
+python scripts/posthog_flags.py --apply
+```
+
+**The safety property:** each flag is created at the rollout that reproduces what it resolves to
+**today**. Every lookup currently falls back to `env_default()`, so a flag created at a different
+value changes production the moment it appears — no deploy, no log line, no error.
+`feed-fallback-when-empty-default` is the live example: it defaults to `true`, so it is provisioned
+at **100%**. Creating it at the obvious-looking 0% would silently flip the fleet engagement default
+for every user without a saved preferences row. The script derives the percentage rather than
+accepting one, so that mistake is not reachable by hand.
+
+Release conditions are rollout-percentage only, never person properties — `flags.py` evaluates
+locally, and a condition needing server-held person properties falls back to env in every Celery
+worker, which looks identical to the flag working.
 
 ## Adding a flag
 
