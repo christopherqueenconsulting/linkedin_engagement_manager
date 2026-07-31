@@ -226,13 +226,20 @@ Ordered by risk-reduction per unit of work. Items 1–2 are the reported product
   `users.avatar_use_post_image` / `_carousel` / `_video` (default **OFF**) → the approval gate. It
   **fails closed**: any error resolving the policy declines the avatar.
 - `PostRequest.use_avatar` — accepted and dropped before — is persisted by `schedule_post` and
-  `update_post`.
+  `update_post`. It stays **three-valued**: omitted means "follow my opt-ins", so `ComposePost.tsx`
+  sends it only once the author has actually moved the toggle, and shows the account opt-in for
+  that surface until they do. An untouched default-off toggle sending a plain `false` would be an
+  explicit per-post opt-out and would silently outrank the very toggles this section adds.
 - Provenance: `generate_post_image()` C2PA-signs every real avatar render and sets
   `posts.avatar_media`, which `_create_content_for_planned_post` reads so `_apply_ai_disclosure()`
   covers avatar images (carousel slides included), not just video. A base-Flux fallback render
   claims neither.
 - Sample regeneration is capped by `AVATAR_SAMPLE_REGEN_MAX` (default 3) on top of the credit
-  ledger — samples cost inference money but no training credit.
+  ledger — samples cost inference money but no training credit. The cap is **reserved in the
+  write** (`claim_avatar_sample_render`) before a render is queued, and the automatic first render
+  claims `samples_generated_at` the same way: a counter that only moves when a render finishes is
+  not a cap, because two clicks (or two status polls) both pass the same reading. A render that
+  ships no images hands the reservation back.
 - **Operator note:** every guardrail defaults OFF, including for accounts that already have an
   active avatar. After this migration an existing avatar must be previewed and approved, and its
   content types opted in, before it is used again. That is deliberate — a never-previewed avatar is

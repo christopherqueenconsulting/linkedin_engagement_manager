@@ -54,7 +54,9 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
   const [scheduledAt, setScheduledAt] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null)
-  const [useAvatar, setUseAvatar] = useState(false)
+  // null = the author never touched the toggle, so their account opt-ins decide (issue #744).
+  // Sending a plain `false` here would be an explicit per-post opt-out, which outranks those.
+  const [useAvatar, setUseAvatar] = useState<boolean | null>(null)
   const [videoQuality, setVideoQuality] = useState<'standard' | 'premium' | 'premium_top'>('standard')
 
   // Carousel AI generation state
@@ -72,6 +74,20 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
     queryFn: async () => {
       const r = await api.get('/avatar/credits', { params: { session_token: sessionToken } })
       return r.data.detail as { balance: number; active_avatar: { trigger_word: string; status: string } | null }
+    },
+    enabled: !!sessionToken,
+  })
+
+  const { data: avatarPrefs } = useQuery({
+    queryKey: ['avatar-preferences', sessionToken],
+    queryFn: async () => {
+      const r = await api.get('/avatar/preferences', { params: { session_token: sessionToken } })
+      return r.data.detail as {
+        avatar_disabled: boolean
+        avatar_use_post_image: boolean
+        avatar_use_carousel: boolean
+        avatar_use_video: boolean
+      }
     },
     enabled: !!sessionToken,
   })
@@ -110,6 +126,16 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
   const templates = templatesData ?? []
   const activeAvatar = avatarData?.active_avatar
   const hasActiveAvatar = activeAvatar?.status === 'succeeded'
+  // The Avatars-page opt-in for THIS surface is what the toggle shows until the author moves it,
+  // so an untouched toggle mirrors the account setting instead of contradicting it.
+  const avatarSurfaceDefault = !avatarPrefs || avatarPrefs.avatar_disabled
+    ? false
+    : postType === 'VIDEO'
+      ? avatarPrefs.avatar_use_video
+      : postType === 'CAROUSEL'
+        ? avatarPrefs.avatar_use_carousel
+        : avatarPrefs.avatar_use_post_image
+  const avatarChecked = (useAvatar ?? avatarSurfaceDefault) && hasActiveAvatar
   const MAX_CHARS = 3000
 
   const bestTimeSuggestion = scheduledAt ? getBestPostingTime(new Date(scheduledAt)) : null
@@ -184,7 +210,11 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
         scheduled_datetime: scheduledUtc,
         email,
         status,
-        use_avatar: postType !== 'TEXT' && useAvatar && hasActiveAvatar,
+      }
+      // Only send a compose-time choice when there IS one: the field is three-valued and an
+      // explicit false outranks the per-content-type opt-ins on the Avatars page (issue #744).
+      if (postType !== 'TEXT' && useAvatar !== null) {
+        payload.use_avatar = useAvatar && hasActiveAvatar
       }
       if (postType === 'VIDEO') {
         payload.video_url = videoUrl || null
@@ -505,6 +535,7 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
                 {hasActiveAvatar ? (
                   <p className="text-xs text-gray-500">
                     Uses <span className="font-mono font-semibold">{activeAvatar?.trigger_word}</span> in the image prompt
+                    {useAvatar === null && ' · following your Avatars settings'}
                   </p>
                 ) : (
                   <p className="text-xs text-gray-400">
@@ -519,7 +550,7 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
                 <input
                   type="checkbox"
                   className="sr-only peer"
-                  checked={useAvatar && hasActiveAvatar}
+                  checked={avatarChecked}
                   disabled={!hasActiveAvatar}
                   onChange={(e) => setUseAvatar(e.target.checked)}
                 />

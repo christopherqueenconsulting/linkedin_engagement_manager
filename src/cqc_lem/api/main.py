@@ -81,6 +81,7 @@ from cqc_lem.utilities.db import (
     update_avatar_training_status, set_active_avatar,
     get_avatar_trainings, get_active_avatar, get_avatar_training,
     update_avatar_attributes, set_avatar_approval,
+    claim_avatar_sample_render, release_avatar_sample_render,
     get_avatar_preferences, update_avatar_preferences, update_post_use_avatar,
     AVATAR_APPROVAL_APPROVED, AVATAR_APPROVAL_REJECTED,
     get_user_timezone, update_user_timezone,
@@ -4131,13 +4132,16 @@ def sync_avatar_training_status(avatar_db_id: int, session_token: str) -> Respon
 def _queue_avatar_samples_if_due(avatar: dict, user_id: int) -> None:
     """Kick off the preview renders the moment a training reaches 'succeeded' (issue #744).
 
-    Idempotent by the stored sample list, so polling the status endpoint repeatedly cannot spend
-    inference money over and over. Best-effort: a broker hiccup must not fail the status read —
-    the SPA's explicit "Regenerate samples" action is the recovery path.
+    The claim is what makes this idempotent: a repeated (or double-clicked) status poll arriving
+    while the first render is still running loses the claim and queues nothing, so polling cannot
+    spend inference money over and over. Best-effort: a broker hiccup must not fail the status
+    read — the claim is handed back so the next poll can try again.
     """
     if avatar.get("status") != "succeeded" or not avatar.get("model_ref"):
         return
     if avatar.get("sample_paths"):
+        return
+    if not claim_avatar_sample_render(user_id, avatar["id"]):
         return
     try:
         from cqc_lem.app.run_avatar import render_avatar_samples_task
@@ -4147,6 +4151,7 @@ def _queue_avatar_samples_if_due(avatar: dict, user_id: int) -> None:
         render_avatar_samples_task.apply_async(
             kwargs={"avatar_id": avatar["id"], "user_id": user_id}, retry=False)
     except Exception as e:
+        release_avatar_sample_render(user_id, avatar["id"])
         log_error("Could not queue avatar sample rendering", exc=e, user_id=user_id)
 
 
@@ -4186,7 +4191,7 @@ def get_avatar_samples(avatar_db_id: int, session_token: str) -> ResponseModel:
 
 @router.post("/avatar/training/{avatar_db_id}/samples", responses={
     200: {"description": "Sample regeneration queued"},
-    **{k: v for k, v in error_responses.items() if k in [400, 401, 404, 429]}
+    **{k: v for k, v in error_responses.items() if k in [400, 401, 404, 429, 500]}
 })
 def regenerate_avatar_samples(avatar_db_id: int, request: AvatarActivateRequest) -> ResponseModel:
     """Re-roll the preview set. Capped by AVATAR_SAMPLE_REGEN_MAX on top of the credit ledger —
@@ -4200,15 +4205,25 @@ def regenerate_avatar_samples(avatar_db_id: int, request: AvatarActivateRequest)
         raise HTTPException(status_code=400, detail="Only a succeeded training can render samples")
 
     from cqc_lem.utilities.env_constants import AVATAR_SAMPLE_REGEN_MAX
-    if avatar["sample_regen_count"] >= AVATAR_SAMPLE_REGEN_MAX:
+    # Reserve the re-roll in the same statement that checks the cap. Reading the counter and
+    # queueing separately let a double-click (the counter only moves when a render FINISHES)
+    # queue two full three-image renders against one reading — an unbounded spend is exactly
+    # what the cap exists to stop. The task hands the reservation back if it renders nothing.
+    if not claim_avatar_sample_render(user_id, avatar_db_id, regeneration=True,
+                                      max_regenerations=AVATAR_SAMPLE_REGEN_MAX):
         raise HTTPException(
             status_code=429,
             detail=f"Sample regeneration limit reached ({AVATAR_SAMPLE_REGEN_MAX}). "
                    f"Train a new avatar with better photos instead.")
 
-    from cqc_lem.app.run_avatar import render_avatar_samples_task
-    render_avatar_samples_task.apply_async(
-        kwargs={"avatar_id": avatar_db_id, "user_id": user_id, "count_regeneration": True})
+    try:
+        from cqc_lem.app.run_avatar import render_avatar_samples_task
+        render_avatar_samples_task.apply_async(
+            kwargs={"avatar_id": avatar_db_id, "user_id": user_id, "count_regeneration": True})
+    except Exception as e:
+        release_avatar_sample_render(user_id, avatar_db_id, regeneration=True)
+        log_error("Could not queue avatar sample regeneration", exc=e, user_id=user_id)
+        raise HTTPException(status_code=500, detail="Could not queue sample regeneration")
     return ResponseModel(status_code=200, detail="Sample regeneration queued")
 
 

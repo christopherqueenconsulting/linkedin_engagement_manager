@@ -7927,36 +7927,100 @@ def set_avatar_approval(user_id: int, avatar_id: int, status: str) -> bool:
         connection.close()
 
 
-def update_avatar_samples(avatar_id: int, sample_paths: list[dict],
-                          count_regeneration: bool = False) -> bool:
+def update_avatar_samples(avatar_id: int, sample_paths: list[dict]) -> bool:
     """Persist rendered sample assets for an avatar (one JSON list per row).
 
-    ``count_regeneration`` increments the counter the regeneration cap is enforced against — the
-    first automatic render after training must not spend one of the user's regenerations.
+    The regeneration counter is NOT touched here — it is reserved before any inference is paid
+    for by :func:`claim_avatar_sample_render`.
     """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
         payload = json.dumps(sample_paths or [])
-        if count_regeneration:
-            cursor.execute(
-                """UPDATE avatar_trainings
-                   SET sample_paths = %s, samples_generated_at = UTC_TIMESTAMP(),
-                       sample_regen_count = sample_regen_count + 1
-                   WHERE id = %s""",
-                (payload, avatar_id),
-            )
-        else:
-            cursor.execute(
-                """UPDATE avatar_trainings
-                   SET sample_paths = %s, samples_generated_at = UTC_TIMESTAMP()
-                   WHERE id = %s""",
-                (payload, avatar_id),
-            )
+        cursor.execute(
+            """UPDATE avatar_trainings
+               SET sample_paths = %s, samples_generated_at = UTC_TIMESTAMP()
+               WHERE id = %s""",
+            (payload, avatar_id),
+        )
         connection.commit()
         return cursor.rowcount > 0
     except mysql.connector.Error as err:
         myprint(f"Could not store avatar samples for avatar {avatar_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def claim_avatar_sample_render(user_id: int, avatar_id: int, *, regeneration: bool = False,
+                               max_regenerations: int = 0) -> bool:
+    """Reserve ONE sample render before any inference is paid for. True when the claim won.
+
+    Both callers used to read a counter, decide, and only write it once the render FINISHED —
+    minutes later. Two status syncs (a double-clicked Refresh) or two Regenerate clicks therefore
+    both passed the same reading and each queued a full three-image render, so the cap the
+    regeneration limit exists to be was not one. Reserving inside the UPDATE makes the decision
+    atomic: exactly one caller can win.
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        if regeneration:
+            cursor.execute(
+                """UPDATE avatar_trainings
+                   SET sample_regen_count = sample_regen_count + 1
+                   WHERE id = %s AND user_id = %s AND sample_regen_count < %s""",
+                (avatar_id, user_id, max_regenerations),
+            )
+        else:
+            # The FIRST render after a training succeeds: samples_generated_at is the claim marker,
+            # so a second poll arriving mid-render finds it set and stands down.
+            cursor.execute(
+                """UPDATE avatar_trainings
+                   SET samples_generated_at = UTC_TIMESTAMP()
+                   WHERE id = %s AND user_id = %s
+                     AND samples_generated_at IS NULL AND sample_paths IS NULL""",
+                (avatar_id, user_id),
+            )
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not claim a sample render for avatar {avatar_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def release_avatar_sample_render(user_id: int, avatar_id: int, *,
+                                 regeneration: bool = False) -> bool:
+    """Give a reservation back when the render produced nothing.
+
+    A user must not lose a regeneration to a render that shipped no images, and a failed first
+    render must leave the automatic path able to try again.
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        if regeneration:
+            cursor.execute(
+                """UPDATE avatar_trainings
+                   SET sample_regen_count = GREATEST(sample_regen_count - 1, 0)
+                   WHERE id = %s AND user_id = %s""",
+                (avatar_id, user_id),
+            )
+        else:
+            cursor.execute(
+                """UPDATE avatar_trainings
+                   SET samples_generated_at = NULL
+                   WHERE id = %s AND user_id = %s AND sample_paths IS NULL""",
+                (avatar_id, user_id),
+            )
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not release the sample-render claim for avatar {avatar_id} | Error: {err}")
         return False
     finally:
         cursor.close()

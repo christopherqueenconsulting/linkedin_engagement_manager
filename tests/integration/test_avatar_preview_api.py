@@ -60,32 +60,51 @@ class TestRegenerateSamplesEndpoint:
         with patch(f"{_M}.get_session_user_id", return_value=USER_ID), \
              patch(f"{_M}.get_avatar_training", return_value=_APPROVABLE), \
              patch("cqc_lem.utilities.env_constants.AVATAR_SAMPLE_REGEN_MAX", 3), \
+             patch(f"{_M}.claim_avatar_sample_render", return_value=True) as claim, \
              patch("cqc_lem.app.run_avatar.render_avatar_samples_task.apply_async") as queued:
             r = _client().post("/api/avatar/training/7/samples",
                                json={"session_token": SESSION})
         assert r.status_code == 200
         assert queued.call_args.kwargs["kwargs"] == {
             "avatar_id": 7, "user_id": USER_ID, "count_regeneration": True}
+        # Reserved BEFORE the render is queued — a second click has to lose the claim, not read
+        # a counter that only moves minutes later.
+        claim.assert_called_once_with(USER_ID, 7, regeneration=True, max_regenerations=3)
 
     def test_cap_returns_429(self):
         """The cap sits on top of the credit ledger — samples cost inference money but no credit."""
-        avatar = {**_APPROVABLE, "sample_regen_count": 3}
         with patch(f"{_M}.get_session_user_id", return_value=USER_ID), \
-             patch(f"{_M}.get_avatar_training", return_value=avatar), \
+             patch(f"{_M}.get_avatar_training", return_value=_APPROVABLE), \
              patch("cqc_lem.utilities.env_constants.AVATAR_SAMPLE_REGEN_MAX", 3), \
+             patch(f"{_M}.claim_avatar_sample_render", return_value=False), \
              patch("cqc_lem.app.run_avatar.render_avatar_samples_task.apply_async") as queued:
             r = _client().post("/api/avatar/training/7/samples",
                                json={"session_token": SESSION})
         assert r.status_code == 429
         queued.assert_not_called()
 
+    def test_a_broker_failure_hands_the_reservation_back(self):
+        with patch(f"{_M}.get_session_user_id", return_value=USER_ID), \
+             patch(f"{_M}.get_avatar_training", return_value=_APPROVABLE), \
+             patch("cqc_lem.utilities.env_constants.AVATAR_SAMPLE_REGEN_MAX", 3), \
+             patch(f"{_M}.claim_avatar_sample_render", return_value=True), \
+             patch(f"{_M}.release_avatar_sample_render") as released, \
+             patch("cqc_lem.app.run_avatar.render_avatar_samples_task.apply_async",
+                   side_effect=RuntimeError("broker down")):
+            r = _client().post("/api/avatar/training/7/samples",
+                               json={"session_token": SESSION})
+        assert r.status_code == 500
+        released.assert_called_once_with(USER_ID, 7, regeneration=True)
+
     def test_unfinished_training_returns_400(self):
         avatar = {**_APPROVABLE, "status": "processing", "model_ref": None}
         with patch(f"{_M}.get_session_user_id", return_value=USER_ID), \
-             patch(f"{_M}.get_avatar_training", return_value=avatar):
+             patch(f"{_M}.get_avatar_training", return_value=avatar), \
+             patch(f"{_M}.claim_avatar_sample_render") as claim:
             r = _client().post("/api/avatar/training/7/samples",
                                json={"session_token": SESSION})
         assert r.status_code == 400
+        claim.assert_not_called()
 
 
 @pytest.mark.integration

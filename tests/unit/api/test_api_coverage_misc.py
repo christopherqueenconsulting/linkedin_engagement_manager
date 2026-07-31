@@ -700,10 +700,37 @@ class TestAvatarEndpoints:
              patch("cqc_lem.utilities.avatar.replicate_avatar.poll_training_status",
                    return_value=("succeeded", "owner/model:v1")), \
              patch(f"{_M}.update_avatar_training_status"), \
+             patch(f"{_M}.claim_avatar_sample_render", return_value=True) as claim, \
              patch("cqc_lem.app.run_avatar.render_avatar_samples_task.apply_async") as queued:
             resp = client.get(f"/api/avatar/training/5/status?session_token={_TOK}")
         assert resp.status_code == 200
         assert queued.call_args.kwargs["kwargs"] == {"avatar_id": 5, "user_id": _UID}
+        claim.assert_called_once_with(_UID, 5)
+
+    def test_sync_training_status_second_poll_mid_render_queues_nothing(self, client):
+        """A double-clicked Refresh used to queue a second full three-image render."""
+        trainings = [{"id": 5, "training_id": "t5", "status": "succeeded",
+                      "model_ref": "owner/m:v1", "sample_paths": []}]
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.get_avatar_trainings", return_value=trainings), \
+             patch(f"{_M}.claim_avatar_sample_render", return_value=False), \
+             patch("cqc_lem.app.run_avatar.render_avatar_samples_task.apply_async") as queued:
+            resp = client.get(f"/api/avatar/training/5/status?session_token={_TOK}")
+        assert resp.status_code == 200
+        queued.assert_not_called()
+
+    def test_sync_training_status_broker_failure_releases_the_claim(self, client):
+        trainings = [{"id": 5, "training_id": "t5", "status": "succeeded",
+                      "model_ref": "owner/m:v1", "sample_paths": []}]
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.get_avatar_trainings", return_value=trainings), \
+             patch(f"{_M}.claim_avatar_sample_render", return_value=True), \
+             patch(f"{_M}.release_avatar_sample_render") as released, \
+             patch("cqc_lem.app.run_avatar.render_avatar_samples_task.apply_async",
+                   side_effect=RuntimeError("broker down")):
+            resp = client.get(f"/api/avatar/training/5/status?session_token={_TOK}")
+        assert resp.status_code == 200
+        released.assert_called_once_with(_UID, 5)
 
     def test_sync_training_status_does_not_requeue_when_samples_exist(self, client):
         trainings = [{"id": 5, "training_id": "t5", "status": "succeeded",
@@ -722,6 +749,7 @@ class TestAvatarEndpoints:
              patch(f"{_M}.get_avatar_trainings", return_value=trainings), \
              patch("cqc_lem.utilities.avatar.replicate_avatar.poll_training_status",
                    return_value=("succeeded", "owner/model:v1")), \
+             patch(f"{_M}.claim_avatar_sample_render", return_value=True), \
              patch("cqc_lem.app.run_avatar.render_avatar_samples_task.apply_async"), \
              patch(f"{_M}.update_avatar_training_status") as upd:
             resp = client.get(f"/api/avatar/training/5/status?session_token={_TOK}")

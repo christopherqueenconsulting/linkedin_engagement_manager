@@ -128,7 +128,8 @@ class TestSetAvatarApproval:
 
 
 class TestUpdateAvatarSamples:
-    def test_first_render_does_not_spend_a_regeneration(self):
+    def test_stores_the_paths_without_touching_the_counter(self):
+        """The re-roll is reserved before the render, never counted after it."""
         conn, cur = _conn(rowcount=1)
         with patch(f"{_DB}.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_avatar_samples
@@ -137,20 +138,79 @@ class TestUpdateAvatarSamples:
         assert "sample_regen_count" not in sql
         assert json.loads(params[0]) == [{"label": "a", "path": "p"}]
 
-    def test_regeneration_increments_the_counter(self):
-        conn, cur = _conn(rowcount=1)
-        with patch(f"{_DB}.get_db_connection", return_value=conn):
-            from cqc_lem.utilities.db import update_avatar_samples
-            update_avatar_samples(4, [], count_regeneration=True)
-        sql, _ = cur.execute.call_args[0]
-        assert "sample_regen_count = sample_regen_count + 1" in sql
-
     def test_error_returns_false(self):
         conn, cur = _conn()
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
         with patch(f"{_DB}.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_avatar_samples
             assert update_avatar_samples(4, []) is False
+
+
+class TestSampleRenderClaim:
+    """The cap has to be decided IN the write: reading a counter that only moves when a render
+    finishes let a double-click queue two full renders against the same reading."""
+
+    def test_regeneration_claim_increments_under_the_cap(self):
+        conn, cur = _conn(rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import claim_avatar_sample_render
+            assert claim_avatar_sample_render(3, 4, regeneration=True, max_regenerations=3) is True
+        sql, params = cur.execute.call_args[0]
+        assert "sample_regen_count = sample_regen_count + 1" in sql
+        assert "sample_regen_count < %s" in sql
+        assert params == (4, 3, 3)
+
+    def test_regeneration_claim_lost_at_the_cap(self):
+        conn, _ = _conn(rowcount=0)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import claim_avatar_sample_render
+            assert claim_avatar_sample_render(3, 4, regeneration=True, max_regenerations=3) is False
+
+    def test_first_render_claim_is_conditional_on_no_prior_render(self):
+        conn, cur = _conn(rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import claim_avatar_sample_render
+            assert claim_avatar_sample_render(3, 4) is True
+        sql, params = cur.execute.call_args[0]
+        assert "samples_generated_at IS NULL" in sql and "sample_paths IS NULL" in sql
+        assert params == (4, 3)
+
+    def test_second_poll_mid_render_loses_the_claim(self):
+        conn, _ = _conn(rowcount=0)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import claim_avatar_sample_render
+            assert claim_avatar_sample_render(3, 4) is False
+
+    def test_claim_error_fails_closed(self):
+        conn, cur = _conn()
+        cur.execute.side_effect = mysql.connector.Error(msg="boom")
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import claim_avatar_sample_render
+            assert claim_avatar_sample_render(3, 4) is False
+
+    def test_release_gives_a_regeneration_back(self):
+        conn, cur = _conn(rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import release_avatar_sample_render
+            assert release_avatar_sample_render(3, 4, regeneration=True) is True
+        sql, params = cur.execute.call_args[0]
+        assert "GREATEST(sample_regen_count - 1, 0)" in sql
+        assert params == (4, 3)
+
+    def test_release_reopens_the_first_render_only_while_no_samples_exist(self):
+        conn, cur = _conn(rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import release_avatar_sample_render
+            assert release_avatar_sample_render(3, 4) is True
+        sql, _ = cur.execute.call_args[0]
+        assert "samples_generated_at = NULL" in sql and "sample_paths IS NULL" in sql
+
+    def test_release_error_returns_false(self):
+        conn, cur = _conn()
+        cur.execute.side_effect = mysql.connector.Error(msg="boom")
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import release_avatar_sample_render
+            assert release_avatar_sample_render(3, 4, regeneration=True) is False
 
 
 class TestAvatarPreferences:
