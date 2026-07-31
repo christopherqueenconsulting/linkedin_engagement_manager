@@ -15,6 +15,11 @@ downloads/
 eggs/
 .eggs/
 lib/
+# `lib/` above is the Python packaging rule, but it is unanchored — it matches a directory named
+# lib at ANY depth, which is why the agent pipeline's lib/ (its capacity/dispatch/lane libraries)
+# silently stayed out of the repo while the tick.sh beside it was tracked. Every other match is
+# under .venv/, which is ignored on its own line, so this negation loosens nothing else.
+!scripts/agent-pipeline/lib/
 lib64/
 parts/
 sdist/
