@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.114.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.113.2...v0.114.0) (2026-07-31)
+
+
+### Features
+
+* **feedback:** admin panel for feedback triage (closes [#793](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/793)) ([#836](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/836)) ([ff7d5c6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ff7d5c6020686387c32e3eed8b7473edd6368c1b))
+
+
+### Bug Fixes
+
+* **dms:** separate an unapproved Catch-up backlog from an empty queue (refs [#792](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/792)) ([#833](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/833)) ([5e5bfb8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5e5bfb88629b27410fc1705c345d9aaa2239c4ca))
+* **engagement:** center the comment composer before clicking it (closes [#815](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/815)) ([#838](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/838)) ([07a85ed](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/07a85ed7c9169bc05e5bb5bee1f28482d1a50b1c))
+* **replies:** confirm email forwarding from a forwarded email, not just our click (closes [#813](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/813)) ([#837](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/837)) ([c6caa76](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c6caa76d9b2b9e28117ae8e3337b82b85f12d65a))
+
 ## [0.113.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.113.1...v0.113.2) (2026-07-31)
 
 
