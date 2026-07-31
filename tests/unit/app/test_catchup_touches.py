@@ -243,6 +243,34 @@ class TestLinkedInDraftHarvest:
         from cqc_lem.app.run_automation import _clean_suggested_message
         assert _clean_suggested_message(raw) == expected
 
+    @pytest.mark.parametrize("chrome", [
+        "Say congrats", "Say congrats to Jane", "Say congrats to Jane Doe", "Congrats!",
+        "Congratulate Jane", "Message", "Send a message", "Send message to Jane",
+        "Write a message…", "Reply", "Send", "View profile", "See more",
+    ])
+    def test_button_chrome_is_never_mistaken_for_a_message(self, chrome):
+        """`button[aria-label*='congrats']` matches LinkedIn's OWN trigger, and an empty composer
+        renders its placeholder — both clear the length floor, so without this the card's chrome
+        becomes the congratulations we queue (and, on auto-approve, SEND). Issue #792."""
+        from cqc_lem.app.run_automation import _clean_suggested_message
+        assert _clean_suggested_message(chrome) == ""
+
+    @pytest.mark.parametrize("real", [
+        "Congrats on the new role, Jane!",
+        "Congrats to Jane on the new role!",
+        "Happy work anniversary, Sam!",
+        "Congratulations on the promotion — well earned.",
+    ])
+    def test_a_real_draft_survives_the_chrome_filter(self, real):
+        from cqc_lem.app.run_automation import _clean_suggested_message
+        assert _clean_suggested_message(real) == real
+
+    def test_a_chrome_only_card_falls_back_to_the_plain_congratulations(self):
+        """End-to-end of the same defect: the card's trigger label must not become the message."""
+        from cqc_lem.app.run_automation import _draft_catchup_message
+        moment = {"name": "Jane Doe", "event_type": "job_change", "suggested_message": "Say congrats"}
+        assert _draft_catchup_message(1, moment, MagicMock()) == "Congrats on the new role, Jane!"
+
     def test_card_suggestion_is_read_without_clicking(self):
         from cqc_lem.app.run_automation import _card_suggested_message
         chip = MagicMock()
@@ -834,6 +862,153 @@ class TestCatchupDispatchers:
              patch(f"{_RS}.send_catchup_touch") as task:
             assert auto_check_catchup_touches() == "Automation throttled"
         task.apply_async.assert_not_called()
+
+
+class TestCatchupRunReport:
+    """Issue #792: EVERY catch-up run reports, including the ones that draft or send nothing —
+    otherwise "the feed had nothing today" and "the lane is broken" are the same silence."""
+
+    def _patches(self, moments, prefs=None):
+        return TestAutomateCatchupTouches()._patches(moments, prefs=prefs)
+
+    def _run_scan(self, moments, prefs=None, **overrides):
+        from cqc_lem.app.run_automation import automate_catchup_touches
+        p = self._patches(moments, prefs=prefs)
+        p.update(overrides)
+        with p["prefs"], p["profile"], p["scrape"], p["quit"], p["has"], p["draft"], p["insert"], \
+             patch(f"{_RA}.track_catchup_run") as track, patch(f"{_RA}.log_error"):
+            automate_catchup_touches.run(user_id=1)
+        track.assert_called_once()
+        return track.call_args.args[1]
+
+    def test_a_drafting_run_reports_the_whole_funnel(self):
+        report = self._run_scan([_moment(suggested_message="Congrats on the new role, Jane!")])
+        assert report["phase"] == "scan"
+        assert report["status"] == "drafted"
+        assert report["moments"] == 1
+        assert report["classified"] == 1
+        assert report["enabled_type"] == 1
+        assert report["drafted"] == 1
+        assert report["message_source"] == "linkedin"
+        assert report["auto_approve"] is False
+
+    def test_an_empty_feed_reports_no_moments(self):
+        report = self._run_scan([])
+        assert report["status"] == "no_moments"
+        assert report["moments"] == 0
+        assert report["drafted"] == 0
+
+    def test_unclassifiable_moments_report_none_qualified_with_zero_classified(self):
+        """The feed rendered cards but none read as a milestone — a selector/copy drift, not a quiet
+        day. `classified == 0` beside `moments > 0` is what separates the two."""
+        report = self._run_scan([_moment(text="People you may know"),
+                                 _moment(text="Suggested for you",
+                                         profile_url="https://www.linkedin.com/in/pat")])
+        assert report["status"] == "none_qualified"
+        assert report["moments"] == 2
+        assert report["classified"] == 0
+
+    def test_a_deduped_milestone_is_counted_as_a_duplicate(self):
+        report = self._run_scan([_moment()],
+                                has=patch(f"{_RA}.has_catchup_touch", return_value=True))
+        assert report["status"] == "none_qualified"
+        assert report["duplicate"] == 1
+        assert report["drafted"] == 0
+
+    def test_an_excluded_author_is_counted_as_excluded(self):
+        report = self._run_scan([_moment()], prefs=_prefs(exclude_authors=["Jane"]))
+        assert report["excluded"] == 1
+        assert report["status"] == "none_qualified"
+
+    def test_a_below_bar_moment_is_counted(self):
+        report = self._run_scan([_moment(text="Wish Jane a happy birthday")],
+                                prefs=_prefs(catchup_event_types=["birthday"]))
+        assert report["below_bar"] == 1
+        assert report["status"] == "none_qualified"
+
+    def test_a_disabled_user_still_reports(self):
+        report = self._run_scan([_moment()], prefs=_prefs(catchup_event_types=[]))
+        assert report["status"] == "disabled"
+
+    def test_a_throttled_scan_reports_rather_than_going_silent(self):
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+        report = self._run_scan(
+            [_moment()],
+            profile=patch(f"{_RA}.get_current_profile", side_effect=LinkedInRateLimited("429")))
+        assert report["status"] == "throttled"
+
+    def test_a_dead_session_reports_session_failed(self):
+        report = self._run_scan(
+            [_moment()], profile=patch(f"{_RA}.get_current_profile", side_effect=RuntimeError("boom")))
+        assert report["status"] == "session_failed"
+
+    def test_a_scrape_failure_reports_scrape_failed(self):
+        report = self._run_scan(
+            [_moment()], scrape=patch(f"{_RA}._scrape_catchup_moments", side_effect=RuntimeError("boom")))
+        assert report["status"] == "scrape_failed"
+
+    def test_a_telemetry_outage_never_fails_the_run(self):
+        from cqc_lem.app.run_automation import report_catchup_run
+        with patch(f"{_RA}.track_catchup_run", side_effect=RuntimeError("posthog down")), \
+             patch(f"{_RA}.log_warning") as warn:
+            report_catchup_run(1, {"phase": "scan", "status": "drafted", "drafted": 1}, "t")
+        warn.assert_called_once()
+
+    def test_scan_dispatcher_reports_when_throttled(self):
+        from cqc_lem.app.run_scheduler import auto_scan_catchup_moments
+        with patch(f"{_RS}._skip_if_throttled", return_value=True), \
+             patch(f"{_RA}.track_catchup_run") as track:
+            auto_scan_catchup_moments()
+        assert track.call_args.args[1]["status"] == "throttled"
+        assert track.call_args.args[1]["phase"] == "scan"
+
+    def test_scan_dispatcher_reports_a_fleet_with_nobody_enabled(self):
+        from cqc_lem.app.run_scheduler import auto_scan_catchup_moments
+        with patch(f"{_RS}._skip_if_throttled", return_value=False), \
+             patch(f"{_RS}.get_active_user_ids", return_value=[1]), \
+             patch(f"{_RS}.get_engagement_preferences", return_value=_prefs(catchup_event_types=[])), \
+             patch(f"{_RA}.automate_catchup_touches"), \
+             patch(f"{_RA}.track_catchup_run") as track:
+            auto_scan_catchup_moments()
+        assert track.call_args.args[1]["status"] == "disabled"
+        assert track.call_args.args[1]["dispatched"] == 0
+
+    def test_send_drip_reports_a_cap_that_swallowed_every_approved_touch(self):
+        from cqc_lem.app.run_scheduler import auto_check_catchup_touches
+        with patch(f"{_RS}._skip_if_throttled", return_value=False), \
+             patch(f"{_RS}.get_approved_catchup_touches", return_value=[(1, 7), (2, 7)]), \
+             patch(f"{_RS}.get_active_user_ids", return_value=[7]), \
+             patch(f"{_RS}.get_engagement_preferences", return_value=_prefs()), \
+             patch(f"{_RS}.max_catchup_touches_allowed", return_value=5), \
+             patch(f"{_RS}.count_catchup_touches_sent_today", return_value=5), \
+             patch(f"{_RS}.get_orphaned_catchup_touches", return_value=[]), \
+             patch(f"{_RS}.update_catchup_touch_status"), \
+             patch(f"{_RS}.send_catchup_touch"), \
+             patch(f"{_RA}.track_catchup_run") as track:
+            auto_check_catchup_touches()
+        report = track.call_args.args[1]
+        assert report["phase"] == "send"
+        assert report["status"] == "capped"
+        assert report["capped"] == 2
+        assert report["dispatched"] == 0
+
+    def test_send_drip_reports_an_empty_queue(self):
+        from cqc_lem.app.run_scheduler import auto_check_catchup_touches
+        with patch(f"{_RS}._skip_if_throttled", return_value=False), \
+             patch(f"{_RS}.get_approved_catchup_touches", return_value=[]), \
+             patch(f"{_RS}.get_orphaned_catchup_touches", return_value=[]), \
+             patch(f"{_RS}.send_catchup_touch"), \
+             patch(f"{_RA}.track_catchup_run") as track:
+            auto_check_catchup_touches()
+        assert track.call_args.args[1]["status"] == "nothing_to_send"
+
+    def test_send_drip_reports_when_throttled(self):
+        from cqc_lem.app.run_scheduler import auto_check_catchup_touches
+        with patch(f"{_RS}._skip_if_throttled", return_value=True), \
+             patch(f"{_RA}.track_catchup_run") as track:
+            auto_check_catchup_touches()
+        assert track.call_args.args[1]["status"] == "throttled"
+        assert track.call_args.args[1]["phase"] == "send"
 
 
 class TestCatchupBeatSchedule:

@@ -88,7 +88,7 @@ from cqc_lem.utilities.linkedin_formatter import normalize_public_text
 from cqc_lem.utilities.logger import myprint, log_error, log_info, log_warning, log_debug
 from cqc_lem.utilities.observability import track_post_outcome, track_audience_snapshot, \
     track_comment_outcome, track_golden_hour_report, track_company_page_invite_run, \
-    attribute_llm_cost, llm_attribution, \
+    track_catchup_run, attribute_llm_cost, llm_attribution, \
     FEATURE_COMMENT, FEATURE_CONTENT, FEATURE_DM
 from cqc_lem.utilities.selenium_util import click_element_wait_retry, \
     get_element_wait_retry, get_elements_as_list_wait_stale, getText, close_tab, get_driver_wait_pair, quit_gracefully, \
@@ -5734,6 +5734,22 @@ CATCHUP_URL = "https://www.linkedin.com/mynetwork/catch-up/all/"
 # generic "Congrats!" is worse than saying nothing.
 CATCHUP_MIN_SCORE = int(os.getenv("CATCHUP_MIN_SCORE", "30"))
 
+# Why a catch-up run produced what it produced (issue #792). Every run reports one of these — the
+# quiet outcomes especially, because "the feed had no milestone today", "the 429 breaker never let
+# the scan start" and "the card selectors have drifted" are the SAME silence without them.
+CATCHUP_PHASE_SCAN = "scan"
+CATCHUP_PHASE_SEND = "send"
+CATCHUP_STATUS_DRAFTED = "drafted"
+CATCHUP_STATUS_DISABLED = "disabled"                # no milestone type enabled for this user
+CATCHUP_STATUS_THROTTLED = "throttled"              # 429 breaker / automation pause
+CATCHUP_STATUS_SESSION_FAILED = "session_failed"
+CATCHUP_STATUS_SCRAPE_FAILED = "scrape_failed"
+CATCHUP_STATUS_NO_MOMENTS = "no_moments"            # the feed rendered nothing we could read
+CATCHUP_STATUS_NONE_QUALIFIED = "none_qualified"    # moments read, none survived the funnel
+CATCHUP_STATUS_DISPATCHED = "dispatched"
+CATCHUP_STATUS_NOTHING_TO_SEND = "nothing_to_send"
+CATCHUP_STATUS_CAPPED = "capped"                    # approved touches exist, today's cap is spent
+
 # Ordered fallback chain for the catch-up cards. LinkedIn's SDUI ships hashed classes, so we prefer
 # data-view-name, then the semantic list, then any main-content list item that links to a profile.
 # NOTE: needs a supervised live-grounding pass on a real account before broad enablement (see #478).
@@ -5774,6 +5790,17 @@ _CATCHUP_COMPOSE_LOCATORS = [
     (By.CSS_SELECTOR, "div[role='dialog'] textarea"),
     (By.CSS_SELECTOR, "div[contenteditable='true'][aria-label*='message']"),
 ]
+# The affordance labels and composer placeholders that live on the SAME nodes we read a draft off.
+# `button[aria-label*='congrats']` matches LinkedIn's "Say congrats to Jane" trigger, and an empty
+# composer renders its placeholder — both are long enough to clear the length floor, so without this
+# the CHROME becomes the congratulations and we queue (or, on auto-approve, SEND) "Say congrats".
+_CATCHUP_CHROME_RE = re.compile(
+    r"(?:say\s+congrats(?:\s+to\s+\w+(?:\s+\w+){0,2})?"
+    r"|congrats|congratulate(?:\s+\w+(?:\s+\w+){0,2})?"
+    r"|send\s+(?:a\s+)?message(?:\s+to\s+\w+(?:\s+\w+){0,2})?"
+    r"|write\s+(?:a\s+)?message"
+    r"|message|reply|send|view\s+profile|see\s+more|more)[\s.…!]*",
+    re.IGNORECASE)
 _CATCHUP_DISMISS_LOCATORS = [
     (By.CSS_SELECTOR, "div[role='dialog'] button[aria-label*='Dismiss']"),
     (By.CSS_SELECTOR, "div[role='dialog'] button[aria-label*='Close']"),
@@ -5912,7 +5939,7 @@ def _clean_suggested_message(text: str) -> str:
     """Normalize a draft LinkedIn handed us: collapse whitespace, drop the button chrome, cap at the
     DM budget. Anything that doesn't look like a message (empty / a bare label) becomes ''."""
     cleaned = " ".join((text or "").replace("\n", " ").split()).strip()
-    if len(cleaned) < 4:
+    if len(cleaned) < 4 or _CATCHUP_CHROME_RE.fullmatch(cleaned):
         return ""
     return cleaned[:CATCHUP_MESSAGE_MAX_CHARS]
 
@@ -6059,6 +6086,33 @@ def _draft_catchup_message(user_id: int, moment: dict, my_profile: LinkedInProfi
                                   event_detail=moment.get("event_detail") or moment.get("text", ""))
 
 
+# The send drip beats every 20 minutes and the scan beat daily, so these outcomes are the STEADY
+# state of a healthy account, not events. They log DEBUG (an expected no-op logged INFO is noise, and
+# the throttle already logs its own reason in _skip_if_throttled) — the PostHog series is what
+# carries them, and that's the series a "catch-up never sends" report has to be answered from.
+_CATCHUP_QUIET_STATUSES = frozenset({CATCHUP_STATUS_NOTHING_TO_SEND, CATCHUP_STATUS_CAPPED,
+                                     CATCHUP_STATUS_THROTTLED, CATCHUP_STATUS_DISABLED})
+
+
+def report_catchup_run(user_id: Optional[int], report: dict, task_name: str) -> None:
+    """Ship ONE catch-up run report (issue #792) and log the same line locally. `user_id` is None for
+    the fleet-wide beat dispatchers. Best-effort: a telemetry outage must never fail a scan that
+    otherwise worked."""
+    summary = ", ".join(f"{k}={report[k]}" for k in
+                        ("moments", "classified", "enabled_type", "excluded", "duplicate",
+                         "below_bar", "drafted", "dispatched", "capped", "requeued")
+                        if k in report)
+    status = report.get("status")
+    emit = log_debug if status in _CATCHUP_QUIET_STATUSES else log_info
+    emit(f"Catch-up {report.get('phase')} run: {status}" + (f" ({summary})" if summary else ""),
+         user_id=user_id, task_name=task_name, action_type="catchup")
+    try:
+        track_catchup_run(user_id, report)
+    except Exception as e:
+        log_warning("Could not report the catch-up run", exc=e, user_id=user_id,
+                    task_name=task_name, action_type="catchup")
+
+
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
                   reject_on_worker_lost=True, rate_limit='2/m', queue='se_outreach')
 def automate_catchup_touches(self, user_id: int, max_moments: int = 40, max_drafts: int = 10):
@@ -6069,10 +6123,20 @@ def automate_catchup_touches(self, user_id: int, max_moments: int = 40, max_draf
     capped scanner sends them later. Only milestone types the user enabled are drafted, each
     milestone is deduped on (person, event_type, period), and moments scoring below CATCHUP_MIN_SCORE
     are tombstoned as 'skipped' so we neither draft nor re-score them. The message itself is
-    LinkedIn's own pre-drafted response unless the user opted into catchup_message_source='ai'."""
+    LinkedIn's own pre-drafted response unless the user opted into catchup_message_source='ai'.
+
+    EVERY run reports (issue #792) — including the ones that draft nothing — with the per-stage
+    funnel counts, because a quiet lane and a broken one are otherwise the same silence."""
+    task_name = "automate_catchup_touches"
     prefs = get_engagement_preferences(user_id)
     enabled = {str(t) for t in (prefs.get("catchup_event_types") or [])}
+    auto_approve = str(prefs.get("catchup_touch_mode") or "pre_review") == "auto_approve"
+    source = str(prefs.get("catchup_message_source") or "linkedin")
+    report = {"phase": CATCHUP_PHASE_SCAN, "auto_approve": auto_approve, "message_source": source}
+
     if not enabled:
+        report["status"] = CATCHUP_STATUS_DISABLED
+        report_catchup_run(user_id, report, task_name)
         return f"Catch-up touches disabled for user {user_id} (no event types enabled)"
 
     try:
@@ -6080,10 +6144,14 @@ def automate_catchup_touches(self, user_id: int, max_moments: int = 40, max_draf
                                                                    session_name="Catch-up Moments")
     except LinkedInRateLimited as e:
         myprint(f"automate_catchup_touches deferred (throttled): {e}")
+        report["status"] = CATCHUP_STATUS_THROTTLED
+        report_catchup_run(user_id, report, task_name)
         return "Catch-up scan deferred (LinkedIn throttled)"
     except Exception as e:
         log_error("Failed to get profile for catch-up scan", exc=e, user_id=user_id,
-                  task_name="automate_catchup_touches")
+                  task_name=task_name)
+        report["status"] = CATCHUP_STATUS_SESSION_FAILED
+        report_catchup_run(user_id, report, task_name)
         return f"Failed to start catch-up scan: {e}"
 
     drafted = skipped = 0
@@ -6092,32 +6160,42 @@ def automate_catchup_touches(self, user_id: int, max_moments: int = 40, max_draf
                                           enabled_event_types=enabled)
     except LinkedInRateLimited as e:
         myprint(f"automate_catchup_touches deferred mid-scrape (throttled): {e}")
+        report["status"] = CATCHUP_STATUS_THROTTLED
+        report_catchup_run(user_id, report, task_name)
         return "Catch-up scan deferred (LinkedIn throttled)"
     except Exception as e:
-        log_error("Catch-up scrape failed", exc=e, user_id=user_id, task_name="automate_catchup_touches")
+        log_error("Catch-up scrape failed", exc=e, user_id=user_id, task_name=task_name)
+        report["status"] = CATCHUP_STATUS_SCRAPE_FAILED
+        report_catchup_run(user_id, report, task_name)
         return f"Catch-up scrape failed: {e}"
     finally:
         quit_gracefully(driver)
 
-    auto_approve = str(prefs.get("catchup_touch_mode") or "pre_review") == "auto_approve"
-    source = str(prefs.get("catchup_message_source") or "linkedin")
+    funnel = {"classified": 0, "enabled_type": 0, "excluded": 0, "duplicate": 0, "below_bar": 0}
     for moment in moments:
         if drafted >= max_drafts:
             break
         event_type = moment.get("event_type") or _classify_catchup_moment(moment.get("text", ""))
-        if event_type is None or event_type not in enabled:
+        if event_type is None:
             continue
+        funnel["classified"] += 1
+        if event_type not in enabled:
+            continue
+        funnel["enabled_type"] += 1
         if _catchup_excluded(moment, prefs):
+            funnel["excluded"] += 1
             continue
         moment["event_type"] = event_type
         period = _catchup_event_period(event_type)
         if has_catchup_touch(user_id, moment["profile_url"], event_type, period):
+            funnel["duplicate"] += 1
             continue
         score = _score_catchup_moment(moment, prefs)
         if score < CATCHUP_MIN_SCORE:
             insert_catchup_touch(user_id, moment["profile_url"], event_type, period,
                                  person_name=moment.get("name"), event_detail=moment.get("text"),
                                  score=score, status=CatchupTouchStatus.SKIPPED)
+            funnel["below_bar"] += 1
             skipped += 1
             continue
         try:
@@ -6133,8 +6211,12 @@ def automate_catchup_touches(self, user_id: int, max_moments: int = 40, max_draf
                                 message=message, score=score, status=status):
             drafted += 1
 
-    log_info(f"Catch-up scan drafted {drafted} touch(es) from {len(moments)} moment(s)",
-             user_id=user_id, task_name="automate_catchup_touches", action_type="catchup")
+    report.update(funnel, moments=len(moments), drafted=drafted)
+    if drafted:
+        report["status"] = CATCHUP_STATUS_DRAFTED
+    else:
+        report["status"] = CATCHUP_STATUS_NO_MOMENTS if not moments else CATCHUP_STATUS_NONE_QUALIFIED
+    report_catchup_run(user_id, report, task_name)
     return (f"Catch-up: {len(moments)} moment(s) scanned, {drafted} drafted "
             f"({'approved' if auto_approve else 'awaiting approval'}), {skipped} below the bar")
 

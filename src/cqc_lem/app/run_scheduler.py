@@ -11,7 +11,10 @@ from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.app.run_automation import automate_commenting, automate_profile_viewer_engagement, \
     automate_appreciation_dms_for_user, clean_stale_invites, update_stale_profile, post_to_linkedin, \
     automate_invites_to_company_page_for_user, send_scheduled_dm, send_connection_request, \
-    sweep_reply_comments, sweep_comment_followups, sweep_comment_outcomes, send_catchup_touch
+    sweep_reply_comments, sweep_comment_followups, sweep_comment_outcomes, send_catchup_touch, \
+    report_catchup_run, CATCHUP_PHASE_SCAN, CATCHUP_PHASE_SEND, CATCHUP_STATUS_THROTTLED, \
+    CATCHUP_STATUS_DISABLED, CATCHUP_STATUS_DISPATCHED, CATCHUP_STATUS_CAPPED, \
+    CATCHUP_STATUS_NOTHING_TO_SEND
 from cqc_lem.utilities.db import (
     get_ready_to_post_posts, get_orphaned_scheduled_posts, update_db_post_status,
     get_active_user_ids, PostStatus, has_linkedin_session, get_company_linked_in_url_for_user,
@@ -1259,7 +1262,13 @@ def auto_scan_catchup_moments():
     """Dispatch the daily per-user LinkedIn Catch-up scan (issue #482). Drafting only — the scan writes
     approval-gated rows to catchup_touches and sends nothing. Users who disabled every milestone type
     are skipped so we never open a Chrome session for them."""
-    if _skip_if_throttled("auto_scan_catchup_moments"):
+    task_name = "auto_scan_catchup_moments"
+    # The dispatcher reports too (issue #792): a lane that never dispatches because the 429 breaker
+    # is open looks exactly like a lane whose per-user scans found nothing, and the difference is the
+    # whole answer to "catch-up isn't sending anything".
+    if _skip_if_throttled(task_name):
+        report_catchup_run(None, {"phase": CATCHUP_PHASE_SCAN,
+                                  "status": CATCHUP_STATUS_THROTTLED}, task_name)
         return "Automation throttled"
     from cqc_lem.app.run_automation import automate_catchup_touches
     dispatched = 0
@@ -1268,6 +1277,9 @@ def auto_scan_catchup_moments():
             continue
         automate_catchup_touches.apply_async(kwargs={'user_id': user_id})
         dispatched += 1
+    report_catchup_run(None, {"phase": CATCHUP_PHASE_SCAN, "dispatched": dispatched,
+                              "status": CATCHUP_STATUS_DISPATCHED if dispatched
+                              else CATCHUP_STATUS_DISABLED}, task_name)
     return f"Dispatched catch-up scan for {dispatched} user(s)"
 
 
@@ -1277,13 +1289,17 @@ def auto_check_catchup_touches():
     auto_check_connection_requests: approval happens upstream (rows only reach 'approved' via the API
     or the user's auto_approve mode), the whole scan short-circuits while the kill-switch / 429 breaker
     is open, and the send task re-checks both caps and the throttle."""
-    if _skip_if_throttled("auto_check_catchup_touches"):
+    task_name = "auto_check_catchup_touches"
+    if _skip_if_throttled(task_name):
+        report_catchup_run(None, {"phase": CATCHUP_PHASE_SEND,
+                                  "status": CATCHUP_STATUS_THROTTLED}, task_name)
         return "Automation throttled"
 
     approved = get_approved_catchup_touches()
     active_user_ids = set(get_active_user_ids()) if approved else set()
 
     dispatched = 0
+    capped = 0
     budgets: dict = {}  # user_id -> remaining catch-up touches allowed today
     for touch_id, user_id in approved:
         if user_id not in active_user_ids:
@@ -1296,6 +1312,7 @@ def auto_check_catchup_touches():
                       max_catchup_touches_allowed(user_id))
             budgets[user_id] = max(0, cap - count_catchup_touches_sent_today(user_id))
         if budgets[user_id] <= 0:
+            capped += 1
             continue  # cap met for today — the rest stay 'approved' for tomorrow
         budgets[user_id] -= 1
         update_catchup_touch_status(touch_id, CatchupTouchStatus.SENDING)
@@ -1307,10 +1324,17 @@ def auto_check_catchup_touches():
     orphaned = get_orphaned_catchup_touches(lookback_hours=2)
     for touch_id, user_id in orphaned:
         log_warning(f"Re-queueing orphaned catch-up touch {touch_id}",
-                    user_id=user_id, task_name="auto_check_catchup_touches")
+                    user_id=user_id, task_name=task_name)
         update_catchup_touch_status(touch_id, CatchupTouchStatus.SENDING)
         send_catchup_touch.apply_async(kwargs={'touch_id': touch_id})
 
+    if dispatched or orphaned:
+        status = CATCHUP_STATUS_DISPATCHED
+    else:
+        status = CATCHUP_STATUS_CAPPED if capped else CATCHUP_STATUS_NOTHING_TO_SEND
+    report_catchup_run(None, {"phase": CATCHUP_PHASE_SEND, "status": status,
+                              "dispatched": dispatched, "capped": capped,
+                              "requeued": len(orphaned)}, task_name)
     if dispatched == 0 and len(orphaned) == 0:
         return "No Catch-up Touches to Send"
     return f"Dispatched {dispatched} catch-up touch(es); re-queued {len(orphaned)} orphaned"
