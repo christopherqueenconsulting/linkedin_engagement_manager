@@ -167,14 +167,18 @@ class TestScrapeCatchupMoments:
         assert moments[0]["name"] == "Jane Doe"
 
     def test_skips_cards_without_a_profile_link(self):
+        """An empty feed is a normal day and the scan runs daily per user, so this is DEBUG — three
+        WARNINGs inside the escalation window re-emit at ERROR and file a grouped $exception for a
+        no-op. The `no_moments` run report (issue #792) is what carries it."""
         from cqc_lem.app.run_automation import _scrape_catchup_moments
         card = MagicMock()
         card.find_elements.return_value = []
         driver = MagicMock()
         with patch(f"{_RA}.find_all_first", return_value=[card]), \
-             patch(f"{_RA}.log_warning") as warn:
+             patch(f"{_RA}.log_warning") as warn, patch(f"{_RA}.log_debug") as debug:
             assert _scrape_catchup_moments(driver, max_moments=10, user_id=1) == []
-        warn.assert_called_once()
+        debug.assert_called_once()
+        warn.assert_not_called()
 
     def test_stops_at_max_moments(self):
         from cqc_lem.app.run_automation import _scrape_catchup_moments
@@ -1002,6 +1006,26 @@ class TestCatchupRunReport:
             auto_check_catchup_touches()
         assert track.call_args.args[1]["status"] == "nothing_to_send"
 
+    def test_send_drip_reports_a_queue_stuck_behind_a_disconnected_account(self):
+        """Approved touches whose owner isn't connected used to be counted nowhere, so the report
+        read `nothing_to_send` while a real queue sat there — and the per-touch skip warned every
+        20 minutes, which the recurrence escalation re-emits at ERROR."""
+        from cqc_lem.app.run_scheduler import auto_check_catchup_touches
+        with patch(f"{_RS}._skip_if_throttled", return_value=False), \
+             patch(f"{_RS}.get_approved_catchup_touches", return_value=[(1, 7), (2, 7)]), \
+             patch(f"{_RS}.get_active_user_ids", return_value=[]), \
+             patch(f"{_RS}.get_orphaned_catchup_touches", return_value=[]), \
+             patch(f"{_RS}.send_catchup_touch") as task, \
+             patch(f"{_RS}.log_warning") as warn, \
+             patch(f"{_RA}.track_catchup_run") as track:
+            auto_check_catchup_touches()
+        report = track.call_args.args[1]
+        assert report["status"] == "inactive_users"
+        assert report["inactive"] == 2
+        assert report["dispatched"] == 0
+        task.apply_async.assert_not_called()
+        warn.assert_not_called()
+
     def test_send_drip_reports_when_throttled(self):
         from cqc_lem.app.run_scheduler import auto_check_catchup_touches
         with patch(f"{_RS}._skip_if_throttled", return_value=True), \
@@ -1009,6 +1033,57 @@ class TestCatchupRunReport:
             auto_check_catchup_touches()
         assert track.call_args.args[1]["status"] == "throttled"
         assert track.call_args.args[1]["phase"] == "send"
+
+
+class TestCatchupDeliveryReport:
+    """Issue #792: `dispatched` is not `sent`. A deferred touch goes back to 'approved' and the drip
+    re-dispatches it on the next 20-minute beat, so the send phase alone shows a climbing dispatch
+    count for a lane that has delivered nothing all day — the reporter's exact symptom."""
+
+    def _send(self, **overrides):
+        from cqc_lem.app.run_automation import send_catchup_touch
+        holder = TestSendCatchupTouch()
+        p = holder._patches(holder._touch(), **{k: v for k, v in overrides.items()
+                                                if k in ("sent", "catchup_today", "dms_today")})
+        for key, value in overrides.items():
+            if key not in ("sent", "catchup_today", "dms_today"):
+                p[key] = value
+        with p["get"], p["prefs"], p["allow"], p["cnt"], p["dms"], p["send"], p["upd"], p["enq"], \
+             patch(f"{_RA}.track_catchup_run") as track:
+            send_catchup_touch.run(touch_id=3)
+        track.assert_called_once()
+        return track.call_args.args[1]
+
+    def test_a_delivered_touch_reports_sent(self):
+        report = self._send()
+        assert report["phase"] == "deliver"
+        assert report["status"] == "sent"
+        assert report["touch_id"] == 3
+
+    def test_a_failed_send_reports_failed(self):
+        assert self._send(sent=False)["status"] == "failed"
+
+    def test_the_account_wide_dm_cap_is_distinguishable_from_the_catchup_cap(self):
+        """The two deferrals look identical from the drip — both leave the row 'approved'. Only the
+        status says which cap the user has to raise."""
+        assert self._send(dms_today=20)["status"] == "dm_capped"
+        assert self._send(catchup_today=5)["status"] == "capped"
+
+    def test_a_throttled_send_reports_rather_than_going_silent(self):
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+        report = self._send(send=patch(f"{_RA}.send_dm_now", side_effect=LinkedInRateLimited("429")))
+        assert report["status"] == "throttled"
+
+    def test_an_empty_message_reports_no_message(self):
+        holder = TestSendCatchupTouch()
+        report = self._send(get=patch(f"{_RA}.get_catchup_touch",
+                                      return_value=holder._touch(message="  ")))
+        assert report["status"] == "no_message"
+
+    def test_a_vanished_row_still_reports(self):
+        report = self._send(get=patch(f"{_RA}.get_catchup_touch", return_value=None))
+        assert report["status"] == "not_sendable"
+        assert report["touch_id"] == 3
 
 
 class TestCatchupBeatSchedule:

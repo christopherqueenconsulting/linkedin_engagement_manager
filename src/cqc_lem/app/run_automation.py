@@ -5739,6 +5739,7 @@ CATCHUP_MIN_SCORE = int(os.getenv("CATCHUP_MIN_SCORE", "30"))
 # the scan start" and "the card selectors have drifted" are the SAME silence without them.
 CATCHUP_PHASE_SCAN = "scan"
 CATCHUP_PHASE_SEND = "send"
+CATCHUP_PHASE_DELIVER = "deliver"                   # the per-touch terminal outcome
 CATCHUP_STATUS_DRAFTED = "drafted"
 CATCHUP_STATUS_DISABLED = "disabled"                # no milestone type enabled for this user
 CATCHUP_STATUS_THROTTLED = "throttled"              # 429 breaker / automation pause
@@ -5749,6 +5750,15 @@ CATCHUP_STATUS_NONE_QUALIFIED = "none_qualified"    # moments read, none survive
 CATCHUP_STATUS_DISPATCHED = "dispatched"
 CATCHUP_STATUS_NOTHING_TO_SEND = "nothing_to_send"
 CATCHUP_STATUS_CAPPED = "capped"                    # approved touches exist, today's cap is spent
+CATCHUP_STATUS_INACTIVE = "inactive_users"          # queue exists but its owners aren't connected
+# Terminal (deliver) outcomes. `dispatched` is NOT delivery: a touch the DM cap or the breaker defers
+# goes back to 'approved' and the drip re-dispatches it on the next beat, so a lane that never sends
+# anything reads as a healthy rising `dispatched` count unless the send itself reports.
+CATCHUP_STATUS_SENT = "sent"
+CATCHUP_STATUS_FAILED = "failed"                    # send_dm_now could not deliver it
+CATCHUP_STATUS_DM_CAPPED = "dm_capped"              # the ACCOUNT-wide DM cap, not the catch-up one
+CATCHUP_STATUS_NO_MESSAGE = "no_message"            # approved with an empty body
+CATCHUP_STATUS_NOT_SENDABLE = "not_sendable"        # row missing or no longer approved/sending
 
 # Ordered fallback chain for the catch-up cards. LinkedIn's SDUI ships hashed classes, so we prefer
 # data-view-name, then the semantic list, then any main-content list item that links to a profile.
@@ -6051,7 +6061,10 @@ def _scrape_catchup_moments(driver: WebDriver, max_moments: int = 40, user_id: i
         time.sleep(random.uniform(2, 4))
 
     if not moments:
-        log_warning("Catch-up feed produced no moments", user_id=user_id, action_type="catchup")
+        # DEBUG, not WARNING: an empty catch-up feed is a normal day, and the scan beat runs daily
+        # per user — three of them inside the escalation window would re-emit at ERROR and file a
+        # grouped $exception for a no-op. The `no_moments` status on the run report carries it.
+        log_debug("Catch-up feed produced no moments", user_id=user_id, action_type="catchup")
     return moments
 
 
@@ -6091,7 +6104,8 @@ def _draft_catchup_message(user_id: int, moment: dict, my_profile: LinkedInProfi
 # the throttle already logs its own reason in _skip_if_throttled) — the PostHog series is what
 # carries them, and that's the series a "catch-up never sends" report has to be answered from.
 _CATCHUP_QUIET_STATUSES = frozenset({CATCHUP_STATUS_NOTHING_TO_SEND, CATCHUP_STATUS_CAPPED,
-                                     CATCHUP_STATUS_THROTTLED, CATCHUP_STATUS_DISABLED})
+                                     CATCHUP_STATUS_THROTTLED, CATCHUP_STATUS_DISABLED,
+                                     CATCHUP_STATUS_DM_CAPPED, CATCHUP_STATUS_NOT_SENDABLE})
 
 
 def report_catchup_run(user_id: Optional[int], report: dict, task_name: str) -> None:
@@ -6100,7 +6114,8 @@ def report_catchup_run(user_id: Optional[int], report: dict, task_name: str) -> 
     otherwise worked."""
     summary = ", ".join(f"{k}={report[k]}" for k in
                         ("moments", "classified", "enabled_type", "excluded", "duplicate",
-                         "below_bar", "drafted", "dispatched", "capped", "requeued")
+                         "below_bar", "drafted", "dispatched", "capped", "inactive", "requeued",
+                         "touch_id")
                         if k in report)
     status = report.get("status")
     emit = log_debug if status in _CATCHUP_QUIET_STATUSES else log_info
@@ -6228,14 +6243,26 @@ def send_catchup_touch(self, touch_id: int):
     and the overall DM cap at send time — either one trips the touch back to 'approved' for the next
     scan rather than sending — and reuses send_dm_now, so it honors the 429 breaker / kill-switch and
     the shared DM logging. A high-value milestone also enqueues the user's follow-up sequence, which is
-    what routes a replying prospect into the BD nurture."""
+    what routes a replying prospect into the BD nurture.
+
+    EVERY outcome reports (issue #792). A deferral puts the touch back to 'approved' and the drip
+    re-dispatches it 20 minutes later, so without this the send phase's `dispatched` count climbs all
+    day on a lane that has never delivered a single message — which IS the reported symptom."""
+    task_name = "send_catchup_touch"
+
+    def _report(status: str, user_id: Optional[int]) -> None:
+        report_catchup_run(user_id, {"phase": CATCHUP_PHASE_DELIVER, "status": status,
+                                     "touch_id": touch_id}, task_name)
+
     touch = get_catchup_touch(touch_id)
     if not touch or touch["status"] not in (CatchupTouchStatus.APPROVED, CatchupTouchStatus.SENDING):
+        _report(CATCHUP_STATUS_NOT_SENDABLE, touch.get("user_id") if touch else None)
         return f"Catch-up touch {touch_id} not sendable (status={touch['status'] if touch else 'missing'})"
     if not (touch.get("message") or "").strip():
         update_catchup_touch_status(touch_id, CatchupTouchStatus.SKIPPED)
         log_warning("Catch-up touch approved with no message; skipping", user_id=touch["user_id"],
                     action_type="catchup")
+        _report(CATCHUP_STATUS_NO_MESSAGE, touch["user_id"])
         return f"Catch-up touch {touch_id} skipped (no message)"
 
     user_id = touch["user_id"]
@@ -6246,9 +6273,11 @@ def send_catchup_touch(self, touch_id: int):
                     max_catchup_touches_allowed(user_id))
     if count_catchup_touches_sent_today(user_id) >= daily_cap:
         update_catchup_touch_status(touch_id, CatchupTouchStatus.APPROVED)  # retry on the next scan
+        _report(CATCHUP_STATUS_CAPPED, user_id)
         return f"Catch-up touch {touch_id} deferred (daily catch-up cap reached)"
     if count_dms_sent_today(user_id) >= int(prefs.get("max_dms_per_day") or 0):
         update_catchup_touch_status(touch_id, CatchupTouchStatus.APPROVED)
+        _report(CATCHUP_STATUS_DM_CAPPED, user_id)
         return f"Catch-up touch {touch_id} deferred (daily DM cap reached)"
 
     try:
@@ -6256,8 +6285,10 @@ def send_catchup_touch(self, touch_id: int):
     except LinkedInRateLimited as e:
         myprint(f"send_catchup_touch: throttled, deferring {touch_id}: {e}")
         update_catchup_touch_status(touch_id, CatchupTouchStatus.APPROVED)
+        _report(CATCHUP_STATUS_THROTTLED, user_id)
         return f"Catch-up touch {touch_id} deferred (LinkedIn throttled)"
     update_catchup_touch_status(touch_id, CatchupTouchStatus.SENT if sent else CatchupTouchStatus.FAILED)
+    _report(CATCHUP_STATUS_SENT if sent else CATCHUP_STATUS_FAILED, user_id)
     if sent:
         first_name = (touch.get("person_name") or "").strip().split(" ")[0] or "there"
         _schedule_catchup_followup(user_id, touch["profile_url"], first_name, str(touch["event_type"]))

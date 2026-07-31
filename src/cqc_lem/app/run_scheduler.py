@@ -14,7 +14,7 @@ from cqc_lem.app.run_automation import automate_commenting, automate_profile_vie
     sweep_reply_comments, sweep_comment_followups, sweep_comment_outcomes, send_catchup_touch, \
     report_catchup_run, CATCHUP_PHASE_SCAN, CATCHUP_PHASE_SEND, CATCHUP_STATUS_THROTTLED, \
     CATCHUP_STATUS_DISABLED, CATCHUP_STATUS_DISPATCHED, CATCHUP_STATUS_CAPPED, \
-    CATCHUP_STATUS_NOTHING_TO_SEND
+    CATCHUP_STATUS_NOTHING_TO_SEND, CATCHUP_STATUS_INACTIVE
 from cqc_lem.utilities.db import (
     get_ready_to_post_posts, get_orphaned_scheduled_posts, update_db_post_status,
     get_active_user_ids, PostStatus, has_linkedin_session, get_company_linked_in_url_for_user,
@@ -1300,11 +1300,16 @@ def auto_check_catchup_touches():
 
     dispatched = 0
     capped = 0
+    inactive = 0
     budgets: dict = {}  # user_id -> remaining catch-up touches allowed today
     for touch_id, user_id in approved:
         if user_id not in active_user_ids:
-            log_warning("Skipping catch-up touch — user not active/connected",
-                        user_id=user_id, task_name="auto_check_catchup_touches")
+            # DEBUG + a counted funnel stage, not a WARNING: this drip beats every 20 minutes, so a
+            # single queued touch on a disconnected account would re-emit at ERROR and file a grouped
+            # $exception ~72x a day. `inactive` on the run report is the durable signal.
+            inactive += 1
+            log_debug("Skipping catch-up touch — user not active/connected",
+                      user_id=user_id, task_name=task_name)
             continue
         if user_id not in budgets:
             # 10/day is a premium-plan allowance; every other plan tops out at 5 (see db.py).
@@ -1330,10 +1335,14 @@ def auto_check_catchup_touches():
 
     if dispatched or orphaned:
         status = CATCHUP_STATUS_DISPATCHED
+    elif capped:
+        status = CATCHUP_STATUS_CAPPED
+    elif inactive:
+        status = CATCHUP_STATUS_INACTIVE  # a queue that exists but whose owners can't be sent for
     else:
-        status = CATCHUP_STATUS_CAPPED if capped else CATCHUP_STATUS_NOTHING_TO_SEND
+        status = CATCHUP_STATUS_NOTHING_TO_SEND
     report_catchup_run(None, {"phase": CATCHUP_PHASE_SEND, "status": status,
-                              "dispatched": dispatched, "capped": capped,
+                              "dispatched": dispatched, "capped": capped, "inactive": inactive,
                               "requeued": len(orphaned)}, task_name)
     if dispatched == 0 and len(orphaned) == 0:
         return "No Catch-up Touches to Send"

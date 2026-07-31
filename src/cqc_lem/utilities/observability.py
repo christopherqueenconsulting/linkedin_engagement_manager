@@ -909,7 +909,12 @@ def track_catchup_run(user_id: Optional[int], report: Optional[dict] = None, **e
     start, and a scan whose selectors had drifted all produced the same thing — silence — so a user
     reporting "catch-up never sends anything" could not be answered from telemetry at all. The
     `status` and the per-stage funnel counts ARE the point: they say which stage the moments died at
-    (`scanned` -> `classified` -> `enabled` -> after exclusion/dedup/score -> `drafted`)."""
+    (`scanned` -> `classified` -> `enabled` -> after exclusion/dedup/score -> `drafted`).
+
+    Three phases, because a `dispatched` touch is not a sent one: `scan` drafts, `send` is the drip
+    that dispatches, and `deliver` is the per-touch terminal outcome. A touch the account-wide DM cap
+    defers goes back to 'approved' and is re-dispatched on the next beat, so only the `deliver` phase
+    can tell a lane that sends from one that has looped all day without delivering anything."""
     report = dict(report or {})
     posthog.capture(
         distinct_id=str(user_id or "system"),
@@ -929,7 +934,9 @@ def track_catchup_run(user_id: Optional[int], report: Optional[dict] = None, **e
             "message_source": report.get("message_source"),
             "dispatched": int(report.get("dispatched") or 0),
             "capped": int(report.get("capped") or 0),
+            "inactive": int(report.get("inactive") or 0),
             "requeued": int(report.get("requeued") or 0),
+            "touch_id": report.get("touch_id"),
             **extra,
         },
     )
