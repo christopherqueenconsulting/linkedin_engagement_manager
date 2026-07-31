@@ -1,16 +1,18 @@
-# Avatar Fidelity, Preview, Guardrails & Video Language — Phase 1 Research
+# Avatar Fidelity, Preview, Guardrails & Video Language
 
-Issue: [#548](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/548)
-Date: 2026-07-25 · Status: **research complete; owner signed off `1A 2A 3A 4A` — see §5**
+Issues: [#548](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/548)
+(research + item 1) · [#744](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/744)
+(items 2–4)
+Date: 2026-07-25, updated 2026-07-31 · Status: **owner signed off `1A 2A 3A 4A` (§5); all four
+Phase 2 items implemented — one supervised live avatar render still outstanding**
 
-This document root-causes the four reported defects against the code as it exists on `main`,
+This document root-causes the four reported defects against the code as it existed on `main`,
 records what the underlying models can and cannot be conditioned on, and lays out the Phase 2
 implementation plan.
 
-**What ships in this PR:** the research below, plus **Phase 2 item 1 only** — the video-language
-fix (§2.1), which the owner asked for ahead of the rest so the two posts that shipped with a
-foreign-language voiceover (#34, #36) can be regenerated. Items 2–4 (likeness attributes, preview
-+ approval gate, guardrails) land in a follow-up PR and close the issue.
+**Shipped in #548 / PR #597:** the research below plus **Phase 2 item 1** — the video-language
+fix (§2.1). **Shipped in #744:** items 2–4 (likeness attributes, preview + approval gate,
+guardrails) — see §4 for the built shape of each.
 
 ---
 
@@ -184,36 +186,57 @@ Ordered by risk-reduction per unit of work. Items 1–2 are the reported product
 - Validation: after deploy, `regenerate_post_video_task(34)` / `(36)` on the owner's account and
   confirm the audio.
 
-**2. Likeness / gender fidelity.** (Decision 3A — user self-declares, never inferred)
-- Migration (timestamp version): add nullable `gender_presentation VARCHAR(32)`, `age_band VARCHAR(16)`,
-  `attributes_confirmed_at DATETIME` to `avatar_trainings`. (`users.content_language` already landed
-  with item 1.)
-- New `utilities/avatar/attributes.py`: `subject_clause(avatar) -> str` producing one canonical phrase
-  (e.g. `"a man in his 40s"`) from **stored, user-declared** values. Empty string when unset — never
-  guessed.
-- Inject it in two places: into `_profile_visual_context()` so the prompt-authoring LLM never invents a
-  conflicting subject, and into `generate_post_image()`'s final prompt next to the trigger word.
-- Thread `ratio` through `generate_image_with_avatar()` → `get_flux_image_via_replicate(aspect_ratio=…)`.
-- Only prepend the trigger word when the scene actually depicts the author (person-bearing prompts);
-  `_generate_avatar_slide_image()` routes object/concept queries to base Flux or Pexels instead.
+**2. Likeness / gender fidelity.** ✅ **shipped in #744** (Decision 3A — user self-declares, never inferred)
+- Migration `V20260731144005__add_avatar_fidelity_and_guardrails.sql`: nullable
+  `gender_presentation VARCHAR(32)`, `age_band VARCHAR(16)`, `attributes_confirmed_at DATETIME` on
+  `avatar_trainings`. (`users.content_language` already landed with item 1.)
+- `utilities/avatar/attributes.py` is the ONE place attributes become prompt text.
+  `subject_clause(avatar)` renders one canonical phrase (`"a man in his 40s"`) from **stored,
+  user-declared** values; `""` when unset. `"prefer-not-to-say"` is a storable choice that
+  contributes no noun, and an age band alone renders the neutral `"a person in their 40s"` —
+  stating an age is not a claim about gender. Nothing here reads a photo.
+- Injected in two places: `subject_directive()` leads `_profile_visual_context()` so the
+  prompt-authoring LLM never invents a conflicting subject, and `apply_subject_clause()` puts the
+  clause beside the trigger word in `generate_post_image()`'s final Replicate prompt.
+- `ratio` threads through `generate_image_with_avatar()` →
+  `get_flux_image_via_replicate(aspect_ratio=…)`.
+- The trigger word only reaches person-bearing scenes: `generate_post_image(depicts_person=…)`,
+  driven by `carousel_creator._query_depicts_person()` — a `personal_story` slide is about the
+  author by definition, anything else needs a person term in the derived query.
 
-**3. Preview + approval gate.** (Decision 4A)
-- On transition to `succeeded`, render N=3 sample images through the avatar LoRA (fixed prompt set:
-  headshot, at-desk, speaking-to-camera) and persist their asset paths (new `avatar_samples` table or a
-  JSON column — one row per avatar).
-- New endpoints: `GET /avatar/training/{id}/samples`, `POST /avatar/training/{id}/approve`,
-  `POST /avatar/training/{id}/reject`.
-- `set_active_avatar()` refuses avatars that are not approved.
-- `Avatars.tsx`: sample gallery, Approve / Reject + Regenerate, attribute & language settings,
-  guardrail toggles, credit/usage visibility.
+**3. Preview + approval gate.** ✅ **shipped in #744** (Decision 4A)
+- `utilities/avatar/samples.py` renders three fixed scenes (headshot, at-desk, speaking-to-camera)
+  through the LoRA using the SAME subject clause a production image uses, so what the user approves
+  is what they get. Paths persist as JSON on `avatar_trainings.sample_paths` (one row per avatar).
+  Rendering runs in `app/run_avatar.render_avatar_samples_task`, queued when a training first
+  reaches `succeeded`; a base-Flux fallback render is discarded rather than shown as "your avatar".
+- Endpoints: `GET`/`POST /avatar/training/{id}/samples` (read / capped re-roll),
+  `POST …/approve`, `POST …/reject`, `PUT …/attributes`, `GET`/`PUT /avatar/preferences`.
+- `set_active_avatar()` **and** the activate endpoint refuse an avatar that is not `approved`;
+  approving requires rendered samples to exist. Rejecting also deactivates. New samples reset an
+  earlier verdict to `pending` — the user approved the images they saw.
+- `Avatars.tsx`: sample gallery, Approve / Reject / Regenerate, attribute controls, guardrail
+  toggles and credit/usage visibility. (Content language stays in Account → Preferences, where
+  item 1 put it.)
 
-**4. Guardrails.** (Decision 4A — full set)
-- Honor `PostRequest.use_avatar` (currently dead) in the compose path.
-- Per-user, per-content-type opt-in (`avatar_use_*` columns or an engagement-preference section),
-  default **off** until the avatar is approved.
-- Extend `_apply_ai_disclosure()` + C2PA to any post whose media used the avatar, not just video.
-- Regeneration cap on top of the credit ledger; an explicit "don't use my avatar" switch that forces
-  the base-Flux / Pexels path.
+**4. Guardrails.** ✅ **shipped in #744** (Decision 4A — full set)
+- `utilities/avatar/guardrails.resolve_avatar_for()` is the ONE gate; `None` always means "use base
+  Flux / Pexels". Precedence: `users.avatar_disabled` (the explicit "don't use my avatar" switch) →
+  `posts.use_avatar` (the compose-time choice, three-valued, NULL = no choice) →
+  `users.avatar_use_post_image` / `_carousel` / `_video` (default **OFF**) → the approval gate. It
+  **fails closed**: any error resolving the policy declines the avatar.
+- `PostRequest.use_avatar` — accepted and dropped before — is persisted by `schedule_post` and
+  `update_post`.
+- Provenance: `generate_post_image()` C2PA-signs every real avatar render and sets
+  `posts.avatar_media`, which `_create_content_for_planned_post` reads so `_apply_ai_disclosure()`
+  covers avatar images (carousel slides included), not just video. A base-Flux fallback render
+  claims neither.
+- Sample regeneration is capped by `AVATAR_SAMPLE_REGEN_MAX` (default 3) on top of the credit
+  ledger — samples cost inference money but no training credit.
+- **Operator note:** every guardrail defaults OFF, including for accounts that already have an
+  active avatar. After this migration an existing avatar must be previewed and approved, and its
+  content types opted in, before it is used again. That is deliberate — a never-previewed avatar is
+  exactly what shipped the wrong-gender renders.
 
 **Testing.** Item 1's coverage ships here: `_audio_direction` across every model in `VIDEO_MODELS`,
 the language/marker content, prompt-trimming, the `create_runway_video` audio gate, language
@@ -221,10 +244,19 @@ resolution precedence + fail-soft paths, pipeline threading, and the settings en
 (`tests/unit/utilities/test_content_language.py`, `tests/unit/utilities/ai/test_ai_helper_media.py`,
 `tests/unit/utilities/ai/test_video_models_premium.py`, `tests/unit/app/test_video_tier_pipeline.py`,
 `tests/integration/test_content_language_settings.py`).
-Items 2–4 still owe: `subject_clause` (unset → empty, never inferred), ratio threading, trigger-word
-gating, the approval gate on `set_active_avatar`, and integration coverage for the new avatar
-endpoints. Target ≥90% patch coverage per the issue. Regenerating posts #34/#36 plus one supervised
-avatar render on the owner's account are the live validation cases.
+Items 2–4's coverage ships with #744: `subject_clause` (unset → empty, never inferred),
+the guardrail precedence + fail-closed posture, sample rendering and its fallback discard, ratio
+threading, trigger-word gating, the approval gate on `set_active_avatar` and the activate endpoint,
+the avatar-image disclosure, and the new endpoints
+(`tests/unit/utilities/avatar/test_attributes.py`, `…/test_guardrails.py`, `…/test_samples.py`,
+`tests/unit/app/test_run_avatar_task.py`, `tests/unit/app/test_avatar_media_disclosure.py`,
+`tests/unit/utilities/ai/test_ai_helper_avatar_image.py`,
+`tests/unit/utilities/test_db_avatar_fidelity.py`,
+`tests/integration/test_avatar_preview_api.py`).
+
+**Still outstanding:** one supervised avatar render on the owner's account after deploy — declare
+attributes, review the three samples, approve, opt a content type in, generate. That is a human
+step and is why #744 stays open until it is done.
 
 ---
 

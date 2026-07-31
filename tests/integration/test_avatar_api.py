@@ -177,29 +177,25 @@ class TestListAvatarTrainings:
 @pytest.mark.integration
 class TestActivateAvatar:
     def test_returns_400_for_non_succeeded_training(self):
-        trainings = [
-            {
-                "id": 1, "training_id": "train-1", "model_ref": None,
-                "trigger_word": "TOK", "status": "processing",
-                "is_active": False, "created_at": None, "updated_at": None,
-            }
-        ]
+        avatar = {
+            "id": 1, "training_id": "train-1", "model_ref": None,
+            "trigger_word": "TOK", "status": "processing", "approval_status": "pending",
+            "is_active": False, "created_at": None, "updated_at": None,
+        }
         with patch("cqc_lem.api.main.get_session_user_id", return_value=USER_ID), \
-             patch("cqc_lem.api.main.get_avatar_trainings", return_value=trainings):
+             patch("cqc_lem.api.main.get_avatar_training", return_value=avatar):
             r = _client().put("/api/avatar/training/1/activate", json={"session_token": SESSION})
 
         assert r.status_code == 400
 
-    def test_returns_200_for_succeeded_training(self):
-        trainings = [
-            {
-                "id": 2, "training_id": "train-2", "model_ref": "user/model:v1",
-                "trigger_word": "TOK", "status": "succeeded",
-                "is_active": False, "created_at": None, "updated_at": None,
-            }
-        ]
+    def test_returns_200_for_approved_succeeded_training(self):
+        avatar = {
+            "id": 2, "training_id": "train-2", "model_ref": "user/model:v1",
+            "trigger_word": "TOK", "status": "succeeded", "approval_status": "approved",
+            "is_active": False, "created_at": None, "updated_at": None,
+        }
         with patch("cqc_lem.api.main.get_session_user_id", return_value=USER_ID), \
-             patch("cqc_lem.api.main.get_avatar_trainings", return_value=trainings), \
+             patch("cqc_lem.api.main.get_avatar_training", return_value=avatar), \
              patch("cqc_lem.api.main.set_active_avatar", return_value=True):
             r = _client().put("/api/avatar/training/2/activate", json={"session_token": SESSION})
 

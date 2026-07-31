@@ -8037,6 +8037,26 @@ def get_post_use_avatar(post_id: Optional[int]) -> Optional[bool]:
         connection.close()
 
 
+def update_post_use_avatar(post_id: int, use_avatar: Optional[bool]) -> bool:
+    """Set the compose-time avatar choice on an existing post. None clears it back to
+    "follow my preferences" — the field is three-valued everywhere it is read."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE posts SET use_avatar = %s WHERE id = %s",
+            (None if use_avatar is None else int(bool(use_avatar)), post_id),
+        )
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not update use_avatar for post_id {post_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def mark_post_avatar_media(post_id: Optional[int]) -> bool:
     """Record that generated media for this post came out of the avatar LoRA.
 

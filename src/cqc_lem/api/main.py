@@ -81,7 +81,7 @@ from cqc_lem.utilities.db import (
     update_avatar_training_status, set_active_avatar,
     get_avatar_trainings, get_active_avatar, get_avatar_training,
     update_avatar_attributes, set_avatar_approval,
-    get_avatar_preferences, update_avatar_preferences,
+    get_avatar_preferences, update_avatar_preferences, update_post_use_avatar,
     AVATAR_APPROVAL_APPROVED, AVATAR_APPROVAL_REJECTED,
     get_user_timezone, update_user_timezone,
     get_user_geo, update_user_location, get_user_content_language,
@@ -1745,6 +1745,10 @@ def update_post(post_id: int, post: PostRequest) -> ResponseModel:
         reason = (post.rejection_reason or "").strip() or None
         if reason:
             update_db_post_rejection_reason(post_id, reason)
+        # Only on an explicit value: omitting the field means "leave my choice alone", not
+        # "clear it" (issue #744 — use_avatar is three-valued).
+        if post.use_avatar is not None:
+            update_post_use_avatar(post_id, post.use_avatar)
         return ResponseModel(status_code=200, detail="Post updated successful")
     else:
         raise HTTPException(status_code=405, detail="Post could not be updated")

@@ -214,6 +214,39 @@ class TestGenerateAvatarSlideImage:
         with patch("cqc_lem.utilities.ai.ai_helper.generate_post_image", side_effect=Exception("api")):
             assert _generate_avatar_slide_image("team", 5) is None
 
+    def test_routes_through_the_carousel_surface_with_the_post_id(self):
+        with patch("cqc_lem.utilities.ai.ai_helper.generate_post_image",
+                   return_value="/tmp/gen.png") as gen:
+            _generate_avatar_slide_image("team retro", 5, 9, "personal_story")
+        assert gen.call_args.kwargs["surface"] == "carousel"
+        assert gen.call_args.kwargs["post_id"] == 9
+        assert gen.call_args.kwargs["depicts_person"] is True
+
+    def test_object_query_is_not_routed_to_the_lora(self):
+        """Prepending the trigger word to 'quarterly dashboard metrics' asked the LoRA to insert
+        the user's face into a scene never written to contain a person (issue #744)."""
+        with patch("cqc_lem.utilities.ai.ai_helper.generate_post_image",
+                   return_value="/tmp/gen.png") as gen:
+            _generate_avatar_slide_image("quarterly dashboard metrics", 5, 9, "educational")
+        assert gen.call_args.kwargs["depicts_person"] is False
+
+
+@pytest.mark.unit
+class TestQueryDepictsPerson:
+    def test_personal_story_always_depicts_the_author(self):
+        assert cc._query_depicts_person("quarterly dashboard", "personal_story") is True
+
+    @pytest.mark.parametrize("query", ["a team retro", "client meeting", "founder portrait"])
+    def test_person_terms_detected(self, query):
+        assert cc._query_depicts_person(query, "educational") is True
+
+    @pytest.mark.parametrize("query", ["dashboard metrics", "server rack", "", None])
+    def test_object_queries_rejected(self, query):
+        assert cc._query_depicts_person(query, "educational") is False
+
+    def test_punctuation_does_not_hide_a_person_term(self):
+        assert cc._query_depicts_person("(team), retro", "educational") is True
+
 
 @pytest.mark.unit
 class TestSelectSlideImage:
