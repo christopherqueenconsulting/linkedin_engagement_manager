@@ -56,8 +56,8 @@ describe('AdminFeedbackPage (issue #793)', () => {
       },
     ]))
     harness(<AdminFeedbackPage />)
-    await waitFor(() => expect(screen.getByText('Feedback triage')).toBeTruthy())
-    expect(screen.getByText('user@x.com')).toBeTruthy()
+    expect(screen.getByText('Feedback triage')).toBeTruthy()
+    await waitFor(() => expect(screen.getByText('user@x.com')).toBeTruthy())
     expect(screen.getByRole('button', { name: /approve/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /dismiss/i })).toBeTruthy()
   })
