@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.112.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.112.0...v0.112.1) (2026-07-31)
+
+
+### Bug Fixes
+
+* **agent-pipeline:** reap abandoned agent:working claims + make the Ollama lane gauge see a broken proxy ([#810](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/810)) ([10fd70c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/10fd70c03b69247776b4b91a6f5009a6c7f8fe00))
+
 ## [0.112.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.111.1...v0.112.0) (2026-07-30)
 
 
