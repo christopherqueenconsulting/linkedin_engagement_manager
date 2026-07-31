@@ -461,17 +461,25 @@ add_worktree() {  # $1=branch  $2=base(ref)  -> path on stdout
     git -C "$REPO" worktree add "$wt" "origin/$branch" >/dev/null 2>&1
     git -C "$wt" checkout -B "$branch" "origin/$branch" >/dev/null 2>&1
   else
-    # Origin ref missing. If a stale local branch already exists (tip is on $base), `git worktree
-    # add -b` would silently fail and cd would break — delete the stale ref first.
+    # Origin ref missing, so there are three cases and only one of them wants `-b`.
     if git -C "$REPO" show-ref --verify --quiet "refs/heads/$branch"; then
       local tip
       tip="$(git -C "$REPO" rev-parse --verify "$branch" 2>/dev/null)" || tip=""
       if [ -n "$tip" ] && git -C "$REPO" merge-base --is-ancestor "$tip" "$base" 2>/dev/null; then
+        # Stale ref carrying nothing: delete it so `-b` can recreate it cleanly.
         log "add_worktree: deleting stale local $branch (tip on $base) before creating worktree." >&2
         git -C "$REPO" branch -D "$branch" >/dev/null 2>&1 || true
+      else
+        # The branch has UNPUSHED WORK. Deleting it would throw that away, but `-b` refuses to
+        # recreate an existing branch — so the tick failed here every time and the issue could never
+        # be worked (feature/claude-issue-744 sat with 3 unique commits and a missing directory,
+        # failing on every tick until the reaper parked it). Attach the existing branch instead.
+        log "add_worktree: reattaching existing $branch (has commits not on $base) to a fresh worktree." >&2
+        git -C "$REPO" worktree add "$wt" "$branch" >/dev/null 2>&1
       fi
     fi
-    git -C "$REPO" worktree add -b "$branch" "$wt" "$base" >/dev/null 2>&1
+    # Only create the branch if the reattach above didn't already produce the worktree.
+    [ -d "$wt" ] || git -C "$REPO" worktree add -b "$branch" "$wt" "$base" >/dev/null 2>&1
   fi
   if [ ! -d "$wt" ]; then
     log "add_worktree: FAILED to create $wt (branch=$branch base=$base). Check git worktree list." >&2
