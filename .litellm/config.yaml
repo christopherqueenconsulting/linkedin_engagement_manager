@@ -1,3 +1,15 @@
+# ── Ollama Cloud roster (refreshed 2026-07-31, issue #717) ───────────────────────
+# TWO things about this file that are easy to get wrong:
+#  1. `routing_strategy: latency-based-routing` means the order of deployments inside a
+#     model_name group is NOT a priority list — every deployment in the group competes and the
+#     fastest wins. Order still matters for ONE thing: scripts/benchmark_models.py treats the
+#     FIRST Ollama Cloud deployment of a tier as that tier's CHAMPION, i.e. the model a candidate
+#     has to beat. So a model is promoted to the head of its group only after the benchmark says
+#     so — never on a spec sheet.
+#  2. Ollama's OpenAI-compat layer supports `response_format` json/json_schema but does NOT
+#     support forced tool calls (`tool_choice`). No LEM call path sends tool_choice — keep it
+#     that way, or the call will silently degrade on every Ollama deployment below. JSON output
+#     is requested with response_format (see generate_carousel_content), not with a forced tool.
 model_list:
   # ── SIMPLE tier: fast, lightweight — refine/summarize/list tasks ──────────────
   - model_name: lem-simple
@@ -31,13 +43,36 @@ model_list:
       request_timeout: 150
       rpm: 50
 
+  # deepseek-v4-flash (284B MoE / 13B active, 1M context, native structured output, fast
+  # no-thinking mode) is a MEDIUM usage-level model — the same quota class gpt-oss:120b and the
+  # departed minimax-m2.7 sit in — so adding it is flat on quota, not a step up.
   - model_name: lem-medium
     litellm_params:
-      model: openai/minimax-m2.7
+      model: openai/deepseek-v4-flash:cloud
+      api_base: os.environ/OLLAMA_CLOUD_URL
+      api_key: os.environ/OLLAMA_CLOUD_API_KEY
+      max_parallel_requests: 4
+      request_timeout: 150
+      rpm: 50
+
+  # gemma4:31b is a Low/Medium usage-level model with a 256K context — cheaper quota than the rest
+  # of this tier, which is why it is in the group rather than replacing anything outright.
+  - model_name: lem-medium
+    litellm_params:
+      model: openai/gemma4:31b
       api_base: os.environ/OLLAMA_CLOUD_URL
       api_key: os.environ/OLLAMA_CLOUD_API_KEY
       max_parallel_requests: 4
       request_timeout: 120
+      rpm: 50
+
+  # NOTE: openai/minimax-m2.7 was REMOVED 2026-07-31 (issue #717) — it is NOT retired, it is
+  # stale: the catalog moved to minimax-m3 and the weekly model-health check re-files that family
+  # gap every run. m3 is a HIGH usage-level model where m2.7 was MEDIUM, so following the family
+  # would raise this tier's quota burn — an evaluation, never an auto-swap. Rather than pay that
+  # for a tier that is not the quality anchor, lem-medium leaves the family: deepseek-v4-flash
+  # (MEDIUM) + gemma4:31b (Low/Medium) cover the same work at the same or lower usage level.
+  # The m3 / glm-5.2 quality question lives on for lem-complex, benchmark-gated.
 
   # OpenAI fallback
   - model_name: lem-medium
@@ -52,6 +87,21 @@ model_list:
   - model_name: lem-complex
     litellm_params:
       model: openai/qwen3.5:397b
+      api_base: os.environ/OLLAMA_CLOUD_URL
+      api_key: os.environ/OLLAMA_CLOUD_API_KEY
+      max_parallel_requests: 3
+      request_timeout: 240
+      rpm: 30
+
+  # deepseek-v4-flash joins this tier AHEAD of the paid OpenAI/Anthropic fallbacks: a MEDIUM
+  # usage-level model on a tier whose only other Ollama deployment is qwen3.5:397b, so long-form
+  # work that lands here costs less quota, and a qwen outage no longer drops straight onto a paid
+  # key. It is NOT ahead of qwen3.5 — see the champion note at the top of this file; promoting it
+  # (or adopting the HIGH usage-level minimax-m3:cloud / glm-5.2:cloud as the quality option) is a
+  # scripts/benchmark_models.py decision, not a config-time one.
+  - model_name: lem-complex
+    litellm_params:
+      model: openai/deepseek-v4-flash:cloud
       api_base: os.environ/OLLAMA_CLOUD_URL
       api_key: os.environ/OLLAMA_CLOUD_API_KEY
       max_parallel_requests: 3
@@ -94,8 +144,11 @@ model_list:
       api_key: os.environ/OPENAI_API_KEY
 
   # ── EMBEDDING: cheap vectors for feedback dedup/clustering (issue #498) ──────
-  # No Ollama Cloud embedding equivalent; text-embedding-3-small is the cheapest useful option.
-  # Callers MUST tolerate this being unavailable — feedback dedup falls back to token overlap.
+  # DO NOT move this to Ollama Cloud "for consistency": Ollama Cloud serves ZERO embedding models
+  # (it is a chat/completions roster only), so there is nothing to move it to — every roster
+  # refresh re-checks this and the answer has not changed. text-embedding-3-small is the cheapest
+  # useful option. Callers MUST tolerate this being unavailable — feedback dedup, the comment
+  # similarity gate and content-quality scoring all fall back to token overlap.
   - model_name: lem-embedding
     litellm_params:
       model: openai/text-embedding-3-small
