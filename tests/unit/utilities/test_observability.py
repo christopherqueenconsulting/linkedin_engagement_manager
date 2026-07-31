@@ -1059,3 +1059,39 @@ class TestExperimentTelemetry:
         assert props["cohort_enrolled"] == 2
         assert props["cohort_treatment_share"] == 0.5
         assert props["buckets"][0]["assignment"] == "flag"
+
+
+class TestTrackCatchupRun:
+    def test_emits_the_catchup_run_event_with_the_funnel(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_catchup_run
+            track_catchup_run(7, {"phase": "scan", "status": "none_qualified", "moments": 12,
+                                  "classified": 0, "message_source": "linkedin"})
+
+        kwargs = mock_ph.capture.call_args.kwargs
+        assert kwargs["event"] == "catchup_run"
+        assert kwargs["distinct_id"] == "7"
+        props = kwargs["properties"]
+        assert props["phase"] == "scan"
+        assert props["status"] == "none_qualified"
+        assert props["moments"] == 12
+        assert props["classified"] == 0
+        assert props["message_source"] == "linkedin"
+
+    def test_a_fleet_wide_beat_report_is_attributed_to_system(self):
+        """The dispatchers report for the whole fleet, not a user — the counts still have to land."""
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_catchup_run
+            track_catchup_run(None, {"phase": "send", "status": "capped", "capped": 3})
+
+        kwargs = mock_ph.capture.call_args.kwargs
+        assert kwargs["distinct_id"] == "system"
+        assert kwargs["properties"]["capped"] == 3
+        assert kwargs["properties"]["dispatched"] == 0  # absent counts read 0, never missing
+
+    def test_an_empty_report_still_emits(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_catchup_run
+            track_catchup_run(7)
+        mock_ph.capture.assert_called_once()
+        assert mock_ph.capture.call_args.kwargs["properties"]["status"] is None
