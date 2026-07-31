@@ -86,6 +86,24 @@ describe('conflict matrix', () => {
     expect(ids(ctx())).not.toContain('C6')
   })
 
+  it('C6 sends a user who has not started to the 3-step setup', () => {
+    const f = find(ctx({ eng: eng({ gmail_forward_confirmation: null }) }), 'C6')
+    expect(f?.message).toContain('3-step setup')
+  })
+
+  it('C6 names the outstanding step once Gmail has asked us to verify (#813)', () => {
+    // A pending record means the address WAS added — repeating "start the 3-step setup" is what
+    // made a half-done setup read as a total failure.
+    const f = find(ctx({ eng: eng({ gmail_forward_confirmation: { confirmed: false, code: '123456789' } }) }), 'C6')
+    expect(f?.message).not.toContain('3-step setup')
+    expect(f?.message).toContain('no forwarded LinkedIn email has arrived yet')
+  })
+
+  it('C6 clears once forwarding is confirmed by an arriving email', () => {
+    expect(ids(ctx({ eng: eng({ gmail_forward_confirmation: { confirmed: true, source: 'forwarded_email' } }) })))
+      .not.toContain('C6')
+  })
+
   it('C7 prices the 429 risk of scheduled sweeps', () => {
     const f = find(ctx({ eng: eng({ reply_check_mode: 'scheduled', reply_sweeps_per_day: 8 }) }), 'C7')
     expect(f?.message).toContain('8')

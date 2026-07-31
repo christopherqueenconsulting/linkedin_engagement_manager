@@ -6,19 +6,30 @@ export default function ReplySetupSteps() {
   const { eng } = useEngagementPrefs()
   if (!eng) return null
   const confirmation = eng.gmail_forward_confirmation
+  // Three states, not two (issue #813). "Pending" is the user who added the address and is waiting
+  // on the first forwarded email — telling them it is "not confirmed" reads as "your setup failed".
+  const state = confirmation?.confirmed ? 'confirmed' : confirmation ? 'pending' : 'missing'
+  const chip = {
+    confirmed: { text: '✓ Forwarding confirmed', className: 'bg-green-100 text-green-800' },
+    pending: { text: 'Waiting for your first forwarded email', className: 'bg-amber-100 text-amber-800' },
+    missing: { text: 'Forwarding not confirmed yet', className: 'bg-amber-100 text-amber-800' },
+  }[state]
 
   return (
     <div className="text-xs text-gray-500 space-y-3">
       <div className="flex items-center gap-2">
         <span
           data-testid="forwarding-status"
-          className={`inline-block rounded-full px-2 py-0.5 text-[11px] font-semibold ${
-            confirmation?.confirmed ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'
-          }`}
+          className={`inline-block rounded-full px-2 py-0.5 text-[11px] font-semibold ${chip.className}`}
         >
-          {confirmation?.confirmed ? '✓ Forwarding confirmed' : 'Forwarding not confirmed yet'}
+          {chip.text}
         </span>
       </div>
+      {state === 'confirmed' && confirmation?.source === 'forwarded_email' && (
+        <p className="text-green-700">
+          A LinkedIn notification reached your forwarding address, so the whole chain is working.
+        </p>
+      )}
       <p className="text-gray-600">
         We reply the moment LinkedIn emails you about a comment — no browser polling, so it can't trip
         LinkedIn's rate limits. One-time setup, about 2 minutes:
