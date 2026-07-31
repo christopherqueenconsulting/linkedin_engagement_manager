@@ -9,7 +9,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-TAG="${1:?Usage: deploy.sh <image-tag>}"
 LAST_GOOD_FILE="${ROOT_DIR}/.last_good_tag"
 ENV_FILE="${ROOT_DIR}/.env"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-180}"
@@ -111,6 +110,75 @@ persist_image_tag() {
   fi
   log "Persisted IMAGE_TAG=${tag} to ${ENV_FILE}"
 }
+
+# Converge the worker/standby tier, retrying once on the Docker "No such container"
+# race that can abort a mid-tier recreate (issue #831).
+converge_stack() {
+  local attempts=0
+  local max_attempts=2
+  local logfile
+  while true; do
+    attempts=$((attempts + 1))
+    logfile="$(mktemp)"
+    log "Recreating remaining services (attempt ${attempts}/${max_attempts})"
+    if ${COMPOSE} up -d --remove-orphans >"${logfile}" 2>&1; then
+      rm -f "${logfile}"
+      return 0
+    fi
+    if [[ ${attempts} -lt ${max_attempts} ]] && grep -qi "no such container" "${logfile}"; then
+      log "WARN: compose hit 'No such container' race — retrying converge"
+      rm -f "${logfile}"
+      sleep 5
+      continue
+    fi
+    log "ERROR: compose converge failed on attempt ${attempts}"
+    cat "${logfile}" >&2 || true
+    rm -f "${logfile}"
+    return 1
+  done
+}
+
+# Verify every expected compose service has at least one running container and that no
+# container is stuck in Created/Exited after a converge (issue #831).
+verify_stack_running() {
+  local expected_services running_services created exited missing
+
+  # awk (unlike grep -v) exits 0 even when it selects no rows, so these pipelines
+  # don't trigger set -e pipefail aborts when the stack is healthy.
+  expected_services="$(${COMPOSE} config --services 2>/dev/null \
+    | awk '$1 != "flyway" {print}' | sort -u)"
+  if [[ -z "${expected_services}" ]]; then
+    log "ERROR: could not enumerate expected compose services"
+    return 1
+  fi
+
+  created="$(${COMPOSE} ps -a --format '{{.Service}}\t{{.State}}' 2>/dev/null \
+    | awk 'tolower($2) == "created" {print $1}' | sort -u)"
+  if [[ -n "${created}" ]]; then
+    log "ERROR: services stuck in Created state: $(echo "${created}" | tr '\n' ' ')"
+    return 1
+  fi
+
+  exited="$(${COMPOSE} ps -a --format '{{.Service}}\t{{.State}}' 2>/dev/null \
+    | awk 'tolower($2) ~ /^(exited|dead)$/ && $1 != "flyway" {print $1}' | sort -u)"
+  if [[ -n "${exited}" ]]; then
+    log "ERROR: services in Exited/Dead state: $(echo "${exited}" | tr '\n' ' ')"
+    return 1
+  fi
+
+  running_services="$(${COMPOSE} ps --format '{{.Service}}' 2>/dev/null | sort -u)"
+  missing="$(comm -23 <(echo "${expected_services}") <(echo "${running_services}"))"
+  if [[ -n "${missing}" ]]; then
+    log "ERROR: expected services not running: $(echo "${missing}" | tr '\n' ' ')"
+    return 1
+  fi
+
+  log "Verified all expected services are running"
+  return 0
+}
+
+main() {
+TAG="${1:?Usage: deploy.sh <image-tag>}"
 
 # 1. Sync compose files + Flyway migrations to the released ref.
 PREV_TAG="$(cat "${LAST_GOOD_FILE}" 2>/dev/null || echo "")"
@@ -293,6 +361,12 @@ echo "${TARGET}" > "${STATE_FILE}"
 log "Edge now routing to web_api_${TARGET}"
 log "Web tier is LIVE on ${TAG} — the rest of this deploy is workers and is not user-facing."
 
+# Persist the tag baseline NOW, while the serving tier is live on the new tag. A later
+# worker-tier failure is a partial deploy, but IMAGE_TAG / .last_good_tag must match what is
+# actually running or the next deploy starts from a stale baseline (issue #831).
+echo "${TAG}" > "${LAST_GOOD_FILE}"
+persist_image_tag "${TAG}"
+
 # 6b. Only NOW enter maintenance mode and drain: stop beat so no new schedule fires, pause dispatch,
 #     cancel each worker's queue consumers, then wait for what is already running (video generation,
 #     commenting loops, DM sweeps) to finish before the recreate below kills them mid-flight
@@ -303,7 +377,17 @@ drain_workers
 # 7. Converge the rest of the stack on the new tag (workers, beat, the standby color). The active
 #    color and the edge are already at their target state, so this doesn't touch routing.
 log "Recreating remaining services"
-${COMPOSE} up -d --remove-orphans
+if ! converge_stack; then
+  log "ERROR: worker/standby converge failed — stack left partially deployed"
+  maint end || true
+  exit 1
+fi
+
+if ! verify_stack_running; then
+  log "ERROR: stack verification failed — at least one expected service is not running"
+  maint end || true
+  exit 1
+fi
 
 # 7a. Reload litellm if its config changed (compose won't recreate it on a bind-mount edit alone).
 if [[ "${LITELLM_RESTART}" == "1" ]]; then
@@ -314,10 +398,13 @@ fi
 # 7b. Healthy on the new tag — lift the pause and restore consumers.
 maint end || log "WARN: could not clear maintenance mode (pause TTL will expire it)"
 
-# 8. Record the new good tag and prune old artifacts.
-echo "${TAG}" > "${LAST_GOOD_FILE}"
-persist_image_tag "${TAG}"
+# 8. Prune old artifacts.
 log "Deploy of ${TAG} OK. Pruning old images/build cache (>168h)."
 docker image prune -af --filter "until=168h" >/dev/null 2>&1 || true
 docker builder prune -af --filter "until=168h" >/dev/null 2>&1 || true
 log "Done."
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

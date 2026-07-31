@@ -36,6 +36,24 @@ Cloudflare Tunnel (dashboard ingress: http://web_app:8000  — UNCHANGED)
    `/opt/lem/.active_color`.
 4. `up -d --remove-orphans` converges workers/beat and the now-standby color onto the new tag.
 
+### Worker-tier resilience (issue #831)
+
+The final `up -d --remove-orphans` can hit a Docker race: compose renames the old
+container before creating the replacement, and a concurrent `docker exec` (or compose's
+own bookkeeping) can reference the old ID in that window, producing `No such container`.
+That aborts the converge mid-tier and leaves workers in `Created` — a silent worker outage.
+
+`scripts/deploy.sh` now:
+
+- **Retries once** if the converge output contains `No such container`.
+- **Verifies the final state** by enumerating expected compose services and checking that
+  none are stuck in `Created` / `Exited` / `Dead`. If verification fails, the deploy exits
+  with a loud error instead of leaving the worker tier down silently.
+- **Persists `IMAGE_TAG` / `.last_good_tag` immediately after the edge flip**, while the
+  serving tier is live on the new tag. A later worker-tier failure is a partial deploy, but
+  the box's recorded baseline matches what is actually running so the next deploy diffs
+  against the correct starting point.
+
 Rollback still exists at every step; the only deploy with a brief blip was the first cutover
 (recreating `web_app` from a FastAPI container into the nginx edge). `scripts/rollback.sh` remains
 the sledgehammer (recreates in place, skips migrations); for a zero-downtime rollback prefer
