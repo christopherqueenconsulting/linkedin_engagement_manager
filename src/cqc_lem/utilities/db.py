@@ -744,7 +744,8 @@ def get_user_id(email: str):
 
 def insert_post(email: str, content: str, scheduled_time: datetime, post_type: PostType,
                 video_url: Optional[str] = None, carousel_slides: Optional[list[str]] = None,
-                video_quality: str = "standard", status: PostStatus = PostStatus.PENDING) -> bool:
+                video_quality: str = "standard", status: PostStatus = PostStatus.PENDING,
+                use_avatar: Optional[bool] = None) -> bool:
     user_id = get_user_id(email)
 
     success = False
@@ -761,11 +762,14 @@ def insert_post(email: str, content: str, scheduled_time: datetime, post_type: P
 
         slides_json = json.dumps(carousel_slides) if carousel_slides else None
 
+        # use_avatar is deliberately three-valued: NULL = the user expressed no preference for this
+        # post, so the per-user opt-ins decide (issue #744). 0/1 is an explicit compose-time choice.
         cursor.execute("""
-            INSERT INTO posts (content, scheduled_time, post_type, user_id, video_url, carousel_slides, video_quality, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO posts (content, scheduled_time, post_type, user_id, video_url, carousel_slides, video_quality, status, use_avatar)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (content, scheduled_time, post_type.value, user_id, video_url, slides_json,
-              video_quality or "standard", status.value))
+              video_quality or "standard", status.value,
+              None if use_avatar is None else int(bool(use_avatar))))
 
         connection.commit()
         success = cursor.rowcount == 1
@@ -7651,6 +7655,13 @@ def get_unposted_posts_missing_assets(within_days: int = 14) -> list:
 # Avatar training records
 # ---------------------------------------------------------------------------
 
+# avatar_trainings.approval_status — the preview/approval gate (issue #744). A freshly trained
+# avatar is 'pending' until the user has seen its sample renders and said yes.
+AVATAR_APPROVAL_PENDING = "pending"
+AVATAR_APPROVAL_APPROVED = "approved"
+AVATAR_APPROVAL_REJECTED = "rejected"
+
+
 def insert_avatar_training(user_id: int, training_id: str, trigger_word: str) -> Optional[int]:
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
@@ -7718,11 +7729,18 @@ def set_active_avatar(user_id: int, avatar_id: int) -> bool:
         # Validate the target avatar BEFORE deactivating anything — a bad id must leave the
         # user's current active avatar untouched (never strand them with no active avatar).
         cursor.execute(
-            "SELECT id FROM avatar_trainings WHERE id = %s AND user_id = %s",
+            "SELECT id, approval_status FROM avatar_trainings WHERE id = %s AND user_id = %s",
             (avatar_id, user_id),
         )
-        if cursor.fetchone() is None:
+        row = cursor.fetchone()
+        if row is None:
             myprint(f"set_active_avatar: avatar {avatar_id} not found for user_id {user_id}")
+            return False
+        # The approval gate (issue #744): activation used to be reachable straight from
+        # 'succeeded', so the first time a user saw their avatar was on a published post.
+        if row.get("approval_status") != AVATAR_APPROVAL_APPROVED:
+            myprint(f"set_active_avatar: avatar {avatar_id} is not approved "
+                    f"(status={row.get('approval_status')}) for user_id {user_id}")
             return False
         cursor.execute(
             "UPDATE avatar_trainings SET is_active = 0 WHERE user_id = %s",
@@ -7742,35 +7760,78 @@ def set_active_avatar(user_id: int, avatar_id: int) -> bool:
         connection.close()
 
 
+_AVATAR_COLUMNS = """id, training_id, model_ref, trigger_word, status, is_active,
+                     gender_presentation, age_band, attributes_confirmed_at,
+                     approval_status, approved_at, sample_paths, samples_generated_at,
+                     sample_regen_count, created_at, updated_at"""
+
+
+def _avatar_row_to_dict(row: dict) -> dict:
+    """One shape for an avatar row everywhere — the guardrails read approval_status and the
+    subject clause reads the declared attributes, so neither may depend on which query ran."""
+    try:
+        samples = json.loads(row.get("sample_paths") or "[]")
+    except (TypeError, ValueError):
+        samples = []
+    return {
+        "id": row["id"],
+        "training_id": row["training_id"],
+        "model_ref": row["model_ref"],
+        "trigger_word": row["trigger_word"],
+        "status": row["status"],
+        "is_active": bool(row.get("is_active")),
+        "gender_presentation": row.get("gender_presentation"),
+        "age_band": row.get("age_band"),
+        "attributes_confirmed_at": (row["attributes_confirmed_at"].isoformat()
+                                    if row.get("attributes_confirmed_at") else None),
+        "approval_status": row.get("approval_status") or AVATAR_APPROVAL_PENDING,
+        "approved_at": row["approved_at"].isoformat() if row.get("approved_at") else None,
+        "sample_paths": samples if isinstance(samples, list) else [],
+        "samples_generated_at": (row["samples_generated_at"].isoformat()
+                                 if row.get("samples_generated_at") else None),
+        "sample_regen_count": int(row.get("sample_regen_count") or 0),
+        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+        "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+    }
+
+
 def get_avatar_trainings(user_id: int) -> list[dict]:
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute(
-            """SELECT id, training_id, model_ref, trigger_word, status, is_active,
-                      created_at, updated_at
-               FROM avatar_trainings
-               WHERE user_id = %s
-               ORDER BY created_at DESC""",
+            f"""SELECT {_AVATAR_COLUMNS}
+                FROM avatar_trainings
+                WHERE user_id = %s
+                ORDER BY created_at DESC""",
             (user_id,),
         )
-        rows = cursor.fetchall()
-        return [
-            {
-                "id": r["id"],
-                "training_id": r["training_id"],
-                "model_ref": r["model_ref"],
-                "trigger_word": r["trigger_word"],
-                "status": r["status"],
-                "is_active": bool(r["is_active"]),
-                "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
-                "updated_at": r["updated_at"].isoformat() if r.get("updated_at") else None,
-            }
-            for r in rows
-        ]
+        return [_avatar_row_to_dict(r) for r in cursor.fetchall()]
     except mysql.connector.Error as err:
         myprint(f"Could not fetch avatar trainings for user_id {user_id} | Error: {err}")
         return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_avatar_training(user_id: int, avatar_id: int) -> Optional[dict]:
+    """One avatar row, scoped to its owner so an id from another account can never be read."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            f"""SELECT {_AVATAR_COLUMNS}
+                FROM avatar_trainings
+                WHERE id = %s AND user_id = %s
+                LIMIT 1""",
+            (avatar_id, user_id),
+        )
+        row = cursor.fetchone()
+        return _avatar_row_to_dict(row) if row else None
+    except mysql.connector.Error as err:
+        myprint(f"Could not fetch avatar {avatar_id} for user_id {user_id} | Error: {err}")
+        return None
     finally:
         cursor.close()
         connection.close()
@@ -7781,25 +7842,236 @@ def get_active_avatar(user_id: int) -> Optional[dict]:
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute(
-            """SELECT id, training_id, model_ref, trigger_word, status
-               FROM avatar_trainings
-               WHERE user_id = %s AND is_active = 1
-               LIMIT 1""",
+            f"""SELECT {_AVATAR_COLUMNS}
+                FROM avatar_trainings
+                WHERE user_id = %s AND is_active = 1
+                LIMIT 1""",
             (user_id,),
         )
         row = cursor.fetchone()
-        if not row:
-            return None
-        return {
-            "id": row["id"],
-            "training_id": row["training_id"],
-            "model_ref": row["model_ref"],
-            "trigger_word": row["trigger_word"],
-            "status": row["status"],
-        }
+        return _avatar_row_to_dict(row) if row else None
     except mysql.connector.Error as err:
         myprint(f"Could not fetch active avatar for user_id {user_id} | Error: {err}")
         return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_avatar_attributes(user_id: int, avatar_id: int,
+                             gender_presentation: Optional[str],
+                             age_band: Optional[str]) -> bool:
+    """Persist the user's SELF-DECLARED likeness attributes (issue #744, decision 3A).
+
+    Values are normalized by ``utilities.avatar.attributes`` first; an unrecognized value is
+    stored as NULL, which renders an empty subject clause rather than a guess.
+    """
+    from cqc_lem.utilities.avatar.attributes import (normalize_age_band,
+                                                     normalize_gender_presentation)
+    gender = normalize_gender_presentation(gender_presentation)
+    band = normalize_age_band(age_band)
+
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """UPDATE avatar_trainings
+               SET gender_presentation = %s, age_band = %s, attributes_confirmed_at = UTC_TIMESTAMP()
+               WHERE id = %s AND user_id = %s""",
+            (gender, band, avatar_id, user_id),
+        )
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not update avatar attributes for avatar {avatar_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def set_avatar_approval(user_id: int, avatar_id: int, status: str) -> bool:
+    """Record the user's verdict on their rendered samples.
+
+    A REJECTED avatar is also deactivated in the same statement — leaving a rejected likeness
+    active would keep publishing exactly the media the user just rejected.
+    """
+    if status not in (AVATAR_APPROVAL_PENDING, AVATAR_APPROVAL_APPROVED, AVATAR_APPROVAL_REJECTED):
+        myprint(f"set_avatar_approval: refusing unknown approval status {status!r}")
+        return False
+
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        if status == AVATAR_APPROVAL_APPROVED:
+            cursor.execute(
+                """UPDATE avatar_trainings
+                   SET approval_status = %s, approved_at = UTC_TIMESTAMP()
+                   WHERE id = %s AND user_id = %s""",
+                (status, avatar_id, user_id),
+            )
+        else:
+            cursor.execute(
+                """UPDATE avatar_trainings
+                   SET approval_status = %s, approved_at = NULL, is_active = 0
+                   WHERE id = %s AND user_id = %s""",
+                (status, avatar_id, user_id),
+            )
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not set approval {status} on avatar {avatar_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_avatar_samples(avatar_id: int, sample_paths: list[dict],
+                          count_regeneration: bool = False) -> bool:
+    """Persist rendered sample assets for an avatar (one JSON list per row).
+
+    ``count_regeneration`` increments the counter the regeneration cap is enforced against — the
+    first automatic render after training must not spend one of the user's regenerations.
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        payload = json.dumps(sample_paths or [])
+        if count_regeneration:
+            cursor.execute(
+                """UPDATE avatar_trainings
+                   SET sample_paths = %s, samples_generated_at = UTC_TIMESTAMP(),
+                       sample_regen_count = sample_regen_count + 1
+                   WHERE id = %s""",
+                (payload, avatar_id),
+            )
+        else:
+            cursor.execute(
+                """UPDATE avatar_trainings
+                   SET sample_paths = %s, samples_generated_at = UTC_TIMESTAMP()
+                   WHERE id = %s""",
+                (payload, avatar_id),
+            )
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not store avatar samples for avatar {avatar_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_avatar_preferences(user_id: int) -> dict:
+    """Per-user avatar guardrails (issue #744, decision 4A).
+
+    Every flag defaults OFF and an unreadable row returns the defaults, so a DB blip degrades to
+    "don't use the avatar" rather than to publishing a synthetic likeness.
+    """
+    from cqc_lem.utilities.avatar.guardrails import DEFAULT_AVATAR_PREFERENCES
+    prefs = dict(DEFAULT_AVATAR_PREFERENCES)
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """SELECT avatar_disabled, avatar_use_post_image, avatar_use_carousel, avatar_use_video
+               FROM users WHERE id = %s""",
+            (user_id,),
+        )
+        row = cursor.fetchone()
+        if row:
+            prefs = {key: bool(row.get(key)) for key in prefs}
+        return prefs
+    except mysql.connector.Error as err:
+        myprint(f"Could not fetch avatar preferences for user_id {user_id} | Error: {err}")
+        return prefs
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_avatar_preferences(user_id: int, prefs: dict) -> bool:
+    """Update only the avatar guardrail flags the caller actually supplied."""
+    from cqc_lem.utilities.avatar.guardrails import DEFAULT_AVATAR_PREFERENCES
+    updates = {k: bool(v) for k, v in (prefs or {}).items()
+               if k in DEFAULT_AVATAR_PREFERENCES and v is not None}
+    if not updates:
+        return False
+
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        assignments = ", ".join(f"{key} = %s" for key in updates)
+        cursor.execute(
+            f"UPDATE users SET {assignments} WHERE id = %s",
+            (*[int(v) for v in updates.values()], user_id),
+        )
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not update avatar preferences for user_id {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_post_use_avatar(post_id: Optional[int]) -> Optional[bool]:
+    """The compose-time avatar choice for a post — None when the user made no choice."""
+    if not post_id:
+        return None
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT use_avatar FROM posts WHERE id = %s", (post_id,))
+        row = cursor.fetchone()
+        if not row or row[0] is None:
+            return None
+        return bool(row[0])
+    except mysql.connector.Error as err:
+        myprint(f"Could not fetch use_avatar for post_id {post_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def mark_post_avatar_media(post_id: Optional[int]) -> bool:
+    """Record that generated media for this post came out of the avatar LoRA.
+
+    This is what lets the caption disclosure cover avatar IMAGES and not just video — the
+    generation step that knows an avatar was used is far away from the step that writes the
+    caption, so the fact has to be durable.
+    """
+    if not post_id:
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("UPDATE posts SET avatar_media = 1 WHERE id = %s", (post_id,))
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not mark avatar media on post_id {post_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def post_used_avatar_media(post_id: Optional[int]) -> bool:
+    if not post_id:
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT avatar_media FROM posts WHERE id = %s", (post_id,))
+        row = cursor.fetchone()
+        return bool(row and row[0])
+    except mysql.connector.Error as err:
+        myprint(f"Could not read avatar_media for post_id {post_id} | Error: {err}")
+        return False
     finally:
         cursor.close()
         connection.close()

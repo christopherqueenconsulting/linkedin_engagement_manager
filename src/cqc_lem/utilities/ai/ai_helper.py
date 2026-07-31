@@ -29,6 +29,7 @@ from cqc_lem.utilities.ai.content_alignment import (
 from cqc_lem.utilities.ai import slop_lint as _slop
 from cqc_lem.utilities.ai.content_research import research_topic
 from cqc_lem.utilities.ai.tools import search_recent_news
+from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_POST_IMAGE
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text, PLAIN_PUNCTUATION_DIRECTIVE, \
     linkedin_post_format_directive, enforce_post_readability
@@ -2758,20 +2759,26 @@ def generate_dall_e_image_from_prompt(prompt: str, size: str = "1024x1024") -> l
     return response.data or []
 
 
-def _profile_visual_context(profile: "LinkedInProfile | None") -> str:
-    """Short brand/context line for image prompts, built from a user's profile."""
-    if profile is None:
-        return ""
+def _profile_visual_context(profile: "LinkedInProfile | None",
+                            subject_directive: str = "") -> str:
+    """Short brand/context line for image prompts, built from a user's profile.
+
+    ``subject_directive`` carries the user's SELF-DECLARED likeness (issue #744). It leads the
+    context because the system prompt below actively pushes the model to invent a person: with
+    nothing stating who that person is, the LLM picked a gender freely and FLUX then rendered
+    that invented gender over the avatar LoRA's identity.
+    """
     bits = []
-    if profile.job_title:
-        bits.append(f"a {profile.job_title}")
-    if profile.industry:
-        bits.append(f"in the {profile.industry} industry")
-    if profile.company_name:
-        bits.append(f"at {profile.company_name}")
+    if profile is not None:
+        if profile.job_title:
+            bits.append(f"a {profile.job_title}")
+        if profile.industry:
+            bits.append(f"in the {profile.industry} industry")
+        if profile.company_name:
+            bits.append(f"at {profile.company_name}")
     if not bits:
-        return ""
-    return (
+        return subject_directive
+    return subject_directive + (
         "The author is " + " ".join(bits) + ". "
         "Make the visual feel on-brand, credible, and relevant to this professional "
         "context.\n\n"
@@ -2779,14 +2786,15 @@ def _profile_visual_context(profile: "LinkedInProfile | None") -> str:
 
 
 def get_flux_image_prompt_from_ai(post_content: str, *, profile: "LinkedInProfile | None" = None,
-                                  ratio: str = "1:1") -> str:
+                                  ratio: str = "1:1", avatar: "dict | None" = None) -> str:
     """Generate a Flux.1 image prompt from the post content and optional profile.
 
     The prompt is engineered for a single attention-drawing focal subject and brand
     alignment — the image must stop a prospect mid-scroll, not be abstract art.
     """
+    from cqc_lem.utilities.avatar.attributes import subject_directive
 
-    profile_context = _profile_visual_context(profile)
+    profile_context = _profile_visual_context(profile, subject_directive(avatar))
 
     prompt = f"""{profile_context}Here is a LinkedIn post: <post_content>{post_content}</post_content>.
 
@@ -2938,19 +2946,54 @@ def generate_flux1_image_from_prompt(prompt: str, *, ratio: str = DEFAULT_IMAGE_
 
 
 def generate_post_image(prompt: str, user_id: int, *, ratio: str = DEFAULT_IMAGE_RATIO,
-                        image_model: str = DEFAULT_IMAGE_MODEL) -> str:
-    """Generate a LinkedIn post image, using the user's active avatar LoRA when available.
+                        image_model: str = DEFAULT_IMAGE_MODEL,
+                        surface: str = AVATAR_SURFACE_POST_IMAGE,
+                        post_id: "int | None" = None,
+                        depicts_person: bool = True) -> str:
+    """Generate a LinkedIn post image, using the user's avatar LoRA when the guardrails allow it.
 
-    Falls back to the base Flux.1 model when the user has no active succeeded avatar.
+    Falls back to the base Flux.1 model whenever ``resolve_avatar_for`` declines (issue #744):
+    no approved avatar, the surface's opt-in is off, this post opted out, or the user switched
+    their avatar off entirely.
+
+    ``depicts_person=False`` is the object/concept case — a slide about a dashboard is not a
+    scene the author appears in, and prepending the trigger word there asked the LoRA to insert
+    the user's face into a scene never written to contain a person.
     """
-    from cqc_lem.utilities.db import get_active_avatar
+    from cqc_lem.utilities.avatar.attributes import apply_subject_clause
+    from cqc_lem.utilities.avatar.guardrails import resolve_avatar_for
     from cqc_lem.utilities.avatar.replicate_avatar import generate_image_with_avatar
 
-    avatar = get_active_avatar(user_id)
-    if avatar and avatar.get("status") == "succeeded" and avatar.get("model_ref"):
-        full_prompt = f"{avatar['trigger_word']}, {prompt}"
-        return generate_image_with_avatar(full_prompt, avatar["model_ref"])
+    avatar = resolve_avatar_for(user_id, surface=surface, post_id=post_id) if depicts_person else None
+    if avatar:
+        full_prompt = apply_subject_clause(prompt, avatar)
+        path, used_avatar = generate_image_with_avatar(
+            full_prompt, avatar["model_ref"], ratio=ratio, fallback_prompt=prompt)
+        if used_avatar:
+            _record_avatar_media(path, post_id, user_id)
+        return path
     return generate_flux1_image_from_prompt(prompt, ratio=ratio, image_model=image_model)
+
+
+def _record_avatar_media(image_path: str, post_id: "int | None", user_id: "int | None") -> None:
+    """Provenance for a synthetic likeness of a real person: C2PA on the file, a durable flag on
+    the post so the caption disclosure covers avatar images and not just video (issue #744).
+
+    Best-effort on both halves — provenance must never break media generation.
+    """
+    try:
+        from cqc_lem.utilities.c2pa_helper import add_ai_content_credentials
+        add_ai_content_credentials(image_path)
+    except Exception as e:
+        log_warning("C2PA signing skipped for avatar image", exc=e, user_id=user_id,
+                    post_id=post_id)
+    if post_id:
+        try:
+            from cqc_lem.utilities.db import mark_post_avatar_media
+            mark_post_avatar_media(post_id)
+        except Exception as e:
+            log_warning("Could not flag avatar media on post", exc=e, user_id=user_id,
+                        post_id=post_id)
 
 
 MAX_MOTION_PROMPT_CHARS = 512

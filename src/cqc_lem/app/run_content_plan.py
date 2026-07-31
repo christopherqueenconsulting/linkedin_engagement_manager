@@ -631,6 +631,20 @@ def _post_missing_required_asset(post_id: int, post_type, video_url) -> bool:
     return False
 
 
+def _post_used_avatar_media(post_id: Optional[int]) -> bool:
+    """Did any generated media for this post come out of the avatar LoRA? (issue #744)
+
+    Fail-soft: an unreadable flag must not cost the post its content, and the video branch still
+    triggers the disclosure independently.
+    """
+    try:
+        from cqc_lem.utilities.db import post_used_avatar_media
+        return post_used_avatar_media(post_id)
+    except Exception as e:
+        log_warning("Could not read the avatar-media flag for disclosure", exc=e, post_id=post_id)
+        return False
+
+
 def _apply_ai_disclosure(content: str) -> str:
     """Append the AI-visuals disclosure line to a caption (idempotent)."""
     if not AI_DISCLOSURE_ENABLED or not content:
@@ -666,8 +680,9 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
     from cqc_lem.utilities.ai.video_models import is_premium, supports_audio
     from cqc_lem.utilities.geocoding import DEFAULT_CONTENT_LANGUAGE
     from cqc_lem.utilities.ai.ai_helper import generate_post_image
+    from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_VIDEO, resolve_avatar_for
     from cqc_lem.utilities.db import (get_post_video_quality, get_video_credit_balance,
-                                      deduct_video_credits, refund_video_credits, get_active_avatar,
+                                      deduct_video_credits, refund_video_credits,
                                       get_default_video_quality, get_user_content_language)
 
     quality = get_post_video_quality(post_id) if post_id else "standard"
@@ -688,18 +703,23 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
             myprint(f"Premium video requested but no credits for user {user_id} — using standard")
 
     try:
-        image_prompt = get_flux_image_prompt_from_ai(text_content, profile=profile, ratio=DEFAULT_IMAGE_RATIO)
+        # The avatar is resolved BEFORE the image prompt is authored: its declared subject clause
+        # is what stops the prompt LLM inventing a person of a different gender for the LoRA to
+        # then contradict (issue #744). None here means the guardrails said no.
+        avatar = resolve_avatar_for(user_id, surface=AVATAR_SURFACE_VIDEO, post_id=post_id)
+        has_avatar = avatar is not None
+        image_prompt = get_flux_image_prompt_from_ai(text_content, profile=profile,
+                                                    ratio=DEFAULT_IMAGE_RATIO, avatar=avatar)
         # Audio-capable (premium/Veo) renders need the user's language in the prompt — Veo has no
         # language parameter and invents a voiceover otherwise (issue #548). Silent models skip
         # the lookup entirely.
         language = get_user_content_language(user_id) if supports_audio(model) else DEFAULT_CONTENT_LANGUAGE
         motion = get_runway_ml_video_prompt_from_ai(text_content, image_prompt, model=model,
                                                     language=language)[:512]
-        avatar = get_active_avatar(user_id) if user_id else None
-        has_avatar = bool(avatar and avatar.get("status") == "succeeded" and avatar.get("model_ref"))
         if is_premium(model):
             if has_avatar:
-                image_path = generate_post_image(image_prompt, user_id, ratio="9:16")
+                image_path = generate_post_image(image_prompt, user_id, ratio="9:16",
+                                                 surface=AVATAR_SURFACE_VIDEO, post_id=post_id)
                 src = create_runway_video(image_path, motion, model=model, ratio="9:16", audio=audio,
                                           user_id=user_id, post_id=post_id)
             else:
@@ -714,7 +734,8 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
             # (avatar likeness regardless of tier; premium only adds the higher-quality Veo motion +
             # credit spend). generate_post_image falls back to base Flux.1 when there is no avatar.
             if has_avatar:
-                image_path = generate_post_image(image_prompt, user_id, ratio=DEFAULT_IMAGE_RATIO)
+                image_path = generate_post_image(image_prompt, user_id, ratio=DEFAULT_IMAGE_RATIO,
+                                                 surface=AVATAR_SURFACE_VIDEO, post_id=post_id)
             else:
                 image_path = generate_flux1_image_from_prompt(image_prompt, ratio=DEFAULT_IMAGE_RATIO)
             src = create_runway_video(image_path, motion, model=model, ratio=DEFAULT_VIDEO_RATIO,
@@ -2331,8 +2352,11 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
             # Update the database with the video url
             update_db_post_video_url(post_id, api_video_url)
 
-        # Disclose AI-generated visuals in the caption (caption-line fallback for C2PA)
-        if ai_video:
+        # Disclose AI-generated visuals in the caption (caption-line fallback for C2PA).
+        # A synthetic likeness of a real person needs the disclosure at least as much as a
+        # stock-motion video does, so ANY media that came out of the avatar LoRA counts —
+        # carousel slides and post images included, not just video (issue #744).
+        if ai_video or _post_used_avatar_media(post_id):
             content = _apply_ai_disclosure(content)
 
         # Dwell-proxy score (issue #391 — C2) for EVERY post type: the text post, the carousel

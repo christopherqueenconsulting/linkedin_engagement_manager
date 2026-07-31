@@ -81,6 +81,12 @@ CAROUSEL_IMAGE_RATE = float(get_constant_from_env('CAROUSEL_IMAGE_RATE', default
 # a local keyword-extraction heuristic is used (no API call).
 CAROUSEL_IMAGE_QUERY_LLM = isTrue(get_constant_from_env('CAROUSEL_IMAGE_QUERY_LLM', default_value='True'))
 
+# --- Avatar preview / approval gate (issue #744) ---
+# Sample renders a user must see BEFORE their avatar may be used on a published post, and how
+# many times they may re-roll them. The cap sits on top of the credit ledger: samples cost
+# inference money but no training credit, so without it "Regenerate" is an unbounded spend.
+AVATAR_SAMPLE_REGEN_MAX = int(get_constant_from_env('AVATAR_SAMPLE_REGEN_MAX', default_value='3'))
+
 # AI disclosure: append a short caption line to AI-visual posts. Guaranteed-visible
 # fallback for C2PA (which self-signed certs can't make LinkedIn trust yet).
 AI_DISCLOSURE_ENABLED = isTrue(get_constant_from_env('AI_DISCLOSURE_ENABLED', default_value='True'))

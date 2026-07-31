@@ -145,16 +145,37 @@ class TestAvatarGating:
         assert _user_has_active_avatar(None) is False
 
     def test_active_avatar_true(self):
-        avatar = {"status": "succeeded", "model_ref": "user/model:v1"}
-        with patch("cqc_lem.utilities.db.get_active_avatar", return_value=avatar):
+        avatar = {"status": "succeeded", "model_ref": "user/model:v1",
+                  "approval_status": "approved"}
+        with patch("cqc_lem.utilities.db.get_avatar_preferences",
+                   return_value={"avatar_use_carousel": True}), \
+             patch("cqc_lem.utilities.db.get_post_use_avatar", return_value=None), \
+             patch("cqc_lem.utilities.db.get_active_avatar", return_value=avatar):
             assert _user_has_active_avatar(5) is True
 
     def test_incomplete_avatar_false(self):
-        with patch("cqc_lem.utilities.db.get_active_avatar", return_value={"status": "training"}):
+        with patch("cqc_lem.utilities.db.get_avatar_preferences",
+                   return_value={"avatar_use_carousel": True}), \
+             patch("cqc_lem.utilities.db.get_post_use_avatar", return_value=None), \
+             patch("cqc_lem.utilities.db.get_active_avatar", return_value={"status": "training"}):
             assert _user_has_active_avatar(5) is False
 
     def test_avatar_lookup_error_false(self):
-        with patch("cqc_lem.utilities.db.get_active_avatar", side_effect=Exception("db down")):
+        with patch("cqc_lem.utilities.db.get_avatar_preferences",
+                   return_value={"avatar_use_carousel": True}), \
+             patch("cqc_lem.utilities.db.get_post_use_avatar", return_value=None), \
+             patch("cqc_lem.utilities.db.get_active_avatar", side_effect=Exception("db down")):
+            assert _user_has_active_avatar(5) is False
+
+    def test_carousel_opt_in_off_false(self):
+        """Guardrail (issue #744): an approved avatar is still not used until the user opts
+        carousels in."""
+        avatar = {"status": "succeeded", "model_ref": "user/model:v1",
+                  "approval_status": "approved"}
+        with patch("cqc_lem.utilities.db.get_avatar_preferences",
+                   return_value={"avatar_use_carousel": False}), \
+             patch("cqc_lem.utilities.db.get_post_use_avatar", return_value=None), \
+             patch("cqc_lem.utilities.db.get_active_avatar", return_value=avatar):
             assert _user_has_active_avatar(5) is False
 
     def test_replicate_disabled_false(self):
@@ -167,9 +188,13 @@ class TestAvatarGating:
             assert _should_generate_with_replicate(1, 2, 5, "educational") is False
 
     def test_replicate_all_gates_pass_true(self):
-        avatar = {"status": "succeeded", "model_ref": "user/model:v1"}
+        avatar = {"status": "succeeded", "model_ref": "user/model:v1",
+                  "approval_status": "approved"}
         with patch(f"{ENV}.CAROUSEL_REPLICATE_ENABLED", True), \
              patch(f"{ENV}.CAROUSEL_REPLICATE_RATE", 1.0), \
+             patch("cqc_lem.utilities.db.get_avatar_preferences",
+                   return_value={"avatar_use_carousel": True}), \
+             patch("cqc_lem.utilities.db.get_post_use_avatar", return_value=None), \
              patch("cqc_lem.utilities.db.get_active_avatar", return_value=avatar):
             assert _should_generate_with_replicate(1, 2, 5, "personal_story") is True
 
