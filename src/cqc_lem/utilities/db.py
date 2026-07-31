@@ -4915,7 +4915,9 @@ def count_pending_catchup_touches() -> int:
         r = cursor.fetchone()
         return int(r[0]) if r else 0
     except mysql.connector.Error as err:
-        myprint(f"Could not count pending catchup touches | Error: {err}")
+        # ERROR, not myprint (which logs at INFO): a failed count returns 0, which reads on the beat
+        # as `nothing_to_send` — the exact silence issue #792 exists to remove. It has to be visible.
+        log_error("Could not count pending catchup touches", exc=err)
         return 0
     finally:
         cursor.close()
