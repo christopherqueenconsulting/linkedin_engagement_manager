@@ -21,34 +21,29 @@ _FAKE_COMPOSE = textwrap.dedent(
     mode = os.environ.get("DEPLOY_FAKE_MODE", "pass")
     fail_count = int(os.environ.get("DEPLOY_FAKE_UP_FAIL_COUNT", "0"))
 
+    # `config --services` is profile-filtered by compose, so the parked standalone
+    # `selenium-chrome` never appears here even when a stopped container of it still exists.
+    _EXPECTED = ["web_app", "web_api_blue", "web_api_green", "celery_worker", "celery_beat"]
+    _ALL_RUNNING = [svc + " running" for svc in _EXPECTED]
+
     _ALL_PS_A = {
-        "pass": [
-            "web_app\\trunning",
-            "web_api_blue\\trunning",
-            "web_api_green\\trunning",
-            "celery_worker\\trunning",
-            "celery_beat\\trunning",
-        ],
-        "created": [
-            "web_app\\trunning",
-            "celery_worker\\tcreated",
-        ],
-        "exited": [
-            "web_app\\trunning",
-            "celery_worker\\texited",
-        ],
-        "missing": [
-            "web_app\\trunning",
-            "web_api_blue\\trunning",
-            "web_api_green\\trunning",
-            "celery_worker\\trunning",
-            "celery_beat\\trunning",
-        ],
+        "pass": _ALL_RUNNING,
+        "created": ["web_app running", "celery_worker created"],
+        "exited": ["web_app running", "celery_worker exited"],
+        "restarting": ["web_app running", "celery_worker restarting"],
+        "missing": _ALL_RUNNING,
+        # A container of a profile-disabled service the deploy never touches. `ps` labels by
+        # PROJECT, not by profile, so it shows up Exited forever and must NOT fail the deploy.
+        "profile_leftover": _ALL_RUNNING + ["selenium-chrome exited"],
     }
 
     _ALL_PS = {
-        "pass": ["web_app", "web_api_blue", "web_api_green", "celery_worker", "celery_beat"],
+        "pass": _EXPECTED,
+        "created": _EXPECTED,
+        "exited": _EXPECTED,
+        "restarting": _EXPECTED,
         "missing": ["web_app", "web_api_blue", "web_api_green", "celery_worker"],
+        "profile_leftover": _EXPECTED,
     }
 
     def inc_state() -> int:
@@ -65,7 +60,7 @@ _FAKE_COMPOSE = textwrap.dedent(
         return n
 
     if args[:2] == ["config", "--services"]:
-        for svc in _ALL_PS["pass"]:
+        for svc in _EXPECTED + ["flyway"]:
             print(svc)
     elif "ps" in args and "-a" in args:
         for line in _ALL_PS_A.get(mode, _ALL_PS_A["pass"]):
@@ -150,11 +145,20 @@ class TestVerifyStackRunning:
         assert result.returncode == 0, result.stderr + result.stdout
         assert "Verified all expected services are running" in result.stdout
 
+    def test_ignores_a_stopped_container_of_a_profile_disabled_service(self, tmp_path: Path) -> None:
+        # `compose ps` labels by project, not by profile: the standalone selenium-chrome the Grid
+        # overlay parks for rollback sits Exited indefinitely. Failing on it would break every
+        # deploy over a service the deploy never touches.
+        result = _run(tmp_path, {"DEPLOY_FAKE_MODE": "profile_leftover"}, "verify_stack_running")
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert "selenium-chrome" not in result.stdout + result.stderr
+
     @pytest.mark.parametrize(
         ("mode", "needle"),
         [
-            ("created", "Created"),
-            ("exited", "Exited"),
+            ("created", "created"),
+            ("exited", "exited"),
+            ("restarting", "restarting"),
             ("missing", "not running"),
         ],
     )
@@ -162,5 +166,39 @@ class TestVerifyStackRunning:
         result = _run(tmp_path, {"DEPLOY_FAKE_MODE": mode}, "verify_stack_running")
         assert result.returncode != 0, result.stdout
         combined = result.stdout + result.stderr
-        assert "celery_worker" in combined or mode == "missing"
+        if mode == "missing":
+            assert "celery_beat" in combined
+        else:
+            assert "celery_worker" in combined
         assert needle in combined
+
+
+class TestDeployScriptWiring:
+    """The functions above are only worth anything if the deploy path actually calls them.
+
+    Unit-testing them in isolation cannot catch a converge/verify call being dropped from `main`,
+    which is the exact regression this issue is about (#831).
+    """
+
+    BODY = DEPLOY_SH.read_text(encoding="utf-8")
+
+    def test_main_converges_through_the_retrying_helper(self) -> None:
+        assert "if ! converge_stack; then" in self.BODY
+        # No bare bulk converge left anywhere — including the rollback path, which recreates the
+        # same worker tier and runs when something has already gone wrong.
+        assert "${COMPOSE} up -d --remove-orphans" not in self.BODY.replace(
+            '${COMPOSE} up -d --remove-orphans >"${logfile}" 2>&1', ""
+        )
+
+    def test_main_aborts_when_verification_fails(self) -> None:
+        block = self.BODY.split("if ! verify_stack_running; then", 1)
+        assert len(block) == 2, "main() no longer verifies the converged stack"
+        body_lines = block[1].splitlines()
+        end = next(i for i, line in enumerate(body_lines) if line.strip() == "fi")
+        assert any(line.strip() == "exit 1" for line in body_lines[:end])
+
+    def test_tag_baseline_is_persisted_before_the_worker_converge(self) -> None:
+        # A partial deploy must still leave IMAGE_TAG/.last_good_tag matching what is serving.
+        persist = self.BODY.index('persist_image_tag "${TAG}"')
+        converge = self.BODY.index("if ! converge_stack; then")
+        assert persist < converge

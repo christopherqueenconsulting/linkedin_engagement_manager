@@ -122,9 +122,16 @@ converge_stack() {
     logfile="$(mktemp)"
     log "Recreating remaining services (attempt ${attempts}/${max_attempts})"
     if ${COMPOSE} up -d --remove-orphans >"${logfile}" 2>&1; then
+      # Echo it even on success. Compose's per-container "Recreated/Started" lines are the only
+      # record of what the converge actually did, and capturing them to a file to grep for the
+      # race would otherwise delete them from the deploy log.
+      cat "${logfile}" || true
       rm -f "${logfile}"
       return 0
     fi
+    # Surface every failed attempt, including one we go on to retry: the `No such container` line
+    # IS the evidence that identified this race both times it happened (issue #831).
+    cat "${logfile}" >&2 || true
     if [[ ${attempts} -lt ${max_attempts} ]] && grep -qi "no such container" "${logfile}"; then
       log "WARN: compose hit 'No such container' race — retrying converge"
       rm -f "${logfile}"
@@ -132,7 +139,6 @@ converge_stack() {
       continue
     fi
     log "ERROR: compose converge failed on attempt ${attempts}"
-    cat "${logfile}" >&2 || true
     rm -f "${logfile}"
     return 1
   done
@@ -141,10 +147,13 @@ converge_stack() {
 # Verify every expected compose service has at least one running container and that no
 # container is stuck in Created/Exited after a converge (issue #831).
 verify_stack_running() {
-  local expected_services running_services created exited missing
+  local expected_services running_services missing states svc state bad=""
 
   # awk (unlike grep -v) exits 0 even when it selects no rows, so these pipelines
   # don't trigger set -e pipefail aborts when the stack is healthy.
+  # `config --services` is already profile-filtered, so the standalone `selenium-chrome` the Grid
+  # overlay parks behind the `standalone` profile is correctly absent. `flyway` is a one-shot
+  # (`compose run --rm`) and is never expected to be up.
   expected_services="$(${COMPOSE} config --services 2>/dev/null \
     | awk '$1 != "flyway" {print}' | sort -u)"
   if [[ -z "${expected_services}" ]]; then
@@ -152,17 +161,23 @@ verify_stack_running() {
     return 1
   fi
 
-  created="$(${COMPOSE} ps -a --format '{{.Service}}\t{{.State}}' 2>/dev/null \
-    | awk 'tolower($2) == "created" {print $1}' | sort -u)"
-  if [[ -n "${created}" ]]; then
-    log "ERROR: services stuck in Created state: $(echo "${created}" | tr '\n' ' ')"
-    return 1
-  fi
-
-  exited="$(${COMPOSE} ps -a --format '{{.Service}}\t{{.State}}' 2>/dev/null \
-    | awk 'tolower($2) ~ /^(exited|dead)$/ && $1 != "flyway" {print $1}' | sort -u)"
-  if [[ -n "${exited}" ]]; then
-    log "ERROR: services in Exited/Dead state: $(echo "${exited}" | tr '\n' ' ')"
+  # ONE `ps -a` read, restricted to the services this topology expects. `ps` labels containers by
+  # PROJECT, not by profile, so an un-removed container of a profile-disabled service (exactly what
+  # the parked standalone `selenium-chrome` is, kept for an instant rollback) sits there Exited
+  # forever — checking it would fail every deploy for a service the deploy never touches.
+  # Space-separated, not '\t': neither a compose service name nor a container state can contain a
+  # space, and this can't then hinge on whether the CLI expands the escape in a Go template.
+  states="$(${COMPOSE} ps -a --format '{{.Service}} {{.State}}' 2>/dev/null || true)"
+  while read -r svc state _; do
+    [[ -n "${svc}" ]] || continue
+    grep -qxF "${svc}" <<< "${expected_services}" || continue
+    state="$(tr '[:upper:]' '[:lower:]' <<< "${state}")"
+    case "${state}" in
+      created|exited|dead|paused|restarting|removing) bad+="${svc}(${state}) " ;;
+    esac
+  done <<< "${states}"
+  if [[ -n "${bad}" ]]; then
+    log "ERROR: expected services not running after converge: ${bad}"
     return 1
   fi
 
@@ -319,7 +334,10 @@ if ! color_healthy "${TARGET}" "${HEALTH_TIMEOUT}"; then
     export IMAGE_TAG="${PREV_TAG}"
     persist_image_tag "${PREV_TAG}"
     drain_workers
-    ${COMPOSE} up -d --remove-orphans
+    # Through converge_stack, not a bare `up`: this path recreates the SAME worker tier that
+    # races (issue #831), and it runs when something has already gone wrong — a rollback that
+    # aborts half-way through the workers is the worst place to hit it.
+    converge_stack || log "WARN: rollback converge failed — worker tier may be partially recreated"
   fi
   maint end || log "WARN: could not clear maintenance mode (pause TTL will expire it)"
   exit 1

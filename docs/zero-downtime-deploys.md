@@ -45,14 +45,25 @@ That aborts the converge mid-tier and leaves workers in `Created` — a silent w
 
 `scripts/deploy.sh` now:
 
-- **Retries once** if the converge output contains `No such container`.
-- **Verifies the final state** by enumerating expected compose services and checking that
-  none are stuck in `Created` / `Exited` / `Dead`. If verification fails, the deploy exits
-  with a loud error instead of leaving the worker tier down silently.
+- **Retries once** if the converge output contains `No such container` (`converge_stack`).
+  Every attempt's compose output is echoed to the deploy log, success or failure — those
+  per-container lines are the only evidence of what the converge did, and they are what
+  identified this race both times it happened.
+- **Verifies the final state** (`verify_stack_running`): `compose config --services` is the
+  expectation, and any of those services sitting in `Created` / `Exited` / `Dead` / `Paused` /
+  `Restarting`, or absent from `compose ps`, fails the deploy loudly instead of leaving the
+  worker tier down silently. The expectation is deliberately the **profile-filtered** service
+  list: `compose ps` labels containers by PROJECT, not by profile, so the standalone
+  `selenium-chrome` the Grid overlay parks for rollback sits `Exited` indefinitely and must
+  never fail a deploy it is not part of. `flyway` is excluded too — it is a `run --rm` one-shot.
 - **Persists `IMAGE_TAG` / `.last_good_tag` immediately after the edge flip**, while the
   serving tier is live on the new tag. A later worker-tier failure is a partial deploy, but
   the box's recorded baseline matches what is actually running so the next deploy diffs
-  against the correct starting point.
+  against the correct starting point — and a manual `compose up -d` recovery uses the right tag.
+
+The legacy full-rollback path recreates the **same** worker tier, so it goes through
+`converge_stack` too — a rollback is the worst place to hit the race, since something has
+already gone wrong by then.
 
 Rollback still exists at every step; the only deploy with a brief blip was the first cutover
 (recreating `web_app` from a FastAPI container into the nginx edge). `scripts/rollback.sh` remains
