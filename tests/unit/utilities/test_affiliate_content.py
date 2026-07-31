@@ -148,6 +148,25 @@ class TestDisclosure:
         assert content is None
         call.assert_not_called()
 
+    def test_a_deployment_that_cannot_publish_affiliate_content_says_so(self):
+        """The one refusal that is a MISCONFIGURATION rather than the healthy common case, and the
+        content plan short-circuits on `claims_promo_slot` — so it has to be reported from there or
+        the deployment silently never promotes."""
+        with ExitStack() as stack:
+            _env(stack, disclosure="")
+            warn = stack.enter_context(patch("cqc_lem.utilities.logger.log_warning"))
+            assert affiliate_content.claims_promo_slot(1, 10, "promo") is False
+        assert warn.call_count == 1
+        assert "AFFILIATE_DISCLOSURE_TEXT" in warn.call_args[0][0]
+
+    def test_declining_an_ordinary_slot_is_not_a_warning(self):
+        """A user who never consented plans promo slots forever; one warning per slot is noise."""
+        with ExitStack() as stack:
+            _env(stack, enrollment=NO_CONSENT)
+            warn = stack.enter_context(patch("cqc_lem.utilities.logger.log_warning"))
+            assert affiliate_content.claims_promo_slot(1, 10, "promo") is False
+        warn.assert_not_called()
+
     def test_copy_that_cannot_be_made_compliant_is_blocked_not_shipped(self):
         with ExitStack() as stack:
             _env(stack)
@@ -157,6 +176,33 @@ class TestDisclosure:
         assert content is None
         assert track.call_args[0][0] == "affiliate_promo_blocked"
         assert track.call_args[1]["reason"] == affiliate_content.REASON_UNDISCLOSED
+
+
+# --- the referral link is the one URL that has to survive verbatim --------------------------------
+
+class TestReferralLinkIntegrity:
+    def test_the_link_the_model_reproduced_survives_the_markdown_pass(self):
+        """The prompt tells the model to reproduce the link, and `sanitize_for_linkedin` strips
+        markdown italics — `_word_` being exactly the shape of `utm_source=…&utm_medium=…`. Left
+        un-repaired the post publishes `utmsource=`, a dead link, AND a second clean copy beside it
+        because the mangled one no longer matches."""
+        from cqc_lem.utilities.marketing.affiliate import link_for_user
+        with ExitStack() as stack:
+            _env(stack)
+            link = link_for_user(1)
+            assert "utm_source=" in link  # the exact shape the italic pass eats
+            content, _ = _generate(stack, draft=f"{DRAFT}\n\n{link}")
+        assert link in content
+        assert content.count("https://") == 1
+        assert "utmsource" not in content
+
+    def test_a_draft_that_omitted_the_link_still_gets_exactly_one(self):
+        from cqc_lem.utilities.marketing.affiliate import link_for_user
+        with ExitStack() as stack:
+            _env(stack)
+            link = link_for_user(1)
+            content, _ = _generate(stack)
+        assert content.count(link) == 1
 
 
 # --- the writer takes a slot, it never adds one ---------------------------------------------------

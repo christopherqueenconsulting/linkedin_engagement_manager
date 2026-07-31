@@ -1052,6 +1052,11 @@ def _is_affiliate_promo(content: str, post_id: Optional[int]) -> bool:
         from cqc_lem.utilities.db import get_post_user_id
         from cqc_lem.utilities.marketing.affiliate import is_affiliate_content
         owner = get_post_user_id(post_id) if post_id is not None else None
+        # An owner we could not resolve must NOT fall through to `user_id=None`, which matches ANY
+        # member's referral code: that would hold somebody's post with "this is your paid
+        # endorsement" over a link that is not theirs.
+        if owner is None:
+            return False
         return is_affiliate_content(content, user_id=owner)
     except Exception as e:
         myprint(f"Could not evaluate affiliate promotion for post {post_id}: {e}")

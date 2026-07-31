@@ -115,6 +115,19 @@ class TestApprovalHold:
             findings = self._gates(stack, PROMO_POST, owner=2)
         assert not [f for f in findings if f["gate"] == GATE_AFFILIATE_PROMO]
 
+    def test_an_unresolvable_owner_is_never_read_as_this_authors_endorsement(self):
+        """Falling through to `user_id=None` would match ANY member's referral code — holding
+        somebody's post, over a link that is not theirs, with copy calling it their paid
+        endorsement."""
+        from cqc_lem.app.run_content_plan import evaluate_post_gates
+        from cqc_lem.utilities.quality_gates import GATE_AFFILIATE_PROMO
+        with ExitStack() as stack:
+            _owned(stack)
+            stack.enter_context(patch("cqc_lem.utilities.db.get_post_user_id", return_value=None))
+            stack.enter_context(patch(f"{_RCP}._post_missing_required_asset", return_value=False))
+            findings = evaluate_post_gates(10, PROMO_POST, "text")
+        assert not [f for f in findings if f["gate"] == GATE_AFFILIATE_PROMO]
+
     def test_unreadable_ownership_leaves_the_publish_gate_as_the_enforcer(self):
         from cqc_lem.app.run_content_plan import evaluate_post_gates
         from cqc_lem.utilities.quality_gates import GATE_AFFILIATE_PROMO
