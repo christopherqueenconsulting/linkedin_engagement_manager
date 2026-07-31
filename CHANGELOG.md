@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.113.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.112.1...v0.113.0) (2026-07-31)
+
+
+### Features
+
+* **avatar:** likeness fidelity, preview gate + usage guardrails (refs [#744](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/744)) ([#812](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/812)) ([5bda0cd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5bda0cddce66553f6b2418c7475bb28efdd5584c))
+
+
+### Bug Fixes
+
+* **observability:** escalate recurring warnings so real defects reach error tracking ([#821](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/821)) ([73a86f4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/73a86f469d5d172ef7fae860bf8e7f8f94d5ff8f))
+
 ## [0.112.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.112.0...v0.112.1) (2026-07-31)
 
 
