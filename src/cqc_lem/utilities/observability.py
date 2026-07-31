@@ -935,6 +935,7 @@ def track_catchup_run(user_id: Optional[int], report: Optional[dict] = None, **e
             "dispatched": int(report.get("dispatched") or 0),
             "capped": int(report.get("capped") or 0),
             "inactive": int(report.get("inactive") or 0),
+            "pending": int(report.get("pending") or 0),
             "requeued": int(report.get("requeued") or 0),
             "touch_id": report.get("touch_id"),
             **extra,

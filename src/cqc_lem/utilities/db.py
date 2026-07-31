@@ -4904,6 +4904,26 @@ def get_approved_catchup_touches() -> list:
         connection.close()
 
 
+def count_pending_catchup_touches() -> int:
+    """Drafted touches still waiting on human approval, fleet-wide. The send drip reports this so a
+    queue that exists but was never approved cannot read as an empty one (issue #792) — the drafts
+    land 'pending' unless the user opted into catchup_touch_mode='auto_approve'."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT COUNT(*) FROM catchup_touches WHERE status = 'pending'")
+        r = cursor.fetchone()
+        return int(r[0]) if r else 0
+    except mysql.connector.Error as err:
+        # ERROR, not myprint (which logs at INFO): a failed count returns 0, which reads on the beat
+        # as `nothing_to_send` — the exact silence issue #792 exists to remove. It has to be visible.
+        log_error("Could not count pending catchup touches", exc=err)
+        return 0
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_orphaned_catchup_touches(lookback_hours: int = 2) -> list:
     """Touches stuck in 'sending' whose send task was lost (e.g. Celery queue purged on restart).
     Mirrors get_orphaned_connection_requests. Returns (id, user_id) tuples."""

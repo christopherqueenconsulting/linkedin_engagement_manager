@@ -128,6 +128,35 @@ class TestCatchupTouchDb:
             from cqc_lem.utilities.db import get_approved_catchup_touches
             assert get_approved_catchup_touches() == []
 
+    def test_count_pending_backlog(self):
+        """The send drip reads this on every beat (issue #792) — it is what separates a queue sitting
+        behind approval from an empty lane, so it must count 'pending' and nothing else."""
+        conn, cur = _conn(fetch_row=(6,))
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import count_pending_catchup_touches
+            assert count_pending_catchup_touches() == 6
+        sql = cur.execute.call_args[0][0]
+        assert "status = 'pending'" in sql and "COUNT(*)" in sql
+
+    def test_count_pending_backlog_no_row_returns_zero(self):
+        conn, _ = _conn(fetch_row=None)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import count_pending_catchup_touches
+            assert count_pending_catchup_touches() == 0
+
+    def test_count_pending_backlog_error_returns_zero(self):
+        """A DB error must read as 'no backlog', not blow up the beat — the drip still has approved
+        touches to dispatch and the report is diagnostic, not load-bearing. But 0 makes the beat
+        report `nothing_to_send`, so the failure itself has to surface at ERROR, not at INFO."""
+        import mysql.connector
+        conn, cur = _conn()
+        cur.execute.side_effect = mysql.connector.Error(msg="boom")
+        with patch(f"{_DB}.get_db_connection", return_value=conn), \
+             patch(f"{_DB}.log_error") as err:
+            from cqc_lem.utilities.db import count_pending_catchup_touches
+            assert count_pending_catchup_touches() == 0
+        err.assert_called_once()
+
     def test_orphaned_touches_use_lookback(self):
         conn, cur = _conn(fetchall=[(9, 1)])
         with patch(f"{_DB}.get_db_connection", return_value=conn):
