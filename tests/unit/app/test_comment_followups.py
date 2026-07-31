@@ -113,8 +113,9 @@ class TestReplyUnderComment:
         comment = MagicMock(); comment.find_elements.return_value = [rbtn]
         composer = MagicMock()
         driver = MagicMock()
-        # scrollIntoView -> None; composer proximity JS -> composer; submit JS -> True
-        driver.execute_script.side_effect = [None, composer, True]
+        # scrollIntoView -> None; composer proximity JS -> composer; composer-centering
+        # scrollIntoView (#815) -> None; submit JS -> True
+        driver.execute_script.side_effect = [None, composer, None, True]
         with patch(f"{RA}.ActionChains"), patch(f"{RA}._strip_non_bmp", side_effect=lambda s: s), \
              patch(f"{RA}._composer_submitted", return_value=True):
             assert _reply_under_comment_inline(driver, MagicMock(), comment, "Great point!", user_id=1) is True
