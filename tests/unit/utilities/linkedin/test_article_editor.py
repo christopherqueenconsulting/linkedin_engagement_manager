@@ -16,13 +16,27 @@ from cqc_lem.utilities.linkedin import article_editor as ae
 pytestmark = pytest.mark.unit
 
 
+def _load_probe_module():
+    """Load `scripts/linkedin_live_validation.py` by path — `scripts/` is not an importable package
+    (and is not baked into the runtime image), so the probe is exercised the same way it ships."""
+    import importlib.util
+    from pathlib import Path
+    script_path = Path(__file__).resolve().parents[4] / "scripts" / "linkedin_live_validation.py"
+    spec = importlib.util.spec_from_file_location("linkedin_live_validation", script_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class FakeElement:
     """A minimal WebElement stand-in with configurable attributes and display state."""
 
     def __init__(self, tag: str = "button", attrs: dict = None, displayed: bool = True,
-                 interact_ok: bool = True, *, tag_name_exc=None, get_attr_exc: dict = None,
+                 interact_ok: bool = True, *, text: str = "", tag_name_exc=None,
+                 get_attr_exc: dict = None,
                  is_displayed_exc=None, clear_exc=None, click_exc=None, send_keys_exc=None):
         self.tag = tag
+        self.text = text
         self.attrs = attrs or {}
         self._displayed = displayed
         self._interact_ok = interact_ok
@@ -592,6 +606,132 @@ class TestFillArticleEditor:
         assert failed == ae.STEP_PUBLISH
 
 
+class TestTwoScreenGrading:
+    """The editor is two screens (#804, live-validated 2026-07-31).
+
+    `/article/new/` renders title + body + Next and NOT Publish, which only exists in the dialog
+    Next opens. These tests pin the two consequences: an off-screen step is UNKNOWN rather than
+    MISSING, and the pre-flight gate before typing may only require the editor screen's controls.
+    """
+
+    @staticmethod
+    def _editor_screen_driver(publish_present: bool = False):
+        """A DOM shaped like the real editor screen: title, body and Next, no publish control."""
+        title = FakeElement(tag="textarea", attrs={"placeholder": "Title"})
+        body = FakeElement(tag="div", attrs={"role": "textbox", "aria-label": "Article editor content"})
+        nxt = FakeElement(tag="button", attrs={"type": "submit"})
+        dom = {
+            (By.CSS_SELECTOR, "textarea[placeholder='Title']"): [title],
+            (By.CSS_SELECTOR, "div[role='textbox'][aria-label*='Article editor']"): [body],
+            (By.XPATH, "//button[normalize-space()='Next']"): [nxt],
+        }
+        if publish_present:
+            dom[(By.XPATH, "//button[normalize-space()='Publish']")] = [
+                FakeElement(tag="button")]
+        return FakeDriver(dom)
+
+    @staticmethod
+    def _ordered_find_first(driver):
+        def fake_find_first(d, w, locators, *args, **kwargs):
+            for by, value in locators:
+                matches = driver.find_elements(by, value)
+                if matches:
+                    return matches[0]
+            return None
+        return fake_find_first
+
+    def test_first_missing_ignores_publish_when_scoped_to_editor_screen(self, monkeypatch):
+        driver = self._editor_screen_driver()
+        monkeypatch.setattr(ae, "find_first", self._ordered_find_first(driver))
+        editor_map = ae.find_article_editor_elements(driver, MagicMock())
+        assert editor_map.first_missing() == ae.STEP_PUBLISH
+        assert editor_map.first_missing(ae.EDITOR_SCREEN_STEPS) is None
+
+    def test_editor_screen_verdict_grades_publish_unknown_not_missing(self, monkeypatch):
+        driver = self._editor_screen_driver()
+        monkeypatch.setattr(ae, "find_first", self._ordered_find_first(driver))
+        verdict = ae.article_editor_verdict(
+            ae.find_article_editor_elements(driver, MagicMock()), on_editor_screen=True)
+        assert verdict["publish"]["verdict"] == ae.StepVerdict.UNKNOWN
+        assert verdict["all_ok"] is True
+        assert verdict["editor_ready"] is True
+        assert verdict["first_missing"] is None
+        assert verdict["graded_steps"] == list(ae.EDITOR_SCREEN_STEPS)
+
+    def test_whole_flow_verdict_still_grades_absent_publish_missing(self, monkeypatch):
+        """The default (not on the editor screen) is unchanged: absent publish is a real miss."""
+        driver = self._editor_screen_driver()
+        monkeypatch.setattr(ae, "find_first", self._ordered_find_first(driver))
+        verdict = ae.article_editor_verdict(ae.find_article_editor_elements(driver, MagicMock()))
+        assert verdict["publish"]["verdict"] == ae.StepVerdict.MISSING
+        assert verdict["all_ok"] is False
+        assert verdict["first_missing"] == ae.STEP_PUBLISH
+        assert verdict["editor_ready"] is True
+
+    def test_editor_screen_verdict_reports_a_broken_editor_step(self, monkeypatch):
+        """A missing BODY is a real selector gap and must survive the screen-aware grading."""
+        driver = self._editor_screen_driver()
+        driver.dom[(By.CSS_SELECTOR, "div[role='textbox'][aria-label*='Article editor']")] = []
+        monkeypatch.setattr(ae, "find_first", self._ordered_find_first(driver))
+        verdict = ae.article_editor_verdict(
+            ae.find_article_editor_elements(driver, MagicMock()), on_editor_screen=True)
+        assert verdict["first_missing"] == ae.STEP_BODY
+        assert verdict["all_ok"] is False
+        assert verdict["editor_ready"] is False
+
+    def test_publish_present_on_editor_screen_reads_ok(self, monkeypatch):
+        """If LinkedIn ever puts Publish on the first screen, the probe says OK, not UNKNOWN."""
+        driver = self._editor_screen_driver(publish_present=True)
+        monkeypatch.setattr(ae, "find_first", self._ordered_find_first(driver))
+        verdict = ae.article_editor_verdict(
+            ae.find_article_editor_elements(driver, MagicMock()), on_editor_screen=True)
+        assert verdict["publish"]["verdict"] == ae.StepVerdict.OK
+
+    def test_resolved_element_verdict_is_three_valued(self):
+        found = ae.ResolvedElement(step=ae.STEP_NEXT, element=FakeElement(), route=ae.ROUTE_NEXT_TEXT)
+        assert found.verdict == ae.StepVerdict.OK
+        absent = ae.ResolvedElement(step=ae.STEP_PUBLISH)
+        assert absent.verdict == ae.StepVerdict.MISSING
+        off_screen = ae.ResolvedElement(step=ae.STEP_PUBLISH, expected_on_screen=False)
+        assert off_screen.verdict == ae.StepVerdict.UNKNOWN
+        assert off_screen.to_dict()["verdict"] == ae.StepVerdict.UNKNOWN
+
+    def test_fill_proceeds_when_publish_only_appears_after_next(self, monkeypatch):
+        """The #804 regression: the pre-flight used to demand Publish on the editor screen, so the
+        flow returned `article_publish` without typing a character. It must now type, click Next,
+        and only then require Publish."""
+        title = FakeElement(tag="textarea", attrs={"placeholder": "Title"})
+        body = FakeElement(tag="div", attrs={"role": "textbox", "aria-label": "Article editor content"})
+        nxt = FakeElement(tag="button", attrs={"type": "submit"})
+        publish = FakeElement(tag="button")
+        driver = self._editor_screen_driver()
+        driver.dom[(By.CSS_SELECTOR, "textarea[placeholder='Title']")] = [title]
+        driver.dom[(By.CSS_SELECTOR, "div[role='textbox'][aria-label*='Article editor']")] = [body]
+        driver.dom[(By.XPATH, "//button[normalize-space()='Next']")] = [nxt]
+        monkeypatch.setattr(ae.time, "sleep", lambda s: None)
+
+        def fake_find_first(d, w, locators, *args, **kwargs):
+            for by, value in locators:
+                # Publish only exists once Next has been clicked — exactly like the live editor.
+                if "Publish" in value and not nxt.clicked:
+                    continue
+                if "Publish" in value:
+                    return publish
+                matches = driver.find_elements(by, value)
+                if matches:
+                    return matches[0]
+            return None
+
+        monkeypatch.setattr(ae, "find_first", fake_find_first)
+        url, failed = ae.fill_article_editor(driver, MagicMock(), "My title", "My body", user_id=1)
+        assert failed is None
+        assert url == driver.current_url
+        assert title.sent == ["My title"]
+        assert body.sent == ["My body"]
+        assert nxt.clicked == 1
+        assert publish.clicked == 1
+
+
 class TestLiveValidationProbe:
     def test_probe_article_editor_reports_editor_verdict(self, monkeypatch):
         title = FakeElement(tag="textarea", attrs={"placeholder": "Title"})
@@ -605,12 +745,7 @@ class TestLiveValidationProbe:
             (By.CSS_SELECTOR, "button[aria-label*='Publish']"): [publish],
         })
 
-        import importlib.util
-        from pathlib import Path
-        script_path = Path(__file__).resolve().parents[4] / "scripts" / "linkedin_live_validation.py"
-        spec = importlib.util.spec_from_file_location("linkedin_live_validation", script_path)
-        llv = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(llv)
+        llv = _load_probe_module()
 
         def fake_find_first(d, w, locators, *args, **kwargs):
             for by, value in locators:
@@ -624,3 +759,97 @@ class TestLiveValidationProbe:
                                           sleep=lambda s: None)
         assert report["all_ok"] is True
         assert report["first_missing"] is None
+
+    def test_probe_grades_absent_publish_unknown_and_records_the_screen(self, monkeypatch):
+        """The live 2026-07-31 shape: title/body/next resolve, no publish control on the screen.
+
+        The probe never clicks Next, so publish must read UNKNOWN and must not drag `all_ok` down —
+        and the buttons it DID see are what make that grading checkable."""
+        llv = _load_probe_module()
+        title = FakeElement(tag="textarea", attrs={"placeholder": "Title"})
+        body = FakeElement(tag="div", attrs={"role": "textbox",
+                                             "aria-label": "Article editor content"})
+        nxt = FakeElement(tag="button", attrs={"type": "submit"}, text="Next")
+        driver = FakeDriver({
+            (By.CSS_SELECTOR, "textarea[placeholder='Title']"): [title],
+            (By.CSS_SELECTOR, "div[role='textbox'][aria-label*='Article editor']"): [body],
+            (By.XPATH, "//button[normalize-space()='Next']"): [nxt],
+            (By.TAG_NAME, "button"): [nxt],
+        })
+
+        def fake_find_first(d, w, locators, *args, **kwargs):
+            for by, value in locators:
+                matches = driver.find_elements(by, value)
+                if matches:
+                    return matches[0]
+            return None
+
+        monkeypatch.setattr(ae, "find_first", fake_find_first)
+        report = llv.probe_article_editor(driver, "https://www.linkedin.com/article/new/",
+                                          sleep=lambda s: None)
+        assert report["publish"]["verdict"] == ae.StepVerdict.UNKNOWN
+        assert report["all_ok"] is True
+        assert report["editor_ready"] is True
+        assert report["first_missing"] is None
+        assert report["title"]["element"]["placeholder"] == "Title"
+        assert report["body"]["element"]["aria_label"] == "Article editor content"
+        assert "Next" in report["buttons"]
+        assert "publish is UNKNOWN by design" in report["verdict"]
+
+    def test_probe_reports_a_broken_editor_step_as_not_ready(self, monkeypatch):
+        llv = _load_probe_module()
+        driver = FakeDriver({(By.TAG_NAME, "button"): []})
+        monkeypatch.setattr(ae, "find_first", lambda *a, **k: None)
+        report = llv.probe_article_editor(driver, "https://www.linkedin.com/article/new/",
+                                          sleep=lambda s: None)
+        assert report["editor_ready"] is False
+        assert report["first_missing"] == ae.STEP_TITLE
+        assert "NOT usable" in report["verdict"]
+
+    def test_probe_reading_calls_out_a_publish_control_on_the_editor_screen(self):
+        llv = _load_probe_module()
+        reading = llv.article_editor_reading(
+            {"editor_ready": True, "publish": {"verdict": "OK"}})
+        assert "publish control is present" in reading
+
+
+class TestProbeEvidenceHelpers:
+    def test_visible_button_labels_dedupes_and_skips_hidden(self):
+        llv = _load_probe_module()
+        shown = FakeElement(tag="button", attrs={"aria-label": "Next"})
+        dupe = FakeElement(tag="button", attrs={"aria-label": "Next"})
+        hidden = FakeElement(tag="button", attrs={"aria-label": "Publish"}, displayed=False)
+        unlabelled = FakeElement(tag="button")
+        driver = FakeDriver({(By.TAG_NAME, "button"): [shown, dupe, hidden, unlabelled]})
+        assert llv.visible_button_labels(driver) == ["Next"]
+
+    def test_visible_button_labels_honours_the_limit(self):
+        llv = _load_probe_module()
+        buttons = [FakeElement(tag="button", attrs={"aria-label": f"b{i}"}) for i in range(10)]
+        driver = FakeDriver({(By.TAG_NAME, "button"): buttons})
+        assert len(llv.visible_button_labels(driver, limit=3)) == 3
+
+    def test_visible_button_labels_reports_a_stopped_enumeration(self):
+        llv = _load_probe_module()
+
+        class Exploding(FakeDriver):
+            def find_elements(self, by, value):
+                raise WebDriverException("boom")
+
+        labels = llv.visible_button_labels(Exploding())
+        assert labels and labels[0].startswith("<enumeration stopped")
+
+    def test_element_evidence_is_best_effort(self):
+        llv = _load_probe_module()
+        el = FakeElement(tag="textarea", attrs={"placeholder": "Title"},
+                         get_attr_exc={"aria-label": WebDriverException("boom")})
+        evidence = llv.element_evidence(el)
+        assert evidence["tag"] == "textarea"
+        assert evidence["placeholder"] == "Title"
+        assert "aria_label" not in evidence
+
+    def test_element_evidence_survives_a_dead_element(self):
+        llv = _load_probe_module()
+        el = FakeElement(tag_name_exc=StaleElementReferenceException("stale"),
+                         get_attr_exc={"aria-label": StaleElementReferenceException("stale")})
+        assert llv.element_evidence(el) == {}
