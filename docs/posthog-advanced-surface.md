@@ -204,3 +204,37 @@ through OUR gate instead of around it.
 Set `POSTHOG_OPS_WEBHOOK_URL` in `/opt/lem/.env` to a Slack incoming-webhook URL (or any other
 `https://` endpoint) and run `scripts/posthog_ops_destination.py --apply` to make the realtime
 429-breaker ping live.
+
+---
+
+## Verifying the SPA surface: never in the Selenium grid Chrome (issue #834)
+
+**Do not test browser-side analytics in LEM's own Selenium Chrome.** Its egress is the per-user
+static residential proxy (`utilities/proxy.py`), and a proxied session drops the SDK's sends while
+leaving every piece of local config looking healthy — which reads, wrongly, as "SPA analytics is
+broken".
+
+That is exactly what happened once posthog-js first shipped to production with `UI_POSTHOG_KEY` in
+v0.113.x. In the grid browser the SDK initialized cleanly (correct token and `api_host`, `__loaded`,
+not opted out, no `before_send`, replay assets all fetched, `startSessionRecording()` flipping
+`disabled` → `sampled`) yet transmitted **nothing** over ~60s of `posthog.capture()` calls — while a
+hand-rolled `fetch` POST of plain JSON to the same `/i/v0/e/` endpoint, from that same browser,
+returned `200` and landed. The one difference between the two paths is the body: posthog-js sends
+`compression: "gzip-js"`, the manual probe did not.
+
+**Verified in real browsers on 2026-07-31: the SDK transmits fine.** Same production build
+(posthog-js 1.407.3, `https://lem.christopherqueenconsulting.com`), two independent unproxied
+clients — desktop Chrome and Mobile Safari — produced `$pageview`, `$autocapture`, `$web_vitals`,
+`$pageleave`, `$identify` and the named `feedback_opened` product event, all within seconds. So the
+grid result was a test-environment artifact of the proxy, **not** a defect: no code change was made,
+and `compression` stays at the posthog-js default.
+
+Two things follow for anyone re-checking this:
+
+- Verify from an ordinary browser (yours, or any non-proxied one). If you must use automation, drive
+  a Chrome whose egress is NOT the proxy.
+- A quiet project is not proof either way — with `capture_pageview: false` the router owns pageviews
+  (`ui/src/utils/analytics.ts`), and with no `VITE_POSTHOG_KEY` in the build the posthog-js chunk is
+  never even fetched. Confirm the build first, then look for events.
+
+The replay half of the same check is in `docs/session-replay.md` § Verifying it.
