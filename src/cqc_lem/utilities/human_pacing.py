@@ -56,6 +56,11 @@ ACTION_INVITE = "invite"
 # envelope (they `record_action` under ACTION_INVITE, which is also their harder ceiling), they just
 # must not enlarge it with a second cap of their own.
 ACTION_COMPANY_INVITE = "company_invite"
+# Affiliate promotional CONTENT (issue #770). Deliberately outside ENGAGEMENT_ACTIONS/ENVELOPE_ACTIONS:
+# it is a generated POST, and posting is API-driven — it was never gated by the engagement envelope
+# (the same reason #629's suppression pause covers engagement only). It draws its own daily budget
+# purely so the writer inherits the rest-day and variable-volume behaviour every other lane has.
+ACTION_AFFILIATE_PROMO = "affiliate_promo"
 ENGAGEMENT_ACTIONS = (ACTION_COMMENT, ACTION_REPLY, ACTION_DM, ACTION_INVITE)
 
 # Which preference key caps each lane.

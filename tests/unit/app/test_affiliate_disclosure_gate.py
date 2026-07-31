@@ -98,6 +98,28 @@ class TestAffiliateDisclosureGate:
         m["share_on_linkedin"].assert_not_called()
         assert "no_disclosure_configured" in result
 
+    def test_a_published_affiliate_post_is_counted_as_published(self):
+        """Issue #770: 'generated' and 'published' are different numbers — a promo post the author
+        never approved is one and not the other, and that gap is the read on the program."""
+        from cqc_lem.app.run_automation import post_to_linkedin
+        with ExitStack() as stack:
+            _post_patches(stack, f"This tool changed my week. {REF_LINK}\n\n{DISCLOSURE}",
+                          prefs={"link_in_first_comment": False})
+            track = stack.enter_context(
+                patch("cqc_lem.utilities.marketing.affiliate_content._track"))
+            post_to_linkedin.run(1, 10)
+        assert track.call_args[0][0] == "affiliate_promo_published"
+        assert track.call_args[1]["post_id"] == 10
+
+    def test_an_ordinary_published_post_is_not_counted_as_affiliate(self):
+        from cqc_lem.app.run_automation import post_to_linkedin
+        with ExitStack() as stack:
+            _post_patches(stack, "Three lessons from the rebuild.")
+            track = stack.enter_context(
+                patch("cqc_lem.utilities.marketing.affiliate_content._track"))
+            post_to_linkedin.run(1, 10)
+        track.assert_not_called()
+
     def test_a_broken_gate_publishes_rather_than_blocking_every_post(self):
         """This is a compliance check on a rare shape of post, not a new way for posting to break."""
         from cqc_lem.app.run_automation import post_to_linkedin

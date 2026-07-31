@@ -1,6 +1,7 @@
 # Affiliate / Ambassador Program
 
-**Issue:** #737 · **Status:** built, owner decision applied (1A 2A 3A) · **Created:** 2026-07-27
+**Issues:** #737 (status + consent + disclosure), #770 (the (B) writer) · **Status:** built, owner
+decision applied (1A 2A 3A) · **Created:** 2026-07-27 · **Updated:** 2026-07-31
 
 LEM's marketing arm is its own users. Every account joins the referral program by default, gets a
 referral link, and earns extra free-trial time for people they bring in who actually get set up.
@@ -33,9 +34,9 @@ shortcut: the account is the user's professional identity.
 Opting out of (A) also withdraws (B) — consent to publish promotion cannot outlive the membership it
 was given for.
 
-> **(B) has consent plumbing and a publish gate, but no generator yet.** Nothing in LEM currently
-> writes promotional content about LEM from a user's account. This issue built the consent record and
-> the compliance gate so that whatever ships next cannot skip them.
+The writer that turns (B) into real content is §2.1 below (issue #770). It reads the same
+`promo_content_allowed()` and nothing else — there is still no env var, cohort or default that can
+authorise promotion for a user who did not.
 
 ## 2. FTC compliance (16 CFR Part 255)
 
@@ -61,6 +62,50 @@ connection that must be disclosed **clearly and conspicuously in the promotional
   Blank means "no disclosure configured", never "no disclosure needed".
 - The gate fails **open** on an unexpected error: this is a compliance check on a rare shape of post,
   not a new way for the whole posting path to break.
+
+## 2.1 The (B) writer — `utilities/marketing/affiliate_content.py` (issue #770)
+
+The ONE place promotional copy about LEM is produced. Four refusals define it:
+
+**It is not a second consent path.** `promo_content_allowed()` is still the only authorisation.
+`AFFILIATE_PROMO_CONTENT_ENABLED` can only turn the writer OFF — with it `True` and nobody
+consented, nothing is written. An unreadable enrollment row reads as *no*.
+
+**It is not an extra post.** An affiliate post **CLAIMS** one of the 70/20/10 governor's promo slots
+(#618) instead of running beside it, so the 10% promo ceiling holds *by construction* rather than by
+a second counter that could drift from the first. Only `content_mix == 'promo'` slots are eligible,
+and only 1 in `AFFILIATE_PROMO_EVERY_N_PROMO_SLOTS` of those (default 3 ⇒ ≤1 post in 30). Every slot
+it does not claim writes the author's own case study exactly as before. Carousels and videos are
+never claimed — the copy is a short text post.
+
+**It is not an author of facts.** The writer's allow-list is `PRODUCT_FACTS` and nothing else — the
+same posture the story bank (#620) takes for personal specifics. It may not state a result, a
+metric, hours saved or a testimonial, because LEM cannot verify any claim about what the tool did for
+*this* user and an invented one is a false endorsement, not merely a bad post. The deterministic slop
+lint (#625) runs on the draft with the same regenerate-then-block budget as everything else; copy
+that cannot be made clean is **blocked**, never shipped.
+
+**It is not silently published.** Two independent guarantees, deliberately not the same one twice:
+
+| Layer | Guarantees |
+|---|---|
+| `apply_disclosure(..., tagged=True)` at generation | the disclosure **is written** |
+| `affiliate_promo` quality gate (`quality_gates.py`) | the post is held **PENDING** for the author's explicit approval — it is the one gate that is not a quality verdict, and re-scoring cannot clear it. Consent to the program is a standing yes to LEM *writing* promotion; it is not a yes to any particular sentence going out over the author's name. Derived from the CONTENT (the referral link, scoped to the post's owner), so a post the user pasted their own link into is held too |
+| `disclosure_report()` in `post_to_linkedin` | an undisclosed affiliate post **never publishes** |
+
+**Pacing.** `human_pacing.ACTION_AFFILIATE_PROMO` draws its own daily budget from
+`AFFILIATE_PROMO_MAX_PER_DAY`, so a rest day writes none. It is deliberately outside
+`ENVELOPE_ACTIONS`: this is a generated POST, and posting is API-driven — it was never gated by the
+engagement envelope. Pacing fails open; consent and the promo slot are the hard limits and neither
+lives in Redis.
+
+**Why a module of its own, given "no parallel per-content-type prompt helpers".** It draws voice,
+mix directive, artifact-CTA policy, style and the slop lint from the shared core rather than
+re-implementing them; what is local is the compliance shape (the fact allow-list, the verbatim link
+and disclosure lines), which has legal teeth and belongs next to the rest of the program's policy.
+
+**Surfaces.** Post only. A feed COMMENT promoting LEM under someone else's post, and a DM pitching
+LEM to the author's connections, are both a different risk class and neither ships here.
 
 ## 3. Reward mechanics
 
@@ -137,6 +182,9 @@ never wrote.
   (`V20260727191347__add_affiliate_program.sql`). Enums live in `db.py` (`AffiliateStatus`,
   `ReferralStatus`, `AffiliateRewardKind`).
 - **Policy + orchestration** — `utilities/marketing/affiliate.py` (the ONE module).
+- **(B) writer** — `utilities/marketing/affiliate_content.py`, claimed from
+  `run_content_plan.create_content` on a promo slot; held by the `affiliate_promo` gate in
+  `quality_gates.py` / `evaluate_post_gates`.
 - **API** — `GET /user/affiliate`, `POST /user/affiliate/status`,
   `POST /user/affiliate/promo-consent`, `POST /user/affiliate/notice`.
 - **Signup** — `api/main.py::_start_affiliate_membership` attributes the referral, then enrols.
@@ -159,8 +207,16 @@ rather than a punishment.
 `observability.track_affiliate_event` emits `affiliate_enrolled`, `affiliate_opted_out`,
 `affiliate_promo_consent`, `affiliate_referral_attributed`, `affiliate_referral_rejected`,
 `affiliate_referral_converted`, `affiliate_reward_granted`, `affiliate_reward_revoked`,
-`affiliate_disclosure_blocked`. The SPA adds `referral_link_copied` and
+`affiliate_disclosure_blocked`, plus the (B) writer's own three: `affiliate_promo_generated`,
+`affiliate_promo_published`, `affiliate_promo_blocked`. The SPA adds `referral_link_copied` and
 `affiliate_notice_acknowledged`.
+
+`affiliate_promo_blocked` (generation could not produce compliant copy) and
+`affiliate_disclosure_blocked` (the publish gate caught content that arrived undisclosed) are
+**never summed** — they are two different failures, and one piece of content can fire both.
+Declining to write at all (no consent, not this slot, paced out) is deliberately NOT an event: a
+refusal series that fires nine times out of ten tells nobody anything. `generated` vs `published` is
+the read that matters — the gap between them is promotional copy the author chose not to approve.
 
 These are **not** funnel events on purpose: the acquisition funnel is one ordered path per person,
 and an affiliate event is about the **referrer**, not about the person moving through the funnel.
@@ -180,6 +236,10 @@ Inbound referral traffic is already visible on the #658 **LEM Channels** dashboa
 | `AFFILIATE_REQUIRE_COMPANY_PAGE` | `False` | Restrict eligibility to accounts with a company page. Evaluated live. |
 | `AFFILIATE_DISCLOSURE_TEXT` | `#ad — I get free …` | The FTC disclosure. **Blank blocks affiliate content entirely.** |
 | `AFFILIATE_PROMO_CONSENT_VERSION` | `v1` | Bump when the (B) consent copy materially changes. |
+| `AFFILIATE_PROMO_CONTENT_ENABLED` | `True` | Kill switch for the (B) **writer**. Cannot turn (B) on for anybody. |
+| `AFFILIATE_PROMO_EVERY_N_PROMO_SLOTS` | `3` | 1-in-N promo slots may be claimed by an affiliate post. |
+| `AFFILIATE_PROMO_MAX_PER_DAY` | `1` | Per-day ceiling on generated promotional pieces, drawn through human pacing. |
+| `AFFILIATE_PROMO_PRODUCT_NAME` | `LinkedIn Engagement Manager` | What the copy may call the product. |
 
 `BRAND_SIGNUP_URL` must be set for referral links to exist at all; with it unset, `referral_url` is
 empty and the SPA says so rather than showing a broken link.

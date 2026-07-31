@@ -6443,6 +6443,18 @@ def post_to_linkedin(self, user_id: int, post_id: int):
         # Update DB with status=posted
         update_db_post_status(post_id, PostStatus.POSTED)
 
+        # Affiliate promotion that actually reached an audience (issue #770). Emitted from the
+        # publish path rather than the writer, because "generated" and "published" are genuinely
+        # different numbers — a promo post the author never approved is one of them and not the
+        # other, and that gap is the honest read on whether the program is working.
+        try:
+            from cqc_lem.utilities.marketing.affiliate_content import record_promo_published
+            record_promo_published(user_id, post_id, content,
+                                   first_comment_links=first_comment_links, post_url=post_url)
+        except Exception as e:
+            log_warning("Could not track affiliate promo publish", exc=e, user_id=user_id,
+                        post_id=post_id)
+
         # Only now — with the post actually live — persist the link split. Keeps the stored post in
         # sync with what published (the preview, the seed comment's grounding, and the post history
         # all read this back) without stranding the post in a link-held-back state if sharing failed.
