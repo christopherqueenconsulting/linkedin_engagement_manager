@@ -266,6 +266,21 @@ def _utc_iso(dt) -> Optional[str]:
     return dt.isoformat().replace("+00:00", "Z")
 
 
+def _warn_if_naive_schedule(dt, endpoint: str, **context) -> None:
+    """A scheduling write whose datetime carries NO offset is a client bug, and a silent one: the
+    storage layer assumes naive means UTC (db.to_naive_utc), so a wall clock the user picked in
+    their own zone is stored verbatim and the post fires offset-hours away from the time they saw
+    (issue #774 — a 9am post published at 5am). We keep interpreting it as UTC (the contract, and
+    what every legacy caller relies on) but leave a breadcrumb, because today the only evidence is
+    the wrong publish time itself."""
+    if dt is not None and getattr(dt, "tzinfo", None) is None:
+        log_warning(
+            f"Naive scheduled_datetime received by {endpoint} — assuming UTC "
+            f"(clients must send an explicit-UTC ISO string; see docs/timezone-contract.md)",
+            **context,
+        )
+
+
 def _public_post_url(value) -> Optional[str]:
     """Only surface real http(s) permalinks. Home-feed comments have no LinkedIn permalink and are
     logged under a synthetic 'feedpost://<hash>' dedup key — never expose that raw string to the UI."""
@@ -1515,6 +1530,8 @@ def schedule_post(post: PostRequest) -> ResponseModel:
     if not user_id:
         raise HTTPException(status_code=403, detail="User not found")
 
+    _warn_if_naive_schedule(post.scheduled_datetime, "/schedule_post/", user_id=user_id)
+
     # SPA-created posts carry an explicit status: "Approve & Schedule" → approved,
     # "Save Draft" → pending. Auto-generated content sets its own status elsewhere.
     if insert_post(post.email, post.content, post.scheduled_datetime, post.post_type,
@@ -1676,6 +1693,8 @@ def bulk_update_posts_endpoint(request: BulkUpdateRequest) -> ResponseModel:
     if not request.post_ids:
         raise HTTPException(status_code=400, detail="post_ids is required")
 
+    _warn_if_naive_schedule(request.scheduled_datetime, "/posts/bulk_update/")
+
     if bulk_update_posts(request.post_ids, status=request.status, scheduled_time=request.scheduled_datetime):
         return ResponseModel(status_code=200, detail="Posts updated successfully")
     else:
@@ -1717,6 +1736,7 @@ def get_post_url(post_id: int, email: str) -> ResponseModel:
 })
 def update_post(post_id: int, post: PostRequest) -> ResponseModel:
     myprint(f"Received Post Request: {post}")
+    _warn_if_naive_schedule(post.scheduled_datetime, "/update_post/", post_id=post_id)
 
     if update_db_post(post.content, post.video_url, post.scheduled_datetime, post.post_type, post_id, post.status):
         reason = (post.rejection_reason or "").strip() or None

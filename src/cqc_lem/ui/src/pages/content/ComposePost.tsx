@@ -5,7 +5,7 @@ import api from '../../api/client'
 import LinkedInPostPreview from '../../components/LinkedInPostPreview'
 import TopicAuthorityMeter from '../../components/TopicAuthorityMeter'
 import { useAuth } from '../../contexts/AuthContext'
-import { useUserTimezone } from '../../hooks/useUserTimezone'
+import { useUserTimezoneState } from '../../hooks/useUserTimezone'
 import { zonedInputToUtcIso } from '../../utils/datetime'
 import { maskProps } from '../../utils/analytics'
 
@@ -65,7 +65,7 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
   const [generatedSlideUrls, setGeneratedSlideUrls] = useState<string[]>([])
   const [generateError, setGenerateError] = useState<string | null>(null)
 
-  const userTimezone = useUserTimezone()
+  const { timezone: userTimezone, isResolved: timezoneResolved } = useUserTimezoneState()
 
   const { data: avatarData } = useQuery({
     queryKey: ['avatar-credits', sessionToken],
@@ -164,7 +164,18 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
     if (!email) { setResult({ ok: false, msg: 'Set your email in Account settings first.' }); return }
     if (!content.trim()) { setResult({ ok: false, msg: 'Post content is required.' }); return }
     if (!scheduledAt) { setResult({ ok: false, msg: 'Scheduled date/time is required.' }); return }
-    // The picker is a bare wall clock — read it in the user's timezone, not the browser's.
+    // The picker is a bare wall clock — read it in the user's timezone, not the browser's, and not
+    // against a GUESS of it (issue #774): until /user/timezone answers, `userTimezone` IS the
+    // browser's zone, so converting now would store the post offset by the difference and publish
+    // it hours from the time that was picked.
+    if (!timezoneResolved) {
+      setResult({
+        ok: false,
+        msg: 'Your timezone has not loaded yet — reload the page so this posts at the time you pick '
+          + '(you can set it under Account → Login Location).',
+      })
+      return
+    }
     const scheduledUtc = zonedInputToUtcIso(scheduledAt, userTimezone)
     if (!scheduledUtc) { setResult({ ok: false, msg: 'Scheduled date/time is not valid.' }); return }
     if (postType === 'CAROUSEL') {
@@ -531,13 +542,17 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
           {/* Schedule date/time */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Schedule Date &amp; Time <span className="font-normal text-gray-400">({userTimezone})</span>
+              Schedule Date &amp; Time{' '}
+              <span className="font-normal text-gray-400">
+                ({timezoneResolved ? userTimezone : 'loading your timezone…'})
+              </span>
             </label>
             <input
               type="datetime-local"
               value={scheduledAt}
+              disabled={!timezoneResolved}
               onChange={(e) => setScheduledAt(e.target.value)}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
             />
             {bestTimeSuggestion && (
               <div className="mt-2 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 flex items-center justify-between gap-2">

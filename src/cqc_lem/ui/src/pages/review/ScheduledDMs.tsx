@@ -36,7 +36,9 @@ const STATUS_COLORS: Record<string, string> = {
 
 const STATUSES = ['ALL', 'pending', 'approved', 'scheduled', 'sent', 'failed', 'canceled']
 
-export default function ScheduledDMs({ userTimezone }: { userTimezone: string }) {
+export default function ScheduledDMs(
+  { userTimezone, timezoneResolved }: { userTimezone: string; timezoneResolved: boolean },
+) {
   const { sessionToken } = useAuth()
   const qc = useQueryClient()
   const [filter, setFilter] = useState('ALL')
@@ -83,6 +85,12 @@ export default function ScheduledDMs({ userTimezone }: { userTimezone: string })
   // The picker is a bare wall clock — read it in the user's timezone, not the browser's. An
   // unparseable value yields null, which the API would reject with a 422; catch it here instead.
   const submit = (status: 'pending' | 'approved') => {
+    // …and not against a GUESS of it either (issue #774) — until /user/timezone answers,
+    // `userTimezone` is the browser's zone and the send would land offset by the difference.
+    if (!timezoneResolved) {
+      flash(false, 'Your timezone has not loaded yet — reload the page so this sends at the time you pick.')
+      return
+    }
     const scheduledUtc = zonedInputToUtcIso(when, userTimezone)
     if (!scheduledUtc) { flash(false, 'Scheduled date/time is not valid.'); return }
     createMutation.mutate({ status, scheduledUtc })
@@ -94,7 +102,7 @@ export default function ScheduledDMs({ userTimezone }: { userTimezone: string })
     onSuccess: () => invalidate(),
   })
 
-  const canSubmit = url.trim() && body.trim() && when
+  const canSubmit = url.trim() && body.trim() && when && timezoneResolved
 
   return (
     <div className="space-y-4">
@@ -122,7 +130,7 @@ export default function ScheduledDMs({ userTimezone }: { userTimezone: string })
           <label className="flex items-center gap-2 text-xs text-gray-500">
             <input type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)}
               className="border border-gray-300 rounded-lg px-3 py-2 text-sm" />
-            {userTimezone}
+            {timezoneResolved ? userTimezone : 'loading your timezone…'}
           </label>
           <button onClick={() => submit('pending')} disabled={!canSubmit || createMutation.isPending}
             className="px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50">
