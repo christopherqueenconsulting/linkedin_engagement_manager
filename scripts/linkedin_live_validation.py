@@ -334,11 +334,72 @@ def message_thread_verdict(reading: Optional[dict]) -> str:
     return f"opened via {route}"
 
 
+def element_evidence(element) -> dict:
+    """The attributes that prove WHICH control a route resolved to — the provenance a selector row
+    needs. Every read is best-effort: an element that goes stale mid-capture must not lose the run."""
+    out = {}
+    for key, attr in (("tag", None), ("aria_label", "aria-label"), ("placeholder", "placeholder"),
+                      ("role", "role"), ("type", "type")):
+        try:
+            value = element.tag_name if attr is None else element.get_attribute(attr)
+        except Exception:
+            value = None
+        if value:
+            out[key] = str(value)[:120]
+    try:
+        text = (element.text or "").strip()
+    except Exception:
+        text = ""
+    if text:
+        out["text"] = text[:80]
+    return out
+
+
+def visible_button_labels(driver, limit: int = 40) -> list:
+    """Every visible button's label on the current screen.
+
+    This is the EVIDENCE half of the publish verdict: 'Publish is UNKNOWN' is only believable
+    alongside the list of controls that ARE on the editor screen. If a future run shows a publish
+    control here, the two-screen assumption has changed and the ladder should gate on it again."""
+    labels = []
+    try:
+        for button in driver.find_elements(By.TAG_NAME, "button"):
+            try:
+                if not button.is_displayed():
+                    continue
+                label = (button.get_attribute("aria-label") or button.text or "").strip()
+            except Exception:
+                continue
+            if label and label not in labels:
+                labels.append(label)
+            if len(labels) >= limit:
+                break
+    except Exception as e:
+        labels.append(f"<enumeration stopped: {type(e).__name__}>")
+    return labels
+
+
+def article_editor_reading(verdict: dict) -> str:
+    """One sentence a human can act on, so the JSON does not have to be interpreted."""
+    if not verdict.get("editor_ready"):
+        return (f"editor screen NOT usable — {verdict.get('first_missing')} resolved by no route; "
+                "newsletter publishing cannot start until that step has a working route")
+    publish = (verdict.get("publish") or {}).get("verdict")
+    if publish == "OK":
+        return "editor screen usable, and a publish control is present on it too"
+    return ("editor screen usable (title, body and Next all resolved); publish is UNKNOWN by design "
+            "— it lives in the dialog Next opens and this probe never clicks Next")
+
+
 def probe_article_editor(driver, editor_url: str = "https://www.linkedin.com/article/new/",
                          sleep=time.sleep) -> dict:
-    """#771: open LinkedIn's article editor (read-only) and report which selector routes resolve for
-    each of the four publish steps: title, body, next, publish. The editor is left untouched; nothing
-    is typed or published."""
+    """#771/#804: open LinkedIn's article editor (read-only) and report which selector routes resolve
+    for each publish step: title, body, next, publish. The editor is left untouched; nothing is typed,
+    no control is clicked and nothing is published.
+
+    Because nothing is clicked, only the EDITOR screen is ever rendered — so publish is graded
+    UNKNOWN rather than MISSING (`on_editor_screen=True`). `buttons` records what WAS on the screen,
+    which is what makes that grading checkable rather than assumed."""
     from cqc_lem.utilities.linkedin.article_editor import (find_article_editor_elements,
                                                            article_editor_verdict)
     from selenium.webdriver.support.ui import WebDriverWait
@@ -347,7 +408,15 @@ def probe_article_editor(driver, editor_url: str = "https://www.linkedin.com/art
     driver.get(editor_url)
     sleep(6)
     editor_map = find_article_editor_elements(driver, wait)
-    return article_editor_verdict(editor_map)
+    verdict = article_editor_verdict(editor_map, on_editor_screen=True)
+    for key, resolved in (("title", editor_map.title), ("body", editor_map.body),
+                          ("next", editor_map.next_button), ("publish", editor_map.publish_button)):
+        if resolved.element is not None:
+            verdict[key]["element"] = element_evidence(resolved.element)
+    verdict["url"] = getattr(driver, "current_url", editor_url)
+    verdict["buttons"] = visible_button_labels(driver)
+    verdict["verdict"] = article_editor_reading(verdict)
+    return verdict
 
 
 def probe_message_thread(driver, profile_url: str, person_name: str = "", self_name: str = "",
@@ -418,7 +487,8 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--article-editor-url", default=None, const="https://www.linkedin.com/article/new/",
                         nargs="?",
                         help="open LinkedIn's article editor and report each publish step's selector "
-                             "state (#771); pass a custom URL or use the default")
+                             "state (#771/#804); pass a custom URL or use the default. Read-only: "
+                             "nothing is typed and no control is clicked, so publish reads UNKNOWN")
     args = parser.parse_args(argv)
 
     if not (args.post_url or args.probe_composer or args.comment_outcome_url or args.dm_thread_url

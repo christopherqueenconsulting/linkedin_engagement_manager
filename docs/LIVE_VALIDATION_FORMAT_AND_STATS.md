@@ -6,6 +6,7 @@
 **Updated:** 2026-07-27 (#645) — §2a settles the member post-stats API lead ·
 **Probe:** `scripts/linkedin_post_stats_api_probe.py` (read-only, no browser)
 **Updated:** 2026-07-27 (#644) — C1's live document-render check ran; §1, §3 and §5 carry the result
+**Updated:** 2026-07-31 (#804) — the article-editor ladder ran live; §3, §4 and §6 carry the result
 
 ## TL;DR
 
@@ -183,6 +184,10 @@ Nothing below is a guess; the provenance column says where each came from.
 | Feed composer trigger | `//button[contains(normalize-space(),'Start a post') or contains(@aria-label,'Start a post') or contains(@aria-label,'Create a post')]` | `auto_post_to_group`, `probe_composer` | in-repo, **best-effort / unvalidated** (F2 #403) |
 | Document upload control | — | — | **unmapped by design** (§1); `--probe-composer` captures it |
 | Document media card | pager buttons `aria-label` = `Go to previous page of document` / `Go to next page of document` (any media node whose `data-testid`/`class`/`aria-label` contains `document` decides the verdict) | `probe_document_render` / `media_verdict` | **live grab 2026-07-27** (#644) — absent on the carousel control |
+| Article **title** | `textarea[placeholder='Title']` (route `title_placeholder`) | `article_editor._TITLE_LOCATORS` | **live grab 2026-07-31** (#804) — resolved on the first route |
+| Article **body** | `div[role='textbox'][aria-label*='Article editor']` — live `aria-label` is exactly `Article editor content` (route `body_aria`) | `article_editor._BODY_LOCATORS` | **live grab 2026-07-31** (#804) — resolved on the first route |
+| Article **Next** | `//button[normalize-space()='Next']`, live element is `<button type="submit">Next</button>` (route `next_text`) | `article_editor._NEXT_LOCATORS` | **live grab 2026-07-31** (#804) — resolved on the first route |
+| Article **Publish** | — **not on the editor screen** | `article_editor._PUBLISH_LOCATORS`, re-resolved *after* Next | **live grab 2026-07-31** (#804) — see §6 |
 
 ## 4. Running the live validation
 
@@ -208,6 +213,16 @@ It emits one JSON report:
 3. **`composer`** *(only with `--probe-composer`)* — the composer's control labels and any
    document-upload affordance among them. It opens the composer and closes it with Escape; nothing is
    attached or posted.
+4. **`article_editor`** *(only with `--article-editor-url`)* — per publish step, the route that
+   resolved and the attributes of the element it resolved to, plus `buttons` (every visible control
+   on that screen) and a one-sentence `verdict`. The probe **never clicks Next**, so only the editor
+   screen is ever rendered and `publish` is graded `UNKNOWN` rather than `MISSING` — read
+   `editor_ready` for "can newsletter publishing start". See §6.
+
+```bash
+sudo docker exec -i celery_worker_selenium python - --user-id 1 --article-editor-url \
+    < scripts/linkedin_live_validation.py
+```
 
 Paste the JSON into #404. If `post_stats` shows a signal sourced from `none` while the analytics page
 plainly shows a number, the `*_lines` arrays contain the drifted layout and this note's §3 rows are
@@ -237,6 +252,57 @@ no `r_member_postAnalytics` claim on it, so **the scrape stays** and the API cut
 analytics-page rows (§3) part of the F2 (#403) selector-liveness sweep — with no API alternative
 available, drift on that page has to be caught by cron rather than by a run of zeroes.
 
+## 6. Article editor — live-validated 2026-07-31 (#804), and the bug it found
+
+`--article-editor-url` ran against the live account (user 1, newsletter enabled, series
+*The Growth Brief*). Result:
+
+| Step | Verdict | Route | Live element |
+|---|---|---|---|
+| `article_title` | **OK** | `title_placeholder` (first route) | `<textarea placeholder="Title">` |
+| `article_body` | **OK** | `body_aria` (first route) | `<div role="textbox" aria-label="Article editor content">` |
+| `article_next` | **OK** | `next_text` (first route) | `<button type="submit">Next</button>` |
+| `article_publish` | **UNKNOWN** | none resolved | *not on this screen* |
+
+Every visible control on `/article/new/` was: `Me`, `For Business`,
+`Christopher Queen / The Growth Brief`, `Style`, `Manage menu`, **`Next`**, `Upload from computer`.
+**No publish-like control among them** — so `article_publish` failing to resolve there is not a
+selector gap. **The editor is two screens**: Publish only exists in the "Ready to publish?" dialog
+that Next opens. Every route in the ladder that could be checked resolved on its *first* route, so
+no selector needed changing.
+
+**The real finding is a defect the probe exposed, not a drifted selector.** `fill_article_editor`
+pre-flighted **all four** steps before typing:
+
+```python
+failed = editor.first_missing()      # included article_publish
+if failed:
+    return None, failed              # aborted before typing a character
+```
+
+Because Publish is never on the editor screen, that gate could **never** pass: every newsletter
+edition publish would have returned `(None, "article_publish")` — the #747 alert firing with a step
+name that names a button which was not supposed to exist yet, and #771's ladder never reached. Fixed
+by scoping the pre-flight to `EDITOR_SCREEN_STEPS` (title, body, next); Publish is still required,
+but at the point it is re-resolved *after* Next, where it actually renders. Caught before the first
+real edition published, so it cost nothing.
+
+Two rules now hold this in place:
+
+- **A step that is not on the current screen is `UNKNOWN`, never `MISSING`.** `StepVerdict.UNKNOWN`
+  existed but nothing ever returned it; `ResolvedElement.expected_on_screen` now does, and the
+  read-only probe sets it for Publish. "We did not look" must not read as "the selector is broken".
+- **`buttons` ships with the verdict.** A claim that a control is on a later screen is only checkable
+  next to the list of controls that *were* on this one — if a future run shows a publish control
+  there, the two-screen assumption has changed and the ladder should gate on it again.
+
+**Still not live-validated:** the publish **dialog** itself — `article_publish`'s two routes and the
+edition-description field (`_fill_edition_description`). Reaching them means clicking Next on a real
+draft, which is one control away from publishing to the live account, so it is deliberately out of
+scope for a read-only probe. It stays what `docs/FORMAT_API_FEASIBILITY.md` §4 already calls it: a
+**supervised** first publish. That first supervised run is what closes it, and `failed_step` now
+names the dialog step honestly if it fails.
+
 ## Sources
 
 - `docs/FORMAT_API_FEASIBILITY.md` (R3 / #406) — API surface for documents, articles, newsletters.
@@ -244,7 +310,8 @@ available, drift on that page has to be caught by cron rather than by a run of z
   — the `memberCreatorPostAnalytics` finders, permission, metric list and error table behind §2a.
 - [Recent Marketing API Changes — Microsoft Learn](https://learn.microsoft.com/en-us/linkedin/marketing/integrations/recent-changes)
   — `202506` added the `q=entity` finder; `202605` changed `metricType` from object to string.
-- In-repo: `utilities/linkedin/poster.py` (document API path), `app/run_automation.py`
+- In-repo: `utilities/linkedin/article_editor.py` (the §6 ladder + the two-screen rule),
+  `utilities/linkedin/poster.py` (document API path), `app/run_automation.py`
   (`_post_social_counts`, `_stacked_counts`, `_post_analytics_counts`, `auto_scrape_post_stats`),
   `utilities/db.py` (`record_post_stats`, `get_latest_post_stats`, `PostType`),
   `api/main.py` (`linkedin_auth_init` — the granted scope list), and
