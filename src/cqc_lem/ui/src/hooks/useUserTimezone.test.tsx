@@ -16,7 +16,7 @@ vi.mock('../contexts/AuthContext', () => ({
 // the assertions hold on any machine — the point is that the fallback is never reported as resolved.
 const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone
 
-// retryDelay:0, NOT retry:false — the hook sets `retry: 2` on the query itself so a blip can't lock
+// retryDelay:0, NOT retry:false — the hook sets `retry: 3` on the query itself so a blip can't lock
 // the pickers, and a per-query option beats a client default. Only the back-off is a default.
 function harness(ui: ReactNode) {
   const client = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } })
@@ -56,8 +56,8 @@ describe('useUserTimezoneState (issue #774)', () => {
   it('stays unresolved when the request fails — a guess is never reported as the setting', async () => {
     get.mockRejectedValue(new Error('boom'))
     harness(<Probe />)
-    // 1 attempt + 2 retries, then it gives up — and still reports unresolved.
-    await waitFor(() => expect(get).toHaveBeenCalledTimes(3))
+    // 1 attempt + 3 retries, then it gives up — and still reports unresolved.
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(4))
     expect(screen.getByTestId('value').textContent).toBe(`${browserZone}|false`)
   })
 

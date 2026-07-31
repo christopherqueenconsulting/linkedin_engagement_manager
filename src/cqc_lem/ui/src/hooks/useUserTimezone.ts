@@ -25,7 +25,9 @@ export function useUserTimezoneState(): UserTimezoneState {
     enabled: !!sessionToken,
     staleTime: 5 * 60 * 1000,
     // Scheduling holds until this answers, so a transient blip must not leave the pickers locked.
-    retry: 2,
+    // Pinned rather than inherited: react-query's own default is 3, so the earlier `retry: 2` would
+    // have made a blip MORE likely to lock the pickers, not less.
+    retry: 3,
   })
 
   const resolved = data?.timezone
