@@ -54,6 +54,50 @@ class TestComposerSubmitted:
         assert _composer_submitted(driver, composer, "leftover") is True
 
 
+def _intercepted():
+    from selenium.common import ElementClickInterceptedException
+    return ElementClickInterceptedException(
+        "element click intercepted: Element <div class=\"ql-editor\"> is not clickable at "
+        "point (890, 9). Other element would receive the click: <svg ...>")
+
+
+class TestFocusComposer:
+    def test_centers_before_clicking(self):
+        # y=9 interception (#815) is the sticky global nav: the composer must be centered, never
+        # left wherever the previous action on the card scrolled it to.
+        from cqc_lem.app import run_automation as ra
+        driver = MagicMock(); composer = MagicMock()
+        ra._focus_composer(driver, composer)
+        scripts = [c.args[0] for c in driver.execute_script.call_args_list]
+        assert any("scrollIntoView({block:'center'})" in s for s in scripts)
+        composer.click.assert_called_once()
+
+    def test_recenters_and_retries_once_on_interception(self):
+        from cqc_lem.app import run_automation as ra
+        driver = MagicMock(); composer = MagicMock()
+        composer.click.side_effect = [_intercepted(), None]
+        ra._focus_composer(driver, composer)
+        assert composer.click.call_count == 2
+        assert len([c for c in driver.execute_script.call_args_list
+                    if "scrollIntoView" in c.args[0]]) == 2
+
+    def test_second_interception_raises(self):
+        # A real overlay must NOT be papered over with a JS click — let it raise so the caller can
+        # name the step and the fault stays visible.
+        from cqc_lem.app import run_automation as ra
+        from selenium.common import ElementClickInterceptedException
+        composer = MagicMock(); composer.click.side_effect = _intercepted()
+        with pytest.raises(ElementClickInterceptedException):
+            ra._focus_composer(MagicMock(), composer)
+
+    def test_survives_unscrollable_element(self):
+        from cqc_lem.app import run_automation as ra
+        driver = MagicMock(); driver.execute_script.side_effect = Exception("no such element")
+        composer = MagicMock()
+        ra._focus_composer(driver, composer)  # positioning is best-effort
+        composer.click.assert_called_once()
+
+
 class TestPostCommentInline:
     def test_posts_and_confirms(self):
         from cqc_lem.app import run_automation as ra
@@ -77,6 +121,79 @@ class TestPostCommentInline:
              patch(f"{_RA}.find_first", return_value=None):
             ok = ra.post_comment_inline(MagicMock(), MagicMock(), MagicMock(), "hello", user_id=1)
         assert ok is False
+
+    def test_only_bmp_text_reaches_send_keys(self):
+        # ChromeDriver's send_keys raises on non-BMP characters — the emoji must be gone by then.
+        from cqc_lem.app import run_automation as ra
+        composer = MagicMock(); composer.text = ""
+        driver = MagicMock(); driver.execute_script.return_value = True
+        with patch(f"{_RA}.click_first", return_value=MagicMock()), \
+             patch(f"{_RA}.find_first", return_value=composer):
+            ok = ra.post_comment_inline(driver, MagicMock(), MagicMock(),
+                                        "Shipped it 🚀 and the numbers held 📈", user_id=1)
+        assert ok is True
+        typed = composer.send_keys.call_args_list[0].args[0]
+        assert all(ord(c) <= 0xFFFF for c in typed)
+        assert "Shipped it" in typed and "🚀" not in typed
+
+    def test_click_interception_survived_by_recentering(self):
+        # The live #815 failure: first click stolen by the sticky nav, the retry lands.
+        from cqc_lem.app import run_automation as ra
+        composer = MagicMock(); composer.text = ""
+        composer.click.side_effect = [_intercepted(), None]
+        driver = MagicMock(); driver.execute_script.return_value = True
+        with patch(f"{_RA}.click_first", return_value=MagicMock()), \
+             patch(f"{_RA}.find_first", return_value=composer), \
+             patch(f"{_RA}.log_warning") as lw:
+            ok = ra.post_comment_inline(driver, MagicMock(), MagicMock(), "Great post", user_id=1)
+        assert ok is True
+        lw.assert_not_called()
+        composer.send_keys.assert_called_once()
+
+
+class TestPostCommentInlineStepNaming:
+    """One `try` over the whole sequence reported every failure mode as the same warning, so the
+    escalated issue never said which step broke — and unrelated faults collapsed into one."""
+
+    def _run(self, composer, driver=None):
+        from cqc_lem.app import run_automation as ra
+        driver = driver or MagicMock()
+        with patch(f"{_RA}.click_first", return_value=MagicMock()), \
+             patch(f"{_RA}.find_first", return_value=composer), \
+             patch(f"{_RA}.log_warning") as lw:
+            ok = ra.post_comment_inline(driver, MagicMock(), MagicMock(), "Great post", user_id=1)
+        return ok, lw
+
+    def test_names_focus_step(self):
+        composer = MagicMock(); composer.click.side_effect = _intercepted()
+        ok, lw = self._run(composer)
+        assert ok is False
+        assert lw.call_args.args[0] == "Inline comment post failed at focus composer"
+        assert isinstance(lw.call_args.kwargs["exc"], Exception)
+
+    def test_names_type_step(self):
+        from selenium.common import WebDriverException
+        composer = MagicMock(); composer.send_keys.side_effect = WebDriverException("bad char")
+        ok, lw = self._run(composer)
+        assert ok is False
+        assert lw.call_args.args[0] == "Inline comment post failed at type comment"
+
+    def test_names_submit_step(self):
+        from selenium.common import JavascriptException
+        composer = MagicMock(); composer.text = ""
+        driver = MagicMock(); driver.execute_script.side_effect = [None, JavascriptException("boom")]
+        ok, lw = self._run(composer, driver=driver)
+        assert ok is False
+        assert lw.call_args.args[0] == "Inline comment post failed at submit composer"
+
+    def test_step_messages_are_distinct_dedup_keys(self):
+        # The escalation dedup key masks quoted strings and numbers, so a quoted/numbered step name
+        # would re-merge these into one issue and hide every mode but the loudest.
+        from cqc_lem.utilities.log_escalation import normalize_message
+        keys = {normalize_message(f"Inline comment post failed at {s}")[1]
+                for s in ("prepare text", "open composer", "find composer", "focus composer",
+                          "type comment", "submit composer", "verify submit")}
+        assert len(keys) == 7
 
 
 def _state(label):

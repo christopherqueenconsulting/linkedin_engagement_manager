@@ -95,7 +95,7 @@ from cqc_lem.utilities.selenium_util import click_element_wait_retry, \
     wait_for_ajax, find_first, click_first, find_all_first
 from dotenv import load_dotenv
 from selenium.common import NoSuchElementException, JavascriptException, StaleElementReferenceException, \
-    ElementNotInteractableException, WebDriverException, TimeoutException
+    ElementNotInteractableException, WebDriverException, TimeoutException, ElementClickInterceptedException
 from selenium.webdriver import ActionChains, Keys
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
@@ -332,8 +332,8 @@ def comment_on_post(self, user_id: int, post_link: str, comment_text: str):
                                      '//button[contains(@class, "comments-comment-box__submit-button--cr")]',
                                      "Clicking Post Button", max_retry=1, use_action_chain=True)
 
-            myprint(f"Added Comment via Post Button")
-            method_result = f"Added Comment via Post Button"
+            myprint("Added Comment via Post Button")
+            method_result = "Added Comment via Post Button"
 
             # Promote the claim to 'commented' and record the log.
             mark_post_commented(user_id, post_link)
@@ -347,8 +347,8 @@ def comment_on_post(self, user_id: int, post_link: str, comment_text: str):
             # Update database with record of comment to this post
             insert_new_log(user_id=user_id, action_type=LogActionType.COMMENT, result=LogResultType.FAILURE,
                            post_url=post_link, message=comment_text)
-            myprint(f"Added Comment via return key. This might not have worked")
-            method_result = f"Added Comment via return key. This might not have worked"
+            myprint("Added Comment via return key. This might not have worked")
+            method_result = "Added Comment via return key. This might not have worked"
 
         try:
 
@@ -395,8 +395,8 @@ def comment_on_post(self, user_id: int, post_link: str, comment_text: str):
                         button_to_click).click().perform()
                     wait_for_ajax(driver)
                     time.sleep(2)
-                    myprint(f"Added Post Reaction")
-                    method_result += f" | Added Post Reaction"
+                    myprint("Added Post Reaction")
+                    method_result += " | Added Post Reaction"
                     break  # Exit loop if click is successful
                 except Exception as e:
                     if attempt < max_retries - 1:
@@ -868,33 +868,73 @@ def _composer_submitted(driver, composer, text: str) -> bool:
         return False
 
 
+def _scroll_into_center(driver, element) -> None:
+    """Best-effort: park `element` in the MIDDLE of the viewport. Positioning is never fatal on its
+    own, so a failure here is swallowed and left to the click that follows."""
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", element)
+        time.sleep(random.uniform(0.3, 0.8))
+    except Exception:
+        pass  # a stale element or a rejected scroll is not a failure — the click below decides
+
+
+def _focus_composer(driver, composer) -> None:
+    """Click into a comment/reply composer, centered first.
+
+    LinkedIn's global nav is STICKY, so whatever the previous action on the card left on screen can
+    leave the composer pinned to the very top of the viewport — the nav's own <svg> then receives
+    the click and Chrome raises ElementClickInterceptedException at y≈9 (issue #815). Centering is
+    the actual fix; a JS click would also dodge the nav but would equally dodge a genuine modal or
+    overlay, so the one retry re-centers and clicks for real and a second interception is allowed
+    to raise (the caller names the step it died on)."""
+    _scroll_into_center(driver, composer)
+    try:
+        composer.click()
+    except ElementClickInterceptedException:
+        _scroll_into_center(driver, composer)
+        composer.click()
+
+
 def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = None) -> bool:
     """Open the card's inline comment composer, type the comment, and submit via the composer's
     own Comment/Post button (the SDUI composer has no <form>). Returns True only if the comment
-    actually lands (composer clears / appears in the list), not just because text was typed."""
+    actually lands (composer clears / appears in the list), not just because text was typed.
+
+    A failure names the STEP it died on: one `try` over the whole sequence reported every failure
+    mode as the same 'Inline comment post failed' warning, which both hid the real cause and
+    collapsed unrelated faults into one escalated issue. Step names carry no quotes or digits on
+    purpose — the escalation dedup key masks both, so quoting them would re-merge the very keys
+    this split exists to separate."""
+    step = "prepare text"
     try:
-        comment_text = _strip_non_bmp(comment_text)
+        comment_text = _strip_non_bmp(comment_text)  # ChromeDriver send_keys throws on non-BMP emoji
         if not comment_text.strip():
             return False
+        step = "open composer"
         if click_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label='Comment']")],
                        "Open comment composer", parent_element=card, required=False, user_id=user_id) is None:
             return False
         time.sleep(random.uniform(1.5, 3))
+        step = "find composer"
         composer = find_first(driver, wait,
                               [(By.CSS_SELECTOR, "div[role='textbox'][aria-label*='creating comment']"),
                                (By.CSS_SELECTOR, "div[role='textbox']")],
                               "Comment composer", visible_only=True, required=False, user_id=user_id)
         if composer is None:
             return False
-        composer.click()
+        step = "focus composer"
+        _focus_composer(driver, composer)
+        step = "type comment"
         composer.send_keys(comment_text)
         time.sleep(random.uniform(1, 2))
+        step = "submit composer"
         if not driver.execute_script(_SUBMIT_NEAR_COMPOSER_JS, composer):
             composer.send_keys(Keys.CONTROL, Keys.RETURN)  # fallback
         time.sleep(random.uniform(3, 5))
+        step = "verify submit"
         return _composer_submitted(driver, composer, comment_text)
     except Exception as e:
-        log_warning("Inline comment post failed", exc=e, action_type="comment", user_id=user_id)
+        log_warning(f"Inline comment post failed at {step}", exc=e, action_type="comment", user_id=user_id)
         return False
 
 
@@ -1539,7 +1579,7 @@ def _reply_to_comment_inline(driver, wait, comment_el, reply_text: str, user_id:
         reply_text = _strip_non_bmp(reply_text)
         if not reply_text.strip():
             return False
-        composer.click()
+        _focus_composer(driver, composer)  # sticky nav steals a top-of-viewport click (#815)
         composer.send_keys(reply_text)
         time.sleep(random.uniform(1, 2))
         if not driver.execute_script(_SUBMIT_NEAR_COMPOSER_JS, composer):
@@ -3112,7 +3152,7 @@ def _reply_under_comment_inline(driver, wait, comment_el, reply_text: str, user_
         reply_text = _strip_non_bmp(reply_text)
         if not reply_text.strip():
             return False
-        composer.click()
+        _focus_composer(driver, composer)  # sticky nav steals a top-of-viewport click (#815)
         composer.send_keys(reply_text)
         time.sleep(random.uniform(1, 2))
         if not driver.execute_script(_SUBMIT_NEAR_COMPOSER_JS, composer):
@@ -4447,7 +4487,7 @@ def generate_and_post_comment(driver, wait, post_link, my_profile: LinkedInProfi
 def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: int = None, future_forward: int = 60):
     global stop_all_thread
 
-    myprint(f"Starting Profile Viewer DMs")
+    myprint("Starting Profile Viewer DMs")
 
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Profile Viewer DMs")
@@ -4652,7 +4692,7 @@ def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: in
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['user_id', 'viewer_url']},
                   reject_on_worker_lost=True, rate_limit='2/m', queue='se_outreach')
 def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
-    myprint(f"Starting Profile Viewer Engagement")
+    myprint("Starting Profile Viewer Engagement")
 
     result = "Profile Viewer Engagement Started"
     engagement_successful = False
@@ -6381,7 +6421,7 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
     suppression tripwire's own pause (and only that one) so recovery stays measurable — see
     rate_limit.is_measurement_paused."""
 
-    myprint(f"Getting Updated Profile")
+    myprint("Getting Updated Profile")
 
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
@@ -6639,7 +6679,7 @@ def post_to_linkedin(self, user_id: int, post_id: int):
                 kwargs={'user_id': user_id, 'post_id': post_id},
                 countdown=_golden.second_wave_first_countdown(user_id, post_id))
 
-        return f"Post successfully created"
+        return "Post successfully created"
 
     else:
         log_error("Failed to create post using /posts API endpoint", user_id=user_id, post_id=post_id, action_type="post", api_provider="linkedin")
@@ -6647,7 +6687,7 @@ def post_to_linkedin(self, user_id: int, post_id: int):
         insert_new_log(user_id=user_id, action_type=LogActionType.POST, result=LogResultType.FAILURE, post_id=post_id,
                        message="Failed to create post using /posts API endpoint.")
 
-        return f"Failed to create post using /posts API endpoint"
+        return "Failed to create post using /posts API endpoint"
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': False}, reject_on_worker_lost=True,

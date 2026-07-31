@@ -30,12 +30,16 @@ class TestReplyInline:
         # Submit failed: composer keeps the text and it's not in the list → NOT a false positive.
         from cqc_lem.app import run_automation as ra
         composer = MagicMock(); composer.text = "hello this is my reply text still here"
-        driver = MagicMock(); driver.execute_script.side_effect = [False, False]  # no button; not in list
+        # composer-centering scrollIntoView (#815); then: no submit button; text not in list
+        driver = MagicMock(); driver.execute_script.side_effect = [None, False, False]
         with patch(f"{_RA}.click_first", return_value=MagicMock()), \
              patch(f"{_RA}.find_first", return_value=composer):
             ok = ra._reply_to_comment_inline(driver, MagicMock(), MagicMock(),
                                              "hello this is my reply text", user_id=1)
         assert ok is False
+        # Pin the sequence: a shift would exhaust the side_effect list and make _composer_submitted
+        # return False off a swallowed StopIteration instead of off the comment-list check.
+        assert driver.execute_script.call_count == 3
 
     def test_returns_false_when_no_reply_button(self):
         from cqc_lem.app import run_automation as ra
