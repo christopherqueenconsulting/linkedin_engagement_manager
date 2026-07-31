@@ -36,8 +36,7 @@ def _patches(*, oauth, session, password, sub_status, lat, display_name="Jordan 
         patch(f"{_M}.get_user_token_info",
               return_value={"access_token": "tok"} if oauth else None),
         patch(f"{_M}.has_linkedin_session", return_value=session),
-        patch(f"{_M}.get_user_password_pair_by_id",
-              return_value=("e", "pw" if password else None)),
+        patch(f"{_M}.has_linkedin_password", return_value=password),
         patch(f"{_M}.get_user_subscription_info",
               return_value={"subscription_status": sub_status}),
         patch(f"{_M}.get_user_geo", return_value={"latitude": lat} if lat is not None else None),
@@ -106,6 +105,31 @@ class TestAccountReadiness:
         item = next(i for i in resp.json()["detail"]["items"] if i["key"] == "linkedin_display_name")
         assert item["ok"] is True
 
+    def test_hint_points_at_the_cookie_not_the_password(self, client):
+        # Issue #745: the password path is deprecated, so the required-item hint must not
+        # advertise it as an equal option.
+        resp = _run(client, oauth=True, session=False, password=False, sub_status="active", lat=1.0)
+        item = next(i for i in resp.json()["detail"]["items"] if i["key"] == "linkedin_session")
+        assert "cookie" in item["hint"] and "password" not in item["hint"]
+
+
+class TestCookieMigrationFlag:
+    """Issue #745 §5.4 — accounts whose only login is a stored password get the one-time prompt."""
+
+    def test_flagged_when_password_only(self, client):
+        resp = _run(client, oauth=True, session=False, password=True, sub_status="active", lat=1.0)
+        assert resp.json()["detail"]["cookie_migration_needed"] is True
+
+    def test_not_flagged_once_a_cookie_exists(self, client):
+        resp = _run(client, oauth=True, session=True, password=True, sub_status="active", lat=1.0)
+        assert resp.json()["detail"]["cookie_migration_needed"] is False
+
+    def test_not_flagged_without_a_password(self, client):
+        resp = _run(client, oauth=True, session=True, password=False, sub_status="active", lat=1.0)
+        assert resp.json()["detail"]["cookie_migration_needed"] is False
+
+
+class TestAccountReadinessAuth:
     def test_401_invalid_session(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=None):
             resp = client.get("/api/user/account-readiness?session_token=bad")

@@ -12,6 +12,7 @@ export default function LinkedInLoginCard() {
   const email = user?.email ?? ''
   const { data: readiness } = useAccountReadiness()
   const sessionOk = readiness?.items.find((i) => i.key === 'linkedin_session')?.ok ?? false
+  const cookieMigrationNeeded = readiness?.cookie_migration_needed ?? false
 
   const [liConnectedLocal] = useState(localStorage.getItem('lem_li_connected') === '1')
   const [liPassword, setLiPassword] = useState('')
@@ -111,18 +112,28 @@ export default function LinkedInLoginCard() {
         </div>
       )}
 
-      {/* LinkedIn Session (cookie) — preferred login method; avoids the device challenge */}
-      <LinkedInSessionCard connected={sessionOk} />
+      {/* LinkedIn Session (cookie) — the DEFAULT engagement login (issue #745, decision 2A) */}
+      <LinkedInSessionCard connected={sessionOk} migrationNeeded={cookieMigrationNeeded} />
 
-      {/* LinkedIn Automation Password — always shown when LinkedIn is connected */}
+      {/* LinkedIn Automation Password — DEPRECATED, collapsed behind a disclosure so the cookie
+          path above is the one users take. Kept working for accounts that already rely on it. */}
       {isLinkedInConnected && !tokenExpired && (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-4">
-          <div>
-            <h2 className="text-base font-semibold text-gray-700">LinkedIn Automation Password</h2>
+        <details className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-4">
+          <summary className="cursor-pointer text-sm font-medium text-gray-500">
+            Use a LinkedIn password instead (not recommended)
+          </summary>
+          <div className="pt-4">
+            <h2 className="text-base font-semibold text-gray-700">
+              LinkedIn Automation Password{' '}
+              <span className="ml-1 text-[11px] font-semibold text-amber-700 bg-amber-50 px-2 py-0.5 rounded">
+                Deprecated
+              </span>
+            </h2>
             <p className="text-xs text-gray-500 mt-1">
-              LEM uses your LinkedIn password to log in via browser automation for actions like
-              profile scraping, post personalization, and DM engagement. It is stored securely and
-              never shared or displayed after saving.
+              Browser automation types this password into LinkedIn's login form, so it has to be
+              stored in a reversible form — encrypted at rest, but still recoverable by the app.
+              A session cookie above does the same job, is revocable from LinkedIn, and is not a
+              credential you reuse anywhere else. Prefer it.
             </p>
           </div>
 
@@ -161,7 +172,7 @@ export default function LinkedInLoginCard() {
           >
             {liPasswordMutation.isPending ? 'Saving…' : 'Save Password'}
           </button>
-        </div>
+        </details>
       )}
     </>
   )

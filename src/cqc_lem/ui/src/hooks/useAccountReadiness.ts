@@ -13,6 +13,9 @@ export interface ReadinessItem {
 export interface AccountReadiness {
   ready: boolean
   items: ReadinessItem[]
+  // True when the account's ONLY engagement login is a stored LinkedIn password (issue #745):
+  // the cue to prompt for a session cookie so the password can be deleted rather than kept.
+  cookie_migration_needed?: boolean
 }
 
 // Reports whether the account has everything the automation needs (LinkedIn OAuth,

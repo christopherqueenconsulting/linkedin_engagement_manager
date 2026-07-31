@@ -6,13 +6,21 @@ import { useAuth } from '../contexts/AuthContext'
 // Connect LinkedIn by reusing the user's existing session cookie (li_at) so automation
 // resumes a trusted session instead of a password login (which trips LinkedIn's
 // new-device challenge). Easiest path is the one-click browser extension.
-export default function LinkedInSessionCard({ connected }: { connected?: boolean }) {
+//
+// This is now the DEFAULT engagement login (issue #745, design decision 2A): a stored LinkedIn
+// password stays reversible even encrypted, so `migrationNeeded` accounts are prompted once to
+// move over, and saving a cookie from that prompt deletes the password instead of keeping both.
+export default function LinkedInSessionCard({
+  connected,
+  migrationNeeded,
+}: { connected?: boolean; migrationNeeded?: boolean }) {
   const { sessionToken } = useAuth()
   const queryClient = useQueryClient()
   const [liAt, setLiAt] = useState('')
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [showSteps, setShowSteps] = useState(false)
   const [tokenCopied, setTokenCopied] = useState(false)
+  const [dropPassword, setDropPassword] = useState(true)
 
   const copyToken = async () => {
     if (!sessionToken) return
@@ -28,10 +36,21 @@ export default function LinkedInSessionCard({ connected }: { connected?: boolean
 
   const mutation = useMutation({
     mutationFn: () =>
-      api.post('/user/linkedin-cookie', { session_token: sessionToken, li_at: liAt.trim() }),
+      api.post('/user/linkedin-cookie', {
+        session_token: sessionToken,
+        li_at: liAt.trim(),
+        // Only ever true from the migration prompt — a user without a stored password has
+        // nothing to drop, and one who keeps the box unchecked keeps their fallback login.
+        drop_password: !!migrationNeeded && dropPassword,
+      }),
     onSuccess: () => {
       setLiAt('')
-      setMsg({ ok: true, text: 'LinkedIn session saved. Automation will reuse it.' })
+      setMsg({
+        ok: true,
+        text: migrationNeeded && dropPassword
+          ? 'LinkedIn session saved and your stored password was deleted.'
+          : 'LinkedIn session saved. Automation will reuse it.',
+      })
       queryClient.invalidateQueries({ queryKey: ['account-readiness'] })
       setTimeout(() => setMsg(null), 5000)
     },
@@ -57,6 +76,31 @@ export default function LinkedInSessionCard({ connected }: { connected?: boolean
           cookie value below.
         </p>
       </div>
+
+      {migrationNeeded && (
+        <div
+          data-testid="cookie-migration-notice"
+          className="rounded-lg border border-amber-300 bg-amber-50 p-4 space-y-2"
+        >
+          <p className="text-sm font-semibold text-amber-900">
+            Switch to session-only login
+          </p>
+          <p className="text-xs text-amber-900/90">
+            Your account still logs in with a saved LinkedIn password. A password has to be stored
+            reversibly for automation to type it, so connecting a session cookie instead is safer —
+            you can revoke it any time from LinkedIn's “Sign out of all sessions”.
+          </p>
+          <label className="flex items-center gap-2 text-xs text-amber-900">
+            <input
+              type="checkbox"
+              checked={dropPassword}
+              onChange={(e) => setDropPassword(e.target.checked)}
+              className="rounded border-amber-400"
+            />
+            Delete my saved LinkedIn password once the session is saved
+          </label>
+        </div>
+      )}
 
       {/* Recommended path: the browser extension grabs the httpOnly li_at cookie the paste
           flow can't reach, and sends it in one click. */}
@@ -116,8 +160,11 @@ export default function LinkedInSessionCard({ connected }: { connected?: boolean
       )}
 
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">li_at cookie value</label>
+        <label htmlFor="li-at-input" className="block text-sm font-medium text-gray-700 mb-1">
+          li_at cookie value
+        </label>
         <input
+          id="li-at-input"
           type="password"
           value={liAt}
           onChange={(e) => setLiAt(e.target.value)}

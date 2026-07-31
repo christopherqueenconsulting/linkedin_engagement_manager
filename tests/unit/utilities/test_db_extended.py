@@ -166,9 +166,12 @@ class TestAddUser:
 
             add_user("new@example.com", "secret")
 
-            call_args = mock_database_connection["cursor"].execute.call_args[0]
-            assert "INSERT INTO users" in call_args[0]
-            assert "new@example.com" in call_args[1]
+            calls = mock_database_connection["cursor"].execute.call_args_list
+            assert "INSERT INTO users" in calls[0][0][0]
+            assert "new@example.com" in calls[0][0][1]
+            # Issue #745: the password is sealed against users.id, which only exists once the row
+            # is inserted — so it lands in a follow-up UPDATE rather than the INSERT.
+            assert "password = %s" in calls[1][0][0]
             mock_database_connection["connection"].commit.assert_called_once()
 
     def test_duplicate_entry_is_handled(self, mock_database_connection):
@@ -218,12 +221,15 @@ class TestAddUserWithAccessToken:
                 refresh_token_expires_in="86400",
             )
 
-            call_args = mock_database_connection["cursor"].execute.call_args[0]
-            assert "INSERT INTO users" in call_args[0]
-            assert "user@example.com" in call_args[1]
-            assert "sub_abc123" in call_args[1]
-            assert "access_tok" in call_args[1]
-            assert "refresh_tok" in call_args[1]
+            calls = mock_database_connection["cursor"].execute.call_args_list
+            assert "INSERT INTO users" in calls[0][0][0]
+            assert "user@example.com" in calls[0][0][1]
+            assert "sub_abc123" in calls[0][0][1]
+            # Issue #745: the OAuth tokens are sealed against users.id, so they can only be
+            # written once the identity row exists.
+            assert "UPDATE users SET" in calls[-1][0][0]
+            assert "access_tok" in calls[-1][0][1]
+            assert "refresh_tok" in calls[-1][0][1]
             mock_database_connection["connection"].commit.assert_called_once()
 
     def test_inserts_without_refresh_token(self, mock_database_connection):
