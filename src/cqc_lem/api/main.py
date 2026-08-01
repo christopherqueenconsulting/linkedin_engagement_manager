@@ -45,7 +45,7 @@ from cqc_lem.utilities.db import (
     create_session, get_session_user_id, delete_session,
     add_user_by_email, get_user_email, get_user_analytics_profile, get_user_token_info,
     store_linkedin_li_at,
-    has_linkedin_session, get_user_password_pair_by_id,
+    has_linkedin_session, has_linkedin_password, clear_user_linkedin_password,
     get_company_linked_in_url_for_user, update_company_linked_in_url_for_user,
     get_user_subscription_info, get_user_preferences, update_user_preferences,
     DEFAULT_CONTENT_BUFFER_DAYS, DEFAULT_CONTENT_BUFFER_MAX_POSTS,
@@ -893,6 +893,10 @@ class LinkedInCookieRequest(BaseModel):
     session_token: str
     li_at: str
     jsessionid: Optional[str] = None
+    # Cookie-only migration (issue #745, design §5.4): set by the SPA prompt shown to accounts that
+    # still hold a LinkedIn password. Defaults to False so the browser extension — which posts the
+    # same body on every reconnect — never silently removes a user's only working login.
+    drop_password: Optional[bool] = False
 
 
 class FeedbackReviewAction(StrEnum):
@@ -3308,10 +3312,15 @@ def delete_story_bank_endpoint(request: StoryBankDeleteRequest) -> ResponseModel
     return ResponseModel(status_code=200, detail="Story bank entry removed")
 
 
-@router.put("/user/linkedin-password")
+@router.put("/user/linkedin-password", deprecated=True)
 def update_linkedin_password(request: LinkedInPasswordRequest) -> ResponseModel:
-    """Store the user's LinkedIn password for Selenium-driven automation tasks.
-    The value is stored as-is because Selenium must type it into the browser.
+    """DEPRECATED (issue #745, design decision 2A) — use POST /user/linkedin-cookie instead.
+
+    Store the user's LinkedIn password for Selenium-driven automation tasks. The value is
+    encrypted at rest but must stay *reversible* because Selenium types it into the browser, so a
+    stored password is strictly worse than a stored `li_at`: the cookie is revocable from
+    LinkedIn's own "Sign out of all sessions" and is not a credential people reuse elsewhere.
+    Kept for the deprecation window so accounts that only have a password keep working.
     It is never returned in any response payload.
     """
     user_id = get_session_user_id(request.session_token)
@@ -3524,9 +3533,18 @@ def store_linkedin_cookie_endpoint(request: LinkedInCookieRequest) -> ResponseMo
 
     if not store_linkedin_li_at(user_id, li_at, jsessionid=jsessionid):
         raise HTTPException(status_code=500, detail="Could not store LinkedIn session")
+
+    # The stored LinkedIn password is a decryptable password even after #745 encrypts it, so the
+    # approved end state is to stop holding one (design §5.4). Only drop it once the cookie that
+    # replaces it is safely stored — and only when the user asked for it.
+    password_dropped = False
+    if request.drop_password:
+        password_dropped = clear_user_linkedin_password(user_id)
+
     return ResponseModel(
         status_code=200,
-        detail="LinkedIn session saved. Automation will reuse it and skip the password login.",
+        detail=("LinkedIn session saved. Automation will reuse it and skip the password login."
+                + (" Your stored LinkedIn password has been deleted." if password_dropped else "")),
     )
 
 
@@ -3566,8 +3584,14 @@ def account_readiness_endpoint(session_token: str) -> ResponseModel:
     has_oauth = bool(token_info and token_info.get("access_token"))
 
     has_session_cookie = has_linkedin_session(user_id)
-    _, li_password = get_user_password_pair_by_id(user_id)
-    has_engagement_login = has_session_cookie or bool(li_password)
+    # Presence check, not a read: get_user_password_pair_by_id would decrypt the password just to
+    # see whether one exists, and an undecryptable row would then read as "no password" and quietly
+    # flip this required item to not-ready (issue #745).
+    has_password = has_linkedin_password(user_id)
+    has_engagement_login = has_session_cookie or has_password
+    # Design §5.4: accounts whose ONLY engagement login is a stored password get a one-time prompt
+    # to paste a session cookie instead, after which the password is deleted rather than kept.
+    cookie_migration_needed = has_password and not has_session_cookie
 
     sub = get_user_subscription_info(user_id)
     sub_status = (sub or {}).get("subscription_status")
@@ -3587,7 +3611,7 @@ def account_readiness_endpoint(session_token: str) -> ResponseModel:
          "required": True, "hint": "Connect LinkedIn in your account."},
         {"key": "linkedin_session", "label": "LinkedIn session (engagement)",
          "ok": has_engagement_login, "required": True,
-         "hint": "Connect your LinkedIn session (cookie) or save your LinkedIn password."},
+         "hint": "Connect your LinkedIn session (cookie) — the one-click extension is easiest."},
         {"key": "linkedin_display_name", "label": "Your LinkedIn display name",
          "ok": has_display_name, "required": True,
          "hint": "Enter your name exactly as it appears on your LinkedIn profile — LEM needs it to "
@@ -3598,7 +3622,8 @@ def account_readiness_endpoint(session_token: str) -> ResponseModel:
          "required": False, "hint": "Set your login location to reduce LinkedIn challenges."},
     ]
     ready = all(i["ok"] for i in items if i["required"])
-    return ResponseModel(status_code=200, detail={"ready": ready, "items": items})
+    return ResponseModel(status_code=200, detail={
+        "ready": ready, "items": items, "cookie_migration_needed": cookie_migration_needed})
 
 
 @router.get("/user/onboarding")

@@ -86,3 +86,41 @@ class TestStoreLinkedInCookie:
                 "session_token": _SESSION, "li_at": _VALID,
             })
         assert resp.status_code == 500
+
+
+class TestCookieOnlyMigration:
+    """Issue #745 §5.4 — the cookie replaces the stored password rather than sitting beside it."""
+
+    def test_password_kept_by_default(self, client):
+        """The browser extension posts this body on every reconnect; it must never silently
+        delete the user's password."""
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
+             patch("cqc_lem.api.main.store_linkedin_li_at", return_value=True), \
+             patch("cqc_lem.api.main.clear_user_linkedin_password") as clear:
+            resp = client.post("/api/user/linkedin-cookie", json={
+                "session_token": _SESSION, "li_at": _VALID,
+            })
+        assert resp.status_code == 200
+        clear.assert_not_called()
+
+    def test_password_dropped_when_requested(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
+             patch("cqc_lem.api.main.store_linkedin_li_at", return_value=True), \
+             patch("cqc_lem.api.main.clear_user_linkedin_password", return_value=True) as clear:
+            resp = client.post("/api/user/linkedin-cookie", json={
+                "session_token": _SESSION, "li_at": _VALID, "drop_password": True,
+            })
+        assert resp.status_code == 200
+        clear.assert_called_once_with(_USER_ID)
+        assert "deleted" in resp.json()["detail"]
+
+    def test_password_not_dropped_when_the_cookie_could_not_be_stored(self, client):
+        """Dropping it first would leave the account with no working login at all."""
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER_ID), \
+             patch("cqc_lem.api.main.store_linkedin_li_at", return_value=False), \
+             patch("cqc_lem.api.main.clear_user_linkedin_password") as clear:
+            resp = client.post("/api/user/linkedin-cookie", json={
+                "session_token": _SESSION, "li_at": _VALID, "drop_password": True,
+            })
+        assert resp.status_code == 500
+        clear.assert_not_called()

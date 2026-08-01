@@ -16,6 +16,12 @@ from cqc_lem.utilities.env_constants import (
     SESSION_ABSOLUTE_MAX_DAYS,
     SESSION_IDLE_HOURS,
 )
+from cqc_lem.utilities.crypto import (
+    decrypt_secret,
+    encrypt_secret,
+    encryption_enabled,
+    needs_reencrypt,
+)
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.logger import myprint, log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.utils import get_top_level_domain, get_aws_ssm_secret
@@ -427,6 +433,25 @@ INVITE_NOT_SENT_MESSAGE = "Connect dialog opened but the invitation could not be
 CONNECT_NOTE_MAX_CHARS = 300
 
 
+# Issue #745 (PR 2a) — the four columns holding a LinkedIn credential at rest. The names are the
+# encryption AAD (`<table>.<column>`), so they are part of the ciphertext contract: renaming one
+# makes every existing row undecryptable. db.py is the ONLY place encrypt/decrypt is called, so the
+# ten modules that consume these secrets cannot accidentally bypass it. See utilities/crypto.py.
+SECRET_FIELD_COOKIE_VALUE = "cookies.value"
+SECRET_FIELD_ACCESS_TOKEN = "users.access_token"
+SECRET_FIELD_REFRESH_TOKEN = "users.refresh_token"
+SECRET_FIELD_PASSWORD = "users.password"
+
+# The only statements the backfill/rotation pass may run — fixed literals, never composed from a
+# row, so there is no path by which data becomes SQL.
+_SECRET_UPDATE_SQL = {
+    SECRET_FIELD_PASSWORD: "UPDATE users SET password = %s WHERE id = %s",
+    SECRET_FIELD_ACCESS_TOKEN: "UPDATE users SET access_token = %s WHERE id = %s",
+    SECRET_FIELD_REFRESH_TOKEN: "UPDATE users SET refresh_token = %s WHERE id = %s",
+    SECRET_FIELD_COOKIE_VALUE: "UPDATE cookies SET value = %s WHERE id = %s",
+}
+
+
 def store_cookies(user_email: str, cookies: list[dict]) -> None:
     connection = get_db_connection()
     cursor = connection.cursor()
@@ -461,7 +486,7 @@ def _store_cookie_rows(cursor: MySQLCursorAbstract, cookies: list[dict],
             """, (
 
                 cookie['name'],
-                cookie['value'],
+                encrypt_secret(cookie['value'], user_id, SECRET_FIELD_COOKIE_VALUE),
                 cookie['domain'],
                 cookie['path'],
                 cookie['expiry'] if 'expiry' in cookie else None,
@@ -518,13 +543,22 @@ def get_cookies(url: str, user_email: str):
 
     try:
         cursor.execute("""
-            SELECT c.name, c.value, c.domain, c.path, UNIX_TIMESTAMP(c.expiry) AS expiry, c.secure, c.http_only
+            SELECT c.name, c.value, c.domain, c.path, UNIX_TIMESTAMP(c.expiry) AS expiry, c.secure,
+                   c.http_only, c.user_id
             FROM cookies c
             JOIN users u ON c.user_id = u.id
             WHERE c.domain LIKE %s AND u.email = %s
         """, (f"%{tld}%", user_email))
 
         cookies = cursor.fetchall()
+        for cookie in cookies or []:
+            # user_id is selected only to unseal the row — Selenium's add_cookie() rejects any
+            # key it doesn't know, so it must not survive into the returned dict.
+            cookie['value'] = decrypt_secret(
+                cookie['value'], cookie.pop('user_id', None), SECRET_FIELD_COOKIE_VALUE)
+        # A cookie that could not be decrypted is worse than a missing one: Selenium would set an
+        # empty li_at and LEM would report "logged in" against a dead session.
+        cookies = [c for c in (cookies or []) if c.get('value')]
     except mysql.connector.Error as err:
         myprint(f"Could not get cookies from DB | Error: {err}")
         cookies = None
@@ -625,7 +659,12 @@ def add_user(email: str, password: str):
     cursor = connection.cursor()
 
     try:
-        cursor.execute("INSERT INTO users (email, password) VALUES (%s, %s)", (email, password))
+        # The row has to exist before the password can be encrypted — the ciphertext is bound to
+        # users.id (AAD), which auto-increment only hands out on INSERT.
+        cursor.execute("INSERT INTO users (email) VALUES (%s)", (email,))
+        user_id = cursor.lastrowid
+        cursor.execute("UPDATE users SET password = %s WHERE id = %s",
+                       (encrypt_secret(password, user_id, SECRET_FIELD_PASSWORD), user_id))
         connection.commit()
     except mysql.connector.Error as e:
         if e.errno == errorcode.ER_DUP_ENTRY:
@@ -651,25 +690,42 @@ def add_user_with_access_token(email: str, linked_sub_id: str, access_token: str
         refresh_token_created_at = None
 
     try:
-        cursor.execute("""INSERT INTO users (email, linked_sub_id, access_token, access_token_expires_in, access_token_created_at, refresh_token, refresh_token_expires_in, refresh_token_created_at, last_login, linkedin_connection_status)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'connected')
+        # Two statements on purpose (issue #745): the OAuth tokens are encrypted under a key
+        # derived from users.id, which does not exist yet for a brand-new user. Upsert the
+        # non-secret identity columns first, then write the ciphertext against the settled id.
+        # `id = LAST_INSERT_ID(id)` is load-bearing: on the ON DUPLICATE KEY UPDATE branch MySQL
+        # does NOT report the existing row's id in lastrowid — it can hand back the auto-increment
+        # value that was allocated and burned by the failed insert. Sealing the tokens against that
+        # id would bind them to a row that does not exist (silently storing no token at all), so
+        # the id is pinned explicitly here and still cross-checked by email below.
+        cursor.execute("""INSERT INTO users (email, linked_sub_id, last_login, linkedin_connection_status)
+        VALUES (%s, %s, %s, 'connected')
         ON DUPLICATE KEY UPDATE
+                id = LAST_INSERT_ID(id),
                 linked_sub_id = VALUES(linked_sub_id),
-                access_token = VALUES(access_token),
-                access_token_expires_in = VALUES(access_token_expires_in),
-                access_token_created_at = VALUES(access_token_created_at),
-                refresh_token = VALUES(refresh_token),
-                refresh_token_expires_in = VALUES(refresh_token_expires_in),
-                refresh_token_created_at = VALUES(refresh_token_created_at),
                 last_login = VALUES(last_login),
                 linkedin_connection_status = 'connected'
-
-        """, (
-            email,
-            linked_sub_id,
-            access_token, access_token_expires_in, access_token_created_at,
-            refresh_token, refresh_token_expires_in, refresh_token_created_at,
-            datetime.now(timezone.utc)))
+        """, (email, linked_sub_id, datetime.now(timezone.utc)))
+        user_id = cursor.lastrowid
+        if not user_id:
+            cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
+            row = cursor.fetchone()
+            user_id = row[0] if row else None
+        if user_id is None:
+            raise mysql.connector.Error(f"Could not resolve user id for {email}")
+        cursor.execute("""UPDATE users SET
+                access_token = %s,
+                access_token_expires_in = %s,
+                access_token_created_at = %s,
+                refresh_token = %s,
+                refresh_token_expires_in = %s,
+                refresh_token_created_at = %s
+            WHERE id = %s""", (
+            encrypt_secret(access_token, user_id, SECRET_FIELD_ACCESS_TOKEN),
+            access_token_expires_in, access_token_created_at,
+            encrypt_secret(refresh_token, user_id, SECRET_FIELD_REFRESH_TOKEN),
+            refresh_token_expires_in, refresh_token_created_at,
+            user_id))
         connection.commit()
     except mysql.connector.Error as e:
         if e.errno == errorcode.ER_DUP_ENTRY:
@@ -721,7 +777,9 @@ def get_user_access_token(user_id: int):
         cursor.close()
         connection.close()
 
-    return access_token['access_token'] if access_token else None
+    if not access_token:
+        return None
+    return decrypt_secret(access_token['access_token'], user_id, SECRET_FIELD_ACCESS_TOKEN)
 
 
 def get_user_id(email: str):
@@ -1909,7 +1967,8 @@ def get_user_password_pair_by_id(user_id: int):
         connection.close()
 
     if user_password_pair:
-        return user_password_pair['email'], user_password_pair['password']
+        return (user_password_pair['email'],
+                decrypt_secret(user_password_pair['password'], user_id, SECRET_FIELD_PASSWORD))
     else:
         return None, None
 
@@ -2753,16 +2812,18 @@ def update_user_linkedin_display_name(user_id: int, display_name: Optional[str])
 def update_user_linkedin_password(user_id: int, password: str) -> bool:
     """Store the user's LinkedIn login password for Selenium-driven automation.
 
-    The password must be stored reversibly (not hashed) because Selenium types
-    it directly into the LinkedIn login form. Only call this from authenticated
-    API endpoints — never expose the value in any response payload.
+    DEPRECATED (issue #745, design decision 2A): cookie-only (`li_at`) is the default now — see
+    store_linkedin_li_at. The password must be stored reversibly because Selenium types it into
+    the LinkedIn login form, so encryption at rest is the ceiling on how safe it can ever be;
+    draining the column via clear_user_linkedin_password is the actual fix. Only call this from
+    authenticated API endpoints — never expose the value in any response payload.
     """
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
         cursor.execute(
             "UPDATE users SET password = %s WHERE id = %s",
-            (password, user_id),
+            (encrypt_secret(password, user_id, SECRET_FIELD_PASSWORD), user_id),
         )
         connection.commit()
         return cursor.rowcount >= 0
@@ -2772,6 +2833,125 @@ def update_user_linkedin_password(user_id: int, password: str) -> bool:
     finally:
         cursor.close()
         connection.close()
+
+
+def clear_user_linkedin_password(user_id: int) -> bool:
+    """Drop the stored LinkedIn password once the user has a session cookie instead (design §5.4).
+
+    Encrypting the password still leaves a *decryptable* LinkedIn password in the DB, so the
+    approved end state is to stop holding one at all. Called from the cookie-migration path, not
+    on every cookie save — a user who has no li_at yet must keep their only working login.
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("UPDATE users SET password = NULL WHERE id = %s", (user_id,))
+        connection.commit()
+        log_info("Cleared stored LinkedIn password after cookie migration", user_id=user_id)
+        return True
+    except mysql.connector.Error as err:
+        log_error(f"Could not clear LinkedIn password | Error: {err}", user_id=user_id)
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def has_linkedin_password(user_id: int) -> bool:
+    """True when a LinkedIn password is still stored for this user — the signal that drives the
+    one-time 'paste a cookie instead' prompt (design §5.4 item 3)."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT 1 FROM users WHERE id = %s AND password IS NOT NULL AND password <> '' LIMIT 1",
+            (user_id,),
+        )
+        return cursor.fetchone() is not None
+    except mysql.connector.Error as err:
+        log_error(f"Could not check stored LinkedIn password | Error: {err}", user_id=user_id)
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def encrypt_secrets_at_rest(limit: Optional[int] = None) -> dict:
+    """Backfill AND rotation in one pass (issue #745, design §5.1/§7 Stage 0).
+
+    Rewrites every stored LinkedIn secret that is not already an envelope under the CURRENT key
+    version: legacy plaintext gets encrypted, and a row still sealed under `LEM_SECRET_KEY_PREVIOUS`
+    gets re-sealed under the new key. Both cases read through the same dual-mode `decrypt_secret`,
+    which is why rotation needs no separate code path.
+
+    **Idempotent** — a second run finds nothing to do, which is what makes it safe to schedule
+    daily instead of hand-running once. A row that cannot be decrypted is counted and LEFT ALONE:
+    overwriting it would destroy a secret that a corrected key might still recover.
+
+    `plaintext_remaining` is the number the operator watches — once it reaches 0, `ENCRYPTION_REQUIRED`
+    can be flipped and the legacy read path fails closed.
+    """
+    stats = {"enabled": encryption_enabled(), "scanned": 0, "rewritten": 0,
+             "failed": 0, "plaintext_remaining": 0}
+    if not stats["enabled"]:
+        log_warning("Secret encryption backfill skipped — no LEM_SECRET_KEY configured")
+        return stats
+
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT id, password, access_token, refresh_token FROM users")
+        user_rows = cursor.fetchall() or []
+        cursor.execute("SELECT id, user_id, value FROM cookies WHERE user_id IS NOT NULL")
+        cookie_rows = cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error(f"Could not read secrets for encryption backfill | Error: {err}")
+        cursor.close()
+        connection.close()
+        return stats
+
+    # (UPDATE statement, row id, user id, field name, stored value). The statement is picked from
+    # the fixed map above rather than composed from the row — nothing here is ever interpolated.
+    targets: list[tuple[str, int, int, str, Optional[str]]] = []
+    for row in user_rows:
+        for column, field in (("password", SECRET_FIELD_PASSWORD),
+                              ("access_token", SECRET_FIELD_ACCESS_TOKEN),
+                              ("refresh_token", SECRET_FIELD_REFRESH_TOKEN)):
+            targets.append((_SECRET_UPDATE_SQL[field], row["id"], row["id"], field, row[column]))
+    for row in cookie_rows:
+        targets.append((_SECRET_UPDATE_SQL[SECRET_FIELD_COOKIE_VALUE], row["id"], row["user_id"],
+                        SECRET_FIELD_COOKIE_VALUE, row["value"]))
+
+    try:
+        for update_sql, row_id, user_id, field, value in targets:
+            if not needs_reencrypt(value):
+                continue
+            stats["scanned"] += 1
+            if limit is not None and stats["rewritten"] >= limit:
+                stats["plaintext_remaining"] += 1
+                continue
+            plaintext = decrypt_secret(value, user_id, field)
+            if not plaintext:
+                stats["failed"] += 1
+                stats["plaintext_remaining"] += 1
+                continue
+            try:
+                cursor.execute(update_sql,
+                               (encrypt_secret(plaintext, user_id, field), row_id))
+                connection.commit()
+                stats["rewritten"] += 1
+            except mysql.connector.Error as err:
+                log_error(f"Could not re-encrypt {field} for row {row_id} | Error: {err}",
+                          user_id=user_id)
+                stats["failed"] += 1
+                stats["plaintext_remaining"] += 1
+    finally:
+        cursor.close()
+        connection.close()
+
+    log_info(f"Secret encryption backfill: {stats['rewritten']} rewritten, "
+             f"{stats['failed']} failed, {stats['plaintext_remaining']} still unprotected")
+    return stats
 
 
 def update_user_settings(user_id: int, blog_url: str = None, sitemap_url: str = None) -> bool:
@@ -3043,7 +3223,13 @@ def get_user_token_info(user_id: int) -> Optional[dict]:
                FROM users WHERE id = %s""",
             (user_id,),
         )
-        return cursor.fetchone()
+        row = cursor.fetchone()
+        if row:
+            row['access_token'] = decrypt_secret(
+                row.get('access_token'), user_id, SECRET_FIELD_ACCESS_TOKEN)
+            row['refresh_token'] = decrypt_secret(
+                row.get('refresh_token'), user_id, SECRET_FIELD_REFRESH_TOKEN)
+        return row
     except mysql.connector.Error as err:
         myprint(f"Could not get token info for user_id {user_id} | Error: {err}")
         return None
@@ -3073,8 +3259,10 @@ def update_user_access_token(
                        refresh_token_expires_in = %s,
                        refresh_token_created_at = %s
                    WHERE id = %s""",
-                (access_token, expires_in, now,
-                 refresh_token, refresh_token_expires_in, now, user_id),
+                (encrypt_secret(access_token, user_id, SECRET_FIELD_ACCESS_TOKEN),
+                 expires_in, now,
+                 encrypt_secret(refresh_token, user_id, SECRET_FIELD_REFRESH_TOKEN),
+                 refresh_token_expires_in, now, user_id),
             )
         else:
             cursor.execute(
@@ -3083,7 +3271,8 @@ def update_user_access_token(
                        access_token_expires_in = %s,
                        access_token_created_at = %s
                    WHERE id = %s""",
-                (access_token, expires_in, now, user_id),
+                (encrypt_secret(access_token, user_id, SECRET_FIELD_ACCESS_TOKEN),
+                 expires_in, now, user_id),
             )
         connection.commit()
         return cursor.rowcount > 0
@@ -3126,8 +3315,11 @@ def update_user_linkedin_token(
                        refresh_token_created_at = %s,
                        linkedin_connection_status = 'connected'
                    WHERE id = %s""",
-                (linked_sub_id, linkedin_email or None, access_token, expires_in, now,
-                 refresh_token, refresh_token_expires_in, now, user_id),
+                (linked_sub_id, linkedin_email or None,
+                 encrypt_secret(access_token, user_id, SECRET_FIELD_ACCESS_TOKEN),
+                 expires_in, now,
+                 encrypt_secret(refresh_token, user_id, SECRET_FIELD_REFRESH_TOKEN),
+                 refresh_token_expires_in, now, user_id),
             )
         else:
             cursor.execute(
@@ -3139,7 +3331,9 @@ def update_user_linkedin_token(
                        access_token_created_at = %s,
                        linkedin_connection_status = 'connected'
                    WHERE id = %s""",
-                (linked_sub_id, linkedin_email or None, access_token, expires_in, now, user_id),
+                (linked_sub_id, linkedin_email or None,
+                 encrypt_secret(access_token, user_id, SECRET_FIELD_ACCESS_TOKEN),
+                 expires_in, now, user_id),
             )
         connection.commit()
         return cursor.rowcount > 0

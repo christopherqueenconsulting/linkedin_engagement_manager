@@ -272,7 +272,7 @@ Three sequential, independently revertible PRs, in this order:
 
 | PR | Scope | Why this order |
 |---|---|---|
-| **2a** | `src/cqc_lem/utilities/crypto.py`, column migration, dual-mode read, backfill task, key-rotation support, **cookie-only default + password-prompt deprecation** (§5.4) | Biggest risk reduction per line of code; no login-UX change; independently shippable |
+| **2a** ✅ shipped (#745) | `src/cqc_lem/utilities/crypto.py`, column migration, dual-mode read, backfill task, key-rotation support, **cookie-only default + password-prompt deprecation** (§5.4). Operator runbook: [`secrets-at-rest.md`](secrets-at-rest.md) | Biggest risk reduction per line of code; no login-UX change; independently shippable |
 | **2b** | `public_uid`, email-as-attribute + change flow, hashed session tokens, httpOnly cookie, per-device sessions, rate limiting, `auth_audit_log` | Hardens what exists; no new login UX to design |
 | **2c** | Passkeys (`webauthn`) + TOTP (`pyotp`) + recovery codes (`argon2-cffi`) + step-up gate + enrollment UI | Largest surface, benefits from 2b's session model already being in place |
 

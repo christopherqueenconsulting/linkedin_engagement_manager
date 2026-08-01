@@ -99,6 +99,13 @@ app.conf.update(
             'task': 'cqc_lem.app.run_scheduler.auto_backfill_missing_assets',
             'schedule': crontab(minute='15', hour='*/3')  # Every 3 hours — regen any missing video/carousel media
         },
+        'encrypt-secrets-at-rest': {
+            'task': 'cqc_lem.app.run_scheduler.auto_encrypt_secrets_at_rest',
+            # Daily 03:10 UTC — quiet window between the 02:40 content-quality pass and the 03:30
+            # lead re-score. Idempotent backfill AND key rotation (issue #745): a normal day is a
+            # no-op, the day after a key swap it re-seals every row under the new version.
+            'schedule': crontab(hour='3', minute='10')
+        },
         'clean-up-stale-invites': {
             'task': 'cqc_lem.app.run_scheduler.auto_clean_stale_invites',
             'schedule': crontab(hour='2', minute='0', )  # Run every day at 2:00 AM

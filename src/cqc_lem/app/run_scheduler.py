@@ -1486,6 +1486,31 @@ def auto_backfill_missing_assets():
     return f"Queued {queued} asset regeneration(s)"
 
 
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_encrypt_secrets_at_rest(self):
+    """Encrypt (and re-key) every LinkedIn secret still stored unprotected (issue #745, PR 2a).
+
+    Scheduled daily rather than hand-run once because the same pass is BOTH the backfill and the
+    key rotation: after `LEM_SECRET_KEY_PREVIOUS` is set and `LEM_SECRET_KEY` replaced, the next
+    run re-seals every row under the new version. It is idempotent, so on an ordinary day it reads
+    a few rows and writes nothing.
+
+    `plaintext_remaining > 0` is logged as a WARNING on purpose — that number is the gate on
+    flipping `ENCRYPTION_REQUIRED`, and a silent backfill that quietly skipped rows would make the
+    fail-closed switch look safe when it isn't.
+    """
+    from cqc_lem.utilities.db import encrypt_secrets_at_rest
+    stats = encrypt_secrets_at_rest()
+    if not stats.get("enabled"):
+        return "Encryption disabled (no LEM_SECRET_KEY) — nothing done"
+    if stats.get("plaintext_remaining"):
+        log_warning(f"{stats['plaintext_remaining']} secret(s) still unencrypted at rest "
+                    f"({stats.get('failed', 0)} failed to re-encrypt)",
+                    task_name="auto_encrypt_secrets_at_rest")
+    return (f"Re-encrypted {stats.get('rewritten', 0)} secret(s); "
+            f"{stats.get('plaintext_remaining', 0)} still unprotected")
+
+
 @shared_task.task
 def auto_clean_stale_invites():
     """Cleans up stale invites for each active user"""
