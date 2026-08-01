@@ -53,12 +53,19 @@ class TestSummarize:
                 _row(visible_most_relevant=0)]
         s = summarize_outcomes(rows)
         assert s["visibility_sample"] == 1
+        assert s["unreadable_readings"] == 2
         assert s["demoted"] == 1
         assert s["demotion_rate"] == 1.0  # 1 of 1 READABLE, not 1 of 3
 
     def test_visible_rows_are_not_demoted(self):
         s = summarize_outcomes([_row(visible_most_relevant=1), _row(visible_most_relevant=0)])
         assert s["visibility_sample"] == 2 and s["demotion_rate"] == 0.5
+
+    def test_unreadable_readings_counted_separately_from_skipped(self):
+        rows = [_row(visible_most_relevant=None), {"status": "skipped", "skip_reason": "comment-not-found"}]
+        s = summarize_outcomes(rows)
+        assert s["checked"] == 1 and s["unreadable_readings"] == 1
+        assert s["skipped"] == 1 and s["visibility_sample"] == 0
 
     def test_our_reply_sent_is_tallied(self):
         s = summarize_outcomes([_row(our_reply_sent=1), _row()])
@@ -113,6 +120,11 @@ class TestReport:
         assert report["checked"] == 1
         assert report["verdict"]["status"] in (VERDICT_OK, VERDICT_WATCH, VERDICT_UNKNOWN)
 
+    def test_report_exposes_unreadable_readings(self):
+        report = comment_quality_report([_row(visible_most_relevant=None)], days=7)
+        assert report["unreadable_readings"] == 1
+
     def test_report_of_nothing_is_still_well_shaped(self):
         report = comment_quality_report(None)
         assert report["sample_size"] == 0 and report["verdict"]["status"] == VERDICT_UNKNOWN
+        assert report["unreadable_readings"] == 0

@@ -83,7 +83,7 @@ def summarize_outcomes(rows: Optional[Iterable[Mapping[str, Any]]]) -> dict:
     actually determine. A skipped check (deleted post, comment not findable) contributes to neither
     — it is a coverage fact, reported separately as `skipped`.
     """
-    checked = skipped = 0
+    checked = skipped = unreadable = 0
     author_replies = replied = liked = our_replies = 0
     demoted = visibility_sample = 0
     total_replies = total_likes = 0
@@ -107,6 +107,7 @@ def summarize_outcomes(rows: Optional[Iterable[Mapping[str, Any]]]) -> dict:
             our_replies += 1
         visible = row.get("visible_most_relevant")
         if visible is None:
+            unreadable += 1  # sort control unreadable — reported so a starved denominator is visible
             continue  # ambiguous read — never counted as healthy
         visibility_sample += 1
         if not _truthy(visible):
@@ -126,6 +127,7 @@ def summarize_outcomes(rows: Optional[Iterable[Mapping[str, Any]]]) -> dict:
         "reply_rate": _rate(replied, checked),
         "like_rate": _rate(liked, checked),
         "visibility_sample": visibility_sample,
+        "unreadable_readings": unreadable,
         "demoted": demoted,
         "demotion_rate": _rate(demoted, visibility_sample),
     }

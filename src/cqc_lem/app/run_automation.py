@@ -3510,12 +3510,24 @@ _X_AZ_LOWER = "abcdefghijklmnopqrstuvwxyz"
 _X_LOWER_TEXT = f"translate(normalize-space(),'{_X_AZ_UPPER}','{_X_AZ_LOWER}')"
 _X_LOWER_ARIA = f"translate(@aria-label,'{_X_AZ_UPPER}','{_X_AZ_LOWER}')"
 _COMMENT_SORT_LOCATORS = [
+    # LinkedIn's SDUI uses data-testid for stable identity; prefer that over text/aria-label drift.
+    (By.CSS_SELECTOR, "button[data-testid*='sort']"),
+    (By.CSS_SELECTOR, "[data-testid='comment-sort-dropdown']"),
+    # Older / fallback: any button whose text or aria-label names the current sort.
     (By.XPATH, f"//button[contains({_X_LOWER_ARIA},'sort') and "
                f"(contains({_X_LOWER_TEXT},'{_SORT_MOST_RELEVANT}') or "
                f"contains({_X_LOWER_TEXT},'{_SORT_MOST_RECENT}'))]"),
     (By.XPATH, f"//button[{_X_LOWER_TEXT}='{_SORT_MOST_RELEVANT}' or "
                f"{_X_LOWER_TEXT}='{_SORT_MOST_RECENT}']"),
     (By.XPATH, f"//button[contains({_X_LOWER_TEXT},'{_SORT_MOST_RELEVANT}') or "
+               f"contains({_X_LOWER_TEXT},'{_SORT_MOST_RECENT}')]"),
+    # Some renders surface the control as a non-button interactive element (role=button) or plain
+    # labeled div. These are intentionally broad; the label extractor below decides if it really
+    # is the sort control.
+    (By.XPATH, f"//*[self::button or @role='button'][contains({_X_LOWER_ARIA},'sort')]"),
+    (By.XPATH, f"//*[self::button or @role='button'][contains({_X_LOWER_TEXT},'{_SORT_MOST_RELEVANT}') or "
+               f"contains({_X_LOWER_TEXT},'{_SORT_MOST_RECENT}')]"),
+    (By.XPATH, f"//div[contains({_X_LOWER_TEXT},'{_SORT_MOST_RELEVANT}') or "
                f"contains({_X_LOWER_TEXT},'{_SORT_MOST_RECENT}')]"),
 ]
 

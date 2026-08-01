@@ -161,9 +161,22 @@ class TestSortOptionLocators:
 
     def test_sort_control_locators_are_case_folded_too(self):
         import importlib
-        for _by, xpath in getattr(importlib.import_module(RA), "_COMMENT_SORT_LOCATORS"):
-            assert "Most relevant" not in xpath and "Most recent" not in xpath
-            assert "translate(" in xpath
+        for _by, expr in getattr(importlib.import_module(RA), "_COMMENT_SORT_LOCATORS"):
+            text = expr if isinstance(expr, str) else ""
+            # CSS selectors don't have case folding, but every XPath expression that embeds a sort
+            # label must compare lowercase literals.
+            if "Most relevant" in text or "Most recent" in text:
+                assert "[" not in text or "translate(" in text
+            if "translate(" in text and ("relevant" in text or "recent" in text):
+                assert "'most relevant'" in text and "'most recent'" in text
+
+    def test_sort_control_chain_includes_data_testid_fallback(self):
+        import importlib
+        chain = getattr(importlib.import_module(RA), "_COMMENT_SORT_LOCATORS")
+        exprs = [expr for (_by, expr) in chain]
+        assert any("data-testid" in e for e in exprs)
+        assert any("@role='button'" in e for e in exprs if "[" in e)
+        assert len(chain) > 3  # original three plus the new fallbacks
 
 
 class TestCommentLikeCount:
@@ -458,6 +471,7 @@ class TestWeeklyQualityReport:
             result, hold, track, _crit = self._run(es, self._rows(12, 1))
         assert "1/1" in result and "0 held" in result
         assert track.called and not hold.called
+        assert track.call_args.args[1]["unreadable_readings"] == 0
 
     def test_demoted_user_is_held_and_escalated(self):
         with ExitStack() as es:
@@ -475,6 +489,19 @@ class TestWeeklyQualityReport:
         with ExitStack() as es:
             result, hold, track, _crit = self._run(es, [])
         assert "0/1" in result and not track.called and not hold.called
+
+    def test_unreadable_readings_are_tracked(self):
+        from cqc_lem.app.run_scheduler import auto_weekly_comment_quality
+        rows = [{"status": "checked", "author_replied": 0, "reply_count": 0, "like_count": 0,
+                 "visible_most_relevant": None, "our_reply_sent": 0}]
+        with patch(f"{RS}.get_active_user_ids", return_value=[1]), \
+             patch("cqc_lem.utilities.db.get_comment_outcomes", return_value=rows), \
+             patch("cqc_lem.utilities.linkedin.rate_limit.hold_commenting") as hold, \
+             patch("cqc_lem.utilities.observability.track_comment_quality") as track:
+            auto_weekly_comment_quality(days=7)
+        assert track.called
+        assert track.call_args.args[1]["unreadable_readings"] == 1
+        assert not hold.called
 
     def test_no_active_users(self):
         from cqc_lem.app.run_scheduler import auto_weekly_comment_quality
