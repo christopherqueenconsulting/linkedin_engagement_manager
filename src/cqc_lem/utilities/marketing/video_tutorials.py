@@ -44,15 +44,15 @@ from cqc_lem.utilities.env_constants import (API_URL_FINAL, ELEVENLABS_API_KEY,
                                              TUTORIAL_THUMBNAIL_ENABLED,
                                              TUTORIAL_TTS_COST_PER_1K_CHARS, TUTORIAL_TTS_MODEL,
                                              TUTORIAL_TTS_PROVIDER, TUTORIAL_TTS_VOICE,
-                                             WAIT_DEFAULT_TIMEOUT,
-                                             YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET,
-                                             YOUTUBE_PRIVACY_STATUS, YOUTUBE_REFRESH_TOKEN)
+                                             WAIT_DEFAULT_TIMEOUT, YOUTUBE_PRIVACY_STATUS)
 from cqc_lem.utilities.flags import TUTORIAL_VIDEOS, flag_enabled
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.marketing.attribution import (MEDIUM_VIDEO, PLACEMENT_VIDEO_DESCRIPTION,
                                                      SOURCE_YOUTUBE, campaign_for_tutorial,
                                                      signup_url, tag_links_in_text)
+from cqc_lem.utilities.marketing.youtube_auth import (mint_access_token, preflight,
+                                                      youtube_configured)
 from cqc_lem.utilities.observability import FEATURE_MARKETING, track_media_cost
 from cqc_lem.utilities.utils import create_folder_if_not_exists
 
@@ -667,23 +667,6 @@ def generate_thumbnail(flow: TutorialFlow, out_dir: str) -> Optional[str]:
 
 # --- publish ---------------------------------------------------------------------------------
 
-def youtube_configured() -> bool:
-    return bool(YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET and YOUTUBE_REFRESH_TOKEN)
-
-
-def _youtube_access_token() -> str:
-    import requests
-    response = requests.post("https://oauth2.googleapis.com/token", timeout=30, data={
-        "client_id": YOUTUBE_CLIENT_ID, "client_secret": YOUTUBE_CLIENT_SECRET,
-        "refresh_token": YOUTUBE_REFRESH_TOKEN, "grant_type": "refresh_token",
-    })
-    response.raise_for_status()
-    token = (response.json() or {}).get("access_token")
-    if not token:
-        raise RuntimeError("YouTube token refresh returned no access_token")
-    return token
-
-
 def publish_to_youtube(mp4_path: str, title: str, description: str,
                        tags: Optional[list] = None) -> Optional[str]:
     """Resumable upload via the YouTube Data API v3 (plain requests — no extra SDK). Returns the
@@ -694,7 +677,7 @@ def publish_to_youtube(mp4_path: str, title: str, description: str,
         return None
     import requests
     try:
-        token = _youtube_access_token()
+        token = mint_access_token()
         metadata = {
             "snippet": {"title": title[:100], "description": description[:5000],
                         "tags": list(tags or [])[:15], "categoryId": "28"},
@@ -736,6 +719,15 @@ def produce_tutorial(flow_key: Optional[str] = None, driver=None) -> Optional[di
     if not flag_enabled(TUTORIAL_VIDEOS):
         log_info("Tutorial production skipped — the tutorial-videos-enabled flag is off",
                  task_name=TASK_NAME)
+        return None
+
+    # Publishing preflight (issue #742), BEFORE any Selenium capture, TTS or render spend. Only a
+    # PROVEN-dead grant aborts: an install with no OAuth credentials at all still produces a usable
+    # MP4 (publishing simply no-ops), and an undecidable probe is not evidence of anything.
+    gate = preflight()
+    if gate.get("should_abort"):
+        log_error(f"Tutorial production aborted before spend — YouTube publishing needs re-auth: "
+                  f"{gate.get('reason')}", task_name=TASK_NAME)
         return None
 
     manifest = load_manifest()

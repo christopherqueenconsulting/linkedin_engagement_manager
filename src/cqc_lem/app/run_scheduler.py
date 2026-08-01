@@ -1940,5 +1940,18 @@ def auto_produce_feature_tutorial(self, flow_key: str = None):
             f"${record['total_usd']}, youtube={'yes' if record.get('youtube_url') else 'no'})")
 
 
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_weekly_youtube_token_check(self):
+    """Weekly YouTube OAuth refresh-token health probe (issue #742). One token exchange — no upload,
+    no quota — that both proves the grant is alive and IS the keep-alive against Google's 6-month
+    disuse expiry, which is why it must keep running while the tutorial feature is off. Alerts the
+    owner only when the grant is provably gone; an unreachable token endpoint stays `unknown`."""
+    from cqc_lem.utilities.marketing.youtube_auth import run_health_probe
+
+    state = run_health_probe()
+    return (f"YouTube token {state.get('status')} at {state.get('checked_at')} "
+            f"({state.get('reason')}, emailed={state.get('emailed')})")
+
+
 if __name__ == "__main__":
     print("Process finished")

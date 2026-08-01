@@ -4892,6 +4892,50 @@ def admin_feedback_review(
     })
 
 
+class YouTubeTokenRequest(BaseModel):
+    refresh_token: str
+
+
+@router.get("/admin/youtube-status", responses={
+    200: {"description": "YouTube publishing status"},
+    401: {"description": "Invalid or expired session"},
+    403: {"description": "Admin access required"},
+})
+def admin_youtube_status(session_token: str, live: bool = False) -> ResponseModel:
+    """'YouTube publishing: connected / needs re-auth (reason)' for the settings surface (#742).
+
+    Reads the last recorded weekly probe by default so opening Settings never spends a round trip on
+    Google; `live=true` re-probes on demand. State only — the refresh token itself is never returned.
+    """
+    _require_user_admin(session_token)
+    from cqc_lem.utilities.marketing.youtube_auth import status_report
+    return ResponseModel(status_code=200, detail=status_report(live=live))
+
+
+@router.post("/admin/youtube-token", responses={
+    200: {"description": "Refresh token stored"},
+    403: {"description": "Forbidden"},
+    422: {"description": "Empty refresh token"},
+})
+def admin_set_youtube_token(request: YouTubeTokenRequest,
+                            x_admin_secret: Optional[str] = Header(default=None)) -> ResponseModel:
+    """Install a re-minted YouTube refresh token WITHOUT a deploy (issue #742): it lands in
+    `app_credentials` and takes precedence over `YOUTUBE_REFRESH_TOKEN` in `.env`. Admin-secret
+    gated rather than session gated — this request body carries a live credential. The stored token
+    is probed immediately, so the response says whether the new value actually works."""
+    _require_admin(x_admin_secret)
+    from cqc_lem.utilities.marketing.youtube_auth import probe, store_refresh_token
+    token = (request.refresh_token or "").strip()
+    if not token:
+        raise HTTPException(status_code=422, detail="refresh_token is required")
+    if not store_refresh_token(token, note="installed via /admin/youtube-token"):
+        raise HTTPException(status_code=500, detail="Could not store the refresh token")
+    state = probe()
+    log_info("YouTube refresh token installed via admin endpoint", task_name="admin_youtube_token")
+    return ResponseModel(status_code=200, detail={"stored": True, "status": state.get("status"),
+                                                  "reason": state.get("reason")})
+
+
 @router.get("/carousel-templates", responses={200: {"description": "Available carousel templates"}})
 def list_carousel_templates() -> ResponseModel:
     """Return all available carousel visual templates for the UI picker."""

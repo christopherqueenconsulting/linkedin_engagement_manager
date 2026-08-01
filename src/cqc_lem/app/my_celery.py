@@ -337,6 +337,14 @@ app.conf.update(
             # then only re-films a flow whose UI actually changed.
             'schedule': crontab(hour='20', minute='0', day_of_week='wednesday')
         },
+        'youtube-token-check': {
+            'task': 'cqc_lem.app.run_scheduler.auto_weekly_youtube_token_check',
+            # Wednesdays 19:30 UTC — 30 min BEFORE the tutorial run, so a dead grant is alerted on
+            # (and the run aborts at its own preflight) rather than discovered after the render
+            # spend. Weekly on purpose: the probe is also the keep-alive against Google's
+            # 6-month-disuse expiry, so it must keep running while the feature is off (issue #742).
+            'schedule': crontab(hour='19', minute='30', day_of_week='wednesday')
+        },
         'weekly-cost-routing': {
             'task': 'cqc_lem.app.run_scheduler.auto_weekly_cost_routing',
             # Mondays 14:00 UTC — after the margin report (12:00) and the alert sweep (13:00), so a
