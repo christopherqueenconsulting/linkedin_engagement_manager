@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.119.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.118.0...v0.119.0) (2026-08-01)
+
+
+### Features
+
+* **security:** identity + session hardening — public_uid, hashed sessions, httpOnly cookie, auth limits (refs [#745](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/745)) ([#869](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/869)) ([4b3d370](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4b3d3708a5cc685cd0215c595f564972ebcecd90))
+
+
+### Bug Fixes
+
+* **engagement:** re-ground the feed sort control and record the sort each scan ran against (closes [#817](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/817)) ([#861](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/861)) ([b6dc01b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b6dc01ba24e8d886d0121eeb6f145e3e940f9f96))
+* **errors:** stop the caller restating a reaction failure that already warned ([6956ec5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6956ec5b5eacaf5dd881f3abd75c809e095213c9)), closes [#878](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/878)
+* **errors:** stop the caller restating a reaction failure that already warned (closes [#878](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/878)) ([#892](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/892)) ([6956ec5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6956ec5b5eacaf5dd881f3abd75c809e095213c9))
+
 ## [0.118.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.117.0...v0.118.0) (2026-08-01)
 
 
