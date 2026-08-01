@@ -3,6 +3,8 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
+from cqc_lem.utilities.env_constants import MAX_WAIT_RETRY
+
 pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"
@@ -259,6 +261,36 @@ class TestReactToPostInline:
             ok = ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
         assert ok is False
         assert cf.call_args_list[0].kwargs["warn_on_miss"] is True
+
+    def test_post_click_confirm_is_not_a_warning_when_the_card_never_had_the_toggle(self):
+        """With no Reaction-state button before the click there is nothing to re-read after it, so
+        the miss is the documented trust-the-click fallback. Warning per card escalated it to ERROR
+        and filed a PostHog defect for working behaviour (issue #875)."""
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
+             patch(f"{_RA}.wait_for_ajax"), \
+             patch(f"{_RA}.find_first", return_value=None) as ff, \
+             patch(f"{_RA}.click_first", return_value=MagicMock()):
+            ok = ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
+        assert ok is True  # unreadable toggle never false-negatives a click that landed
+        confirm = [c for c in ff.call_args_list if c.args[3] == "Reaction state (post-click)"]
+        assert len(confirm) == 1
+        assert confirm[0].kwargs["warn_on_miss"] is False
+        assert confirm[0].kwargs["max_try"] == 1  # no retry sleep for a control this card lacks
+
+    def test_post_click_confirm_still_warns_when_the_toggle_was_readable_before(self):
+        """It was there before the click and isn't after — that IS selector rot, keep the signal."""
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
+             patch(f"{_RA}.wait_for_ajax"), \
+             patch(f"{_RA}.find_first",
+                   side_effect=[_state("Reaction button state: no reaction"), None]) as ff, \
+             patch(f"{_RA}.click_first", return_value=MagicMock()):
+            ok = ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
+        assert ok is True
+        confirm = [c for c in ff.call_args_list if c.args[3] == "Reaction state (post-click)"]
+        assert confirm[0].kwargs["warn_on_miss"] is True
+        assert confirm[0].kwargs["max_try"] == MAX_WAIT_RETRY
 
     def test_clicks_the_ai_chosen_reaction(self):
         from cqc_lem.app import run_automation as ra
