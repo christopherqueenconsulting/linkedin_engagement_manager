@@ -22,7 +22,7 @@ BASE="${BASE:-/home/lem/agent-pipeline}"
 . "$BASE/lib/posthog.sh" 2>/dev/null || true
 
 OLLAMA_PARALLEL_ENABLED="${OLLAMA_PARALLEL_ENABLED:-1}"
-OLLAMA_DEFAULT_TIER="${OLLAMA_DEFAULT_TIER:-lem-agent-tier2}"   # kimi-k2.7-code:cloud
+OLLAMA_DEFAULT_TIER="${OLLAMA_DEFAULT_TIER:-lem-agent-tier2}"   # kimi-k2.7-code
 
 # ── preflight (once per tick) ───────────────────────────────────────────────
 capacity_preflight() {
@@ -54,7 +54,7 @@ capacity_preflight() {
 # ── tier selection for the Ollama lane ──────────────────────────────────────
 # Issue labels can force a tier: agent:tier:1 | agent:tier:2-alt | agent:tier:3.
 # Otherwise MODE drives it: review/reasoning -> tier3 (nemotron), everything else -> default tier2.
-# tier1 (glm-5.2:cloud) is opt-in only — it is a slow thinking model and intermittently times out,
+# tier1 (glm-5.2) is opt-in only — it is a slow thinking model and intermittently times out,
 # so it is reserved for issues the owner explicitly flags as hardest long-horizon work.
 _pick_ollama_tier() {
   local labels="${ISSUE_LABELS:-}"

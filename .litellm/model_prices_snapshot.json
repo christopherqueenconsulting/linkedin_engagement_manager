@@ -81,6 +81,13 @@
       "mode": "chat",
       "shadow_reference": "openai/gpt-4o-mini"
     },
+    "openai/glm-5.2": {
+      "input_cost_per_token": 0.0,
+      "output_cost_per_token": 0.0,
+      "deprecation_date": null,
+      "mode": "chat",
+      "shadow_reference": "openai/gpt-4o-mini"
+    },
     "openai/gpt-4o": {
       "input_cost_per_token": 2.5e-06,
       "output_cost_per_token": 1e-05,
@@ -121,6 +128,13 @@
       "mode": "chat",
       "shadow_reference": "openai/gpt-4o"
     },
+    "openai/kimi-k2.7-code": {
+      "input_cost_per_token": 0.0,
+      "output_cost_per_token": 0.0,
+      "deprecation_date": null,
+      "mode": "chat",
+      "shadow_reference": "openai/gpt-4o"
+    },
     "openai/minimax-m2.5": {
       "input_cost_per_token": 0.0,
       "output_cost_per_token": 0.0,
@@ -135,12 +149,26 @@
       "mode": "chat",
       "shadow_reference": "openai/gpt-4o-mini"
     },
+    "openai/minimax-m3": {
+      "input_cost_per_token": 0.0,
+      "output_cost_per_token": 0.0,
+      "deprecation_date": null,
+      "mode": "chat",
+      "shadow_reference": "openai/gpt-4o-mini"
+    },
     "openai/mistral-large-3:675b": {
       "input_cost_per_token": 0.0,
       "output_cost_per_token": 0.0,
       "deprecation_date": null,
       "mode": "chat",
       "shadow_reference": "openai/gpt-4o"
+    },
+    "openai/nemotron-3-super": {
+      "input_cost_per_token": 0.0,
+      "output_cost_per_token": 0.0,
+      "deprecation_date": null,
+      "mode": "chat",
+      "shadow_reference": "openai/gpt-4o-mini"
     },
     "openai/qwen3.5:397b": {
       "input_cost_per_token": 0.0,

@@ -53,10 +53,22 @@ Mapped in `.litellm/config.yaml` as `lem-agent-*` aliases (reusing `OLLAMA_CLOUD
 
 | Alias | Cloud model | Use |
 |---|---|---|
-| `lem-agent-tier1` | `glm-5.2:cloud` | hardest long-horizon / architecture / multi-step (opt-in via `agent:tier:1` — slow thinking model, intermittently times out) |
-| `lem-agent-tier2` | `kimi-k2.7-code:cloud` | **default** coding lane: patches, tests, multi-file edits |
-| `lem-agent-tier2-alt` | `minimax-m3:cloud` | premium parallel / vision-capable alternate (opt-in via `agent:tier:2-alt`) |
-| `lem-agent-tier3` | `nemotron-3-super:cloud` | reviewer / reasoning lane (used for `MODE=selfreview`) or opt-in via `agent:tier:3` |
+| `lem-agent-tier1` | `glm-5.2` | hardest long-horizon / architecture / multi-step (opt-in via `agent:tier:1` — slow thinking model, intermittently times out) |
+| `lem-agent-tier2` | `kimi-k2.7-code` | **default** coding lane: patches, tests, multi-file edits |
+| `lem-agent-tier2-alt` | `minimax-m3` | premium parallel / vision-capable alternate (opt-in via `agent:tier:2-alt`) |
+| `lem-agent-tier3` | `nemotron-3-super` | reviewer / reasoning lane (used for `MODE=selfreview`) or opt-in via `agent:tier:3` |
+
+Ids are the **bare** `ollama.com/api/tags` names, like every other Ollama deployment in that file.
+These four carried a `:cloud` tag until #844. Probed 2026-08-01: `glm-5.2:cloud` answers **200** and
+serves the same model as bare `glm-5.2` (`glm-5.2:bogus` 404s, so tags *are* validated — `:cloud`
+is an alias the endpoint resolves, like `:latest`). So the lane was never broken by it, and tier1's
+timeouts are the model being slow, not a 404. What the tag *did* break is the tooling that reads the
+config by id — above all `plan_retirement_notices`, which matches the docs.ollama.com/cloud
+retirement table verbatim, so an announced retirement of `glm-5.2` would never have matched
+`glm-5.2:cloud` and this lane had no advance-retirement cover at all. The four now also have
+`model_prices_snapshot.json` entries, which keeps the roster uniform and prices them from day one if
+one is ever promoted into a LEM serving tier — it does **not** put a cost on this lane's traffic, which
+is `$ai_generation`'s (see *Token/cost accounting* below), never the app's `llm_call`.
 
 LiteLLM falls hard tasks down the chain (`tier1→tier2→tier3`, `tier2→tier3`) before failing.
 **Local models are not used on this path** — the Ollama Max subscription is cloud-first.
@@ -276,9 +288,9 @@ and a comment explains why, rather than cycling forever on whatever keeps killin
   recreate the container (above). Verify with `curl -X POST http://127.0.0.1:4000/v1/messages
   -H "x-api-key: $LITELLM_MASTER_KEY" -H "anthropic-version: 2023-06-01" -H 'content-type:
   application/json' -d '{"model":"lem-agent-tier2","max_tokens":5,"messages":[{"role":"user","content":"ok"}]}'`.
-- **Ollama cloud model times out** → `glm-5.2:cloud` (tier1) is a slow thinking model and
+- **Ollama cloud model times out** → `glm-5.2` (tier1) is a slow thinking model and
   intermittently times out; that's why it's opt-in (`agent:tier:1`) and the default is tier2
-  (`kimi-k2.7-code:cloud`). LiteLLM's fallback chain should drop to tier2/tier3 automatically.
+  (`kimi-k2.7-code`). LiteLLM's fallback chain should drop to tier2/tier3 automatically.
 - **No PostHog events** → `secrets.env` must have `POSTHOG_API_KEY` + `POSTHOG_HOST`; the
   `capacity_preflight` event fires every tick — if it's absent, PostHog capture is failing
   (logged to the tick log as `[posthog] capture failed ...`). Check the host in `secrets.env`.
