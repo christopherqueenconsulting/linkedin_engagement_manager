@@ -1130,10 +1130,12 @@ def _roster_activity_url(profile_url: str) -> str:
 
 def _switch_feed_to_recent(driver, wait) -> None:
     """Best-effort: flip the feed sort from 'Top' to 'Recent' so golden-hour posts surface for
-    commenting. Silent no-op if the 'Sort by' control isn't present."""
+    commenting. Silent no-op if the 'Sort by' control isn't present — group feeds
+    (`auto_comment_in_groups`) never render it, so a WARNING here escalates on every group run and
+    files a defect for working behaviour."""
     try:
         btn = find_first(driver, wait, [(By.XPATH, "//button[contains(normalize-space(),'Sort by')]")],
-                         "Feed sort control", required=False)
+                         "Feed sort control", required=False, warn_on_miss=False)
         if btn is None:
             return
         # The control reads "Sort by: Recent" once flipped — skip re-opening the menu so the second

@@ -17,6 +17,14 @@ class TestSwitchFeedToRecent:
         assert find_first.call_count == 1
         driver.execute_script.assert_not_called()
 
+    def test_missing_sort_control_is_not_a_warning(self):
+        """Group feeds never render the 'Sort by' control (issue #872) — a WARNING there repeats
+        every group run and escalates into a filed defect for working behaviour."""
+        from cqc_lem.app.run_automation import _switch_feed_to_recent
+        with patch(f"{_MOD}.find_first", return_value=None) as find_first:
+            _switch_feed_to_recent(MagicMock(), MagicMock())
+        assert find_first.call_args.kwargs["warn_on_miss"] is False
+
     def test_skips_when_already_sorted_by_recent(self):
         from cqc_lem.app.run_automation import _switch_feed_to_recent
         driver = MagicMock()

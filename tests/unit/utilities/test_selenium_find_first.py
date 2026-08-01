@@ -65,6 +65,31 @@ class TestFindFirst:
         assert kwargs["user_id"] == 7 and kwargs["post_id"] == 3
         assert any("a" in s for s in kwargs["selectors"])
 
+    def test_expected_miss_logs_debug_not_warning(self):
+        """warn_on_miss=False keeps a legitimately-absent control out of recurrence escalation."""
+        from cqc_lem.utilities.selenium_util import find_first
+        driver = _driver_with({})
+        wait = _FakeWait(driver)
+        with patch(f"{_MOD}.log_warning") as warn, patch(f"{_MOD}.log_debug") as debug:
+            got = find_first(driver, wait, [("css", "a")], "Feed sort control",
+                             required=False, warn_on_miss=False, max_try=1, user_id=7)
+        assert got is None
+        warn.assert_not_called()
+        debug.assert_called_once()
+        assert debug.call_args.args[0] == "Selector miss: Feed sort control"
+        assert debug.call_args.kwargs["user_id"] == 7
+
+    def test_expected_miss_survives_the_retry_pass(self):
+        """The retry recursion must carry warn_on_miss through, or the last attempt warns anyway."""
+        from cqc_lem.utilities.selenium_util import find_first
+        driver = _driver_with({})
+        wait = _FakeWait(driver)
+        with patch(f"{_MOD}.log_warning") as warn, patch(f"{_MOD}.log_debug") as debug:
+            find_first(driver, wait, [("css", "a")], "Feed sort control",
+                       required=False, warn_on_miss=False, max_try=2)
+        warn.assert_not_called()
+        debug.assert_called_once()
+
     def test_visible_only_skips_hidden(self):
         from cqc_lem.utilities.selenium_util import find_first
         hidden = MagicMock(); hidden.is_displayed.return_value = False
