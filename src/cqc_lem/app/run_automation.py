@@ -91,7 +91,7 @@ from cqc_lem.utilities.observability import track_post_outcome, track_audience_s
     track_comment_outcome, track_golden_hour_report, track_company_page_invite_run, \
     track_catchup_run, track_feed_scan, attribute_llm_cost, llm_attribution, \
     FEATURE_COMMENT, FEATURE_CONTENT, FEATURE_DM
-from cqc_lem.utilities.env_constants import MAX_WAIT_RETRY
+from cqc_lem.utilities.env_constants import INLINE_REACTIONS_ENABLED, MAX_WAIT_RETRY
 from cqc_lem.utilities.selenium_util import click_element_wait_retry, \
     get_element_wait_retry, get_elements_as_list_wait_stale, getText, close_tab, get_driver_wait_pair, quit_gracefully, \
     wait_for_ajax, find_first, click_first, find_all_first
@@ -1351,7 +1351,14 @@ def _engage_card(driver, wait, my_profile: LinkedInProfile, user_id: int, card, 
     # React BEFORE submitting the comment: posting re-renders the card and staled the element, so
     # the old post-comment reaction attempt silently failed. Skip our OWN posts. Non-fatal — a
     # missed reaction never blocks the comment.
-    if not _author_is_me(author, my_profile):
+    #
+    # Gated OFF by default since #816. DEBUG, not a warning: a deliberate stand-down is working
+    # behaviour, and warning it every card is exactly the "expected no-op" that escalates into a
+    # filed defect. The commenting path below is untouched.
+    if not INLINE_REACTIONS_ENABLED:
+        log_debug("Inline reactions disabled (INLINE_REACTIONS_ENABLED=False, issue #816)",
+                  user_id=user_id, action_type="comment")
+    elif not _author_is_me(author, my_profile):
         outcome = react_to_post_inline(driver, wait, card, post_content=content,
                                        comment_text=comment_text, user_id=user_id)
         if outcome is None:

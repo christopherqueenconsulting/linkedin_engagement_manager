@@ -87,6 +87,13 @@ CAROUSEL_IMAGE_QUERY_LLM = isTrue(get_constant_from_env('CAROUSEL_IMAGE_QUERY_LL
 # inference money but no training credit, so without it "Regenerate" is an unbounded spend.
 AVATAR_SAMPLE_REGEN_MAX = int(get_constant_from_env('AVATAR_SAMPLE_REGEN_MAX', default_value='3'))
 
+# Inline feed reactions. OFF by default since issue #816: LinkedIn's SDUI drifted away from all
+# three aria-label anchors `react_to_post_inline` keys on, so reactions stopped landing entirely
+# (63 selector misses in 48h) while each miss still burned MAX_WAIT_RETRY x ~5s inside a Selenium
+# session holding a Grid slot. Commenting is unaffected — a reaction was always non-fatal to it.
+# Flip back to True once the locator chains are re-grounded against a live session.
+INLINE_REACTIONS_ENABLED = isTrue(get_constant_from_env('INLINE_REACTIONS_ENABLED', default_value='False'))
+
 # AI disclosure: append a short caption line to AI-visual posts. Guaranteed-visible
 # fallback for C2PA (which self-signed certs can't make LinkedIn trust yet).
 AI_DISCLOSURE_ENABLED = isTrue(get_constant_from_env('AI_DISCLOSURE_ENABLED', default_value='True'))

@@ -461,6 +461,7 @@ class TestEngageCardReactionLogging:
              patch(f"{_RA}.select_blueprint", return_value={"format": "expander"}), \
              patch(f"{_RA}.generate_ai_response", return_value="A real comment."), \
              patch(f"{_RA}._author_is_me", return_value=False), \
+             patch(f"{_RA}.INLINE_REACTIONS_ENABLED", True), \
              patch(f"{_RA}.react_to_post_inline", return_value=reaction_outcome), \
              patch(f"{_RA}.mark_post_reacted"), \
              patch(f"{_RA}.post_comment_inline", return_value=True), \

@@ -50,6 +50,9 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
 
     with ExitStack() as es:
         p = lambda name, **kw: es.enter_context(patch(f"{_RA}.{name}", **kw))
+        # Reactions ship OFF by default while #816 is open; these tests exercise the reaction
+        # path itself, so they opt in explicitly rather than depending on the shipped default.
+        p("INLINE_REACTIONS_ENABLED", new=True)
         p("get_engagement_preferences", return_value=prefs or {"max_comments_per_day": 20})
         p("get_recent_engagers", return_value=set())
         p("get_recent_comment_texts", return_value=[])
