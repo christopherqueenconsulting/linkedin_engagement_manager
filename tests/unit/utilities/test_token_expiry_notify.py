@@ -76,16 +76,49 @@ class TestNotifyLinkedInTokenExpiring:
 
     def test_user_without_email_returns_false(self):
         from cqc_lem.utilities.notifications import notify_linkedin_token_expiring
-        with patch(f"{_RATE}.shared_redis_client", return_value=_redis()), \
+        client = _redis()
+        with patch(f"{_RATE}.shared_redis_client", return_value=client), \
              patch(f"{_MOD}.get_user_email", return_value=None), \
              patch(f"{_EMAIL}.send_linkedin_token_expiring_email") as send:
             assert notify_linkedin_token_expiring(7, 2) is False
         send.assert_not_called()
+        client.delete.assert_called_once_with("lem:linkedin_token_expiry_email:7")
 
     def test_exception_is_swallowed(self):
         from cqc_lem.utilities.notifications import notify_linkedin_token_expiring
-        with patch(f"{_RATE}.shared_redis_client", return_value=_redis()), \
+        client = _redis()
+        with patch(f"{_RATE}.shared_redis_client", return_value=client), \
              patch(f"{_MOD}.get_user_email", side_effect=RuntimeError("db down")):
+            assert notify_linkedin_token_expiring(7, 2) is False
+        client.delete.assert_called_once_with("lem:linkedin_token_expiry_email:7")
+
+    def test_failed_send_releases_the_throttle_slot(self):
+        # Claiming the slot then failing to send would silence this user for a week — the exact
+        # shape of the bug #600 exists to fix.
+        from cqc_lem.utilities.notifications import notify_linkedin_token_expiring
+        client = _redis()
+        with patch(f"{_RATE}.shared_redis_client", return_value=client), \
+             patch(f"{_MOD}.get_user_email", return_value="u@e.com"), \
+             patch(f"{_EMAIL}.send_linkedin_token_expiring_email", return_value=False):
+            assert notify_linkedin_token_expiring(7, 2) is False
+        client.delete.assert_called_once_with("lem:linkedin_token_expiry_email:7")
+
+    def test_successful_send_keeps_the_throttle_slot(self):
+        from cqc_lem.utilities.notifications import notify_linkedin_token_expiring
+        client = _redis()
+        with patch(f"{_RATE}.shared_redis_client", return_value=client), \
+             patch(f"{_MOD}.get_user_email", return_value="u@e.com"), \
+             patch(f"{_EMAIL}.send_linkedin_token_expiring_email", return_value=True):
+            assert notify_linkedin_token_expiring(7, 2) is True
+        client.delete.assert_not_called()
+
+    def test_release_failure_is_swallowed(self):
+        from cqc_lem.utilities.notifications import notify_linkedin_token_expiring
+        client = _redis()
+        client.delete.side_effect = RuntimeError("redis gone")
+        with patch(f"{_RATE}.shared_redis_client", return_value=client), \
+             patch(f"{_MOD}.get_user_email", return_value="u@e.com"), \
+             patch(f"{_EMAIL}.send_linkedin_token_expiring_email", return_value=False):
             assert notify_linkedin_token_expiring(7, 2) is False
 
 
@@ -117,6 +150,22 @@ class TestLinkedInTokenExpiringEmail:
         subject, html = dispatch.call_args[0][1], dispatch.call_args[0][2]
         assert "has expired" in subject
         assert "already expired" in html
+
+    def test_iso_expiry_is_rendered_as_a_human_date(self):
+        # resolve_token_status hands the beat an ISO-8601 timestamp; a customer must never read
+        # "(on 2026-09-14T08:30:12+00:00)".
+        from cqc_lem.utilities.email import send_linkedin_token_expiring_email
+        with patch(f"{_EMAIL}._dispatch_email", return_value=True) as dispatch:
+            send_linkedin_token_expiring_email("u@e.com", 4, "2026-09-14T08:30:12+00:00")
+        html = dispatch.call_args[0][2]
+        assert "(on Sep 14, 2026)" in html
+        assert "T08:30" not in html
+
+    def test_unparseable_expiry_passes_through(self):
+        from cqc_lem.utilities.email import send_linkedin_token_expiring_email
+        with patch(f"{_EMAIL}._dispatch_email", return_value=True) as dispatch:
+            send_linkedin_token_expiring_email("u@e.com", 4, "next Tuesday")
+        assert "(on next Tuesday)" in dispatch.call_args[0][2]
 
     def test_unknown_expiry_avoids_a_number(self):
         from cqc_lem.utilities.email import send_linkedin_token_expiring_email

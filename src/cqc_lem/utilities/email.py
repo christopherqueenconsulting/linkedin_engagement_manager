@@ -2,6 +2,7 @@ import hashlib
 import re
 import secrets
 import smtplib
+from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
@@ -342,6 +343,19 @@ def send_session_revalidation_email(to_email: str, account_url: Optional[str] = 
         to_email, "⚠️ Action needed: reconnect your LinkedIn session", html, high_priority=True)
 
 
+def _human_date(value: Optional[str]) -> Optional[str]:
+    """The only producer of an expiry string is `resolve_token_status`, which emits ISO-8601 —
+    "expires on 2026-09-14T08:30:12+00:00" is not something to put in front of a customer. Anything
+    that isn't a timestamp is passed through untouched."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return value
+    return f"{parsed:%b} {parsed.day}, {parsed.year}"
+
+
 def send_linkedin_token_expiring_email(to_email: str, days_remaining: Optional[int] = None,
                                        expires_on: Optional[str] = None,
                                        account_url: Optional[str] = None) -> bool:
@@ -350,6 +364,7 @@ def send_linkedin_token_expiring_email(to_email: str, days_remaining: Optional[i
     authorization at 60 days and only hands refresh tokens to approved apps, so for some accounts a
     manual reconnect is the only option and this email IS the notice."""
     url = account_url or _account_url()
+    expires_on = _human_date(expires_on)
     if days_remaining is None:
         headline = "Your LinkedIn authorization needs renewing"
         when = "It expires soon, and we could not renew it automatically."
