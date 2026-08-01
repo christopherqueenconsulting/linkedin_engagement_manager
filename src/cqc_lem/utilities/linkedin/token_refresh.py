@@ -7,6 +7,9 @@ from cqc_lem.utilities.env_constants import LI_CLIENT_ID, LI_CLIENT_SECRET
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 
 LINKEDIN_TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken"
+# Half the life of a 60-day token. This is BOTH the SPA banner threshold and the point the daily
+# beat starts emailing users it could not renew (issue #600, owner decision 1A) — paired with the
+# 7-day LINKEDIN_TOKEN_EMAIL_THROTTLE_DAYS it caps a user at ~4 emails across that final month.
 EXPIRY_WARNING_DAYS = 30
 
 

@@ -65,7 +65,8 @@ export default function LinkedInLoginCard() {
 
   const showLinkedInSection = !isLinkedInConnected || tokenExpiringSoon || tokenExpired
   // Healthy connections used to render nothing at all, so there was no way to see how much time
-  // was left until the warning fired. Show a compact countdown strip instead.
+  // was left until the warning fired. Show a compact countdown strip instead — always, not only
+  // inside the warning window (issue #600, owner decision 2A).
   const showHealthyCountdown = !showLinkedInSection && isLinkedInConnected && !!tokenStatusData
 
   // LinkedIn password save
