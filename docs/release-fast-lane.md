@@ -51,11 +51,23 @@ user-visible commenting failure, priority:high"* — so the choice is auditable 
 
 1. PR merges with the label.
 2. `release-auto-merge.yml` fires on `pull_request_target: closed`, sees `merged == true` and the
-   label, and waits (up to 5 min) for release-please to open/refresh the release PR — release-please
-   is reacting to the same merge, so the PR often does not exist yet.
-3. It enables auto-merge on that release PR. The release PR still runs its own CI and still goes
+   label, and waits (up to 10 min) for **release-please's own run for this merge commit** to
+   conclude successfully.
+3. It enables auto-merge on the release PR. The release PR still runs its own CI and still goes
    through the merge queue, so **a fast-laned release can never ship a red build**.
 4. Tag → `Build & Deploy Release` → blue/green cutover.
+
+Step 2 waits on the *run*, not on "a release PR exists" — those look equivalent and are not. A
+release PR is almost always already open (it accumulates between windows), so an existence check
+passes instantly and enqueues a release PR that **predates the commit being fast-laned**. And a PR
+sitting in the merge queue has its branch locked, so release-please then fails with
+`Error updating ref heads/release-please--branches--main` and can never add the commit.
+
+That combination bit v0.115.0 on the fast lane's first real use: the release PR was one green check
+away from shipping *without* the security PR that triggered it, and was wedged besides. Recovery was
+to dequeue the release PR (which unlocks the branch), re-run release-please, and confirm the entry
+landed before re-enqueuing. If release-please **fails** for the merge commit, the fast lane now
+stands down deliberately rather than enqueue a release known to omit the change.
 
 A `concurrency` group serialises this: three `release:now` PRs merging together enqueue one release,
 not three.

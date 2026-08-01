@@ -51,26 +51,48 @@ jobs:
       (github.event.pull_request.merged == true &&
        contains(github.event.pull_request.labels.*.name, 'release:now'))
     steps:
-      # release-please reacts to the same merge this job does, so on the fast lane the release PR
-      # may not exist or may not yet include this commit. Wait for it rather than racing.
-      - name: Wait for release-please to update the release PR
+      # Wait for release-please's OWN run for this merge commit to finish — not merely for "a
+      # release PR to exist". Those are different conditions and the difference broke a release:
+      #
+      # A release PR is almost always already open (it accumulates between windows), so the old
+      # "does one exist?" check passed instantly and enqueued a release PR that predated the very
+      # commit being fast-laned. Worse, a PR sitting in the merge queue has its branch LOCKED, so
+      # release-please then failed with `Error updating ref heads/release-please--branches--main`
+      # and could never add the commit. Result: v0.115.0 was one green check away from shipping
+      # WITHOUT the security PR that triggered the fast lane, and the release PR was wedged.
+      #
+      # release-please's run for MERGE_SHA completing is the real signal: the release PR is current
+      # as of this commit, and release-please is done touching the branch, so enqueuing is safe.
+      - name: Wait for release-please to finish processing this merge
         if: github.event_name == 'pull_request_target'
         env:
           GH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN || secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
         run: |
-          for i in $(seq 1 20); do
-            PR="$(gh pr list --repo "$REPO" --state open --json number,headRefName \
-                  --jq '[.[] | select(.headRefName | startswith("release-please--"))][0].number // empty')"
-            if [ -n "$PR" ]; then
-              echo "Release PR #$PR is open (attempt $i)."
-              exit 0
-            fi
-            echo "No release PR yet (attempt $i/20) — waiting 15s for release-please."
+          if [ -z "$MERGE_SHA" ]; then
+            echo "::warning title=Fast lane skipped::no merge commit sha on the event payload."
+            exit 0
+          fi
+          for i in $(seq 1 40); do
+            STATE="$(gh run list --repo "$REPO" --workflow=release-please.yml --commit "$MERGE_SHA" \
+                     --limit 1 --json status,conclusion \
+                     --jq '.[0] | "\(.status)/\(.conclusion)"' 2>/dev/null || echo "")"
+            case "$STATE" in
+              completed/success)
+                echo "release-please finished for $MERGE_SHA (attempt $i)."
+                exit 0 ;;
+              completed/*)
+                # A failed release-please means the release PR does NOT contain this commit.
+                # Enqueuing now would ship a release that silently omits it — the exact failure
+                # this step exists to prevent. Stop, and let the next window pick it up.
+                echo "::warning title=Fast lane stood down::release-please concluded '$STATE' for $MERGE_SHA, so the release PR does not include this commit. Not enqueuing; it will ship in the next scheduled window."
+                exit 0 ;;
+            esac
+            echo "release-please for $MERGE_SHA is '${STATE:-not started}' (attempt $i/40) — waiting 15s."
             sleep 15
           done
-          echo "::warning title=Fast lane timed out::release-please never opened a release PR; this change will ship in the next scheduled window."
+          echo "::warning title=Fast lane timed out::release-please never completed for $MERGE_SHA; this change will ship in the next scheduled window."
           exit 0
 
       - name: Find and auto-merge the open release-please PR
