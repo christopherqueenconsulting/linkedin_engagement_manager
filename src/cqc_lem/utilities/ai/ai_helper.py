@@ -34,6 +34,7 @@ from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text, PLAIN_PUNCTUATION_DIRECTIVE, \
     linkedin_post_format_directive, enforce_post_readability
 from cqc_lem.utilities.logger import myprint, log_debug, log_error, log_info, log_warning
+from cqc_lem.utilities.observability import FEATURE_COMMENT, FEATURE_NEWSLETTER, llm_pipeline, llm_step
 from cqc_lem.utilities.utils import create_folder_if_not_exists, save_video_url_to_dir
 from cqc_lem.utilities.env_constants import DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_RATIO
 # create_runway_video lives in video_models (model abstraction); re-exported here
@@ -341,6 +342,7 @@ def _comment_contract_variant(user_id: int = None) -> "str | None":
         return None
 
 
+@llm_pipeline("comment_generation", feature=FEATURE_COMMENT)
 def generate_ai_response(post_content, profile: LinkedInProfile, post_img_url=None, post_comment: str = None,
                          prefs: dict = None, profile_synthesis: str = None,
                          blueprint: dict = None, research: dict = None,
@@ -691,6 +693,7 @@ def plan_newsletter_topics(profile_synthesis: str, newsletter_description: str, 
     return _framework.enforce_variety("newsletter", planned[:count], recent_formats, recent_hook_styles)
 
 
+@llm_pipeline("newsletter_edition", feature=FEATURE_NEWSLETTER)
 def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
                                 blog_content: str = None, prefs: dict = None,
                                 subject: str = None, avoid_subjects: list = None,
@@ -1156,6 +1159,7 @@ def generate_nurture_dm(their_message: str, intent: str, profile: "LinkedInProfi
     return lint_repaired(_draft(), "dm", _draft, action_type="dm")
 
 
+@llm_step("hook")
 def optimize_post_hook(post_content: str, prefs: dict = None,
                        preserve_cta_keyword: str = None) -> str:
     """Rewrite a generated post so it opens with a scroll-stopping hook within the first ~210
@@ -1347,6 +1351,7 @@ def get_industries_of_profile_from_ai(linked_in_profile: LinkedInProfile, indust
     comment = response.choices[0].message.content.strip()
     return comment
 
+@llm_step("refine")
 def get_ai_linked_post_refinement(original_message: str, character_limit: int = 3000,
                                   prefs: dict = None, preserve_cta_keyword: str = None):
     character_limit_string = (f"""\nThe refined LinkedIn Post needs to be less than or equal to {character_limit} characters including white spaces and punctuations. You may use symbols, abbreviations, and other and short-hand.
@@ -1748,6 +1753,7 @@ def _subject_anchor_line(trends: dict) -> str:
             f"into unrelated {industry} news.\n")
 
 
+@llm_step("draft")
 def get_thought_leadership_post_from_ai(linked_user_profile: LinkedInProfile, buyer_stage: str,
                                         prefs: dict = None, profile_synthesis: str = None,
                                         blueprint: dict = None, lead_magnet_cta: str = None,
@@ -1957,6 +1963,7 @@ def get_industry_trend_analysis_based_on_user_profile(linked_in_profile: LinkedI
     }
 
 
+@llm_step("draft")
 def get_industry_news_post_from_ai(linked_user_profile: LinkedInProfile, buyer_stage: str,
                                    prefs: dict = None, profile_synthesis: str = None,
                                    blueprint: dict = None, lead_magnet_cta: str = None,
@@ -2152,6 +2159,7 @@ def get_industry_trend_from_ai(industry: str, articles: list):
     return comment
 
 
+@llm_step("draft")
 def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage: str,
                                     prefs: dict = None, profile_synthesis: str = None,
                                     blueprint: dict = None, lead_magnet_cta: str = None,
@@ -2276,6 +2284,7 @@ def get_personal_story_post_from_ai(linked_user_profile: LinkedInProfile, stage:
     return content
 
 
+@llm_step("draft")
 def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage: str,
                                     prefs: dict = None, profile_synthesis: str = None,
                                     blueprint: dict = None, lead_magnet_cta: str = None,
@@ -2396,6 +2405,7 @@ def generate_engagement_prompt_post(linked_user_profile: LinkedInProfile, stage:
     return content
 
 
+@llm_step("draft")
 def get_blog_summary_post_from_ai(blog_post_url: str, blog_post_content: str, linked_user_profile: LinkedInProfile,
                                   stage: str, prefs: dict = None, profile_synthesis: str = None,
                                   blueprint: dict = None, lead_magnet_cta: str = None,

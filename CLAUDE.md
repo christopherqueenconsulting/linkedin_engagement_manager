@@ -164,11 +164,18 @@ Track events via `utilities/observability.py` (`track_llm_call` / `track_task` /
 Each subsection below is a one-paragraph invariant; rationale, contracts, sample code, and edge
 cases live in the pointed-to doc. Plan with this section, drill in with the doc.
 
-### LLM analytics (issue #647)
+### LLM analytics (issue #647, traces #746)
 Two streams, never summed: `llm_call` (app, cost ESTIMATE — every money question reads this) vs
 `$ai_generation`/`$ai_embedding` (proxy-native, post-fallback, provider-priced — latency/error/
 volume). Attribution lives in `utilities/ai/client.py` (the ONE client); `_attach_routing_metadata`
-must stay. Full posture: `docs/llm-analytics.md`.
+must stay. **Pipeline traces** group a post/edition/comment's 5–6 calls into ONE `$ai_trace` with
+per-step `$ai_span`s: `@llm_pipeline` on the three roots (`create_text_post`,
+`generate_newsletter_edition`, `generate_ai_response` — it SUPERSEDES `attribute_llm_cost`),
+`@llm_step` on the SHARED-core step functions (never at a call site, so newsletters/comments inherit
+it). The client sends the ids two ways because LiteLLM reads them from two places — trace id in the
+`x-litellm-trace-id` HEADER (metadata would be overwritten), parent span in `metadata.parent_run_id`.
+Nested trace = span; span with no trace = no-op; `LLM_TRACING_ENABLED=false` mints nothing.
+Full posture: `docs/llm-analytics.md`.
 
 ### Error tracking (issue #648)
 Logs (`logger.py` → PostHog Logs) carry message+context; `$exception` is the grouped/fingerprinted

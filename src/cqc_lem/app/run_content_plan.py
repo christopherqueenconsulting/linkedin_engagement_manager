@@ -65,7 +65,8 @@ from cqc_lem.utilities.linkedin.rate_limit import acquire_run_lock, release_run_
 from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin, strip_engagement_bait
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.logger import myprint, log_info, log_warning, log_error
-from cqc_lem.utilities.observability import attribute_llm_cost, llm_attribution, FEATURE_CONTENT
+from cqc_lem.utilities.observability import (attribute_llm_cost, llm_attribution, llm_pipeline,
+                                             llm_step, FEATURE_CONTENT)
 from cqc_lem.utilities.selenium_util import get_driver_wait_pair, quit_gracefully
 from cqc_lem.utilities.utils import get_post_time, create_folder_if_not_exists, \
     save_video_url_to_dir, apply_schedule_jitter
@@ -1344,6 +1345,7 @@ def _fabricated_specifics(content: str, story: Optional[dict],
         content, _story_bank.fact_sources(story, profile_synthesis, *extra_sources))
 
 
+@llm_step("review")
 def _review_generated_post(user_id: int, stage: str, post_type: str, user_profile: LinkedInProfile,
                            blueprint: dict, post_id: int, lead_magnet_cta: str, content: str,
                            recent_texts: list, prefs: dict = None,
@@ -1460,7 +1462,7 @@ def _review_generated_post(user_id: int, stage: str, post_type: str, user_profil
     return second
 
 
-@attribute_llm_cost(FEATURE_CONTENT)
+@llm_pipeline("post_generation", feature=FEATURE_CONTENT)
 def create_text_post(user_id: int, stage: str, post_type: str = None, user_profile: LinkedInProfile=None,
                      refine_final_post: bool = True, blueprint: dict = None, post_id: int = None,
                      lead_magnet_cta: str = None, history_directive: str = None,
@@ -1964,6 +1966,7 @@ def process_selected_post(url, content):
         myprint("Selected Post Content: None")
 
 
+@llm_step("draft")
 def generate_website_content_post(sitemap_url, linked_user_profile, stage: str, prefs: dict = None,
                                   profile_synthesis: Optional[str] = None, blueprint: dict = None,
                                   lead_magnet_cta: str = None, history_directive: str = None,
