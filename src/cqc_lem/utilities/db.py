@@ -6071,6 +6071,69 @@ def get_recent_posted_post_ids(user_id: int, days: int = 21) -> list:
         connection.close()
 
 
+def get_uncaptured_posted_post_ids(user_id: int, days: int = 90, limit: int = 5) -> list:
+    """Posted posts inside the ANALYTICS window that have no `post_stats` row at all (issue #809).
+
+    The stats sweep only walks `get_recent_posted_post_ids`' short window, but the dashboard reads
+    90 days — a post whose capture was missed while it was fresh (automation paused, no permalink
+    logged yet, a 429) could never be measured afterwards, which is why the analytics rendered a
+    shrinking subset of the account's posts. Newest first and capped, so topping the sweep up costs
+    a bounded number of extra page loads.
+
+    Only posts with a logged permalink are offered. The sweep can do nothing with the others, and
+    since a post leaves this set only by GAINING a stat row, a handful of permalink-less posts at
+    the head of the window would otherwise hold every slot of the cap on every run — the backfill
+    would report as working while never reaching a post it could actually capture."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT p.id FROM posts p "
+            "LEFT JOIN post_stats s ON s.post_id = p.id AND s.user_id = p.user_id "
+            "WHERE p.user_id = %s AND p.status = %s "
+            "AND p.scheduled_time >= (NOW() - INTERVAL %s DAY) AND s.id IS NULL "
+            "AND EXISTS (SELECT 1 FROM logs l WHERE l.user_id = p.user_id AND l.post_id = p.id "
+            "AND l.action_type = %s AND l.result = %s "
+            "AND l.post_url IS NOT NULL AND l.post_url <> '') "
+            "ORDER BY p.scheduled_time DESC LIMIT %s",
+            (user_id, PostStatus.POSTED.value, days, LogActionType.POST.value,
+             LogResultType.SUCCESS.value, max(0, int(limit))))
+        return [r[0] for r in (cursor.fetchall() or [])]
+    except mysql.connector.Error as err:
+        myprint(f"Could not get uncaptured posted post ids for user {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_post_coverage_counts(user_id: int, days: int = 90) -> dict:
+    """How much of the account the analytics dashboard is looking at (issue #809).
+
+    Three unrelated denominators used to share one screen with no way to reconcile them: the
+    all-time "posted" tile, the content-mix window, and the per-post table (which only sees posts
+    with a captured `post_stats` row). This returns the two POST-side numbers — all-time posted and
+    posted within the analytics window — so the UI can say WHY it is showing a subset instead of
+    reading as broken. The measured count stays with the stats read (`get_post_performance_rows`),
+    so the panel can never contradict its own sample size."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT COALESCE(SUM(status = %s), 0), "
+            "COALESCE(SUM(status = %s AND scheduled_time >= (NOW() - INTERVAL %s DAY)), 0) "
+            "FROM posts WHERE user_id = %s",
+            (PostStatus.POSTED.value, PostStatus.POSTED.value, days, user_id))
+        row = cursor.fetchone() or (0, 0)
+        return {"posted_total": int(row[0] or 0), "posted_in_window": int(row[1] or 0)}
+    except mysql.connector.Error as err:
+        myprint(f"Could not get post coverage counts for user {user_id} | Error: {err}")
+        return {"posted_total": 0, "posted_in_window": 0}
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_post_engagement_rows(user_id: int) -> list:
     """Latest stats per post joined with when it was posted → rows of
     (scheduled_time, reactions, comments, reposts, archetype, hook_style, format, topic,

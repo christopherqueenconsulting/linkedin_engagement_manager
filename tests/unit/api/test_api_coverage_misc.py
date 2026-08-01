@@ -404,9 +404,12 @@ class TestUserSettingsAndGroups:
 class TestEngagementAnalytics:
     @pytest.fixture(autouse=True)
     def _no_comment_outcomes(self):
-        # The endpoint also scores comment outcomes (#628) and rolls up content quality (#630);
-        # default both to an empty window so the post-stats assertions below stay about post stats.
+        # The endpoint also scores comment outcomes (#628), rolls up content quality (#630) and
+        # reports post coverage (#809); default all three to an empty window so the post-stats
+        # assertions below stay about post stats.
         with patch(f"{_M}.get_comment_outcomes", return_value=[]), \
+             patch(f"{_M}.get_post_coverage_counts",
+                   return_value={"posted_total": 0, "posted_in_window": 0}), \
              patch("cqc_lem.utilities.db.get_content_quality_scores", return_value=[]):
             yield
 
@@ -436,6 +439,41 @@ class TestEngagementAnalytics:
         assert detail["content_mix"]["total"] == 10
         assert detail["content_mix"]["ratios"]["promo"] == pytest.approx(0.1)
         assert detail["content_mix"]["counts"]["unclassified"] == 3
+
+    def test_coverage_reconciles_measured_posts_with_the_account_total(self, client):
+        """Issue #809: the panel measures only posts with captured stats, so it must SAY which
+        subset it is looking at — otherwise 'x of 11' next to a 30-post account reads as broken."""
+        from datetime import datetime
+        rows = [{"post_id": 9, "scheduled_time": datetime(2026, 7, 20, 14, 0), "reactions": 1,
+                 "comments": 0, "reposts": 0, "saves": 0, "impressions": 100, "archetype": None,
+                 "hook_style": None, "format": None, "topic": None, "buyer_stage": None}]
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.get_content_mix_counts", return_value={}), \
+             patch(f"{_M}.get_post_coverage_counts",
+                   return_value={"posted_total": 30, "posted_in_window": 11}) as cov, \
+             patch(f"{_M}.get_post_performance_rows", return_value=rows):
+            resp = client.get(f"/api/user/engagement-analytics?session_token={_TOK}&days=90")
+        detail = resp.json()["detail"]
+        assert cov.call_args[1]["days"] == 90
+        assert detail["coverage"] == {"posted_total": 30, "posted_in_window": 11,
+                                      "measured": 1, "awaiting_capture": 10}
+        # measured comes from the rows actually read, so the coverage line can never disagree with
+        # the sample size the rest of the panel is drawn from.
+        assert detail["coverage"]["measured"] == detail["sample_size"]
+
+    def test_coverage_never_reports_a_negative_backlog(self, client):
+        """A stat row whose post fell outside the window would otherwise make awaiting_capture go
+        negative — 'waiting on -2 captures' is worse than saying nothing."""
+        rows = [{"post_id": i, "scheduled_time": None, "reactions": 0, "comments": 0, "reposts": 0,
+                 "saves": 0, "impressions": None, "archetype": None, "hook_style": None,
+                 "format": None, "topic": None, "buyer_stage": None} for i in range(3)]
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.get_content_mix_counts", return_value={}), \
+             patch(f"{_M}.get_post_coverage_counts",
+                   return_value={"posted_total": 1, "posted_in_window": 1}), \
+             patch(f"{_M}.get_post_performance_rows", return_value=rows):
+            resp = client.get(f"/api/user/engagement-analytics?session_token={_TOK}")
+        assert resp.json()["detail"]["coverage"]["awaiting_capture"] == 0
 
     def test_flags_a_plan_over_the_promo_ceiling(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \

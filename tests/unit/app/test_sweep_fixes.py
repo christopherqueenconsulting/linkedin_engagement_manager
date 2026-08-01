@@ -115,6 +115,7 @@ class TestScrapeRecordsImpressions:
         counts = {"reactions": 5, "comments": 2, "reposts": 7, "impressions": 153, "saves": 4}
         with patch(f"{_RA}.time.sleep"), \
              patch(f"{_RA}.get_recent_posted_post_ids", return_value=[9]), \
+             patch(f"{_RA}.get_uncaptured_posted_post_ids", return_value=[]), \
              patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
              patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://x/urn"), \
              patch(f"{_RA}._post_social_counts", return_value=counts), \
@@ -133,6 +134,7 @@ class TestScrapeRecordsImpressions:
         counts = {"reactions": 5, "comments": 2, "reposts": 0, "impressions": 100, "saves": 0}
         with patch(f"{_RA}.time.sleep"), \
              patch(f"{_RA}.get_recent_posted_post_ids", return_value=[9, 10]), \
+             patch(f"{_RA}.get_uncaptured_posted_post_ids", return_value=[]), \
              patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
              patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://x/urn"), \
              patch(f"{_RA}._post_social_counts", return_value=counts), \
@@ -153,6 +155,7 @@ class TestScrapeRecordsImpressions:
         analytics = {"reposts": 6, "impressions": 72, "saves": 9}
         with patch(f"{_RA}.time.sleep"), \
              patch(f"{_RA}.get_recent_posted_post_ids", return_value=[9]), \
+             patch(f"{_RA}.get_uncaptured_posted_post_ids", return_value=[]), \
              patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
              patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://x/urn"), \
              patch(f"{_RA}._post_social_counts", return_value=detail), \
@@ -163,6 +166,75 @@ class TestScrapeRecordsImpressions:
             auto_scrape_post_stats.run(user_id=1)
         assert rec.call_args.kwargs == {"reposts": 6, "impressions": 72, "saves": 9}
         assert rec.call_args.args[2:] == (5, 2)
+
+
+class TestScrapeBackfillsNeverCapturedPosts:
+    """Issue #809: the sweep walks a short window but the dashboard reads 90 days, so a post whose
+    capture was missed while it was fresh stayed unmeasurable forever — and the analytics rendered a
+    shrinking subset of the account."""
+
+    def _run(self, recent, uncaptured, env=None, counts=None):
+        with patch(f"{_RA}.time.sleep"), \
+             patch.dict("os.environ", env or {}, clear=False), \
+             patch(f"{_RA}.get_recent_posted_post_ids", return_value=list(recent)), \
+             patch(f"{_RA}.get_uncaptured_posted_post_ids", return_value=list(uncaptured)) as back, \
+             patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://x/urn"), \
+             patch(f"{_RA}._post_social_counts",
+                   return_value={"reactions": 1, "comments": 0} if counts is None else counts), \
+             patch(f"{_RA}._post_analytics_counts", return_value={}), \
+             patch(f"{_RA}.get_shipped_variant_keys", return_value={}), \
+             patch(f"{_RA}.track_post_outcome"), \
+             patch(f"{_RA}.record_post_stats") as rec, patch(f"{_RA}.quit_gracefully"):
+            from cqc_lem.app.run_automation import auto_scrape_post_stats
+            result = auto_scrape_post_stats.run(user_id=1)
+        return result, rec, back
+
+    def test_older_uncaptured_posts_are_appended_to_the_sweep(self):
+        result, rec, back = self._run(recent=[9], uncaptured=[4, 2])
+        assert [c.args[1] for c in rec.call_args_list] == [9, 4, 2]
+        assert back.call_args.kwargs == {"days": 90, "limit": 5}
+        assert "3" in result
+
+    def test_a_post_already_in_the_recent_sweep_is_not_scraped_twice(self):
+        _, rec, _ = self._run(recent=[9, 10], uncaptured=[10, 4])
+        assert [c.args[1] for c in rec.call_args_list] == [9, 10, 4]
+
+    def test_backfill_only_posts_still_open_a_session(self):
+        """An account whose posts all aged out of the short window still gets measured."""
+        _, rec, _ = self._run(recent=[], uncaptured=[4])
+        assert [c.args[1] for c in rec.call_args_list] == [4]
+
+    def test_window_and_cap_are_env_tunable(self):
+        _, _, back = self._run(recent=[9], uncaptured=[],
+                               env={"POST_STATS_BACKFILL_DAYS": "30", "POST_STATS_BACKFILL_MAX": "2"})
+        assert back.call_args.kwargs == {"days": 30, "limit": 2}
+
+    def test_cap_of_zero_disables_the_backfill(self):
+        _, _, back = self._run(recent=[9], uncaptured=[4],
+                               env={"POST_STATS_BACKFILL_MAX": "0"})
+        back.assert_not_called()
+
+    def test_unparseable_env_falls_back_to_defaults(self):
+        _, _, back = self._run(recent=[9], uncaptured=[],
+                               env={"POST_STATS_BACKFILL_DAYS": "ninety", "POST_STATS_BACKFILL_MAX": ""})
+        assert back.call_args.kwargs == {"days": 90, "limit": 5}
+
+    def test_an_unreadable_page_records_nothing_instead_of_a_zero_row(self):
+        """A page that never rendered (auth wall, 429, dead permalink) parses to NO signals at all —
+        writing the zeros would publish a fabricated row, and for a backfilled post it is permanent:
+        the stat row retires it from the never-captured queue on a single bad read."""
+        result, rec, _ = self._run(recent=[], uncaptured=[4], counts={})
+        rec.assert_not_called()
+        assert "0" in result
+
+    def test_a_genuinely_zero_engagement_post_is_still_recorded(self):
+        """A readable page always yields the full zero-filled dict, so 'no engagement' must keep
+        being measured — only 'nothing read' is skipped."""
+        _, rec, _ = self._run(recent=[9], uncaptured=[],
+                              counts={"reactions": 0, "comments": 0, "reposts": 0,
+                                      "impressions": 0, "saves": 0})
+        assert [c.args[1] for c in rec.call_args_list] == [9]
 
 
 class TestPostAnalyticsCounts:
