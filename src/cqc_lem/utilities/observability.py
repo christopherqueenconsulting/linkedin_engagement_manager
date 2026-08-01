@@ -1120,6 +1120,37 @@ def track_catchup_run(user_id: Optional[int], report: Optional[dict] = None, **e
     )
 
 
+def track_feed_scan(user_id: Optional[int], funnel: Optional[dict] = None, **extra) -> None:
+    """Emit one feed/roster commenting scan (issue #817) — EVERY scan, including the ones that
+    comment on nothing.
+
+    `feed_sort` is the load-bearing property. Issue #622 made the scoring matrix recency-dominant,
+    so a scan that ran while the 'Sort by -> Recent' control could not be found ranked a candidate
+    pool LinkedIn had already reordered by engagement. That miss was only ever a log line, which
+    meant an unsorted scan and a recency-sorted one were indistinguishable in the funnel — and
+    #622's effect was being measured against a silent mix of the two. It is a STRING (never a
+    boolean) so alert tiles can filter on it; `recent` is the only value that means sorted.
+    """
+    funnel = dict(funnel or {})
+    posthog.capture(
+        distinct_id=str(user_id or "system"),
+        event="feed_scan",
+        properties={
+            "user_id": user_id,
+            "feed_sort": funnel.get("feed_sort"),
+            "examined": int(funnel.get("examined") or 0),
+            "passed_filters": int(funnel.get("passed_filters") or 0),
+            "matched_topics": int(funnel.get("matched_topics") or 0),
+            "commented": int(funnel.get("commented") or 0),
+            "roster_commented": int(funnel.get("roster_commented") or 0),
+            "feed_commented": int(funnel.get("feed_commented") or 0),
+            "off_topic_skipped": int(funnel.get("off_topic_skipped") or 0),
+            "fallback_used": bool(funnel.get("fallback_used")),
+            **extra,
+        },
+    )
+
+
 def track_margin_report(report: dict) -> None:
     """Emit the weekly unit-economics scorecard (plan §E.1.4) as one `margin_report` event so the
     PostHog tiles read system margin, cohort margin and LTV:CAC without re-deriving them. Per-user

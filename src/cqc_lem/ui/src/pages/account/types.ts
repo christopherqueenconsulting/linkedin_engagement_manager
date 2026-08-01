@@ -92,6 +92,9 @@ export type FeedReach = {
   off_topic_skipped?: number
   max_post_age_hours?: number
   min_reactions?: number
+  // Which feed ordering that scan actually ranked (#817). 'recent' is the only value that means
+  // LEM's recency-first scoring saw a recency-ordered feed; 'n/a' is a group feed, which has none.
+  feed_sort?: 'recent' | 'top' | 'missing' | 'unknown' | 'n/a'
   at?: string
 }
 

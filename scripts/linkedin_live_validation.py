@@ -15,11 +15,15 @@ Answers, against a REAL logged-in session, the two questions
      thread today (anchor / button / text node / More menu / direct compose URL / messaging search),
      on which surface, and what the reply reader sees once it is open — the early warning for the
      next entry-point rotation, which is what silently disabled reply detection in the first place.
+  5. On the home feed: does the "Sort by -> Recent" control resolve, and does the flip stick? —
+     grounds #817. #622 made feed scoring recency-dominant, so a missing control means the whole
+     matrix ranks LinkedIn's algorithmic feed instead of a fresh one.
 
 **Read-only.** It navigates and reads: it publishes nothing, comments on nothing, sends no
 invites or DMs and changes no settings. ``--probe-composer`` additionally OPENS the post
 composer to capture the "add a document" affordance's anchors and closes it with Escape without
-attaching or posting anything.
+attaching or posting anything; ``--comment-outcome-url`` and ``--feed-sort`` flip a sort control,
+exactly as the production readers they are grounding do.
 
 Run it from inside a Selenium worker so the login/cookie/proxy stack is the production one
 (``scripts/`` is not baked into the image, so pipe the file in on stdin, the same way
@@ -31,6 +35,11 @@ Run it from inside a Selenium worker so the login/cookie/proxy stack is the prod
 
 The report is JSON on stdout — paste it into the issue. The parsing/verdict logic is pure and
 unit-tested; the browser steps take injected callables so they are mocked in tests.
+
+``--feed-sort`` deliberately runs against an image that PREDATES the chain it grounds: the only
+grounding pass that can stop an unvalidated selector chain from shipping happens before the merge
+that ships it. It carries the chain itself when the running image has none, and says so in the
+report (``chain_source``).
 """
 
 import argparse
@@ -315,6 +324,200 @@ def probe_comment_outcome(driver, post_url: str, our_slug: str, comment_text: st
     return reading
 
 
+# This probe is piped into a RUNNING Selenium worker, so the `cqc_lem` it imports is the code baked
+# into the DEPLOYED image — not this branch. That is exactly backwards for the only grounding pass
+# that can stop an unvalidated chain from shipping: a PRE-merge run cannot import the chain it is
+# grounding, because that image predates it. So the chain is taken from the running image when it
+# HAS one and carried here when it does not, and the report names which — a reading against the
+# deployed chain and one against this branch's answer different questions. `TestFeedSortChainCopy`
+# fails the build if the carried copy drifts from `run_automation`'s.
+_X_AZ_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_X_AZ_LOWER = "abcdefghijklmnopqrstuvwxyz"
+
+
+def _x_lower(expression: str) -> str:
+    return f"translate({expression},'{_X_AZ_UPPER}','{_X_AZ_LOWER}')"
+
+
+_X_LOWER_TEXT = _x_lower("normalize-space()")
+_X_LOWER_ARIA = _x_lower("@aria-label")
+_X_LOWER_TESTID = _x_lower("@data-testid")
+
+SORT_RECENT = "recent"
+SORT_TOP = "top"
+SORT_MISSING = "missing"
+SORT_UNKNOWN = "unknown"
+
+FALLBACK_SORT_LOCATORS = [
+    (By.XPATH, f"//button[contains({_X_LOWER_ARIA},'sort')]"),
+    (By.XPATH, f"//*[self::button or @role='button'][contains({_X_LOWER_TESTID},'sort')]"),
+    (By.XPATH, f"//button[contains({_X_LOWER_TEXT},'sort by')]"),
+    (By.XPATH, f"//button[@aria-haspopup][{_X_LOWER_TEXT}='{SORT_TOP}' or "
+               f"{_X_LOWER_TEXT}='{SORT_RECENT}']"),
+    (By.XPATH, f"//*[@role='button'][contains({_X_LOWER_ARIA},'sort')]"),
+]
+
+FALLBACK_RECENT_OPTION_LOCATORS = [
+    (By.XPATH, "//*[self::button or self::li or @role='menuitem' or @role='menuitemradio' "
+               f"or @role='option'][{_X_LOWER_TEXT}='{SORT_RECENT}']"),
+    (By.XPATH, "//*[self::button or @role='menuitem' or @role='menuitemradio' or @role='option']"
+               f"[contains({_X_LOWER_TEXT},'{SORT_RECENT}')]"),
+    (By.XPATH, f"//*[{_X_LOWER_TEXT}='{SORT_RECENT}']"),
+]
+
+
+def feed_sort_chains() -> tuple:
+    """(trigger locators, 'Recent' option locators, where they came from)."""
+    try:
+        from cqc_lem.app.run_automation import (_FEED_RECENT_OPTION_LOCATORS,
+                                                _FEED_SORT_LOCATORS)
+    except ImportError:
+        return list(FALLBACK_SORT_LOCATORS), list(FALLBACK_RECENT_OPTION_LOCATORS), "script"
+    return list(_FEED_SORT_LOCATORS), list(_FEED_RECENT_OPTION_LOCATORS), "image"
+
+
+def control_sort_state(control) -> str:
+    """Which sort a found control reports, or '' when its label is unreadable. '' is load-bearing:
+    'we could not tell' must never be recorded as 'recent' — that is the lie #817 exists to stop.
+    A label naming BOTH sorts is unreadable too, exactly as `_feed_sort_state` treats it, or the
+    probe would report a control healthy that production reads as unknown."""
+    if control is None:
+        return ""
+    try:
+        label = f"{control.get_attribute('aria-label') or ''} {control.text or ''}".lower()
+    except Exception:
+        return ""
+    has_recent, has_top = SORT_RECENT in label, SORT_TOP in label
+    if has_recent and not has_top:
+        return SORT_RECENT
+    if has_top and not has_recent:
+        return SORT_TOP
+    return ""
+
+
+def feed_sort_verdict(reading: Optional[dict]) -> str:
+    """What one feed-sort probe proves about #817.
+
+    'recent' is the only healthy answer: it is the state in which `_score_feed_post`'s recency term
+    is ranking a recency-ordered feed. Everything else names WHICH half broke — no control at all
+    (the selectors have rotated) versus a control that would not flip (the menu has) — because those
+    have different fixes and the log line `Selector miss: Feed sort control` cannot tell them apart.
+    """
+    reading = dict(reading or {})
+    state = reading.get("sort_after")
+    note = (" [chain carried by this script — the running image predates #817]"
+            if reading.get("chain_source") == "script" else "")
+    if state == SORT_RECENT:
+        route = ("already on Recent" if reading.get("sort_before") == SORT_RECENT
+                 else "flipped to Recent")
+        return f"sort control OK — {route}{note}"
+    if not reading.get("control_found"):
+        return ("NO sort control resolved — every feed scan is ranking LinkedIn's algorithmic feed; "
+                f"re-ground _FEED_SORT_LOCATORS from `visible_controls` below{note}")
+    if state == SORT_TOP or reading.get("option_found") is False:
+        return ("control resolved but the 'Recent' option did not — re-ground "
+                f"_FEED_RECENT_OPTION_LOCATORS from `visible_controls` below{note}")
+    return f"control resolved, sort state unreadable after the flip ({state}){note}"
+
+
+def menu_item_labels(driver, limit: int = 40) -> list:
+    """Every visible menu-role label on screen. LinkedIn's sort options are not always <button>s, so
+    `visible_button_labels` alone can report an empty menu that is actually rendered as list items —
+    which would send the next re-grounding pass after the wrong half of the control.
+
+    Menu ROLES are enumerated before bare <li>s, and the two are separate queries on purpose: one
+    comma-joined selector returns DOCUMENT order, and a feed page is full of <li>s (global nav, the
+    left rail, every post's action row) that come before an overlay dropdown — so the cap would be
+    spent on page furniture and the menu this probe exists to capture could be missing from its own
+    capture."""
+    labels = []
+    for selector in ("[role='menuitem'],[role='menuitemradio'],[role='option']", "li"):
+        if len(labels) >= limit:
+            break
+        try:
+            elements = driver.find_elements(By.CSS_SELECTOR, selector)
+        except Exception as e:
+            labels.append(f"<enumeration stopped: {type(e).__name__}>")
+            break
+        for element in elements:
+            try:
+                if not element.is_displayed():
+                    continue
+                label = (element.get_attribute("aria-label") or element.text or "").strip()
+            except Exception:
+                continue
+            label = " ".join(label.split())[:80]
+            if label and label not in labels:
+                labels.append(label)
+            if len(labels) >= limit:
+                break
+    return labels
+
+
+def _flip_feed_sort(driver, wait, control, option_locators, sort_locators, sleep) -> dict:
+    """The steps `_switch_feed_to_recent` takes, run from the probe so a pre-merge pass can take
+    them against an image that does not have that function yet.
+
+    It reports `option_found` separately, which the production return value has to collapse: 'top'
+    covers both "the menu never opened" and "it opened without a Recent row", and those are re-ground
+    from different halves of the capture below.
+    """
+    from cqc_lem.utilities.selenium_util import find_first
+
+    if control is None:
+        return {"option_found": None, "sort_after": SORT_MISSING}
+    if control_sort_state(control) == SORT_RECENT:
+        return {"option_found": None, "sort_after": SORT_RECENT}
+    driver.execute_script("arguments[0].click();", control)
+    sleep(1.5)
+    option = find_first(driver, wait, option_locators, "Recent sort option", required=False,
+                        visible_only=True, max_try=1)
+    if option is None:
+        # Returning here leaves the dropdown OPEN, which is what `visible_controls` needs to capture.
+        return {"option_found": False, "sort_after": SORT_TOP}
+    driver.execute_script("arguments[0].click();", option)
+    sleep(3)
+    after = find_first(driver, wait, sort_locators, "Feed sort control", required=False,
+                       visible_only=True, max_try=1)
+    return {"option_found": True, "sort_after": control_sort_state(after) or SORT_UNKNOWN}
+
+
+def probe_feed_sort(driver, sleep=time.sleep) -> dict:
+    """#817: on the real home feed, report whether the sort control resolves, what it reads before
+    and after the flip, and every visible control that could plausibly BE it.
+
+    `visible_controls` is the point: a bare "not found" is not re-groundable, but the live labels are
+    exactly what the next locator chain gets written from. They are captured AFTER the flip attempt
+    on purpose — when the trigger resolved and the 'Recent' option did not, the dropdown is still
+    open at that moment, so the capture holds the menu this probe exists to re-ground.
+    """
+    from cqc_lem.utilities.selenium_util import find_first
+    from selenium.webdriver.support.ui import WebDriverWait
+
+    sort_locators, option_locators, chain_source = feed_sort_chains()
+    wait = WebDriverWait(driver, 10)
+    driver.get(FEED_URL)
+    sleep(5)
+    control = find_first(driver, wait, sort_locators, "Feed sort control", required=False,
+                         visible_only=True, max_try=1)
+    reading = {"url": getattr(driver, "current_url", FEED_URL),
+               "chain_source": chain_source,
+               "control_found": control is not None,
+               "control": element_evidence(control) if control is not None else None,
+               "sort_before": control_sort_state(control),
+               "locators": [f"{by}={val}" for by, val in sort_locators]}
+    try:
+        reading.update(_flip_feed_sort(driver, wait, control, option_locators, sort_locators, sleep))
+    except Exception as e:
+        # The production path logs a warning and reports 'unknown'; a probe that swallowed the cause
+        # would send the re-grounding pass looking at selectors when the session was the problem.
+        reading.update({"option_found": None, "sort_after": SORT_UNKNOWN,
+                        "flip_error": f"{type(e).__name__}: {e}"})
+    reading["visible_controls"] = visible_button_labels(driver) + menu_item_labels(driver)
+    reading["verdict"] = feed_sort_verdict(reading)
+    return reading
+
+
 def message_thread_verdict(reading: Optional[dict]) -> str:
     """What one thread-open probe proves about the #731 resolution ladder.
 
@@ -489,15 +692,18 @@ def main(argv: Optional[list] = None) -> int:
                         help="open LinkedIn's article editor and report each publish step's selector "
                              "state (#771/#804); pass a custom URL or use the default. Read-only: "
                              "nothing is typed and no control is clicked, so publish reads UNKNOWN")
+    parser.add_argument("--feed-sort", action="store_true",
+                        help="report whether the home feed's 'Sort by -> Recent' control resolves "
+                             "and whether the flip sticks (#817)")
     parser.add_argument("--watch", action="store_true",
                         help="request the watchable Grid debug node so the session is visible via "
                              "noVNC; falls back to the pool if the debug node is busy/absent")
     args = parser.parse_args(argv)
 
     if not (args.post_url or args.probe_composer or args.comment_outcome_url or args.dm_thread_url
-            or args.article_editor_url):
+            or args.article_editor_url or args.feed_sort):
         parser.error("nothing to probe — pass --post-url, --comment-outcome-url, --dm-thread-url, "
-                     "--article-editor-url and/or --probe-composer")
+                     "--article-editor-url, --feed-sort and/or --probe-composer")
 
     from cqc_lem.app.run_automation import get_current_profile
     from cqc_lem.utilities.selenium_util import quit_gracefully
@@ -523,6 +729,8 @@ def main(argv: Optional[list] = None) -> int:
             report["message_thread"] = probe_message_thread(
                 driver, args.dm_thread_url, args.dm_thread_name,
                 self_name=resolve_self_name(args.user_id, profile))
+        if args.feed_sort:
+            report["feed_sort"] = probe_feed_sort(driver)
         if args.probe_composer:
             report["composer"] = probe_composer(driver)
         if args.article_editor_url:

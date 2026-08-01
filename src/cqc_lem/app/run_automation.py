@@ -89,7 +89,7 @@ from cqc_lem.utilities.linkedin_formatter import normalize_public_text
 from cqc_lem.utilities.logger import myprint, log_error, log_info, log_warning, log_debug
 from cqc_lem.utilities.observability import track_post_outcome, track_audience_snapshot, \
     track_comment_outcome, track_golden_hour_report, track_company_page_invite_run, \
-    track_catchup_run, attribute_llm_cost, llm_attribution, \
+    track_catchup_run, track_feed_scan, attribute_llm_cost, llm_attribution, \
     FEATURE_COMMENT, FEATURE_CONTENT, FEATURE_DM
 from cqc_lem.utilities.env_constants import MAX_WAIT_RETRY
 from cqc_lem.utilities.selenium_util import click_element_wait_retry, \
@@ -1158,44 +1158,129 @@ def _roster_activity_url(profile_url: str) -> str:
     return f"{base}/recent-activity/all/"
 
 
-def _feed_sort_control_expected(driver) -> bool:
-    """'Sort by' is a HOME-FEED control. Absent there it is selector rot and must warn; on a group
-    feed or an activity page it was never part of the surface (issue #872), and warning would repeat
-    every run until the recurrence rule filed a defect for working behaviour. An unreadable URL
-    counts as not-expected — a false silence loses one signal, a false defect costs a triage."""
+# XPath 1.0 has no lower-case(), so translate() is the case fold. Every comparison against a
+# LinkedIn sort label goes through it: LinkedIn renders 'Most recent' / 'Recent', and a literal
+# case-sensitive match against any other casing silently never fires.
+_X_AZ_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_X_AZ_LOWER = "abcdefghijklmnopqrstuvwxyz"
+
+
+def _x_lower(expression: str) -> str:
+    """`expression` case-folded inside an XPath predicate."""
+    return f"translate({expression},'{_X_AZ_UPPER}','{_X_AZ_LOWER}')"
+
+
+_X_LOWER_TEXT = _x_lower("normalize-space()")
+_X_LOWER_ARIA = _x_lower("@aria-label")
+_X_LOWER_TESTID = _x_lower("@data-testid")
+
+# What the run's feed sort actually was. Only FEED_SORT_RECENT means the recency-dominant scoring
+# matrix (#622) ranked a recency-ordered feed; every other value means it ranked whatever LinkedIn's
+# algorithm served, and the scan must not be read as if recency sorting was active (#817).
+FEED_SORT_RECENT = "recent"            # confirmed on 'Recent' by the control itself
+FEED_SORT_TOP = "top"                  # control found, still on the algorithmic sort
+FEED_SORT_MISSING = "missing"          # no sort control on the home feed at all
+FEED_SORT_UNKNOWN = "unknown"          # control there, but which sort applies could not be read
+FEED_SORT_NOT_APPLICABLE = "n/a"       # a surface that never had one (group feed, roster activity)
+
+# Ordered fallback chain for the home-feed sort trigger, most-stable anchor first: aria-label →
+# data-testid → visible 'Sort by' text → a popup trigger whose whole label IS the current sort (the
+# 'Sort by' prefix is dropped on narrow layouts) → any non-<button> role=button carrying 'sort'.
+# Class names are never keyed on — SDUI churns them.
+_FEED_SORT_LOCATORS = [
+    (By.XPATH, f"//button[contains({_X_LOWER_ARIA},'sort')]"),
+    (By.XPATH, f"//*[self::button or @role='button'][contains({_X_LOWER_TESTID},'sort')]"),
+    (By.XPATH, f"//button[contains({_X_LOWER_TEXT},'sort by')]"),
+    (By.XPATH, f"//button[@aria-haspopup][{_X_LOWER_TEXT}='{FEED_SORT_TOP}' or "
+               f"{_X_LOWER_TEXT}='{FEED_SORT_RECENT}']"),
+    (By.XPATH, f"//*[@role='button'][contains({_X_LOWER_ARIA},'sort')]"),
+]
+
+_FEED_RECENT_OPTION_LOCATORS = [
+    (By.XPATH, "//*[self::button or self::li or @role='menuitem' or @role='menuitemradio' "
+               f"or @role='option'][{_X_LOWER_TEXT}='{FEED_SORT_RECENT}']"),
+    (By.XPATH, "//*[self::button or @role='menuitem' or @role='menuitemradio' or @role='option']"
+               f"[contains({_X_LOWER_TEXT},'{FEED_SORT_RECENT}')]"),
+    (By.XPATH, f"//*[{_X_LOWER_TEXT}='{FEED_SORT_RECENT}']"),
+]
+
+
+def _is_home_feed(driver) -> bool:
+    """True only on linkedin.com/feed itself. Group feeds and a roster author's recent-activity page
+    reuse the same commenting engine but never had a home-feed sort control, so a miss there is an
+    expected no-op — warning on it would file a defect for working behaviour.
+
+    An unreadable URL counts as NOT the home feed (issue #872): a dead session cannot say which
+    surface it was on, and escalating on a guess costs a triage for working behaviour. A false
+    silence loses one signal; a false defect costs a person."""
     try:
-        return "/feed" in str(driver.current_url or "")
+        path = str(driver.current_url or "").split("?")[0].split("#")[0].lower()
     except Exception:
         return False
+    return path.rstrip("/").endswith("/feed")
 
 
-def _switch_feed_to_recent(driver, wait) -> None:
-    """Best-effort: flip the feed sort from 'Top' to 'Recent' so golden-hour posts surface for
-    commenting. Silent no-op if the 'Sort by' control isn't present."""
+def _feed_sort_state(control) -> str:
+    """Which sort a found control reports — FEED_SORT_RECENT / FEED_SORT_TOP, or '' when its label
+    is unreadable. '' is load-bearing: 'we could not tell' must never be recorded as 'recent'.
+
+    A label naming BOTH sorts is unreadable too. Some dropdown triggers spell their options into
+    the accessible name ('Sort by, currently Top, options Top and Recent'), and taking 'recent' from
+    one would do the two worst things at once: skip the flip below (the label already 'says' Recent)
+    and record the run as sorted — the exact lie #817 exists to stop."""
+    if control is None:
+        return ""
     try:
-        # Only the home feed has the control, so only there is a miss worth waiting out (15s x
-        # MAX_WAIT_RETRY per group run, otherwise) or worth warning about.
-        expected = _feed_sort_control_expected(driver)
-        btn = find_first(driver, wait, [(By.XPATH, "//button[contains(normalize-space(),'Sort by')]")],
-                         "Feed sort control", required=False, warn_on_miss=expected,
-                         max_try=MAX_WAIT_RETRY if expected else 1)
+        label = f"{control.get_attribute('aria-label') or ''} {control.text or ''}".lower()
+    except Exception:
+        return ""
+    has_recent, has_top = FEED_SORT_RECENT in label, FEED_SORT_TOP in label
+    if has_recent and not has_top:
+        return FEED_SORT_RECENT
+    if has_top and not has_recent:
+        return FEED_SORT_TOP
+    return ""
+
+
+def _switch_feed_to_recent(driver, wait, user_id: int = None) -> str:
+    """Flip the home feed's sort from 'Top' to 'Recent' and REPORT what the run actually got.
+
+    A silent no-op was fine before #622 made feed scoring recency-dominant; it is not now. With the
+    sort control missing, `_score_feed_post`'s recency term ranks a candidate pool LinkedIn has
+    already reordered by engagement, so the run quietly degrades to roughly what #622 replaced. The
+    return value is the run's sort state and it rides into the feed funnel + `feed_scan` event, so a
+    scan is never read as recency-sorted when it wasn't (#817).
+
+    FEED_SORT_RECENT is returned ONLY when the control confirms it afterwards — an unverified flip
+    recorded as sorted tells the same lie the silent no-op told. Fail-fast (`max_try=1`): this runs
+    twice a run and each retry round burned MAX_WAIT_RETRY x ~5s before reporting the same miss.
+    """
+    try:
+        if not _is_home_feed(driver):
+            log_debug("Skipping feed sort — not the home feed", action_type="scrape", user_id=user_id)
+            return FEED_SORT_NOT_APPLICABLE
+        btn = find_first(driver, wait, _FEED_SORT_LOCATORS, "Feed sort control", required=False,
+                         visible_only=True, max_try=1, user_id=user_id)
         if btn is None:
-            return
-        # The control reads "Sort by: Recent" once flipped — skip re-opening the menu so the second
-        # caller in a run (navigate_to_feed then comment_on_feed_inline) is a cheap no-op.
-        if "recent" in (btn.text or "").lower():
-            return
+            return FEED_SORT_MISSING
+        # The control reads 'Recent' once flipped — skip re-opening the menu so the second caller in
+        # a run (navigate_to_feed then comment_on_feed_inline) is a cheap no-op.
+        if _feed_sort_state(btn) == FEED_SORT_RECENT:
+            return FEED_SORT_RECENT
         driver.execute_script("arguments[0].click();", btn)
         time.sleep(random.uniform(1, 2))
-        opt = find_first(driver, wait,
-                         [(By.XPATH, "//*[self::button or @role='menuitem' or @role='menuitemradio'][normalize-space()='Recent']"),
-                          (By.XPATH, "//*[normalize-space()='Recent']")],
-                         "Recent sort option", required=False)
-        if opt is not None:
-            driver.execute_script("arguments[0].click();", opt)
-            time.sleep(random.uniform(2, 3.5))
+        opt = find_first(driver, wait, _FEED_RECENT_OPTION_LOCATORS, "Recent sort option",
+                         required=False, visible_only=True, max_try=1, user_id=user_id)
+        if opt is None:
+            return FEED_SORT_TOP
+        driver.execute_script("arguments[0].click();", opt)
+        time.sleep(random.uniform(2, 3.5))
+        after = find_first(driver, wait, _FEED_SORT_LOCATORS, "Feed sort control", required=False,
+                           visible_only=True, max_try=1, user_id=user_id)
+        return _feed_sort_state(after) or FEED_SORT_UNKNOWN
     except Exception as e:
-        log_warning("Feed recent-sort failed", exc=e, action_type="scrape")
+        log_warning("Feed recent-sort failed", exc=e, action_type="scrape", user_id=user_id)
+        return FEED_SORT_UNKNOWN
 
 
 _FEED_FUNNEL_KEY = "linkedin:feed_funnel:{user_id}"
@@ -1438,7 +1523,9 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
 
     if roster_stats["targets_visited"]:
         navigate_to_feed(driver, wait)  # the roster pass navigated away from the feed
-    _switch_feed_to_recent(driver, wait)  # surface golden-hour posts; scoring still ranks them
+    # Surface golden-hour posts; scoring still ranks them. The returned state is recorded on the
+    # funnel + the feed_scan event — an unsorted scan ranked an algorithmic candidate pool (#817).
+    feed_sort = _switch_feed_to_recent(driver, wait, user_id=user_id)
     # Reach funnel (surfaced to the user so they can tell when their targeting is too strict) and the
     # empty-filter fallback. examined = posts we looked at; hard = passed excludes/recency/min-reactions;
     # include = also matched the user's include topics/keywords/authors.
@@ -1580,7 +1667,7 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
         posted_key_sources[source] = posted_key_sources.get(source, 0) + count
     feed_commented = posted - roster_stats["posted"]
     off_topic_total = off_topic_skipped + roster_stats["off_topic_skipped"]
-    set_feed_funnel(user_id, {
+    funnel = {
         "examined": len(examined_keys) + roster_stats["examined"],
         "passed_filters": len(hard_keys),      # cleared excludes + recency + min-reactions
         "matched_topics": len(include_keys),   # also matched include topics/keywords/authors
@@ -1597,14 +1684,19 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
         "commented_key_sources": posted_key_sources,   # only the ones we commented on
         "max_post_age_hours": prefs.get("max_post_age_hours") or 24,
         "min_reactions": min_reactions,
+        # Which feed ordering the recency-dominant scoring matrix actually ranked (#817). Anything
+        # other than FEED_SORT_RECENT means the candidate pool was LinkedIn's algorithmic one.
+        "feed_sort": feed_sort,
         "at": datetime.now().isoformat(),
-    })
+    }
+    set_feed_funnel(user_id, funnel)
+    track_feed_scan(user_id, funnel)
     log_info(f"Engagement scan: examined {len(examined_keys) + roster_stats['examined']}, "
              f"passed filters {len(hard_keys)}, matched topics {len(include_keys)}, "
              f"commented {posted} (roster {roster_stats['posted']} / feed {feed_commented}), "
              f"off-topic skipped {off_topic_total}, fallback={fallback_used}, "
-             f"key sources {examined_key_sources}", user_id=user_id, action_type="comment",
-             task_name="comment_on_feed_inline")
+             f"sort {feed_sort}, key sources {examined_key_sources}", user_id=user_id,
+             action_type="comment", task_name="comment_on_feed_inline")
     if posted_key_sources.get("hash"):
         log_warning(f"{posted_key_sources['hash']} of {posted} feed comments used an unstable "
                     f"content-hash key — no activity URN on those cards (duplicate risk, #580)",
@@ -3651,14 +3743,10 @@ _MAX_OUTCOME_CHECKS_PER_RUN = 15  # volume backstop — one post navigation each
 _SORT_MOST_RELEVANT = "most relevant"
 _SORT_MOST_RECENT = "most recent"
 
-# XPath 1.0 has no lower-case(), so translate() is the case fold. Every comparison against a sort
-# label goes through it: LinkedIn renders 'Most recent', and a literal case-sensitive match against
-# any other casing silently never fires — which would leave the sort flip permanently failing and
-# the demotion signal permanently NULL.
-_X_AZ_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-_X_AZ_LOWER = "abcdefghijklmnopqrstuvwxyz"
-_X_LOWER_TEXT = f"translate(normalize-space(),'{_X_AZ_UPPER}','{_X_AZ_LOWER}')"
-_X_LOWER_ARIA = f"translate(@aria-label,'{_X_AZ_UPPER}','{_X_AZ_LOWER}')"
+# The case fold (`_X_LOWER_TEXT` / `_X_LOWER_ARIA`) is shared with the feed sort control above:
+# LinkedIn renders 'Most recent', and a literal case-sensitive match against any other casing
+# silently never fires — which would leave the sort flip permanently failing and the demotion
+# signal permanently NULL.
 # XPath's normalize-space() is the WHOLE SUBTREE's text, so an unbounded contains() on a generic
 # element also matches every ancestor wrapper up to <body> — and find_first returns the first match
 # in document order, i.e. the outermost one. That element's .text is then the whole page, so the
