@@ -970,12 +970,17 @@ def react_to_post_inline(driver, wait, card, post_content: str = None, comment_t
         reaction = choose_post_reaction(post_content, comment_text)
         # The reaction fly-out is hover-revealed off the card's primary Like/React toggle. Hover it
         # first (the menu opener is hidden until then), then click the opener.
+        # The toggle is only ONE of the two ways in: missing it still leaves the fly-out path below,
+        # so its absence alone is not a failure. And when the opener misses too, that miss already
+        # warns (`warn_on_miss=trigger is None`, issue #873) and the caller warns again — so warning
+        # here as well filed a THIRD PostHog defect for the same one condition (issue #877).
         trigger = state or find_first(
             driver, wait,
             [(By.CSS_SELECTOR, "button[aria-label='React Like']"),
              (By.CSS_SELECTOR, "button[aria-label^='React']"),
              (By.CSS_SELECTOR, "button[aria-label='Like']")],
-            "React toggle", parent_element=card, required=False, visible_only=True, user_id=user_id)
+            "React toggle", parent_element=card, required=False, visible_only=True,
+            warn_on_miss=False, user_id=user_id)
         if trigger is not None:
             try:
                 ActionChains(driver).move_to_element(trigger).perform()
@@ -985,7 +990,8 @@ def react_to_post_inline(driver, wait, card, post_content: str = None, comment_t
         # The fly-out opener is optional: with a `trigger` in hand its absence just means we take the
         # documented default-Like fallback below, which is working behaviour — warning about it every
         # card escalated into a filed defect (issue #873). With no trigger there is no fallback, so
-        # the card's reaction controls really are unreadable and the miss is worth the signal.
+        # the card's reaction controls really are unreadable and the miss is worth the signal — this
+        # is the ONE warning that stands for that condition (the React-toggle miss above is DEBUG).
         opened = click_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label='Open reactions menu']")],
                              "Open reactions menu", parent_element=card, required=False,
                              warn_on_miss=trigger is None, user_id=user_id)

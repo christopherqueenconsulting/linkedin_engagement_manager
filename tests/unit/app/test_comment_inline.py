@@ -332,6 +332,34 @@ class TestReactToPostInline:
         assert ok is False
         assert cf.call_args_list[0].kwargs["warn_on_miss"] is True
 
+    def test_missing_react_toggle_is_never_a_warning(self):
+        """The React toggle is only one of the two ways into a reaction — the fly-out opener is the
+        other — so its absence alone is not a failure. And when BOTH miss, the opener's own miss
+        already warns (issue #873) and the caller warns again, so warning here too filed a third
+        PostHog defect for one condition (issue #877)."""
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
+             patch(f"{_RA}.wait_for_ajax"), \
+             patch(f"{_RA}.find_first", return_value=None) as ff, \
+             patch(f"{_RA}.click_first", return_value=None):
+            ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
+        toggle = [c for c in ff.call_args_list if c.args[3] == "React toggle"]
+        assert len(toggle) == 1
+        assert toggle[0].kwargs["warn_on_miss"] is False
+
+    def test_react_toggle_is_not_looked_up_when_the_state_button_is_the_trigger(self):
+        """A readable 'no reaction' state button IS the trigger, so the toggle chain never runs and
+        can't miss — the warning this issue is about only ever fires on state-less cards."""
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
+             patch(f"{_RA}.wait_for_ajax"), \
+             patch(f"{_RA}.find_first",
+                   side_effect=[_state("Reaction button state: no reaction"),
+                                _state("Reaction button state: Like reaction")]) as ff, \
+             patch(f"{_RA}.click_first", return_value=MagicMock()):
+            ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
+        assert not [c for c in ff.call_args_list if c.args[3] == "React toggle"]
+
     def test_post_click_confirm_is_not_a_warning_when_the_card_never_had_the_toggle(self):
         """With no Reaction-state button before the click there is nothing to re-read after it, so
         the miss is the documented trust-the-click fallback. Warning per card escalated it to ERROR
