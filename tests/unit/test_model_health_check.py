@@ -850,15 +850,16 @@ class TestCatalogScanCLI:
             mhc.main(["--catalog-apply", f"--plan-file={plan_path}"])
 
     def test_the_repo_config_and_committed_snapshot_are_clean_today(self, tmp_path, capsys):
-        """Guards the shipped state: no configured model is scheduled to retire, and the committed
-        snapshot matches the catalog fixture, so a fresh run files nothing spurious."""
+        """Guards the shipped state: no configured model is scheduled to retire, the committed
+        snapshot matches the catalog fixture, and — since the #717 roster refresh dropped the
+        trailing minimax-m2.7 — no configured model is a version behind its own family either.
+        A fresh run therefore files nothing at all."""
         code = mhc.main(["--catalog-scan", "--no-usage-levels",
                          f"--config={_ROOT / '.litellm' / 'config.yaml'}",
                          f"--map={_ROOT / '.litellm' / 'model_upgrades.yaml'}",
                          f"--snapshot={_ROOT / '.litellm' / 'ollama_catalog_snapshot.json'}",
                          f"--catalog-fixture={FIXTURES}", "--today=2026-07-27"])
         out = capsys.readouterr().out
-        assert "RETIRING" not in out and "NEW TAG" not in out
-        # minimax-m2.7 trails minimax-m3 — the owner's example, reported as an evaluation only.
-        assert "UPGRADE (major) minimax-m2.7 -> minimax-m3" in out
-        assert code == 2
+        assert "RETIRING" not in out and "NEW TAG" not in out and "UPGRADE" not in out
+        assert "nothing to do" in out
+        assert code == 0
