@@ -127,10 +127,14 @@ class TestReplyComposerForComment:
         assert ra._reply_composer_for_comment(_driver(collapsed), _comment(900), user_id=1) is None
 
     def test_none_when_the_comment_itself_is_not_rendered(self):
+        # #886 dropped the callers' own miss log, so EVERY None out of here has to say so itself —
+        # a stale comment must not drop a reply with no trace at any level.
         from cqc_lem.app import run_automation as ra
         comment = MagicMock()
         type(comment).rect = property(lambda self: (_ for _ in ()).throw(Exception("stale")))
-        assert ra._reply_composer_for_comment(_driver(_box(1030)), comment, user_id=1) is None
+        with patch(f"{_RA}.log_debug") as ld:
+            assert ra._reply_composer_for_comment(_driver(_box(1030)), comment, user_id=1) is None
+        ld.assert_called_once()
 
 
 class TestInSameComment:
@@ -224,6 +228,80 @@ class TestReplyInline:
              patch(f"{_RA}._reply_composer_for_comment", return_value=composer) as rc:
             ra._reply_to_comment_inline(driver, MagicMock(), comment, "a reply worth posting", user_id=1)
         assert rc.call_args.args[1] is comment
+
+
+def _thread_comment(y, height=120, composers=()):
+    """`_reply_under_comment_inline`'s comment: a rendered container that also answers the Reply
+    button lookup (`button[aria-label='Reply']`) the composer lookup does not."""
+    el = _comment(y, height=height, composers=composers)
+    el.find_elements.side_effect = lambda by, value: (
+        list(composers) if "textbox" in value else [MagicMock(name="reply_btn")])
+    return el
+
+
+class TestReplyUnderCommentComposerPick:
+    """Issue #886. #478 only PENALISED a composer above the comment (`+1e6`), so when the post's main
+    'Add a comment' box was the ONLY visible role=textbox — our reply box never opened, the thread
+    re-rendered, the box collapsed — it still won as `best` and the reply posted as a standalone
+    top-level comment. Resolution is now shared with `_reply_to_comment_inline` (#883): hard filter."""
+
+    def test_main_comment_box_as_the_only_composer_is_never_borrowed(self):
+        from cqc_lem.app import run_automation as ra
+        main = _box(100)                                    # the post's own 'Add a comment' box
+        comment = _thread_comment(900)
+        driver = _driver(main)
+        with patch(f"{_RA}.ActionChains"):
+            ok = ra._reply_under_comment_inline(driver, MagicMock(), comment, "a real reply", user_id=1)
+        assert ok is False
+        main.send_keys.assert_not_called()
+        main.click.assert_not_called()
+
+    def test_another_comments_composer_is_never_typed_into(self):
+        from cqc_lem.app import run_automation as ra
+        theirs = _box(1300)                                 # a LATER comment's open reply box
+        comment = _thread_comment(900)
+        driver = _driver(theirs)
+        driver.execute_script.return_value = False          # neither element contains the other
+        with patch(f"{_RA}.ActionChains"), \
+             patch(f"{_RA}._comment_container", return_value=_comment(1200)):
+            ok = ra._reply_under_comment_inline(driver, MagicMock(), comment, "a real reply", user_id=1)
+        assert ok is False
+        theirs.send_keys.assert_not_called()
+
+    def test_types_into_our_own_box_below_the_comment(self):
+        from cqc_lem.app import run_automation as ra
+        main, mine = _box(100), _box(1030, text="")
+        comment = _thread_comment(900, composers=[mine])
+        driver = _driver(main, mine); driver.execute_script.return_value = True
+        with patch(f"{_RA}.ActionChains"):
+            ok = ra._reply_under_comment_inline(driver, MagicMock(), comment, "a real reply", user_id=1)
+        assert ok is True
+        mine.send_keys.assert_called_once()
+        main.send_keys.assert_not_called()
+
+    def test_both_reply_paths_use_the_same_composer_resolver(self):
+        # Acceptance: ONE composer-resolution helper. Kept as a test so a future edit can't quietly
+        # reintroduce a second, softer pick on one of the two paths.
+        from cqc_lem.app import run_automation as ra
+        composer = MagicMock(); composer.text = ""
+        under_comment, inline_comment = MagicMock(), MagicMock()
+        under_comment.find_elements.return_value = [MagicMock(name="reply_btn")]
+        driver = MagicMock(); driver.execute_script.return_value = True
+        with patch(f"{_RA}.ActionChains"), patch(f"{_RA}.click_first", return_value=MagicMock()), \
+             patch(f"{_RA}._reply_composer_for_comment", return_value=composer) as rc:
+            assert ra._reply_under_comment_inline(driver, _wait(), under_comment, "reply one", user_id=1) is True
+            assert ra._reply_to_comment_inline(driver, _wait(), inline_comment, "reply two", user_id=1) is True
+        assert [c.args[1] for c in rc.call_args_list] == [under_comment, inline_comment]
+
+    def test_empty_reply_text_is_never_typed(self):
+        from cqc_lem.app import run_automation as ra
+        composer = MagicMock()
+        comment = MagicMock(); comment.find_elements.return_value = [MagicMock(name="reply_btn")]
+        with patch(f"{_RA}.ActionChains"), \
+             patch(f"{_RA}._reply_composer_for_comment", return_value=composer):
+            ok = ra._reply_under_comment_inline(MagicMock(), _wait(), comment, "   ", user_id=1)
+        assert ok is False
+        composer.send_keys.assert_not_called()
 
 
 class TestCommentItemsFromThread:

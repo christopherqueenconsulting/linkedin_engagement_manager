@@ -24,6 +24,25 @@ by the nav's `<svg>`: `ElementClickInterceptedException ... at point (x, 9)` (is
 still-mounted composer, which is the real y=9 source AND a comment landing on the wrong post.
 There is no fallback: no composer on this card = skip it (issue #876).
 
+## A reply composer is resolved ONE way, for both reply paths
+
+`_reply_composer_for_comment()` is the only thing that decides which `div[role='textbox']` a reply
+is typed into — `_reply_to_comment_inline` (a comment on a feed card, #883) and
+`_reply_under_comment_inline` (a reply under our own comment on someone else's post, #478/#886)
+both call it. Order: a box nested in the comment's own subtree wins; otherwise the visible box
+nearest the comment's bottom edge, with a box starting ABOVE the comment rejected **outright** and
+a box that resolves to a DIFFERENT comment rejected too. No box of ours = skip.
+
+The above-filter has to be a rejection, not a penalty. #478's original pick only scored an
+above-composer `+1e6`, so the post's main "Add a comment" box still won whenever it was the only
+visible composer (our reply box never opened, or the thread re-rendered and collapsed it) — and the
+reply posted as a standalone top-level comment, the exact failure the function exists to prevent
+(#886). The two helpers stay separate only because they OPEN the box differently: the #478 thread
+path needs `scrollIntoView` + an `ActionChains` hover to render a hover-hidden Reply button.
+
+A miss is an expected no-op and is logged DEBUG *inside* the resolver — never a `log_warning`,
+which would re-escalate as a defect on repeat (see `docs/error-tracking.md`).
+
 ## Failure naming
 
 Inline compose failures name the STEP that threw (e.g. `Inline comment post failed at focus

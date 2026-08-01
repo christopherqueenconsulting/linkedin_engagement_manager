@@ -107,19 +107,19 @@ class TestReactToCommentInline:
 
 
 class TestReplyUnderComment:
-    def test_types_into_nearest_composer_and_submits(self):
+    def test_types_into_this_comments_composer_and_submits(self):
         from cqc_lem.app.run_automation import _reply_under_comment_inline
         rbtn = MagicMock()
         comment = MagicMock(); comment.find_elements.return_value = [rbtn]
         composer = MagicMock()
         driver = MagicMock()
-        # scrollIntoView -> None; composer proximity JS -> composer; composer-centering
-        # scrollIntoView (#815) -> None; submit JS -> True
-        driver.execute_script.side_effect = [None, composer, None, True]
+        driver.execute_script.return_value = True  # scrollIntoView, then the submit-button JS
         with patch(f"{RA}.ActionChains"), patch(f"{RA}._strip_non_bmp", side_effect=lambda s: s), \
+             patch(f"{RA}._reply_composer_for_comment", return_value=composer) as rc, \
              patch(f"{RA}._composer_submitted", return_value=True):
             assert _reply_under_comment_inline(driver, MagicMock(), comment, "Great point!", user_id=1) is True
         composer.send_keys.assert_called()
+        assert rc.call_args.args[1] is comment  # resolution is anchored to THIS comment
 
     def test_returns_false_when_no_reply_button(self):
         from cqc_lem.app.run_automation import _reply_under_comment_inline
@@ -127,6 +127,18 @@ class TestReplyUnderComment:
         driver = MagicMock()
         with patch(f"{RA}.ActionChains"), patch(f"{RA}.log_warning"):
             assert _reply_under_comment_inline(driver, MagicMock(), comment, "hi", user_id=1) is False
+
+    def test_no_composer_of_ours_is_a_clean_skip_not_an_exception(self):
+        # Issue #886: the sweep and the lead-signal delivery both treat the return value as a
+        # boolean skip — a miss must never raise, and must never warn (an unopened reply box is an
+        # expected no-op; a repeated log_warning re-escalates as a defect).
+        from cqc_lem.app.run_automation import _reply_under_comment_inline
+        comment = MagicMock(); comment.find_elements.return_value = [MagicMock()]
+        driver = MagicMock()
+        with patch(f"{RA}.ActionChains"), patch(f"{RA}.log_warning") as lw, \
+             patch(f"{RA}._reply_composer_for_comment", return_value=None):
+            assert _reply_under_comment_inline(driver, MagicMock(), comment, "hi", user_id=1) is False
+        lw.assert_not_called()
 
 
 class TestCommentContainerHelpers:
