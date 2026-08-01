@@ -17,12 +17,40 @@ class TestSwitchFeedToRecent:
         assert find_first.call_count == 1
         driver.execute_script.assert_not_called()
 
-    def test_missing_sort_control_is_not_a_warning(self):
+    def test_missing_sort_control_is_not_a_warning_on_a_group_feed(self):
         """Group feeds never render the 'Sort by' control (issue #872) — a WARNING there repeats
-        every group run and escalates into a filed defect for working behaviour."""
+        every group run and escalates into a filed defect for working behaviour. The miss is also
+        not worth retrying out at 15s a try on a surface that never has the control."""
         from cqc_lem.app.run_automation import _switch_feed_to_recent
+        driver = MagicMock()
+        driver.current_url = "https://www.linkedin.com/groups/12345/"
         with patch(f"{_MOD}.find_first", return_value=None) as find_first:
-            _switch_feed_to_recent(MagicMock(), MagicMock())
+            _switch_feed_to_recent(driver, MagicMock())
+        assert find_first.call_args.kwargs["warn_on_miss"] is False
+        assert find_first.call_args.kwargs["max_try"] == 1
+
+    def test_missing_sort_control_still_warns_on_the_home_feed(self):
+        """The home feed DOES render the control — silencing the miss there would hide the selector
+        rot that leaves the recency-dominant engine reading a 'Top' feed."""
+        from cqc_lem.app.run_automation import _switch_feed_to_recent
+        driver = MagicMock()
+        driver.current_url = "https://www.linkedin.com/feed/"
+        with patch(f"{_MOD}.find_first", return_value=None) as find_first:
+            _switch_feed_to_recent(driver, MagicMock())
+        assert find_first.call_args.kwargs["warn_on_miss"] is True
+        assert find_first.call_args.kwargs["max_try"] > 1
+
+    def test_unreadable_url_does_not_warn(self):
+        """A dead session can't say which surface it was on — never escalate on a guess."""
+        from cqc_lem.app.run_automation import _switch_feed_to_recent
+
+        class _DeadSession:
+            @property
+            def current_url(self):
+                raise RuntimeError("invalid session id")
+
+        with patch(f"{_MOD}.find_first", return_value=None) as find_first:
+            _switch_feed_to_recent(_DeadSession(), MagicMock())
         assert find_first.call_args.kwargs["warn_on_miss"] is False
 
     def test_skips_when_already_sorted_by_recent(self):

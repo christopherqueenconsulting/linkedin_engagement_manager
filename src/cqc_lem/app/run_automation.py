@@ -91,6 +91,7 @@ from cqc_lem.utilities.observability import track_post_outcome, track_audience_s
     track_comment_outcome, track_golden_hour_report, track_company_page_invite_run, \
     track_catchup_run, attribute_llm_cost, llm_attribution, \
     FEATURE_COMMENT, FEATURE_CONTENT, FEATURE_DM
+from cqc_lem.utilities.env_constants import MAX_WAIT_RETRY
 from cqc_lem.utilities.selenium_util import click_element_wait_retry, \
     get_element_wait_retry, get_elements_as_list_wait_stale, getText, close_tab, get_driver_wait_pair, quit_gracefully, \
     wait_for_ajax, find_first, click_first, find_all_first
@@ -1128,14 +1129,27 @@ def _roster_activity_url(profile_url: str) -> str:
     return f"{base}/recent-activity/all/"
 
 
+def _feed_sort_control_expected(driver) -> bool:
+    """'Sort by' is a HOME-FEED control. Absent there it is selector rot and must warn; on a group
+    feed or an activity page it was never part of the surface (issue #872), and warning would repeat
+    every run until the recurrence rule filed a defect for working behaviour. An unreadable URL
+    counts as not-expected — a false silence loses one signal, a false defect costs a triage."""
+    try:
+        return "/feed" in str(driver.current_url or "")
+    except Exception:
+        return False
+
+
 def _switch_feed_to_recent(driver, wait) -> None:
     """Best-effort: flip the feed sort from 'Top' to 'Recent' so golden-hour posts surface for
-    commenting. Silent no-op if the 'Sort by' control isn't present — group feeds
-    (`auto_comment_in_groups`) never render it, so a WARNING here escalates on every group run and
-    files a defect for working behaviour."""
+    commenting. Silent no-op if the 'Sort by' control isn't present."""
     try:
+        # Only the home feed has the control, so only there is a miss worth waiting out (15s x
+        # MAX_WAIT_RETRY per group run, otherwise) or worth warning about.
+        expected = _feed_sort_control_expected(driver)
         btn = find_first(driver, wait, [(By.XPATH, "//button[contains(normalize-space(),'Sort by')]")],
-                         "Feed sort control", required=False, warn_on_miss=False)
+                         "Feed sort control", required=False, warn_on_miss=expected,
+                         max_try=MAX_WAIT_RETRY if expected else 1)
         if btn is None:
             return
         # The control reads "Sort by: Recent" once flipped — skip re-opening the menu so the second
