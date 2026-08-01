@@ -5939,16 +5939,22 @@ def get_enabled_group_ids(user_id: int) -> list:
 
 def get_next_group_for_post(user_id: int) -> Optional[dict]:
     """The ONE place "which group does the next group post go to" is decided (issue #769): the
-    least-recently-posted group the user has opted into for POSTING. `post_enabled` is independent
+    least-recently-TRIED group the user has opted into for POSTING. `post_enabled` is independent
     of `enabled` (which only governs commenting), so a group can take posts without being commented
-    in and vice versa. Never posted there = sorts first. None when no group is opted in."""
+    in and vice versa. Never tried = sorts first. None when no group is opted in.
+
+    Ordering reads `last_post_run_at` (every run that reached the group), NOT `last_posted_at`
+    (successful posts only) — a group where members cannot post never stamps the latter, so ordering
+    on it left that group "next" every week forever and starved the rest (issue #858). The COALESCE
+    covers any row stamped before `last_post_run_at` existed."""
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute(
             "SELECT group_id, group_name FROM user_groups "
             "WHERE user_id=%s AND post_enabled=1 "
-            "ORDER BY last_posted_at IS NULL DESC, last_posted_at ASC, group_name ASC LIMIT 1",
+            "ORDER BY COALESCE(last_post_run_at, last_posted_at) IS NULL DESC, "
+            "         COALESCE(last_post_run_at, last_posted_at) ASC, group_name ASC LIMIT 1",
             (user_id,))
         row = cursor.fetchone()
         return dict(row) if row else None
@@ -5961,16 +5967,39 @@ def get_next_group_for_post(user_id: int) -> Optional[dict]:
 
 
 def record_group_post(user_id: int, group_id: str) -> bool:
-    """Stamp a group as just-posted-in so the rotation moves on to the next one."""
+    """Stamp a group as just-posted-in so the rotation moves on to the next one. A successful post
+    is also a run, so both columns advance together."""
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
-        cursor.execute("UPDATE user_groups SET last_posted_at=NOW() WHERE user_id=%s AND group_id=%s",
+        cursor.execute("UPDATE user_groups SET last_posted_at=NOW(), last_post_run_at=NOW() "
+                       "WHERE user_id=%s AND group_id=%s",
                        (user_id, str(group_id)))
         connection.commit()
         return True
     except mysql.connector.Error as err:
         myprint(f"Could not record group post for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def record_group_post_run(user_id: int, group_id: str) -> bool:
+    """Stamp a group as just-TRIED (issue #858) — the rotation moves on, but `last_posted_at` is
+    left alone because nothing was published. Called only when the run reached the group and the
+    group itself turned out to be unpostable (no share box / editor / Post button — admin-only or
+    announcement groups). A run that never reached the group stamps neither column, so a transient
+    session failure still leaves that group next in line."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("UPDATE user_groups SET last_post_run_at=NOW() WHERE user_id=%s AND group_id=%s",
+                       (user_id, str(group_id)))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not record group post run for user {user_id} | Error: {err}")
         return False
     finally:
         cursor.close()

@@ -35,7 +35,7 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     get_engagement_preferences, count_comments_today, get_recent_engagers, upsert_engager, \
     get_newsletter_settings, mark_newsletter_published, record_newsletter_subscriber_stat, \
     get_newsletter_edition, mark_edition_published, mark_edition_failed, \
-    upsert_user_group, get_enabled_group_ids, record_group_post, record_post_stats, \
+    upsert_user_group, get_enabled_group_ids, record_group_post, record_group_post_run, record_post_stats, \
     get_recent_posted_post_ids, get_uncaptured_posted_post_ids, \
     get_shipped_variant_keys, \
     get_lead_magnet_settings, has_received_lead_magnet, record_lead_magnet_sent, \
@@ -2429,24 +2429,36 @@ def auto_post_to_group(self, user_id: int, group_id: str, group_name: str = None
                 profile_synthesis=get_or_create_profile_synthesis(user_id, my_profile)) or "")
         if not text.strip():
             return "No group post generated"
+
+        def _unpostable(reason: str) -> str:
+            # The group loaded but its composer did not: members cannot post here (admin-only /
+            # announcement group). Stamp the RUN so the rotation moves past it — ordering on
+            # successful posts alone left such a group "least recently posted" forever, starving
+            # every other post-enabled group (issue #858). `last_posted_at` is untouched, so it
+            # stays the truthful record of what actually shipped.
+            record_group_post_run(user_id, group_id)
+            log_info(f"Group is not postable, rotating past it: {reason}", user_id=user_id,
+                     task_name="auto_post_to_group")
+            return reason
+
         # Open the group share box, type, and post (best-effort SDUI selectors).
         if click_first(driver, wait, [(By.XPATH,
                 "//button[contains(normalize-space(),'Start a post') or contains(normalize-space(),'Start a public post') "
                 "or contains(@aria-label,'Start a post') or contains(@aria-label,'Create a post') "
                 "or (contains(normalize-space(),'Start a') and contains(normalize-space(),'post'))]")],
                        "Group share box", required=False) is None:
-            return "Group share box not found"
+            return _unpostable("Group share box not found")
         time.sleep(random.uniform(2, 3))
         box = find_first(driver, wait, [(By.CSS_SELECTOR, "div[role='textbox']")], "Group post editor",
                          visible_only=True, required=False)
         if box is None:
-            return "Group post editor not found"
+            return _unpostable("Group post editor not found")
         box.click()
         box.send_keys(text)
         time.sleep(random.uniform(1, 2))
         if click_first(driver, wait, [(By.XPATH, "//button[normalize-space()='Post']")], "Group Post button",
                        required=False) is None:
-            return "Group Post button not found"
+            return _unpostable("Group Post button not found")
         time.sleep(random.uniform(3, 5))
         # Only a post that actually shipped advances the rotation — a failed run leaves this group
         # next in line rather than skipping its turn.
