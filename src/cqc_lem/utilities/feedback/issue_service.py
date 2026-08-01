@@ -45,6 +45,7 @@ Env:
 import json
 import os
 import re
+import time
 from typing import Optional
 
 from cqc_lem.utilities.ai.content_framework import as_vector, cosine_similarity, text_similarity
@@ -81,6 +82,21 @@ RATE_LIMIT_WINDOW_HOURS = 24
 MAX_CLUSTER_CANDIDATES = 100
 MAX_TITLE_CHARS = 120
 GITHUB_TIMEOUT_SECONDS = 20
+
+# Issue #767: a DNS/connect blip is the NETWORK, not a defect in this loop — GitHub is reached
+# best-effort and the row is left for the next pass either way. It is retried in place, then
+# reported as a WARNING so `log_escalation` decides: one blip stays a warning, GitHub unreachable
+# for three passes running becomes the ERROR/$exception it deserves.
+GITHUB_RETRY_ATTEMPTS = 3
+GITHUB_RETRY_BACKOFF_SECONDS = 0.5
+# Once the transport is down, every other call in the same pass fails the same way. Short-circuiting
+# them keeps ONE outage to ONE warning instead of one per request — three of which is exactly the
+# escalation threshold, i.e. an outage would file itself as a defect.
+GITHUB_UNREACHABLE_COOLDOWN_SECONDS = 60.0
+
+# Monotonic deadline for the cool-off above. Process-local on purpose: it exists to collapse the
+# retries of ONE pass, not to coordinate workers.
+_unreachable_until = 0.0
 
 # Issue #718: the label/assignee/comment sub-resource endpoints 403'd for weeks while `POST /issues`
 # kept succeeding, so every auto-filed issue landed label-less. Named in every failure log so the
@@ -516,27 +532,61 @@ def build_duplicate_comment(classification: FeedbackClassification,
 
 # --- GitHub I/O ---------------------------------------------------------------------------------
 
+def github_unreachable() -> bool:
+    """True while `github_request`'s transport cool-off is open — the call a caller just lost was
+    the network being down, not GitHub refusing it. Callers use this to keep an outage from being
+    reported as the permission failure it looks like (issue #767)."""
+    return time.monotonic() < _unreachable_until
+
+
+def _is_transport_failure(exc: BaseException) -> bool:
+    """Whether the request never reached GitHub. Every `requests` transport exception
+    (ConnectionError, Timeout, SSLError, …) subclasses `RequestException` -> `IOError`, as do the
+    builtin socket errors — an unreachable host is exactly the OSError family, anything else is
+    ours."""
+    return isinstance(exc, OSError)
+
+
 def github_request(method: str, path: str, payload: dict = None) -> Optional[object]:
     """One GitHub REST call, shared with the shipped-fix notifier (issue #502). Returns the parsed
     body (a dict, or a list for collection endpoints), or None when unconfigured/failed — filing is
     best-effort by design: a GitHub outage must never lose the feedback row. `path` may carry its
     own query string."""
+    global _unreachable_until
     token = github_token()
     if not token:
         log_warning("Feedback issue filing skipped — no FEEDBACK_GITHUB_TOKEN/GITHUB_TOKEN set",
                     api_provider="github")
         return None
+    if github_unreachable():
+        log_debug(f"GitHub {method} {path} skipped — transport still in the unreachable cool-off",
+                  api_provider="github")
+        return None
     import requests
     url = f"{GITHUB_API_BASE}/repos/{github_repo()}/{path.lstrip('/')}"
-    try:
-        response = requests.request(
-            method, url, json=payload, timeout=GITHUB_TIMEOUT_SECONDS,
-            headers={"Authorization": f"Bearer {token}",
-                     "Accept": "application/vnd.github+json",
-                     "X-GitHub-Api-Version": "2022-11-28"})
-    except Exception as e:
-        log_error(f"GitHub {method} {path} failed", exc=e, api_provider="github")
-        return None
+    response = None
+    for attempt in range(1, max(1, GITHUB_RETRY_ATTEMPTS) + 1):
+        try:
+            response = requests.request(
+                method, url, json=payload, timeout=GITHUB_TIMEOUT_SECONDS,
+                headers={"Authorization": f"Bearer {token}",
+                         "Accept": "application/vnd.github+json",
+                         "X-GitHub-Api-Version": "2022-11-28"})
+            break
+        except Exception as e:
+            if not _is_transport_failure(e):
+                log_error(f"GitHub {method} {path} failed", exc=e, api_provider="github")
+                return None
+            if attempt < GITHUB_RETRY_ATTEMPTS:
+                log_debug(f"GitHub {method} {path} transport attempt {attempt} failed — retrying",
+                          api_provider="github")
+                time.sleep(GITHUB_RETRY_BACKOFF_SECONDS * attempt)
+                continue
+            _unreachable_until = time.monotonic() + GITHUB_UNREACHABLE_COOLDOWN_SECONDS
+            log_warning(f"GitHub {method} {path} unreachable after {GITHUB_RETRY_ATTEMPTS} "
+                        f"attempts — the next pass retries", exc=e, api_provider="github")
+            return None
+    _unreachable_until = 0.0
     if response.status_code >= 300:
         log_error(f"GitHub {method} {path} returned {response.status_code}: "
                   f"{response.text[:300]}", api_provider="github",
@@ -878,7 +928,8 @@ def repair_auto_filed_issues(limit: int = MAX_REPAIR_ISSUES) -> dict:
     WRITE: a permission failure is deterministic, so if one repair is forbidden the next 49 are too,
     and hammering GitHub would only bury the one error that says why. A refused READ gets the same
     treatment after `REPAIR_READ_FAILURE_STOP` in a row — one unreadable issue is just a deleted
-    issue, but a run of them is the same broken token and must not cost 50 errors every beat."""
+    issue, but a run of them is the same broken token and must not cost 50 errors every beat. Reads
+    lost to an unreachable transport (issue #767) are neither: the pass defers with one warning."""
     if not github_token():
         return {"scanned": 0, "repaired": 0, "failed": 0}
     seen: set = set()
@@ -892,6 +943,12 @@ def repair_auto_filed_issues(limit: int = MAX_REPAIR_ISSUES) -> dict:
         issue = github_request("GET", f"issues/{int(number)}")
         if not isinstance(issue, dict):
             failed += 1
+            if github_unreachable():
+                # Issue #767: the reads are failing because the network is, so the token hint below
+                # would be a lie and the remaining GETs would only repeat it.
+                log_warning("Feedback issue repair pass deferred — GitHub is unreachable from this "
+                            "host; the next beat retries", api_provider="github")
+                break
             unreadable += 1
             if unreadable >= REPAIR_READ_FAILURE_STOP:
                 log_error(f"Feedback issue repair pass stopped — {unreadable} issue reads in a row "

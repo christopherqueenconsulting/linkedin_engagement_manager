@@ -26,6 +26,15 @@ def _mod():
     return issue_service
 
 
+@pytest.fixture(autouse=True)
+def _clear_transport_cool_off():
+    """Issue #767: the unreachable cool-off is process-global by design, so one test's simulated
+    outage would silently short-circuit the next test's request."""
+    _mod()._unreachable_until = 0.0
+    yield
+    _mod()._unreachable_until = 0.0
+
+
 def _classification(**overrides):
     from cqc_lem.utilities.feedback.classifier import (
         FeedbackCategory, FeedbackClassification, FeedbackRisk, FeedbackSeverity)
@@ -562,7 +571,7 @@ class TestGithubIO:
         monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
         requests = MagicMock()
         requests.request.side_effect = OSError("connection reset")
-        with patch.dict("sys.modules", {"requests": requests}):
+        with patch.dict("sys.modules", {"requests": requests}), patch(f"{_SVC}.time.sleep"):
             assert svc.comment_on_issue(5, "body") is False
 
     def test_comment_targets_the_issue_number(self, monkeypatch):
@@ -588,6 +597,90 @@ class TestGithubIO:
 
     def test_comment_without_an_issue_number_is_a_no_op(self):
         assert _mod().comment_on_issue(None, "+1") is False
+
+
+class TestTransportFailures:
+    """Issue #767: a DNS/connect blip is the network, not a defect in this loop. It is retried in
+    place and reported ONCE as a WARNING (recurrence escalation decides whether it is a defect) —
+    an ERROR per lost request turned a 100ms outage into an auto-filed GitHub issue."""
+
+    def _response(self, status=200, payload=None):
+        response = MagicMock(status_code=status, text="")
+        response.json.return_value = payload if payload is not None else {}
+        return response
+
+    def test_a_dns_failure_is_retried_then_warned_not_errored(self, monkeypatch):
+        svc = _mod()
+        monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
+        requests = MagicMock()
+        requests.request.side_effect = ConnectionError(
+            "Failed to resolve 'api.github.com' ([Errno -3] Temporary failure in name resolution)")
+        with patch.dict("sys.modules", {"requests": requests}), \
+                patch(f"{_SVC}.time.sleep") as sleep, \
+                patch(f"{_SVC}.log_warning") as warning, patch(f"{_SVC}.log_error") as error:
+            assert svc.github_request("GET", "issues/727") is None
+        assert requests.request.call_count == svc.GITHUB_RETRY_ATTEMPTS
+        assert sleep.call_count == svc.GITHUB_RETRY_ATTEMPTS - 1
+        error.assert_not_called()
+        assert "unreachable" in warning.call_args[0][0]
+        assert warning.call_args.kwargs["exc"] is not None
+
+    def test_a_transport_failure_that_recovers_is_never_reported(self, monkeypatch):
+        svc = _mod()
+        monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
+        requests = MagicMock()
+        requests.request.side_effect = [TimeoutError("read timed out"),
+                                        self._response(200, {"number": 5})]
+        with patch.dict("sys.modules", {"requests": requests}), \
+                patch(f"{_SVC}.time.sleep"), \
+                patch(f"{_SVC}.log_warning") as warning, patch(f"{_SVC}.log_error") as error:
+            assert svc.github_request("GET", "issues/5") == {"number": 5}
+        assert requests.request.call_count == 2
+        warning.assert_not_called()
+        error.assert_not_called()
+        assert svc.github_unreachable() is False
+
+    def test_a_failure_that_is_not_the_transport_is_still_an_error(self, monkeypatch):
+        # A bug in this module must not be retried three times and filed away as "the network".
+        svc = _mod()
+        monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
+        requests = MagicMock()
+        requests.request.side_effect = ValueError("bad payload")
+        with patch.dict("sys.modules", {"requests": requests}), \
+                patch(f"{_SVC}.time.sleep") as sleep, patch(f"{_SVC}.log_error") as error:
+            assert svc.github_request("POST", "issues") is None
+        assert requests.request.call_count == 1
+        sleep.assert_not_called()
+        assert "failed" in error.call_args[0][0]
+
+    def test_one_outage_is_reported_once_and_short_circuits_the_rest_of_the_pass(self,
+                                                                                monkeypatch):
+        # Three lost requests in one pass = three warnings = the escalation threshold, i.e. the
+        # outage would file itself as a defect. The cool-off is what keeps it to one.
+        svc = _mod()
+        monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
+        requests = MagicMock()
+        requests.request.side_effect = ConnectionError("no route to host")
+        with patch.dict("sys.modules", {"requests": requests}), \
+                patch(f"{_SVC}.time.sleep"), patch(f"{_SVC}.log_warning") as warning, \
+                patch(f"{_SVC}.log_error") as error:
+            assert svc.github_request("GET", "issues/101") is None
+            assert svc.github_unreachable() is True
+            assert svc.github_request("GET", "issues/102") is None
+            assert svc.github_request("POST", "issues/103/comments", {"body": "x"}) is None
+        assert requests.request.call_count == svc.GITHUB_RETRY_ATTEMPTS
+        assert warning.call_count == 1
+        error.assert_not_called()
+
+    def test_a_successful_call_clears_the_cool_off(self, monkeypatch):
+        svc = _mod()
+        monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
+        svc._unreachable_until = 0.0
+        requests = MagicMock()
+        requests.request.return_value = self._response(200, {"ok": True})
+        with patch.dict("sys.modules", {"requests": requests}):
+            assert svc.github_request("GET", "issues/1") == {"ok": True}
+        assert svc.github_unreachable() is False
 
 
 class TestFileFeedbackIssue:
@@ -1264,6 +1357,21 @@ class TestRepairAutoFiledIssues:
             assert svc.repair_auto_filed_issues() == {"scanned": 3, "repaired": 0, "failed": 3}
         assert request.call_count == svc.REPAIR_READ_FAILURE_STOP
         assert "Issues: Read and write" in error.call_args[0][0]
+
+    def test_an_unreachable_transport_defers_the_sweep_without_blaming_the_token(self, monkeypatch):
+        # Issue #767: these reads were lost to the network, so the #718 token hint would be a lie —
+        # and every remaining GET would only re-report the same outage.
+        svc = _mod()
+        monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
+        clusters = [_cluster(n, issue=100 + n) for n in range(1, 8)]
+        with patch(f"{_SVC}.get_open_feedback_clusters", return_value=clusters), \
+                patch(f"{_SVC}.github_request", return_value=None) as request, \
+                patch(f"{_SVC}.github_unreachable", return_value=True), \
+                patch(f"{_SVC}.log_warning") as warning, patch(f"{_SVC}.log_error") as error:
+            assert svc.repair_auto_filed_issues() == {"scanned": 1, "repaired": 0, "failed": 1}
+        assert request.call_count == 1
+        assert "unreachable" in warning.call_args[0][0]
+        error.assert_not_called()
 
     def test_the_work_list_is_bounded(self, monkeypatch):
         svc = _mod()
