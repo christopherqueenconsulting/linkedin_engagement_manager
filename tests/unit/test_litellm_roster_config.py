@@ -22,12 +22,6 @@ CONFIG_TEXT = (REPO_ROOT / ".litellm" / "config.yaml").read_text()
 SNAPSHOT = json.loads((REPO_ROOT / ".litellm" / "ollama_catalog_snapshot.json").read_text())
 PRICES = json.loads((REPO_ROOT / ".litellm" / "model_prices_snapshot.json").read_text())["models"]
 
-# The `lem-agent-*` aliases back the agent-pipeline's Ollama lane, not LEM's own serving tiers, and
-# they are configured with a `:cloud` tag the direct ollama.com API does not list. That predates
-# #717 and is tracked on #844 — excluded here rather than silently normalized away, so the serving
-# tiers can be checked strictly. Delete this exclusion when #844 lands.
-AGENT_GROUPS = tuple(sorted({d for d in re.findall(r"model_name:\s*(lem-agent-[\w-]+)", CONFIG_TEXT)}))
-
 
 def _load(name: str):
     path = REPO_ROOT / "scripts" / f"{name}.py"
@@ -49,8 +43,11 @@ def _ollama_models(group: str) -> list:
     return [d["bare"] for d in DEPLOYMENTS if d["group"] == group and d["is_ollama"]]
 
 
-def _serving_ollama_deployments() -> list:
-    return [d for d in DEPLOYMENTS if d["is_ollama"] and d["group"] not in AGENT_GROUPS]
+def _ollama_deployments() -> list:
+    """Every Ollama Cloud deployment — LEM's serving tiers AND the agent-pipeline's `lem-agent-*`
+    lane. The agent tiers were exempt until #844, when they carried a `:cloud` tag; ollama.com
+    resolves that as a tag alias, so it never 404'd, which is exactly why nothing caught it."""
+    return [d for d in DEPLOYMENTS if d["is_ollama"]]
 
 
 class TestRoster:
@@ -67,23 +64,25 @@ class TestRoster:
         for group in ("lem-simple", "lem-medium", "lem-complex", "lem-router"):
             assert not any(m.startswith("minimax-m2") for m in _ollama_models(group))
 
-    def test_every_serving_tier_tag_exists_verbatim_in_the_committed_catalog(self):
+    def test_every_ollama_tag_exists_verbatim_in_the_committed_catalog(self):
         """A tag the catalog has never listed is a 404, and a 404 is the FASTEST answer in the
         group — latency routing then sends it MORE traffic (how retired ministral-3:8b kept winning
         lem-simple). The catalog snapshot is `ollama.com/api/tags`, i.e. exactly the ids the direct
-        ollama.com/v1 API serves, so the comparison is verbatim: no `:cloud`/`-cloud` normalizing,
-        because that suffix is the local `ollama pull` form and would mask precisely this typo."""
+        ollama.com/v1 API serves, so the comparison is verbatim: no `:cloud`/`-cloud` normalizing.
+        `-cloud` is the local `ollama pull` form; `:cloud` is a tag alias the endpoint RESOLVES
+        (probed on #844 — it answers 200, only a genuinely unknown tag 404s), which is worse than
+        a typo: it serves, so only this assertion and the two below can see it."""
         catalog = SNAPSHOT["models"]
-        for deployment in _serving_ollama_deployments():
+        for deployment in _ollama_deployments():
             bare = deployment["bare"]
             assert bare in catalog, f"{bare} ({deployment['group']}) is not in the catalog snapshot"
 
-    def test_every_serving_tier_tag_is_priced_so_shadow_cost_never_silently_drops(self):
+    def test_every_ollama_tag_is_priced_so_shadow_cost_never_silently_drops(self):
         """track_llm_call prices the SERVING model. estimate_shadow_cost_usd looks the id up
         EXACTLY (no substring fallback, unlike estimate_llm_cost_usd), so an Ollama deployment
         missing from the price snapshot reports no shadow cost at all — subscription traffic that
         the margin report cannot see."""
-        for deployment in _serving_ollama_deployments():
+        for deployment in _ollama_deployments():
             key = f"openai/{deployment['bare']}"
             spec = PRICES.get(key)
             assert spec, f"{key} ({deployment['group']}) has no model_prices_snapshot entry"
@@ -94,6 +93,16 @@ class TestRoster:
         nothing — the moment that one model has a bad day."""
         for group in ("lem-medium", "lem-complex"):
             assert len(_ollama_models(group)) >= 2
+
+    def test_the_agent_lane_tiers_carry_no_tag_the_catalog_does_not_use(self):
+        """The `lem-agent-*` aliases back the agent-pipeline's Ollama lane (scripts/agent-pipeline).
+        They are pinned by name because the assertions above only compare against the catalog — and
+        `glm-5.2:cloud` would satisfy nothing there while still SERVING, so a re-introduced tag
+        would show up as a missing-catalog-entry failure with no hint of what to write instead."""
+        assert _ollama_models("lem-agent-tier1") == ["glm-5.2"]
+        assert _ollama_models("lem-agent-tier2") == ["kimi-k2.7-code"]
+        assert _ollama_models("lem-agent-tier2-alt") == ["minimax-m3"]
+        assert _ollama_models("lem-agent-tier3") == ["nemotron-3-super"]
 
 
 class TestWeeklyModelCheck:
@@ -112,12 +121,13 @@ class TestWeeklyModelCheck:
         """scan_retirements keys configured deployments by their bare id and matches the
         docs.ollama.com/cloud retirement table verbatim. An id spelled in a way that table never
         uses (a `:cloud` tag, say) makes that deployment invisible to the advance-retirement
-        warning — the one thing this cron exists to give us."""
+        warning — the one thing this cron exists to give us. That is what the `lem-agent-*` lane
+        was doing before #844."""
         announced = [{"model": name, "date": "2026-12-31", "alternative": None}
                      for name in sorted(SNAPSHOT["models"])]
         notices, _ = mhc.plan_retirement_notices(DEPLOYMENTS, announced, {}, today="2026-08-01")
         assert ({n["bare"] for n in notices}
-                == {d["bare"] for d in _serving_ollama_deployments()})
+                == {d["bare"] for d in _ollama_deployments()})
 
 
 class TestBenchmarkChampions:
