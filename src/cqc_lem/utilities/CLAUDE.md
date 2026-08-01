@@ -56,7 +56,10 @@ Two things follow for anyone writing a call site here:
    not once for the call site: the same lookup on the
    home feed, where the control does exist, is selector rot and must still warn. The other half of
    the test is whether a FALLBACK is in hand — `react_to_post_inline` warns on a missing
-   'Open reactions menu' only when it found no React toggle to default-Like instead (issue #873).
+   'Open reactions menu' only when it found no React toggle to default-Like instead (issue #873),
+   and on a missing post-click 'Reaction state' only when the pre-click read found that toggle: a
+   card that never carried one has nothing to re-read, so the miss IS the documented
+   trust-the-click fallback (issue #875).
 2. **Keep the message a stable template.** The dedup key masks volatile tokens (URLs, emails, UUIDs,
    URNs, hex, `[...]`, quoted strings, numbers) and combines them with the call site, so
    `Selector miss: Feed sort control` and `Selector miss: Reaction state` stay two distinct problems

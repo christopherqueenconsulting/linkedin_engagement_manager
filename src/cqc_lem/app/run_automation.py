@@ -996,11 +996,17 @@ def react_to_post_inline(driver, wait, card, post_content: str = None, comment_t
             driver.execute_script("arguments[0].click();", trigger)
         time.sleep(random.uniform(0.8, 1.5))
         wait_for_ajax(driver)
+        # Best-effort confirm: label flips away from 'no reaction'. If the toggle can't be re-read,
+        # trust the click rather than false-negative — so the miss only means something when the
+        # card HAD a readable Reaction-state button before the click. Cards that never exposed one
+        # (the fly-out/React-toggle path) take the documented trust-the-click fallback, and warning
+        # about that on every card escalated to ERROR and filed a defect for working behaviour
+        # (issue #875). A control this card never carried is also not worth waiting out twice.
+        expected = state is not None
         after = find_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label^='Reaction button state']")],
                            "Reaction state (post-click)", parent_element=card, required=False,
-                           visible_only=True, user_id=user_id)
-        # Best-effort confirm: label flips away from 'no reaction'. If the toggle can't be re-read,
-        # trust the click rather than false-negative.
+                           visible_only=True, warn_on_miss=expected,
+                           max_try=MAX_WAIT_RETRY if expected else 1, user_id=user_id)
         if after is not None and "no reaction" in (after.get_attribute("aria-label") or "").lower():
             return False
         myprint(f"Reacted '{reaction}' on post")
