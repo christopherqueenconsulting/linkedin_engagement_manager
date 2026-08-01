@@ -452,14 +452,20 @@ _SECRET_UPDATE_SQL = {
 }
 
 
-def store_cookies(user_email: str, cookies: list[dict]) -> None:
+def store_cookies(user_email: str, cookies: list[dict]) -> bool:
+    """Persist the browser's cookies for this user. Returns False when any row failed to store.
+
+    The return value is load-bearing since #745: the cookie-migration path DELETES the user's
+    stored LinkedIn password once the session is "saved", so a swallowed per-row write error must
+    not read as success — that would take away the only login they had left.
+    """
     connection = get_db_connection()
     cursor = connection.cursor()
 
     user_id = get_user_id(user_email)
 
     try:
-        _store_cookie_rows(cursor, cookies, user_id)
+        failed = _store_cookie_rows(cursor, cookies, user_id)
         connection.commit()
     finally:
         cursor.close()
@@ -468,9 +474,24 @@ def store_cookies(user_email: str, cookies: list[dict]) -> None:
     if user_id is not None:
         prune_superseded_cookies(user_id)
 
+    return not failed
+
 
 def _store_cookie_rows(cursor: MySQLCursorAbstract, cookies: list[dict],
-                       user_id: Optional[int]) -> None:
+                       user_id: Optional[int]) -> list[str]:
+    """Insert/update each cookie row; returns the names of the ones that could NOT be stored.
+
+    Issue #745: a row with no user_id cannot be bound by the AAD, so encrypt_secret would store the
+    value as PLAINTEXT — and get_cookies JOINs users, so nothing could ever read it back. That
+    leaves a live li_at in the clear which encrypt_secrets_at_rest (scanning user-owned rows) would
+    never find. Refuse the write instead of creating an unreadable plaintext credential.
+    """
+    if user_id is None:
+        log_error("Refusing to store cookies with no user_id — the row could not be bound to a "
+                  "user, so it would be a plaintext session no read path can return")
+        return [str(cookie.get('name')) for cookie in cookies]
+
+    failed: list[str] = []
     for cookie in cookies:
         try:
             cursor.execute("""
@@ -496,6 +517,8 @@ def _store_cookie_rows(cursor: MySQLCursorAbstract, cookies: list[dict],
             ))
         except mysql.connector.Error as err:
             myprint(f"Could not add cookie to database | Error: {err}")
+            failed.append(str(cookie.get('name')))
+    return failed
 
 
 def prune_superseded_cookies(user_id: int) -> int:
@@ -593,7 +616,12 @@ def store_linkedin_li_at(user_id: int, li_at: str, jsessionid: Optional[str] = N
             "path": "/", "expiry": expiry, "secure": True, "httpOnly": False,
         })
     try:
-        store_cookies(email, cookies)
+        # Must reflect the actual write (issue #745): the caller drops the user's stored LinkedIn
+        # password on a True, and per-row insert errors are swallowed inside _store_cookie_rows.
+        if not store_cookies(email, cookies):
+            log_error("Could not store LinkedIn session cookie — no row was written",
+                      user_id=user_id)
+            return False
         return True
     except Exception as e:
         myprint(f"Could not store LinkedIn session cookie for user_id {user_id}: {e}")
@@ -2889,10 +2917,11 @@ def encrypt_secrets_at_rest(limit: Optional[int] = None) -> dict:
     overwriting it would destroy a secret that a corrected key might still recover.
 
     `plaintext_remaining` is the number the operator watches — once it reaches 0, `ENCRYPTION_REQUIRED`
-    can be flipped and the legacy read path fails closed.
+    can be flipped and the legacy read path fails closed. It includes `orphaned` (see below), so the
+    gate can never read 0 while a plaintext session is still sitting in a dump.
     """
     stats = {"enabled": encryption_enabled(), "scanned": 0, "rewritten": 0,
-             "failed": 0, "plaintext_remaining": 0}
+             "failed": 0, "orphaned": 0, "plaintext_remaining": 0}
     if not stats["enabled"]:
         log_warning("Secret encryption backfill skipped — no LEM_SECRET_KEY configured")
         return stats
@@ -2904,6 +2933,17 @@ def encrypt_secrets_at_rest(limit: Optional[int] = None) -> dict:
         user_rows = cursor.fetchall() or []
         cursor.execute("SELECT id, user_id, value FROM cookies WHERE user_id IS NOT NULL")
         cookie_rows = cursor.fetchall() or []
+        # Rows with no user_id cannot be encrypted (nothing to bind the AAD to) and cannot be read
+        # back (get_cookies JOINs users) — they are dead PLAINTEXT credentials. Counting them keeps
+        # them out of the operator's blind spot: without this, the gate reports "0 unprotected"
+        # while a legacy plaintext li_at is still in every dump. The remedy is deletion, not
+        # encryption, so this pass reports them and never touches them.
+        cursor.execute(
+            "SELECT COUNT(*) AS n FROM cookies WHERE user_id IS NULL AND value IS NOT NULL "
+            "AND value <> ''")
+        orphan_row = cursor.fetchone() or {}
+        stats["orphaned"] = int(orphan_row.get("n") or 0)
+        stats["plaintext_remaining"] += stats["orphaned"]
     except mysql.connector.Error as err:
         log_error(f"Could not read secrets for encryption backfill | Error: {err}")
         cursor.close()
@@ -2949,8 +2989,14 @@ def encrypt_secrets_at_rest(limit: Optional[int] = None) -> dict:
         cursor.close()
         connection.close()
 
+    if stats["orphaned"]:
+        log_error(f"{stats['orphaned']} cookie row(s) have no user_id — plaintext sessions that "
+                  f"cannot be encrypted or read. Delete them "
+                  f"(DELETE FROM cookies WHERE user_id IS NULL) before flipping "
+                  f"ENCRYPTION_REQUIRED.")
     log_info(f"Secret encryption backfill: {stats['rewritten']} rewritten, "
-             f"{stats['failed']} failed, {stats['plaintext_remaining']} still unprotected")
+             f"{stats['failed']} failed, {stats['orphaned']} orphaned, "
+             f"{stats['plaintext_remaining']} still unprotected")
     return stats
 
 

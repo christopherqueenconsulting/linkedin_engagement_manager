@@ -12,7 +12,7 @@ from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited, clear_rat
     mark_rate_limited, rate_limit_cooldown_remaining, is_automation_paused, \
     automation_pause_remaining, is_measurement_paused
 from cqc_lem.utilities.linkedin.scrapper import returnProfileInfo
-from cqc_lem.utilities.logger import myprint, log_debug, log_warning
+from cqc_lem.utilities.logger import myprint, log_debug, log_error, log_warning
 from cqc_lem.utilities.selenium_util import load_cookies, get_element_wait_retry, \
     get_visible_element_wait_retry, getText
 from selenium.common.exceptions import WebDriverException
@@ -340,6 +340,23 @@ def drive_email_pin_challenge(driver, user_email: str, is_logged_in) -> bool:
     return is_logged_in(driver.current_url)
 
 
+def _persist_session_cookies(driver: WebDriver, user_email: str) -> bool:
+    """Store the freshly authenticated session and report honestly whether it landed.
+
+    `store_cookies` swallows per-row driver errors and refuses a write it cannot bind to a user
+    (issue #745), so a lost write is invisible here unless we look. The consequence is delayed and
+    silent: this run works, but the next one finds no li_at, falls back to a password login and
+    trips LinkedIn's new-device challenge — while the log said the cookies were saved.
+    """
+    stored = store_cookies(user_email, driver.get_cookies())
+    if not stored:
+        log_error("Could not persist LinkedIn session cookies — the next run will have no li_at "
+                  "and will fall back to a password login", action_type="login")
+        return False
+    myprint("Cookies stored to DB!")
+    return True
+
+
 def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, user_password: str,
                       measurement_only: bool = False):
     linked_url = "https://www.linkedin.com"
@@ -539,8 +556,7 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
     if _is_logged_in(driver.current_url):
         myprint(f"Already logged in! (current URL: {driver.current_url})")
         clear_rate_limit()
-        store_cookies(user_email, driver.get_cookies())
-        myprint("Cookies stored to DB!")
+        _persist_session_cookies(driver, user_email)
         return
 
     # We had a stored session cookie but it didn't authenticate — it's stale/expired.
@@ -624,8 +640,7 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
     if _is_logged_in(driver.current_url):
         myprint("Login successful!")
         clear_rate_limit()
-        store_cookies(user_email, driver.get_cookies())
-        myprint("Cookies stored to DB!")
+        _persist_session_cookies(driver, user_email)
     else:
         myprint("Login failed. Check your credentials.")
 
