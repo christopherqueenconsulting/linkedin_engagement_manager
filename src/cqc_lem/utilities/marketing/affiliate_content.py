@@ -27,7 +27,6 @@ Four things it refuses to be, each of which is the whole point:
 
 from __future__ import annotations
 
-import re
 from typing import Optional
 
 from cqc_lem.utilities.env_constants import (AFFILIATE_PROMO_CONTENT_ENABLED,
@@ -262,35 +261,16 @@ def _draft(user_id: int, prompt: str, retry_directive: str = "") -> Optional[str
         return None
 
 
-_URL_RE = re.compile(r"https?://[^\s<>\"')\]]+")
-
-
-def _restore_referral_link(body: str, referral_link: str) -> str:
-    """Put the exact referral URL back over any copy the markdown pass mangled.
-
-    `sanitize_for_linkedin` strips markdown italics, and `_word_` is precisely the shape of a UTM'd
-    referral link: `utm_source=…&utm_medium=…` comes back as `utmsource=…&utmmedium=…`. That is a
-    dead link on the one URL in the post whose whole job is attribution — and because the mangled
-    copy no longer matches, the caller would append a second, clean one beside it and publish both.
-    Matched on the underscore-free form so the repair works wherever in the body the link landed."""
-    if not referral_link:
-        return body
-    wanted = referral_link.replace("_", "")
-
-    def _repair(match) -> str:
-        url = match.group(0)
-        core = url.rstrip(".,;:!?)]")
-        return referral_link + url[len(core):] if core.replace("_", "") == wanted else url
-
-    return _URL_RE.sub(_repair, body)
-
-
 def _finalize(user_id: int, draft: str, referral_link: str) -> str:
     """Everything that must be true of the copy regardless of what the model returned: LinkedIn-safe
     punctuation, the referral link present AND intact (it is what earns the trial time and what the
-    publish gate grades on), and the disclosure stamped."""
+    publish gate grades on), and the disclosure stamped.
+
+    The link survives `sanitize_for_linkedin` on its own since #823 — that function masks URLs
+    around the markdown transforms, so `utm_source=…&utm_medium=…` is no longer eaten by the italic
+    pass. This used to carry its own repair for that one URL; two half-fixes is worse than one."""
     from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin
-    body = _restore_referral_link(sanitize_for_linkedin(draft).strip(), referral_link)
+    body = sanitize_for_linkedin(draft).strip()
     if referral_link and referral_link not in body:
         body = f"{body}\n\n{referral_link}"
     return apply_disclosure(body, user_id=user_id, tagged=True).strip()
