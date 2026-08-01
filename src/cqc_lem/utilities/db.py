@@ -2546,6 +2546,36 @@ def get_active_user_ids():
     return active_user_ids
 
 
+def get_linkedin_token_user_ids() -> list[int]:
+    """Subscribed users holding a LinkedIn access token, expired or not (issue #600).
+
+    Deliberately NOT get_active_user_ids(): that one requires an unexpired token, so the users the
+    renewal pass most needs to reach — the ones whose authorization already lapsed — are exactly
+    the ones it filters out."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("""
+            SELECT id FROM users
+            WHERE linkedin_connection_status = 'connected'
+              AND access_token IS NOT NULL
+              AND (
+                    subscription_status = 'active'
+                    OR (
+                        subscription_status = 'trial'
+                        AND (trial_ends_at IS NULL OR trial_ends_at > NOW())
+                    )
+              )
+        """)
+        return [row[0] for row in cursor.fetchall()]
+    except mysql.connector.Error as err:
+        myprint(f"Could not get linkedin token user ids | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_user_location(user_id: int) -> tuple[float, float] | None:
     connection = get_db_connection()
     cursor = connection.cursor()

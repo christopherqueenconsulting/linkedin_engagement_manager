@@ -2,6 +2,7 @@ import hashlib
 import re
 import secrets
 import smtplib
+from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
@@ -340,6 +341,59 @@ def send_session_revalidation_email(to_email: str, account_url: Optional[str] = 
     """
     return _dispatch_email(
         to_email, "⚠️ Action needed: reconnect your LinkedIn session", html, high_priority=True)
+
+
+def _human_date(value: Optional[str]) -> Optional[str]:
+    """The only producer of an expiry string is `resolve_token_status`, which emits ISO-8601 —
+    "expires on 2026-09-14T08:30:12+00:00" is not something to put in front of a customer. Anything
+    that isn't a timestamp is passed through untouched."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return value
+    return f"{parsed:%b} {parsed.day}, {parsed.year}"
+
+
+def send_linkedin_token_expiring_email(to_email: str, days_remaining: Optional[int] = None,
+                                       expires_on: Optional[str] = None,
+                                       account_url: Optional[str] = None) -> bool:
+    """Tell a user their LinkedIn authorization is running out and we could NOT renew it for them
+    (issue #600). Only sent after the daily renewal pass has already tried — LinkedIn caps the
+    authorization at 60 days and only hands refresh tokens to approved apps, so for some accounts a
+    manual reconnect is the only option and this email IS the notice."""
+    url = account_url or _account_url()
+    expires_on = _human_date(expires_on)
+    if days_remaining is None:
+        headline = "Your LinkedIn authorization needs renewing"
+        when = "It expires soon, and we could not renew it automatically."
+    elif days_remaining <= 0:
+        headline = "Your LinkedIn authorization has expired"
+        when = ("It has already expired, so posting, commenting and messaging on your behalf have "
+                "stopped.")
+    else:
+        day_word = "day" if days_remaining == 1 else "days"
+        headline = f"Your LinkedIn authorization expires in {days_remaining} {day_word}"
+        when = (f"It expires in <strong>{days_remaining} {day_word}</strong>"
+                f"{f' (on {html_escape(expires_on)})' if expires_on else ''}, and we could not "
+                f"renew it automatically.")
+    html = f"""
+    <html><body style="font-family:Arial,Helvetica,sans-serif;color:#222;">
+    <h2>{headline}</h2>
+    <p>LinkedIn only authorizes apps for 60 days at a time, and it does not let us extend that
+    window. We try to renew yours in the background every day. {when}</p>
+    <p>Reconnecting takes about a minute and restarts the 60-day clock:</p>
+    <p><a href="{url}" style="background:#0a66c2;color:#fff;padding:10px 16px;border-radius:6px;
+    text-decoration:none;">Reconnect LinkedIn</a></p>
+    <p style="color:#888;font-size:12px;">Your account page always shows how long the current
+    authorization has left.</p>
+    </body></html>
+    """
+    subject = ("⚠️ Your LinkedIn authorization has expired — reconnect to resume"
+               if days_remaining is not None and days_remaining <= 0
+               else "⚠️ Action needed: your LinkedIn authorization is expiring")
+    return _dispatch_email(to_email, subject, html, high_priority=True)
 
 
 def send_newsletter_draft_ready_email(to_email: str, edition_title: str,

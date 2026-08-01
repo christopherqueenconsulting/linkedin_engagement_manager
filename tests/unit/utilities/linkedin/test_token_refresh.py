@@ -5,9 +5,12 @@ import pytest
 
 from cqc_lem.utilities.linkedin.token_refresh import (
     attempt_token_refresh,
+    days_until_expiry,
     get_token_expiry,
     is_token_expired,
     is_token_expiring_soon,
+    refresh_token_usable,
+    resolve_token_status,
 )
 
 
@@ -144,3 +147,100 @@ class TestAttemptTokenRefresh:
         }
         success, token = attempt_token_refresh(user_id=1)
         assert success is False
+
+
+class TestDaysUntilExpiry:
+    def test_floors_partial_days(self):
+        info = make_token_info(seconds_until_expiry=int(2.9 * 86400))
+        assert days_until_expiry(info) == 2
+
+    def test_expired_never_goes_negative(self):
+        assert days_until_expiry(make_token_info(seconds_until_expiry=-86400 * 5)) == 0
+
+    def test_unknown_expiry_is_none_not_zero(self):
+        assert days_until_expiry({}) is None
+
+
+class TestRefreshTokenUsable:
+    def test_missing_refresh_token(self):
+        assert refresh_token_usable(make_token_info(3600)) is False
+
+    def test_live_refresh_token(self):
+        assert refresh_token_usable(make_token_info(3600, refresh_token='rt')) is True
+
+    def test_lapsed_refresh_token(self):
+        now = datetime.now(timezone.utc)
+        assert refresh_token_usable({
+            'refresh_token': 'rt',
+            'refresh_token_created_at': now - timedelta(days=90),
+            'refresh_token_expires_in': 60 * 24 * 3600,
+        }) is False
+
+    def test_unknown_refresh_window_assumed_usable(self):
+        assert refresh_token_usable({'refresh_token': 'rt'}) is True
+
+
+class TestResolveTokenStatus:
+    @patch('cqc_lem.utilities.db.get_user_token_info')
+    def test_no_token_reads_disconnected(self, mock_get_info):
+        mock_get_info.return_value = None
+        status = resolve_token_status(user_id=1)
+        assert status["connected"] is False
+        assert status["is_expired"] is True
+        assert status["days_remaining"] is None
+        assert status["can_auto_refresh"] is False
+
+    @patch('cqc_lem.utilities.db.get_user_token_info')
+    def test_row_without_access_token_reads_disconnected(self, mock_get_info):
+        mock_get_info.return_value = {'access_token': None}
+        assert resolve_token_status(user_id=1)["connected"] is False
+
+    @patch('cqc_lem.utilities.linkedin.token_refresh.attempt_token_refresh')
+    @patch('cqc_lem.utilities.db.get_user_token_info')
+    def test_healthy_token_is_not_refreshed(self, mock_get_info, mock_refresh):
+        mock_get_info.return_value = make_token_info(50 * 86400, refresh_token='rt')
+        status = resolve_token_status(user_id=1)
+        mock_refresh.assert_not_called()
+        assert status["refresh_attempted"] is False
+        assert status["is_expiring_soon"] is False
+        assert status["days_remaining"] == 49
+
+    @patch('cqc_lem.utilities.linkedin.token_refresh.attempt_token_refresh')
+    @patch('cqc_lem.utilities.db.get_user_token_info')
+    def test_expiring_token_is_refreshed_and_restated(self, mock_get_info, mock_refresh):
+        mock_get_info.side_effect = [make_token_info(3 * 86400, refresh_token='rt'),
+                                     make_token_info(60 * 86400, refresh_token='rt2')]
+        mock_refresh.return_value = (True, 'new')
+        status = resolve_token_status(user_id=1)
+        assert status["refresh_attempted"] is True
+        assert status["refresh_succeeded"] is True
+        assert status["is_expiring_soon"] is False
+        assert status["days_remaining"] == 59
+
+    @patch('cqc_lem.utilities.linkedin.token_refresh.attempt_token_refresh')
+    @patch('cqc_lem.utilities.db.get_user_token_info')
+    def test_failed_refresh_keeps_expiring_state(self, mock_get_info, mock_refresh):
+        mock_get_info.return_value = make_token_info(3 * 86400, refresh_token='rt')
+        mock_refresh.return_value = (False, None)
+        status = resolve_token_status(user_id=1)
+        assert status["refresh_attempted"] is True
+        assert status["refresh_succeeded"] is False
+        assert status["is_expiring_soon"] is True
+
+    @patch('cqc_lem.utilities.linkedin.token_refresh.attempt_token_refresh')
+    @patch('cqc_lem.utilities.db.get_user_token_info')
+    def test_no_refresh_token_never_attempts(self, mock_get_info, mock_refresh):
+        mock_get_info.return_value = make_token_info(3 * 86400)
+        status = resolve_token_status(user_id=1)
+        mock_refresh.assert_not_called()
+        assert status["refresh_attempted"] is False
+        assert status["can_auto_refresh"] is False
+
+    @patch('cqc_lem.utilities.linkedin.token_refresh.attempt_token_refresh')
+    @patch('cqc_lem.utilities.db.get_user_token_info')
+    def test_auto_refresh_disabled(self, mock_get_info, mock_refresh):
+        mock_get_info.return_value = make_token_info(3 * 86400, refresh_token='rt')
+        status = resolve_token_status(user_id=1, auto_refresh=False)
+        mock_refresh.assert_not_called()
+        assert status["refresh_attempted"] is False
+        assert status["can_auto_refresh"] is True

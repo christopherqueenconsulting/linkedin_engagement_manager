@@ -7,6 +7,7 @@ LINKEDIN_SESSION_EMAIL_THROTTLE_DAYS so users aren't spammed every automation cy
 
 import os
 from datetime import datetime, timedelta
+from typing import Optional
 
 from cqc_lem.utilities.db import (
     get_user_email,
@@ -44,6 +45,56 @@ def notify_linkedin_session(user_id: int, revalidation: bool = False) -> bool:
         set_linkedin_session_email_sent_at(user_id)
         myprint(f"Sent LinkedIn session {'re-validation' if revalidation else 'connect'} "
                 f"email to user_id {user_id}")
+    return sent
+
+
+TOKEN_EXPIRY_EMAIL_KEY = "lem:linkedin_token_expiry_email:{user_id}"
+
+
+def notify_linkedin_token_expiring(user_id: int, days_remaining: Optional[int] = None,
+                                   expires_on: Optional[str] = None) -> bool:
+    """Email a user whose LinkedIn authorization is lapsing and could NOT be auto-renewed (issue
+    #600). Throttled per-user to LINKEDIN_TOKEN_EMAIL_THROTTLE_DAYS (default 7) through Redis, so
+    the daily renewal beat can run every day without spamming. **Fails open**: the reported bug was
+    an expiry warning in the SPA with no email behind it, so a Redis outage degrades to at most one
+    email a day rather than to silence. Returns True only if an email was actually sent."""
+    throttle_days = int(os.getenv("LINKEDIN_TOKEN_EMAIL_THROTTLE_DAYS", "7"))
+    key = TOKEN_EXPIRY_EMAIL_KEY.format(user_id=user_id)
+    claimed_client = None
+    if throttle_days > 0:
+        try:
+            from cqc_lem.utilities.linkedin.rate_limit import shared_redis_client
+            client = shared_redis_client()
+            if client is not None:
+                if not client.set(key, "1", nx=True, ex=throttle_days * 86400):
+                    return False
+                claimed_client = client
+        except Exception as e:
+            log_warning("Could not read LinkedIn token email throttle — sending anyway", exc=e,
+                        user_id=user_id, action_type="token_expiry")
+
+    sent = False
+    try:
+        email = get_user_email(user_id)
+        if email:
+            from cqc_lem.utilities.email import send_linkedin_token_expiring_email
+            sent = send_linkedin_token_expiring_email(email, days_remaining, expires_on)
+        if sent:
+            log_info("Sent LinkedIn token-expiring notice", user_id=user_id,
+                     action_type="token_expiry")
+    except Exception as e:
+        log_warning("Could not send LinkedIn token-expiring notice", exc=e, user_id=user_id,
+                    action_type="token_expiry")
+
+    if not sent and claimed_client is not None:
+        # The slot has to be claimed BEFORE the send (two workers must not both email), but holding
+        # it after a send that never happened silences this user for a week — which is the exact
+        # bug #600 exists to fix. Release it so tomorrow's pass tries again.
+        try:
+            claimed_client.delete(key)
+        except Exception as e:
+            log_warning("Could not release LinkedIn token email throttle after a failed send",
+                        exc=e, user_id=user_id, action_type="token_expiry")
     return sent
 
 

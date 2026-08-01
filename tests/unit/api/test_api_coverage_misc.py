@@ -150,43 +150,67 @@ class TestAuthLogoutAndTokenStatus:
             resp = client.get(f"/api/user/token_status?session_token=bad")
         assert resp.status_code == 401
 
+    @staticmethod
+    def _token_info(days_left: int, refresh_token=None):
+        from datetime import datetime, timezone
+        return {
+            "access_token": "at",
+            "access_token_created_at": datetime.now(timezone.utc),
+            "access_token_expires_in": days_left * 86400,
+            "refresh_token": refresh_token,
+            "refresh_token_created_at": None,
+            "refresh_token_expires_in": None,
+        }
+
     def test_token_status_no_token_is_expired(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_user_token_info", return_value=None):
+             patch("cqc_lem.utilities.db.get_user_token_info", return_value=None):
             resp = client.get(f"/api/user/token_status?session_token={_TOK}")
         detail = resp.json()["detail"]
         assert detail["is_expired"] is True and detail["token_expiry_date"] is None
+        assert detail["days_remaining"] is None
+        assert detail["can_auto_refresh"] is False
 
     def test_token_status_healthy_token(self, client):
-        from datetime import datetime
-        expiry = datetime(2026, 12, 1, 0, 0)
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_user_token_info",
-                   return_value={"access_token": "at", "refresh_token": None}), \
-             patch(f"{_M}.is_token_expiring_soon", return_value=False), \
-             patch(f"{_M}.is_token_expired", return_value=False), \
-             patch(f"{_M}.get_token_expiry", return_value=expiry):
+             patch("cqc_lem.utilities.db.get_user_token_info",
+                   return_value=self._token_info(45)):
             resp = client.get(f"/api/user/token_status?session_token={_TOK}")
         detail = resp.json()["detail"]
         assert detail["is_expired"] is False
+        assert detail["is_expiring_soon"] is False
         assert detail["refresh_attempted"] is False
-        assert detail["token_expiry_date"] == expiry.isoformat()
+        assert detail["days_remaining"] == 44  # floored — 44d 23h 59m left
+        assert detail["token_expiry_date"] is not None
 
     def test_token_status_expiring_triggers_refresh(self, client):
+        refreshed = self._token_info(60, refresh_token="rt")
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_user_token_info",
-                   side_effect=[{"access_token": "old", "refresh_token": "rt"},
-                                {"access_token": "new", "refresh_token": "rt"}]), \
-             patch(f"{_M}.is_token_expiring_soon", side_effect=[True, False]), \
-             patch(f"{_M}.is_token_expired", side_effect=[True, False]), \
-             patch(f"{_M}.attempt_token_refresh", return_value=(True, "ok")) as refresh, \
-             patch(f"{_M}.get_token_expiry", return_value=None):
+             patch("cqc_lem.utilities.db.get_user_token_info",
+                   side_effect=[self._token_info(5, refresh_token="rt"), refreshed]), \
+             patch("cqc_lem.utilities.linkedin.token_refresh.attempt_token_refresh",
+                   return_value=(True, "ok")) as refresh:
             resp = client.get(f"/api/user/token_status?session_token={_TOK}")
         detail = resp.json()["detail"]
         refresh.assert_called_once_with(_UID)
         assert detail["refresh_attempted"] is True
         assert detail["refresh_succeeded"] is True
         assert detail["is_expired"] is False
+        assert detail["is_expiring_soon"] is False
+        assert detail["can_auto_refresh"] is True
+
+    def test_token_status_no_refresh_token_skips_refresh(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch("cqc_lem.utilities.db.get_user_token_info",
+                   return_value=self._token_info(5)), \
+             patch("cqc_lem.utilities.linkedin.token_refresh.attempt_token_refresh") as refresh:
+            resp = client.get(f"/api/user/token_status?session_token={_TOK}")
+        detail = resp.json()["detail"]
+        refresh.assert_not_called()
+        assert detail["refresh_attempted"] is False
+        assert detail["can_auto_refresh"] is False
+        assert detail["is_expiring_soon"] is True
+        assert detail["days_remaining"] == 4
 
 
 def _token_response(access_token="at", refresh_token="rt"):

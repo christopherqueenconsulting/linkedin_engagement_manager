@@ -27,8 +27,10 @@ export default function LinkedInLoginCard() {
         .get(`/user/token_status?session_token=${encodeURIComponent(sessionToken!)}`)
         .then((r) => r.data.detail as {
           token_expiry_date: string | null
+          days_remaining: number | null
           is_expiring_soon: boolean
           is_expired: boolean
+          can_auto_refresh: boolean
           refresh_attempted: boolean
           refresh_succeeded: boolean
         }),
@@ -40,8 +42,32 @@ export default function LinkedInLoginCard() {
   const isLinkedInConnected = liConnectedLocal || hasValidToken
   const tokenExpiringSoon = tokenStatusData?.is_expiring_soon ?? false
   const tokenExpired = tokenStatusData?.is_expired ?? false
+  const daysRemaining = tokenStatusData?.days_remaining ?? null
+  const canAutoRefresh = tokenStatusData?.can_auto_refresh ?? false
+  const expiryDate = tokenStatusData?.token_expiry_date
+    ? new Date(tokenStatusData.token_expiry_date).toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      })
+    : null
+
+  // "N days left" is the thing the user actually asked to see (issue #600). null days_remaining
+  // means we could not read an expiry — say so rather than render an alarming "0 days".
+  const countdownText =
+    daysRemaining === null
+      ? 'Expiration date unknown'
+      : daysRemaining <= 0
+        ? 'Expired'
+        : `${daysRemaining} ${daysRemaining === 1 ? 'day' : 'days'} left${
+            expiryDate ? ` — expires ${expiryDate}` : ''
+          }`
 
   const showLinkedInSection = !isLinkedInConnected || tokenExpiringSoon || tokenExpired
+  // Healthy connections used to render nothing at all, so there was no way to see how much time
+  // was left until the warning fired. Show a compact countdown strip instead — always, not only
+  // inside the warning window (issue #600, owner decision 2A).
+  const showHealthyCountdown = !showLinkedInSection && isLinkedInConnected && !!tokenStatusData
 
   // LinkedIn password save
   const liPasswordMutation = useMutation({
@@ -75,10 +101,20 @@ export default function LinkedInLoginCard() {
 
           {isLinkedInConnected && tokenExpiringSoon && !tokenExpired && (
             <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-sm text-yellow-800">
-              Your LinkedIn token is expiring soon. Please reconnect to keep posting.
-              {tokenStatusData?.refresh_attempted && !tokenStatusData?.refresh_succeeded && (
-                <span className="ml-1 text-xs">(Auto-refresh failed — manual reconnect required.)</span>
-              )}
+              Your LinkedIn authorization expires in{' '}
+              <strong>
+                {daysRemaining === null
+                  ? 'less than 30 days'
+                  : `${daysRemaining} ${daysRemaining === 1 ? 'day' : 'days'}`}
+              </strong>
+              {expiryDate ? ` (on ${expiryDate})` : ''}. Please reconnect to keep posting.
+              <span className="block mt-1 text-xs">
+                {tokenStatusData?.refresh_attempted && !tokenStatusData?.refresh_succeeded
+                  ? 'We tried to renew it automatically and could not — a manual reconnect is required.'
+                  : canAutoRefresh
+                    ? 'We retry the automatic renewal every day, and email you if it keeps failing.'
+                    : 'LinkedIn does not let us renew this authorization for you — reconnecting restarts the 60-day clock.'}
+              </span>
             </div>
           )}
 
@@ -108,6 +144,24 @@ export default function LinkedInLoginCard() {
             className="inline-block w-full text-center py-2 rounded-lg text-sm font-semibold bg-blue-700 text-white hover:bg-blue-800 cursor-pointer transition-colors"
           >
             {isLinkedInConnected ? 'Reconnect LinkedIn' : 'Connect LinkedIn'}
+          </a>
+        </div>
+      )}
+
+      {showHealthyCountdown && (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 px-6 py-4 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-3 h-3 rounded-full flex-shrink-0 bg-green-500" />
+            <span className="text-sm text-gray-600 truncate">
+              Connected to LinkedIn ·{' '}
+              <span className="text-gray-500">{countdownText}</span>
+            </span>
+          </div>
+          <a
+            href={`${LI_AUTH_URL}?email=${encodeURIComponent(email)}&session_token=${encodeURIComponent(sessionToken ?? '')}`}
+            className="text-xs font-semibold text-blue-700 hover:text-blue-800 whitespace-nowrap"
+          >
+            Reconnect
           </a>
         </div>
       )}
