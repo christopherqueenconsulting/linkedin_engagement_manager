@@ -967,8 +967,10 @@ def react_to_post_inline(driver, wait, card, post_content: str = None, comment_t
         # It is quieted (issue #874) because it is a DUPLICATE symptom of that one rot — the
         # `trigger` lookup below is this read's fallback, so the attempt still proceeds — and one
         # condition gets ONE warning: the fly-out opener's miss below is the signal that stands for
-        # "this card's reaction controls are unreadable". Keep that one un-quieted while #816 is
-        # open; re-grounding these three anchors is #816's job, not another log-level change.
+        # "this card's reaction controls are unreadable" — but it warns only when no React toggle was
+        # found, so on a rotted card that still exposes a toggle this whole path is already silent
+        # and reports success. Keep the opener un-quieted while #816 is open; re-grounding these
+        # three anchors (and closing that silent path) is #816's job, not another log-level change.
         state = find_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label^='Reaction button state']")],
                            "Reaction state", parent_element=card, required=False, visible_only=True,
                            warn_on_miss=False, user_id=user_id)

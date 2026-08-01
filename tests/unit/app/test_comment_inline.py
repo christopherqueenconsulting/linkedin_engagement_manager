@@ -393,8 +393,10 @@ class TestReactToPostInline:
     def test_pre_click_reaction_state_miss_is_not_a_warning(self):
         """The pre-click read misses at the same rate as the post-click one (#816: 17 vs 16 in 48h),
         so it is a duplicate symptom of that rot, not a healthy card — and the React-toggle lookup is
-        its fallback. One condition, one warning: quieted here (issue #874), still signalled by the
-        fly-out opener's miss, which the next assertion pins."""
+        its fallback. One condition, one warning: quieted here (issue #874), still signalled — when
+        there is no React toggle to fall back to, as here — by the fly-out opener's miss, which the
+        next assertion pins. With a toggle in hand the path is silent by design; that gap belongs to
+        #816, not to another log-level change."""
         from cqc_lem.app import run_automation as ra
         with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
              patch(f"{_RA}.wait_for_ajax"), \
@@ -404,7 +406,8 @@ class TestReactToPostInline:
         pre = [c for c in ff.call_args_list if c.args[3] == "Reaction state"]
         assert len(pre) == 1
         assert pre[0].kwargs["warn_on_miss"] is False
-        # The reaction cluster keeps exactly ONE un-quieted signal while #816 is open — this one.
+        # With no React toggle found, the cluster keeps exactly ONE un-quieted signal while #816 is
+        # open — this one. It must not be collapsed away by the next issue in the cluster.
         assert cf.call_args_list[0].args[3] == "Open reactions menu"
         assert cf.call_args_list[0].kwargs["warn_on_miss"] is True
 
