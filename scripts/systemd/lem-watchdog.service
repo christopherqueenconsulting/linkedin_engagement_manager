@@ -1,0 +1,17 @@
+[Unit]
+Description=LEM stack watchdog — alerts when a compose service is down past its grace window
+Documentation=file:///opt/lem/docs/stack-watchdog.md
+# Deliberately NOT After=docker.service with a hard Requires: the watchdog's whole job is to report
+# a broken stack, so it must still run (and fail loudly) when Docker itself is unhealthy.
+After=docker.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/lem
+ExecStart=/opt/lem/scripts/stack_watchdog.sh
+# The script exits 1 while something is still down. That is a true report, not a unit failure —
+# without this, systemd marks the unit failed and the next timer tick is all systemd talks about.
+SuccessExitStatus=0 1
+StandardOutput=journal
+StandardError=journal

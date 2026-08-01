@@ -1199,7 +1199,38 @@ class FutureForwardValues(IntEnum):
 
 @app.get("/health")
 def health_check():
+    """Liveness for the blue/green flip and the Cloudflare tunnel. Deliberately trivial: it gates
+    every deploy, so it must never depend on Redis, MySQL or Celery being reachable."""
     return {"status": "healthy"}
+
+
+@app.get("/health/deep")
+def health_check_deep():
+    """Readiness of the things `/health` deliberately ignores — for external monitors.
+
+    `/health` returning 200 while the entire Celery tier was in `Created` is exactly how the
+    v0.118.0 outage stayed invisible for four hours: the API was genuinely fine, and nothing an
+    uptime monitor could reach knew that automation was dead. This endpoint answers the question a
+    monitor actually wants to ask.
+
+    Never raises and never 503s on a partial: an external monitor should read `status`, and a
+    scrape that can't tell must report `unknown` rather than a confident wrong answer.
+    """
+    lanes: dict = {}
+    status = "healthy"
+    try:
+        from cqc_lem.utilities.maintenance import _inspect
+        # active_queues() reaches every worker over the broker's control channel, so a lane whose
+        # container was never started simply isn't in the reply — which is the signal we want.
+        replies = _inspect().active_queues() or {}
+        for worker, queues in replies.items():
+            lanes[worker] = sorted(q.get("name", "?") for q in (queues or []))
+        if not lanes:
+            status = "degraded"        # broker reachable, nobody consuming
+    except Exception as e:
+        log_warning("Deep health check could not reach the Celery control channel", exc=e)
+        status = "unknown"             # unmeasured is never "healthy"
+    return {"status": status, "workers": len(lanes), "lanes": lanes}
 
 
 @router.get("/app-info")
