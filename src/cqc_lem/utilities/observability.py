@@ -1064,6 +1064,23 @@ def track_capacity_alert(alert: dict, generated_at: Optional[str] = None) -> Non
     )
 
 
+def track_youtube_token_check(state: Optional[dict] = None) -> None:
+    """Emit one YouTube OAuth refresh-token probe (issue #742) as a `youtube_token_check` event.
+
+    The dated OK line in the logs is the audit trail; this is the queryable series behind it, so
+    "when did publishing actually go bad?" is answerable without grepping a year of logs. Always
+    system-scoped: one OAuth grant publishes the whole channel, not one user's."""
+    state = dict(state or {})
+    posthog.capture(
+        distinct_id="system",
+        event="youtube_token_check",
+        properties={"status": state.get("status"), "reason": state.get("reason"),
+                    "error": state.get("error"), "scope": state.get("scope"),
+                    "checked_at": state.get("checked_at"),
+                    "http_status": state.get("http_status")},
+    )
+
+
 def track_rate_limit_trip(seconds: int, trips: int, reason: str = "429") -> None:
     """Emit one LinkedIn 429 breaker trip (issue #650) as a `rate_limit_trip` event.
 

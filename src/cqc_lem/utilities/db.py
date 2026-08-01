@@ -10292,3 +10292,61 @@ def revoke_affiliate_enrollment_bonus(user_id: int) -> dict:
     finally:
         cursor.close()
         connection.close()
+
+
+# --- app-level credentials (issue #742) -------------------------------------------------------
+# Named secrets that belong to the INSTALL, not to a user (the YouTube OAuth refresh token today).
+# Reads fall back to the env seed at the call site, so an empty table behaves exactly like the
+# pre-#742 env-only world; a write here is what lets a re-minted token land without a deploy.
+
+def get_app_credential(name: str) -> Optional[str]:
+    """The stored value for `name`, or None when unset/unreadable. A DB problem returns None so the
+    caller falls back to its env seed rather than losing the credential entirely."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT value FROM app_credentials WHERE name=%s", (name,))
+        row = cursor.fetchone()
+        value = (row or {}).get("value")
+        return str(value) if value else None
+    except mysql.connector.Error as err:
+        log_warning(f"Could not read app credential {name}", exc=err)
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def set_app_credential(name: str, value: Optional[str], note: Optional[str] = None) -> bool:
+    """Upsert a named app credential. Returns True when it was stored."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO app_credentials (name, value, note) VALUES (%s,%s,%s) "
+            "ON DUPLICATE KEY UPDATE value=VALUES(value), note=VALUES(note)",
+            (name, value, note))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        log_error(f"Could not store app credential {name}", exc=err)
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_app_credential_updated_at(name: str) -> Optional[datetime]:
+    """When `name` was last written, or None when it has never been stored here."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT updated_at FROM app_credentials WHERE name=%s", (name,))
+        row = cursor.fetchone()
+        return (row or {}).get("updated_at")
+    except mysql.connector.Error as err:
+        log_warning(f"Could not read app credential timestamp for {name}", exc=err)
+        return None
+    finally:
+        cursor.close()
+        connection.close()

@@ -40,6 +40,7 @@ vi.mock('../TimezoneCard', () => ({ default: () => <div data-testid="timezone-ca
 vi.mock('../LoginLocationCard', () => ({ default: () => <div data-testid="login-location-card" /> }))
 vi.mock('../LinkedInLoginCard', () => ({ default: () => <div data-testid="linkedin-login-card" /> }))
 vi.mock('../LinkedInDisplayNameCard', () => ({ default: () => <div data-testid="linkedin-display-name-card" /> }))
+vi.mock('../YouTubePublishingCard', () => ({ default: () => <div data-testid="youtube-publishing-card" /> }))
 vi.mock('../CompanyPageCard', () => ({ default: () => <div data-testid="company-page-card" /> }))
 vi.mock('../ContentProfileCard', () => ({ default: () => <div data-testid="content-profile-card" /> }))
 vi.mock('../StoryBankCard', () => ({ default: () => <div data-testid="story-bank-card" /> }))
