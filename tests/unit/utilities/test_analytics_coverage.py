@@ -46,7 +46,18 @@ class TestGetUncapturedPostedPostIds:
         sql, params = cursor.execute.call_args[0]
         assert "LEFT JOIN post_stats" in sql and "s.id IS NULL" in sql
         assert "ORDER BY p.scheduled_time DESC" in sql
-        assert params == (7, "posted", 90, 5)
+        assert params == (7, "posted", 90, "post", "success", 5)
+
+    def test_only_offers_posts_that_have_a_logged_permalink(self, mock_database_connection):
+        """A post the sweep can't open never gains a stat row, so it would sit at the head of this
+        capped list forever and starve every post behind it."""
+        cursor = mock_database_connection["cursor"]
+        cursor.fetchall.return_value = []
+        from cqc_lem.utilities.db import get_uncaptured_posted_post_ids
+        get_uncaptured_posted_post_ids(7)
+        sql = cursor.execute.call_args[0][0]
+        assert "EXISTS (SELECT 1 FROM logs l" in sql
+        assert "l.post_url IS NOT NULL AND l.post_url <> ''" in sql
 
     def test_negative_limit_is_clamped(self, mock_database_connection):
         cursor = mock_database_connection["cursor"]

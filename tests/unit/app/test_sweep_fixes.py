@@ -173,14 +173,15 @@ class TestScrapeBackfillsNeverCapturedPosts:
     capture was missed while it was fresh stayed unmeasurable forever — and the analytics rendered a
     shrinking subset of the account."""
 
-    def _run(self, recent, uncaptured, env=None):
+    def _run(self, recent, uncaptured, env=None, counts=None):
         with patch(f"{_RA}.time.sleep"), \
              patch.dict("os.environ", env or {}, clear=False), \
              patch(f"{_RA}.get_recent_posted_post_ids", return_value=list(recent)), \
              patch(f"{_RA}.get_uncaptured_posted_post_ids", return_value=list(uncaptured)) as back, \
              patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
              patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://x/urn"), \
-             patch(f"{_RA}._post_social_counts", return_value={"reactions": 1, "comments": 0}), \
+             patch(f"{_RA}._post_social_counts",
+                   return_value={"reactions": 1, "comments": 0} if counts is None else counts), \
              patch(f"{_RA}._post_analytics_counts", return_value={}), \
              patch(f"{_RA}.get_shipped_variant_keys", return_value={}), \
              patch(f"{_RA}.track_post_outcome"), \
@@ -218,6 +219,22 @@ class TestScrapeBackfillsNeverCapturedPosts:
         _, _, back = self._run(recent=[9], uncaptured=[],
                                env={"POST_STATS_BACKFILL_DAYS": "ninety", "POST_STATS_BACKFILL_MAX": ""})
         assert back.call_args.kwargs == {"days": 90, "limit": 5}
+
+    def test_an_unreadable_page_records_nothing_instead_of_a_zero_row(self):
+        """A page that never rendered (auth wall, 429, dead permalink) parses to NO signals at all —
+        writing the zeros would publish a fabricated row, and for a backfilled post it is permanent:
+        the stat row retires it from the never-captured queue on a single bad read."""
+        result, rec, _ = self._run(recent=[], uncaptured=[4], counts={})
+        rec.assert_not_called()
+        assert "0" in result
+
+    def test_a_genuinely_zero_engagement_post_is_still_recorded(self):
+        """A readable page always yields the full zero-filled dict, so 'no engagement' must keep
+        being measured — only 'nothing read' is skipped."""
+        _, rec, _ = self._run(recent=[9], uncaptured=[],
+                              counts={"reactions": 0, "comments": 0, "reposts": 0,
+                                      "impressions": 0, "saves": 0})
+        assert [c.args[1] for c in rec.call_args_list] == [9]
 
 
 class TestPostAnalyticsCounts:

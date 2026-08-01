@@ -6078,7 +6078,12 @@ def get_uncaptured_posted_post_ids(user_id: int, days: int = 90, limit: int = 5)
     90 days — a post whose capture was missed while it was fresh (automation paused, no permalink
     logged yet, a 429) could never be measured afterwards, which is why the analytics rendered a
     shrinking subset of the account's posts. Newest first and capped, so topping the sweep up costs
-    a bounded number of extra page loads."""
+    a bounded number of extra page loads.
+
+    Only posts with a logged permalink are offered. The sweep can do nothing with the others, and
+    since a post leaves this set only by GAINING a stat row, a handful of permalink-less posts at
+    the head of the window would otherwise hold every slot of the cap on every run — the backfill
+    would report as working while never reaching a post it could actually capture."""
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -6087,8 +6092,12 @@ def get_uncaptured_posted_post_ids(user_id: int, days: int = 90, limit: int = 5)
             "LEFT JOIN post_stats s ON s.post_id = p.id AND s.user_id = p.user_id "
             "WHERE p.user_id = %s AND p.status = %s "
             "AND p.scheduled_time >= (NOW() - INTERVAL %s DAY) AND s.id IS NULL "
+            "AND EXISTS (SELECT 1 FROM logs l WHERE l.user_id = p.user_id AND l.post_id = p.id "
+            "AND l.action_type = %s AND l.result = %s "
+            "AND l.post_url IS NOT NULL AND l.post_url <> '') "
             "ORDER BY p.scheduled_time DESC LIMIT %s",
-            (user_id, PostStatus.POSTED.value, days, max(0, int(limit))))
+            (user_id, PostStatus.POSTED.value, days, LogActionType.POST.value,
+             LogResultType.SUCCESS.value, max(0, int(limit))))
         return [r[0] for r in (cursor.fetchall() or [])]
     except mysql.connector.Error as err:
         myprint(f"Could not get uncaptured posted post ids for user {user_id} | Error: {err}")

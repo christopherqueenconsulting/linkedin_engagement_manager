@@ -2233,6 +2233,15 @@ def auto_scrape_post_stats(self, user_id: int):
             # the analytics view doesn't render can't zero out one the detail page did.
             for key, val in _post_analytics_counts(driver, url).items():
                 counts[key] = max(counts.get(key) or 0, val)
+            # NOTHING parsed (a readable page always yields the full zero-filled dict) means the page
+            # never rendered — auth wall, 429, dead permalink — not that the post earned nothing.
+            # Recording those zeros publishes a fabricated row to the analytics panel, and for a
+            # backfilled post it is permanent: one bad read retires it from the never-captured queue
+            # and the dashboard measures a lie instead of a gap (#809).
+            if not counts:
+                log_debug("Post page unreadable — leaving it uncaptured", user_id=user_id,
+                          post_id=pid, task_name="auto_scrape_post_stats")
+                continue
             record_post_stats(user_id, pid, counts.get("reactions", 0), counts.get("comments", 0),
                               reposts=counts.get("reposts") or 0,
                               impressions=counts.get("impressions") or None,
