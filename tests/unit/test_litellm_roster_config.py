@@ -24,8 +24,8 @@ PRICES = json.loads((REPO_ROOT / ".litellm" / "model_prices_snapshot.json").read
 
 # The `lem-agent-*` aliases back the agent-pipeline's Ollama lane, not LEM's own serving tiers, and
 # they are configured with a `:cloud` tag the direct ollama.com API does not list. That predates
-# #717 and is tracked separately — it is excluded here rather than silently normalized away, so the
-# serving tiers can be checked strictly.
+# #717 and is tracked on #844 — excluded here rather than silently normalized away, so the serving
+# tiers can be checked strictly. Delete this exclusion when #844 lands.
 AGENT_GROUPS = tuple(sorted({d for d in re.findall(r"model_name:\s*(lem-agent-[\w-]+)", CONFIG_TEXT)}))
 
 
