@@ -70,10 +70,23 @@ overwritten, because a corrected key might still recover it.
 Watch the number it logs:
 
 ```
-Secret encryption backfill: 12 rewritten, 0 failed, 0 still unprotected
+Secret encryption backfill: 12 rewritten, 0 failed, 0 orphaned, 0 still unprotected
 ```
 
-`plaintext_remaining > 0` is logged as a WARNING. Run it on demand with:
+`plaintext_remaining > 0` is logged as a WARNING.
+
+**Orphaned rows** are `cookies` rows with no `user_id`. They cannot be encrypted (there is no user
+to bind the AAD to) and cannot be read back (`get_cookies` JOINs `users`) — a dead plaintext
+session. They count toward `plaintext_remaining` so the fail-closed gate can never read 0 while one
+exists, and the remedy is deletion, not encryption:
+
+```sql
+DELETE FROM cookies WHERE user_id IS NULL;
+```
+
+New ones can no longer be created: `_store_cookie_rows` refuses a write it cannot bind.
+
+Run the pass on demand with:
 
 ```bash
 docker exec celery_worker python -c \

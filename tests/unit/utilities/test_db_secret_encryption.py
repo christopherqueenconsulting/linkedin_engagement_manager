@@ -65,15 +65,33 @@ class TestCookieWrites:
         assert LI_AT not in str(_executed(cur))
         assert decrypt_secret(stored, 42, SECRET_FIELD_COOKIE_VALUE) == LI_AT
 
-    def test_orphan_cookie_without_a_user_is_still_stored(self, keyed, mock_database_connection):
-        """An unbindable row can't be sealed — it must not silently vanish either."""
+    def test_unbindable_cookie_is_refused_not_written_in_the_clear(self, keyed,
+                                                                   mock_database_connection):
+        """No user_id means no AAD to bind to, so the row would be written as PLAINTEXT — and
+        get_cookies JOINs users, so nothing could ever read it back. A dead plaintext li_at that
+        the backfill can't see is strictly worse than no row at all."""
         cur = mock_database_connection["cursor"]
         cookie = {"name": "li_at", "value": LI_AT, "domain": ".linkedin.com", "path": "/",
                   "expiry": 123, "secure": True, "httpOnly": True}
         with patch("cqc_lem.utilities.db.get_user_id", return_value=None):
-            store_cookies("nobody@example.com", [cookie])
-        stored = next(p[1] for s, p in _executed(cur) if "INSERT INTO cookies" in s)
-        assert stored == LI_AT
+            ok = store_cookies("nobody@example.com", [cookie])
+        assert ok is False
+        assert not any("INSERT INTO cookies" in s for s, _ in _executed(cur))
+        assert LI_AT not in str(_executed(cur))
+
+    def test_failed_write_is_reported_so_the_password_is_never_dropped(
+            self, keyed, mock_database_connection):
+        """store_linkedin_li_at's True is what authorises deleting the user's stored LinkedIn
+        password. _store_cookie_rows swallows per-row driver errors, so the failure has to travel
+        back out — otherwise a user loses the only login they had left."""
+        from cqc_lem.utilities.db import store_linkedin_li_at
+
+        cur = mock_database_connection["cursor"]
+        cur.execute.side_effect = mysql.connector.Error("cookie write failed")
+        with patch("cqc_lem.utilities.db.get_user_id", return_value=42), \
+             patch("cqc_lem.utilities.db.get_user_email", return_value="a@b.com"), \
+             patch("cqc_lem.utilities.db.prune_superseded_cookies"):
+            assert store_linkedin_li_at(42, LI_AT) is False
 
 
 class TestCookieReads:
@@ -247,8 +265,9 @@ class TestOAuthTokens:
 
 
 class TestBackfillAndRotation:
-    def _rows(self, cursor, users, cookies):
+    def _rows(self, cursor, users, cookies, orphans=0):
         cursor.fetchall.side_effect = [users, cookies]
+        cursor.fetchone.return_value = {"n": orphans}
 
     def test_disabled_without_a_key(self, mock_database_connection, monkeypatch):
         monkeypatch.delenv("LEM_SECRET_KEY", raising=False)
@@ -322,9 +341,24 @@ class TestBackfillAndRotation:
         cur = mock_database_connection["cursor"]
         self._rows(cur, [{"id": 1, "password": "pw", "access_token": None,
                           "refresh_token": None}], [])
-        cur.execute.side_effect = [None, None, mysql.connector.Error("boom")]
+        # users SELECT, cookies SELECT, orphan COUNT, then the UPDATE fails
+        cur.execute.side_effect = [None, None, None, mysql.connector.Error("boom")]
         stats = encrypt_secrets_at_rest()
         assert stats["rewritten"] == 0 and stats["plaintext_remaining"] == 1
+
+    def test_orphaned_plaintext_cookies_keep_the_gate_off_zero(self, keyed,
+                                                               mock_database_connection):
+        """A cookie row with no user_id can be neither encrypted nor read, but it IS a plaintext
+        session in every dump. If it didn't count, the operator would read 'nothing unprotected'
+        and flip ENCRYPTION_REQUIRED with live credentials still in the clear."""
+        cur = mock_database_connection["cursor"]
+        self._rows(cur, [], [], orphans=2)
+        stats = encrypt_secrets_at_rest()
+        assert stats["orphaned"] == 2
+        assert stats["plaintext_remaining"] == 2
+        # Reported, never rewritten — the remedy is deletion, not encryption.
+        assert stats["rewritten"] == 0
+        assert not any("UPDATE" in c[0][0] for c in cur.execute.call_args_list)
 
     def test_read_failure_returns_early(self, keyed, mock_database_connection):
         mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("boom")

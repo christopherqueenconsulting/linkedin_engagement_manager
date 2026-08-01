@@ -1505,7 +1505,8 @@ def auto_encrypt_secrets_at_rest(self):
         return "Encryption disabled (no LEM_SECRET_KEY) — nothing done"
     if stats.get("plaintext_remaining"):
         log_warning(f"{stats['plaintext_remaining']} secret(s) still unencrypted at rest "
-                    f"({stats.get('failed', 0)} failed to re-encrypt)",
+                    f"({stats.get('failed', 0)} failed to re-encrypt, "
+                    f"{stats.get('orphaned', 0)} orphaned cookie row(s) to delete)",
                     task_name="auto_encrypt_secrets_at_rest")
     return (f"Re-encrypted {stats.get('rewritten', 0)} secret(s); "
             f"{stats.get('plaintext_remaining', 0)} still unprotected")
