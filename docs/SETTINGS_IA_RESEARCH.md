@@ -115,7 +115,11 @@ Read-only fields the GET adds for the UI: `reply_inbound_address`, `gmail_forwar
   collaboration, profile viewer, nurture, plus six catch-up milestones. Each has step 0 + N
   follow-ups with `delay_hours`. Blank = built-in default.
 - **Lead magnet** — enabled, trigger keyword, DM message.
-- **Groups** — per joined group on/off; all on by default.
+- **Groups** — per joined group, TWO independent switches (issue #769): *Comment* (daily value-add
+  comments on other members' posts, out of the daily comment cap) and *Post* (the weekly ORIGINAL
+  group post — never a copy or reshare of a scheduled feed post, one group per week, rotating to
+  whichever post-enabled group has gone longest without one). Both on by default; the card names the
+  group the next post lands in.
 - **Billing** — plan/tier/trial, Stripe portal, video-credit and avatar-credit packs.
 
 ---

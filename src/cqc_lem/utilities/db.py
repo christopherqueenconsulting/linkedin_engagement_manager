@@ -5906,11 +5906,15 @@ def get_user_groups(user_id: int) -> list:
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute(
-            "SELECT group_id, group_name, enabled FROM user_groups WHERE user_id=%s ORDER BY group_name",
+            "SELECT group_id, group_name, enabled, post_enabled, last_posted_at "
+            "FROM user_groups WHERE user_id=%s ORDER BY group_name",
             (user_id,))
         rows = cursor.fetchall() or []
         for r in rows:
             r["enabled"] = bool(r.get("enabled"))
+            r["post_enabled"] = bool(r.get("post_enabled"))
+            posted = r.get("last_posted_at")
+            r["last_posted_at"] = posted.isoformat() if hasattr(posted, "isoformat") else posted
         return rows
     except mysql.connector.Error as err:
         myprint(f"Could not list groups for user {user_id} | Error: {err}")
@@ -5933,14 +5937,62 @@ def get_enabled_group_ids(user_id: int) -> list:
         connection.close()
 
 
-def set_groups_enabled(user_id: int, group_states: dict) -> bool:
-    """Bulk-update per-group enabled flags: {group_id: bool}."""
+def get_next_group_for_post(user_id: int) -> Optional[dict]:
+    """The ONE place "which group does the next group post go to" is decided (issue #769): the
+    least-recently-posted group the user has opted into for POSTING. `post_enabled` is independent
+    of `enabled` (which only governs commenting), so a group can take posts without being commented
+    in and vice versa. Never posted there = sorts first. None when no group is opted in."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT group_id, group_name FROM user_groups "
+            "WHERE user_id=%s AND post_enabled=1 "
+            "ORDER BY last_posted_at IS NULL DESC, last_posted_at ASC, group_name ASC LIMIT 1",
+            (user_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    except mysql.connector.Error as err:
+        myprint(f"Could not resolve next post group for user {user_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def record_group_post(user_id: int, group_id: str) -> bool:
+    """Stamp a group as just-posted-in so the rotation moves on to the next one."""
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
-        for gid, enabled in group_states.items():
-            cursor.execute("UPDATE user_groups SET enabled=%s WHERE user_id=%s AND group_id=%s",
-                           (1 if enabled else 0, user_id, str(gid)))
+        cursor.execute("UPDATE user_groups SET last_posted_at=NOW() WHERE user_id=%s AND group_id=%s",
+                       (user_id, str(group_id)))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not record group post for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def set_groups_enabled(user_id: int, group_states: dict) -> bool:
+    """Bulk-update per-group flags. Each value is either a bare bool (engagement only — the shape
+    the pre-#769 SPA bundle still sends) or {"enabled": bool, "post_enabled": bool}; only the keys
+    present are written, so a partial payload never silently resets the other flag."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        for gid, state in group_states.items():
+            flags = state if isinstance(state, dict) else {"enabled": state}
+            updates = [(col, 1 if flags[col] else 0) for col in ("enabled", "post_enabled") if col in flags]
+            if not updates:
+                continue
+            cursor.execute(
+                f"UPDATE user_groups SET {', '.join(f'{c}=%s' for c, _ in updates)} "
+                "WHERE user_id=%s AND group_id=%s",
+                (*(v for _, v in updates), user_id, str(gid)))
         connection.commit()
         return True
     except mysql.connector.Error as err:

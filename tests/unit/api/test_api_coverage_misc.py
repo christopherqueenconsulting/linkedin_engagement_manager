@@ -342,11 +342,24 @@ class TestUserSettingsAndGroups:
         assert resp.status_code == 500
 
     def test_get_groups(self, client):
-        groups = [{"group_id": "g1", "group_name": "AI", "enabled": True}]
+        groups = [{"group_id": "g1", "group_name": "AI", "enabled": True, "post_enabled": True},
+                  {"group_id": "g2", "group_name": "Sales", "enabled": True, "post_enabled": True}]
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
-             patch(f"{_M}.get_user_groups", return_value=groups):
+             patch(f"{_M}.get_user_groups", return_value=groups), \
+             patch(f"{_M}.get_next_group_for_post", return_value={"group_id": "g2", "group_name": "Sales"}):
             resp = client.get(f"/api/user/groups?session_token={_TOK}")
-        assert resp.status_code == 200 and resp.json()["detail"] == groups
+        assert resp.status_code == 200
+        detail = resp.json()["detail"]
+        # Still a plain array (an older cached SPA bundle reads it as one) with the next post marked.
+        assert [g["is_next_post"] for g in detail] == [False, True]
+
+    def test_get_groups_none_opted_in_for_posting(self, client):
+        groups = [{"group_id": "g1", "group_name": "AI", "enabled": True, "post_enabled": False}]
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.get_user_groups", return_value=groups), \
+             patch(f"{_M}.get_next_group_for_post", return_value=None):
+            resp = client.get(f"/api/user/groups?session_token={_TOK}")
+        assert resp.json()["detail"][0]["is_next_post"] is False
 
     def test_put_groups(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
@@ -355,6 +368,15 @@ class TestUserSettingsAndGroups:
                 "session_token": _TOK, "groups": {"g1": False}})
         assert resp.status_code == 200
         assert setg.call_args[0] == (_UID, {"g1": False})
+
+    def test_put_groups_accepts_per_group_post_flag(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.set_groups_enabled", return_value=True) as setg:
+            resp = client.put("/api/user/groups", json={
+                "session_token": _TOK,
+                "groups": {"g1": {"enabled": True, "post_enabled": False}}})
+        assert resp.status_code == 200
+        assert setg.call_args[0] == (_UID, {"g1": {"enabled": True, "post_enabled": False}})
 
     def test_put_groups_500(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \

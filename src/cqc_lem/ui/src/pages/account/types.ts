@@ -213,6 +213,11 @@ export type UserGroup = {
   group_id: string
   group_name: string | null
   enabled: boolean
+  /** Whether the weekly original group post may land in this group (issue #769). */
+  post_enabled?: boolean
+  last_posted_at?: string | null
+  /** Server-marked: the group the NEXT weekly group post goes to. */
+  is_next_post?: boolean
 }
 
 export type LeadMagnet = {
