@@ -5999,7 +5999,12 @@ def record_group_post_run(user_id: int, group_id: str) -> bool:
         connection.commit()
         return True
     except mysql.connector.Error as err:
-        myprint(f"Could not record group post run for user {user_id} | Error: {err}")
+        # A lost stamp is exactly the starvation this function exists to prevent — the group stays
+        # least-recently-tried and is "next" again next week — and the caller has nothing to do
+        # about it, so it has to be visible on its own (ERROR, not the myprint shim: prod forwards
+        # WARNING and above to PostHog).
+        log_error("Could not record group post run", exc=err, user_id=user_id,
+                  task_name="record_group_post_run")
         return False
     finally:
         cursor.close()

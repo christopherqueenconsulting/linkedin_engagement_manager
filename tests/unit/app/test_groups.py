@@ -100,6 +100,19 @@ class TestUserGroupsDB:
             "last_post_run_at", "")
         assert cur.execute.call_args[0][1] == (1, "123")
 
+    def test_record_group_post_run_failure_is_visible(self):
+        """A lost stamp leaves the group least-recently-tried — i.e. it re-creates the starvation —
+        and the caller can do nothing with the False, so the failure has to log at ERROR."""
+        import mysql.connector
+        conn, cur = self._conn()
+        cur.execute.side_effect = mysql.connector.Error("connection gone")
+        with patch(f"{_DB}.get_db_connection", return_value=conn), \
+             patch(f"{_DB}.log_error") as logged:
+            from cqc_lem.utilities.db import record_group_post_run
+            assert record_group_post_run(1, "123") is False
+        logged.assert_called_once()
+        assert logged.call_args.kwargs["user_id"] == 1
+
 
 class TestSyncUserGroups:
     def test_upserts_enumerated(self):
