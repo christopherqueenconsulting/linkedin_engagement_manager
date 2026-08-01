@@ -123,7 +123,8 @@ def mint_access_token() -> str:
 def probe(persist: bool = True) -> dict:
     """Exchange the refresh token once and judge the result. Never raises: a probe that cannot run
     is a state (`unknown`), not an exception. `persist=False` skips writing the Redis state record,
-    for read-only callers that must not overwrite the weekly audit trail."""
+    for read-only callers that must not overwrite the weekly audit trail — it does NOT skip storing
+    a refresh token Google rotated in, which every exchange must keep whoever asked for it."""
     checked_at = datetime.now(timezone.utc).isoformat()
     if not (YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET):
         return _state(STATUS_NOT_CONFIGURED, "YOUTUBE_CLIENT_ID/SECRET are not set", checked_at,
@@ -167,8 +168,7 @@ def probe(persist: bool = True) -> dict:
                       checked_at, persist=persist, error="scope_missing", scope=scope,
                       http_status=status_code)
 
-    if persist:
-        _persist_rotated_token(payload, current)
+    _persist_rotated_token(payload, current)
     return _state(STATUS_OK, "Refresh token exchanged for an access token", checked_at,
                   persist=persist, scope=scope or None, http_status=status_code)
 
@@ -263,10 +263,21 @@ def _json(response) -> dict:
 
 def _persist_rotated_token(payload: dict, current: str) -> None:
     """Google normally omits `refresh_token` on a refresh grant — but when it does return one, the
-    old value is on its way out and only the DB can hold the new one."""
+    old value is on its way out and only the DB can hold the new one.
+
+    Runs on EVERY exchange, including the read-only preflight: `persist` governs the Redis audit
+    record, and dropping a rotated token there would leave the very next publish holding a value
+    Google has already retired — the render spend this module exists to protect. Storage failures
+    are logged, never raised: `probe()` promises a state, not an exception, and `get_db_connection`
+    raises when MySQL is down."""
     rotated = str((payload or {}).get("refresh_token") or "").strip()
-    if rotated and rotated != current:
+    if not rotated or rotated == current:
+        return
+    try:
         store_refresh_token(rotated, note="rotated by Google during a token refresh")
+    except Exception as e:
+        log_error("Could not persist the refresh token Google rotated in — the next publish will "
+                  "use a retired token", exc=e, task_name=TASK_NAME)
 
 
 def _token_updated_at() -> Optional[str]:

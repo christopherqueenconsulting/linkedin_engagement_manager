@@ -9,6 +9,7 @@ probe that cried wolf on either would train the owner to ignore the one alert th
 import json
 from unittest.mock import MagicMock, patch
 
+import mysql.connector
 import pytest
 
 from cqc_lem.utilities.marketing import youtube_auth as ya
@@ -158,6 +159,33 @@ class TestProbe:
                 payload={"access_token": "at", "refresh_token": "rotated"})):
             ya.probe()
         assert stored[ya.CREDENTIAL_NAME] == "rotated"
+
+    def test_a_rotated_token_is_kept_even_on_the_read_only_preflight(self, monkeypatch):
+        """`persist=False` is about the Redis audit record, NOT the credential: Google retires the
+        old value the moment it hands back a new one, so dropping it here would leave the publish
+        that follows this very preflight holding a dead token — the wasted render spend #742 exists
+        to prevent."""
+        stored = {}
+        monkeypatch.setattr(ya, "set_app_credential",
+                            lambda name, value, note=None: stored.update({name: value}) or True)
+        with patch("requests.post", return_value=_response(
+                payload={"access_token": "at", "refresh_token": "rotated"})):
+            ya.probe(persist=False)
+        assert stored[ya.CREDENTIAL_NAME] == "rotated"
+
+    def test_a_credential_store_outage_never_turns_a_probe_into_an_exception(self, monkeypatch):
+        """`get_db_connection` raises when MySQL is down, and it is called outside `db.py`'s own
+        try/except — so an unguarded write here would propagate out of probe(), past the beat's
+        narrow except clause, and abort a tutorial run that had nothing wrong with it."""
+        def _boom(*args, **kwargs):
+            raise mysql.connector.Error("db down")
+
+        monkeypatch.setattr(ya, "set_app_credential", _boom)
+        with patch("requests.post", return_value=_response(
+                payload={"access_token": "at", "refresh_token": "rotated"})), \
+             patch(f"{_MOD}.log_error") as error:
+            assert ya.probe()["status"] == ya.STATUS_OK
+        error.assert_called_once()
 
     def test_persist_false_leaves_the_weekly_audit_record_untouched(self, _configured):
         with patch("requests.post", return_value=_response(payload={"access_token": "at"})):

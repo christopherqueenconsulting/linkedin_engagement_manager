@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
@@ -28,16 +28,22 @@ type YouTubeStatus = {
  */
 export default function YouTubePublishingCard() {
   const { sessionToken, isAdmin } = useAuth()
-  const [live, setLive] = useState(false)
+  // One-shot, deliberately NOT query state: a `live` flag in the key latches on after the first
+  // click, so every window refocus past staleTime would then re-probe Google — the opposite of the
+  // "opening Settings never spends a round trip" contract. The ref arms exactly one live fetch.
+  const liveOnce = useRef(false)
 
   const { data, isFetching, refetch } = useQuery({
-    queryKey: ['youtube-status', sessionToken, live],
-    queryFn: () =>
-      api
+    queryKey: ['youtube-status', sessionToken],
+    queryFn: () => {
+      const live = liveOnce.current
+      liveOnce.current = false
+      return api
         .get(
           `/admin/youtube-status?session_token=${encodeURIComponent(sessionToken!)}&live=${live}`,
         )
-        .then((r) => r.data.detail as YouTubeStatus),
+        .then((r) => r.data.detail as YouTubeStatus)
+    },
     enabled: !!sessionToken && isAdmin,
     staleTime: 60 * 1000,
   })
@@ -94,7 +100,7 @@ export default function YouTubePublishingCard() {
       <button
         type="button"
         onClick={() => {
-          setLive(true)
+          liveOnce.current = true
           refetch()
         }}
         disabled={isFetching}

@@ -69,12 +69,17 @@ describe('YouTubePublishingCard (issue #742)', () => {
     await waitFor(() => expect(badge().textContent).toBe('Unknown'))
   })
 
-  it('re-probes on demand', async () => {
+  it('re-probes on demand, and spends exactly one round trip doing it', async () => {
+    // The live flag is a one-shot ref, not query state: keying the query on it would latch it on
+    // after the first click (every later refocus re-probing Google) AND fire two requests per
+    // click — a refetch of the cached query plus a fetch of the new key.
     get.mockResolvedValue(payload(connected))
     harness(<YouTubePublishingCard />)
-    await waitFor(() => expect(badge()).toBeTruthy())
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(1))
+    expect(String(get.mock.calls[0][0])).toContain('live=false')
     fireEvent.click(screen.getByRole('button', { name: /check now/i }))
-    await waitFor(() => expect(get.mock.calls.some((c) => String(c[0]).includes('live=true'))).toBe(true))
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2))
+    expect(String(get.mock.calls[1][0])).toContain('live=true')
   })
 
   it('renders nothing when YouTube is not configured at all', async () => {
