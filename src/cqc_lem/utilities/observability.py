@@ -5,6 +5,7 @@ import json
 import os
 import re
 import time
+import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from functools import wraps
@@ -295,23 +296,33 @@ def llm_attribution(user_id: Optional[int] = None, feature: Optional[str] = None
         _llm_attribution.reset(token)
 
 
+def _argument_reader(fn, arg_name: str):
+    """A `(args, kwargs) -> value` reader for one of `fn`'s own arguments, keyword or positional.
+    Bound once at decoration time so the signature isn't introspected on every call."""
+    try:
+        params = list(inspect.signature(fn).parameters)
+    except (TypeError, ValueError):
+        params = []
+    position = params.index(arg_name) if arg_name in params else None
+
+    def read(args, kwargs):
+        value = kwargs.get(arg_name)
+        if value is None and position is not None and len(args) > position:
+            value = args[position]
+        return value
+    return read
+
+
 def attribute_llm_cost(feature: str, user_id_arg: str = "user_id"):
     """Decorator form of llm_attribution() for a function that OWNS a feature's LLM work (a Celery
     task, a generator entry point). It reads the user id from the call's own `user_id_arg` argument,
     so cost is attributed the same way no matter which caller — beat, API, or healer — invoked it."""
     def decorator(fn):
-        try:
-            params = list(inspect.signature(fn).parameters)
-        except (TypeError, ValueError):
-            params = []
-        position = params.index(user_id_arg) if user_id_arg in params else None
+        read_user_id = _argument_reader(fn, user_id_arg)
 
         @wraps(fn)
         def wrapper(*args, **kwargs):
-            user_id = kwargs.get(user_id_arg)
-            if user_id is None and position is not None and len(args) > position:
-                user_id = args[position]
-            with llm_attribution(user_id=user_id, feature=feature):
+            with llm_attribution(user_id=read_user_id(args, kwargs), feature=feature):
                 return fn(*args, **kwargs)
         return wrapper
     return decorator
@@ -327,6 +338,165 @@ def current_llm_attribution() -> Tuple[Optional[int], Optional[str]]:
         user_id = user_id if user_id is not None else task_user_id
         feature = feature or feature_from_task_name(task_name)
     return user_id, feature
+
+
+# --- LLM pipeline traces: $ai_trace / $ai_span (issue #746) --------------------------------
+# A post is not one model call. Research -> draft -> refine -> humanize -> authenticity -> review is
+# six, and each lands in PostHog as its own isolated $ai_generation, so "what did THIS post cost, end
+# to end?" has no answer. Grouping is app-side work: only the app knows where a pipeline starts.
+#
+# The ids live in a contextvar (no ai_helper signature grows a trace argument) and the SHARED client
+# is what puts them on the wire — see utilities/ai/client.py. Two wires, because LiteLLM's PostHog
+# logger reads them from two places: the `x-litellm-trace-id` header becomes the proxy event's
+# $ai_trace_id, and `metadata.parent_run_id` becomes its $ai_parent_id. The $ai_trace / $ai_span
+# events emitted here are the skeleton those generations hang off.
+#
+# The proxy-side $ai_generation stream itself is untouched: no extra event, no changed property.
+
+_llm_trace: contextvars.ContextVar[dict] = contextvars.ContextVar("llm_trace", default={})
+
+
+def llm_tracing_enabled() -> bool:
+    """Kill switch, read at call time. Off means no trace id is ever minted, so the client attaches
+    nothing and the proxy stream is exactly what it was before tracing shipped."""
+    return _env_flag("LLM_TRACING_ENABLED")
+
+
+def current_llm_trace() -> Tuple[Optional[str], Optional[str]]:
+    """(trace_id, span_id) for the LLM call happening right now — the pipeline it belongs to, and the
+    step within it. (None, None) when no pipeline is open, which every untraced call still is."""
+    scope = _llm_trace.get()
+    return scope.get("trace_id"), scope.get("span_id")
+
+
+def _capture_ai_span(event: str, trace_id: str, span_id: str, name: str, started: float,
+                     parent_id: Optional[str], error: Optional[BaseException],
+                     user_id: Optional[int], feature: Optional[str],
+                     properties: Optional[dict] = None) -> None:
+    """Emit one $ai_trace / $ai_span. Best-effort by construction — a post must never fail to
+    generate because its telemetry could not be written."""
+    try:
+        props = {
+            "$ai_trace_id": trace_id,
+            "$ai_span_id": span_id,
+            "$ai_span_name": name,
+            # PostHog's LLM analytics reads $ai_latency in SECONDS (llm_call's latency_ms is the
+            # other convention and the two must not be confused on one chart).
+            "$ai_latency": round(max(0.0, time.time() - started), 3),
+            "feature": feature or FEATURE_SYSTEM,
+            "user_id": user_id,
+        }
+        if parent_id:
+            props["$ai_parent_id"] = parent_id
+        if error is not None:
+            props["$ai_is_error"] = True
+            props["$ai_error"] = f"{type(error).__name__}: {error}"
+        if properties:
+            props.update({k: v for k, v in properties.items() if v is not None})
+        posthog.capture(
+            distinct_id=str(user_id if user_id is not None else "system"),
+            event=event,
+            properties=props,
+        )
+    except Exception as e:
+        # DEBUG, not WARNING: a telemetry miss is an expected no-op class, and a repeated warning
+        # would file a defect for it (see utilities/CLAUDE.md).
+        log_debug(f"Could not capture {event}: {e}")
+
+
+@contextmanager
+def llm_trace(name: str, user_id: Optional[int] = None,
+              feature: Optional[str] = None) -> Iterator[Optional[str]]:
+    """Group every LLM call made inside this block into ONE PostHog trace named `name`, and open the
+    matching `llm_attribution()` scope so a pipeline entry point declares who/what once.
+
+    Nesting is deliberate: a trace opened inside an open one becomes a SPAN of the outer trace rather
+    than a second trace. `create_text_post` recurses into itself for post-type fallbacks, and two
+    half-traces of one post answer nobody's question."""
+    if _llm_trace.get().get("trace_id"):
+        with llm_attribution(user_id=user_id, feature=feature):
+            with llm_span(name):
+                yield _llm_trace.get().get("trace_id")
+        return
+
+    with llm_attribution(user_id=user_id, feature=feature):
+        if not llm_tracing_enabled():
+            yield None
+            return
+        trace_id, span_id = str(uuid.uuid4()), str(uuid.uuid4())
+        # Resolved once, inside the scope: the finally block runs after llm_attribution has been
+        # reset, and a trace attributed to "system" would be worse than no trace at all.
+        scope_user_id, scope_feature = current_llm_attribution()
+        token = _llm_trace.set({"trace_id": trace_id, "span_id": span_id})
+        started, error = time.time(), None
+        try:
+            yield trace_id
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            _llm_trace.reset(token)
+            _capture_ai_span("$ai_trace", trace_id, span_id, name, started, None, error,
+                             scope_user_id, scope_feature)
+
+
+@contextmanager
+def llm_span(name: str, **properties) -> Iterator[Optional[str]]:
+    """One step of the pipeline currently open around this block.
+
+    Outside a pipeline this does nothing at all and yields None — a span with no trace is an orphan
+    PostHog cannot render, and the work itself must run identically either way."""
+    scope = _llm_trace.get()
+    trace_id, parent_id = scope.get("trace_id"), scope.get("span_id")
+    if not trace_id:
+        yield None
+        return
+    span_id = str(uuid.uuid4())
+    user_id, feature = current_llm_attribution()
+    token = _llm_trace.set({"trace_id": trace_id, "span_id": span_id})
+    started, error = time.time(), None
+    try:
+        yield span_id
+    except BaseException as exc:
+        error = exc
+        raise
+    finally:
+        _llm_trace.reset(token)
+        _capture_ai_span("$ai_span", trace_id, span_id, name, started, parent_id, error,
+                         user_id, feature, properties)
+
+
+def llm_pipeline(name: str, feature: Optional[str] = None, user_id_arg: str = "user_id"):
+    """Decorator form of llm_trace() for a function that IS one pipeline (`create_text_post`,
+    `generate_newsletter_edition`, `generate_ai_response`). Supersedes `attribute_llm_cost` on such a
+    function: it opens the same attribution scope AND the trace, reading the user id off the call's
+    own `user_id_arg` the same way."""
+    def decorator(fn):
+        read_user_id = _argument_reader(fn, user_id_arg)
+
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            with llm_trace(name, user_id=read_user_id(args, kwargs), feature=feature):
+                return fn(*args, **kwargs)
+        wrapper.__llm_trace_name__ = name
+        return wrapper
+    return decorator
+
+
+def llm_step(name: str):
+    """Decorator form of llm_span() for ONE step of a pipeline.
+
+    It goes on the STEP FUNCTION, not at its call sites: newsletters and comments draw draft,
+    research, humanize and authenticity from the same shared content core as posts, so decorating
+    the core is what makes every pipeline's trace legible without touching any caller."""
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            with llm_span(name):
+                return fn(*args, **kwargs)
+        wrapper.__llm_span_name__ = name
+        return wrapper
+    return decorator
 
 
 # --- Error tracking (issue #648) -----------------------------------------------------------
