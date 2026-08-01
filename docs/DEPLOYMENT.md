@@ -116,6 +116,42 @@ approval) SSHes in and runs `scripts/deploy.sh vX.Y.Z`, which:
 7. waits for `/health`, **auto-rolls-back** to `.last_good_tag` on failure,
 8. **leaves maintenance mode** — restores consumers and resumes dispatch (on the rollback path too).
 
+## Version milestones and owner-triggered major releases
+
+LEM's version number signals product stage, not just changelog mechanics:
+
+- **0.x** — pre-launch / open beta. Breaking changes bump the minor under release-please's `python` release type.
+- **1.0.0** — cut when the marketing engine goes live (brand account + affiliate program running, per `docs/launch-and-marketing-plan.md` P0→P1).
+- **2.0.0** — cut after the user-testing phase and its resulting fixes are complete.
+
+These two major releases are **owner-triggered milestones**, not automatic. No CI job or commit should cut 1.0.0 or 2.0.0 on its own.
+
+### Forcing a major version with `Release-As`
+
+release-please honors a `Release-As: X.Y.Z` footer in a commit body, which overrides the calculated next version for the release PR it opens. To cut 1.0.0, make an empty release-forcing commit on `main` after the final pre-1.0 PR has merged:
+
+```bash
+git checkout main
+git pull origin main
+git commit --allow-empty -m "chore(main): release 1.0.0
+
+Release-As: 1.0.0"
+git push origin main
+```
+
+release-please will open a release PR for exactly `1.0.0`. Merging that PR tags `v1.0.0`, builds `ghcr.io/christopherqueenconsulting/cqc-lem:v1.0.0`, and deploys it the same way every other release does.
+
+The same footer works for 2.0.0 (or any other explicit version) when the owner decides the time is right.
+
+### Before cutting 1.0.0
+
+Verify the places that care about major-version semantics:
+
+- **Image tag / `IMAGE_TAG` flow:** `scripts/deploy.sh` takes a tag argument and writes it to `IMAGE_TAG` in `.env`; it is version-agnostic and works the same for `v0.116.0` and `v1.0.0`.
+- **Rollback path:** `scripts/rollback.sh` and the deployer's `.last_good_tag` mechanism also use the raw tag string, with no special-casing for major versions.
+- **`/api/app-info`:** the SPA footer reads the installed package version via `get_app_version()` in `src/cqc_lem/utilities/env_constants.py`. After 1.0.0 it reports `1.0.0` automatically.
+- **Conventional Commit discipline:** once the repo is on `1.x`, a breaking change must use `feat!:` or a `BREAKING CHANGE:` footer to bump the major version. Pre-1.0 breaking changes only bump the minor, so the commit convention has not mattered for major bumps yet.
+
 ## Deploys and in-flight Celery tasks (issue #549)
 
 A deploy recreates the app containers, which SIGTERMs the workers. Three layers keep long tasks
