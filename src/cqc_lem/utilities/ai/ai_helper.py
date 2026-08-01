@@ -2,6 +2,7 @@ import os
 import random
 import time
 from datetime import datetime
+from typing import Any, Optional
 
 import openai
 import replicate
@@ -84,6 +85,22 @@ def _resolve_serving_model(response, requested_model: str) -> str:
         if val:
             return str(val)
     return requested_model
+
+
+def _first_choice(response) -> "Optional[Any]":
+    """Safely extract the first completion choice from an LLM response.
+
+    Some proxy / edge responses return a response object with `choices=None`
+    (or an empty list) instead of raising. Treating that as "no usable output"
+    lets the caller degrade gracefully rather than surfacing a TypeError into
+    error tracking (issue #768)."""
+    try:
+        choices = getattr(response, "choices", None)
+        if choices and len(choices) > 0:
+            return choices[0]
+    except Exception:
+        pass
+    return None
 
 
 def _call_llm(**kwargs):
@@ -979,7 +996,12 @@ def generate_second_wave_comment(post_content, profile: "LinkedInProfile", prefs
                              messages=[{"role": "system", "content": system_prompt["content"] + fix},
                                        user_prompt],
                              temperature=temperature)
-        content = response.choices[0].message.content
+        choice = _first_choice(response)
+        if choice is None:
+            log_warning("Second-wave comment LLM response had no usable choice",
+                        user_id=user_id, action_type="comment")
+            return None
+        content = choice.message.content
         if content is None:
             return None
         # Humanization pass (issue #416 — A5) before the gate, so the contract grades what ships.

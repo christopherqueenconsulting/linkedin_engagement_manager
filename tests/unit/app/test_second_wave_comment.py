@@ -271,6 +271,16 @@ class TestGenerateSecondWaveComment:
         resp.choices = [MagicMock(message=MagicMock(content=text))]
         return resp
 
+    def _response_no_choices(self):
+        resp = MagicMock()
+        resp.choices = None
+        return resp
+
+    def _response_empty_choices(self):
+        resp = MagicMock()
+        resp.choices = []
+        return resp
+
     def test_a_passing_draft_is_returned(self):
         from cqc_lem.utilities.ai import ai_helper
         draft = ("The 40% figure in the post came from one migration, not the whole fleet. "
@@ -305,3 +315,23 @@ class TestGenerateSecondWaveComment:
                                                    recent_comments=[])
         user_message = llm.call_args.kwargs["messages"][1]["content"]
         assert "cut CI 22→8 minutes" in user_message
+
+    def test_missing_choices_degrades_to_none(self):
+        """A malformed LLM response with choices=None must not raise TypeError; it should be treated
+        as a draft that failed the gate (issue #768)."""
+        from cqc_lem.utilities.ai import ai_helper
+        with patch(f"{_AI}._call_llm", return_value=self._response_no_choices()), \
+             patch(f"{_AI}.log_warning") as warn:
+            out = ai_helper.generate_second_wave_comment("our migration cut build cost 40%",
+                                                         self._profile(), recent_comments=[])
+        assert out is None
+        warn.assert_called_once()
+
+    def test_empty_choices_degrades_to_none(self):
+        from cqc_lem.utilities.ai import ai_helper
+        with patch(f"{_AI}._call_llm", return_value=self._response_empty_choices()), \
+             patch(f"{_AI}.log_warning") as warn:
+            out = ai_helper.generate_second_wave_comment("our migration cut build cost 40%",
+                                                         self._profile(), recent_comments=[])
+        assert out is None
+        warn.assert_called_once()
