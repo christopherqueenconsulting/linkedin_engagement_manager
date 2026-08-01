@@ -185,7 +185,8 @@ class TestReferralLinkIntegrity:
         """The prompt tells the model to reproduce the link, and `sanitize_for_linkedin` strips
         markdown italics — `_word_` being exactly the shape of `utm_source=…&utm_medium=…`. Left
         un-repaired the post publishes `utmsource=`, a dead link, AND a second clean copy beside it
-        because the mangled one no longer matches."""
+        because the mangled one no longer matches. The sanitizer masks URLs since #823; this stays
+        as the end-to-end guard that the one URL earning the trial time reaches the post verbatim."""
         from cqc_lem.utilities.marketing.affiliate import link_for_user
         with ExitStack() as stack:
             _env(stack)
