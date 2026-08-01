@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.118.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.117.0...v0.118.0) (2026-08-01)
+
+
+### Features
+
+* **auth:** renew LinkedIn tokens daily and show the expiry countdown (closes [#600](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/600)) ([#854](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/854)) ([4e30859](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4e3085912fe35c752bb4e2667ee7bba1128e3fdf))
+* **models:** carry each candidate's Ollama Cloud usage level through the benchmark ([#842](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/842)) ([#864](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/864)) ([9465ff2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9465ff26e4e4570ce9d09b2220cf12bf7059c803))
+
+
+### Bug Fixes
+
+* **errors:** stop the React-toggle miss filing a third defect for one unreadable card (closes [#877](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/877)) ([#890](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/890)) ([74c81b4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/74c81b4d94f2698416663c50060712c44fd7a96e))
+* **groups:** rotate past a group LEM cannot post in (closes [#858](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/858)) ([#871](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/871)) ([89c3320](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/89c3320cc35afb2cd833cc2d260fa06cb9b6330d))
+* **observability:** re-ground comment sort control + expose unreadable readings ([#818](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/818)) ([#860](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/860)) ([a9424f3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a9424f3b4fe48e51521e2ac772fb8e6bcb1d86d7))
+
 ## [0.117.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.116.0...v0.117.0) (2026-08-01)
 
 
