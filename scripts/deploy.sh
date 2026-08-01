@@ -66,10 +66,13 @@ log "Selenium topology: ${SELENIUM_TOPOLOGY}"
 # Run a maintenance-mode subcommand inside whichever app container is up. Best-effort by design:
 # a stack that can't answer must not block the deploy (warm shutdown + acks_late still protect
 # in-flight work), so every call site tolerates a non-zero exit.
+# In PRODUCTION `web_app` is a tiny nginx edge with no python on PATH, so it was never a usable
+# fallback — and the one moment maint() is needed is mid-converge, exactly when celery_worker is
+# stopped. Fall back to the API colors, which run the app image and are up across the whole deploy.
 maint() {
   local sub="$1"; shift
   local svc
-  for svc in celery_worker web_app; do
+  for svc in celery_worker "web_api_${TARGET:-blue}" web_api_blue web_api_green; do
     if docker ps --format '{{.Names}}' | grep -qx "${svc}"; then
       ${COMPOSE} exec -T "${svc}" python -m cqc_lem.utilities.maintenance "${sub}" "$@"
       return $?
@@ -111,6 +114,29 @@ persist_image_tag() {
   log "Persisted IMAGE_TAG=${tag} to ${ENV_FILE}"
 }
 
+# Every app service sets an explicit `container_name`, so compose recreates by renaming the old
+# container to `<12-hex>_<name>`, creating the new one, then removing the old. A converge that dies
+# between those steps leaves the renamed container behind — and because it still carries this
+# project's labels, the NEXT converge tries to recreate IT too and collides with the live container
+# still holding the canonical name ("name is already in use"). One interrupted deploy therefore
+# poisons every deploy after it until someone clears the orphan by hand (issue #831).
+#
+# Only ever removes containers that are this project's, match Docker's rename prefix exactly, and
+# are NOT running — compose recreates them on the `up` that follows.
+sweep_rename_orphans() {
+  local ids id name
+  ids="$(${COMPOSE} ps -aq 2>/dev/null || true)"
+  [[ -n "${ids}" ]] || return 0
+  while read -r id; do
+    [[ -n "${id}" ]] || continue
+    name="$(docker inspect -f '{{.Name}}' "${id}" 2>/dev/null | sed 's|^/||')"
+    [[ "${name}" =~ ^[0-9a-f]{12}_.+$ ]] || continue
+    [[ "$(docker inspect -f '{{.State.Running}}' "${id}" 2>/dev/null)" == "false" ]] || continue
+    log "Removing leftover rename-orphan container ${name} (interrupted prior converge)"
+    docker rm "${id}" >/dev/null 2>&1 || log "WARN: could not remove orphan ${name}"
+  done <<< "${ids}"
+}
+
 # Converge the worker/standby tier, retrying once on the Docker "No such container"
 # race that can abort a mid-tier recreate (issue #831).
 converge_stack() {
@@ -120,6 +146,7 @@ converge_stack() {
   while true; do
     attempts=$((attempts + 1))
     logfile="$(mktemp)"
+    sweep_rename_orphans
     log "Recreating remaining services (attempt ${attempts}/${max_attempts})"
     if ${COMPOSE} up -d --remove-orphans >"${logfile}" 2>&1; then
       # Echo it even on success. Compose's per-container "Recreated/Started" lines are the only
@@ -132,8 +159,11 @@ converge_stack() {
     # Surface every failed attempt, including one we go on to retry: the `No such container` line
     # IS the evidence that identified this race both times it happened (issue #831).
     cat "${logfile}" >&2 || true
-    if [[ ${attempts} -lt ${max_attempts} ]] && grep -qi "no such container" "${logfile}"; then
-      log "WARN: compose hit 'No such container' race — retrying converge"
+    # "already in use" is the same class of failure seen from the other side: a rename-orphan that
+    # appeared DURING this converge rather than a previous one. The retry re-runs the sweep first.
+    if [[ ${attempts} -lt ${max_attempts} ]] \
+       && grep -qiE "no such container|is already in use" "${logfile}"; then
+      log "WARN: compose hit a container-name race — retrying converge"
       rm -f "${logfile}"
       sleep 5
       continue
