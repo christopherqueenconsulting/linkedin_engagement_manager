@@ -6413,19 +6413,22 @@ def update_stale_profile(self, user_id: int):
 
 
 def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
-                        measurement_only: bool = False) -> Tuple[
+                        measurement_only: bool = False, debug: bool = False) -> Tuple[
     WebDriver, WebDriverWait, str, LinkedInProfile]:
     """Update the profile of the user.
 
     `measurement_only` marks a read-only stat-capture session, which keeps running under the
     suppression tripwire's own pause (and only that one) so recovery stays measurable — see
-    rate_limit.is_measurement_paused."""
+    rate_limit.is_measurement_paused.
+
+    `debug` requests the watchable Grid debug node (if free) for live inspection; it falls
+    back to the normal pool when the node is busy or absent."""
 
     myprint("Getting Updated Profile")
 
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
-    driver, wait = get_driver_wait_pair(session_name=session_name, user_id=user_id)
+    driver, wait = get_driver_wait_pair(session_name=session_name, user_id=user_id, debug=debug)
 
     # Login first — a failure here (e.g. HTTP 429 rate-limit, expired cookie) is fatal
     # for this run; abort cleanly so the caller backs off instead of hammering LinkedIn.

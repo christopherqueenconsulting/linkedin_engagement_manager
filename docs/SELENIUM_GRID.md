@@ -141,6 +141,27 @@ production slot. Two caveats:
 Both 4444 and the event bus bind to **loopback** by default (`SELENIUM_GRID_HUB_BIND`,
 `SELENIUM_GRID_BUS_BIND`), matching how `docker-compose.prod.yml` hardens the standalone today.
 
+#### Pinning a session to the debug node
+
+The debug node advertises a custom capability, `lem:debug`, via `SE_NODE_STEREOTYPE_EXTRA`.
+Clients that want to **watch the exact session** can request that capability:
+
+* **Live-validation probe:** `python -c "..." < scripts/linkedin_live_validation.py --watch ...`
+* **Selenium MCP server:** `SELENIUM_DEBUG_NODE=true poetry run python tools/selenium_mcp_server.py`
+* **Ad-hoc code using `get_docker_driver()`:** `SELENIUM_DEBUG_NODE=true` is read automatically
+  when the caller does not pass an explicit `debug=` argument.
+
+When the debug node is busy or absent, the helper silently falls back to the normal pool —
+a debugging convenience must never block production work. An unflagged session never requests
+`lem:debug`, so normal automation stays on the 8 production nodes.
+
+To watch the pinned session end-to-end:
+
+1. Start the session with one of the opt-ins above.
+2. Open noVNC on the debug node: `http://localhost:7900/?autoconnect=1&password=secret`
+   (or the tunnel hostname if working remotely).
+3. The session you care about is the one rendered there.
+
 ---
 
 ## 3. The load test

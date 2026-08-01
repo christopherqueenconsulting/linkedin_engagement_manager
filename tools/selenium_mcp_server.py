@@ -23,6 +23,9 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
+from cqc_lem.utilities.env_constants import isTrue
+from cqc_lem.utilities.selenium_util import apply_debug_node
+
 mcp = FastMCP("selenium-lem")
 
 _BY = {
@@ -54,6 +57,8 @@ def start_browser() -> str:
         return f"Session already open at {_driver().current_url}"
     options = Options()
     options.set_capability("se:timeZone", os.getenv("SE_TIMEZONE", "America/New_York"))
+    # Opt-in pin to the watchable debug node; falls back to the pool if the node is busy/absent.
+    apply_debug_node(options, isTrue(os.getenv("SELENIUM_DEBUG_NODE", "False")))
     _state["driver"] = webdriver.Remote(command_executor=_remote_url(), options=options)
     _state["driver"].set_window_size(1920, 1080)
     return f"Connected to {_remote_url()}"

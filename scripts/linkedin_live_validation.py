@@ -489,6 +489,9 @@ def main(argv: Optional[list] = None) -> int:
                         help="open LinkedIn's article editor and report each publish step's selector "
                              "state (#771/#804); pass a custom URL or use the default. Read-only: "
                              "nothing is typed and no control is clicked, so publish reads UNKNOWN")
+    parser.add_argument("--watch", action="store_true",
+                        help="request the watchable Grid debug node so the session is visible via "
+                             "noVNC; falls back to the pool if the debug node is busy/absent")
     args = parser.parse_args(argv)
 
     if not (args.post_url or args.probe_composer or args.comment_outcome_url or args.dm_thread_url
@@ -500,7 +503,8 @@ def main(argv: Optional[list] = None) -> int:
     from cqc_lem.utilities.selenium_util import quit_gracefully
 
     driver, _wait, _email, profile = get_current_profile(user_id=args.user_id,
-                                                        session_name="Live Validation")
+                                                        session_name="Live Validation",
+                                                        debug=args.watch)
     report = {"user_id": args.user_id}
     try:
         if args.post_url:
