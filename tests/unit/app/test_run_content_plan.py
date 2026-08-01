@@ -741,6 +741,8 @@ class TestRegeneratePostAllTypes:
              patch(f"{_RCP}.apply_post_guidance", return_value=None), \
              patch(f"{_RCP}.get_lead_magnet_settings", return_value=None), \
              patch(f"{_RCP}.sanitize_for_linkedin", side_effect=lambda x: x), \
+             patch(f"{_RCP}._post_used_avatar_media", return_value=False), \
+             patch(f"{_RCP}._post_is_flagged_error", return_value=False), \
              patch(f"{_RCP}.ensure_lead_magnet_cta", side_effect=lambda c, *a, **k: c):
             yield
 
@@ -761,15 +763,29 @@ class TestRegeneratePostAllTypes:
     @patch("cqc_lem.utilities.db.get_post_type", return_value=PostType.CAROUSEL)
     @patch("cqc_lem.utilities.db.get_post_buyer_stage", return_value="consideration")
     def test_carousel_post_regenerates_with_guidance(self, mock_stage, mock_type, mock_carousel, base_patches):
+        """The guidance reaches the DECK's generation — a caption-only rewrite would leave the
+        user's suggestions off the slides, which on a carousel ARE the post (issue #794)."""
         from cqc_lem.app.run_content_plan import regenerate_post
         from cqc_lem.utilities.db import PostStatus
-        with patch(f"{_RCP}.apply_post_guidance", return_value="Guided carousel caption") as mock_guidance:
+        with patch(f"{_RCP}.apply_post_guidance") as mock_guidance:
             result = regenerate_post(8, guidance="more tactical")
-        assert result == "Guided carousel caption"
-        mock_carousel.assert_called_once_with(1, "consideration", 8)
-        mock_guidance.assert_called_once_with("New carousel caption", "more tactical", prefs={"use_emojis": False}, profile_synthesis="synth")
+        assert result == "New carousel caption"
+        mock_carousel.assert_called_once_with(1, "consideration", 8, guidance="more tactical")
+        mock_guidance.assert_not_called()
         from cqc_lem.app.run_content_plan import update_db_post_status
         update_db_post_status.assert_called_once_with(8, PostStatus.PENDING)
+
+    @patch(f"{_RCP}.create_carousel_content", return_value="New carousel caption")
+    @patch("cqc_lem.utilities.db.get_post_type", return_value=PostType.CAROUSEL)
+    def test_carousel_keeps_error_status_when_slides_fail(self, mock_type, mock_carousel, base_patches):
+        """create_carousel_content flags a failed slide render 'error'; clearing that to PENDING
+        would present a deck still carrying the PREVIOUS draft's slides as ready to review."""
+        from cqc_lem.app.run_content_plan import regenerate_post
+        with patch(f"{_RCP}._post_is_flagged_error", return_value=True):
+            result = regenerate_post(8)
+        assert result == "New carousel caption"
+        from cqc_lem.app.run_content_plan import update_db_post_status
+        update_db_post_status.assert_not_called()
 
     @patch(f"{_RCP}.create_carousel_content", return_value="New document caption")
     @patch("cqc_lem.utilities.db.get_post_type", return_value=PostType.DOCUMENT)
@@ -778,7 +794,7 @@ class TestRegeneratePostAllTypes:
         from cqc_lem.app.run_content_plan import regenerate_post
         result = regenerate_post(9)
         assert result == "New document caption"
-        mock_carousel.assert_called_once_with(1, "decision", 9)
+        mock_carousel.assert_called_once_with(1, "decision", 9, guidance=None)
 
     @patch(f"{_RCP}.create_text_post", return_value="New video caption")
     @patch(f"{_RCP}._post_content_mix", return_value="authority")
@@ -794,11 +810,54 @@ class TestRegeneratePostAllTypes:
              patch(f"{_RCP}.update_db_post_video_url") as mock_update_video, \
              patch(f"{_RCP}.apply_post_guidance", return_value="Guided video caption") as mock_guidance:
             result = regenerate_post(10, guidance="shorter")
-        assert result == "Guided video caption"
+        # The persisted caption carries the AI-visuals disclosure (asserted exactly below).
+        assert result.startswith("Guided video caption")
         mock_text.assert_called_once_with(1, "awareness", user_profile=ANY, post_id=10, content_mix="authority")
         mock_guidance.assert_called_once_with("New video caption", "shorter", prefs={"use_emojis": False}, profile_synthesis="synth")
         mock_video_src.assert_called_once_with(1, "Guided video caption", ANY, 10)
         mock_update_video.assert_called_once()
+        from cqc_lem.app.run_content_plan import update_db_post_status
+        update_db_post_status.assert_called_once_with(10, PostStatus.PENDING)
+
+    @patch(f"{_RCP}.create_text_post", return_value="New video caption")
+    @patch(f"{_RCP}._post_content_mix", return_value="authority")
+    @patch("cqc_lem.utilities.db.get_post_type", return_value=PostType.VIDEO)
+    @patch(f"{_RCP}._generate_video_src", return_value="https://runway.video/xyz.mp4")
+    def test_regenerated_ai_video_is_disclosed(self, mock_video_src, mock_type, mock_mix,
+                                               mock_text, base_patches):
+        """Regeneration replaces the whole caption, so the old draft's AI-visuals disclosure went
+        with it — the new caption must carry it or the post ships undisclosed (issue #744)."""
+        from cqc_lem.app.run_content_plan import regenerate_post
+        with patch(f"{_RCP}.create_folder_if_not_exists"), \
+             patch(f"{_RCP}.save_video_url_to_dir", return_value="/fake/path/xyz.mp4"), \
+             patch(f"{_RCP}.update_db_post_video_url"), \
+             patch(f"{_RCP}.apply_post_guidance", side_effect=lambda c, *a, **k: c), \
+             patch(f"{_RCP}._apply_ai_disclosure", side_effect=lambda c: c + " [AI]") as mock_disc, \
+             patch(f"{_RCP}.update_db_post_content") as mock_content:
+            result = regenerate_post(10)
+        mock_disc.assert_called_once_with("New video caption")
+        mock_content.assert_called_once_with(10, "New video caption [AI]")
+        assert result == "New video caption [AI]"
+
+    @patch(f"{_RCP}.create_text_post", return_value="New video caption")
+    @patch(f"{_RCP}._post_content_mix", return_value="authority")
+    @patch("cqc_lem.utilities.db.get_post_type", return_value=PostType.VIDEO)
+    @patch(f"{_RCP}._generate_video_src", return_value="https://runway.video/xyz.mp4")
+    def test_video_asset_download_failure_still_persists_caption(self, mock_video_src, mock_type,
+                                                                 mock_mix, mock_text, base_patches):
+        """A failed download must not take the regenerated caption down with it — the post is
+        persisted and held by the missing-asset gate, exactly as a failed render is."""
+        from cqc_lem.app.run_content_plan import regenerate_post
+        from cqc_lem.utilities.db import PostStatus
+        with patch(f"{_RCP}._store_video_asset", side_effect=OSError("disk full")), \
+             patch(f"{_RCP}.apply_post_guidance", side_effect=lambda c, *a, **k: c), \
+             patch(f"{_RCP}.update_db_post_content") as mock_content, \
+             patch(f"{_RCP}._gate_findings_for_post", return_value=[]) as mock_gates:
+            result = regenerate_post(10)
+        assert result == "New video caption"
+        mock_content.assert_called_once_with(10, "New video caption")
+        # video_url None is what makes the missing-asset gate fire.
+        assert mock_gates.call_args.args[4] is None
         from cqc_lem.app.run_content_plan import update_db_post_status
         update_db_post_status.assert_called_once_with(10, PostStatus.PENDING)
 

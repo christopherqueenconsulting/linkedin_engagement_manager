@@ -515,8 +515,12 @@ def _report_carousel_fact_grounding(user_id: int, post_id: Optional[int], bluepr
 
 @attribute_llm_cost(FEATURE_CONTENT)
 def create_carousel_content(user_id: int, stage: str, post_id: int = None,
-                            template: Optional[str] = None) -> str:
-    """Generate AI carousel content, render slide images, update DB, and return the post text."""
+                            template: Optional[str] = None,
+                            guidance: Optional[str] = None) -> str:
+    """Generate AI carousel content, render slide images, update DB, and return the post text.
+
+    `guidance` is the user's free-text revision request from the regenerate flow (issue #794) — it
+    steers the CAPTION AND the slides, since on a deck the slides are the post."""
     from cqc_lem.utilities.ai.ai_helper import generate_carousel_content
     from cqc_lem.utilities.carousel_creator import (
         create_ppt, create_carousel_slide_images,
@@ -555,7 +559,8 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
                                                          profile_synthesis=profile_synthesis,
                                                          blueprint=blueprint,
                                                          fact_anchors=writer_anchors,
-                                                         story_directive=story_directive)
+                                                         story_directive=story_directive,
+                                                         guidance=guidance)
     myprint(f"Carousel AI content generated for user_id={user_id} stage={stage} "
             f"archetype={(blueprint or {}).get('format')}")
 
@@ -808,6 +813,26 @@ def create_video_content(user_id: int, stage: str, post_id: int = None) -> tuple
     return text_content, video_url
 
 
+def _store_video_asset(post_id: int, video_src_url: str) -> str:
+    """Download a generated video into the shared assets volume, attach C2PA credentials to AI
+    output, persist posts.video_url, and return the public API asset URL. The ONE place a
+    regenerated video is stored — both the asset-only healer and the full post regenerate use it."""
+    videos_dir = os.path.join(assets_dir, 'videos', 'runwayml')
+    create_folder_if_not_exists(videos_dir)
+    video_file_path = save_video_url_to_dir(video_src_url, videos_dir)
+    # Only AI (Runway, http) output gets C2PA AI credentials — not Pexels stock.
+    if str(video_src_url).startswith("http"):
+        try:
+            from cqc_lem.utilities.c2pa_helper import add_ai_content_credentials
+            add_ai_content_credentials(video_file_path)
+        except Exception as e:
+            myprint(f"_store_video_asset: C2PA signing skipped for post {post_id}: {e}")
+    video_file_name = os.path.basename(video_file_path)
+    api_video_url = f"{API_URL_FINAL}/api/assets?file_name=videos/runwayml/{video_file_name}"
+    update_db_post_video_url(post_id, api_video_url)
+    return api_video_url
+
+
 def regenerate_video_for_post(post_id: int) -> Optional[str]:
     """Regenerate ONLY the video asset for an existing post, keeping its content.
 
@@ -835,19 +860,7 @@ def regenerate_video_for_post(post_id: int) -> Optional[str]:
     if not video_src_url:
         return None
 
-    videos_dir = os.path.join(assets_dir, 'videos', 'runwayml')
-    create_folder_if_not_exists(videos_dir)
-    video_file_path = save_video_url_to_dir(video_src_url, videos_dir)
-    # Only AI (Runway, http) output gets C2PA AI credentials — not Pexels stock.
-    if str(video_src_url).startswith("http"):
-        try:
-            from cqc_lem.utilities.c2pa_helper import add_ai_content_credentials
-            add_ai_content_credentials(video_file_path)
-        except Exception as e:
-            myprint(f"regenerate_video_for_post: C2PA signing skipped: {e}")
-    video_file_name = os.path.basename(video_file_path)
-    api_video_url = f"{API_URL_FINAL}/api/assets?file_name=videos/runwayml/{video_file_name}"
-    update_db_post_video_url(post_id, api_video_url)
+    api_video_url = _store_video_asset(post_id, video_src_url)
     # Symmetric with regenerate_post_carousel_task: a real video now exists, so heal a non-terminal
     # post (e.g. one left in 'planning' by asset backfill) to 'approved' so it becomes visible in the
     # Review UI and can post, instead of being stranded despite a correctly-produced video.
@@ -927,15 +940,39 @@ def _apply_guidance_to_text_post(user_id: int, post_id: int, content: str,
     return content
 
 
+def _post_is_flagged_error(post_id: int) -> bool:
+    """Did the media step just flag this post 'error'? Never raises — an unreadable status falls
+    back to the normal PENDING reset rather than stranding a good post."""
+    try:
+        from cqc_lem.utilities.db import get_post_status
+        return get_post_status(post_id) == PostStatus.ERROR.value
+    except Exception as e:
+        myprint(f"Could not read the status for post {post_id}: {e}")
+        return False
+
+
 def _finish_regenerated_post(user_id: int, post_id: int, content: str,
-                             post_type_value: str, video_url: Optional[str] = None) -> None:
-    """Shared close-out for a regenerated post: persist content, re-score dwell, refresh gate
-    findings, and reset the post to PENDING for re-review."""
+                             post_type_value: str, video_url: Optional[str] = None,
+                             ai_media: bool = False) -> str:
+    """Shared close-out for a regenerated post: disclose AI visuals, persist content, re-score
+    dwell, refresh gate findings, and reset the post to PENDING for re-review. Returns the content
+    as PERSISTED — the caller must return this, not its pre-disclosure copy."""
+    # Regeneration replaces the whole caption, so the old draft's disclosure line went with it —
+    # re-apply it here or a regenerated video/avatar post ships undisclosed (issue #744).
+    if ai_media or _post_used_avatar_media(post_id):
+        content = _apply_ai_disclosure(content)
     _score_and_persist_dwell(user_id, post_id, content)
     update_db_post_content(post_id, content)
     _persist_gate_findings(user_id, post_id,
                            _gate_findings_for_post(user_id, post_id, content, post_type_value, video_url))
+    # create_carousel_content flags a slide-render failure as ERROR so it gets a manual fix; resetting
+    # that to PENDING would hide a deck carrying the PREVIOUS draft's slides behind a normal-looking
+    # review row (the missing-asset gate reads those stale slides as present).
+    if _post_is_flagged_error(post_id):
+        myprint(f"regenerate_post: post {post_id} left 'error' — its media could not be regenerated")
+        return content
     update_db_post_status(post_id, PostStatus.PENDING)
+    return content
 
 
 def regenerate_post(post_id: int, guidance: str = None) -> Optional[str]:
@@ -967,18 +1004,20 @@ def regenerate_post(post_id: int, guidance: str = None) -> Optional[str]:
             myprint(f"regenerate_post: text generation produced nothing for post {post_id}")
             return None
         content = _apply_guidance_to_text_post(user_id, post_id, content, user_profile, guidance)
-        _finish_regenerated_post(user_id, post_id, content, pt_value)
+        content = _finish_regenerated_post(user_id, post_id, content, pt_value)
         myprint(f"regenerate_post: text post {post_id} regenerated → pending")
         return content
 
     if pt_value in (PostType.CAROUSEL.value, PostType.DOCUMENT.value):
-        content = create_carousel_content(user_id, stage, post_id)
+        # Guidance goes INTO the deck's generation, not a caption-only rewrite after it: on a
+        # carousel/document the slides ARE the post, so steering only the caption would leave the
+        # user's suggestions off the thing they were looking at.
+        content = create_carousel_content(user_id, stage, post_id, guidance=guidance)
         if not content:
             myprint(f"regenerate_post: carousel generation produced nothing for post {post_id}")
             return None
-        content = _apply_guidance_to_text_post(user_id, post_id, content, user_profile, guidance)
-        _finish_regenerated_post(user_id, post_id, content, pt_value)
-        myprint(f"regenerate_post: carousel/document post {post_id} regenerated → pending")
+        content = _finish_regenerated_post(user_id, post_id, content, pt_value)
+        myprint(f"regenerate_post: carousel/document post {post_id} regenerated")
         return content
 
     if pt_value == PostType.VIDEO.value:
@@ -991,25 +1030,21 @@ def regenerate_post(post_id: int, guidance: str = None) -> Optional[str]:
 
         # The new caption drives the new video asset so the visuals match the words (issue #794).
         video_src_url = _generate_video_src(user_id, content, user_profile, post_id)
+        api_video_url = None
         if video_src_url:
-            videos_dir = os.path.join(assets_dir, 'videos', 'runwayml')
-            create_folder_if_not_exists(videos_dir)
-            video_file_path = save_video_url_to_dir(video_src_url, videos_dir)
-            if str(video_src_url).startswith("http"):
-                try:
-                    from cqc_lem.utilities.c2pa_helper import add_ai_content_credentials
-                    add_ai_content_credentials(video_file_path)
-                except Exception as e:
-                    myprint(f"regenerate_post: C2PA signing skipped: {e}")
-            video_file_name = os.path.basename(video_file_path)
-            api_video_url = f"{API_URL_FINAL}/api/assets?file_name=videos/runwayml/{video_file_name}"
-            update_db_post_video_url(post_id, api_video_url)
-            _finish_regenerated_post(user_id, post_id, content, pt_value, api_video_url)
-            myprint(f"regenerate_post: video post {post_id} regenerated → pending")
-        else:
-            # No video asset means the post is held for review with a missing_asset finding.
-            _finish_regenerated_post(user_id, post_id, content, pt_value, None)
-            myprint(f"regenerate_post: video post {post_id} regenerated caption but video asset failed")
+            try:
+                api_video_url = _store_video_asset(post_id, video_src_url)
+            except Exception as e:
+                # Losing the download must not lose the regenerated caption too — persist it and
+                # let the missing-asset gate hold the post, exactly as a failed render does.
+                log_warning("Could not store the regenerated video asset", exc=e,
+                            user_id=user_id, post_id=post_id, task_name="regenerate_post")
+        # No video asset means the post is held for review with a missing_asset finding.
+        content = _finish_regenerated_post(
+            user_id, post_id, content, pt_value, api_video_url,
+            ai_media=bool(api_video_url) and str(video_src_url).startswith("http"))
+        myprint(f"regenerate_post: video post {post_id} regenerated"
+                f"{'' if api_video_url else ' (caption only — video asset failed)'}")
         return content
 
     myprint(f"regenerate_post: post {post_id} has unsupported post_type '{pt_value}' — skipping")
