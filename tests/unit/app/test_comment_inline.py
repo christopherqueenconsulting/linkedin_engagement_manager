@@ -390,6 +390,33 @@ class TestReactToPostInline:
         assert confirm[0].kwargs["warn_on_miss"] is True
         assert confirm[0].kwargs["max_try"] == MAX_WAIT_RETRY
 
+    def test_pre_click_reaction_state_miss_is_not_a_warning(self):
+        """The pre-click read misses at the same rate as the post-click one (#816: 17 vs 16 in 48h),
+        so it is a duplicate symptom of that rot, not a healthy card — and the React-toggle lookup is
+        its fallback. One condition, one warning: quieted here (issue #874), still signalled by the
+        fly-out opener's miss, which the next assertion pins."""
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
+             patch(f"{_RA}.wait_for_ajax"), \
+             patch(f"{_RA}.find_first", return_value=None) as ff, \
+             patch(f"{_RA}.click_first", return_value=None) as cf:
+            ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
+        pre = [c for c in ff.call_args_list if c.args[3] == "Reaction state"]
+        assert len(pre) == 1
+        assert pre[0].kwargs["warn_on_miss"] is False
+        # The reaction cluster keeps exactly ONE un-quieted signal while #816 is open — this one.
+        assert cf.call_args_list[0].args[3] == "Open reactions menu"
+        assert cf.call_args_list[0].kwargs["warn_on_miss"] is True
+
+    def test_reaction_state_reads_stay_distinct_dedup_keys(self):
+        # The two reads share a selector but not a verdict (#875 keeps the post-click one warning
+        # whenever the card HAD the button), so their miss messages must not collapse into one
+        # escalation issue — quieting the pre-click read would otherwise quiet both.
+        from cqc_lem.utilities.log_escalation import normalize_message
+        keys = {normalize_message(f"Selector miss: {label}")[1]
+                for label in ("Reaction state", "Reaction state (post-click)")}
+        assert len(keys) == 2
+
     def test_clicks_the_ai_chosen_reaction(self):
         from cqc_lem.app import run_automation as ra
         seen = []

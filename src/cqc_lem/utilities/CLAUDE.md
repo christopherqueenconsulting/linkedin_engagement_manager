@@ -67,9 +67,18 @@ Two things follow for anyone writing a call site here:
    `Could not leave a reaction on post` restated a failure that had already warned where it
    happened, so it is DEBUG (issue #878) and the one path the selector misses did NOT cover — the
    click the toggle never registered — warns once, inside the function that detects it. **Warn
-   where you detect, not where you notice.** ONE unreadable card still warns twice, because the
-   pre-click 'Reaction state' read warns too (issue #874, open); collapse that into the opener's
-   signal as well, and never add a fourth.
+   where you detect, not where you notice.** The pre-click 'Reaction state' read collapses the same
+   way (issue #874). Note WHY, because the wrong reason is easy to write down: that anchor is not
+   optional-and-healthy, it is **rotted** — in production it misses at the same rate as the
+   post-click read, both symptoms of the reaction selector drift tracked on **#816**. **Quieting a
+   miss claims it is not a DISTINCT actionable defect; it never claims the DOM is fine.** So when
+   you collapse a cluster, cite the tracking issue at the call site and leave the fault's surviving
+   warnings alone — silence those too and an open outage has no signal at all. The cluster is now
+   fully collapsed, so know how thin what remains is: nothing warns at all on a card whose state
+   anchor rotted while a React toggle is still readable — the opener's miss is quiet because that
+   toggle IS the fallback, the post-click re-read is quiet because there was no pre-click state to
+   re-read, and the run reports success. Closing that gap is #816's job — re-ground the anchors,
+   never another log-level change, and never add a fourth warning.
 2. **Keep the message a stable template.** The dedup key masks volatile tokens (URLs, emails, UUIDs,
    URNs, hex, `[...]`, quoted strings, numbers) and combines them with the call site, so
    `Selector miss: Feed sort control` and `Selector miss: Reaction state` stay two distinct problems

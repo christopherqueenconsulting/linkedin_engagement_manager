@@ -962,8 +962,16 @@ def react_to_post_inline(driver, wait, card, post_content: str = None, comment_t
     call scoped to the post + our comment, which self-falls-back to random. Returns True only if a
     reaction registered (the toggle no longer reads 'no reaction')."""
     try:
+        # A miss here is NOT a healthy un-reacted card: #816 records this read and the post-click
+        # re-read below missing at near 1:1 (17 vs 16 in 48h), i.e. the anchor itself has rotted.
+        # It is quieted (issue #874) because it is a DUPLICATE symptom of that one rot — the
+        # `trigger` lookup below is this read's fallback, so the attempt still proceeds — and one
+        # condition gets ONE warning: the fly-out opener's miss below is the signal that stands for
+        # "this card's reaction controls are unreadable". Keep that one un-quieted while #816 is
+        # open; re-grounding these three anchors is #816's job, not another log-level change.
         state = find_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label^='Reaction button state']")],
-                           "Reaction state", parent_element=card, required=False, visible_only=True, user_id=user_id)
+                           "Reaction state", parent_element=card, required=False, visible_only=True,
+                           warn_on_miss=False, user_id=user_id)
         if state is not None and "no reaction" not in (state.get_attribute("aria-label") or "").lower():
             return None  # already reacted on this post — a no-op, not a failure
 
