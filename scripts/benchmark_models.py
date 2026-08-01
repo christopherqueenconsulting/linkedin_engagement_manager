@@ -103,6 +103,11 @@ LEADERBOARD_COLUMNS = ("Date", "Run", "Tier", "Model", "Role", "Deterministic", 
 LEADERBOARD_HEADER = "| " + " | ".join(LEADERBOARD_COLUMNS) + " |"
 LEADERBOARD_DIVIDER = "|" + "---|" * len(LEADERBOARD_COLUMNS)
 
+SCORECARD_COLUMNS = ("Tier", "Model", "Role", "Usage", "Cases", "Deterministic", "Judge", "Judged",
+                     "Timeouts", "p50", "p90")
+SCORECARD_HEADER = "| " + " | ".join(SCORECARD_COLUMNS) + " |"
+SCORECARD_DIVIDER = "|" + "---|" * len(SCORECARD_COLUMNS)
+
 # Openers that mean the model narrated instead of answering. `lem-simple` outputs are pasted
 # straight into LinkedIn copy, so a preamble is a correctness failure, not a style nit.
 _PREAMBLE_RE = re.compile(
@@ -890,9 +895,8 @@ def render_report(run: dict) -> str:
         "",
         "## Scorecard",
         "",
-        "| Tier | Model | Role | Usage | Cases | Deterministic | Judge | Judged | Timeouts | p50 "
-        "| p90 |",
-        "|---|---|---|---|---|---|---|---|---|---|---|",
+        SCORECARD_HEADER,
+        SCORECARD_DIVIDER,
     ]
     for card in run.get("scorecards") or []:
         lines.append(
