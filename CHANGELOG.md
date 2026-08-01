@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.115.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.114.0...v0.115.0) (2026-08-01)
+
+
+### Features
+
+* **models:** refresh the Ollama Cloud roster — deepseek-v4-flash + gemma4:31b (closes [#717](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/717)) ([#843](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/843)) ([db04098](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/db04098c0c6b78f2269c7bb227d5ee7b065d69fc))
+* **security:** encrypt LinkedIn secrets at rest + cookie-only default (refs [#745](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/745)) ([#807](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/807)) ([f514241](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f514241522da675970ae360af1cd08b12e687e10))
+
+
+### Bug Fixes
+
+* **agent-pipeline:** reattach unpushed branches + phase guard reads what a PR actually closes ([#832](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/832)) ([b92940d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b92940d4398e7036a2d74e29cadd6ae8606f4078))
+* **deploy:** resilient worker converge + verify + early tag persist (closes [#831](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/831)) ([#840](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/840)) ([0fa4de4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0fa4de4a106881e81dffe1be3568411c8da566cc))
+
+
+### Documentation
+
+* **analytics:** SPA posthog-js does transmit — the grid result was a proxy artifact (closes [#834](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/834)) ([#839](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/839)) ([e99de15](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e99de1583ee6049be9fa19f304ceb6dc5e997664))
+
 ## [0.114.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.113.2...v0.114.0) (2026-07-31)
 
 
