@@ -38,7 +38,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install anthropic SDK
-        run: pip install anthropic==0.34.2
+        run: pip install anthropic==0.120.2
 
       - name: Run Claude code review
         id: review
@@ -62,25 +62,26 @@ jobs:
 
           system_prompt = """You are a senior code reviewer for the LinkedIn Engagement Manager (LEM) project.
 
-Stack: Python 3.12+, FastAPI, Celery/Redis, MySQL 8, Selenium 4, LiteLLM, React 18 + Vite + TailwindCSS v4.
+          Stack: Python 3.12+, FastAPI, Celery/Redis, MySQL 8, Selenium 4, LiteLLM, React 18 + Vite + TailwindCSS v4.
 
-Project conventions (block merge if violated):
-- No print() — use myprint() from cqc_lem.utilities.logger
-- Type hints on every function signature
-- Enums for status fields (PostStatus, PostType, LogActionType) from db.py
-- No raw SQL outside utilities/db.py
-- All LLM calls via cqc_lem.utilities.ai.client using lem-simple/medium/complex/image/router aliases
-- Selenium always via get_docker_driver() in selenium_util.py
-- No hardcoded secrets — .env + load_dotenv() only
-- New logic needs unit tests in tests/unit/; new API endpoints need integration tests in tests/integration/
-- No pass-body test functions
+          Project conventions (block merge if violated):
+          - No print() — use the structured logger from cqc_lem.utilities.logger
+            (log_debug / log_info / log_warning / log_error / log_critical). myprint() is a legacy shim.
+          - Type hints on every function signature
+          - Enums for status fields (PostStatus, PostType, LogActionType) from db.py
+          - No raw SQL outside utilities/db.py
+          - All LLM calls via cqc_lem.utilities.ai.client using lem-simple/medium/complex/image/router aliases
+          - Selenium always via get_docker_driver() in selenium_util.py
+          - No hardcoded secrets — .env + load_dotenv() only
+          - New logic needs unit tests in tests/unit/; new API endpoints need integration tests in tests/integration/
+          - No pass-body test functions
 
-Format your review as:
-## Summary
-## Blocking Issues (must fix before merge)
-## Requested Changes (should fix)
-## Suggestions (optional)
-## Verdict: Approved / Approved with Changes / Changes Required"""
+          Format your review as:
+          ## Summary
+          ## Blocking Issues (must fix before merge)
+          ## Requested Changes (should fix)
+          ## Suggestions (optional)
+          ## Verdict: Approved / Approved with Changes / Changes Required"""
 
           pr_title = os.environ.get("PR_TITLE", "")
           pr_body = os.environ.get("PR_BODY", "")
@@ -88,24 +89,31 @@ Format your review as:
 
           user_prompt = f"""Review this PR:
 
-**Title:** {pr_title}
+          **Title:** {pr_title}
 
-**Description:**
-{pr_body[:2000]}
+          **Description:**
+          {pr_body[:2000]}
 
-**Diff (truncated to 28k chars):**
-```diff
-{diff}
-```"""
+          **Diff (truncated to 28k chars):**
+          ```diff
+          {diff}
+          ```"""
 
           message = client.messages.create(
-              model="claude-sonnet-4-6",
-              max_tokens=2048,
+              model="claude-opus-5",
+              max_tokens=16000,
               messages=[{"role": "user", "content": user_prompt}],
               system=system_prompt,
           )
 
-          review = message.content[0].text
+          # Thinking is on by default on Opus 5, so content[0] is not necessarily the answer,
+          # and a safety refusal returns 200 with no text block at all.
+          if message.stop_reason == "refusal":
+              review = "Claude review skipped: the request was declined by safety classifiers."
+          else:
+              review = "\n".join(b.text for b in message.content if b.type == "text").strip()
+              if not review:
+                  review = "Claude review skipped: the model returned no reviewable text."
           print(review)
 
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
