@@ -55,7 +55,7 @@ def env(monkeypatch):
     monkeypatch.setattr(ya, "get_app_credential_updated_at", lambda name: None)
     monkeypatch.setattr(ya, "set_app_credential",
                         lambda name, value, note=None: stored.update({name: value}) or True)
-    monkeypatch.setattr(ya, "_redis", lambda: _FakeRedis())
+    monkeypatch.setattr(ya, "_redis", _FakeRedis)
     return stored
 
 

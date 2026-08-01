@@ -82,6 +82,8 @@ def token_source() -> str:
         if get_app_credential(CREDENTIAL_NAME):
             return "db"
     except Exception:
+        # Deliberately silent: refresh_token() already warns on a DB outage, and this is a state
+        # label for the settings card — warning twice for one outage escalates a working fallback.
         pass
     return "env" if (YOUTUBE_REFRESH_TOKEN or "").strip() else "none"
 

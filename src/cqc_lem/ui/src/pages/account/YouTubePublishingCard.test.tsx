@@ -75,9 +75,12 @@ describe('YouTubePublishingCard (issue #742)', () => {
     // click — a refetch of the cached query plus a fetch of the new key.
     get.mockResolvedValue(payload(connected))
     harness(<YouTubePublishingCard />)
-    await waitFor(() => expect(get).toHaveBeenCalledTimes(1))
+    // findBy, not getBy: the call count reaches 1 while the promise is still in flight, so the card
+    // (which renders null until data lands) has no button yet at that point.
+    const button = await screen.findByRole('button', { name: /check now/i })
+    expect(get).toHaveBeenCalledTimes(1)
     expect(String(get.mock.calls[0][0])).toContain('live=false')
-    fireEvent.click(screen.getByRole('button', { name: /check now/i }))
+    fireEvent.click(button)
     await waitFor(() => expect(get).toHaveBeenCalledTimes(2))
     expect(String(get.mock.calls[1][0])).toContain('live=true')
   })
