@@ -1,9 +1,11 @@
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, ANY
 
 import pytest
 from freezegun import freeze_time
 
 import pydantic.v1.types  # noqa: F401
+
+from cqc_lem.utilities.db import PostType
 
 
 # Wall-clock MUST be frozen mid-month here: the plan window derives its length from
@@ -712,3 +714,115 @@ class TestCreateVideoContent:
                 assert content == "Fallback post text"
             except Exception:
                 pass  # pexels import failure is acceptable in unit context
+
+
+# ---------------------------------------------------------------------------
+# regenerate_post tests (issue #794 — all post types)
+# ---------------------------------------------------------------------------
+
+class TestRegeneratePostAllTypes:
+    """regenerate_post now handles text, carousel, document, and video posts."""
+
+    _DB = "cqc_lem.utilities.db"
+
+    @pytest.fixture(autouse=True)
+    def base_patches(self):
+        """Stop DB/profile reads from escaping the unit."""
+        with patch(f"{self._DB}.get_post_user_id", return_value=1), \
+             patch(f"{self._DB}.get_post_buyer_stage", return_value="awareness"), \
+             patch(f"{self._DB}.get_post_type", return_value=PostType.TEXT), \
+             patch(f"{_RCP}.load_profile_for_user", return_value=MagicMock()), \
+             patch(f"{_RCP}._score_and_persist_dwell"), \
+             patch(f"{_RCP}.update_db_post_content"), \
+             patch(f"{_RCP}._persist_gate_findings"), \
+             patch(f"{_RCP}.update_db_post_status"), \
+             patch(f"{_RCP}.get_engagement_preferences", return_value={"use_emojis": False}), \
+             patch(f"{_RCP}.get_or_create_profile_synthesis", return_value="synth"), \
+             patch(f"{_RCP}.apply_post_guidance", return_value=None), \
+             patch(f"{_RCP}.get_lead_magnet_settings", return_value=None), \
+             patch(f"{_RCP}.sanitize_for_linkedin", side_effect=lambda x: x), \
+             patch(f"{_RCP}.ensure_lead_magnet_cta", side_effect=lambda c, *a, **k: c):
+            yield
+
+    @patch(f"{_RCP}.create_text_post", return_value="New text post")
+    @patch(f"{_RCP}._post_content_mix", return_value="value")
+    def test_text_post_regenerates_with_guidance(self, mock_mix, mock_text, base_patches):
+        from cqc_lem.app.run_content_plan import regenerate_post
+        from cqc_lem.utilities.db import PostStatus
+        with patch(f"{_RCP}.apply_post_guidance", return_value="Guided text post") as mock_guidance:
+            result = regenerate_post(7, guidance="punchier")
+        assert result == "Guided text post"
+        mock_text.assert_called_once_with(1, "awareness", user_profile=ANY, post_id=7, content_mix="value")
+        mock_guidance.assert_called_once_with("New text post", "punchier", prefs={"use_emojis": False}, profile_synthesis="synth")
+        from cqc_lem.app.run_content_plan import update_db_post_status
+        update_db_post_status.assert_called_once_with(7, PostStatus.PENDING)
+
+    @patch(f"{_RCP}.create_carousel_content", return_value="New carousel caption")
+    @patch("cqc_lem.utilities.db.get_post_type", return_value=PostType.CAROUSEL)
+    @patch("cqc_lem.utilities.db.get_post_buyer_stage", return_value="consideration")
+    def test_carousel_post_regenerates_with_guidance(self, mock_stage, mock_type, mock_carousel, base_patches):
+        from cqc_lem.app.run_content_plan import regenerate_post
+        from cqc_lem.utilities.db import PostStatus
+        with patch(f"{_RCP}.apply_post_guidance", return_value="Guided carousel caption") as mock_guidance:
+            result = regenerate_post(8, guidance="more tactical")
+        assert result == "Guided carousel caption"
+        mock_carousel.assert_called_once_with(1, "consideration", 8)
+        mock_guidance.assert_called_once_with("New carousel caption", "more tactical", prefs={"use_emojis": False}, profile_synthesis="synth")
+        from cqc_lem.app.run_content_plan import update_db_post_status
+        update_db_post_status.assert_called_once_with(8, PostStatus.PENDING)
+
+    @patch(f"{_RCP}.create_carousel_content", return_value="New document caption")
+    @patch("cqc_lem.utilities.db.get_post_type", return_value=PostType.DOCUMENT)
+    @patch("cqc_lem.utilities.db.get_post_buyer_stage", return_value="decision")
+    def test_document_post_regenerates(self, mock_stage, mock_type, mock_carousel, base_patches):
+        from cqc_lem.app.run_content_plan import regenerate_post
+        result = regenerate_post(9)
+        assert result == "New document caption"
+        mock_carousel.assert_called_once_with(1, "decision", 9)
+
+    @patch(f"{_RCP}.create_text_post", return_value="New video caption")
+    @patch(f"{_RCP}._post_content_mix", return_value="authority")
+    @patch("cqc_lem.utilities.db.get_post_type", return_value=PostType.VIDEO)
+    @patch("cqc_lem.utilities.db.get_post_buyer_stage", return_value="awareness")
+    @patch(f"{_RCP}._generate_video_src", return_value="https://runway.video/xyz.mp4")
+    def test_video_post_regenerates_caption_and_video(self, mock_video_src, mock_stage, mock_type,
+                                                    mock_mix, mock_text, base_patches):
+        from cqc_lem.app.run_content_plan import regenerate_post
+        from cqc_lem.utilities.db import PostStatus
+        with patch(f"{_RCP}.create_folder_if_not_exists"), \
+             patch(f"{_RCP}.save_video_url_to_dir", return_value="/fake/path/xyz.mp4"), \
+             patch(f"{_RCP}.update_db_post_video_url") as mock_update_video, \
+             patch(f"{_RCP}.apply_post_guidance", return_value="Guided video caption") as mock_guidance:
+            result = regenerate_post(10, guidance="shorter")
+        assert result == "Guided video caption"
+        mock_text.assert_called_once_with(1, "awareness", user_profile=ANY, post_id=10, content_mix="authority")
+        mock_guidance.assert_called_once_with("New video caption", "shorter", prefs={"use_emojis": False}, profile_synthesis="synth")
+        mock_video_src.assert_called_once_with(1, "Guided video caption", ANY, 10)
+        mock_update_video.assert_called_once()
+        from cqc_lem.app.run_content_plan import update_db_post_status
+        update_db_post_status.assert_called_once_with(10, PostStatus.PENDING)
+
+    @patch("cqc_lem.utilities.db.get_post_type", return_value=PostType.VIDEO)
+    @patch("cqc_lem.utilities.db.get_post_buyer_stage", return_value="awareness")
+    @patch(f"{_RCP}.create_text_post", return_value="New video caption")
+    @patch(f"{_RCP}._post_content_mix", return_value="authority")
+    @patch(f"{_RCP}._generate_video_src", return_value=None)
+    def test_video_post_held_when_video_asset_fails(self, mock_video_src, mock_mix, mock_text,
+                                                    mock_stage, mock_type, base_patches):
+        from cqc_lem.app.run_content_plan import regenerate_post
+        from cqc_lem.utilities.db import PostStatus
+        with patch(f"{_RCP}.apply_post_guidance", side_effect=lambda c, *a, **k: c):
+            result = regenerate_post(11)
+        assert result == "New video caption"
+        from cqc_lem.app.run_content_plan import update_db_post_status
+        update_db_post_status.assert_called_once_with(11, PostStatus.PENDING)
+
+    @patch("cqc_lem.utilities.db.get_post_type", return_value=None)
+    def test_unknown_post_type_returns_none(self, mock_type, base_patches):
+        from cqc_lem.app.run_content_plan import regenerate_post
+        assert regenerate_post(12) is None
+
+    @patch("cqc_lem.utilities.db.get_post_user_id", return_value=None)
+    def test_missing_user_returns_none(self, mock_user_id):
+        from cqc_lem.app.run_content_plan import regenerate_post
+        assert regenerate_post(13) is None

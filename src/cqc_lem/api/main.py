@@ -2423,9 +2423,10 @@ def regenerate_newsletter_draft_endpoint(request: NewsletterRegenerateRequest) -
 
 @router.post("/user/post/regenerate")
 def regenerate_post_endpoint(request: PostRegenerateRequest) -> ResponseModel:
-    """Regenerate a single pending/approved post. Generation is a slow lem-complex call, so dispatch
-    it to a Celery task; the post resets to 'pending' for re-review. Optional free-text `guidance`
-    steers the rewrite while the base regeneration honors the user's saved engagement settings."""
+    """Regenerate a single pending/approved/rejected post. Generation is a slow lem-complex call,
+    so dispatch it to a Celery task; the post resets to 'pending' for re-review. Optional free-text
+    `guidance` steers the rewrite while the base regeneration honors the user's saved engagement
+    settings. Works for text, carousel, document, and video posts (issue #794)."""
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")

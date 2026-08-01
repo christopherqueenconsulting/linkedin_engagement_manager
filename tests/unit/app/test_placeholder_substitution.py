@@ -136,15 +136,20 @@ class TestRegeneratePost:
         apg.assert_called_once()
         uc.assert_called_once_with(42, "guided post")
 
-    def test_non_text_post_skipped(self):
+    def test_carousel_post_regenerates(self):
         from cqc_lem.app import run_content_plan as rcp
+        from cqc_lem.utilities.db import PostStatus
         p = self._patches(post_type="carousel")
         with p["get_post_user_id"], p["get_post_buyer_stage"], p["get_post_type"], p["load_profile"], \
-             p["create_text_post"] as ctp, p["update_status"] as us:
+             patch(f"{_RCP}.create_carousel_content", return_value="fresh carousel body") as ccp, \
+             patch(f"{_RCP}._score_and_persist_dwell"), \
+             patch(f"{_RCP}._persist_gate_findings"), \
+             p["update_content"] as uc, p["update_status"] as us:
             out = rcp.regenerate_post(42)
-        assert out is None
-        ctp.assert_not_called()
-        us.assert_not_called()
+        assert out == "fresh carousel body"
+        ccp.assert_called_once_with(1, "awareness", 42)
+        uc.assert_called_once_with(42, "fresh carousel body")
+        us.assert_called_once_with(42, PostStatus.PENDING)
 
     def test_no_user_returns_none(self):
         from cqc_lem.app import run_content_plan as rcp
