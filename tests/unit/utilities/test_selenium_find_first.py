@@ -125,3 +125,26 @@ class TestClickFirst:
             out = su.click_first(driver, wait, [("css", "btn")], "button")
         el.click.assert_called_once()
         assert out is el
+
+    def test_carries_warn_on_miss_into_find_first(self):
+        """click_first is the only way most call sites reach find_first — without the passthrough a
+        caller with a working fallback (issue #873) has no way to keep its miss out of escalation."""
+        from cqc_lem.utilities import selenium_util as su
+        driver = _driver_with({})
+        wait = _FakeWait(driver)
+        with patch(f"{_MOD}.log_warning") as warn, patch(f"{_MOD}.log_debug") as debug:
+            out = su.click_first(driver, wait, [("css", "btn")], "Open reactions menu",
+                                 required=False, warn_on_miss=False, max_try=1, user_id=4)
+        assert out is None
+        warn.assert_not_called()
+        debug.assert_called_once()
+        assert debug.call_args.args[0] == "Selector miss: Open reactions menu"
+
+    def test_warns_on_miss_by_default(self):
+        from cqc_lem.utilities import selenium_util as su
+        driver = _driver_with({})
+        wait = _FakeWait(driver)
+        with patch(f"{_MOD}.log_warning") as warn:
+            su.click_first(driver, wait, [("css", "btn")], "Open reactions menu",
+                           required=False, max_try=1)
+        warn.assert_called_once()

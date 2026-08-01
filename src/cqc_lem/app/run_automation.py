@@ -975,8 +975,13 @@ def react_to_post_inline(driver, wait, card, post_content: str = None, comment_t
                 time.sleep(random.uniform(0.6, 1.2))
             except Exception:
                 pass
+        # The fly-out opener is optional: with a `trigger` in hand its absence just means we take the
+        # documented default-Like fallback below, which is working behaviour — warning about it every
+        # card escalated into a filed defect (issue #873). With no trigger there is no fallback, so
+        # the card's reaction controls really are unreadable and the miss is worth the signal.
         opened = click_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label='Open reactions menu']")],
-                             "Open reactions menu", parent_element=card, required=False, user_id=user_id)
+                             "Open reactions menu", parent_element=card, required=False,
+                             warn_on_miss=trigger is None, user_id=user_id)
         time.sleep(random.uniform(0.8, 1.6))
         # The fly-out can render just outside the card subtree, so match the reaction button globally
         # (only one menu is open at a time and click_first filters to visible elements).

@@ -50,9 +50,11 @@ Two things follow for anyone writing a call site here:
    Same idea for empty-result chatter: `db.get_ready_to_post_posts` logs INFO only when the list is
    non-empty, DEBUG otherwise. For Selenium, `find_first(..., required=False, warn_on_miss=False)`
    logs the miss at DEBUG — use it when the element is legitimately absent on some surfaces
-   (`_switch_feed_to_recent`'s 'Sort by' control does not exist on a group feed). Decide it PER
-   SURFACE, not once for the call site: the same lookup on the home feed, where the control does
-   exist, is selector rot and must still warn.
+   (`_switch_feed_to_recent`'s 'Sort by' control does not exist on a group feed). `click_first`
+   carries the same flag. Decide it PER SURFACE, not once for the call site: the same lookup on the
+   home feed, where the control does exist, is selector rot and must still warn. The other half of
+   the test is whether a FALLBACK is in hand — `react_to_post_inline` warns on a missing
+   'Open reactions menu' only when it found no React toggle to default-Like instead (issue #873).
 2. **Keep the message a stable template.** The dedup key masks volatile tokens (URLs, emails, UUIDs,
    URNs, hex, `[...]`, quoted strings, numbers) and combines them with the call site, so
    `Selector miss: Feed sort control` and `Selector miss: Reaction state` stay two distinct problems
