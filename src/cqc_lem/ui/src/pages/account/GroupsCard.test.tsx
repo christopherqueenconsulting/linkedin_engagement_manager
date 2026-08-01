@@ -56,6 +56,39 @@ describe('GroupsCard (issue #769)', () => {
     expect(screen.queryByText('Next post')).toBeNull()
   })
 
+  it('drops the next-post claim when another group is switched ON, before saving', async () => {
+    // A never-posted group jumps to the front of the rotation, so the group marked at mount is no
+    // longer the answer — naming it anyway is the confusion this card exists to end.
+    get.mockResolvedValue({
+      data: {
+        detail: [{ ...GROUPS[0], is_next_post: true },
+                 { ...GROUPS[1], post_enabled: false, is_next_post: false },
+                 { group_id: 'g3', group_name: 'Founders', enabled: true, post_enabled: false,
+                   last_posted_at: null, is_next_post: false }],
+      },
+    })
+    harness(<GroupsCard />)
+    await waitFor(() => expect(screen.getByText('Next group post: AI Leaders.')).toBeTruthy())
+    fireEvent.click(screen.getByLabelText('Post in Founders'))
+    expect(screen.getByText(/picked from the groups below when you save/i)).toBeTruthy()
+    expect(screen.queryByText('Next post')).toBeNull()
+  })
+
+  it('adopts the rotation the server re-resolves after a save', async () => {
+    get.mockResolvedValueOnce({ data: { detail: GROUPS } }).mockResolvedValue({
+      data: {
+        detail: [{ ...GROUPS[0], is_next_post: true },
+                 { ...GROUPS[1], post_enabled: false, is_next_post: false }],
+      },
+    })
+    put.mockResolvedValue({ data: { detail: 'ok' } })
+    harness(<GroupsCard />)
+    await waitFor(() => expect(screen.getByText('Next group post: Sales Pros.')).toBeTruthy())
+    fireEvent.click(screen.getByLabelText('Post in Sales Pros'))
+    fireEvent.click(screen.getByRole('button', { name: /Save Group Settings/i }))
+    await waitFor(() => expect(screen.getByText('Next group post: AI Leaders.')).toBeTruthy())
+  })
+
   it('says nothing will be posted when no group is opted in', async () => {
     get.mockResolvedValue({
       data: { detail: GROUPS.map((g) => ({ ...g, post_enabled: false, is_next_post: false })) },

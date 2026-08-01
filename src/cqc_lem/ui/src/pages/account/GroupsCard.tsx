@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
 import Toggle from '../../components/Toggle'
@@ -7,16 +7,23 @@ import type { UserGroup } from './types'
 import { useRegisterSaveSection, sectionSaveCallbacks } from './SettingsSaveContext'
 
 const groupLabel = (g: UserGroup) => g.group_name || `Group ${g.group_id}`
+// A group synced before #769 has no post_enabled in an older cached payload — treat a missing flag
+// as ON, which is what the column defaults to server-side.
+const normalize = (rows: UserGroup[]) => rows.map((g) => ({ ...g, post_enabled: g.post_enabled !== false }))
+// WHICH groups take posts is the only input the server's rotation reads, so an unsaved change to it
+// invalidates the marked next group.
+const postSig = (rows: UserGroup[]) =>
+  rows.filter((g) => g.post_enabled).map((g) => g.group_id).sort().join('|')
 
 export default function GroupsCard() {
   const { sessionToken } = useAuth()
-  const queryClient = useQueryClient()
   const [groups, setGroups] = useState<UserGroup[]>([])
   const [groupsInit, setGroupsInit] = useState(false)
   const [savedSig, setSavedSig] = useState<string | null>(null)
+  const [savedPostSig, setSavedPostSig] = useState('')
   const [groupsMsg, setGroupsMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
-  const { data: groupsData } = useQuery({
+  const { data: groupsData, refetch: refetchGroups } = useQuery({
     queryKey: ['user-groups', sessionToken],
     queryFn: () =>
       api
@@ -27,11 +34,10 @@ export default function GroupsCard() {
   })
   useEffect(() => {
     if (groupsData && !groupsInit) {
-      // A group synced before #769 has no post_enabled in an older cached payload — treat a missing
-      // flag as ON, which is what the column defaults to server-side.
-      const normalized = groupsData.map((g) => ({ ...g, post_enabled: g.post_enabled !== false }))
+      const normalized = normalize(groupsData)
       setGroups(normalized)
       setSavedSig(JSON.stringify(normalized))
+      setSavedPostSig(postSig(normalized))
       setGroupsInit(true)
     }
   }, [groupsData, groupsInit])
@@ -47,9 +53,15 @@ export default function GroupsCard() {
           groups.map((g) => [g.group_id, { enabled: g.enabled, post_enabled: !!g.post_enabled }])
         ),
       }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['user-groups'] })
-      setSavedSig(JSON.stringify(groups))
+    onSuccess: async () => {
+      // Saving the flags moves the rotation — a group whose Post switch just went on and has never
+      // been posted in is now next. Adopt the answer the server re-resolves instead of leaving the
+      // card naming the group it was mounted with.
+      const fresh = await refetchGroups()
+      const normalized = normalize(fresh.data ?? groups)
+      setGroups(normalized)
+      setSavedSig(JSON.stringify(normalized))
+      setSavedPostSig(postSig(normalized))
       setGroupsMsg({ ok: true, text: 'Saved.' })
       setTimeout(() => setGroupsMsg(null), 3000)
     },
@@ -65,10 +77,12 @@ export default function GroupsCard() {
 
   if (!(groupsInit && groups.length > 0)) return null
 
-  // The server decides the rotation (least-recently-posted first) and marks the row; we only hide
-  // the badge when this row's own toggles rule it out, so an unsaved edit never shows a
-  // contradiction. The real next group is re-resolved on save.
-  const markedNext = groups.find((g) => g.is_next_post && g.post_enabled)
+  // The server decides the rotation (least-recently-posted first) and marks the row. Any unsaved
+  // change to which groups take posts changes that answer — including switching a never-posted
+  // group ON, which jumps it to the front — so the card stops naming a group until the save
+  // re-resolves it rather than confidently naming the wrong one.
+  const postSelectionDirty = postSig(groups) !== savedPostSig
+  const markedNext = postSelectionDirty ? undefined : groups.find((g) => g.is_next_post && g.post_enabled)
   const postingGroups = groups.filter((g) => g.post_enabled)
 
   return (
