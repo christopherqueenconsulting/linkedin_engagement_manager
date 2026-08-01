@@ -22,7 +22,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
 
 from cqc_lem.utilities.env_constants import *
-from cqc_lem.utilities.logger import myprint, log_info, log_warning
+from cqc_lem.utilities.logger import myprint, log_debug, log_info, log_warning
 from cqc_lem.utilities.utils import get_aws_device_farm_url
 
 # Last-resort geolocation when a session has no user_id and therefore no stored Login Location.
@@ -559,6 +559,7 @@ def get_visible_element_wait_retry(driver: WebDriver, wait: WebDriverWait,
 def find_first(driver: WebDriver, wait: WebDriverWait, locators: list[tuple[str, str]], label: str,
                *, required: bool = True, parent_element: WebElement = None,
                max_try: int = MAX_WAIT_RETRY, visible_only: bool = False,
+               warn_on_miss: bool = True,
                user_id: int = None, post_id: int = None) -> WebElement | None:
     """Return the first element matching any locator in `locators` (ordered, most-stable first).
 
@@ -567,6 +568,10 @@ def find_first(driver: WebDriver, wait: WebDriverWait, locators: list[tuple[str,
     if `required`, raise (like the other helpers); else emit a STRUCTURED warning naming the
     tried selectors + current URL and return None — turning today's silent skips into greppable
     signal. `visible_only` restricts to displayed elements (duplicate hidden+visible copies).
+
+    `warn_on_miss=False` logs that miss at DEBUG instead: use it where the element is legitimately
+    absent on some surfaces (a home-feed-only control looked for on a group page), because a
+    repeated WARNING escalates to ERROR and files a defect for working behaviour.
     """
     root = parent_element if parent_element is not None else driver
 
@@ -596,15 +601,17 @@ def find_first(driver: WebDriver, wait: WebDriverWait, locators: list[tuple[str,
             time.sleep(5)
             return find_first(driver, wait, locators, label, required=required,
                               parent_element=parent_element, max_try=max_try - 1,
-                              visible_only=visible_only, user_id=user_id, post_id=post_id)
+                              visible_only=visible_only, warn_on_miss=warn_on_miss,
+                              user_id=user_id, post_id=post_id)
         if required:
             raise se
         try:
             current_url = driver.current_url
         except Exception:
             current_url = "?"
-        log_warning(f"Selector miss: {label}", action_type="scrape", user_id=user_id, post_id=post_id,
-                    selectors=[f"{by}={val}" for by, val in locators], url=current_url)
+        emit = log_warning if warn_on_miss else log_debug
+        emit(f"Selector miss: {label}", action_type="scrape", user_id=user_id, post_id=post_id,
+             selectors=[f"{by}={val}" for by, val in locators], url=current_url)
         return None
 
 
