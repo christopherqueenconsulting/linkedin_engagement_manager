@@ -25,6 +25,26 @@ def _fake_driver(text: str = "", current_url: str = ""):
     return driver
 
 
+def _sort_control(text: str, aria: str = ""):
+    control = MagicMock()
+    control.text = text
+    control.tag_name = "button"
+    control.get_attribute.side_effect = lambda a: {"aria-label": aria}.get(a)
+    return control
+
+
+def _find_first_returning(results: list):
+    """`find_first` answering each call of the probe's chain in order: trigger, Recent option,
+    trigger again after the flip. Running out means the probe stopped early, which is the point of
+    several of these cases."""
+    calls = iter(results)
+
+    def _find_first(*_a, **_k):
+        return next(calls, None)
+
+    return _find_first
+
+
 @pytest.mark.unit
 class TestLabelLines:
     def test_captures_each_label_with_its_neighbours(self):
@@ -279,24 +299,62 @@ class TestFeedSortProbe:
         assert llv.feed_sort_verdict(None).startswith("NO sort control")
 
     def test_probe_reports_the_control_and_the_live_labels(self, monkeypatch):
-        from cqc_lem.app import run_automation as ra
-
-        control = MagicMock()
-        control.text = "Sort by: Top"
-        control.tag_name = "button"
-        control.get_attribute.side_effect = lambda a: {"aria-label": "Sort by dropdown"}.get(a)
-        monkeypatch.setattr("cqc_lem.utilities.selenium_util.find_first", lambda *a, **k: control)
-        monkeypatch.setattr(ra, "_switch_feed_to_recent", lambda *a, **k: "recent")
+        control = _sort_control("Sort by: Top")
+        recent = _sort_control("Sort by: Recent")
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.find_first",
+                            _find_first_returning([control, recent, recent]))
         monkeypatch.setattr(llv, "visible_button_labels", lambda d, **k: ["Sort by: Recent"])
         monkeypatch.setattr(llv, "menu_item_labels", lambda d, **k: ["Recent"])
 
         report = llv.probe_feed_sort(_fake_driver(current_url=llv.FEED_URL), sleep=lambda s: None)
         assert report["control_found"] is True
         assert report["sort_before"] == "top"
+        assert report["option_found"] is True
         assert report["sort_after"] == "recent"
         assert report["visible_controls"] == ["Sort by: Recent", "Recent"]
         assert report["control"]["text"] == "Sort by: Top"
         assert report["verdict"].startswith("sort control OK")
+
+    def test_a_flip_the_control_will_not_confirm_is_never_reported_as_recent(self, monkeypatch):
+        """The lie #817 exists to stop: a clicked flip whose result is unreadable is 'unknown'."""
+        control = _sort_control("Sort by: Top")
+        blank = _sort_control("")
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.find_first",
+                            _find_first_returning([control, blank, blank]))
+        monkeypatch.setattr(llv, "visible_button_labels", lambda d, **k: [])
+        monkeypatch.setattr(llv, "menu_item_labels", lambda d, **k: [])
+
+        report = llv.probe_feed_sort(_fake_driver(current_url=llv.FEED_URL), sleep=lambda s: None)
+        assert report["sort_after"] == "unknown"
+        assert "unreadable" in report["verdict"]
+
+    def test_an_unresolved_recent_option_leaves_the_menu_open_for_the_capture(self, monkeypatch):
+        """`option_found is False` is the finding: the trigger is fine, the MENU rotated — and the
+        dropdown must still be open when `visible_controls` is read, or it captures nothing."""
+        control = _sort_control("Sort by: Top")
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.find_first",
+                            _find_first_returning([control, None]))
+        monkeypatch.setattr(llv, "visible_button_labels", lambda d, **k: [])
+        monkeypatch.setattr(llv, "menu_item_labels", lambda d, **k: ["Top", "Recent posts"])
+
+        report = llv.probe_feed_sort(_fake_driver(current_url=llv.FEED_URL), sleep=lambda s: None)
+        assert report["option_found"] is False
+        assert report["sort_after"] == "top"
+        assert report["visible_controls"] == ["Top", "Recent posts"]
+        assert "_FEED_RECENT_OPTION_LOCATORS" in report["verdict"]
+
+    def test_a_session_failure_mid_flip_is_reported_as_the_cause_not_as_selectors(self, monkeypatch):
+        control = _sort_control("Sort by: Top")
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.find_first",
+                            _find_first_returning([control]))
+        monkeypatch.setattr(llv, "visible_button_labels", lambda d, **k: [])
+        monkeypatch.setattr(llv, "menu_item_labels", lambda d, **k: [])
+        driver = _fake_driver(current_url=llv.FEED_URL)
+        driver.execute_script.side_effect = RuntimeError("session deleted")
+
+        report = llv.probe_feed_sort(driver, sleep=lambda s: None)
+        assert report["sort_after"] == "unknown"
+        assert "session deleted" in report["flip_error"]
 
     def test_menu_item_labels_skips_hidden_and_duplicate_rows(self):
         def _item(text, displayed=True):
@@ -310,6 +368,53 @@ class TestFeedSortProbe:
         driver.find_elements.return_value = [_item("Recent"), _item("Recent"),
                                              _item("Top", displayed=False), _item("")]
         assert llv.menu_item_labels(driver) == ["Recent"]
+
+
+@pytest.mark.unit
+class TestFeedSortChainCopy:
+    """The probe runs inside a Selenium worker whose `cqc_lem` is the DEPLOYED image, so a pre-merge
+    grounding pass cannot import the chain it is grounding. The script therefore carries a copy —
+    and a copy that drifts grounds a chain nothing ships, which is worse than not probing at all."""
+
+    def test_carried_chain_is_identical_to_the_one_run_automation_uses(self):
+        from cqc_lem.app import run_automation as ra
+
+        assert llv.FALLBACK_SORT_LOCATORS == ra._FEED_SORT_LOCATORS
+        assert llv.FALLBACK_RECENT_OPTION_LOCATORS == ra._FEED_RECENT_OPTION_LOCATORS
+
+    def test_sort_states_match_the_ones_the_run_records(self):
+        from cqc_lem.app import run_automation as ra
+
+        assert (llv.SORT_RECENT, llv.SORT_TOP) == (ra.FEED_SORT_RECENT, ra.FEED_SORT_TOP)
+        assert (llv.SORT_MISSING, llv.SORT_UNKNOWN) == (ra.FEED_SORT_MISSING, ra.FEED_SORT_UNKNOWN)
+
+    def test_the_running_image_wins_when_it_has_a_chain(self):
+        sort, option, source = llv.feed_sort_chains()
+        assert source == "image"
+        from cqc_lem.app import run_automation as ra
+        assert sort == ra._FEED_SORT_LOCATORS and option == ra._FEED_RECENT_OPTION_LOCATORS
+
+    def test_falls_back_to_the_carried_copy_on_an_image_that_predates_817(self, monkeypatch):
+        import builtins
+        real_import = builtins.__import__
+
+        def _no_chain(name, *a, **k):
+            if name == "cqc_lem.app.run_automation":
+                raise ImportError("cannot import name '_FEED_SORT_LOCATORS'")
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", _no_chain)
+        sort, option, source = llv.feed_sort_chains()
+        assert source == "script"
+        assert sort == llv.FALLBACK_SORT_LOCATORS and option == llv.FALLBACK_RECENT_OPTION_LOCATORS
+
+    def test_a_reading_taken_from_the_carried_copy_says_so(self):
+        verdict = llv.feed_sort_verdict({"control_found": True, "sort_before": "top",
+                                         "sort_after": "recent", "chain_source": "script"})
+        assert verdict.startswith("sort control OK")
+        assert "predates #817" in verdict
+        assert "predates" not in llv.feed_sort_verdict({"control_found": True, "sort_after": "recent",
+                                                        "chain_source": "image"})
 
 
 @pytest.mark.unit
