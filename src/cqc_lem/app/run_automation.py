@@ -918,10 +918,17 @@ def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = No
             return False
         time.sleep(random.uniform(1.5, 3))
         step = "find composer"
+        # Scoped to THIS card. The feed walk comments on several posts without reloading the page and
+        # LinkedIn leaves each composer mounted after it submits, so a document-wide lookup returns
+        # the FIRST visible role=textbox in DOM order — an earlier post's composer, scrolled off the
+        # top, which is how the click landed under the sticky nav at y=9 (issue #876). Centering that
+        # composer (#815) would not have fixed it, it would have typed the comment into the wrong
+        # post. No document-wide fallback on purpose: no composer on this card means skip the post.
         composer = find_first(driver, wait,
                               [(By.CSS_SELECTOR, "div[role='textbox'][aria-label*='creating comment']"),
                                (By.CSS_SELECTOR, "div[role='textbox']")],
-                              "Comment composer", visible_only=True, required=False, user_id=user_id)
+                              "Comment composer", visible_only=True, required=False,
+                              parent_element=card, user_id=user_id)
         if composer is None:
             return False
         step = "focus composer"

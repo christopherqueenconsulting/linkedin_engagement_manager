@@ -153,6 +153,76 @@ class TestPostCommentInline:
         composer.send_keys.assert_called_once()
 
 
+def _wait():
+    """Minimal WebDriverWait stand-in so `find_first` can run for real: poll once, TimeoutException
+    on a falsy result (which is what a total selector miss looks like to it)."""
+    from selenium.common import TimeoutException
+    w = MagicMock()
+
+    def until(fn, label=None):
+        found = fn(None)
+        if not found:
+            raise TimeoutException(label)
+        return found
+
+    w.until.side_effect = until
+    return w
+
+
+def _textbox_source(*elements):
+    """find_elements stand-in that answers the composer locators and nothing else."""
+    return lambda by, value: list(elements) if "textbox" in value else []
+
+
+class TestComposerIsScopedToTheCard:
+    """Issue #876. The feed walk comments on several posts WITHOUT reloading the page and LinkedIn
+    leaves each composer mounted after it submits, so a document-wide role=textbox lookup returned
+    the first one in DOM order — an earlier post's composer, by then scrolled off the top. That is
+    the click Chrome reported intercepted at y=9, and centering it (#815) would not have fixed the
+    run: it would have typed this post's comment into the previous post."""
+
+    def test_types_into_this_cards_composer_not_an_earlier_posts(self):
+        from cqc_lem.app import run_automation as ra
+        earlier = MagicMock()                 # first in document order, from the post we just did
+        mine = MagicMock(); mine.text = ""    # this card's own composer
+        driver = MagicMock()
+        driver.find_elements.side_effect = _textbox_source(earlier, mine)
+        driver.execute_script.return_value = True
+        card = MagicMock()
+        card.find_elements.side_effect = _textbox_source(mine)
+        with patch(f"{_RA}.click_first", return_value=MagicMock()):
+            ok = ra.post_comment_inline(driver, _wait(), card, "Great post, thanks", user_id=1)
+        assert ok is True
+        mine.send_keys.assert_called_once()
+        earlier.send_keys.assert_not_called()
+        earlier.click.assert_not_called()
+
+    def test_card_without_a_composer_skips_instead_of_borrowing_one(self):
+        # No document-wide fallback on purpose — commenting on the wrong post is worse than not
+        # commenting, and the caller releases the claim so a later run retries this post.
+        from cqc_lem.app import run_automation as ra
+        earlier = MagicMock()
+        driver = MagicMock()
+        driver.find_elements.side_effect = _textbox_source(earlier)
+        card = MagicMock(); card.find_elements.return_value = []
+        with patch(f"{_RA}.click_first", return_value=MagicMock()), \
+             patch("cqc_lem.utilities.selenium_util.time.sleep"), \
+             patch("cqc_lem.utilities.selenium_util.log_warning"):
+            ok = ra.post_comment_inline(driver, _wait(), card, "Great post, thanks", user_id=1)
+        assert ok is False
+        earlier.send_keys.assert_not_called()
+
+    def test_lookup_is_scoped_to_the_card(self):
+        from cqc_lem.app import run_automation as ra
+        composer = MagicMock(); composer.text = ""
+        card = MagicMock()
+        driver = MagicMock(); driver.execute_script.return_value = True
+        with patch(f"{_RA}.click_first", return_value=MagicMock()), \
+             patch(f"{_RA}.find_first", return_value=composer) as ff:
+            ra.post_comment_inline(driver, MagicMock(), card, "Great post, thanks", user_id=1)
+        assert ff.call_args.kwargs["parent_element"] is card
+
+
 class TestPostCommentInlineStepNaming:
     """One `try` over the whole sequence reported every failure mode as the same warning, so the
     escalated issue never said which step broke — and unrelated faults collapsed into one."""
