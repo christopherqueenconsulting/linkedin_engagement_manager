@@ -259,7 +259,11 @@ print(','.join(names[:${BENCHMARK_MAX_CANDIDATES:-3}]), len(names))
 import sys, json
 run = json.load(sys.stdin)
 for r in run['recommendations']:
-    print(f\"{r['tier']}: {r['champion']} -> {r['model']} (benchmark-recommended, not applied)\")
+    # A recommendation is a QUALITY verdict; #842's standing spend policy says whether it may be
+    # taken. This alert is where the owner meets the swap, so the 'hold' has to arrive with it.
+    policy = (r.get('quota_policy') or {}).get('decision') or 'unknown'
+    quota = (r.get('usage_delta') or {}).get('direction') or 'unknown'
+    print(f\"{r['tier']}: {r['champion']} -> {r['model']} (benchmark-recommended, not applied; quota {quota}, spend policy: {policy})\")
 " 2>/dev/null || echo "(could not read recommendations)")"
             alert "Model benchmark recommends a swap:"$'\n'"$MSG"
           fi

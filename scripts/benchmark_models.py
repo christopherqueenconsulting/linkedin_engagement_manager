@@ -570,12 +570,26 @@ USAGE_FLAT = "flat"
 USAGE_UNKNOWN = "unknown"
 
 
+def usage_level(entry: Optional[dict]) -> Optional[int]:
+    """The ONE place a stored level becomes a number the harness is willing to act on.
+
+    `model_health_check.parse_usage_level` falls back to COUNTING filled pips when the page's
+    wording changes, so a markup drift hands back a level like 0 or 7. Anything outside 1–4 is
+    unreadable, and it has to read that way EVERYWHERE: a level the scorecard prints as `unknown`
+    while the delta treats it as a real number is how an unread champion level renders a quota
+    increase as a "decrease" and clears the standing spend policy on its own."""
+    level = (entry or {}).get("level")
+    if isinstance(level, bool) or not isinstance(level, (int, float)):
+        return None
+    level = int(level)
+    return level if 1 <= level <= 4 else None
+
+
 def usage_name(entry: Optional[dict]) -> str:
     """`{level, label}` → "High (3)". An unreadable level is `unknown`, never a guessed middle."""
-    entry = entry or {}
-    level = entry.get("level")
-    level = int(level) if isinstance(level, (int, float)) and 1 <= int(level) <= 4 else None
-    label = " ".join(str(entry.get("label") or "").split()).title() or USAGE_LEVEL_NAMES.get(level)
+    level = usage_level(entry)
+    label = (" ".join(str((entry or {}).get("label") or "").split()).capitalize()
+             or USAGE_LEVEL_NAMES.get(level))
     if label and level:
         return f"{label} ({level})"
     return label or "unknown"
@@ -632,11 +646,11 @@ def usage_delta(candidate: Optional[dict], champion: Optional[dict], *,
     `unknown` is NOT `flat`. A swap whose quota cost cannot be read is a quota RISK, so it renders
     with the same warning an increase gets — the failure mode this exists to prevent is a HIGH model
     being adopted as if it were free because nobody could see its level."""
-    cand_level = (candidate or {}).get("level")
-    champ_level = (champion or {}).get("level")
+    cand_level = usage_level(candidate)
+    champ_level = usage_level(champion)
     cand_name = usage_name(candidate)
     champ_name = usage_name(champion)
-    known = isinstance(cand_level, int) and isinstance(champ_level, int)
+    known = cand_level is not None and champ_level is not None
     if not known:
         direction, steps = USAGE_UNKNOWN, None
     elif cand_level > champ_level:
@@ -659,7 +673,7 @@ def usage_delta(candidate: Optional[dict], champion: Optional[dict], *,
     else:
         missing = [n for n, lvl in ((candidate_model or "candidate", cand_level),
                                     (champion_model or "champion", champ_level))
-                   if not isinstance(lvl, int)]
+                   if lvl is None]
         summary = (f"⚠️ **quota delta unknown** — no usage level for {', '.join(missing)} "
                    f"(ollama.com publishes it only for cloud-only models; pass "
                    f"`--usage-levels {missing[0]}=<level>`). Treat as an increase until confirmed.")

@@ -837,6 +837,31 @@ class TestUsageLevels:
         assert "unknown" in delta["summary"] and "glm-5.2" in delta["summary"]
         assert "--usage-levels glm-5.2=" in delta["summary"]
 
+    def test_an_off_scale_level_is_unreadable_in_the_delta_too_not_just_in_the_table(self):
+        # `parse_usage_level` counts filled pips when the page's wording changes, so a markup drift
+        # yields a level like 7. The scorecard already prints that as `unknown`; if the delta still
+        # believed the number, an unread CHAMPION level would render a real increase as a
+        # "decrease" — and a decrease is exactly what the standing spend policy waves through.
+        champion = {"level": 7, "label": None}
+        candidate = {"level": 3, "label": "high"}
+        assert bm.usage_name(champion) == "unknown"
+        delta = bm.usage_delta(candidate, champion, candidate_model="minimax-m3",
+                               champion_model="qwen3.5:397b")
+        assert delta["direction"] == bm.USAGE_UNKNOWN and delta["steps"] is None
+        assert delta["champion_level"] is None  # the JSON says what the table says
+        assert "qwen3.5:397b" in delta["summary"]
+        assert bm.quota_policy("lem-medium", delta, {"judge_pass_rate": 1.0},
+                               {"judge_pass_rate": 0.1})["decision"] == bm.POLICY_HOLD
+
+    def test_a_level_replayed_from_json_still_compares(self):
+        # `--render` replays a results file; a level that came back as 3.0 must not read as unknown
+        # in the delta while the table happily prints "High (3)".
+        delta = bm.usage_delta({"level": 3.0}, {"level": 2.0})
+        assert delta["direction"] == bm.USAGE_UP and delta["steps"] == 1
+
+    def test_the_extra_high_label_renders_the_way_the_scale_names_it(self):
+        assert bm.usage_name({"level": 4, "label": "extra high"}) == "Extra high (4)"
+
     def test_the_gate_reports_the_delta_without_blocking_on_it(self):
         candidate = dict(_card(model="minimax-m3"), usage={"level": 3, "label": "high"})
         champion = dict(_card(model="qwen3.5:397b", role="champion"),
@@ -1267,7 +1292,9 @@ class TestCLI:
                  "--usage-levels", "champ=medium", "--max-judge-calls", "5"])
         report = (tmp_path / "2026-07-27-bm-u1.md").read_text()
         assert "Medium (2)" in report   # the override
-        assert "unknown" in report      # the candidate, never guessed
+        # The candidate's own row, never guessed — the footnote also says "unknown", so assert on
+        # the scorecard row rather than on the word appearing anywhere in the page.
+        assert "| `cand` | candidate | unknown |" in report
 
     def test_the_env_supplies_the_levels_when_nobody_is_there_to_pass_the_flag(self, monkeypatch,
                                                                               tmp_path):
