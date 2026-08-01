@@ -1158,9 +1158,11 @@ export default function ContentStudio() {
                 {/* Regenerate with suggestions — mirrors the newsletter flow. Runs the generation
                     pipeline server-side (honors saved voice/tone, focus/goals, emoji/hashtag prefs)
                     PLUS the optional guidance, then resets the post to PENDING for re-review.
-                    Available for pending/rejected text posts so users can fix drafts that still
-                    need a decision; approved posts already have acceptance (issue #778). */}
-                {editingPost.post_type === 'text' && (editingPost.status === 'pending' || editingPost.status === 'rejected') && (
+                    Available for pending/rejected posts of EVERY type so users can fix drafts that
+                    still need a decision (issue #794 — carousels/documents re-render their slides
+                    and videos re-render their clip from the new caption); approved posts already
+                    have acceptance (issue #778). */}
+                {(editingPost.status === 'pending' || editingPost.status === 'rejected') && (
                   <div className="border-t border-gray-100 pt-4 space-y-2">
                     <label className="block text-xs font-medium text-gray-600">
                       Added Guidance <span className="font-normal text-gray-400">(optional)</span>
@@ -1183,7 +1185,13 @@ export default function ContentStudio() {
                       {regenerateMutation.isPending ? 'Starting…' : 'Re-generate Post'}
                     </button>
                     <p className="text-xs text-gray-400">
-                      Regeneration replaces this post's content and returns it to PENDING for review.
+                      Regeneration replaces this post's content
+                      {editingPost.post_type === 'carousel' || editingPost.post_type === 'document'
+                        ? ' and slides'
+                        : editingPost.post_type === 'video'
+                          ? ' and video'
+                          : ''}
+                      , and returns it to PENDING for review.
                     </p>
                   </div>
                 )}

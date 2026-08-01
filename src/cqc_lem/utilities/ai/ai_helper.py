@@ -3227,7 +3227,8 @@ _CAROUSEL_CAPTION_MAX_CHARS = 2200
 def generate_carousel_content(user_id: int, stage: str, prefs: dict = None,
                               profile_synthesis: str = None, blueprint: dict = None,
                               fact_anchors: list = None,
-                              story_directive: str = None) -> tuple[str, dict]:
+                              story_directive: str = None,
+                              guidance: str = None) -> tuple[str, dict]:
     """Generate structured carousel content using AI and return (post_text, carousel_dict).
 
     An assigned `blueprint` (issue #619 / G4) maps a SHORT-FORM POST ARCHETYPE onto the slides — a
@@ -3346,6 +3347,15 @@ Return ONLY valid JSON. No explanation, no markdown fences."""
         prompt += (f"\n\nAuthor voice reference (TONE + CREDIBILITY only — never the subject):\n"
                    f"{profile_synthesis}")
     prompt += _alignment_directive(prefs)
+
+    # The author's revision request from the regenerate flow (issue #794). Last, so it outranks the
+    # generic framing — but explicitly subordinate to the fact rules above, or "add a stat here"
+    # would license the invented metric every other directive exists to prevent.
+    if (guidance or "").strip():
+        prompt += (f"\n\nAUTHOR'S REVISION REQUEST — apply it to the caption AND every slide:\n"
+                   f"{guidance.strip()}\n"
+                   f"Follow it exactly, except where it would break the fact-grounding rules above: "
+                   f"never invent a number, name, or result to satisfy it.")
 
     system_prompt = {
         "role": "system",

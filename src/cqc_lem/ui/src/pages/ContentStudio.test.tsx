@@ -140,8 +140,23 @@ describe('ContentStudio regenerate-with-guidance (issue #778)', () => {
     expect(screen.queryByRole('button', { name: /Re-generate Post/i })).toBeNull()
   })
 
-  it('hides the guidance section for a pending non-text post', async () => {
-    mockPosts([{ ...POST_BASE, post_type: 'carousel', status: 'pending', carousel_slides: ['Slide 1'] }])
+  // Issue #794: every post type can be regenerated with suggestions, not just text.
+  it.each(['carousel', 'document', 'video'])(
+    'shows the guidance section for a pending %s post',
+    async (postType) => {
+      mockPosts([{ ...POST_BASE, post_type: postType, status: 'pending', carousel_slides: ['Slide 1'] }])
+      harness(<ContentStudio />)
+
+      await waitFor(() => expect(screen.getByText('Draft content')).toBeDefined())
+      fireEvent.click(screen.getByText('Draft content'))
+
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /Re-generate Post/i })).toBeDefined()
+      )
+    })
+
+  it('hides the guidance section for an approved carousel post', async () => {
+    mockPosts([{ ...POST_BASE, post_type: 'carousel', status: 'approved', carousel_slides: ['Slide 1'] }])
     harness(<ContentStudio />)
 
     await waitFor(() => expect(screen.getByText('Draft content')).toBeDefined())
