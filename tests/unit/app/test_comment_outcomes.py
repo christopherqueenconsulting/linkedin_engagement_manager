@@ -8,6 +8,7 @@ from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
 
 import pytest
+from selenium.webdriver.common.by import By
 
 pytestmark = pytest.mark.unit
 
@@ -28,6 +29,10 @@ def _fn(name):
 
 def _p(es, name, **kw):
     return es.enter_context(patch(f"{RA}.{name}", **kw))
+
+
+def _sort_chain() -> list:
+    return list(_fn("_COMMENT_SORT_LOCATORS"))
 
 
 class TestCommentTextMatches:
@@ -160,23 +165,44 @@ class TestSortOptionLocators:
             assert "translate(normalize-space()" in xpath
 
     def test_sort_control_locators_are_case_folded_too(self):
-        import importlib
-        for _by, expr in getattr(importlib.import_module(RA), "_COMMENT_SORT_LOCATORS"):
-            text = expr if isinstance(expr, str) else ""
-            # CSS selectors don't have case folding, but every XPath expression that embeds a sort
-            # label must compare lowercase literals.
-            if "Most relevant" in text or "Most recent" in text:
-                assert "[" not in text or "translate(" in text
-            if "translate(" in text and ("relevant" in text or "recent" in text):
-                assert "'most relevant'" in text and "'most recent'" in text
+        # CSS selectors have no case folding to do; every XPath that names a sort label must
+        # compare lowercase literals through translate(), or it silently never fires.
+        for by, expr in _sort_chain():
+            if by != By.XPATH:
+                continue
+            assert "Most relevant" not in expr and "Most recent" not in expr
+            if "relevant" in expr or "recent" in expr:
+                assert "translate(" in expr
+                assert "'most relevant'" in expr and "'most recent'" in expr
 
     def test_sort_control_chain_includes_data_testid_fallback(self):
-        import importlib
-        chain = getattr(importlib.import_module(RA), "_COMMENT_SORT_LOCATORS")
+        chain = _sort_chain()
         exprs = [expr for (_by, expr) in chain]
         assert any("data-testid" in e for e in exprs)
         assert any("@role='button'" in e for e in exprs if "[" in e)
         assert len(chain) > 3  # original three plus the new fallbacks
+
+    def test_testid_wildcard_cannot_claim_an_unrelated_sort_control(self):
+        # A bare [data-testid*='sort'] sits FIRST in the chain, so any other 'sort' button on the
+        # page would be handed back and read as unreadable forever — with no 'Selector miss'
+        # warning, because find_first did find something.
+        for by, expr in _sort_chain():
+            if by == By.CSS_SELECTOR and "*='sort'" in expr:
+                assert "comment" in expr
+
+    def test_subtree_text_locators_cannot_match_a_wrapper(self):
+        # normalize-space() is the WHOLE SUBTREE's text, so an unbounded contains() on a generic
+        # element matches every ancestor up to <body>, and find_first returns the outermost match.
+        # The sort would then be decided by any comment saying 'most recent', and a click on that
+        # wrapper would never open the real control.
+        for by, expr in _sort_chain():
+            if by != By.XPATH or "normalize-space()," not in expr:
+                continue
+            if expr.startswith("//button["):
+                continue  # a <button> cannot wrap the page
+            assert "string-length(normalize-space()) <" in expr, expr
+        divs = [e for by, e in _sort_chain() if by == By.XPATH and e.startswith("//div[")]
+        assert divs and all("not(.//div)" in e for e in divs)
 
 
 class TestCommentLikeCount:

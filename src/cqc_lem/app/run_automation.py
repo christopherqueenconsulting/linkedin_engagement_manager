@@ -3509,9 +3509,18 @@ _X_AZ_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _X_AZ_LOWER = "abcdefghijklmnopqrstuvwxyz"
 _X_LOWER_TEXT = f"translate(normalize-space(),'{_X_AZ_UPPER}','{_X_AZ_LOWER}')"
 _X_LOWER_ARIA = f"translate(@aria-label,'{_X_AZ_UPPER}','{_X_AZ_LOWER}')"
+# XPath's normalize-space() is the WHOLE SUBTREE's text, so an unbounded contains() on a generic
+# element also matches every ancestor wrapper up to <body> — and find_first returns the first match
+# in document order, i.e. the outermost one. That element's .text is then the whole page, so the
+# sort would be decided by any comment that happens to say 'most recent', and clicking it would
+# never open the real control (a click on a wrapper does not activate the button inside it). Any
+# locator that is not already restricted to a <button> carries this bound.
+_X_SHORT_TEXT = "string-length(normalize-space()) < 40"
 _COMMENT_SORT_LOCATORS = [
     # LinkedIn's SDUI uses data-testid for stable identity; prefer that over text/aria-label drift.
-    (By.CSS_SELECTOR, "button[data-testid*='sort']"),
+    # Both substrings are required: a bare *='sort' would also claim an unrelated sort control, and
+    # a wrong element found FIRST reads as unreadable forever with no 'Selector miss' warning.
+    (By.CSS_SELECTOR, "button[data-testid*='sort'][data-testid*='comment']"),
     (By.CSS_SELECTOR, "[data-testid='comment-sort-dropdown']"),
     # Older / fallback: any button whose text or aria-label names the current sort.
     (By.XPATH, f"//button[contains({_X_LOWER_ARIA},'sort') and "
@@ -3522,12 +3531,16 @@ _COMMENT_SORT_LOCATORS = [
     (By.XPATH, f"//button[contains({_X_LOWER_TEXT},'{_SORT_MOST_RELEVANT}') or "
                f"contains({_X_LOWER_TEXT},'{_SORT_MOST_RECENT}')]"),
     # Some renders surface the control as a non-button interactive element (role=button) or plain
-    # labeled div. These are intentionally broad; the label extractor below decides if it really
-    # is the sort control.
+    # labeled div. The label extractor below still decides whether it really is the sort control,
+    # so these stay broad — but bounded to a node whose OWN text is the label (see _X_SHORT_TEXT).
     (By.XPATH, f"//*[self::button or @role='button'][contains({_X_LOWER_ARIA},'sort')]"),
-    (By.XPATH, f"//*[self::button or @role='button'][contains({_X_LOWER_TEXT},'{_SORT_MOST_RELEVANT}') or "
+    (By.XPATH, f"//*[self::button or @role='button'][{_X_SHORT_TEXT}]"
+               f"[contains({_X_LOWER_TEXT},'{_SORT_MOST_RELEVANT}') or "
                f"contains({_X_LOWER_TEXT},'{_SORT_MOST_RECENT}')]"),
-    (By.XPATH, f"//div[contains({_X_LOWER_TEXT},'{_SORT_MOST_RELEVANT}') or "
+    # Innermost div only: a click bubbles UP to whatever handler owns the control, so the deepest
+    # labeled node is both the right label to read and the right node to click.
+    (By.XPATH, f"//div[not(.//div)][{_X_SHORT_TEXT}]"
+               f"[contains({_X_LOWER_TEXT},'{_SORT_MOST_RELEVANT}') or "
                f"contains({_X_LOWER_TEXT},'{_SORT_MOST_RECENT}')]"),
 ]
 
