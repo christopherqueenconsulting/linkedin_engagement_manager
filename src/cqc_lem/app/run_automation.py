@@ -1661,6 +1661,10 @@ def _reply_composer_for_comment(driver: WebDriver, comment_el: WebElement,
     """
     anchor = _visible_rect(comment_el)
     if anchor is None:
+        # The callers now rely on THIS function to log every miss (#886 dropped their own warning),
+        # so a stale/unrendered comment must not return None silently.
+        log_debug("Comment is not rendered; no reply composer to resolve",
+                  action_type="reply", user_id=user_id)
         return None
     bottom = anchor["y"] + anchor["height"]
     nested = _visible_composers(comment_el)
@@ -1687,7 +1691,8 @@ def _reply_composer_for_comment(driver: WebDriver, comment_el: WebElement,
     return best[0]
 
 
-def _type_and_submit_reply(driver, composer: WebElement, reply_text: str, user_id: int = None) -> bool:
+def _type_and_submit_reply(driver: WebDriver, composer: WebElement, reply_text: str,
+                           user_id: int = None) -> bool:
     """Type into an ALREADY-resolved composer and submit (role=textbox + Ctrl+Enter fallback). Both
     reply paths share this so the submit/verify contract can never drift between them. True only when
     `_composer_submitted` confirms the post."""

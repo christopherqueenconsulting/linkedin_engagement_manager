@@ -127,10 +127,14 @@ class TestReplyComposerForComment:
         assert ra._reply_composer_for_comment(_driver(collapsed), _comment(900), user_id=1) is None
 
     def test_none_when_the_comment_itself_is_not_rendered(self):
+        # #886 dropped the callers' own miss log, so EVERY None out of here has to say so itself —
+        # a stale comment must not drop a reply with no trace at any level.
         from cqc_lem.app import run_automation as ra
         comment = MagicMock()
         type(comment).rect = property(lambda self: (_ for _ in ()).throw(Exception("stale")))
-        assert ra._reply_composer_for_comment(_driver(_box(1030)), comment, user_id=1) is None
+        with patch(f"{_RA}.log_debug") as ld:
+            assert ra._reply_composer_for_comment(_driver(_box(1030)), comment, user_id=1) is None
+        ld.assert_called_once()
 
 
 class TestInSameComment:
