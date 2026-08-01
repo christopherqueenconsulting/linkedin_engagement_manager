@@ -1596,19 +1596,107 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     return posted
 
 
+# How far ABOVE a comment's own top edge a composer may still start and count as its reply box.
+# Only absorbs sub-pixel/rounding drift — a real reply box opens below the comment, never above it.
+_COMPOSER_ABOVE_SLACK_PX = 8
+
+
+def _visible_rect(element: WebElement) -> dict | None:
+    """Page-coordinate rect of a RENDERED element, else None. Zero-size IS the hidden case here —
+    the same width>0 && height>0 test #478 applies to composer candidates."""
+    try:
+        r = element.rect or {}
+    except Exception:
+        return None  # stale/detached element is not a candidate
+    if not r.get("width") or not r.get("height"):
+        return None
+    return r
+
+
+def _visible_composers(root: WebDriver | WebElement) -> list[tuple[WebElement, dict]]:
+    """`(element, rect)` for every rendered role=textbox under `root` — a WebElement to search one
+    comment's subtree, or the driver to search the page."""
+    found = []
+    try:
+        for box in root.find_elements(By.CSS_SELECTOR, "div[role='textbox']"):
+            rect = _visible_rect(box)
+            if rect:
+                found.append((box, rect))
+    except Exception:
+        pass  # a stale root has no candidates; the caller skips
+    return found
+
+
+def _in_same_comment(driver: WebDriver, comment_el: WebElement, other: WebElement | None) -> bool:
+    """True when `other` is this comment or shares its subtree (a reply wrapper inside it, or a
+    wrapper holding it) — i.e. the composer that resolved to it is ours to type into."""
+    if other is None:
+        return False
+    if other == comment_el:
+        return True
+    try:
+        return bool(driver.execute_script(
+            "return arguments[0].contains(arguments[1]) || arguments[1].contains(arguments[0]);",
+            comment_el, other))
+    except Exception:
+        return False
+
+
+def _reply_composer_for_comment(driver: WebDriver, comment_el: WebElement,
+                                user_id: int = None) -> WebElement | None:
+    """The reply composer belonging to THIS comment — never a page-wide first match.
+
+    A document-wide role=textbox lookup returns the first VISIBLE composer in DOM order, so the reply
+    was typed into the post's main 'Add a comment' box (it posts as a standalone comment) or into one
+    left mounted by a comment replied to earlier in the same sweep. Same bug class as #478 on the
+    other reply path and #876 on the post card; this is issue #883.
+
+    Two rules, in order. A composer inside the comment's own subtree is unambiguous — LinkedIn nests
+    a comment's replies, and the box that opens at the end of them, in the comment container. If this
+    render puts it outside, fall back to #478's geometry: the visible composer NEAREST the comment's
+    bottom edge, with anything above the comment rejected OUTRIGHT — that hard above-filter is what
+    keeps the post's main box out, where #478 merely penalises it and still hands it back when it is
+    the only candidate — and with a box that resolves to a DIFFERENT comment rejected too. No
+    candidate means skip; we never borrow a composer.
+    """
+    anchor = _visible_rect(comment_el)
+    if anchor is None:
+        return None
+    bottom = anchor["y"] + anchor["height"]
+    nested = _visible_composers(comment_el)
+    candidates = nested or [(box, rect) for box, rect in _visible_composers(driver)
+                            if rect["y"] >= anchor["y"] - _COMPOSER_ABOVE_SLACK_PX]
+    best = min(candidates, key=lambda br: abs(br[1]["y"] - bottom), default=None)
+    if best is None:
+        log_debug("No reply composer belongs to this comment", action_type="reply", user_id=user_id)
+        return None
+    if nested:
+        return best[0]
+    # Sibling render: reject a box that resolves to a DIFFERENT comment — the nearest box below can
+    # belong to a LATER comment when our own reply box never opened, and borrowing it answers the
+    # wrong person. An UNRESOLVED owner is not proof of that: `_comment_container` was written for a
+    # comment BODY (`expandable-text-box`) and rejects any ancestor holding a GIF/Emoji composer
+    # button, which is the composer's OWN toolbar here — requiring it to resolve would make this
+    # branch skip every time, silently, whenever LinkedIn renders the reply box outside the comment.
+    # Unresolved therefore falls through to #478's proven geometry, still under the hard above-filter
+    # that is what actually keeps the post's main comment box out.
+    owner = _comment_container(driver, best[0])
+    if owner is not None and not _in_same_comment(driver, comment_el, owner):
+        log_debug("Nearest reply composer belongs to another comment", action_type="reply", user_id=user_id)
+        return None
+    return best[0]
+
+
 def _reply_to_comment_inline(driver, wait, comment_el, reply_text: str, user_id: int = None) -> bool:
     """Open a comment's inline reply box, type the reply, and submit (same SDUI pattern as
-    post_comment_inline: role=textbox composer + Ctrl+Enter fallback). Returns True if posted."""
+    post_comment_inline: role=textbox composer + Ctrl+Enter fallback). The composer is resolved
+    against THIS comment (`_reply_composer_for_comment`), never page-wide. Returns True if posted."""
     try:
         if click_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label='Reply']")],
                        "Open reply box", parent_element=comment_el, required=False, user_id=user_id) is None:
             return False
         time.sleep(random.uniform(1.5, 3))
-        composer = find_first(driver, wait,
-                              [(By.CSS_SELECTOR, "div[role='textbox'][aria-label*='reply']"),
-                               (By.CSS_SELECTOR, "div[role='textbox'][aria-label*='comment']"),
-                               (By.CSS_SELECTOR, "div[role='textbox']")],
-                              "Reply composer", visible_only=True, required=False, user_id=user_id)
+        composer = _reply_composer_for_comment(driver, comment_el, user_id=user_id)
         if composer is None:
             return False
         reply_text = _strip_non_bmp(reply_text)
