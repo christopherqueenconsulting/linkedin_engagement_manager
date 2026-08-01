@@ -582,6 +582,172 @@ def visible_button_labels(driver, limit: int = 40) -> list:
     return labels
 
 
+def reaction_anchor_kind(evidence: dict) -> str:
+    """Which of the three anchors `react_to_post_inline` needs this control could serve as.
+
+    Names the ROLE rather than dumping raw attributes, so a run's output is directly comparable to
+    the locator chain it is meant to re-ground (issue #816)."""
+    blob = " ".join(str(evidence.get(k, "")) for k in ("aria_label", "text", "testid")).lower()
+    if "reaction button state" in blob or "no reaction" in blob:
+        return "state"                     # the pre/post-click 'Reaction state' read
+    if "open reactions" in blob or "reactions menu" in blob:
+        return "opener"                    # the fly-out opener
+    if blob.strip() in {"like", "react like"} or blob.startswith("react "):
+        return "toggle"                    # the default-Like toggle
+    if any(r in blob for r in ("celebrate", "support", "love", "insightful", "funny")):
+        return "flyout_option"             # a reaction inside the open fly-out
+    if "like" in blob:
+        return "like_like"                 # mentions like, but not one of the shapes above
+    return "other"
+
+
+def probe_feed_reactions(driver, max_cards: int = 3, open_menu: bool = False,
+                         sleep=time.sleep) -> dict:
+    """READ-ONLY capture of the feed cards' reaction controls (issue #816).
+
+    All three anchors `react_to_post_inline` keys on are single locators with no fallback chain,
+    and LinkedIn's SDUI has drifted away from every one of them (63 selector misses in 48h). This
+    reports what is ACTUALLY on a card so the chain can be rebuilt against evidence instead of
+    against a docstring that says 'verified live' about a long-gone DOM.
+
+    It never leaves a reaction: it enumerates controls, and with --reaction-open-menu it will hover
+    and open the fly-out (which changes no persisted state) to capture the option labels. The
+    reaction buttons themselves are never clicked.
+    """
+    from selenium.webdriver.common.action_chains import ActionChains
+
+    out: dict = {"cards": [], "opened_flyout": False, "note": "read-only; no reaction was left"}
+    try:
+        driver.get("https://www.linkedin.com/feed/")
+        sleep(5)
+        # The feed lazy-loads: without a scroll the first paint can carry no post cards at all, and
+        # "found nothing" would then be indistinguishable from "the anchors are gone".
+        for _ in range(3):
+            driver.execute_script("window.scrollBy(0, 900);")
+            sleep(2)
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {e}"
+        return out
+
+    # Always record WHICH screen we landed on. A zero-card result is only actionable next to the
+    # evidence of what was actually rendered — an auth wall and a drifted card selector look
+    # identical in a bare `cards_found: 0`.
+    try:
+        out["url"] = str(driver.current_url or "")[:200]
+        out["title"] = str(driver.title or "")[:120]
+    except Exception:
+        pass
+
+    # Mirror the production feed walk exactly: find each post's comment textbox, then climb to the
+    # nearest ancestor carrying a Comment button. Guessing a card selector (div[data-id], article)
+    # finds nothing on the current SDUI — and a probe that samples different cards than the code it
+    # is grounding is worse than no probe.
+    try:
+        boxes = driver.find_elements(By.CSS_SELECTOR, "div[role='textbox']")
+        out["textboxes_found"] = len(boxes)
+        cards = []
+        for box in boxes:
+            if len(cards) >= max_cards:
+                break
+            try:
+                card = driver.execute_script(
+                    "let el=arguments[0],d=0;while(el&&d<15){"
+                    "if(el.querySelector&&el.querySelector(\"button[aria-label='Comment']\"))return el;"
+                    "el=el.parentElement;d++;}return null;", box)
+            except Exception:
+                card = None
+            if card is not None:
+                cards.append(card)
+    except Exception as e:
+        out["error"] = f"card enumeration failed: {type(e).__name__}: {e}"
+        return out
+    out["cards_found"] = len(cards)
+    if not cards:
+        # Nothing to sample: hand back the screen's own controls so the next run knows whether this
+        # was an auth wall, an empty feed, or a card selector that has itself drifted.
+        out["visible_buttons"] = visible_button_labels(driver, limit=30)
+        try:
+            out["body_text_head"] = (driver.find_element(By.TAG_NAME, "body").text or "")[:400]
+        except Exception:
+            pass
+
+    for index, card in enumerate(cards):
+        entry: dict = {"index": index, "controls": []}
+        try:
+            for button in card.find_elements(By.CSS_SELECTOR, "button, [role='button']"):
+                try:
+                    if not button.is_displayed():
+                        continue
+                except Exception:
+                    continue
+                evidence = element_evidence(button)
+                try:
+                    testid = button.get_attribute("data-testid")
+                    if testid:
+                        evidence["testid"] = str(testid)[:120]
+                except Exception:
+                    pass
+                blob = " ".join(str(v) for v in evidence.values()).lower()
+                # Only reaction-ish controls: a whole card's buttons is mostly noise.
+                if not any(t in blob for t in ("react", "like", "celebrate", "support", "love",
+                                               "insightful", "funny")):
+                    continue
+                evidence["kind"] = reaction_anchor_kind(evidence)
+                entry["controls"].append(evidence)
+        except Exception as e:
+            entry["error"] = f"{type(e).__name__}: {e}"
+        entry["kinds"] = sorted({c.get("kind", "other") for c in entry["controls"]})
+        out["cards"].append(entry)
+
+    if open_menu:
+        # Hovering reveals the opener; opening the fly-out reveals the per-reaction buttons. Neither
+        # persists anything on LinkedIn — only a click on a reaction would, and we never do that.
+        #
+        # Falls back to a DOCUMENT-level search when card enumeration found nothing. That is the
+        # case worth capturing: the reaction anchors can be perfectly healthy while the card walk
+        # that scopes `parent_element=card` is what actually broke, and a probe that gives up with
+        # the cards cannot tell those two apart.
+        try:
+            scope = cards[0] if cards else driver
+            out["flyout_scope"] = "card" if cards else "document"
+            trigger = None
+            for candidate in scope.find_elements(By.CSS_SELECTOR, "button, [role='button']"):
+                if not _safe_displayed(candidate):
+                    continue
+                ev = element_evidence(candidate)
+                if reaction_anchor_kind(ev) in {"toggle", "opener", "state"}:
+                    trigger = candidate
+                    out["flyout_trigger"] = ev
+                    break
+            if trigger is not None:
+                ActionChains(driver).move_to_element(trigger).perform()
+                sleep(2)
+                out["flyout_candidates"] = [
+                    element_evidence(b) for b in driver.find_elements(By.CSS_SELECTOR, "button")
+                    if _safe_displayed(b) and reaction_anchor_kind(element_evidence(b)) in
+                    {"flyout_option", "opener"}
+                ][:15]
+                out["opened_flyout"] = True
+        except Exception as e:
+            out["flyout_error"] = f"{type(e).__name__}: {e}"
+
+    # The verdict the fix needs: which of the three anchors exist ANYWHERE on the sampled cards.
+    seen = {k for card in out["cards"] for k in card.get("kinds", [])}
+    out["anchors_present"] = {
+        "state": "state" in seen,
+        "opener": "opener" in seen,
+        "toggle": "toggle" in seen,
+    }
+    return out
+
+
+def _safe_displayed(element) -> bool:
+    try:
+        return bool(element.is_displayed())
+    except Exception:
+        return False
+
+
 def article_editor_reading(verdict: dict) -> str:
     """One sentence a human can act on, so the JSON does not have to be interpreted."""
     if not verdict.get("editor_ready"):
@@ -698,12 +864,21 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--watch", action="store_true",
                         help="request the watchable Grid debug node so the session is visible via "
                              "noVNC; falls back to the pool if the debug node is busy/absent")
+    parser.add_argument("--reaction-probe", action="store_true",
+                        help="capture the feed cards' reaction controls (issue #816). Read-only: "
+                             "it never leaves a reaction.")
+    parser.add_argument("--reaction-cards", type=int, default=3,
+                        help="how many feed cards to sample for --reaction-probe")
+    parser.add_argument("--reaction-open-menu", action="store_true",
+                        help="also hover and open the reaction fly-out to capture its option "
+                             "labels. Changes no persisted state; the options are never clicked.")
     args = parser.parse_args(argv)
 
     if not (args.post_url or args.probe_composer or args.comment_outcome_url or args.dm_thread_url
-            or args.article_editor_url or args.feed_sort):
+            or args.article_editor_url or args.feed_sort or args.reaction_probe):
         parser.error("nothing to probe — pass --post-url, --comment-outcome-url, --dm-thread-url, "
-                     "--article-editor-url, --feed-sort and/or --probe-composer")
+                     "--article-editor-url, --feed-sort, --reaction-probe and/or "
+                     "--probe-composer")
 
     from cqc_lem.app.run_automation import get_current_profile
     from cqc_lem.utilities.selenium_util import quit_gracefully
@@ -735,6 +910,9 @@ def main(argv: Optional[list] = None) -> int:
             report["composer"] = probe_composer(driver)
         if args.article_editor_url:
             report["article_editor"] = probe_article_editor(driver, args.article_editor_url)
+        if args.reaction_probe:
+            report["feed_reactions"] = probe_feed_reactions(
+                driver, max_cards=args.reaction_cards, open_menu=args.reaction_open_menu)
     finally:
         quit_gracefully(driver)
 
