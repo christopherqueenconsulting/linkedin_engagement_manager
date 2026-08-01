@@ -26,3 +26,17 @@ export function compactNumber(value: number): string {
 export function formatRate(value: number): string {
   return `${(value * 100).toFixed(2)}%`
 }
+
+// "2026-07-20" → "Jul 20" for compact chart/table axes (dates are tz-agnostic calendar days).
+const _MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+export function shortDate(iso: string): string {
+  const [, m, d] = iso.split('-')
+  const mi = Number(m) - 1
+  return mi >= 0 && mi < 12 ? `${_MONTHS[mi]} ${Number(d)}` : iso
+}
+
+export function titleCase(k: string | null): string {
+  if (!k) return '—'
+  const s = String(k).replace(/[_-]+/g, ' ').trim()
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}

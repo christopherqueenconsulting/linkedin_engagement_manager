@@ -10,29 +10,13 @@ import OnboardingChecklist from '../components/OnboardingChecklist'
 import PostHogStatsPanel from '../components/PostHogStatsPanel'
 import LineChart, { type LinePoint } from '../components/charts/LineChart'
 import Leaderboard, { type RankEntry } from '../components/charts/Leaderboard'
-import { compactNumber, formatRate } from '../components/charts/palette'
+import PerPostTable, { type PerPost } from '../components/charts/PerPostTable'
+import { compactNumber, formatRate, shortDate, titleCase } from '../components/charts/palette'
 
 interface PostStats {
   recommendations: { weekday: string; hour: number; avg_engagement: number; sample: number }[]
   rankings: Record<string, RankEntry[]>
   sample_size: number
-}
-
-interface PerPost {
-  post_id: number
-  scheduled_time: string | null
-  format: string | null
-  archetype: string | null
-  hook_style: string | null
-  topic: string | null
-  buyer_stage: string | null
-  reactions: number
-  comments: number
-  reposts: number
-  saves: number
-  impressions: number | null
-  engagement: number
-  engagement_rate: number | null
 }
 
 interface TrendPoint {
@@ -235,20 +219,6 @@ function deltaColor(d: AudienceDelta | null | undefined): string {
 // letting the tile imply a window it didn't cover.
 function deltaSince(d: AudienceDelta | null | undefined): string {
   return d ? `since ${shortDate(d.from_date)}` : 'not enough history'
-}
-
-// "2026-07-20" → "Jul 20" for compact chart/table axes (dates are tz-agnostic calendar days).
-const _MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-function shortDate(iso: string): string {
-  const [, m, d] = iso.split('-')
-  const mi = Number(m) - 1
-  return mi >= 0 && mi < 12 ? `${_MONTHS[mi]} ${Number(d)}` : iso
-}
-
-function titleCase(k: string | null): string {
-  if (!k) return '—'
-  const s = String(k).replace(/[_-]+/g, ' ').trim()
-  return s.charAt(0).toUpperCase() + s.slice(1)
 }
 
 interface DashboardStats {
@@ -795,44 +765,8 @@ export default function Dashboard() {
                 <Leaderboard title="Top hooks" entries={hookBoard} humanizeKey={titleCase} />
               </div>
 
-              {/* Per-post performance drill-down */}
-              <div>
-                <h3 className="text-sm font-semibold text-gray-700 mb-2">Per-post performance</h3>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs text-left tabular-nums">
-                    <thead>
-                      <tr className="text-gray-500 border-b border-gray-200">
-                        <th className="py-1.5 pr-3 font-medium">Date</th>
-                        <th className="py-1.5 pr-3 font-medium">Format</th>
-                        <th className="py-1.5 pr-3 font-medium">Hook</th>
-                        <th className="py-1.5 pr-3 font-medium text-right">Impr.</th>
-                        <th className="py-1.5 pr-3 font-medium text-right">Reactions</th>
-                        <th className="py-1.5 pr-3 font-medium text-right">Comments</th>
-                        <th className="py-1.5 pr-3 font-medium text-right">Reposts</th>
-                        <th className="py-1.5 pr-3 font-medium text-right">Saves</th>
-                        <th className="py-1.5 font-medium text-right">Eng. rate</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {perPost.map((p) => (
-                        <tr key={p.post_id} className="border-b border-gray-100 last:border-0 text-gray-700">
-                          <td className="py-1.5 pr-3 whitespace-nowrap">
-                            {p.scheduled_time ? shortDate(p.scheduled_time.slice(0, 10)) : '—'}
-                          </td>
-                          <td className="py-1.5 pr-3">{titleCase(p.format)}</td>
-                          <td className="py-1.5 pr-3">{titleCase(p.hook_style)}</td>
-                          <td className="py-1.5 pr-3 text-right">{p.impressions != null ? compactNumber(p.impressions) : '—'}</td>
-                          <td className="py-1.5 pr-3 text-right">{p.reactions.toLocaleString()}</td>
-                          <td className="py-1.5 pr-3 text-right">{p.comments.toLocaleString()}</td>
-                          <td className="py-1.5 pr-3 text-right">{p.reposts.toLocaleString()}</td>
-                          <td className="py-1.5 pr-3 text-right">{p.saves.toLocaleString()}</td>
-                          <td className="py-1.5 text-right">{p.engagement_rate != null ? formatRate(p.engagement_rate) : '—'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+              {/* Per-post performance drill-down — collapsed by default (#808) */}
+              <PerPostTable posts={perPost} />
             </>
           )}
         </div>
