@@ -93,7 +93,8 @@ anything code-split) is only fetched when the user triggers the feature. At 4 re
 open across one asks for a hash the new image no longer has — a 404 that presents as "the feature is
 broken", not "reload me".
 
-Two layers, in this order:
+Three layers, in this order — the first two are REACTIVE (something already failed to load), the
+third is the proactive prompt:
 
 1. **Asset retention (the user sees nothing).** Both colors mount the named `spa_asset_archive`
    volume at `SPA_ASSET_ARCHIVE_DIR=/app/spa_asset_archive`. On startup each FastAPI container syncs
@@ -110,8 +111,20 @@ Two layers, in this order:
    (`NewVersionNotice.tsx`) instead of looping. An OFFLINE tab is never reloaded: a disconnected
    dynamic import reports the same message a stale chunk does, and reloading a `no-store` shell with
    no network replaces a working app with the browser's offline page.
+3. **New-version awareness (issue #754).** The two layers above only fire once something has failed,
+   and a tab several builds behind can keep WORKING while running old client code against a newer
+   API. `ui/src/hooks/useNewVersion.ts` polls `/api/app-info` every 5 minutes — skipping the request
+   entirely while the tab is hidden, and re-checking on `visibilitychange` so a backgrounded tab
+   catches up the moment it returns — and raises the SAME `NewVersionNotice` when the reported
+   version differs from the one this tab booted with (the first version it ever read). The BOOT read
+   is the single poll that ignores visibility: a tab opened in the background (ctrl-click, a restored
+   session) still runs this bundle while hidden, and deferring its first read would baseline it
+   against whatever shipped before the user first looked at it — the tab would be running old code
+   and could never be told. It is a PROMPT: this layer never reloads, so it can never race layer 2's
+   one automatic reload. An unreachable endpoint or a missing/blank version raises nothing and does
+   not become the baseline — an unknown version is never "new".
 
-The `no-store` shell is load-bearing for BOTH layers — if a CDN rule ever caches `index.html`, the
+The `no-store` shell is load-bearing for BOTH reactive layers — if a CDN rule ever caches `index.html`, the
 reload lands on the same broken build. `tests/unit/api/test_spa_asset_archive.py` guards the header
 contract and the compose wiring.
 
