@@ -60,7 +60,7 @@ from cqc_lem.utilities.db import (
     get_pending_newsletter_editions,
     get_latest_edition_scheduled_for, update_newsletter_edition, get_newsletter_edition,
     get_user_groups, set_groups_enabled, get_next_group_for_post,
-    get_post_engagement_rows, get_post_performance_rows,
+    get_post_engagement_rows, get_post_performance_rows, get_post_coverage_counts,
     get_content_mix_counts, get_comment_outcomes,
     get_follower_stats, get_daily_action_counts,
     get_lead_magnet_settings, update_lead_magnet_settings,
@@ -2953,11 +2953,19 @@ def get_engagement_analytics_endpoint(session_token: str, days: int = 90) -> Res
     comment_quality["hold"] = {"active": hold_remaining > 0,
                                "reason": commenting_hold_reason(user_id) if hold_remaining else None,
                                "seconds_remaining": hold_remaining}
+    # Why the panel is measuring a SUBSET (issue #809). Only posts with a captured post_stats row can
+    # be measured, so without these the dashboard shows a number that reconciles with nothing else on
+    # the screen. `measured` is taken from the rows we actually read, never re-counted in SQL, so the
+    # coverage line can't contradict `sample_size`.
+    posted_counts = get_post_coverage_counts(user_id, days=days)
+    coverage = {**posted_counts, "measured": len(rows),
+                "awaiting_capture": max(0, int(posted_counts.get("posted_in_window") or 0) - len(rows))}
     return ResponseModel(status_code=200, detail={
         "per_post": build_performance_table(rows),
         "trend": build_engagement_trend(rows),
         "sample_size": len(rows),
         "days": days,
+        "coverage": coverage,
         # Mix compliance is a property of the PLAN, not of captured stats — it reports even when no
         # post has engagement data yet.
         "content_mix": content_mix_compliance(get_content_mix_counts(user_id, days=days)),

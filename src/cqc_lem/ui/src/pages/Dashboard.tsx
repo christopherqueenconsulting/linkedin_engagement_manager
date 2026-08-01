@@ -119,11 +119,40 @@ interface ContentQuality {
   alerts: ContentQualityAlert[]
 }
 
+// Why the panel below is measuring a SUBSET of the account (#809). Only a post with a captured
+// post_stats row can be measured, so these are what reconcile "Posts measured" with the all-time
+// "posted" tile — without them a partial window reads as the analytics being broken.
+interface AnalyticsCoverage {
+  posted_total: number
+  posted_in_window: number
+  measured: number
+  awaiting_capture: number
+}
+
+// Built as one string rather than inline JSX: a newline between text and an expression container
+// becomes a space, which would render "post s" and " ." mid-sentence.
+function coverageSummary(coverage: AnalyticsCoverage, days: number): string {
+  const scope =
+    coverage.posted_total > coverage.posted_in_window
+      ? ` (${coverage.posted_total} posted all time).`
+      : '.'
+  const backlog =
+    coverage.awaiting_capture > 0
+      ? ` ${coverage.awaiting_capture} still need their stats read from LinkedIn — they join the` +
+        ' numbers below once a capture succeeds.'
+      : ''
+  return (
+    `Measuring ${coverage.measured} of ${coverage.posted_in_window} post(s) published in the last ` +
+    `${days} days${scope}${backlog}`
+  )
+}
+
 interface Analytics {
   per_post: PerPost[]
   trend: TrendPoint[]
   sample_size: number
   days: number
+  coverage?: AnalyticsCoverage
   content_mix?: ContentMix
   comment_quality?: CommentQuality
   content_quality?: ContentQuality
@@ -365,6 +394,8 @@ export default function Dashboard() {
   const perPost = analytics?.per_post ?? []
   const trend = analytics?.trend ?? []
   const hasAnalytics = (analytics?.sample_size ?? 0) > 0
+  const coverage = analytics?.coverage
+  const analyticsDays = analytics?.days ?? 90
   const mix = analytics?.content_mix
   const commentQuality = analytics?.comment_quality
   const contentQuality = analytics?.content_quality
@@ -510,8 +541,16 @@ export default function Dashboard() {
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-6">
           <div className="flex items-baseline justify-between">
             <h2 className="text-lg font-semibold text-gray-700">Engagement Analytics</h2>
-            <span className="text-xs text-gray-400">Last {analytics?.days ?? 90} days</span>
+            <span className="text-xs text-gray-400">Last {analyticsDays} days</span>
           </div>
+
+          {/* Coverage (#809) — the panel only measures posts whose LinkedIn numbers were captured, so
+              say so explicitly rather than letting a partial window read as missing analytics. */}
+          {coverage && (
+            <p className="text-xs text-gray-500 -mt-4" data-testid="analytics-coverage">
+              {coverageSummary(coverage, analyticsDays)}
+            </p>
+          )}
 
           {/* Content mix governor (#618) — how much of the plan sells vs. gives value */}
           {mix && mix.total > 0 && (
@@ -543,7 +582,9 @@ export default function Dashboard() {
               </div>
               <p className="text-xs text-gray-400 mt-2">
                 One soft-promo post per {mix.promo_every_n} planned posts, case-study shaped with an
-                artifact CTA — never a meeting ask.
+                artifact CTA — never a meeting ask. Measured across the {mix.total} planned post(s)
+                in the last {analyticsDays} days — the plan includes drafts and scheduled posts, so
+                this denominator is not the same as the posts measured above.
                 {(mix.counts.unclassified ?? 0) > 0 &&
                   ` ${mix.counts.unclassified} older post(s) predate the mix governor and are not counted.`}
               </p>
@@ -698,7 +739,11 @@ export default function Dashboard() {
           {!hasAnalytics ? (
             <p className="text-sm text-gray-400 py-4 text-center">
               Gathering data — engagement analytics appear once your posted content has captured
-              stats{analytics ? ` (currently ${analytics.sample_size})` : ''}.
+              stats.
+              {coverage &&
+                (coverage.posted_in_window > 0
+                  ? ` None of your ${coverage.posted_in_window} post(s) from the last ${analyticsDays} days have been read from LinkedIn yet.`
+                  : ` No posts published in the last ${analyticsDays} days yet.`)}
             </p>
           ) : (
             <>

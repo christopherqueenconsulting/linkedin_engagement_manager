@@ -349,6 +349,7 @@ class TestScrapeStatsTask:
         _RA = "cqc_lem.app.run_automation"
         with patch(f"{_RA}.time.sleep"), \
              patch(f"{_RA}.get_recent_posted_post_ids", return_value=[9, 10]), \
+             patch(f"{_RA}.get_uncaptured_posted_post_ids", return_value=[]), \
              patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
              patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://x/urn"), \
              patch(f"{_RA}._post_social_counts", return_value={"reactions": 12, "comments": 3}), \

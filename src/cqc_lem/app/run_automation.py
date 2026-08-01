@@ -36,7 +36,7 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     get_newsletter_settings, mark_newsletter_published, record_newsletter_subscriber_stat, \
     get_newsletter_edition, mark_edition_published, mark_edition_failed, \
     upsert_user_group, get_enabled_group_ids, record_group_post, record_post_stats, \
-    get_recent_posted_post_ids, \
+    get_recent_posted_post_ids, get_uncaptured_posted_post_ids, \
     get_shipped_variant_keys, \
     get_lead_magnet_settings, has_received_lead_magnet, record_lead_magnet_sent, \
     LogResultType, has_user_commented_on_post_url, get_post_url_from_log_for_user, get_post_message_from_log_for_user, \
@@ -2177,6 +2177,17 @@ def _post_analytics_counts(driver, post_url: str) -> dict:
         return {}
 
 
+def _post_stats_backfill_bounds() -> Tuple[int, int]:
+    """(window days, per-run cap) for the never-captured backfill (issue #809). A typo'd env value
+    falls back to the defaults rather than taking the whole sweep down."""
+    def _read(name: str, default: int) -> int:
+        try:
+            return max(0, int((os.environ.get(name) or "").strip() or default))
+        except ValueError:
+            return default
+    return _read("POST_STATS_BACKFILL_DAYS", 90), _read("POST_STATS_BACKFILL_MAX", 5)
+
+
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
                   queue='se_content')
 def auto_scrape_post_stats(self, user_id: int):
@@ -2185,6 +2196,14 @@ def auto_scrape_post_stats(self, user_id: int):
     social-count extraction on each post's detail page, then on its analytics page for the
     signals the detail page never renders (saves, impressions)."""
     post_ids = get_recent_posted_post_ids(user_id)
+    # The analytics dashboard reads a 90-day window while this sweep only walks the last few weeks,
+    # so a post that missed its capture while it was fresh stayed unmeasurable forever (issue #809).
+    # Top the sweep up with a bounded number of never-captured posts from the wider window.
+    backfill_days, backfill_max = _post_stats_backfill_bounds()
+    if backfill_max:
+        already = set(post_ids)
+        post_ids = post_ids + [pid for pid in get_uncaptured_posted_post_ids(
+            user_id, days=backfill_days, limit=backfill_max) if pid not in already]
     if not post_ids:
         return "No recent posts to scrape"
     # One query for the whole sweep, so every outcome event can name the A/B variant its post shipped
