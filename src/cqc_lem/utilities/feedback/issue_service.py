@@ -89,6 +89,16 @@ GITHUB_TIMEOUT_SECONDS = 20
 # for three passes running becomes the ERROR/$exception it deserves.
 GITHUB_RETRY_ATTEMPTS = 3
 GITHUB_RETRY_BACKOFF_SECONDS = 0.5
+# Only a READ is replayed. A write that failed AFTER GitHub accepted it (read timeout, connection
+# reset mid-response) is indistinguishable from one that never landed, so retrying `POST /issues`
+# would file the duplicate this whole module exists to prevent. A lost write costs nothing: the
+# cluster is still open and the next beat's repair pass re-attaches it.
+GITHUB_IDEMPOTENT_METHODS = ("GET", "HEAD")
+# Deterministic `requests` faults that also inherit IOError. A malformed URL or a redirect loop is
+# OUR bug, not the network — retrying it three times and reporting it as "unreachable" would hide
+# the one thing worth alerting on.
+NON_TRANSPORT_REQUEST_ERRORS = ("URLRequired", "MissingSchema", "InvalidSchema", "InvalidURL",
+                                "InvalidHeader", "InvalidJSONError", "TooManyRedirects")
 # Once the transport is down, every other call in the same pass fails the same way. Short-circuiting
 # them keeps ONE outage to ONE warning instead of one per request — three of which is exactly the
 # escalation threshold, i.e. an outage would file itself as a defect.
@@ -543,8 +553,22 @@ def _is_transport_failure(exc: BaseException) -> bool:
     """Whether the request never reached GitHub. Every `requests` transport exception
     (ConnectionError, Timeout, SSLError, …) subclasses `RequestException` -> `IOError`, as do the
     builtin socket errors — an unreachable host is exactly the OSError family, anything else is
-    ours."""
+    ours. The deterministic `requests` faults share that base but are ours too, so they are named
+    out by class rather than imported (this module keeps `requests` a lazy import)."""
+    if any(base.__name__ in NON_TRANSPORT_REQUEST_ERRORS for base in type(exc).__mro__):
+        return False
     return isinstance(exc, OSError)
+
+
+def _log_lost_write(message: str) -> None:
+    """A refused WRITE breaks the loop and is an ERROR — the operator has to fix the token. But when
+    the transport is down (issue #767) that hint is a lie: nothing was refused, the call never left
+    the host, and the repair pass re-attaches on the next beat."""
+    if github_unreachable():
+        log_warning(f"{message} — GitHub is unreachable from this host; the repair pass re-attaches",
+                    api_provider="github")
+    else:
+        log_error(f"{message}. {TOKEN_PERMISSION_HINT}", api_provider="github")
 
 
 def github_request(method: str, path: str, payload: dict = None) -> Optional[object]:
@@ -564,8 +588,10 @@ def github_request(method: str, path: str, payload: dict = None) -> Optional[obj
         return None
     import requests
     url = f"{GITHUB_API_BASE}/repos/{github_repo()}/{path.lstrip('/')}"
+    attempts = (max(1, GITHUB_RETRY_ATTEMPTS)
+                if str(method).upper() in GITHUB_IDEMPOTENT_METHODS else 1)
     response = None
-    for attempt in range(1, max(1, GITHUB_RETRY_ATTEMPTS) + 1):
+    for attempt in range(1, attempts + 1):
         try:
             response = requests.request(
                 method, url, json=payload, timeout=GITHUB_TIMEOUT_SECONDS,
@@ -577,14 +603,14 @@ def github_request(method: str, path: str, payload: dict = None) -> Optional[obj
             if not _is_transport_failure(e):
                 log_error(f"GitHub {method} {path} failed", exc=e, api_provider="github")
                 return None
-            if attempt < GITHUB_RETRY_ATTEMPTS:
+            if attempt < attempts:
                 log_debug(f"GitHub {method} {path} transport attempt {attempt} failed — retrying",
                           api_provider="github")
                 time.sleep(GITHUB_RETRY_BACKOFF_SECONDS * attempt)
                 continue
             _unreachable_until = time.monotonic() + GITHUB_UNREACHABLE_COOLDOWN_SECONDS
-            log_warning(f"GitHub {method} {path} unreachable after {GITHUB_RETRY_ATTEMPTS} "
-                        f"attempts — the next pass retries", exc=e, api_provider="github")
+            log_warning(f"GitHub {method} {path} unreachable after {attempts} "
+                        f"attempt(s) — the next pass retries", exc=e, api_provider="github")
             return None
     _unreachable_until = 0.0
     if response.status_code >= 300:
@@ -617,14 +643,12 @@ def create_github_issue(title: str, body: str, labels: list,
     label_list = [str(label) for label in (labels or [])]
     if label_list and github_request("POST", f"issues/{number}/labels",
                                      {"labels": label_list}) is None:
-        log_error(f"Auto-filed issue #{number} could not be labeled {label_list} — it is invisible "
-                  f"to the agent pipeline until this is repaired. {TOKEN_PERMISSION_HINT}",
-                  api_provider="github")
+        _log_lost_write(f"Auto-filed issue #{number} could not be labeled {label_list} — it is "
+                        f"invisible to the agent pipeline until this is repaired")
     assignee_list = [str(assignee) for assignee in (assignees or [])]
     if assignee_list and github_request("POST", f"issues/{number}/assignees",
                                         {"assignees": assignee_list}) is None:
-        log_error(f"Auto-filed issue #{number} could not be assigned to {assignee_list}. "
-                  f"{TOKEN_PERMISSION_HINT}", api_provider="github")
+        _log_lost_write(f"Auto-filed issue #{number} could not be assigned to {assignee_list}")
     log_info(f"Auto-filed feedback issue #{number}: {title}", api_provider="github")
     return number
 
@@ -904,9 +928,8 @@ def repair_filed_issue(issue: dict) -> str:
     wanted = labels_for_issue(classification, reporter_count)
     missing = [label for label in wanted if label not in present]
     if github_request("POST", f"issues/{number}/labels", {"labels": missing}) is None:
-        log_error(f"Could not repair auto-filed issue #{number} — attaching {missing} was refused, "
-                  f"so it stays invisible to the pipeline. {TOKEN_PERMISSION_HINT}",
-                  api_provider="github")
+        _log_lost_write(f"Could not repair auto-filed issue #{number} — attaching {missing} did not "
+                        f"land, so it stays invisible to the pipeline")
         return RepairAction.ERROR
     if AGENT_READY_LABEL not in wanted:
         if not issue.get("assignees"):
