@@ -136,6 +136,28 @@ describe('useNewVersion polling', () => {
     expect(get).toHaveBeenCalledTimes(1)
   })
 
+  it('still baselines at boot in a tab that opened in the background', async () => {
+    // A ctrl-clicked tab runs this bundle while hidden. Skipping its boot read would baseline it
+    // against whatever shipped before the user first looked at it, and the prompt would never come.
+    setHidden(true)
+    get.mockResolvedValue(appInfo('0.120.0'))
+    render(<Probe />)
+    await settle()
+    expect(get).toHaveBeenCalledTimes(1)
+
+    get.mockResolvedValue(appInfo('0.121.0'))
+    await settle(VERSION_POLL_INTERVAL_MS * 3)
+    expect(get).toHaveBeenCalledTimes(1) // hidden: no polling after the boot read
+    expect(value()).toBe('false')
+
+    setHidden(false)
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(value()).toBe('true')
+  })
+
   it('catches up as soon as the tab comes back to the foreground', async () => {
     get.mockResolvedValue(appInfo('0.120.0'))
     setHidden(false)

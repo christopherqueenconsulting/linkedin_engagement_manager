@@ -116,10 +116,13 @@ third is the proactive prompt:
    API. `ui/src/hooks/useNewVersion.ts` polls `/api/app-info` every 5 minutes — skipping the request
    entirely while the tab is hidden, and re-checking on `visibilitychange` so a backgrounded tab
    catches up the moment it returns — and raises the SAME `NewVersionNotice` when the reported
-   version differs from the one this tab booted with (the first version it ever read). It is a
-   PROMPT: this layer never reloads, so it can never race layer 2's one automatic reload. An
-   unreachable endpoint or a missing/blank version raises nothing and does not become the baseline —
-   an unknown version is never "new".
+   version differs from the one this tab booted with (the first version it ever read). The BOOT read
+   is the single poll that ignores visibility: a tab opened in the background (ctrl-click, a restored
+   session) still runs this bundle while hidden, and deferring its first read would baseline it
+   against whatever shipped before the user first looked at it — the tab would be running old code
+   and could never be told. It is a PROMPT: this layer never reloads, so it can never race layer 2's
+   one automatic reload. An unreachable endpoint or a missing/blank version raises nothing and does
+   not become the baseline — an unknown version is never "new".
 
 The `no-store` shell is load-bearing for BOTH reactive layers — if a CDN rule ever caches `index.html`, the
 reload lands on the same broken build. `tests/unit/api/test_spa_asset_archive.py` guards the header

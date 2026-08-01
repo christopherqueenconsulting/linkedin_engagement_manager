@@ -53,15 +53,17 @@ export function useNewVersion(intervalMs: number = VERSION_POLL_INTERVAL_MS): bo
     if (isStale) return
     let cancelled = false
 
-    const poll = async () => {
-      // A hidden tab polls nothing — it cannot show the prompt anyway, and the check on the way back
-      // to visible covers every interval it slept through.
-      if (document.visibilityState === 'hidden') return
+    // `force` is the boot read only. A tab opened in the BACKGROUND (ctrl-click, a restored
+    // session) still loads and runs this bundle while hidden, so skipping its first read would
+    // baseline it against whatever shipped by the time the user finally looked at it — the tab
+    // would be running old code and could never be told. Every later poll respects visibility.
+    const poll = async (force = false) => {
+      if (!force && document.visibilityState === 'hidden') return
       const isNew = await checkForNewVersion()
       if (isNew && !cancelled) setIsStale(true)
     }
 
-    void poll() // the first run is what records the boot baseline
+    void poll(true) // the first run is what records the boot baseline
     const timer = window.setInterval(() => void poll(), intervalMs)
     const onVisibilityChange = () => void poll()
     document.addEventListener('visibilitychange', onVisibilityChange)
