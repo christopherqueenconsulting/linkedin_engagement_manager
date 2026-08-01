@@ -109,6 +109,18 @@ class TestReplyComposerForComment:
             got = ra._reply_composer_for_comment(driver, _comment(900), user_id=1)
         assert got is sibling
 
+    def test_unresolvable_owner_still_takes_the_box_below_this_comment(self):
+        # `_comment_container` was written to walk up from a comment BODY and rejects any ancestor
+        # holding a GIF/Emoji composer button — which here is the reply composer's OWN toolbar, so
+        # it can return null for a perfectly valid reply box. Demanding it resolve would make this
+        # branch skip EVERY sibling render, silently. Unresolved is not proof the box is another
+        # comment's; the hard above-filter is what keeps the post's main box out.
+        from cqc_lem.app import run_automation as ra
+        main, sibling = _box(100), _box(1030)
+        with patch(f"{_RA}._comment_container", return_value=None):
+            got = ra._reply_composer_for_comment(_driver(main, sibling), _comment(900), user_id=1)
+        assert got is sibling
+
     def test_hidden_composers_are_not_candidates(self):
         from cqc_lem.app import run_automation as ra
         collapsed = _box(1030, height=0)                    # display:none renders 0x0

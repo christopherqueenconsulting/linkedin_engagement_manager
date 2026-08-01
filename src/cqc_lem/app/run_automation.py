@@ -1654,9 +1654,10 @@ def _reply_composer_for_comment(driver: WebDriver, comment_el: WebElement,
     Two rules, in order. A composer inside the comment's own subtree is unambiguous — LinkedIn nests
     a comment's replies, and the box that opens at the end of them, in the comment container. If this
     render puts it outside, fall back to #478's geometry: the visible composer NEAREST the comment's
-    bottom edge, with anything above the comment rejected outright, and only if it walks back up to
-    this comment. Both filters are HARD — #478 merely penalises composers above the comment, which
-    still hands back the main box when that is the only candidate. No match means skip.
+    bottom edge, with anything above the comment rejected OUTRIGHT — that hard above-filter is what
+    keeps the post's main box out, where #478 merely penalises it and still hands it back when it is
+    the only candidate — and with a box that resolves to a DIFFERENT comment rejected too. No
+    candidate means skip; we never borrow a composer.
     """
     anchor = _visible_rect(comment_el)
     if anchor is None:
@@ -1671,10 +1672,16 @@ def _reply_composer_for_comment(driver: WebDriver, comment_el: WebElement,
         return None
     if nested:
         return best[0]
-    # Sibling render: confirm ownership before typing. The nearest box below can still belong to a
-    # LATER comment when our own reply box never opened, and borrowing it answers the wrong person.
+    # Sibling render: reject a box that resolves to a DIFFERENT comment — the nearest box below can
+    # belong to a LATER comment when our own reply box never opened, and borrowing it answers the
+    # wrong person. An UNRESOLVED owner is not proof of that: `_comment_container` was written for a
+    # comment BODY (`expandable-text-box`) and rejects any ancestor holding a GIF/Emoji composer
+    # button, which is the composer's OWN toolbar here — requiring it to resolve would make this
+    # branch skip every time, silently, whenever LinkedIn renders the reply box outside the comment.
+    # Unresolved therefore falls through to #478's proven geometry, still under the hard above-filter
+    # that is what actually keeps the post's main comment box out.
     owner = _comment_container(driver, best[0])
-    if not _in_same_comment(driver, comment_el, owner):
+    if owner is not None and not _in_same_comment(driver, comment_el, owner):
         log_debug("Nearest reply composer belongs to another comment", action_type="reply", user_id=user_id)
         return None
     return best[0]
