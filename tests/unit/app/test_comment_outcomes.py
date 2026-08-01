@@ -83,6 +83,66 @@ class TestCommentSortLabel:
             assert _fn("_comment_sort_label")(MagicMock(), MagicMock()) == ""
 
 
+class TestFindCommentSortControl:
+    def _el(self, aria="", text=""):
+        e = MagicMock()
+        e.get_attribute.return_value = aria
+        e.text = text
+        return e
+
+    def _driver(self, per_locator):
+        """A driver whose find_elements answers each locator in chain order from `per_locator`."""
+        driver = MagicMock()
+        answers = list(per_locator) + [[]] * len(_sort_chain())
+        driver.find_elements.side_effect = lambda *a, **k: answers.pop(0) if answers else []
+        return driver
+
+    def test_prefers_a_candidate_that_actually_names_a_sort(self):
+        # An unrelated 'sort' button matched by an earlier locator must not short-circuit the chain:
+        # find_first would hand it back and the reading would be unreadable forever, with no
+        # 'Selector miss' warning to say so.
+        wrong = self._el(aria="Sort your saved items")
+        right = self._el(text="Most relevant")
+        driver = self._driver([[wrong], [], [right]])
+        assert _fn("_find_comment_sort_control")(driver, MagicMock()) is right
+
+    def test_falls_back_to_the_first_match_when_none_name_a_sort(self):
+        # Some renders label the control only inside its popup — the click path still needs it.
+        first = self._el(aria="Sort")
+        later = self._el(aria="Sort by")
+        driver = self._driver([[first], [later]])
+        assert _fn("_find_comment_sort_control")(driver, MagicMock()) is first
+
+    def test_total_miss_defers_to_find_first_for_the_selector_miss_warning(self):
+        driver = self._driver([])
+        with patch(f"{RA}.find_first", return_value=None) as ff:
+            assert _fn("_find_comment_sort_control")(driver, MagicMock()) is None
+        assert ff.call_count == 1
+
+    def test_a_locator_that_raises_does_not_abort_the_chain(self):
+        right = self._el(text="Most recent")
+        driver = MagicMock()
+        answers = [RuntimeError("stale"), [right]]
+
+        def _find(*_a, **_k):
+            nxt = answers.pop(0) if answers else []
+            if isinstance(nxt, Exception):
+                raise nxt
+            return nxt
+
+        driver.find_elements.side_effect = _find
+        assert _fn("_find_comment_sort_control")(driver, MagicMock()) is right
+
+    def test_scan_is_bounded_per_locator(self):
+        # Reading a label is two Selenium round-trips; the broad tail of the chain can match many
+        # nodes on a busy thread.
+        noise = [self._el(aria="nope") for _ in range(50)]
+        driver = self._driver([noise])
+        _fn("_find_comment_sort_control")(driver, MagicMock())
+        read = [e for e in noise if e.get_attribute.called]
+        assert len(read) == _fn("_SORT_CANDIDATE_SCAN_CAP")
+
+
 class TestSwitchCommentSort:
     def test_true_only_when_the_control_confirms_the_new_sort(self):
         with patch(f"{RA}.find_first", side_effect=[MagicMock(), MagicMock()]), \
@@ -189,6 +249,13 @@ class TestSortOptionLocators:
         for by, expr in _sort_chain():
             if by == By.CSS_SELECTOR and "*='sort'" in expr:
                 assert "comment" in expr
+
+    def test_the_known_comment_testid_leads_the_wildcard(self):
+        # Ordered most-specific first: the exact testid can only be the comment sort control, the
+        # wildcard behind it merely probably is.
+        exprs = [e for _by, e in _sort_chain()]
+        assert exprs.index("[data-testid='comment-sort-dropdown']") < \
+            min(i for i, e in enumerate(exprs) if "*='sort'" in e)
 
     def test_subtree_text_locators_cannot_match_a_wrapper(self):
         # normalize-space() is the WHOLE SUBTREE's text, so an unbounded contains() on a generic

@@ -3518,10 +3518,10 @@ _X_LOWER_ARIA = f"translate(@aria-label,'{_X_AZ_UPPER}','{_X_AZ_LOWER}')"
 _X_SHORT_TEXT = "string-length(normalize-space()) < 40"
 _COMMENT_SORT_LOCATORS = [
     # LinkedIn's SDUI uses data-testid for stable identity; prefer that over text/aria-label drift.
-    # Both substrings are required: a bare *='sort' would also claim an unrelated sort control, and
-    # a wrong element found FIRST reads as unreadable forever with no 'Selector miss' warning.
-    (By.CSS_SELECTOR, "button[data-testid*='sort'][data-testid*='comment']"),
+    # The KNOWN testid leads; the wildcard behind it requires both substrings, since a bare *='sort'
+    # would also claim an unrelated sort control on the page.
     (By.CSS_SELECTOR, "[data-testid='comment-sort-dropdown']"),
+    (By.CSS_SELECTOR, "button[data-testid*='sort'][data-testid*='comment']"),
     # Older / fallback: any button whose text or aria-label names the current sort.
     (By.XPATH, f"//button[contains({_X_LOWER_ARIA},'sort') and "
                f"(contains({_X_LOWER_TEXT},'{_SORT_MOST_RELEVANT}') or "
@@ -3572,18 +3572,16 @@ _COMMENT_LIKE_COUNT_JS = (
     "}return '';")
 
 
-def _comment_sort_label(driver, wait) -> str:
-    """The comment sort currently applied, lowercased ('most relevant' / 'most recent'), or '' when
-    the control isn't present. '' is load-bearing: without knowing the sort we cannot say whether an
-    absent comment was demoted, so the visibility reading stays NULL rather than guessing."""
+# Reading a candidate's label costs two Selenium round-trips, and the broad tail of the chain can
+# match many nodes on a busy thread. Only the first few per locator are worth checking.
+_SORT_CANDIDATE_SCAN_CAP = 8
+
+
+def _sort_from_element(el) -> str:
+    """The sort an element names ('most relevant' / 'most recent'), or '' when it names neither —
+    which is how a wrong-but-matching node is told apart from the real control."""
     try:
-        btn = find_first(driver, wait, _COMMENT_SORT_LOCATORS, "Comment sort control", required=False)
-    except Exception:
-        return ""
-    if btn is None:
-        return ""
-    try:
-        text = f"{btn.get_attribute('aria-label') or ''} {btn.text or ''}".lower()
+        text = f"{el.get_attribute('aria-label') or ''} {el.text or ''}".lower()
     except Exception:
         return ""
     if _SORT_MOST_RECENT in text:
@@ -3593,12 +3591,50 @@ def _comment_sort_label(driver, wait) -> str:
     return ""
 
 
+def _find_comment_sort_control(driver, wait):
+    """The comment sort control, preferring a candidate whose own label actually reads as a sort.
+
+    find_first hands back the first match of the first locator that yields ANY element — it never
+    looks at what it found. One unrelated 'sort' button matched by a broad fallback would therefore
+    be returned forever, read as unreadable, and never warn ('Selector miss' only fires on a TOTAL
+    miss), which is exactly the starved denominator #818 is about. Walking the chain here lets such
+    a node fall through to a locator that names the real sort. Some renders label the control only
+    inside its popup, so an unvalidated candidate is still returned when nothing in the chain parses
+    — that is the pre-existing behaviour, and the click path in `_switch_comment_sort` needs it."""
+    fallback = None
+    for locator in _COMMENT_SORT_LOCATORS:
+        try:
+            els = driver.find_elements(*locator)[:_SORT_CANDIDATE_SCAN_CAP]
+        except Exception:
+            continue
+        for el in els:
+            if _sort_from_element(el):
+                return el
+            if fallback is None:
+                fallback = el
+    if fallback is not None:
+        return fallback
+    # Nothing at all yet: fall back to find_first for its wait/retry and its Selector-miss warning.
+    return find_first(driver, wait, _COMMENT_SORT_LOCATORS, "Comment sort control", required=False)
+
+
+def _comment_sort_label(driver, wait) -> str:
+    """The comment sort currently applied, lowercased ('most relevant' / 'most recent'), or '' when
+    the control isn't present. '' is load-bearing: without knowing the sort we cannot say whether an
+    absent comment was demoted, so the visibility reading stays NULL rather than guessing."""
+    try:
+        btn = _find_comment_sort_control(driver, wait)
+    except Exception:
+        return ""
+    return _sort_from_element(btn) if btn is not None else ""
+
+
 def _switch_comment_sort(driver, wait, target: str = _SORT_MOST_RECENT) -> bool:
     """Best-effort flip of the comment sort. True only when the control afterwards reports `target`
     — an unverified flip would let 'not found here' be read as a demotion when the sort never
     actually changed."""
     try:
-        btn = find_first(driver, wait, _COMMENT_SORT_LOCATORS, "Comment sort control", required=False)
+        btn = _find_comment_sort_control(driver, wait)
         if btn is None:
             return False
         driver.execute_script("arguments[0].click();", btn)
