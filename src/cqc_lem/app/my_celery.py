@@ -262,6 +262,12 @@ app.conf.update(
             'task': 'cqc_lem.app.run_scheduler.auto_notify_missing_linkedin_session',
             'schedule': crontab(hour='9', minute='0')  # Daily 9:00 AM — throttled per-user to 1/week
         },
+        'refresh-linkedin-tokens': {
+            'task': 'cqc_lem.app.run_scheduler.auto_refresh_linkedin_tokens',
+            # Daily 8:30 AM — BEFORE the 9:00 missing-session pass, so a token renewed here never
+            # produces a reconnect email half an hour later. Email is throttled per-user (#600).
+            'schedule': crontab(hour='8', minute='30')
+        },
         'onboarding-nudges': {
             'task': 'cqc_lem.app.run_scheduler.auto_onboarding_nudges',
             # Daily 9:30 AM — right after the missing-session email, so a user who just got that one

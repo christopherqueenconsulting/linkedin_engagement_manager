@@ -99,9 +99,7 @@ from cqc_lem.utilities.email import generate_pin, hash_pin, send_pin_email
 from cqc_lem.utilities.linkedin.verification_pin import (
     extract_pin_from_text, extract_token_from_address, submit_pin_by_token)
 from cqc_lem.utilities.geocoding import geocode_city, GeocodeError
-from cqc_lem.utilities.linkedin.token_refresh import (
-    get_token_expiry, is_token_expired, is_token_expiring_soon, attempt_token_refresh,
-)
+from cqc_lem.utilities.linkedin.token_refresh import resolve_token_status
 from cqc_lem.utilities.env_constants import LI_CLIENT_ID, LI_CLIENT_SECRET, LI_REDIRECT_URL, LI_STATE_SALT, ADMIN_SECRET, API_ACCESS_TOKENS, \
     DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_VIDEO_RATIO
 import requests
@@ -2057,37 +2055,9 @@ def get_user_token_status(session_token: str) -> ResponseModel:
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
 
-    token_info = get_user_token_info(user_id)
-    if not token_info or not token_info.get('access_token'):
-        return ResponseModel(status_code=200, detail={
-            "token_expiry_date": None,
-            "is_expiring_soon": True,
-            "is_expired": True,
-            "refresh_attempted": False,
-            "refresh_succeeded": False,
-        })
-
-    expiring_soon = is_token_expiring_soon(token_info)
-    expired = is_token_expired(token_info)
-    refresh_attempted = False
-    refresh_succeeded = False
-
-    if expiring_soon and token_info.get('refresh_token'):
-        refresh_attempted = True
-        refresh_succeeded, _ = attempt_token_refresh(user_id)
-        if refresh_succeeded:
-            token_info = get_user_token_info(user_id)
-            expiring_soon = is_token_expiring_soon(token_info)
-            expired = is_token_expired(token_info)
-
-    expiry = get_token_expiry(token_info)
-    return ResponseModel(status_code=200, detail={
-        "token_expiry_date": expiry.isoformat() if expiry else None,
-        "is_expiring_soon": expiring_soon,
-        "is_expired": expired,
-        "refresh_attempted": refresh_attempted,
-        "refresh_succeeded": refresh_succeeded,
-    })
+    # One decision core shared with the daily renewal beat (issue #600), so the countdown the SPA
+    # renders and the one that triggers the reconnect email can never disagree.
+    return ResponseModel(status_code=200, detail=resolve_token_status(user_id))
 
 
 @app.get("/auth/linkedin/", response_model=None, include_in_schema=False)

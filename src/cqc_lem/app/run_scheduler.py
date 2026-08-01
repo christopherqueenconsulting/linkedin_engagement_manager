@@ -1412,6 +1412,45 @@ def auto_notify_missing_linkedin_session():
 
 
 @shared_task.task
+def auto_refresh_linkedin_tokens():
+    """Daily: renew every connected user's LinkedIn authorization BEFORE it lapses, and email the
+    ones we cannot renew for them (issue #600).
+
+    LinkedIn fixes the access token at 60 days and gives no way to ask for a longer one, so a
+    rolling refresh is the only thing that makes the connection outlive it. Until now the ONLY
+    thing that ever refreshed a token was the SPA hitting /user/token_status — a user who didn't
+    open the app simply lapsed, and the in-app warning they eventually saw had no email behind it.
+    The email is throttled per-user inside notify_linkedin_token_expiring, so this runs daily
+    without spamming."""
+    from cqc_lem.utilities.db import get_linkedin_token_user_ids
+    from cqc_lem.utilities.linkedin.token_refresh import resolve_token_status
+    from cqc_lem.utilities.notifications import notify_linkedin_token_expiring
+
+    user_ids = get_linkedin_token_user_ids()
+    refreshed = 0
+    notified = 0
+    for user_id in user_ids:
+        try:
+            status = resolve_token_status(user_id, auto_refresh=True)
+            if status["refresh_succeeded"]:
+                refreshed += 1
+                continue
+            # Still short after the attempt (or never refreshable at all) — only a human reconnect
+            # fixes it from here, so say so out of band rather than only in the SPA.
+            if status["is_expired"] or status["is_expiring_soon"]:
+                if notify_linkedin_token_expiring(user_id, status["days_remaining"],
+                                                  status["token_expiry_date"]):
+                    notified += 1
+        except Exception as e:
+            log_warning("Failed to renew LinkedIn token", exc=e, user_id=user_id,
+                        task_name="auto_refresh_linkedin_tokens")
+    log_info(f"LinkedIn tokens: refreshed {refreshed}, emailed {notified} of {len(user_ids)} "
+             f"connected user(s)", task_name="auto_refresh_linkedin_tokens")
+    return (f"Refreshed {refreshed} and emailed {notified} of {len(user_ids)} "
+            f"connected user(s)")
+
+
+@shared_task.task
 def auto_onboarding_nudges():
     """Daily: advance every not-yet-activated user's checklist (persisting steps + emitting the
     activation funnel to PostHog) and email the ONE next-best nudge to those who stalled (issue
