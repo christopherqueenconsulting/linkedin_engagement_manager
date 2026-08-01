@@ -99,8 +99,11 @@ class TestUnhandledExceptionCapture:
 
     def test_healthy_request_is_not_captured(self, client):
         with patch("cqc_lem.api.main.capture_exception") as mock_capture:
-            client.get("/health")
+            response = client.get("/health")
 
+        # Assert the body, not just a 200: the catch-all also answers 200, so "no capture" on a
+        # shadowed /health would be the same vacuous pass the probes above were fixed out of.
+        assert response.json() == {"status": "healthy"}
         mock_capture.assert_not_called()
 
 
