@@ -1203,8 +1203,15 @@ _FEED_RECENT_OPTION_LOCATORS = [
 def _is_home_feed(driver) -> bool:
     """True only on linkedin.com/feed itself. Group feeds and a roster author's recent-activity page
     reuse the same commenting engine but never had a home-feed sort control, so a miss there is an
-    expected no-op — warning on it would file a defect for working behaviour."""
-    path = str(driver.current_url or "").split("?")[0].split("#")[0].lower()
+    expected no-op — warning on it would file a defect for working behaviour.
+
+    An unreadable URL counts as NOT the home feed (issue #872): a dead session cannot say which
+    surface it was on, and escalating on a guess costs a triage for working behaviour. A false
+    silence loses one signal; a false defect costs a person."""
+    try:
+        path = str(driver.current_url or "").split("?")[0].split("#")[0].lower()
+    except Exception:
+        return False
     return path.rstrip("/").endswith("/feed")
 
 

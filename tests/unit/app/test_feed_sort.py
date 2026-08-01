@@ -37,39 +37,50 @@ class TestSwitchFeedToRecent:
 
     def test_missing_sort_control_is_not_a_warning_on_a_group_feed(self):
         """Group feeds never render the 'Sort by' control (issue #872) — a WARNING there repeats
-        every group run and escalates into a filed defect for working behaviour. The miss is also
-        not worth retrying out at 15s a try on a surface that never has the control."""
-        from cqc_lem.app.run_automation import _switch_feed_to_recent
+        every group run and escalates into a filed defect for working behaviour.
+
+        #817 keeps that guarantee by a stronger mechanism than #872's `warn_on_miss=False`: the
+        surface is rejected BEFORE the lookup, so there is no miss to warn about, and none of the
+        wall clock a lookup costs on a surface that never had the control."""
+        from cqc_lem.app.run_automation import FEED_SORT_NOT_APPLICABLE, _switch_feed_to_recent
         driver = MagicMock()
         driver.current_url = "https://www.linkedin.com/groups/12345/"
         with patch(f"{_MOD}.find_first", return_value=None) as find_first:
-            _switch_feed_to_recent(driver, MagicMock())
-        assert find_first.call_args.kwargs["warn_on_miss"] is False
-        assert find_first.call_args.kwargs["max_try"] == 1
+            state = _switch_feed_to_recent(driver, MagicMock())
+        assert state == FEED_SORT_NOT_APPLICABLE
+        find_first.assert_not_called()
 
     def test_missing_sort_control_still_warns_on_the_home_feed(self):
         """The home feed DOES render the control — silencing the miss there would hide the selector
-        rot that leaves the recency-dominant engine reading a 'Top' feed."""
-        from cqc_lem.app.run_automation import _switch_feed_to_recent
+        rot that leaves the recency-dominant engine reading a 'Top' feed. `find_first` warns on a
+        miss by default, so the home feed is the one surface where the lookup actually runs."""
+        from cqc_lem.app.run_automation import FEED_SORT_MISSING, _switch_feed_to_recent
         driver = MagicMock()
         driver.current_url = "https://www.linkedin.com/feed/"
         with patch(f"{_MOD}.find_first", return_value=None) as find_first:
-            _switch_feed_to_recent(driver, MagicMock())
-        assert find_first.call_args.kwargs["warn_on_miss"] is True
-        assert find_first.call_args.kwargs["max_try"] > 1
+            state = _switch_feed_to_recent(driver, MagicMock())
+        assert state == FEED_SORT_MISSING
+        find_first.assert_called_once()
+        # Not silenced: the default is warn_on_miss=True and #817 must not opt out of it.
+        assert find_first.call_args.kwargs.get("warn_on_miss", True) is True
 
     def test_unreadable_url_does_not_warn(self):
-        """A dead session can't say which surface it was on — never escalate on a guess."""
-        from cqc_lem.app.run_automation import _switch_feed_to_recent
+        """A dead session can't say which surface it was on — never escalate on a guess (#872).
+        The URL read must not raise out of `_is_home_feed` either, or the outer handler logs
+        `Feed recent-sort failed` at WARNING and files the defect by the other door."""
+        from cqc_lem.app.run_automation import FEED_SORT_NOT_APPLICABLE, _switch_feed_to_recent
 
         class _DeadSession:
             @property
             def current_url(self):
                 raise RuntimeError("invalid session id")
 
-        with patch(f"{_MOD}.find_first", return_value=None) as find_first:
-            _switch_feed_to_recent(_DeadSession(), MagicMock())
-        assert find_first.call_args.kwargs["warn_on_miss"] is False
+        with patch(f"{_MOD}.find_first", return_value=None) as find_first, \
+             patch(f"{_MOD}.log_warning") as log_warning:
+            state = _switch_feed_to_recent(_DeadSession(), MagicMock())
+        assert state == FEED_SORT_NOT_APPLICABLE
+        find_first.assert_not_called()
+        log_warning.assert_not_called()
 
     def test_skips_when_already_sorted_by_recent(self):
         from cqc_lem.app.run_automation import FEED_SORT_RECENT, _switch_feed_to_recent
