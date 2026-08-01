@@ -59,7 +59,8 @@ from cqc_lem.utilities.db import (
     get_newsletter_settings, update_newsletter_settings,
     get_pending_newsletter_editions,
     get_latest_edition_scheduled_for, update_newsletter_edition, get_newsletter_edition,
-    get_user_groups, set_groups_enabled, get_post_engagement_rows, get_post_performance_rows,
+    get_user_groups, set_groups_enabled, get_next_group_for_post,
+    get_post_engagement_rows, get_post_performance_rows,
     get_content_mix_counts, get_comment_outcomes,
     get_follower_stats, get_daily_action_counts,
     get_lead_magnet_settings, update_lead_magnet_settings,
@@ -2876,7 +2877,8 @@ def delete_catchup_touch_endpoint(request: CatchupTouchDeleteRequest) -> Respons
 
 class GroupTogglesRequest(BaseModel):
     session_token: str
-    groups: dict = {}  # {group_id: enabled}
+    # {group_id: enabled} or {group_id: {"enabled": bool, "post_enabled": bool}} (issue #769)
+    groups: dict = {}
 
 
 @router.get("/user/groups")
@@ -2884,7 +2886,14 @@ def get_user_groups_endpoint(session_token: str) -> ResponseModel:
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
-    return ResponseModel(status_code=200, detail=get_user_groups(user_id))
+    groups = get_user_groups(user_id)
+    # Which group the next weekly group post lands in — marked on the row rather than returned
+    # beside the list, so an older SPA bundle still reads `detail` as a plain array (issue #743).
+    nxt = get_next_group_for_post(user_id)
+    next_gid = nxt.get("group_id") if nxt else None
+    for g in groups:
+        g["is_next_post"] = g.get("group_id") == next_gid
+    return ResponseModel(status_code=200, detail=groups)
 
 
 @router.put("/user/groups")
@@ -4915,6 +4924,50 @@ def admin_feedback_review(
         "action": "approved",
         "filing_result": result,
     })
+
+
+class YouTubeTokenRequest(BaseModel):
+    refresh_token: str
+
+
+@router.get("/admin/youtube-status", responses={
+    200: {"description": "YouTube publishing status"},
+    401: {"description": "Invalid or expired session"},
+    403: {"description": "Admin access required"},
+})
+def admin_youtube_status(session_token: str, live: bool = False) -> ResponseModel:
+    """'YouTube publishing: connected / needs re-auth (reason)' for the settings surface (#742).
+
+    Reads the last recorded weekly probe by default so opening Settings never spends a round trip on
+    Google; `live=true` re-probes on demand. State only — the refresh token itself is never returned.
+    """
+    _require_user_admin(session_token)
+    from cqc_lem.utilities.marketing.youtube_auth import status_report
+    return ResponseModel(status_code=200, detail=status_report(live=live))
+
+
+@router.post("/admin/youtube-token", responses={
+    200: {"description": "Refresh token stored"},
+    403: {"description": "Forbidden"},
+    422: {"description": "Empty refresh token"},
+})
+def admin_set_youtube_token(request: YouTubeTokenRequest,
+                            x_admin_secret: Optional[str] = Header(default=None)) -> ResponseModel:
+    """Install a re-minted YouTube refresh token WITHOUT a deploy (issue #742): it lands in
+    `app_credentials` and takes precedence over `YOUTUBE_REFRESH_TOKEN` in `.env`. Admin-secret
+    gated rather than session gated — this request body carries a live credential. The stored token
+    is probed immediately, so the response says whether the new value actually works."""
+    _require_admin(x_admin_secret)
+    from cqc_lem.utilities.marketing.youtube_auth import probe, store_refresh_token
+    token = (request.refresh_token or "").strip()
+    if not token:
+        raise HTTPException(status_code=422, detail="refresh_token is required")
+    if not store_refresh_token(token, note="installed via /admin/youtube-token"):
+        raise HTTPException(status_code=500, detail="Could not store the refresh token")
+    state = probe()
+    log_info("YouTube refresh token installed via admin endpoint", task_name="admin_youtube_token")
+    return ResponseModel(status_code=200, detail={"stored": True, "status": state.get("status"),
+                                                  "reason": state.get("reason")})
 
 
 @router.get("/carousel-templates", responses={200: {"description": "Available carousel templates"}})

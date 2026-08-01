@@ -14,6 +14,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Optional
 
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
+from cqc_lem.utilities.observability import llm_step
 from cqc_lem.utilities.marketing.attribution import (MEDIUM_SOCIAL, PLACEMENT_FIRST_COMMENT,
                                                      PLACEMENT_POST_BODY, SOURCE_LINKEDIN,
                                                      campaign_for_post, mark_placement,
@@ -1257,6 +1258,7 @@ _HUMANIZE_TYPE_NOTE = {
 }
 
 
+@llm_step("humanize")
 def humanize_text(content: Optional[str], content_type: str = "post",
                   profile_synthesis: Optional[str] = None,
                   prefs: Optional[dict] = None, max_chars: Optional[int] = None) -> Optional[str]:
@@ -1435,6 +1437,7 @@ def humanize_title(title: Optional[str], content_type: str = "newsletter",
     return rewritten
 
 
+@llm_step("authenticity")
 def score_authenticity(content: str, profile=None, profile_synthesis: Optional[str] = None,
                        prefs: dict = None) -> dict:
     """LLM-judge the authenticity / generic-AI risk of a finished post draft.

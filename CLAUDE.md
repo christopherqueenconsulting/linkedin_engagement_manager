@@ -138,6 +138,7 @@ the on-time/resource curve that sizes it. See `docs/SELENIUM_GRID.md` and `docs/
 - One declarative `TutorialFlow` per feature (routes + the CSS anchors that prove the screen rendered) → headless SPA capture via `get_docker_driver()` → grounded script (`lem-medium`) → TTS (OpenAI `lem-tts` default, ElevenLabs behind `TUTORIAL_TTS_PROVIDER`) → ffmpeg MP4 with branded intro/outro + `.srt` → 9:16 clip → YouTube Data API v3 upload.
 - **Fail-closed**: a missing UI anchor, an unparseable script, profanity, an over-cap narration or a fabricated number aborts BEFORE any TTS/publish spend. Cost is attributed per part (script tokens, TTS characters, render minutes) and totalled on the manifest record.
 - State lives in `assets/videos/tutorials/manifest.json` (no schema change); the SPA embeds it via `TutorialVideos.tsx`. Weekly cadence, and a flow is re-filmed only when its captured UI fingerprint changes. OFF unless `TUTORIAL_VIDEOS_ENABLED`.
+- **YouTube OAuth token** (`youtube_auth.py`, #742): the ONE place its state is decided. Read DB-first (`app_credentials`, installed via `POST /admin/youtube-token` — no deploy), `YOUTUBE_REFRESH_TOKEN` seeds it. `unknown` (Google unreachable) is NOT `needs_reauth` (4xx / lost `youtube.upload` — the only state that alerts). Weekly beat `youtube-token-check` IS the keep-alive vs the 6-month-disuse expiry — never drop it while the feature is off; `produce_tutorial` preflights before spend. Full posture: `docs/youtube-publishing.md`.
 
 ### Anti-bot / session infra
 - Per-user static residential proxy (`utilities/proxy.py`) + an in-memory **MV3 proxy-auth extension** (`_build_proxy_auth_extension_b64` in `selenium_util.py`) — never URL-embedded credentials, since MV2 background pages are disabled in Chrome 149+.
@@ -163,11 +164,18 @@ Track events via `utilities/observability.py` (`track_llm_call` / `track_task` /
 Each subsection below is a one-paragraph invariant; rationale, contracts, sample code, and edge
 cases live in the pointed-to doc. Plan with this section, drill in with the doc.
 
-### LLM analytics (issue #647)
+### LLM analytics (issue #647, traces #746)
 Two streams, never summed: `llm_call` (app, cost ESTIMATE — every money question reads this) vs
 `$ai_generation`/`$ai_embedding` (proxy-native, post-fallback, provider-priced — latency/error/
 volume). Attribution lives in `utilities/ai/client.py` (the ONE client); `_attach_routing_metadata`
-must stay. Full posture: `docs/llm-analytics.md`.
+must stay. **Pipeline traces** group a post/edition/comment's 5–6 calls into ONE `$ai_trace` with
+per-step `$ai_span`s: `@llm_pipeline` on the three roots (`create_text_post`,
+`generate_newsletter_edition`, `generate_ai_response` — it SUPERSEDES `attribute_llm_cost`),
+`@llm_step` on the SHARED-core step functions (never at a call site, so newsletters/comments inherit
+it). The client sends the ids two ways because LiteLLM reads them from two places — trace id in the
+`x-litellm-trace-id` HEADER (metadata would be overwritten), parent span in `metadata.parent_run_id`.
+Nested trace = span; span with no trace = no-op; `LLM_TRACING_ENABLED=false` mints nothing.
+Full posture: `docs/llm-analytics.md`.
 
 ### Error tracking (issue #648)
 Logs (`logger.py` → PostHog Logs) carry message+context; `$exception` is the grouped/fingerprinted

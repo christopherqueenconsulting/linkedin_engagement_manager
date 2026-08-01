@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from cqc_lem.utilities.marketing import video_tutorials as vt
+from cqc_lem.utilities.marketing import youtube_auth as ya
 
 pytestmark = pytest.mark.unit
 
@@ -30,9 +31,14 @@ def _isolated_assets(tmp_path, monkeypatch):
     # unit lane pinned to env-only flags, setting the env var IS setting the flag.
     monkeypatch.setenv("TUTORIAL_VIDEOS_ENABLED", "true")
     monkeypatch.setattr(vt, "TUTORIAL_THUMBNAIL_ENABLED", False)
-    monkeypatch.setattr(vt, "YOUTUBE_CLIENT_ID", "")
-    monkeypatch.setattr(vt, "YOUTUBE_CLIENT_SECRET", "")
-    monkeypatch.setattr(vt, "YOUTUBE_REFRESH_TOKEN", "")
+    # YouTube credentials live in youtube_auth now (issue #742) — publishing is unconfigured here
+    # unless a test says otherwise, and neither the DB credential store nor Redis is touched.
+    monkeypatch.setattr(ya, "YOUTUBE_CLIENT_ID", "")
+    monkeypatch.setattr(ya, "YOUTUBE_CLIENT_SECRET", "")
+    monkeypatch.setattr(ya, "YOUTUBE_REFRESH_TOKEN", "")
+    monkeypatch.setattr(ya, "get_app_credential", lambda name: None)
+    monkeypatch.setattr(ya, "set_app_credential", lambda *a, **kw: True)
+    monkeypatch.setattr(ya, "_redis", lambda: None)
     yield
 
 
@@ -46,6 +52,19 @@ def _flow(steps=2, requires_auth=False, key="sample"):
                     for i in range(steps)),
         requires_auth=requires_auth,
     )
+
+
+def _configure_youtube(monkeypatch):
+    monkeypatch.setattr(ya, "YOUTUBE_CLIENT_ID", "cid")
+    monkeypatch.setattr(ya, "YOUTUBE_CLIENT_SECRET", "secret")
+    monkeypatch.setattr(ya, "YOUTUBE_REFRESH_TOKEN", "refresh")
+
+
+def _token_response(status_code=200, payload=None):
+    response = MagicMock(headers={})
+    response.status_code = status_code
+    response.json.return_value = payload if payload is not None else {"access_token": "at"}
+    return response
 
 
 def _driver(screenshot=True):
@@ -448,9 +467,7 @@ class TestYouTubePublish:
         post.assert_not_called()
 
     def _configure(self, monkeypatch):
-        monkeypatch.setattr(vt, "YOUTUBE_CLIENT_ID", "cid")
-        monkeypatch.setattr(vt, "YOUTUBE_CLIENT_SECRET", "secret")
-        monkeypatch.setattr(vt, "YOUTUBE_REFRESH_TOKEN", "refresh")
+        _configure_youtube(monkeypatch)
 
     def test_resumable_upload_returns_the_watch_url(self, tmp_path, monkeypatch):
         self._configure(monkeypatch)
@@ -507,11 +524,12 @@ class TestProduceTutorial:
 
     def test_end_to_end_produces_publishes_and_prices_one_tutorial(self, monkeypatch):
         element = self._patched(monkeypatch)
-        monkeypatch.setattr(vt, "YOUTUBE_CLIENT_ID", "cid")
-        monkeypatch.setattr(vt, "YOUTUBE_CLIENT_SECRET", "secret")
-        monkeypatch.setattr(vt, "YOUTUBE_REFRESH_TOKEN", "refresh")
+        _configure_youtube(monkeypatch)
         flow = vt.next_flow({"videos": {}})
         segments = len(flow.steps)
+        # Three token-endpoint POSTs now: the #742 publish preflight, then the upload's own token
+        # exchange, then the resumable-session start.
+        preflight = _token_response(payload={"access_token": "at", "scope": ya.UPLOAD_SCOPE})
         token = MagicMock(headers={}, **{"json.return_value": {"access_token": "at"}})
         session = MagicMock(headers={"Location": "https://upload.test/x"})
         done = MagicMock()
@@ -525,7 +543,7 @@ class TestProduceTutorial:
              patch("cqc_lem.utilities.ai.client.client.audio.speech.create",
                    return_value=SimpleNamespace(content=b"mp3")), \
              patch("subprocess.run", side_effect=_fake_ffmpeg("4.0")), \
-             patch("requests.post", side_effect=[token, session]), \
+             patch("requests.post", side_effect=[preflight, token, session]), \
              patch("requests.put", return_value=done), \
              patch(f"{_MOD}.track_media_cost") as track:
             record = vt.produce_tutorial()
@@ -585,3 +603,50 @@ class TestProduceTutorial:
             with pytest.raises(vt.TutorialGuardrailError):
                 vt.produce_tutorial()
         tts.assert_not_called()
+
+    def test_a_dead_publishing_token_aborts_before_any_capture_or_tts_spend(self, monkeypatch):
+        """Issue #742: a render that can't be published is wasted money, so the token is verified
+        before the browser opens — not discovered at the upload step after the spend."""
+        self._patched(monkeypatch)
+        _configure_youtube(monkeypatch)
+        with patch("requests.post",
+                   return_value=_token_response(400, {"error": "invalid_grant"})), \
+             patch("cqc_lem.utilities.selenium_util.get_docker_driver") as get_driver, \
+             patch("cqc_lem.utilities.ai.ai_helper._call_llm") as call, \
+             patch("cqc_lem.utilities.ai.client.client.audio.speech.create") as tts:
+            assert vt.produce_tutorial() is None
+        get_driver.assert_not_called()
+        call.assert_not_called()
+        tts.assert_not_called()
+
+    def test_an_unconfigured_install_still_renders_an_unpublished_tutorial(self, monkeypatch):
+        """No OAuth credentials is the expected pre-1.0 state — the MP4 is still a usable asset, so
+        the preflight must not turn "publishing is off" into "produce nothing"."""
+        element = self._patched(monkeypatch)
+        with patch("cqc_lem.utilities.selenium_util.get_docker_driver", return_value=_driver()), \
+             patch("cqc_lem.utilities.selenium_util.find_first", return_value=element), \
+             patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   return_value=_llm_response(_script_json(3))), \
+             patch("cqc_lem.utilities.ai.client.client.audio.speech.create",
+                   return_value=SimpleNamespace(content=b"mp3")), \
+             patch("subprocess.run", side_effect=_fake_ffmpeg("4.0")), \
+             patch("requests.post") as post:
+            record = vt.produce_tutorial()
+        assert record is not None and record["youtube_url"] is None
+        post.assert_not_called()
+
+    def test_an_undecidable_probe_never_blocks_a_run(self, monkeypatch):
+        """Google being unreachable is not evidence the grant is dead — the run proceeds and the
+        upload takes its own chances (an upload failure never loses the render)."""
+        element = self._patched(monkeypatch)
+        _configure_youtube(monkeypatch)
+        with patch("cqc_lem.utilities.selenium_util.get_docker_driver", return_value=_driver()), \
+             patch("cqc_lem.utilities.selenium_util.find_first", return_value=element), \
+             patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   return_value=_llm_response(_script_json(3))), \
+             patch("cqc_lem.utilities.ai.client.client.audio.speech.create",
+                   return_value=SimpleNamespace(content=b"mp3")), \
+             patch("subprocess.run", side_effect=_fake_ffmpeg("4.0")), \
+             patch("requests.post", side_effect=OSError("network down")):
+            record = vt.produce_tutorial()
+        assert record is not None and record["youtube_url"] is None

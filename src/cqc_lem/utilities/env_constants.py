@@ -417,6 +417,9 @@ YOUTUBE_CLIENT_ID = get_constant_from_env('YOUTUBE_CLIENT_ID', default_value='')
 YOUTUBE_CLIENT_SECRET = get_constant_from_env('YOUTUBE_CLIENT_SECRET')
 YOUTUBE_REFRESH_TOKEN = get_constant_from_env('YOUTUBE_REFRESH_TOKEN')
 YOUTUBE_PRIVACY_STATUS = get_constant_from_env('YOUTUBE_PRIVACY_STATUS', default_value='unlisted')
+# Where the weekly refresh-token health probe (issue #742) alerts when the grant is provably gone.
+# Empty falls back to MARGIN_REPORT_EMAIL.
+YOUTUBE_ALERT_EMAIL = get_constant_from_env('YOUTUBE_ALERT_EMAIL', default_value='')
 
 # Set other constants here
 USE_DOCKER_BROWSER = isTrue(get_constant_from_env('USE_DOCKER_BROWSER', default_value='True'))

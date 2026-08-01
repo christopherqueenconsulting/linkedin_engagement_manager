@@ -806,3 +806,27 @@ class TestHumanPause:
             h._human_pause(1.0, 2.0)
         uni.assert_called_once_with(1.0, 2.0)
         slept.assert_called_once_with(1.5)
+
+
+class TestPersistSessionCookies:
+    """store_cookies' bool is load-bearing (issue #745) — the login path must not claim a
+    session was saved when the write was refused or swallowed a driver error. A lost write is
+    invisible until the NEXT run falls back to a password login and trips the device challenge."""
+
+    def _run(self, stored):
+        from cqc_lem.utilities.linkedin.helper import _persist_session_cookies
+        driver = MagicMock()
+        driver.get_cookies.return_value = [{"name": "li_at"}]
+        with patch(f"{_MODULE}.store_cookies", return_value=stored), \
+             patch(f"{_MODULE}.log_error") as logged:
+            return _persist_session_cookies(driver, "a@b.com"), logged
+
+    def test_successful_write_is_reported_as_stored(self):
+        ok, logged = self._run(True)
+        assert ok is True
+        logged.assert_not_called()
+
+    def test_failed_write_is_surfaced_not_announced_as_success(self):
+        ok, logged = self._run(False)
+        assert ok is False
+        logged.assert_called_once()

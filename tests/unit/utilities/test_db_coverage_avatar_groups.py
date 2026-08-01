@@ -133,14 +133,21 @@ class TestAvatarTrainings:
 
 
 class TestUserGroups:
-    def test_get_user_groups_coerces_enabled_to_bool(self):
-        rows = [{"group_id": "g1", "group_name": "AI Leaders", "enabled": 1},
-                {"group_id": "g2", "group_name": "Sales", "enabled": 0}]
+    def test_get_user_groups_coerces_flags_to_bool_and_date_to_iso(self):
+        rows = [{"group_id": "g1", "group_name": "AI Leaders", "enabled": 1, "post_enabled": 0,
+                 "last_posted_at": datetime(2026, 7, 28, 15, 0)},
+                {"group_id": "g2", "group_name": "Sales", "enabled": 0, "post_enabled": 1,
+                 "last_posted_at": None}]
         conn, _ = _conn(fetch_all=rows)
         with patch(f"{_DB}.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_user_groups
             result = get_user_groups(1)
-        assert result[0]["enabled"] is True and result[1]["enabled"] is False
+        # Commenting and posting are independent flags (issue #769) — neither implies the other.
+        assert result[0]["enabled"] is True and result[0]["post_enabled"] is False
+        assert result[1]["enabled"] is False and result[1]["post_enabled"] is True
+        # JSON-serializable for the SPA payload.
+        assert result[0]["last_posted_at"] == "2026-07-28T15:00:00"
+        assert result[1]["last_posted_at"] is None
 
     def test_get_user_groups_error_returns_empty(self):
         conn, cur = _conn()

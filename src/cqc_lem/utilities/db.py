@@ -5906,11 +5906,15 @@ def get_user_groups(user_id: int) -> list:
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute(
-            "SELECT group_id, group_name, enabled FROM user_groups WHERE user_id=%s ORDER BY group_name",
+            "SELECT group_id, group_name, enabled, post_enabled, last_posted_at "
+            "FROM user_groups WHERE user_id=%s ORDER BY group_name",
             (user_id,))
         rows = cursor.fetchall() or []
         for r in rows:
             r["enabled"] = bool(r.get("enabled"))
+            r["post_enabled"] = bool(r.get("post_enabled"))
+            posted = r.get("last_posted_at")
+            r["last_posted_at"] = posted.isoformat() if hasattr(posted, "isoformat") else posted
         return rows
     except mysql.connector.Error as err:
         myprint(f"Could not list groups for user {user_id} | Error: {err}")
@@ -5933,14 +5937,62 @@ def get_enabled_group_ids(user_id: int) -> list:
         connection.close()
 
 
-def set_groups_enabled(user_id: int, group_states: dict) -> bool:
-    """Bulk-update per-group enabled flags: {group_id: bool}."""
+def get_next_group_for_post(user_id: int) -> Optional[dict]:
+    """The ONE place "which group does the next group post go to" is decided (issue #769): the
+    least-recently-posted group the user has opted into for POSTING. `post_enabled` is independent
+    of `enabled` (which only governs commenting), so a group can take posts without being commented
+    in and vice versa. Never posted there = sorts first. None when no group is opted in."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT group_id, group_name FROM user_groups "
+            "WHERE user_id=%s AND post_enabled=1 "
+            "ORDER BY last_posted_at IS NULL DESC, last_posted_at ASC, group_name ASC LIMIT 1",
+            (user_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    except mysql.connector.Error as err:
+        myprint(f"Could not resolve next post group for user {user_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def record_group_post(user_id: int, group_id: str) -> bool:
+    """Stamp a group as just-posted-in so the rotation moves on to the next one."""
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
-        for gid, enabled in group_states.items():
-            cursor.execute("UPDATE user_groups SET enabled=%s WHERE user_id=%s AND group_id=%s",
-                           (1 if enabled else 0, user_id, str(gid)))
+        cursor.execute("UPDATE user_groups SET last_posted_at=NOW() WHERE user_id=%s AND group_id=%s",
+                       (user_id, str(group_id)))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not record group post for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def set_groups_enabled(user_id: int, group_states: dict) -> bool:
+    """Bulk-update per-group flags. Each value is either a bare bool (engagement only — the shape
+    the pre-#769 SPA bundle still sends) or {"enabled": bool, "post_enabled": bool}; only the keys
+    present are written, so a partial payload never silently resets the other flag."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        for gid, state in group_states.items():
+            flags = state if isinstance(state, dict) else {"enabled": state}
+            updates = [(col, 1 if flags[col] else 0) for col in ("enabled", "post_enabled") if col in flags]
+            if not updates:
+                continue
+            cursor.execute(
+                f"UPDATE user_groups SET {', '.join(f'{c}=%s' for c, _ in updates)} "
+                "WHERE user_id=%s AND group_id=%s",
+                (*(v for _, v in updates), user_id, str(gid)))
         connection.commit()
         return True
     except mysql.connector.Error as err:
@@ -10335,6 +10387,64 @@ def revoke_affiliate_enrollment_bonus(user_id: int) -> dict:
         connection.rollback()
         log_error("Could not revoke affiliate enrollment bonus", exc=err, user_id=user_id)
         return _result(False, "error")
+    finally:
+        cursor.close()
+        connection.close()
+
+
+# --- app-level credentials (issue #742) -------------------------------------------------------
+# Named secrets that belong to the INSTALL, not to a user (the YouTube OAuth refresh token today).
+# Reads fall back to the env seed at the call site, so an empty table behaves exactly like the
+# pre-#742 env-only world; a write here is what lets a re-minted token land without a deploy.
+
+def get_app_credential(name: str) -> Optional[str]:
+    """The stored value for `name`, or None when unset/unreadable. A DB problem returns None so the
+    caller falls back to its env seed rather than losing the credential entirely."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT value FROM app_credentials WHERE name=%s", (name,))
+        row = cursor.fetchone()
+        value = (row or {}).get("value")
+        return str(value) if value else None
+    except mysql.connector.Error as err:
+        log_warning(f"Could not read app credential {name}", exc=err)
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def set_app_credential(name: str, value: Optional[str], note: Optional[str] = None) -> bool:
+    """Upsert a named app credential. Returns True when it was stored."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO app_credentials (name, value, note) VALUES (%s,%s,%s) "
+            "ON DUPLICATE KEY UPDATE value=VALUES(value), note=VALUES(note)",
+            (name, value, note))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        log_error(f"Could not store app credential {name}", exc=err)
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_app_credential_updated_at(name: str) -> Optional[datetime]:
+    """When `name` was last written, or None when it has never been stored here."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT updated_at FROM app_credentials WHERE name=%s", (name,))
+        row = cursor.fetchone()
+        return (row or {}).get("updated_at")
+    except mysql.connector.Error as err:
+        log_warning(f"Could not read app credential timestamp for {name}", exc=err)
+        return None
     finally:
         cursor.close()
         connection.close()

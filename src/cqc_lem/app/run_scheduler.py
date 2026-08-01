@@ -1091,17 +1091,20 @@ def auto_group_engagement():
 
 @shared_task.task
 def auto_group_posts():
-    """Weekly: publish one value-add post into an enabled group per active user."""
+    """Weekly: publish ONE original value-add post into ONE of the user's post-enabled groups —
+    never a copy or reshare of a scheduled feed post. Which group is the least-recently-posted one
+    (issue #769), so the weekly slot rotates instead of always landing in the same group."""
     from cqc_lem.app.run_automation import auto_post_to_group
-    from cqc_lem.utilities.db import get_enabled_group_ids
+    from cqc_lem.utilities.db import get_next_group_for_post
     users = get_active_user_ids()
     n = 0
     for uid in users:
         if not has_linkedin_session(uid):
             continue
-        groups = get_enabled_group_ids(uid)
-        if groups:
-            auto_post_to_group.apply_async(kwargs={'user_id': uid, 'group_id': groups[0]})
+        group = get_next_group_for_post(uid)
+        if group:
+            auto_post_to_group.apply_async(kwargs={'user_id': uid, 'group_id': group['group_id'],
+                                                   'group_name': group.get('group_name')})
             n += 1
     return f"Group posts dispatched for {n}/{len(users)} user(s)"
 
@@ -1964,6 +1967,19 @@ def auto_produce_feature_tutorial(self, flow_key: str = None):
         return "No tutorial produced"
     return (f"Produced tutorial '{record['flow']}' ({record['duration_seconds']}s, "
             f"${record['total_usd']}, youtube={'yes' if record.get('youtube_url') else 'no'})")
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_weekly_youtube_token_check(self):
+    """Weekly YouTube OAuth refresh-token health probe (issue #742). One token exchange — no upload,
+    no quota — that both proves the grant is alive and IS the keep-alive against Google's 6-month
+    disuse expiry, which is why it must keep running while the tutorial feature is off. Alerts the
+    owner only when the grant is provably gone; an unreachable token endpoint stays `unknown`."""
+    from cqc_lem.utilities.marketing.youtube_auth import run_health_probe
+
+    state = run_health_probe()
+    return (f"YouTube token {state.get('status')} at {state.get('checked_at')} "
+            f"({state.get('reason')}, emailed={state.get('emailed')})")
 
 
 if __name__ == "__main__":

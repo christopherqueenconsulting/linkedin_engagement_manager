@@ -23,6 +23,7 @@ import os
 
 from cqc_lem.utilities.flags import COMMENT_RESEARCH, flag_enabled
 from cqc_lem.utilities.logger import log_debug, log_warning
+from cqc_lem.utilities.observability import llm_step
 
 _EMPTY: dict = {"findings": "", "sources": []}
 
@@ -119,6 +120,7 @@ def _research_via_litellm(query: str, max_sources: int) -> dict:
     return {"findings": findings, "sources": sources}
 
 
+@llm_step("research")
 def research_topic(subject: str, content_type: str = "newsletter", blueprint: dict = None,
                    context_description: str = None, prefs: dict = None,
                    max_sources: int = 5, user_id: int = None) -> dict:

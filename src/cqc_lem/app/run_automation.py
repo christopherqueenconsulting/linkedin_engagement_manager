@@ -35,7 +35,8 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     get_engagement_preferences, count_comments_today, get_recent_engagers, upsert_engager, \
     get_newsletter_settings, mark_newsletter_published, record_newsletter_subscriber_stat, \
     get_newsletter_edition, mark_edition_published, mark_edition_failed, \
-    upsert_user_group, get_enabled_group_ids, record_post_stats, get_recent_posted_post_ids, \
+    upsert_user_group, get_enabled_group_ids, record_group_post, record_post_stats, \
+    get_recent_posted_post_ids, \
     get_shipped_variant_keys, \
     get_lead_magnet_settings, has_received_lead_magnet, record_lead_magnet_sent, \
     LogResultType, has_user_commented_on_post_url, get_post_url_from_log_for_user, get_post_message_from_log_for_user, \
@@ -2382,9 +2383,10 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id', 'group_id']},
                   queue='se_content')
-def auto_post_to_group(self, user_id: int, group_id: str):
-    """Publish one short, value-add (non-promotional) post into a group via its share box.
-    Best-effort — the group composer selectors are validated in the live pass."""
+def auto_post_to_group(self, user_id: int, group_id: str, group_name: str = None):
+    """Publish one short, value-add (non-promotional) post into a group via its share box. The text
+    is written FRESH for that group — a group post is never a copy or reshare of a scheduled feed
+    post. Best-effort — the group composer selectors are validated in the live pass."""
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Group Post")
     except Exception as e:
@@ -2395,7 +2397,7 @@ def auto_post_to_group(self, user_id: int, group_id: str):
         time.sleep(random.uniform(4, 7))
         with llm_attribution(user_id=user_id, feature=FEATURE_CONTENT):
             text = _strip_non_bmp(generate_group_post(
-                my_profile, prefs=get_engagement_preferences(user_id),
+                my_profile, group_name=group_name, prefs=get_engagement_preferences(user_id),
                 profile_synthesis=get_or_create_profile_synthesis(user_id, my_profile)) or "")
         if not text.strip():
             return "No group post generated"
@@ -2418,6 +2420,9 @@ def auto_post_to_group(self, user_id: int, group_id: str):
                        required=False) is None:
             return "Group Post button not found"
         time.sleep(random.uniform(3, 5))
+        # Only a post that actually shipped advances the rotation — a failed run leaves this group
+        # next in line rather than skipping its turn.
+        record_group_post(user_id, group_id)
         return "Posted to group"
     except Exception as e:
         log_error("Group post error", exc=e, user_id=user_id, task_name="auto_post_to_group")
@@ -6413,19 +6418,22 @@ def update_stale_profile(self, user_id: int):
 
 
 def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
-                        measurement_only: bool = False) -> Tuple[
+                        measurement_only: bool = False, debug: bool = False) -> Tuple[
     WebDriver, WebDriverWait, str, LinkedInProfile]:
     """Update the profile of the user.
 
     `measurement_only` marks a read-only stat-capture session, which keeps running under the
     suppression tripwire's own pause (and only that one) so recovery stays measurable — see
-    rate_limit.is_measurement_paused."""
+    rate_limit.is_measurement_paused.
+
+    `debug` requests the watchable Grid debug node (if free) for live inspection; it falls
+    back to the normal pool when the node is busy or absent."""
 
     myprint("Getting Updated Profile")
 
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
-    driver, wait = get_driver_wait_pair(session_name=session_name, user_id=user_id)
+    driver, wait = get_driver_wait_pair(session_name=session_name, user_id=user_id, debug=debug)
 
     # Login first — a failure here (e.g. HTTP 429 rate-limit, expired cookie) is fatal
     # for this run; abort cleanly so the caller backs off instead of hammering LinkedIn.

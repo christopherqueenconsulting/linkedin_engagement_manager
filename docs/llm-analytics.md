@@ -95,9 +95,73 @@ Caveat worth knowing when the two are compared: a LiteLLM **cache hit** still em
 `$ai_generation`, at `$ai_total_cost_usd` 0 like `llm_call`'s `cached` path, but its
 `$ai_input_tokens` are the served request's, so token volume reads higher than billable tokens.
 
-## Not in scope here
+## Pipeline traces — `$ai_trace` / `$ai_span` (issue #746)
 
-`$ai_trace` / `$ai_span` hierarchies — wrapping a post's full generation chain
-(research → draft → review → humanize) into one readable trace. Every event already carries a
-`$ai_trace_id`, but it is per-call; grouping them is app-side work via the `posthog-python` AI
-helpers. Tracked as the stretch half of #647.
+A post is not one model call. Research → draft → refine → humanize → authenticity → review is six,
+and until they shared a trace the question the analytics exist to answer — *what did THIS post cost,
+end to end?* — had no answer at all: every call was its own isolated `$ai_generation` with its own
+proxy-minted `$ai_trace_id`.
+
+Grouping is **app-side work**, because only the app knows where a pipeline starts. The
+`$ai_generation` stream is untouched: no extra event, no changed property, no LiteLLM config change.
+
+| Piece | Where |
+|---|---|
+| `llm_trace()` / `llm_span()` + the `@llm_pipeline` / `@llm_step` decorator forms | `utilities/observability.py` |
+| Putting the ids on the wire | `utilities/ai/client.py` (`_attach_trace`) |
+| Kill switch | `LLM_TRACING_ENABLED` (default on), read at call time |
+
+### The two wires
+
+LiteLLM's PostHog logger sources the two ids from two different places, so LEM has to send them two
+different ways. Getting this wrong is silent — the events still ship, they just don't nest.
+
+- **`x-litellm-trace-id` header** → becomes the proxy's own `litellm_trace_id`, which it publishes as
+  `$ai_trace_id`. It **cannot** be sent as request metadata: the logger reads `$ai_trace_id` from its
+  own standard logging payload and would overwrite anything we put in metadata.
+- **`metadata.parent_run_id`** → the logger maps it to `$ai_parent_id` and keeps the key out of the
+  copied-through properties, so the generation nests under the span that made it.
+
+Both live in the shared client, for the same reason attribution does: a step that forgot them would
+drop out of its post's trace and nothing would say so. Tracing rides in its own hook rather than
+inside `_attach_attribution`, which bails out whenever the caller supplied its own metadata —
+`_call_llm` always does, so folding them together would have excluded nearly every generation LEM
+makes.
+
+### The shape
+
+`@llm_pipeline` marks a function that IS one pipeline and supersedes `attribute_llm_cost` on it — it
+opens the trace *and* the same `llm_attribution()` scope, reading the user id off the call's own
+`user_id` argument. Three are marked: `create_text_post` (`post_generation`),
+`generate_newsletter_edition` (`newsletter_edition`), `generate_ai_response` (`comment_generation`).
+
+`@llm_step` goes on the STEP FUNCTION, never at a call site. Newsletters and comments draw draft,
+research, humanize and authenticity from the same shared content core as posts, so decorating the
+core is what gives every pipeline a legible trace without touching a single caller. Current spans:
+`research`, `draft`, `refine`, `hook`, `humanize`, `authenticity`, `review`.
+
+Two invariants worth knowing before you add either:
+
+- **A trace opened inside an open trace becomes a span**, not a second trace. `create_text_post`
+  recurses into itself for post-type fallbacks, and two half-traces of one post answer nobody.
+- **A span outside a pipeline is a no-op.** Most calls into the shared core are not part of a
+  pipeline; an orphan span is something PostHog cannot render, and the work must run identically
+  either way. Same posture as the rest of this file: telemetry is never a reason to lose the
+  generation, so a capture failure is swallowed at DEBUG.
+
+### Reading it
+
+`$ai_trace` / `$ai_span` carry `$ai_trace_id`, `$ai_span_id`, `$ai_span_name`, `$ai_latency`
+(**seconds** — `llm_call.latency_ms` is the other convention and the two must not share a chart),
+plus LEM's `feature` / `user_id` and `$ai_is_error` / `$ai_error` when the step raised. distinct_id
+follows the same rule as every other event here: the user id, or the `"system"` sentinel.
+
+**The root span IS the trace.** `llm_trace()` uses the trace id as its own span id, so a top-level
+step's `$ai_parent_id` — and the `parent_run_id` of a call made directly under the root — is the
+trace id itself. That is not cosmetic: PostHog assembles a trace's children with
+`toString($ai_parent_id) = toString($ai_trace_id)` (`traces_query_runner.py`), and totals its latency
+over the same set. Mint a separate root-span uuid and every event still carries the right
+`$ai_trace_id` while the trace opens **empty, at zero latency**.
+
+The de-dupe rule above still holds inside a trace — the money number is `llm_call`, and summing the
+generations under one trace gives you the provider's charge, not LEM's ledger.
