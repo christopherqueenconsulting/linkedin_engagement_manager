@@ -148,3 +148,31 @@ class TestClickFirst:
             su.click_first(driver, wait, [("css", "btn")], "Open reactions menu",
                            required=False, max_try=1)
         warn.assert_called_once()
+
+    def test_click_miss_also_honours_warn_on_miss(self):
+        """A hover-revealed control found-then-un-clickable returns None just like a selector miss,
+        so the caller takes the same fallback. Warning here anyway would keep escalating the very
+        recurrence warn_on_miss was added to close (issue #873)."""
+        from cqc_lem.utilities import selenium_util as su
+        el = MagicMock(); el.is_displayed.return_value = True
+        driver = _driver_with({"btn": [el]})
+        wait = _FakeWait(driver)
+        with patch.object(su.EC, "element_to_be_clickable", return_value=lambda d: False), \
+             patch(f"{_MOD}.log_warning") as warn, patch(f"{_MOD}.log_debug") as debug:
+            out = su.click_first(driver, wait, [("css", "btn")], "Open reactions menu",
+                                 required=False, warn_on_miss=False, max_try=1, user_id=4)
+        assert out is None
+        warn.assert_not_called()
+        assert debug.call_args.args[0] == "Click miss: Open reactions menu"
+
+    def test_click_miss_warns_by_default(self):
+        from cqc_lem.utilities import selenium_util as su
+        el = MagicMock(); el.is_displayed.return_value = True
+        driver = _driver_with({"btn": [el]})
+        wait = _FakeWait(driver)
+        with patch.object(su.EC, "element_to_be_clickable", return_value=lambda d: False), \
+             patch(f"{_MOD}.log_warning") as warn:
+            out = su.click_first(driver, wait, [("css", "btn")], "Open reactions menu",
+                                 required=False, max_try=1)
+        assert out is None
+        assert warn.call_args.args[0] == "Click miss: Open reactions menu"

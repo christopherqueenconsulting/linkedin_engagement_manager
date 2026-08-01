@@ -51,7 +51,9 @@ Two things follow for anyone writing a call site here:
    non-empty, DEBUG otherwise. For Selenium, `find_first(..., required=False, warn_on_miss=False)`
    logs the miss at DEBUG — use it when the element is legitimately absent on some surfaces
    (`_switch_feed_to_recent`'s 'Sort by' control does not exist on a group feed). `click_first`
-   carries the same flag. Decide it PER SURFACE, not once for the call site: the same lookup on the
+   carries the same flag across BOTH of its miss paths — `Selector miss:` (never found) and
+   `Click miss:` (found, then un-clickable), which return None identically. Decide it PER SURFACE,
+   not once for the call site: the same lookup on the
    home feed, where the control does exist, is selector rot and must still warn. The other half of
    the test is whether a FALLBACK is in hand — `react_to_post_inline` warns on a missing
    'Open reactions menu' only when it found no React toggle to default-Like instead (issue #873).
