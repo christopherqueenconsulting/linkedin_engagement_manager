@@ -45,6 +45,9 @@ Options:
   --out-dir DIR            Report + leaderboard directory (default docs/model-benchmarks).
   --results-out PATH       Where --run/--dry-run writes the machine-readable results.
   --recommendations-out P  Write ONLY the swap recommendations (for the cron) to this path.
+  --usage-levels m=lvl,…   Ollama Cloud usage level for models whose page publishes none
+                           (low|medium|high|"extra high"). Overrides the fetched value.
+  --no-usage-levels        Skip the per-model usage-level fetch (one page request per model).
   --no-judge               Deterministic checks only.
   --max-judge-calls N      Hard cap on judge calls for the whole run (default BENCHMARK_MAX_JUDGE_CALLS).
   --run-id ID              Fix the run id (tests / reproducible dry runs).
@@ -532,6 +535,123 @@ def merge_scorecard(tier: str, model: str, role: str, case_results: list,
     }
 
 
+# ─────────────────────── usage level / quota delta (pure) ────────────────────────
+#
+# A benchmark win says a model is BETTER. It does not say what it costs. Ollama Cloud meters by the
+# model's usage level, so promoting a HIGH model over a MEDIUM one raises quota burn on every call
+# of that tier — issue #842's minimax-m3 / glm-5.2 question exactly. The harness therefore carries
+# the level beside the scores and renders the delta in the report; it deliberately does NOT gate on
+# it, because "is the extra quota worth it" is a human call, not a threshold.
+
+USAGE_LEVEL_NAMES = {1: "Low", 2: "Medium", 3: "High", 4: "Extra high"}
+# Same scale `model_health_check.parse_usage_level` reads off the model page — a test asserts the
+# two agree, so an override and a scrape can never mean different things by "medium".
+USAGE_LEVELS_BY_LABEL = {name.lower(): level for level, name in USAGE_LEVEL_NAMES.items()}
+
+USAGE_UP = "up"
+USAGE_DOWN = "down"
+USAGE_FLAT = "flat"
+USAGE_UNKNOWN = "unknown"
+
+
+def usage_name(entry: Optional[dict]) -> str:
+    """`{level, label}` → "High (3)". An unreadable level is `unknown`, never a guessed middle."""
+    entry = entry or {}
+    level = entry.get("level")
+    level = int(level) if isinstance(level, (int, float)) and 1 <= int(level) <= 4 else None
+    label = " ".join(str(entry.get("label") or "").split()).title() or USAGE_LEVEL_NAMES.get(level)
+    if label and level:
+        return f"{label} ({level})"
+    return label or "unknown"
+
+
+def parse_usage_overrides(raw: Optional[str]) -> dict:
+    """`model=low|medium|high|extra high` pairs.
+
+    Needed because ollama.com publishes the Usage stat only on CLOUD-ONLY model pages: the tiers'
+    incumbents (`gpt-oss:120b`, `qwen3.5:397b`, `gemma4:31b`) are also pullable locally, so their
+    pages carry no level and the scrape honestly returns unknown. The level is then a human input
+    from the model's cloud listing — stated on the run, never invented by the harness."""
+    out: dict = {}
+    for chunk in str(raw or "").split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        model, _, label = chunk.partition("=")
+        label = " ".join(label.split()).lower()
+        if not model.strip() or label not in USAGE_LEVELS_BY_LABEL:
+            raise SystemExit(f"--usage-levels expects model=low|medium|high|'extra high', "
+                             f"got {chunk!r}")
+        out[model.strip()] = {"level": USAGE_LEVELS_BY_LABEL[label], "label": label}
+    return out
+
+
+def collect_usage_levels(models: list, *, fetch: Optional[Callable[[str], dict]] = None,
+                         overrides: Optional[dict] = None) -> dict:
+    """`model -> {level, label}` for every model in the run. Overrides win over the fetched page.
+
+    `fetch` is injected (and omitted entirely on a dry run) so this stays the only place the harness
+    would touch the network for a level; a fetch that raises leaves that model unknown rather than
+    failing the benchmark."""
+    overrides = overrides or {}
+    levels: dict = {}
+    for model in models:
+        if model in overrides:
+            levels[model] = dict(overrides[model])
+            continue
+        entry = {"level": None, "label": None}
+        if fetch is not None:
+            try:
+                entry = fetch(model) or entry
+            except Exception as exc:  # noqa: BLE001 - a level we cannot read is unknown, not fatal
+                print(f"  ! usage level unavailable for {model}: {str(exc)[:120]}", file=sys.stderr)
+        levels[model] = {"level": entry.get("level"), "label": entry.get("label")}
+    return levels
+
+
+def usage_delta(candidate: Optional[dict], champion: Optional[dict], *,
+                candidate_model: str = "", champion_model: str = "") -> dict:
+    """What adopting `candidate` in place of `champion` does to Ollama Cloud quota.
+
+    `unknown` is NOT `flat`. A swap whose quota cost cannot be read is a quota RISK, so it renders
+    with the same warning an increase gets — the failure mode this exists to prevent is a HIGH model
+    being adopted as if it were free because nobody could see its level."""
+    cand_level = (candidate or {}).get("level")
+    champ_level = (champion or {}).get("level")
+    cand_name = usage_name(candidate)
+    champ_name = usage_name(champion)
+    known = isinstance(cand_level, int) and isinstance(champ_level, int)
+    if not known:
+        direction, steps = USAGE_UNKNOWN, None
+    elif cand_level > champ_level:
+        direction, steps = USAGE_UP, cand_level - champ_level
+    elif cand_level < champ_level:
+        direction, steps = USAGE_DOWN, cand_level - champ_level
+    else:
+        direction, steps = USAGE_FLAT, 0
+
+    champ_ref = f"champion `{champion_model}`" if champion_model else "the champion"
+    if direction == USAGE_UP:
+        summary = (f"⚠️ **quota increase** — {cand_name} vs {champ_ref} {champ_name} "
+                   f"(+{steps} usage level{'s' if steps > 1 else ''}). Every call on this tier "
+                   f"burns more Ollama Cloud quota; this is a spend decision, not a free upgrade.")
+    elif direction == USAGE_DOWN:
+        summary = (f"quota decrease — {cand_name} vs {champ_ref} {champ_name} "
+                   f"({steps} usage level{'s' if steps < -1 else ''}).")
+    elif direction == USAGE_FLAT:
+        summary = f"flat on quota — {cand_name} on both sides."
+    else:
+        missing = [n for n, lvl in ((candidate_model or "candidate", cand_level),
+                                    (champion_model or "champion", champ_level))
+                   if not isinstance(lvl, int)]
+        summary = (f"⚠️ **quota delta unknown** — no usage level for {', '.join(missing)} "
+                   f"(ollama.com publishes it only for cloud-only models; pass "
+                   f"`--usage-levels {missing[0]}=<level>`). Treat as an increase until confirmed.")
+    return {"candidate_level": cand_level, "candidate_label": cand_name,
+            "champion_level": champ_level, "champion_label": champ_name,
+            "direction": direction, "steps": steps, "summary": summary}
+
+
 # ───────────────────────── champion/challenger gate (pure) ───────────────────────
 
 VERDICT_RECOMMEND = "recommend"
@@ -607,9 +727,14 @@ def gate_decision(candidate: dict, champion: Optional[dict], thresholds: dict) -
         verdict = VERDICT_DETERMINISTIC_ONLY
     else:
         verdict = VERDICT_RECOMMEND
+    # Reported, never gated: a HIGH-usage candidate can still earn `recommend` on quality — what it
+    # must never do is arrive without its price tag attached.
     return {"tier": candidate.get("tier"), "model": candidate.get("model"),
             "champion": (champion or {}).get("model"), "verdict": verdict,
             "expectations": expectations,
+            "usage_delta": usage_delta(candidate.get("usage"), (champion or {}).get("usage"),
+                                       candidate_model=str(candidate.get("model") or ""),
+                                       champion_model=str((champion or {}).get("model") or "")),
             "blockers": [e["expectation"] for e in expectations if e["passes"] is False]}
 
 
@@ -624,7 +749,8 @@ def gate_run(scorecards: list, suites: dict) -> list:
 def swap_recommendations(gates: list) -> list:
     """ONLY full `recommend` verdicts become swap recommendations. A candidate that merely cleared
     the deterministic floor, or had no champion to beat, is reported and goes no further."""
-    return [{"tier": g["tier"], "model": g["model"], "champion": g["champion"]}
+    return [{"tier": g["tier"], "model": g["model"], "champion": g["champion"],
+             "usage_delta": g.get("usage_delta") or usage_delta(None, None)}
             for g in gates if g.get("verdict") == VERDICT_RECOMMEND]
 
 
@@ -700,17 +826,23 @@ def render_report(run: dict) -> str:
         "",
         "## Scorecard",
         "",
-        "| Tier | Model | Role | Cases | Deterministic | Judge | Judged | Timeouts | p50 | p90 |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| Tier | Model | Role | Usage | Cases | Deterministic | Judge | Judged | Timeouts | p50 "
+        "| p90 |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for card in run.get("scorecards") or []:
         lines.append(
-            f"| {card['tier']} | `{card['model']}` | {card['role']} | {card['cases']} | "
+            f"| {card['tier']} | `{card['model']}` | {card['role']} | "
+            f"{usage_name(card.get('usage'))} | {card['cases']} | "
             f"{_fmt_rate(card.get('deterministic_pass_rate'))} "
             f"({card.get('deterministic_passed', 0)}/{card.get('cases', 0)}) | "
             f"{_fmt_rate(card.get('judge_pass_rate'))} | {card.get('judged', 0)} | "
             f"{card.get('judge_timeouts', 0)} | {_fmt_ms(card.get('latency_p50_ms'))} | "
             f"{_fmt_ms(card.get('latency_p90_ms'))} |")
+    lines += ["",
+              ("**Usage** is the Ollama Cloud usage level (quota class) — `unknown` where "
+               "ollama.com publishes no level for that model, which is the case for models that "
+               "are also pullable locally. Supply those with `--usage-levels model=<level>`.")]
 
     lines += ["", "## Per-expectation detail", ""]
     for card in run.get("scorecards") or []:
@@ -743,6 +875,9 @@ def render_report(run: dict) -> str:
         for expectation in gate.get("expectations") or []:
             mark = {True: "✅", False: "❌"}.get(expectation["passes"], "➖")
             lines.append(f"- {mark} {expectation['expectation']} — {expectation['detail']}")
+        delta = gate.get("usage_delta") or {}
+        if delta.get("summary"):
+            lines.append(f"- 💳 usage level — {delta['summary']}")
         lines.append("")
 
     recommendations = run.get("recommendations") or []
@@ -753,6 +888,15 @@ def render_report(run: dict) -> str:
     else:
         for rec in recommendations:
             lines.append(f"- **{rec['tier']}**: `{rec['champion']}` → `{rec['model']}`")
+            delta = rec.get("usage_delta") or {}
+            if delta.get("summary"):
+                lines.append(f"  - {delta['summary']}")
+        if any((r.get("usage_delta") or {}).get("direction") in (USAGE_UP, USAGE_UNKNOWN)
+               for r in recommendations):
+            lines += ["",
+                      ("At least one recommendation above raises this stack's Ollama Cloud quota "
+                       "class (or its level could not be read). A quality win is not on its own an "
+                       "adoption: decide the extra quota burn deliberately and record the call.")]
         lines += ["",
                   ("These are recommendations, not changes. `.litellm/model_upgrades.yaml` is the " +
                    "RETIREMENT map and auto-swaps into the live config, so adopting one of these is " +
@@ -1248,7 +1392,8 @@ def run_benchmark(suites: dict, models: list, champions: dict, *, run_id: str, t
                   provider: Optional[ProviderClient] = None,
                   evals: Optional["PostHogEvals"] = None,
                   judge_cap: int = 0, dry_run: bool = False,
-                  judge_enabled: bool = True) -> dict:
+                  judge_enabled: bool = True,
+                  usage_levels: Optional[dict] = None) -> dict:
     """Run every (model, tier) pair and merge the results into one run document.
 
     `dry_run` scores each suite against the case's committed `canned` output and verdict: a full
@@ -1374,6 +1519,7 @@ def run_benchmark(suites: dict, models: list, champions: dict, *, run_id: str, t
 
         card = merge_scorecard(tier, model, role, case_results, judge_results, timings)
         card["benchmark_run_id"] = run_id
+        card["usage"] = dict((usage_levels or {}).get(model) or {"level": None, "label": None})
         scorecards.append(card)
         if evals is not None and judge_enabled and not dry_run and judge_results:
             awaiting.append((card, suite, outputs, judge_results))
@@ -1425,6 +1571,7 @@ def run_benchmark(suites: dict, models: list, champions: dict, *, run_id: str, t
         "tiers": sorted(suites),
         "candidates": list(models),
         "champions": {t: champions.get(t) for t in sorted(suites)},
+        "usage_levels": dict(usage_levels or {}),
         "judge_calls": judge_spent,
         "judge_call_cap": judge_budget,
         "scorecards": scorecards,
@@ -1469,6 +1616,8 @@ def main(argv: Optional[list] = None) -> int:
     ap.add_argument("--out-dir", default=DEFAULT_OUT_DIR)
     ap.add_argument("--results-out", default=None)
     ap.add_argument("--recommendations-out", default=None)
+    ap.add_argument("--usage-levels", default="")
+    ap.add_argument("--no-usage-levels", action="store_true")
     ap.add_argument("--no-judge", action="store_true")
     ap.add_argument("--max-judge-calls", type=int, default=None)
     ap.add_argument("--run-id", default=None)
@@ -1539,11 +1688,21 @@ def main(argv: Optional[list] = None) -> int:
             print("  POSTHOG_API_KEY is unset — PostHog evaluations cannot score events that were "
                   "never emitted; using the in-runner judge", file=sys.stderr)
 
+    # Every model the run will score, champions included — a delta needs both sides.
+    measured = sorted(set(models) | {m for m in champions.values() if m})
+    fetch = None
+    if not args.dry_run and not args.no_usage_levels:
+        from model_health_check import fetch_usage_level  # noqa: WPS433 - sibling script
+        fetch = fetch_usage_level
+    usage_levels = collect_usage_levels(measured, fetch=fetch,
+                                        overrides=parse_usage_overrides(args.usage_levels))
+
     cap = args.max_judge_calls if args.max_judge_calls is not None else max_judge_calls()
     run = run_benchmark(suites, models, champions,
                         run_id=args.run_id or _run_id(today), today=today,
                         provider=provider, evals=evals, judge_cap=cap,
-                        dry_run=bool(args.dry_run), judge_enabled=not args.no_judge)
+                        dry_run=bool(args.dry_run), judge_enabled=not args.no_judge,
+                        usage_levels=usage_levels)
 
     if args.results_out:
         with open(args.results_out, "w") as f:

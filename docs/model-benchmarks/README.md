@@ -56,6 +56,34 @@ reported but go no further:
 | `no-baseline` | No champion measured for that tier — nothing to compare against. |
 | `reject` | Failed at least one expectation. |
 
+### Usage level — what a swap COSTS (issue #842)
+
+The gate scores quality. It says nothing about price, and on Ollama Cloud those are separate
+questions: metering is by the model's **usage level** (Low / Medium / High / Extra high), so
+promoting a High model over a Medium one raises quota burn on every call that tier serves. That is a
+spend decision, not a free upgrade.
+
+So the harness carries the level **beside** the scores and never gates on it:
+
+- every scorecard has a `Usage` column, champion and candidate alike;
+- every gate verdict carries a `usage_delta` (`up` / `flat` / `down` / `unknown`), rendered under
+  the expectations, and it rides on the JSON that `--recommendations-out` writes;
+- a recommendation that raises the level renders **⚠️ quota increase** with the step count, and the
+  Swap-recommendations section adds a "decide the extra quota burn deliberately" note.
+
+`unknown` is **not** `flat`. A level that could not be read renders with the same warning an
+increase gets — the failure this prevents is a High model being adopted as if it were free because
+nobody could see its level. Unknown is common and expected: ollama.com publishes the Usage stat only
+on **cloud-only** model pages, so models that are also pullable locally (`gpt-oss:120b`,
+`qwen3.5:397b`, `gemma4:31b`) have no level to scrape. Supply theirs from the cloud listing:
+
+```bash
+--usage-levels gpt-oss:120b=medium,qwen3.5:397b=medium
+```
+
+`--no-usage-levels` skips the fetch entirely (one page request per measured model); a fetch that
+fails leaves that model `unknown` rather than failing the run.
+
 A recommendation is **not** a change. `.litellm/model_upgrades.yaml` is the RETIREMENT map and the
 reactive half of the model-health check auto-swaps whatever lands in it, so adopting a benchmark
 winner is a deliberate edit to `.litellm/config.yaml` (or a #717-style PR). The report renders the
