@@ -255,6 +255,24 @@ issue_for_pr() {
         end'
 }
 
+closing_issue_for_pr() {
+  # Issue that merging PR $1 would actually CLOSE — deliberately NARROWER than issue_for_pr.
+  # The branch convention says which issue the work BELONGS to; it does NOT close anything. Those
+  # two answers diverge exactly when a PR lands one phase of a multi-phase issue and omits the
+  # closing keyword ON PURPOSE, which is the case the phase guard exists to bless, not to block:
+  # #807 (phase 2a of #745, no closing keyword, `closingIssuesReferences` empty) was parked for a
+  # day and told to "remove `Closes #745` from the PR body" — text that was never there, so the
+  # instruction was impossible to follow and every tick re-parked it.
+  local P="$1" I
+  I="$(gh pr view "$P" --repo "$SLUG" --json closingIssuesReferences 2>/dev/null \
+       | jq -r '[(.closingIssuesReferences // [])[] | .number] | (first // empty)')"
+  [ -n "$I" ] && { echo "$I"; return 0; }
+  # Body keyword only — GitHub populates the link from it, so this is a belt-and-braces catch for
+  # an API blip, never a guess from the branch name.
+  gh pr view "$P" --repo "$SLUG" --json body 2>/dev/null | jq -r '
+      ((.body // "") | capture("(?i)(clos(e|es|ed)|fix(e[sd])?|resolv(e|es|ed))[[:space:]]+#(?<n>[0-9]+)")? | .n) // empty' 2>/dev/null
+}
+
 pr_for_issue() {
   # Open PR belonging to issue $1. Uses GitHub's OWN linkage (the "Closes #N" development link) —
   # NOT a "#N" scan of PR bodies, which false-matches any PR that merely cites the issue as context
@@ -418,7 +436,10 @@ phase_followup_linked() {  # $1=pr $2=issue -> 0 when a follow-up issue is alrea
 phase_guard_ok() {  # $1=pr -> 0 when merging is safe (guard off / nothing closed / scope complete)
   [ "$PHASE_GUARD" = "1" ] || return 0
   local P="$1" N leftover
-  N="$(issue_for_pr "$P")"
+  # closing_issue_for_pr, NOT issue_for_pr: the guard's whole premise is "merging this will close
+  # the issue and silently drop the rest of its scope". A PR that closes nothing cannot drop
+  # anything, however its branch happens to be named.
+  N="$(closing_issue_for_pr "$P")"
   [ -n "$N" ] || return 0                      # closes nothing -> nothing can be dropped
   leftover="$(phase_leftover "$N")"
   [ -n "$leftover" ] || return 0
