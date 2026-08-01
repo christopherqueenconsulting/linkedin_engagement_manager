@@ -59,6 +59,11 @@ phase with no linked follow-up is **not merged** — it gets a `🧩 phase-guard
 `agent:blocked`, and the owner is assigned. Unchecked boxes alone only produce a warning comment, so
 clear them honestly. Clearing a hold = do (a) or (b), then re-label the PR `agent:working`.
 
+The guard fires on what a PR **closes** (`closing_issue_for_pr` — GitHub's development link, or a
+`Closes #N` keyword), never on the `feature/claude-issue-N` branch name. So the intended way to land
+one phase of a multi-phase issue is exactly what it looks like: **omit the closing keyword**, name
+what remains in the PR body, and the issue stays open with nothing held.
+
 ## Escalate to a human instead of proceeding when:
 - The issue needs **live LinkedIn interaction / real credentials / a running Selenium session** you can't do headless.
 - It requires a **product or policy decision**, an external secret, or account/ToS judgment.
