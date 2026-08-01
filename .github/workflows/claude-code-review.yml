@@ -37,28 +37,33 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install anthropic SDK
-        run: pip install anthropic==0.120.2
+      # OpenRouter, not the Anthropic SDK: OPENROUTER_API_KEY is the only LLM credential this repo
+      # exposes to Actions, and it fronts the same models. OpenRouter is OpenAI-compatible, so the
+      # `openai` client is the correct one here — this is deliberately NOT an Anthropic call site.
+      - name: Install OpenAI SDK
+        run: pip install openai==2.15.0
 
       - name: Run Claude code review
         id: review
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          REVIEW_MODEL: ${{ vars.REVIEW_MODEL || 'anthropic/claude-opus-5' }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_DIFF: ${{ steps.diff.outputs.diff }}
         run: |
           python3 - <<'PYEOF'
-          import os, sys, anthropic
+          import os, sys
+          from openai import OpenAI
 
-          api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+          api_key = os.environ.get("OPENROUTER_API_KEY", "")
           if not api_key:
-              print("ANTHROPIC_API_KEY not set — skipping Claude review")
+              print("OPENROUTER_API_KEY not set — skipping review")
               with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-                  f.write("review=Claude review skipped: ANTHROPIC_API_KEY not configured as a GitHub secret.\n")
+                  f.write("review=Review skipped: OPENROUTER_API_KEY not configured as a GitHub secret.\n")
               sys.exit(0)
 
-          client = anthropic.Anthropic(api_key=api_key)
+          client = OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
 
           system_prompt = """You are a senior code reviewer for the LinkedIn Engagement Manager (LEM) project.
 
@@ -99,21 +104,24 @@ jobs:
           {diff}
           ```"""
 
-          message = client.messages.create(
-              model="claude-opus-5",
-              max_tokens=16000,
-              messages=[{"role": "user", "content": user_prompt}],
-              system=system_prompt,
-          )
+          try:
+              completion = client.chat.completions.create(
+                  model=os.environ.get("REVIEW_MODEL") or "anthropic/claude-opus-5",
+                  max_tokens=16000,
+                  messages=[{"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}],
+              )
+          except Exception as e:
+              # A review is advisory. An OpenRouter outage, a retired model slug or a spend cap
+              # must not fail the PR — post nothing and say why in the log.
+              print(f"Review call failed: {e}")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("review=Review skipped: the model call failed. See the workflow log.\n")
+              sys.exit(0)
 
-          # Thinking is on by default on Opus 5, so content[0] is not necessarily the answer,
-          # and a safety refusal returns 200 with no text block at all.
-          if message.stop_reason == "refusal":
-              review = "Claude review skipped: the request was declined by safety classifiers."
-          else:
-              review = "\n".join(b.text for b in message.content if b.type == "text").strip()
-              if not review:
-                  review = "Claude review skipped: the model returned no reviewable text."
+          review = (completion.choices[0].message.content or "").strip() if completion.choices else ""
+          if not review:
+              review = "Review skipped: the model returned no reviewable text."
           print(review)
 
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
