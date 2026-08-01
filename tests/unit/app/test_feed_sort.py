@@ -129,6 +129,35 @@ class TestSwitchFeedToRecent:
         assert state == FEED_SORT_RECENT
         driver.execute_script.assert_not_called()
 
+    def test_a_label_naming_both_sorts_is_not_read_as_already_recent(self):
+        """A trigger that spells its OPTIONS into the accessible name mentions 'Recent' while the
+        feed is still on Top. Reading that as sorted would skip the flip AND record the run as
+        recency-sorted — both halves of the lie #817 exists to stop, in one label."""
+        from cqc_lem.app.run_automation import FEED_SORT_RECENT, _switch_feed_to_recent
+        ambiguous = MagicMock()
+        ambiguous.text = ""
+        ambiguous.get_attribute.return_value = "Sort by, currently Top, options Top and Recent"
+        opt = _control("Recent")
+        driver = _driver()
+        with patch(f"{_MOD}.find_first",
+                   side_effect=[ambiguous, opt, _control("Sort by: Recent")]), \
+             patch(f"{_MOD}.time.sleep"):
+            state = _switch_feed_to_recent(driver, MagicMock())
+        # The flip actually ran instead of being short-circuited by the ambiguous label.
+        assert [c.args[1] for c in driver.execute_script.call_args_list] == [ambiguous, opt]
+        assert state == FEED_SORT_RECENT
+
+    def test_an_ambiguous_label_after_the_flip_reads_unknown_not_recent(self):
+        from cqc_lem.app.run_automation import FEED_SORT_UNKNOWN, _switch_feed_to_recent
+        both = MagicMock()
+        both.text = "Top Recent"
+        both.get_attribute.return_value = ""
+        with patch(f"{_MOD}.find_first",
+                   side_effect=[_control("Sort by: Top"), _control("Recent"), both]), \
+             patch(f"{_MOD}.time.sleep"):
+            state = _switch_feed_to_recent(_driver(), MagicMock())
+        assert state == FEED_SORT_UNKNOWN
+
     def test_group_feed_is_an_expected_no_op_not_a_warning(self):
         """A group feed reuses the commenting engine but never had a home-feed sort control, so a
         miss there is working behaviour — warning on it would file a defect for it (#817)."""

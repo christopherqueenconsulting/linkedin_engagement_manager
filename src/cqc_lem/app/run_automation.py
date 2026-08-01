@@ -1217,16 +1217,22 @@ def _is_home_feed(driver) -> bool:
 
 def _feed_sort_state(control) -> str:
     """Which sort a found control reports — FEED_SORT_RECENT / FEED_SORT_TOP, or '' when its label
-    is unreadable. '' is load-bearing: 'we could not tell' must never be recorded as 'recent'."""
+    is unreadable. '' is load-bearing: 'we could not tell' must never be recorded as 'recent'.
+
+    A label naming BOTH sorts is unreadable too. Some dropdown triggers spell their options into
+    the accessible name ('Sort by, currently Top, options Top and Recent'), and taking 'recent' from
+    one would do the two worst things at once: skip the flip below (the label already 'says' Recent)
+    and record the run as sorted — the exact lie #817 exists to stop."""
     if control is None:
         return ""
     try:
         label = f"{control.get_attribute('aria-label') or ''} {control.text or ''}".lower()
     except Exception:
         return ""
-    if FEED_SORT_RECENT in label:
+    has_recent, has_top = FEED_SORT_RECENT in label, FEED_SORT_TOP in label
+    if has_recent and not has_top:
         return FEED_SORT_RECENT
-    if FEED_SORT_TOP in label:
+    if has_top and not has_recent:
         return FEED_SORT_TOP
     return ""
 

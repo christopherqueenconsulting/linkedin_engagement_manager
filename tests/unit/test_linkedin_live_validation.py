@@ -356,6 +356,32 @@ class TestFeedSortProbe:
         assert report["sort_after"] == "unknown"
         assert "session deleted" in report["flip_error"]
 
+    def test_a_control_label_naming_both_sorts_is_unreadable_not_recent(self):
+        """Production reads a both-sorts label as unknown; a probe that called it 'recent' would
+        report the control healthy on exactly the reading that leaves the run unsorted."""
+        assert llv.control_sort_state(_sort_control("", "Sort by, currently Top, options Recent")) == ""
+        assert llv.control_sort_state(_sort_control("Sort by: Recent")) == "recent"
+
+    def test_menu_rows_are_captured_before_the_page_is_full_of_list_items(self):
+        """One comma-joined selector returns DOCUMENT order, and a feed page's nav/rail/post <li>s
+        come before an overlay dropdown — so the cap would be spent on furniture and the menu this
+        probe exists to re-ground could be missing from its own capture."""
+        def _item(text):
+            el = MagicMock()
+            el.text = text
+            el.is_displayed.return_value = True
+            el.get_attribute.return_value = None
+            return el
+
+        furniture = [_item(f"Nav {i}") for i in range(60)]
+        menu = [_item("Top"), _item("Recent")]
+        driver = MagicMock()
+        driver.find_elements.side_effect = lambda by, sel: menu if "role=" in sel else furniture
+
+        labels = llv.menu_item_labels(driver)
+        assert labels[:2] == ["Top", "Recent"]
+        assert len(labels) == 40
+
     def test_menu_item_labels_skips_hidden_and_duplicate_rows(self):
         def _item(text, displayed=True):
             el = MagicMock()

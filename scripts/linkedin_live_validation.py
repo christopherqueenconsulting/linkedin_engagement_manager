@@ -378,16 +378,19 @@ def feed_sort_chains() -> tuple:
 
 def control_sort_state(control) -> str:
     """Which sort a found control reports, or '' when its label is unreadable. '' is load-bearing:
-    'we could not tell' must never be recorded as 'recent' — that is the lie #817 exists to stop."""
+    'we could not tell' must never be recorded as 'recent' — that is the lie #817 exists to stop.
+    A label naming BOTH sorts is unreadable too, exactly as `_feed_sort_state` treats it, or the
+    probe would report a control healthy that production reads as unknown."""
     if control is None:
         return ""
     try:
         label = f"{control.get_attribute('aria-label') or ''} {control.text or ''}".lower()
     except Exception:
         return ""
-    if SORT_RECENT in label:
+    has_recent, has_top = SORT_RECENT in label, SORT_TOP in label
+    if has_recent and not has_top:
         return SORT_RECENT
-    if SORT_TOP in label:
+    if has_top and not has_recent:
         return SORT_TOP
     return ""
 
@@ -420,25 +423,34 @@ def feed_sort_verdict(reading: Optional[dict]) -> str:
 def menu_item_labels(driver, limit: int = 40) -> list:
     """Every visible menu-role label on screen. LinkedIn's sort options are not always <button>s, so
     `visible_button_labels` alone can report an empty menu that is actually rendered as list items —
-    which would send the next re-grounding pass after the wrong half of the control."""
+    which would send the next re-grounding pass after the wrong half of the control.
+
+    Menu ROLES are enumerated before bare <li>s, and the two are separate queries on purpose: one
+    comma-joined selector returns DOCUMENT order, and a feed page is full of <li>s (global nav, the
+    left rail, every post's action row) that come before an overlay dropdown — so the cap would be
+    spent on page furniture and the menu this probe exists to capture could be missing from its own
+    capture."""
     labels = []
-    try:
-        elements = driver.find_elements(
-            By.CSS_SELECTOR, "[role='menuitem'],[role='menuitemradio'],[role='option'],li")
-    except Exception as e:
-        return [f"<enumeration stopped: {type(e).__name__}>"]
-    for element in elements:
-        try:
-            if not element.is_displayed():
-                continue
-            label = (element.get_attribute("aria-label") or element.text or "").strip()
-        except Exception:
-            continue
-        label = " ".join(label.split())[:80]
-        if label and label not in labels:
-            labels.append(label)
+    for selector in ("[role='menuitem'],[role='menuitemradio'],[role='option']", "li"):
         if len(labels) >= limit:
             break
+        try:
+            elements = driver.find_elements(By.CSS_SELECTOR, selector)
+        except Exception as e:
+            labels.append(f"<enumeration stopped: {type(e).__name__}>")
+            break
+        for element in elements:
+            try:
+                if not element.is_displayed():
+                    continue
+                label = (element.get_attribute("aria-label") or element.text or "").strip()
+            except Exception:
+                continue
+            label = " ".join(label.split())[:80]
+            if label and label not in labels:
+                labels.append(label)
+            if len(labels) >= limit:
+                break
     return labels
 
 

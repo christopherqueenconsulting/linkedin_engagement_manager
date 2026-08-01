@@ -45,11 +45,15 @@ function FeedReachFunnel() {
         </p>
       )}
       {/* LEM ranks candidates recency-first, which only holds if the feed was sorted by Recent.
-          Saying so keeps a scan of LinkedIn's algorithmic feed from being read as a fresh one. */}
+          Saying so keeps a scan of LinkedIn's algorithmic feed from being read as a fresh one.
+          The wording covers all three unsorted states without over-claiming: 'missing' means the
+          control wasn't there, but 'top' means it was and wouldn't flip, and 'unknown' means the
+          flip may well have worked and just couldn't be read back — asserting "the control wasn't
+          available" there would be the same kind of untrue reading this line exists to prevent. */}
       {reach.feed_sort && reach.feed_sort !== 'recent' && reach.feed_sort !== 'n/a' && (
         <p className="mt-1" data-testid="feed-reach-unsorted">
-          LinkedIn's &ldquo;Sort by → Recent&rdquo; control wasn&rsquo;t available on this scan, so
-          these posts came from your algorithmic feed rather than the newest ones.
+          LEM couldn&rsquo;t confirm LinkedIn&rsquo;s &ldquo;Sort by → Recent&rdquo; order on this
+          scan, so these posts may have come from your algorithmic feed rather than the newest ones.
         </p>
       )}
     </div>
