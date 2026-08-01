@@ -264,3 +264,42 @@ prod overlay.
 | Migrations fail | `docker compose run --rm flyway`; inspect Flyway output |
 | Tunnel down | `docker compose logs cloudflared`; verify `TUNNEL_TOKEN` |
 | OAuth fails | `LI_REDIRECT_URL` matches the LinkedIn app + `app.<domain>` |
+
+## Compose file layering — why editing files on disk does nothing in prod
+
+The stack is always launched with **both** compose files:
+`docker compose -f docker-compose.yml -f docker-compose.prod.yml`.
+
+`docker-compose.yml` alone is the DEV config — it bind-mounts `./src:/app/src`, so local edits are
+live immediately. `docker-compose.prod.yml` overrides that bind-mount away, so in PRODUCTION every
+app service runs the code baked into the image; editing files on disk under `/opt/lem` does
+nothing until a new image ships. Code lives at `/app/src/cqc_lem/...` inside the image.
+
+The image ref is `${DOCKER_IMAGE_NAME}:${IMAGE_TAG:-latest}`, both set in `/opt/lem/.env`
+(git-ignored); `scripts/deploy.sh` exports `IMAGE_TAG` per-deploy. App services that share the
+image: `web_api_blue`/`web_api_green` (FastAPI blue/green), `celery_worker`,
+`celery_worker_selenium{,_prepost,_outreach,_content}`, `celery_beat`, `flower`. In prod, `web_app`
+is the nginx edge described above, not the FastAPI container. Infra (`mysql`, `redis`,
+`selenium-chrome`, `litellm`, `cloudflared`, `flyway`) uses its own upstream images and is
+unaffected by this layering.
+
+Runtime state (429 breaker, manual automation pause, reply-sweep cadence keys) lives in **Redis**,
+not the DB or a container, so it survives every deploy. Inspect/repair it by calling the real
+functions inside a running container so the correct Redis URL is used, e.g.:
+
+```bash
+docker exec celery_worker_selenium python -c \
+  "from cqc_lem.utilities.linkedin.rate_limit import clear_rate_limit, pause_automation; ..."
+```
+
+## Local hotfix deploy (fallback when CI/release is too slow or blocked)
+
+Build a thin overlay image `FROM` the currently running release tag that only `COPY`s the changed
+`src` files (identical deps, seconds not minutes). Then on the box:
+
+1. Set `/opt/lem/.env` → `IMAGE_TAG=<hotfix-tag>`.
+2. `cd /opt/lem && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --no-deps --pull never <app-services>`.
+3. Keep the prior release image locally for instant rollback (`IMAGE_TAG=vX.Y.Z`).
+
+**This diverges prod from `main`** — the fix MUST still land via the normal PR → release flow, or
+the next release will REVERT it. Requires `sudo` for the Docker socket on this box.
