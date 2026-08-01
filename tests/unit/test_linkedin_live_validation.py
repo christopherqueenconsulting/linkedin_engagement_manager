@@ -256,7 +256,71 @@ class TestMessageThreadProbe:
 
 
 @pytest.mark.unit
+class TestFeedSortProbe:
+    """#817: the probe has to say WHICH half of the sort control broke — the trigger or the menu —
+    because `Selector miss: Feed sort control` alone cannot, and they need different fixes."""
+
+    def test_recent_is_the_only_healthy_verdict(self):
+        assert llv.feed_sort_verdict({"control_found": True, "sort_before": "top",
+                                      "sort_after": "recent"}) == "sort control OK — flipped to Recent"
+        assert llv.feed_sort_verdict({"control_found": True, "sort_before": "recent",
+                                      "sort_after": "recent"}).endswith("already on Recent")
+
+    def test_a_missing_trigger_points_at_the_control_locators(self):
+        verdict = llv.feed_sort_verdict({"control_found": False, "sort_after": "missing"})
+        assert "NO sort control" in verdict and "_FEED_SORT_LOCATORS" in verdict
+
+    def test_a_trigger_that_would_not_flip_points_at_the_option_locators(self):
+        verdict = llv.feed_sort_verdict({"control_found": True, "sort_after": "top"})
+        assert "_FEED_RECENT_OPTION_LOCATORS" in verdict
+
+    def test_an_unreadable_flip_is_never_reported_as_ok(self):
+        assert "unreadable" in llv.feed_sort_verdict({"control_found": True, "sort_after": "unknown"})
+        assert llv.feed_sort_verdict(None).startswith("NO sort control")
+
+    def test_probe_reports_the_control_and_the_live_labels(self, monkeypatch):
+        from cqc_lem.app import run_automation as ra
+
+        control = MagicMock()
+        control.text = "Sort by: Top"
+        control.tag_name = "button"
+        control.get_attribute.side_effect = lambda a: {"aria-label": "Sort by dropdown"}.get(a)
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.find_first", lambda *a, **k: control)
+        monkeypatch.setattr(ra, "_switch_feed_to_recent", lambda *a, **k: "recent")
+        monkeypatch.setattr(llv, "visible_button_labels", lambda d, **k: ["Sort by: Recent"])
+        monkeypatch.setattr(llv, "menu_item_labels", lambda d, **k: ["Recent"])
+
+        report = llv.probe_feed_sort(_fake_driver(current_url=llv.FEED_URL), sleep=lambda s: None)
+        assert report["control_found"] is True
+        assert report["sort_before"] == "top"
+        assert report["sort_after"] == "recent"
+        assert report["visible_controls"] == ["Sort by: Recent", "Recent"]
+        assert report["control"]["text"] == "Sort by: Top"
+        assert report["verdict"].startswith("sort control OK")
+
+    def test_menu_item_labels_skips_hidden_and_duplicate_rows(self):
+        def _item(text, displayed=True):
+            el = MagicMock()
+            el.text = text
+            el.is_displayed.return_value = displayed
+            el.get_attribute.return_value = None
+            return el
+
+        driver = MagicMock()
+        driver.find_elements.return_value = [_item("Recent"), _item("Recent"),
+                                             _item("Top", displayed=False), _item("")]
+        assert llv.menu_item_labels(driver) == ["Recent"]
+
+
+@pytest.mark.unit
 class TestMain:
     def test_requires_something_to_probe(self):
         with pytest.raises(SystemExit):
             llv.main([])
+
+    def test_feed_sort_alone_is_enough_to_probe(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.app.run_automation.get_current_profile",
+                            lambda **k: (MagicMock(), MagicMock(), "a@b.c", MagicMock()))
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
+        monkeypatch.setattr(llv, "probe_feed_sort", lambda d: {"verdict": "sort control OK"})
+        assert llv.main(["--feed-sort"]) == 0

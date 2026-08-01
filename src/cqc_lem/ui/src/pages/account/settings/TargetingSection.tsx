@@ -44,6 +44,14 @@ function FeedReachFunnel() {
           {reach.off_topic_skipped === 1 ? '' : 's'} — commenting off your focus topics hurts reach.
         </p>
       )}
+      {/* LEM ranks candidates recency-first, which only holds if the feed was sorted by Recent.
+          Saying so keeps a scan of LinkedIn's algorithmic feed from being read as a fresh one. */}
+      {reach.feed_sort && reach.feed_sort !== 'recent' && reach.feed_sort !== 'n/a' && (
+        <p className="mt-1" data-testid="feed-reach-unsorted">
+          LinkedIn's &ldquo;Sort by → Recent&rdquo; control wasn&rsquo;t available on this scan, so
+          these posts came from your algorithmic feed rather than the newest ones.
+        </p>
+      )}
     </div>
   )
 }

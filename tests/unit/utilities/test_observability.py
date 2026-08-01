@@ -1106,3 +1106,39 @@ class TestTrackCatchupRun:
             track_catchup_run(7)
         mock_ph.capture.assert_called_once()
         assert mock_ph.capture.call_args.kwargs["properties"]["status"] is None
+
+
+class TestTrackFeedScan:
+    """#817: the sort the scan actually ran against has to reach the event, or a run that ranked
+    LinkedIn's algorithmic feed is indistinguishable from one that ranked a recency-sorted one."""
+
+    def test_the_sort_state_rides_on_the_event(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_feed_scan
+            track_feed_scan(7, {"feed_sort": "missing", "examined": 40, "passed_filters": 12,
+                                "matched_topics": 3, "commented": 2, "fallback_used": True})
+
+        kwargs = mock_ph.capture.call_args.kwargs
+        assert kwargs["event"] == "feed_scan"
+        assert kwargs["distinct_id"] == "7"
+        props = kwargs["properties"]
+        assert props["feed_sort"] == "missing"
+        assert props["examined"] == 40 and props["commented"] == 2
+        assert props["fallback_used"] is True
+
+    def test_the_sort_state_is_a_string_so_alert_tiles_can_filter_on_it(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_feed_scan
+            track_feed_scan(7, {"feed_sort": "recent"})
+        props = mock_ph.capture.call_args.kwargs["properties"]
+        assert isinstance(props["feed_sort"], str)
+        assert not any(isinstance(v, bool) for k, v in props.items() if k != "fallback_used")
+
+    def test_a_scan_that_commented_on_nothing_still_emits(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_feed_scan
+            track_feed_scan(7)
+        mock_ph.capture.assert_called_once()
+        props = mock_ph.capture.call_args.kwargs["properties"]
+        assert props["feed_sort"] is None       # unrecorded is never 'recent'
+        assert props["examined"] == 0
