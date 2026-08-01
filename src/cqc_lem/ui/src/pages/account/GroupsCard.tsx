@@ -102,7 +102,9 @@ export default function GroupsCard() {
         </p>
         <p>
           The weekly slot rotates: it goes to whichever group with <span className="font-semibold text-gray-700">Post</span>{' '}
-          on has gone longest without one.
+          on has waited longest for its turn. A group that turns out not to take member posts
+          (announcement or admin-only) uses up its turn and goes to the back of the queue, so it
+          never holds up the others.
         </p>
       </div>
 

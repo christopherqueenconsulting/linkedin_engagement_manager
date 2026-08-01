@@ -92,6 +92,7 @@ _ERROR_CASES = [
     ("set_groups_enabled", (1, {"g1": True}), False),
     ("get_next_group_for_post", (1,), None),
     ("record_group_post", (1, "g1"), False),
+    ("record_group_post_run", (1, "g1"), False),
     ("record_post_stats", (1, 2, 3, 4), False),
     ("get_recent_posted_post_ids", (1,), []),
     ("get_post_engagement_rows", (1,), []),

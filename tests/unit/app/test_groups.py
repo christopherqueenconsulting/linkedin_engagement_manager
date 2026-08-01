@@ -67,8 +67,10 @@ class TestUserGroupsDB:
         sql = cur.execute.call_args[0][0]
         # Posting is gated on post_enabled ALONE — a group can take posts without being commented in.
         assert "post_enabled=1" in sql and "enabled=1" not in sql.replace("post_enabled=1", "")
-        # Never-posted groups sort first, then oldest first.
-        assert "last_posted_at IS NULL DESC, last_posted_at ASC" in sql
+        # Never-TRIED groups sort first, then oldest first. Ordering is on the run column, not the
+        # success column — an unpostable group must not be "next" forever (issue #858).
+        assert "COALESCE(last_post_run_at, last_posted_at) IS NULL DESC" in sql
+        assert "COALESCE(last_post_run_at, last_posted_at) ASC" in sql
 
     def test_next_group_for_post_none_when_nothing_opted_in(self):
         conn, cur = self._conn()
@@ -78,12 +80,38 @@ class TestUserGroupsDB:
             assert get_next_group_for_post(1) is None
 
     def test_record_group_post_stamps_the_row(self):
+        """A successful post is also a run, so both columns advance."""
         conn, cur = self._conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import record_group_post
             assert record_group_post(1, "123") is True
-        assert "last_posted_at=NOW()" in cur.execute.call_args[0][0]
+        sql = cur.execute.call_args[0][0]
+        assert "last_posted_at=NOW()" in sql and "last_post_run_at=NOW()" in sql
         assert cur.execute.call_args[0][1] == (1, "123")
+
+    def test_record_group_post_run_never_claims_a_post(self):
+        """Issue #858: a try advances the rotation without pretending anything shipped."""
+        conn, cur = self._conn()
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import record_group_post_run
+            assert record_group_post_run(1, "123") is True
+        sql = cur.execute.call_args[0][0]
+        assert "last_post_run_at=NOW()" in sql and "last_posted_at" not in sql.replace(
+            "last_post_run_at", "")
+        assert cur.execute.call_args[0][1] == (1, "123")
+
+    def test_record_group_post_run_failure_is_visible(self):
+        """A lost stamp leaves the group least-recently-tried — i.e. it re-creates the starvation —
+        and the caller can do nothing with the False, so the failure has to log at ERROR."""
+        import mysql.connector
+        conn, cur = self._conn()
+        cur.execute.side_effect = mysql.connector.Error("connection gone")
+        with patch(f"{_DB}.get_db_connection", return_value=conn), \
+             patch(f"{_DB}.log_error") as logged:
+            from cqc_lem.utilities.db import record_group_post_run
+            assert record_group_post_run(1, "123") is False
+        logged.assert_called_once()
+        assert logged.call_args.kwargs["user_id"] == 1
 
 
 class TestSyncUserGroups:
@@ -131,23 +159,63 @@ class TestPostToGroup:
              patch(f"{_RA}.generate_group_post", return_value="A useful insight.") as gen, \
              patch(f"{_RA}.click_first", return_value=MagicMock()), \
              patch(f"{_RA}.find_first", return_value=MagicMock()), \
-             patch(f"{_RA}.record_group_post") as rec, patch(f"{_RA}.quit_gracefully"):
+             patch(f"{_RA}.record_group_post") as rec, \
+             patch(f"{_RA}.record_group_post_run") as run, patch(f"{_RA}.quit_gracefully"):
             result = auto_post_to_group.run(user_id=1, group_id="123", group_name="AI Leaders")
         assert result == "Posted to group"
         assert gen.call_args.kwargs["group_name"] == "AI Leaders"
         rec.assert_called_once_with(1, "123")
+        # record_group_post stamps both columns itself — the success path never double-stamps.
+        run.assert_not_called()
 
-    def test_failed_post_leaves_the_group_next_in_line(self):
+    @pytest.mark.parametrize("miss,expected", [
+        ("share_box", "Group share box not found"),
+        ("editor", "Group post editor not found"),
+        ("post_button", "Group Post button not found"),
+    ])
+    def test_unpostable_group_advances_the_rotation_without_claiming_a_post(self, miss, expected):
+        """Issue #858: a group whose composer never renders (admin-only / announcement) is stamped
+        as TRIED so it moves to the back of the queue — but `last_posted_at` stays untouched."""
         from cqc_lem.app.run_automation import auto_post_to_group
+        clicks = {"share_box": [None], "editor": [MagicMock()],
+                  "post_button": [MagicMock(), None]}[miss]
         with self._driver_patches(), \
              patch(f"{_RA}.get_engagement_preferences", return_value={}), \
              patch(f"{_RA}.get_or_create_profile_synthesis", return_value="synth"), \
              patch(f"{_RA}.generate_group_post", return_value="A useful insight."), \
-             patch(f"{_RA}.click_first", return_value=None), \
-             patch(f"{_RA}.record_group_post") as rec, patch(f"{_RA}.quit_gracefully"):
+             patch(f"{_RA}.click_first", side_effect=clicks), \
+             patch(f"{_RA}.find_first", return_value=None if miss == "editor" else MagicMock()), \
+             patch(f"{_RA}.record_group_post") as rec, \
+             patch(f"{_RA}.record_group_post_run") as run, patch(f"{_RA}.quit_gracefully"):
             result = auto_post_to_group.run(user_id=1, group_id="123", group_name="AI Leaders")
-        assert result == "Group share box not found"
+        assert result == expected
+        run.assert_called_once_with(1, "123")
         rec.assert_not_called()
+
+    def test_failure_before_the_group_is_reached_does_not_advance_the_rotation(self):
+        """A dead session is transient and not the group's fault — it keeps its turn."""
+        from cqc_lem.app.run_automation import auto_post_to_group
+        with patch(f"{_RA}.get_current_profile", side_effect=Exception("no session")), \
+             patch(f"{_RA}.record_group_post") as rec, \
+             patch(f"{_RA}.record_group_post_run") as run:
+            result = auto_post_to_group.run(user_id=1, group_id="123", group_name="AI Leaders")
+        assert "Failed" in result
+        rec.assert_not_called()
+        run.assert_not_called()
+
+    def test_empty_generation_does_not_advance_the_rotation(self):
+        """Nothing to say this week is a transient LLM outcome, not an unpostable group."""
+        from cqc_lem.app.run_automation import auto_post_to_group
+        with self._driver_patches(), \
+             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
+             patch(f"{_RA}.get_or_create_profile_synthesis", return_value="synth"), \
+             patch(f"{_RA}.generate_group_post", return_value="   "), \
+             patch(f"{_RA}.record_group_post") as rec, \
+             patch(f"{_RA}.record_group_post_run") as run, patch(f"{_RA}.quit_gracefully"):
+            result = auto_post_to_group.run(user_id=1, group_id="123", group_name="AI Leaders")
+        assert result == "No group post generated"
+        rec.assert_not_called()
+        run.assert_not_called()
 
 
 class TestGroupDispatchers:
