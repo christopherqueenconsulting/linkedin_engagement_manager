@@ -14,6 +14,10 @@ import {
   resetChunkReloadState,
 } from './chunkReload'
 
+// NewVersionNotice also watches /api/app-info (issue #754) — a request that never settles keeps
+// this file about the chunk half only. The version half has its own tests in useNewVersion.test.tsx.
+vi.mock('../api/client', () => ({ default: { get: () => new Promise(() => {}) } }))
+
 const CHUNK_ERROR = new TypeError(
   'Failed to fetch dynamically imported module: https://lem.example.com/assets/jszip.min-BZWDyCXg.js',
 )
