@@ -25,6 +25,8 @@ and cannot accidentally bypass encryption.
 """
 
 import base64
+import hashlib
+import hmac
 import os
 import secrets
 from typing import Optional
@@ -124,6 +126,33 @@ def encryption_enabled() -> bool:
 def generate_master_key() -> str:
     """A fresh base64 master key for `/opt/lem/.env`. Never called by the app at runtime."""
     return base64.urlsafe_b64encode(secrets.token_bytes(MASTER_KEY_BYTES)).decode("ascii")
+
+
+def hash_session_token(token: Optional[str]) -> Optional[str]:
+    """SHA-256 of a LEM session token — what `sessions.session_token` stores since #745 (2b).
+
+    Deliberately UNKEYED: the token is 256 bits of `secrets.token_hex(32)`, so there is nothing to
+    brute-force, and keying it would mean a lost or rotated `LEM_SECRET_KEY` logged every user out.
+    Returns 64 lowercase hex chars, which is exactly the existing column width."""
+    if not token:
+        return None
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def hash_client_ip(ip: Optional[str]) -> Optional[str]:
+    """Pseudonymised client IP for the audit log and the session list.
+
+    Keyed with the master key when one is configured, because an IP is a ~2^32 space that a plain
+    digest does not protect. With no key it falls back to an unkeyed digest — same pre-#745
+    fail-open posture as the rest of this module; the value is only ever displayed, never compared
+    across a key rotation."""
+    if not ip:
+        return None
+    current_version, keys = _keyring()
+    material = f"ip:{ip}".encode("utf-8")
+    if current_version is not None:
+        return hmac.new(keys[current_version], material, hashlib.sha256).hexdigest()
+    return hashlib.sha256(material).hexdigest()
 
 
 def _derive_key(master: bytes, user_id: int, field: str) -> bytes:

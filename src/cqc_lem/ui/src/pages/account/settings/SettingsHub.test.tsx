@@ -50,6 +50,7 @@ vi.mock('../DmTemplatesCard', () => ({ default: () => <div data-testid="dm-templ
 vi.mock('../EngagementRosterCard', () => ({ default: () => <div data-testid="engagement-roster-card" /> }))
 vi.mock('../LeadMagnetCard', () => ({ default: () => <div data-testid="lead-magnet-card" /> }))
 vi.mock('../AffiliateCard', () => ({ default: () => <div data-testid="affiliate-card" /> }))
+vi.mock('../SecurityCard', () => ({ default: () => <div data-testid="security-card" /> }))
 
 vi.mock('./VoiceSection', () => ({ default: () => <div data-testid="voice-section" /> }))
 vi.mock('./ContentSection', () => ({ default: () => <div data-testid="content-section" /> }))

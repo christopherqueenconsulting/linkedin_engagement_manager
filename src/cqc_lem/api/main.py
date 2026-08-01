@@ -4,6 +4,7 @@ import math
 import os
 import time
 import zipfile
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum, StrEnum
 from typing import Dict, List, Union
@@ -41,8 +42,11 @@ from cqc_lem.utilities.db import (
     DEFAULT_CATCHUP_EVENT_TYPES, VALID_CATCHUP_TOUCH_MODES, VALID_CATCHUP_MESSAGE_SOURCES,
     CATCHUP_TOUCHES_MIN, CATCHUP_TOUCHES_MAX, CATCHUP_TOUCHES_MAX_STANDARD,
     max_catchup_touches_allowed,
-    create_pin_for_email, verify_pin_for_email, delete_pin_for_email,
-    create_session, get_session_user_id, delete_session,
+    create_pin_for_email, verify_pin_for_email, delete_pin_for_email, get_pin_lockout,
+    create_session, get_session_user_id as _db_get_session_user_id, delete_session,
+    get_session_id, list_user_sessions, revoke_session, revoke_other_sessions,
+    record_auth_event, get_auth_audit_events, AuthAuditEvent,
+    get_user_public_uid, mark_email_verified, change_user_email,
     add_user_by_email, get_user_email, get_user_analytics_profile, get_user_token_info,
     store_linkedin_li_at,
     has_linkedin_session, has_linkedin_password, clear_user_linkedin_password,
@@ -104,7 +108,9 @@ from cqc_lem.utilities.linkedin.token_refresh import (
     get_token_expiry, is_token_expired, is_token_expiring_soon, attempt_token_refresh,
 )
 from cqc_lem.utilities.env_constants import LI_CLIENT_ID, LI_CLIENT_SECRET, LI_REDIRECT_URL, LI_STATE_SALT, ADMIN_SECRET, API_ACCESS_TOKENS, \
-    DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_VIDEO_RATIO
+    DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_VIDEO_RATIO, \
+    SESSION_ABSOLUTE_MAX_DAYS, SESSION_COOKIE_NAME, SESSION_COOKIE_SAMESITE, SESSION_COOKIE_SECURE
+from cqc_lem.utilities.auth_rate_limit import check_auth_init, check_auth_verify, clear_auth_limits
 import requests
 from cqc_lem.utilities.logger import myprint, log_debug, log_warning, log_info, log_error
 from cqc_lem.utilities.mime_type_helper import get_file_mime_type
@@ -117,7 +123,7 @@ from cqc_lem.utilities.observability import (
     FUNNEL_SUBSCRIPTION_STARTED, FUNNEL_CHURNED,
 )
 from cqc_lem.utilities.utils import get_file_extension_from_filepath
-from fastapi import FastAPI, HTTPException, Request, status, APIRouter, Header, Depends
+from fastapi import FastAPI, HTTPException, Request, Response, status, APIRouter, Header, Depends
 from fastapi import File, Form, Query, UploadFile
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, APIKeyHeader
 from fastapi.responses import FileResponse
@@ -225,6 +231,108 @@ async def api_token_middleware(request: Request, call_next):
         if token not in _API_ACCESS_TOKEN_SET:
             return JSONResponse(status_code=401, content={"status_code": 401, "detail": "Unauthorized"})
     return await call_next(request)
+
+
+# ---------------------------------------------------------------------------
+# Session resolution (issue #745, phase 2b)
+#
+# The session token now lives in an httpOnly cookie, so a script on the page cannot read it. Every
+# handler still calls get_session_user_id(...) with whatever the caller sent, and THIS wrapper
+# decides: an explicit token that resolves wins (non-browser callers, the LinkedIn OAuth state
+# round trip, the tutorial capture harness), otherwise the request's cookie is used. The SPA sends
+# the non-secret sentinel COOKIE_SESSION_SENTINEL in the field so ~150 existing call sites keep
+# their shape while holding no secret at all.
+#
+# The cookie is read off a ContextVar rather than threaded through every signature — a handler
+# that never took a Request object still gets cookie auth.
+# ---------------------------------------------------------------------------
+
+COOKIE_SESSION_SENTINEL = "cookie"
+
+_request_session_cookie: ContextVar[Optional[str]] = ContextVar("lem_session_cookie", default=None)
+
+
+@app.middleware("http")
+async def session_cookie_middleware(request: Request, call_next):
+    reset_token = _request_session_cookie.set(request.cookies.get(SESSION_COOKIE_NAME))
+    try:
+        return await call_next(request)
+    finally:
+        _request_session_cookie.reset(reset_token)
+
+
+def _explicit_token(session_token: Optional[str]) -> Optional[str]:
+    """The caller-supplied token, or None when they presented the cookie sentinel instead."""
+    if not session_token or session_token == COOKIE_SESSION_SENTINEL:
+        return None
+    return session_token
+
+
+def current_session_token(session_token: Optional[str] = None) -> Optional[str]:
+    """The token this request is actually authenticated by — explicit first, then the cookie.
+    Used where the token itself is needed (logout, "this device" in the session list)."""
+    return _explicit_token(session_token) or _request_session_cookie.get()
+
+
+def get_session_user_id(session_token: Optional[str] = None) -> Optional[int]:
+    """Resolve the caller's user id from the explicit token or the httpOnly session cookie.
+
+    Wraps `db.get_session_user_id`, which is the only thing that touches the sessions table. An
+    explicit token that does NOT resolve falls through to the cookie rather than 401ing: a browser
+    holding a stale token from before the cutover is still the signed-in person on that cookie."""
+    explicit = _explicit_token(session_token)
+    if explicit:
+        user_id = _db_get_session_user_id(explicit)
+        if user_id:
+            return user_id
+    cookie_token = _request_session_cookie.get()
+    if cookie_token and cookie_token != explicit:
+        return _db_get_session_user_id(cookie_token)
+    return None
+
+
+def _client_ip(request: Optional[Request]) -> Optional[str]:
+    """The caller's address behind the Cloudflare tunnel + nginx edge. X-Forwarded-For is a list;
+    the ORIGINAL client is the first entry."""
+    if request is None:
+        return None
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        first = forwarded.split(",")[0].strip()
+        if first:
+            return first
+    return request.client.host if request.client else None
+
+
+def _user_agent(request: Optional[Request]) -> Optional[str]:
+    return request.headers.get("User-Agent") if request is not None else None
+
+
+def _samesite() -> str:
+    """Starlette rejects anything outside lax/strict/none, and a typo in the env must not turn every
+    login into a 500. Unknown values fall back to the documented default."""
+    value = (SESSION_COOKIE_SAMESITE or "").strip().lower()
+    return value if value in ("lax", "strict", "none") else "lax"
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    """Issue the session cookie. max_age is the ABSOLUTE session cap, not the idle window — the
+    server slides the idle expiry itself, and a cookie that expired mid-idle-window would log an
+    active user out."""
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=token,
+        max_age=SESSION_ABSOLUTE_MAX_DAYS * 24 * 3600,
+        httponly=True,
+        secure=SESSION_COOKIE_SECURE,
+        samesite=_samesite(),
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(key=SESSION_COOKIE_NAME, path="/", httponly=True,
+                           secure=SESSION_COOKIE_SECURE, samesite=_samesite())
 
 
 _ui_dist = os.path.join(os.path.dirname(__file__), "..", "ui", "dist")
@@ -397,7 +505,30 @@ class AuthVerifyRequest(BaseModel):
 
 
 class LogoutRequest(BaseModel):
-    session_token: str
+    session_token: Optional[str] = None
+
+
+class RevokeSessionRequest(BaseModel):
+    """Per-device revocation (issue #745, 2b). `session_id` revokes one device; `all_others`
+    revokes every device except the one making the call."""
+    session_token: Optional[str] = None
+    session_id: Optional[int] = None
+    all_others: bool = False
+
+
+class ExtensionTokenRequest(BaseModel):
+    session_token: Optional[str] = None
+
+
+class EmailChangeInitRequest(BaseModel):
+    session_token: Optional[str] = None
+    new_email: str
+
+
+class EmailChangeVerifyRequest(BaseModel):
+    session_token: Optional[str] = None
+    new_email: str
+    pin: str
 
 
 class CheckoutSessionRequest(BaseModel):
@@ -1936,10 +2067,20 @@ def _start_affiliate_membership(user_id: int, attribution: dict) -> None:
 
 # LinkedIn OAuth initiation — builds the authorization URL and redirects user to LinkedIn
 @router.post("/auth/email/init")
-def auth_email_init(request: AuthInitRequest) -> ResponseModel:
+def auth_email_init(request: AuthInitRequest, http_request: Request = None,
+                    response: Response = None) -> ResponseModel:
     email = request.email.strip().lower()
     if not email:
         raise HTTPException(status_code=400, detail="Email is required")
+
+    ip = _client_ip(http_request)
+    user_agent = _user_agent(http_request)
+    verdict = check_auth_init(email, ip)
+    if not verdict.allowed:
+        record_auth_event(AuthAuditEvent.LOGIN_RATE_LIMITED, email=email, ip=ip,
+                          user_agent=user_agent, success=False, details={"scope": verdict.scope})
+        raise HTTPException(status_code=429, detail="Too many sign-in requests — try again later",
+                            headers={"Retry-After": str(verdict.retry_after_seconds)})
 
     user_exists = bool(get_user_id(email))
     attribution = _attribution_dict(request.attribution)
@@ -1960,12 +2101,18 @@ def auth_email_init(request: AuthInitRequest) -> ResponseModel:
             user_id = add_user_by_email(email)
             if not user_id:
                 raise HTTPException(status_code=500, detail="Could not create user record")
-        session_token = create_session(user_id)
+        session_token = create_session(user_id, user_agent=user_agent, ip=ip)
         if not session_token:
             raise HTTPException(status_code=500, detail="Could not create session")
         if is_new_user:
             _track_signup_funnel(user_id, email, attribution, pin_bypassed=True)
             _start_affiliate_membership(user_id, attribution)
+        mark_email_verified(user_id)
+        clear_auth_limits(email, ip)
+        record_auth_event(AuthAuditEvent.LOGIN_SUCCESS, user_id=user_id, email=email, ip=ip,
+                          user_agent=user_agent, details={"method": "pin_bypass"})
+        if response is not None:
+            _set_session_cookie(response, session_token)
         return ResponseModel(status_code=200, detail={
             "bypass": True,
             "session_token": session_token,
@@ -1988,14 +2135,35 @@ def auth_email_init(request: AuthInitRequest) -> ResponseModel:
 
 
 @router.post("/auth/email/verify")
-def auth_email_verify(request: AuthVerifyRequest) -> ResponseModel:
+def auth_email_verify(request: AuthVerifyRequest, http_request: Request = None,
+                      response: Response = None) -> ResponseModel:
     email = request.email.strip().lower()
     pin = request.pin.strip()
     if not email or not pin:
         raise HTTPException(status_code=400, detail="Email and PIN are required")
 
+    ip = _client_ip(http_request)
+    user_agent = _user_agent(http_request)
+    verdict = check_auth_verify(email, ip)
+    if not verdict.allowed:
+        record_auth_event(AuthAuditEvent.LOGIN_RATE_LIMITED, email=email, ip=ip,
+                          user_agent=user_agent, success=False, details={"scope": verdict.scope})
+        raise HTTPException(status_code=429, detail="Too many attempts — try again later",
+                            headers={"Retry-After": str(verdict.retry_after_seconds)})
+
+    locked_until = get_pin_lockout(email)
+    if locked_until:
+        record_auth_event(AuthAuditEvent.PIN_LOCKED, email=email, ip=ip, user_agent=user_agent,
+                          success=False)
+        raise HTTPException(status_code=429,
+                            detail="Too many incorrect PINs — request a new one shortly")
+
     pin_hash = hash_pin(pin, email)
     if not verify_pin_for_email(email, pin_hash):
+        # Audited by EMAIL, not by user id: resolving the account here would add a lookup on the
+        # one path an attacker controls, and the address is what the row needs anyway.
+        record_auth_event(AuthAuditEvent.LOGIN_FAILED, email=email, ip=ip, user_agent=user_agent,
+                          success=False, details={"reason": "bad_pin"})
         raise HTTPException(status_code=401, detail="Invalid or expired PIN")
 
     user_id = get_user_id(email)
@@ -2005,7 +2173,7 @@ def auth_email_verify(request: AuthVerifyRequest) -> ResponseModel:
         if not user_id:
             raise HTTPException(status_code=500, detail="Could not create user record")
 
-    session_token = create_session(user_id)
+    session_token = create_session(user_id, user_agent=user_agent, ip=ip)
     if not session_token:
         raise HTTPException(status_code=500, detail="Could not create session")
 
@@ -2014,6 +2182,13 @@ def auth_email_verify(request: AuthVerifyRequest) -> ResponseModel:
         _track_signup_funnel(user_id, email, signup_attribution, pin_bypassed=False)
         _start_affiliate_membership(user_id, signup_attribution)
 
+    mark_email_verified(user_id)
+    clear_auth_limits(email, ip)
+    record_auth_event(AuthAuditEvent.LOGIN_SUCCESS, user_id=user_id, email=email, ip=ip,
+                      user_agent=user_agent, details={"method": "email_pin"})
+    if response is not None:
+        _set_session_cookie(response, session_token)
+
     return ResponseModel(
         status_code=200,
         detail={"session_token": session_token, "email": email, "is_new_user": is_new_user},
@@ -2021,13 +2196,28 @@ def auth_email_verify(request: AuthVerifyRequest) -> ResponseModel:
 
 
 @router.post("/auth/logout")
-def auth_logout(request: LogoutRequest) -> ResponseModel:
-    delete_session(request.session_token)
+def auth_logout(request: LogoutRequest, http_request: Request = None,
+                response: Response = None) -> ResponseModel:
+    token = current_session_token(request.session_token)
+    # Best effort, and in this order: whatever happens to the audit trail, the session row and the
+    # cookie must still go. A logout that 500s leaves the user signed in.
+    try:
+        user_id = get_session_user_id(request.session_token)
+    except Exception as e:
+        log_debug(f"Could not resolve user for logout audit: {e}")
+        user_id = None
+    if token:
+        delete_session(token)
+    if user_id:
+        record_auth_event(AuthAuditEvent.LOGOUT, user_id=user_id, ip=_client_ip(http_request),
+                          user_agent=_user_agent(http_request))
+    if response is not None:
+        _clear_session_cookie(response)
     return ResponseModel(status_code=200, detail="Logged out")
 
 
 @router.get("/auth/session")
-def auth_check_session(session_token: str) -> ResponseModel:
+def auth_check_session(session_token: Optional[str] = None) -> ResponseModel:
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -2038,6 +2228,9 @@ def auth_check_session(session_token: str) -> ResponseModel:
     profile = get_user_analytics_profile(user_id)
     return ResponseModel(status_code=200, detail={
         "user_id": user_id,
+        # The identifier that may safely appear in a URL, a log line or a support ticket — the
+        # sequential row id never should (issue #745, 2b).
+        "public_uid": get_user_public_uid(user_id),
         "email": email,
         "plan": profile.get("subscription_tier"),
         "plan_status": profile.get("subscription_status"),
@@ -2089,6 +2282,174 @@ def get_user_token_status(session_token: str) -> ResponseModel:
         "refresh_attempted": refresh_attempted,
         "refresh_succeeded": refresh_succeeded,
     })
+
+
+@router.get("/user/security")
+def get_user_security(session_token: Optional[str] = None) -> ResponseModel:
+    """Everything the account page's Security card shows (issue #745, 2b): the devices signed in,
+    the recent auth history, and the state of the email attribute. Never returns a token, a token
+    hash or an IP hash."""
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    token = current_session_token(session_token)
+    sessions = [{
+        "id": s["id"],
+        "label": s["label"],
+        "created_at": _utc_iso(s.get("created_at")),
+        "last_seen_at": _utc_iso(s.get("last_seen_at")),
+        "expires_at": _utc_iso(s.get("expires_at")),
+        "is_current": s["is_current"],
+    } for s in list_user_sessions(user_id, current_token=token)]
+    events = [{
+        "event": e.get("event"),
+        "success": bool(e.get("success")),
+        "user_agent": e.get("user_agent"),
+        "created_at": _utc_iso(e.get("created_at")),
+    } for e in get_auth_audit_events(user_id)]
+
+    return ResponseModel(status_code=200, detail={
+        "public_uid": get_user_public_uid(user_id),
+        "email": get_user_email(user_id),
+        "sessions": sessions,
+        "recent_events": events,
+    })
+
+
+@router.post("/user/sessions/revoke")
+def revoke_user_session(request: RevokeSessionRequest, http_request: Request = None) -> ResponseModel:
+    """Sign a device out. Revoking the CURRENT session is allowed — it is the same thing as logging
+    out — and the caller's next request simply resolves to no user."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    ip = _client_ip(http_request)
+    user_agent = _user_agent(http_request)
+    if request.all_others:
+        revoked = revoke_other_sessions(user_id, keep_token=current_session_token(request.session_token))
+        record_auth_event(AuthAuditEvent.SESSIONS_REVOKED_ALL, user_id=user_id, ip=ip,
+                          user_agent=user_agent, details={"revoked": revoked})
+        return ResponseModel(status_code=200, detail={"revoked": revoked})
+
+    if not request.session_id:
+        raise HTTPException(status_code=400, detail="session_id or all_others is required")
+    # revoke_session is scoped by user_id, so an id belonging to another account is a 404, never a
+    # cross-account revoke.
+    if not revoke_session(user_id, request.session_id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    record_auth_event(AuthAuditEvent.SESSION_REVOKED, user_id=user_id, ip=ip,
+                      user_agent=user_agent, details={"session_id": request.session_id})
+    return ResponseModel(status_code=200, detail={"revoked": 1})
+
+
+@router.post("/user/extension-token")
+def mint_extension_token(request: ExtensionTokenRequest, http_request: Request = None) -> ResponseModel:
+    """Mint a session token for the browser extension (issue #745, 2b).
+
+    The extension needs a token it can hold; the SPA no longer has one to give it, because the
+    browser's own session is an httpOnly cookie. So it gets its OWN session row — labelled, listed
+    beside every other device on the Security card, and revocable on its own without signing the
+    person out of the app."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    token = create_session(user_id, user_agent=_user_agent(http_request),
+                           ip=_client_ip(http_request), label="LinkedIn Connect extension")
+    if not token:
+        raise HTTPException(status_code=500, detail="Could not create session")
+    return ResponseModel(status_code=200, detail={"session_token": token})
+
+
+@router.post("/user/email/change/init")
+def user_email_change_init(request: EmailChangeInitRequest,
+                           http_request: Request = None) -> ResponseModel:
+    """Start an email change: PIN goes to the NEW address, so control of it has to be proven before
+    the account moves. The address is an attribute of the account — the identity is `public_uid`."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    new_email = request.new_email.strip().lower()
+    if not new_email or "@" not in new_email:
+        raise HTTPException(status_code=400, detail="A valid email address is required")
+    if new_email == (get_user_email(user_id) or "").lower():
+        raise HTTPException(status_code=400, detail="That is already your email address")
+
+    ip = _client_ip(http_request)
+    verdict = check_auth_init(new_email, ip)
+    if not verdict.allowed:
+        raise HTTPException(status_code=429, detail="Too many requests — try again later",
+                            headers={"Retry-After": str(verdict.retry_after_seconds)})
+
+    existing_owner = get_user_id(new_email)
+    if existing_owner and existing_owner != user_id:
+        # Deliberately the same 400 the SPA shows for any rejected address: a distinct "already
+        # registered" reply would turn this endpoint into an account-existence oracle.
+        raise HTTPException(status_code=400, detail="That address cannot be used")
+
+    # Unlike login, this flow has no bypass: the whole point is proving control of the NEW address,
+    # so with no mail provider configured the change is unavailable rather than unconfirmed.
+    _, bypassed = send_pin_email(new_email, "", probe_only=True)
+    if bypassed:
+        raise HTTPException(status_code=503,
+                            detail="Email delivery is not configured — email change is unavailable")
+
+    pin = generate_pin()
+    if not create_pin_for_email(new_email, hash_pin(pin, new_email)):
+        raise HTTPException(status_code=500, detail="Could not create PIN")
+    sent, _ = send_pin_email(new_email, pin, is_new_user=False)
+    if not sent:
+        delete_pin_for_email(new_email)
+        raise HTTPException(status_code=500, detail="Could not send confirmation email")
+
+    record_auth_event(AuthAuditEvent.EMAIL_CHANGE_REQUESTED, user_id=user_id, email=new_email,
+                      ip=ip, user_agent=_user_agent(http_request))
+    return ResponseModel(status_code=200, detail={"message": "Confirmation PIN sent"})
+
+
+@router.post("/user/email/change/verify")
+def user_email_change_verify(request: EmailChangeVerifyRequest,
+                             http_request: Request = None) -> ResponseModel:
+    """Confirm the new address with the PIN sent to it, then move the account. Every OTHER device is
+    revoked: an email change is exactly what an attacker does after stealing a session, and the real
+    owner has to be able to end those sessions by taking their address back."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    new_email = request.new_email.strip().lower()
+    pin = request.pin.strip()
+    if not new_email or not pin:
+        raise HTTPException(status_code=400, detail="Email and PIN are required")
+
+    ip = _client_ip(http_request)
+    user_agent = _user_agent(http_request)
+    verdict = check_auth_verify(new_email, ip)
+    if not verdict.allowed:
+        raise HTTPException(status_code=429, detail="Too many attempts — try again later",
+                            headers={"Retry-After": str(verdict.retry_after_seconds)})
+    if get_pin_lockout(new_email):
+        raise HTTPException(status_code=429, detail="Too many incorrect PINs — start over shortly")
+
+    if not verify_pin_for_email(new_email, hash_pin(pin, new_email)):
+        record_auth_event(AuthAuditEvent.EMAIL_CHANGED, user_id=user_id, email=new_email, ip=ip,
+                          user_agent=user_agent, success=False, details={"reason": "bad_pin"})
+        raise HTTPException(status_code=401, detail="Invalid or expired PIN")
+
+    token = current_session_token(request.session_token)
+    old_email = get_user_email(user_id)
+    if not change_user_email(user_id, new_email, changed_by_session_id=get_session_id(token) if token else None):
+        raise HTTPException(status_code=400, detail="That address cannot be used")
+
+    revoked = revoke_other_sessions(user_id, keep_token=token)
+    record_auth_event(AuthAuditEvent.EMAIL_CHANGED, user_id=user_id, email=new_email, ip=ip,
+                      user_agent=user_agent, details={"old_email": old_email,
+                                                      "sessions_revoked": revoked})
+    log_info("User email changed", user_id=user_id)
+    return ResponseModel(status_code=200, detail={"email": new_email, "sessions_revoked": revoked})
 
 
 @app.get("/auth/linkedin/", response_model=None, include_in_schema=False)

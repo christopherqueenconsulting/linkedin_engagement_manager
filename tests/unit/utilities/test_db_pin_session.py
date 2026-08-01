@@ -26,6 +26,12 @@ def _patch_conn(conn):
     return patch("cqc_lem.utilities.db.get_db_connection", return_value=conn)
 
 
+def _sha256(token: str) -> str:
+    """What `sessions.session_token` stores since #745 (2b) — the plaintext never reaches SQL."""
+    import hashlib
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # create_pin_for_email
 # ---------------------------------------------------------------------------
@@ -89,7 +95,8 @@ class TestVerifyPinForEmail:
         from cqc_lem.utilities.db import verify_pin_for_email
 
         conn, cursor = _make_conn_and_cursor(dictionary=True)
-        cursor.fetchone.return_value = {"id": 5}
+        # First fetchone is the lockout probe (no lock), second is the PIN row itself.
+        cursor.fetchone.side_effect = [None, {"id": 5}]
 
         with _patch_conn(conn):
             result = verify_pin_for_email("user@example.com", "correct_hash")
@@ -114,13 +121,14 @@ class TestVerifyPinForEmail:
             result = verify_pin_for_email("user@example.com", "wrong_hash")
 
         assert result is False
-        # No UPDATE should have been issued
+        # The only UPDATE a wrong PIN may issue is the failed-attempt counter — never used = 1.
         update_calls = [
             c for c in cursor.execute.call_args_list
             if "UPDATE" in c[0][0].upper()
         ]
-        assert len(update_calls) == 0
-        conn.commit.assert_not_called()
+        assert len(update_calls) == 1
+        assert "attempts" in update_calls[0][0][0]
+        assert "used = 1" not in update_calls[0][0][0]
 
     def test_db_error_returns_false(self):
         from cqc_lem.utilities.db import verify_pin_for_email
@@ -197,7 +205,9 @@ class TestCreateSession:
         ]
         assert len(insert_calls) == 1
         insert_params = insert_calls[0][0][1]
-        assert token in insert_params
+        # The row stores the HASH; the plaintext token goes to the caller and nowhere else.
+        assert token not in insert_params
+        assert _sha256(token) in insert_params
         assert 42 in insert_params
 
         # Verify last_login UPDATE was also called
@@ -288,7 +298,8 @@ class TestGetSessionUserId:
 
         sql, params = cursor.execute.call_args[0]
         assert "expires_at" in sql
-        assert "my_session_token" in params
+        assert "my_session_token" not in params
+        assert _sha256("my_session_token") in params
 
     def test_valid_token_slides_expiry_forward(self):
         """A live token should be extended (sliding idle window) and still return the user."""
@@ -310,7 +321,7 @@ class TestGetSessionUserId:
         ]
         assert len(update_calls) == 1
         assert "expires_at" in update_calls[0][0][0]
-        assert "live_token" in update_calls[0][0][1]
+        assert _sha256("live_token") in update_calls[0][0][1]
         conn.commit.assert_called_once()
 
     def test_sliding_expiry_capped_by_absolute_max(self):
@@ -366,7 +377,8 @@ class TestDeleteSession:
         assert result is True
         sql, params = cursor.execute.call_args[0]
         assert "DELETE" in sql.upper()
-        assert "some_token" in params
+        assert "some_token" not in params
+        assert _sha256("some_token") in params
         conn.commit.assert_called_once()
 
     def test_db_error_returns_false_not_raised(self):

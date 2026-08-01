@@ -20,6 +20,8 @@ from cqc_lem.utilities.crypto import (
     decrypt_secret,
     encrypt_secret,
     encryption_enabled,
+    hash_client_ip,
+    hash_session_token,
     needs_reencrypt,
 )
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
@@ -3059,21 +3061,66 @@ def delete_pin_for_email(email: str) -> None:
         connection.close()
 
 
-def verify_pin_for_email(email: str, pin_hash: str) -> bool:
+def get_pin_lockout(email: str) -> Optional[datetime]:
+    """When this email's PIN entry is locked until, or None. Read by the API so a locked account
+    gets a 429 with a wait time instead of an indistinguishable 401."""
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute(
+            """SELECT MAX(locked_until) AS locked_until FROM email_pin_auth
+               WHERE email = %s AND used = 0 AND locked_until > %s""",
+            (email, datetime.now(timezone.utc)),
+        )
+        row = cursor.fetchone()
+        return row.get('locked_until') if row else None
+    except mysql.connector.Error as err:
+        myprint(f"Could not read PIN lockout for {email} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def verify_pin_for_email(email: str, pin_hash: str) -> bool:
+    """Consume a PIN. Wrong guesses increment `attempts` and lock the outstanding PIN once
+    PIN_MAX_ATTEMPTS is reached (issue #745, 2b) — a 6-digit space is otherwise walkable.
+
+    A new /auth/email/init clears the unused rows and therefore the lock; that path is bounded
+    separately by the per-email request limiter in `utilities/auth_rate_limit.py`."""
+    from cqc_lem.utilities.env_constants import PIN_LOCKOUT_MINUTES, PIN_MAX_ATTEMPTS
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        now = datetime.now(timezone.utc)
+        cursor.execute(
+            """SELECT id FROM email_pin_auth
+               WHERE email = %s AND used = 0 AND locked_until > %s LIMIT 1""",
+            (email, now),
+        )
+        if cursor.fetchone():
+            return False
+
+        cursor.execute(
             """SELECT id FROM email_pin_auth
                WHERE email = %s AND pin = %s AND used = 0 AND expires_at > %s
                ORDER BY id DESC LIMIT 1""",
-            (email, pin_hash, datetime.now(timezone.utc)),
+            (email, pin_hash, now),
         )
         row = cursor.fetchone()
         if row:
             cursor.execute("UPDATE email_pin_auth SET used = 1 WHERE id = %s", (row['id'],))
             connection.commit()
             return True
+
+        cursor.execute(
+            """UPDATE email_pin_auth
+                  SET attempts = attempts + 1,
+                      locked_until = CASE WHEN attempts + 1 >= %s THEN %s ELSE locked_until END
+                WHERE email = %s AND used = 0""",
+            (PIN_MAX_ATTEMPTS, now + timedelta(minutes=PIN_LOCKOUT_MINUTES), email),
+        )
+        connection.commit()
         return False
     except mysql.connector.Error as err:
         myprint(f"Could not verify PIN for {email} | Error: {err}")
@@ -3087,7 +3134,13 @@ def verify_pin_for_email(email: str, pin_hash: str) -> bool:
 # Session management
 # ---------------------------------------------------------------------------
 
-def create_session(user_id: int) -> Optional[str]:
+def create_session(user_id: int, user_agent: Optional[str] = None,
+                   ip: Optional[str] = None, label: Optional[str] = None) -> Optional[str]:
+    """Mint a session and return the token to the CALLER ONLY — the row stores its SHA-256.
+
+    Since #745 (2b) `sessions.session_token` holds the hash, so a DB dump hands over no live
+    session. The device facts (user agent, pseudonymised IP, label) are what make per-device
+    revocation possible on the account page."""
     import secrets
     token = secrets.token_hex(32)
     now = datetime.now(timezone.utc)
@@ -3096,8 +3149,10 @@ def create_session(user_id: int) -> Optional[str]:
     cursor = connection.cursor()
     try:
         cursor.execute(
-            "INSERT INTO sessions (session_token, user_id, expires_at) VALUES (%s, %s, %s)",
-            (token, user_id, expires_at),
+            "INSERT INTO sessions (session_token, user_id, expires_at, user_agent, ip_hash, "
+            "last_seen_at, label) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (hash_session_token(token), user_id, expires_at, (user_agent or None),
+             hash_client_ip(ip), now, (label or _device_label(user_agent))),
         )
         cursor.execute(
             "UPDATE users SET last_login = %s WHERE id = %s",
@@ -3113,20 +3168,41 @@ def create_session(user_id: int) -> Optional[str]:
         connection.close()
 
 
+def _device_label(user_agent: Optional[str]) -> str:
+    """A short, human-readable name for a session row ("Chrome on macOS"). Best effort: the account
+    page has to show the user something they can recognise before they revoke it."""
+    if not user_agent:
+        return "Unknown device"
+    ua = user_agent.lower()
+    browser = next((name for token, name in (
+        ("edg/", "Edge"), ("opr/", "Opera"), ("chrome", "Chrome"), ("firefox", "Firefox"),
+        ("safari", "Safari")) if token in ua), "Browser")
+    platform = next((name for token, name in (
+        ("iphone", "iPhone"), ("ipad", "iPad"), ("android", "Android"), ("mac os", "macOS"),
+        ("macintosh", "macOS"), ("windows", "Windows"), ("linux", "Linux")) if token in ua),
+        "unknown OS")
+    return f"{browser} on {platform}"
+
+
 def get_session_user_id(token: str) -> Optional[int]:
     """Validate a session token and, if live, slide its expiry forward.
 
     Sliding idle window (SESSION_IDLE_HOURS) so an active user never has to request a new PIN,
     bounded by an absolute cap (SESSION_ABSOLUTE_MAX_DAYS from first login) for security.
-    Expired/unknown tokens return None so the caller forces a fresh PIN."""
+    Expired/unknown/revoked tokens return None so the caller forces a fresh PIN.
+
+    The presented token is hashed before lookup (#745, 2b) — the plaintext never touches SQL."""
+    token_hash = hash_session_token(token)
+    if not token_hash:
+        return None
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
         now = datetime.now(timezone.utc)
         cursor.execute(
             "SELECT user_id, created_at FROM sessions "
-            "WHERE session_token = %s AND expires_at > %s",
-            (token, now),
+            "WHERE session_token = %s AND expires_at > %s AND revoked_at IS NULL",
+            (token_hash, now),
         )
         row = cursor.fetchone()
         if not row:
@@ -3141,8 +3217,8 @@ def get_session_user_id(token: str) -> Optional[int]:
             if new_expiry > absolute_cap:
                 new_expiry = absolute_cap
         cursor.execute(
-            "UPDATE sessions SET expires_at = %s WHERE session_token = %s",
-            (new_expiry, token),
+            "UPDATE sessions SET expires_at = %s, last_seen_at = %s WHERE session_token = %s",
+            (new_expiry, now, token_hash),
         )
         connection.commit()
         return row['user_id']
@@ -3154,16 +3230,185 @@ def get_session_user_id(token: str) -> Optional[int]:
         connection.close()
 
 
+def get_session_id(token: str) -> Optional[int]:
+    """Row id of a live session, for audit rows that name the session that acted."""
+    token_hash = hash_session_token(token)
+    if not token_hash:
+        return None
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT id FROM sessions WHERE session_token = %s AND revoked_at IS NULL",
+            (token_hash,),
+        )
+        row = cursor.fetchone()
+        return row['id'] if row else None
+    except mysql.connector.Error as err:
+        myprint(f"Could not resolve session id | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def delete_session(token: str) -> bool:
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
-        cursor.execute("DELETE FROM sessions WHERE session_token = %s", (token,))
+        cursor.execute("DELETE FROM sessions WHERE session_token = %s", (hash_session_token(token),))
         connection.commit()
         return True
     except mysql.connector.Error as err:
         myprint(f"Could not delete session | Error: {err}")
         return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def list_user_sessions(user_id: int, current_token: Optional[str] = None) -> list[dict]:
+    """Live sessions for the account page. Never returns a token or a hash — the caller gets the
+    row id it revokes by, plus enough device detail to recognise it. `is_current` is resolved here
+    so the SPA never has to compare tokens."""
+    current_hash = hash_session_token(current_token)
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT id, session_token, label, user_agent, created_at, last_seen_at, expires_at "
+            "FROM sessions WHERE user_id = %s AND revoked_at IS NULL AND expires_at > %s "
+            "ORDER BY COALESCE(last_seen_at, created_at) DESC",
+            (user_id, datetime.now(timezone.utc)),
+        )
+        sessions = []
+        for row in cursor.fetchall():
+            sessions.append({
+                "id": row["id"],
+                "label": row.get("label") or _device_label(row.get("user_agent")),
+                "created_at": row.get("created_at"),
+                "last_seen_at": row.get("last_seen_at"),
+                "expires_at": row.get("expires_at"),
+                "is_current": bool(current_hash) and row.get("session_token") == current_hash,
+            })
+        return sessions
+    except mysql.connector.Error as err:
+        myprint(f"Could not list sessions for user_id {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def revoke_session(user_id: int, session_id: int) -> bool:
+    """Revoke ONE session. Scoped by user_id on purpose — a session id from another account must
+    never be revocable by guessing the number."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE sessions SET revoked_at = %s WHERE id = %s AND user_id = %s "
+            "AND revoked_at IS NULL",
+            (datetime.now(timezone.utc), session_id, user_id),
+        )
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not revoke session {session_id} for user_id {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def revoke_other_sessions(user_id: int, keep_token: Optional[str] = None) -> int:
+    """Revoke every session except the one presenting `keep_token` (None revokes all). Returns how
+    many rows were revoked — "sign out everywhere", and what an email change triggers."""
+    keep_hash = hash_session_token(keep_token)
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        now = datetime.now(timezone.utc)
+        if keep_hash:
+            cursor.execute(
+                "UPDATE sessions SET revoked_at = %s WHERE user_id = %s AND revoked_at IS NULL "
+                "AND session_token <> %s",
+                (now, user_id, keep_hash),
+            )
+        else:
+            cursor.execute(
+                "UPDATE sessions SET revoked_at = %s WHERE user_id = %s AND revoked_at IS NULL",
+                (now, user_id),
+            )
+        connection.commit()
+        return cursor.rowcount or 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not revoke sessions for user_id {user_id} | Error: {err}")
+        return 0
+    finally:
+        cursor.close()
+        connection.close()
+
+
+# ---------------------------------------------------------------------------
+# Auth audit log (issue #745, 2b)
+# ---------------------------------------------------------------------------
+
+class AuthAuditEvent(StrEnum):
+    """Every security-relevant thing that can happen to an account's identity."""
+    LOGIN_SUCCESS = "login_success"
+    LOGIN_FAILED = "login_failed"
+    LOGIN_RATE_LIMITED = "login_rate_limited"
+    PIN_LOCKED = "pin_locked"
+    LOGOUT = "logout"
+    SESSION_REVOKED = "session_revoked"
+    SESSIONS_REVOKED_ALL = "sessions_revoked_all"
+    EMAIL_CHANGE_REQUESTED = "email_change_requested"
+    EMAIL_CHANGED = "email_changed"
+
+
+def record_auth_event(event: AuthAuditEvent, user_id: Optional[int] = None,
+                      email: Optional[str] = None, ip: Optional[str] = None,
+                      user_agent: Optional[str] = None, session_id: Optional[int] = None,
+                      success: bool = True, details: Optional[dict] = None) -> bool:
+    """Append one row to `auth_audit_log`. Best effort — an audit write must never fail a login,
+    but a failure is logged so a silently blind audit trail is visible."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO auth_audit_log (user_id, email, event, ip_hash, user_agent, session_id, "
+            "success, details) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (user_id, email, str(event), hash_client_ip(ip),
+             user_agent[:512] if user_agent else None, session_id, 1 if success else 0,
+             json.dumps(details) if details else None),
+        )
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        log_warning(f"Could not write auth audit row for {event}", user_id=user_id)
+        myprint(f"Could not write auth audit row | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_auth_audit_events(user_id: int, limit: int = 20) -> list[dict]:
+    """Recent auth history for the account page — what a user needs to spot a login they didn't
+    make. Returns no IP hash: it is stored for forensics, not for display."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT event, success, user_agent, created_at FROM auth_audit_log "
+            "WHERE user_id = %s ORDER BY id DESC LIMIT %s",
+            (user_id, int(limit)),
+        )
+        return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        myprint(f"Could not read auth audit for user_id {user_id} | Error: {err}")
+        return []
     finally:
         cursor.close()
         connection.close()
@@ -3182,9 +3427,10 @@ def add_user_by_email(email: str) -> Optional[int]:
     try:
         cursor.execute(
             """INSERT INTO users
-               (email, subscription_status, subscription_tier, trial_started_at, trial_ends_at)
-               VALUES (%s, 'trial', 'free_trial', %s, %s)""",
-            (email, now, trial_ends),
+               (email, public_uid, subscription_status, subscription_tier, trial_started_at,
+                trial_ends_at)
+               VALUES (%s, %s, 'trial', 'free_trial', %s, %s)""",
+            (email, str(uuid.uuid4()), now, trial_ends),
         )
         connection.commit()
         user_id = cursor.lastrowid
@@ -3206,6 +3452,107 @@ def add_user_by_email(email: str) -> Optional[int]:
             return get_user_id(email)
         myprint(f"Could not create user for {email} | Error: {err}")
         return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_user_public_uid(user_id: int) -> Optional[str]:
+    """The account's public identifier (issue #745, 2b). Lazily minted for a row that predates the
+    column and somehow escaped the migration backfill, so callers never have to handle None."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT public_uid FROM users WHERE id = %s", (user_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        if row.get('public_uid'):
+            return row['public_uid']
+        public_uid = str(uuid.uuid4())
+        cursor.execute("UPDATE users SET public_uid = %s WHERE id = %s AND public_uid IS NULL",
+                       (public_uid, user_id))
+        connection.commit()
+        return public_uid
+    except mysql.connector.Error as err:
+        myprint(f"Could not get public_uid for user_id {user_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_user_id_by_public_uid(public_uid: str) -> Optional[int]:
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT id FROM users WHERE public_uid = %s", (public_uid,))
+        row = cursor.fetchone()
+        return row['id'] if row else None
+    except mysql.connector.Error as err:
+        myprint(f"Could not resolve public_uid | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def mark_email_verified(user_id: int) -> bool:
+    """Stamp `users.email_verified_at` — the email is an attribute of the account, and this is the
+    proof that the current value was actually reached."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("UPDATE users SET email_verified_at = %s WHERE id = %s",
+                       (datetime.now(timezone.utc), user_id))
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not mark email verified for user_id {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def change_user_email(user_id: int, new_email: str,
+                      changed_by_session_id: Optional[int] = None) -> bool:
+    """Point the account at a different email and record the move in `user_email_history`.
+
+    The account identity is `users.id` / `public_uid`, so nothing else has to move. Returns False
+    when the new address already belongs to another account — the caller must not merge accounts."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        now = datetime.now(timezone.utc)
+        cursor.execute("SELECT id FROM users WHERE email = %s AND id <> %s", (new_email, user_id))
+        if cursor.fetchone():
+            log_warning("Email change rejected — address already in use", user_id=user_id)
+            return False
+
+        cursor.execute("SELECT email FROM users WHERE id = %s", (user_id,))
+        row = cursor.fetchone()
+        if not row:
+            return False
+        old_email = row.get('email')
+
+        cursor.execute(
+            "UPDATE users SET email = %s, email_verified_at = %s WHERE id = %s",
+            (new_email, now, user_id),
+        )
+        cursor.execute(
+            "INSERT INTO user_email_history (user_id, old_email, new_email, changed_by_session_id) "
+            "VALUES (%s, %s, %s, %s)",
+            (user_id, old_email, new_email, changed_by_session_id),
+        )
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        if err.errno == errorcode.ER_DUP_ENTRY:
+            log_warning("Email change rejected — address already in use", user_id=user_id)
+            return False
+        myprint(f"Could not change email for user_id {user_id} | Error: {err}")
+        return False
     finally:
         cursor.close()
         connection.close()
