@@ -82,7 +82,25 @@ on **cloud-only** model pages, so models that are also pullable locally (`gpt-os
 ```
 
 `--no-usage-levels` skips the fetch entirely (one page request per measured model); a fetch that
-fails leaves that model `unknown` rather than failing the run.
+fails leaves that model `unknown` rather than failing the run. On an **unattended** run there is
+nobody to type that flag, so the same string is read from `BENCHMARK_USAGE_LEVELS` (an explicit
+flag wins) — see *Unattended runs* below.
+
+### Standing spend policy — when a quota increase may be taken (#842)
+
+The delta says what a swap costs. The policy says who gets to accept that cost, and the owner
+settled it once (#842 decision `2A`) so a run does not park for the same question every time:
+
+> A usage-level **increase** is adoptable only on `lem-complex` — long-form is the one tier where
+> quality *is* the product — and only on a **strict** judge-rate win. A tie is not worth +1 usage
+> level on every call that tier serves.
+
+`QUOTA_INCREASE_TIERS` in `scripts/benchmark_models.py` is that rule, and every `recommend` verdict
+carries a `quota_policy` of `adopt` / `hold` with the reason, rendered under the verdict and again
+per recommendation. `hold` is **not** a gate — the quality verdict is unchanged and the swap is
+still recommended; it means the swap goes to the owner rather than into a config PR. `unknown`
+holds too, for the same reason it never renders as `flat`: a level nobody read cannot be checked
+against a rule written about increases.
 
 A recommendation is **not** a change. `.litellm/model_upgrades.yaml` is the RETIREMENT map and the
 reactive half of the model-health check auto-swaps whatever lands in it, so adopting a benchmark
@@ -108,6 +126,25 @@ poetry run python scripts/benchmark_models.py --render /tmp/bm.json --out-dir do
 `scripts/weekly_model_check.sh` invokes it automatically for the candidates the #716 catalog scan
 found, and opens the report as a PR. A benchmark failure alerts but never blocks the retirement-swap
 safety path.
+
+### Unattended runs (#842)
+
+A real run needs a key, so it used to need a person. Four env vars are the whole difference between
+"paste me the report" and a run that happens on its own:
+
+| Variable | Why it has to be in the environment |
+|---|---|
+| `BENCHMARK_ENABLED=true` | Without it `--run` prints "nothing to do" and exits 0 — a silent no-op, not an error. |
+| `OLLAMA_CLOUD_URL` | `https://ollama.com/v1`, the direct API that serves the bare model ids (`deepseek-v4-flash`, not `deepseek-v4-flash:cloud`). |
+| `OLLAMA_CLOUD_API_KEY` | The metered credential. Never in the repo, never in a report. |
+| `BENCHMARK_USAGE_LEVELS` | The incumbents' levels, which ollama.com does not publish. Unsupplied is `unknown`, and `unknown` holds a swap — so a run without it can recommend but can never conclude. |
+
+`POSTHOG_PERSONAL_API_KEY` + `POSTHOG_API_KEY` are optional: both present uses PostHog Evaluations
+as the judge, otherwise the run falls back to the in-runner judge and says so in the report.
+
+The report is the deliverable — `--results-out` for the JSON a later `--render` replays, and
+`--recommendations-out` for the swap list a follow-up config PR reads. Anything the standing spend
+policy marks `hold` is named in the report and belongs to the owner, not to the config PR.
 
 ## Leaderboard
 

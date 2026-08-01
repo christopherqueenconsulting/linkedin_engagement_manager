@@ -895,6 +895,99 @@ class TestUsageLevels:
         assert "raises this stack's Ollama Cloud quota class" not in report
 
 
+# ────────────────── standing spend policy for a quota increase (#842 `2A`) ───────────────────
+
+class TestQuotaPolicy:
+    """The owner's standing call: a usage-level increase is adoptable only on `lem-complex`, and
+    only on a STRICT judge-rate win. Encoded so an unattended run states the decision itself."""
+
+    def test_no_increase_is_adoptable_on_the_quality_gate_alone(self):
+        for direction in (bm.USAGE_FLAT, bm.USAGE_DOWN):
+            policy = bm.quota_policy("lem-medium", {"direction": direction})
+            assert policy["decision"] == bm.POLICY_ADOPT
+
+    def test_a_strict_judge_win_on_lem_complex_is_adoptable(self):
+        policy = bm.quota_policy("lem-complex", {"direction": bm.USAGE_UP},
+                                 _card(tier="lem-complex", judge_rate=0.9),
+                                 _card(tier="lem-complex", role="champion", judge_rate=0.8))
+        assert policy["decision"] == bm.POLICY_ADOPT
+        assert "90% vs 80%" in policy["reason"]
+
+    def test_a_tie_on_lem_complex_is_held_because_a_tie_does_not_buy_a_usage_level(self):
+        policy = bm.quota_policy("lem-complex", {"direction": bm.USAGE_UP},
+                                 _card(tier="lem-complex", judge_rate=0.9),
+                                 _card(tier="lem-complex", role="champion", judge_rate=0.9))
+        assert policy["decision"] == bm.POLICY_HOLD
+        assert "tie" in policy["reason"]
+
+    def test_an_increase_on_any_other_tier_is_held_however_good_the_candidate(self):
+        policy = bm.quota_policy("lem-medium", {"direction": bm.USAGE_UP},
+                                 _card(tier="lem-medium", judge_rate=1.0),
+                                 _card(tier="lem-medium", role="champion", judge_rate=0.5))
+        assert policy["decision"] == bm.POLICY_HOLD
+        assert "`lem-complex`" in policy["reason"] and "lem-medium" in policy["reason"]
+
+    def test_a_missing_judge_rate_cannot_clear_a_quota_increase(self):
+        policy = bm.quota_policy("lem-complex", {"direction": bm.USAGE_UP},
+                                 _card(tier="lem-complex", judge_rate=None),
+                                 _card(tier="lem-complex", role="champion", judge_rate=0.8))
+        assert policy["decision"] == bm.POLICY_HOLD
+        assert "measured quality win" in policy["reason"]
+
+    def test_an_unread_level_is_held_rather_than_adopted(self):
+        # Symmetric with `usage_delta`: unknown is treated as an increase, and a policy about
+        # increases cannot clear one whose size nobody can see.
+        for delta in ({"direction": bm.USAGE_UNKNOWN}, {}, None):
+            policy = bm.quota_policy("lem-complex", delta,
+                                     _card(tier="lem-complex", judge_rate=1.0),
+                                     _card(tier="lem-complex", role="champion", judge_rate=0.1))
+            assert policy["decision"] == bm.POLICY_HOLD
+            assert "BENCHMARK_USAGE_LEVELS" in policy["reason"]
+
+    def test_the_gate_and_the_recommendation_both_carry_the_policy(self):
+        candidate = dict(_card(tier="lem-complex", model="minimax-m3", judge_rate=0.9),
+                         usage={"level": 3, "label": "high"})
+        champion = dict(_card(tier="lem-complex", model="qwen3.5:397b", role="champion",
+                              judge_rate=0.8), usage={"level": 2, "label": "medium"})
+        gate = bm.gate_decision(candidate, champion, {"min_judged": 1})
+        assert gate["verdict"] == bm.VERDICT_RECOMMEND
+        assert gate["quota_policy"]["decision"] == bm.POLICY_ADOPT
+        assert bm.swap_recommendations([gate])[0]["quota_policy"]["decision"] == bm.POLICY_ADOPT
+
+    def test_a_gate_with_no_policy_recorded_still_ships_one(self):
+        # A consumer of the JSON must never read a missing key as "adopt".
+        recs = bm.swap_recommendations([{"tier": "lem-medium", "model": "a", "champion": "old",
+                                         "verdict": bm.VERDICT_RECOMMEND}])
+        assert recs[0]["quota_policy"]["decision"] == bm.POLICY_HOLD
+
+    def test_the_report_names_the_held_recommendations(self):
+        candidate = dict(_card(tier="lem-medium", model="minimax-m3"),
+                         usage={"level": 3, "label": "high"})
+        champion = dict(_card(tier="lem-medium", model="gpt-oss:120b", role="champion"),
+                        usage={"level": 2, "label": "medium"})
+        gate = bm.gate_decision(candidate, champion, {"min_judged": 1})
+        report = bm.render_report({
+            "source": bm.BENCHMARK_SOURCE, "run_id": "bm-x", "date": "2026-07-27",
+            "scoring_mode": bm.SCORING_FALLBACK, "tiers": ["lem-medium"],
+            "candidates": ["minimax-m3"], "scorecards": [champion, candidate],
+            "gates": [gate], "recommendations": bm.swap_recommendations([gate])})
+        assert "standing spend policy" in report
+        assert "**1 held**" in report and "`minimax-m3` on lem-medium" in report
+
+    def test_an_adoptable_recommendation_is_not_reported_as_held(self):
+        candidate = dict(_card(tier="lem-complex", model="minimax-m3", judge_rate=0.9),
+                         usage={"level": 3, "label": "high"})
+        champion = dict(_card(tier="lem-complex", model="qwen3.5:397b", role="champion",
+                              judge_rate=0.8), usage={"level": 2, "label": "medium"})
+        gate = bm.gate_decision(candidate, champion, {"min_judged": 1})
+        report = bm.render_report({
+            "source": bm.BENCHMARK_SOURCE, "run_id": "bm-x", "date": "2026-07-27",
+            "scoring_mode": bm.SCORING_FALLBACK, "tiers": ["lem-complex"],
+            "candidates": ["minimax-m3"], "scorecards": [champion, candidate],
+            "gates": [gate], "recommendations": bm.swap_recommendations([gate])})
+        assert "**adopt**" in report and "held**" not in report
+
+
 # ──────────────────────────────── orchestration ──────────────────────────────────
 
 class TestRunBenchmark:
@@ -1175,6 +1268,26 @@ class TestCLI:
         report = (tmp_path / "2026-07-27-bm-u1.md").read_text()
         assert "Medium (2)" in report   # the override
         assert "unknown" in report      # the candidate, never guessed
+
+    def test_the_env_supplies_the_levels_when_nobody_is_there_to_pass_the_flag(self, monkeypatch,
+                                                                              tmp_path):
+        # An unattended run (#842 `1B`) has no human to type `--usage-levels`, and an unsupplied
+        # level is a quota RISK, not a free pass — so the runner's env carries the same string.
+        monkeypatch.setenv("BENCHMARK_USAGE_LEVELS", "champ=medium")
+        bm.main(["--dry-run", "--models", "cand", "--suite-dir", str(SUITE_DIR),
+                 "--out-dir", str(tmp_path), "--run-id", "bm-u4", "--today", "2026-07-27",
+                 "--champions", "lem-simple=champ", "--tiers", "lem-simple",
+                 "--max-judge-calls", "5"])
+        assert "Medium (2)" in (tmp_path / "2026-07-27-bm-u4.md").read_text()
+
+    def test_an_explicit_flag_wins_over_the_env(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("BENCHMARK_USAGE_LEVELS", "champ=medium")
+        bm.main(["--dry-run", "--models", "cand", "--suite-dir", str(SUITE_DIR),
+                 "--out-dir", str(tmp_path), "--run-id", "bm-u5", "--today", "2026-07-27",
+                 "--champions", "lem-simple=champ", "--tiers", "lem-simple",
+                 "--usage-levels", "champ=high", "--max-judge-calls", "5"])
+        report = (tmp_path / "2026-07-27-bm-u5.md").read_text()
+        assert "High (3)" in report and "Medium (2)" not in report
 
     def test_a_real_run_fetches_levels_for_candidates_and_champions(self, monkeypatch, tmp_path):
         monkeypatch.setenv("BENCHMARK_ENABLED", "true")
