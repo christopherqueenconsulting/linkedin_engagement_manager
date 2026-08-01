@@ -59,7 +59,13 @@ Two things follow for anyone writing a call site here:
    'Open reactions menu' only when it found no React toggle to default-Like instead (issue #873),
    and on a missing post-click 'Reaction state' only when the pre-click read found that toggle: a
    card that never carried one has nothing to re-read, so the miss IS the documented
-   trust-the-click fallback (issue #875).
+   trust-the-click fallback (issue #875). Third rule, from the same function: **one condition gets
+   ONE warning.** The React toggle is one of two ways into a reaction, so its miss never warns — when
+   both it and the fly-out opener miss, the opener's warning already stands for "this card's reaction
+   controls are unreadable", and a second just files another defect for the same fault (issue #877).
+   That rule is not fully applied here yet: ONE unreadable card still warns twice more — from the
+   pre-click 'Reaction state' read (issue #874, open) and from the caller's 'Could not leave a
+   reaction on post' (issue #878, open). Collapse those into the opener's signal; never add a fourth.
 2. **Keep the message a stable template.** The dedup key masks volatile tokens (URLs, emails, UUIDs,
    URNs, hex, `[...]`, quoted strings, numbers) and combines them with the call site, so
    `Selector miss: Feed sort control` and `Selector miss: Reaction state` stay two distinct problems
