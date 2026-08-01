@@ -62,10 +62,13 @@ Ids are the **bare** `ollama.com/api/tags` names, like every other Ollama deploy
 These four carried a `:cloud` tag until #844. Probed 2026-08-01: `glm-5.2:cloud` answers **200** and
 serves the same model as bare `glm-5.2` (`glm-5.2:bogus` 404s, so tags *are* validated — `:cloud`
 is an alias the endpoint resolves, like `:latest`). So the lane was never broken by it, and tier1's
-timeouts are the model being slow, not a 404. What the tag *did* break is everything that reads the
-config by id: the verbatim-catalog assertion, `plan_retirement_notices` (matches the
-docs.ollama.com/cloud retirement table verbatim — an announced retirement of `glm-5.2` would never
-have matched `glm-5.2:cloud`) and shadow-cost pricing.
+timeouts are the model being slow, not a 404. What the tag *did* break is the tooling that reads the
+config by id — above all `plan_retirement_notices`, which matches the docs.ollama.com/cloud
+retirement table verbatim, so an announced retirement of `glm-5.2` would never have matched
+`glm-5.2:cloud` and this lane had no advance-retirement cover at all. The four now also have
+`model_prices_snapshot.json` entries, which keeps the roster uniform and prices them from day one if
+one is ever promoted into a LEM serving tier — it does **not** put a cost on this lane's traffic, which
+is `$ai_generation`'s (see *Token/cost accounting* below), never the app's `llm_call`.
 
 LiteLLM falls hard tasks down the chain (`tier1→tier2→tier3`, `tier2→tier3`) before failing.
 **Local models are not used on this path** — the Ollama Max subscription is cloud-first.

@@ -81,7 +81,10 @@ class TestRoster:
         """track_llm_call prices the SERVING model. estimate_shadow_cost_usd looks the id up
         EXACTLY (no substring fallback, unlike estimate_llm_cost_usd), so an Ollama deployment
         missing from the price snapshot reports no shadow cost at all — subscription traffic that
-        the margin report cannot see."""
+        the margin report cannot see. The `lem-agent-*` lane is covered for uniformity and for the
+        promotion case (glm-5.2 / minimax-m3 are live candidates for lem-complex), NOT because it
+        feeds this path: agent-pipeline traffic never reaches track_llm_call, its cost is LiteLLM's
+        own `$ai_generation` callback (scripts/agent-pipeline/docs/agent-pipeline-routing.md)."""
         for deployment in _ollama_deployments():
             key = f"openai/{deployment['bare']}"
             spec = PRICES.get(key)
@@ -94,15 +97,30 @@ class TestRoster:
         for group in ("lem-medium", "lem-complex"):
             assert len(_ollama_models(group)) >= 2
 
-    def test_the_agent_lane_tiers_carry_no_tag_the_catalog_does_not_use(self):
-        """The `lem-agent-*` aliases back the agent-pipeline's Ollama lane (scripts/agent-pipeline).
-        They are pinned by name because the assertions above only compare against the catalog — and
-        `glm-5.2:cloud` would satisfy nothing there while still SERVING, so a re-introduced tag
-        would show up as a missing-catalog-entry failure with no hint of what to write instead."""
-        assert _ollama_models("lem-agent-tier1") == ["glm-5.2"]
-        assert _ollama_models("lem-agent-tier2") == ["kimi-k2.7-code"]
-        assert _ollama_models("lem-agent-tier2-alt") == ["minimax-m3"]
-        assert _ollama_models("lem-agent-tier3") == ["nemotron-3-super"]
+    def test_no_ollama_deployment_carries_a_tag_the_catalog_never_lists(self):
+        """Companion to the catalog assertion above, for its ERROR MESSAGE. `glm-5.2:cloud` fails
+        that one as "not in the catalog snapshot", which reads like a stale snapshot rather than the
+        real fault: a tag ollama.com RESOLVES (probed on #844 — it answers 200, like `:latest`) but
+        never lists. The `lem-agent-*` lane carried exactly that until #844.
+
+        Matched by SHAPE, not by model name. scripts/weekly_model_check.sh rewrites `model:` lines
+        in place when a configured id is retired — and since #844 that reaches the agent tiers too —
+        so pinning the four current ids would fail CI on the cron's own correct swap."""
+        for deployment in _ollama_deployments():
+            bare = deployment["bare"]
+            for tag in (":cloud", "-cloud", ":latest"):
+                assert not bare.endswith(tag), (
+                    f"{bare} ({deployment['group']}) carries a `{tag}` tag. The direct "
+                    f"ollama.com/v1 API is keyed on the bare catalog id — write "
+                    f"`{bare[:-len(tag)]}`.")
+
+    def test_the_agent_lane_keeps_one_ollama_deployment_per_tier(self):
+        """The `lem-agent-*` aliases back the agent-pipeline's Ollama lane (scripts/agent-pipeline),
+        which pins a tier per issue and has no serving-tier redundancy to fall back on. Also the
+        guard that keeps the assertions above from passing vacuously on an emptied group."""
+        for group in ("lem-agent-tier1", "lem-agent-tier2",
+                      "lem-agent-tier2-alt", "lem-agent-tier3"):
+            assert len(_ollama_models(group)) == 1, f"{group} has no Ollama Cloud deployment"
 
 
 class TestWeeklyModelCheck:

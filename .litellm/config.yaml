@@ -198,8 +198,10 @@ model_list:
   #   tier2a  minimax-m3      premium parallel / vision-capable alternate
   #   tier3   nemotron-3-super fallback / reviewer / reasoning lane
   # These four carried a `:cloud` tag until #844. It served fine (see note 0 — the endpoint
-  # resolves `:cloud` as a tag alias), but it is not what the catalog lists, so the retirement
-  # scan and the shadow-cost lookup could not see them. Bare ids now, like every tier above.
+  # resolves `:cloud` as a tag alias), but it is not what the catalog lists, so the advance-
+  # retirement scan could not see them. Bare ids now, like every tier above. Their price-snapshot
+  # entries keep the roster uniform and price them from day one if one is promoted into a serving
+  # tier; this lane's own cost is LiteLLM's `$ai_generation`, not the app's `llm_call`.
   # See docs/agent-pipeline-routing.md for the capacity-aware lane-selection rule.
   - model_name: lem-agent-tier1
     litellm_params:
