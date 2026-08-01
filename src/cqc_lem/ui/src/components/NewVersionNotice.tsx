@@ -1,11 +1,17 @@
 import { useEffect, useState } from 'react'
 import { CHUNK_RELOAD_BLOCKED_EVENT, NEW_VERSION_MESSAGE } from '../utils/chunkReload'
+import { useNewVersion } from '../hooks/useNewVersion'
 
-// The visible half of the stale-chunk guard (issue #743). Renders nothing in the normal case: a
-// chunk lost to a deploy self-heals with one silent reload. This is only what the user sees when a
-// SECOND failure lands inside the reload cooldown — reloading again could loop, so we ask instead.
+// The ONE "refresh me" surface. Two signals raise it, and neither of them reloads the tab on its
+// own:
+//   - reactive (issue #743) — a chunk lost to a deploy self-heals with one silent reload, and this
+//     is what the user sees when a SECOND failure lands inside the reload cooldown, since reloading
+//     again could loop;
+//   - proactive (issue #754) — `/api/app-info` reports a release newer than the one this tab booted
+//     with, before anything has failed.
 export default function NewVersionNotice() {
   const [blocked, setBlocked] = useState(false)
+  const newVersionAvailable = useNewVersion()
 
   useEffect(() => {
     const onBlocked = () => setBlocked(true)
@@ -13,7 +19,7 @@ export default function NewVersionNotice() {
     return () => window.removeEventListener(CHUNK_RELOAD_BLOCKED_EVENT, onBlocked)
   }, [])
 
-  if (!blocked) return null
+  if (!blocked && !newVersionAvailable) return null
 
   return (
     <div
@@ -23,7 +29,9 @@ export default function NewVersionNotice() {
     >
       <p className="text-sm font-semibold text-amber-900">{NEW_VERSION_MESSAGE}</p>
       <p className="mt-1 text-sm text-amber-800">
-        This tab has been open since an earlier release, so part of the app could not load.
+        {blocked
+          ? 'This tab has been open since an earlier release, so part of the app could not load.'
+          : 'This tab has been open since an earlier release. Refreshing picks up the latest version.'}
       </p>
       <button
         type="button"

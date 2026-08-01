@@ -36,7 +36,7 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     get_newsletter_settings, mark_newsletter_published, record_newsletter_subscriber_stat, \
     get_newsletter_edition, mark_edition_published, mark_edition_failed, \
     upsert_user_group, get_enabled_group_ids, record_group_post, record_post_stats, \
-    get_recent_posted_post_ids, \
+    get_recent_posted_post_ids, get_uncaptured_posted_post_ids, \
     get_shipped_variant_keys, \
     get_lead_magnet_settings, has_received_lead_magnet, record_lead_magnet_sent, \
     LogResultType, has_user_commented_on_post_url, get_post_url_from_log_for_user, get_post_message_from_log_for_user, \
@@ -91,6 +91,7 @@ from cqc_lem.utilities.observability import track_post_outcome, track_audience_s
     track_comment_outcome, track_golden_hour_report, track_company_page_invite_run, \
     track_catchup_run, attribute_llm_cost, llm_attribution, \
     FEATURE_COMMENT, FEATURE_CONTENT, FEATURE_DM
+from cqc_lem.utilities.env_constants import MAX_WAIT_RETRY
 from cqc_lem.utilities.selenium_util import click_element_wait_retry, \
     get_element_wait_retry, get_elements_as_list_wait_stale, getText, close_tab, get_driver_wait_pair, quit_gracefully, \
     wait_for_ajax, find_first, click_first, find_all_first
@@ -917,10 +918,17 @@ def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = No
             return False
         time.sleep(random.uniform(1.5, 3))
         step = "find composer"
+        # Scoped to THIS card. The feed walk comments on several posts without reloading the page and
+        # LinkedIn leaves each composer mounted after it submits, so a document-wide lookup returns
+        # the FIRST visible role=textbox in DOM order — an earlier post's composer, scrolled off the
+        # top, which is how the click landed under the sticky nav at y=9 (issue #876). Centering that
+        # composer (#815) would not have fixed it, it would have typed the comment into the wrong
+        # post. No document-wide fallback on purpose: no composer on this card means skip the post.
         composer = find_first(driver, wait,
                               [(By.CSS_SELECTOR, "div[role='textbox'][aria-label*='creating comment']"),
                                (By.CSS_SELECTOR, "div[role='textbox']")],
-                              "Comment composer", visible_only=True, required=False, user_id=user_id)
+                              "Comment composer", visible_only=True, required=False,
+                              parent_element=card, user_id=user_id)
         if composer is None:
             return False
         step = "focus composer"
@@ -962,20 +970,31 @@ def react_to_post_inline(driver, wait, card, post_content: str = None, comment_t
         reaction = choose_post_reaction(post_content, comment_text)
         # The reaction fly-out is hover-revealed off the card's primary Like/React toggle. Hover it
         # first (the menu opener is hidden until then), then click the opener.
+        # The toggle is only ONE of the two ways in: missing it still leaves the fly-out path below,
+        # so its absence alone is not a failure. And when the opener misses too, that miss already
+        # warns (`warn_on_miss=trigger is None`, issue #873) and the caller warns again — so warning
+        # here as well filed a THIRD PostHog defect for the same one condition (issue #877).
         trigger = state or find_first(
             driver, wait,
             [(By.CSS_SELECTOR, "button[aria-label='React Like']"),
              (By.CSS_SELECTOR, "button[aria-label^='React']"),
              (By.CSS_SELECTOR, "button[aria-label='Like']")],
-            "React toggle", parent_element=card, required=False, visible_only=True, user_id=user_id)
+            "React toggle", parent_element=card, required=False, visible_only=True,
+            warn_on_miss=False, user_id=user_id)
         if trigger is not None:
             try:
                 ActionChains(driver).move_to_element(trigger).perform()
                 time.sleep(random.uniform(0.6, 1.2))
             except Exception:
                 pass
+        # The fly-out opener is optional: with a `trigger` in hand its absence just means we take the
+        # documented default-Like fallback below, which is working behaviour — warning about it every
+        # card escalated into a filed defect (issue #873). With no trigger there is no fallback, so
+        # the card's reaction controls really are unreadable and the miss is worth the signal — this
+        # is the ONE warning that stands for that condition (the React-toggle miss above is DEBUG).
         opened = click_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label='Open reactions menu']")],
-                             "Open reactions menu", parent_element=card, required=False, user_id=user_id)
+                             "Open reactions menu", parent_element=card, required=False,
+                             warn_on_miss=trigger is None, user_id=user_id)
         time.sleep(random.uniform(0.8, 1.6))
         # The fly-out can render just outside the card subtree, so match the reaction button globally
         # (only one menu is open at a time and click_first filters to visible elements).
@@ -990,11 +1009,17 @@ def react_to_post_inline(driver, wait, card, post_content: str = None, comment_t
             driver.execute_script("arguments[0].click();", trigger)
         time.sleep(random.uniform(0.8, 1.5))
         wait_for_ajax(driver)
+        # Best-effort confirm: label flips away from 'no reaction'. If the toggle can't be re-read,
+        # trust the click rather than false-negative — so the miss only means something when the
+        # card HAD a readable Reaction-state button before the click. Cards that never exposed one
+        # (the fly-out/React-toggle path) take the documented trust-the-click fallback, and warning
+        # about that on every card escalated to ERROR and filed a defect for working behaviour
+        # (issue #875). A control this card never carried is also not worth waiting out twice.
+        expected = state is not None
         after = find_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label^='Reaction button state']")],
                            "Reaction state (post-click)", parent_element=card, required=False,
-                           visible_only=True, user_id=user_id)
-        # Best-effort confirm: label flips away from 'no reaction'. If the toggle can't be re-read,
-        # trust the click rather than false-negative.
+                           visible_only=True, warn_on_miss=expected,
+                           max_try=MAX_WAIT_RETRY if expected else 1, user_id=user_id)
         if after is not None and "no reaction" in (after.get_attribute("aria-label") or "").lower():
             return False
         myprint(f"Reacted '{reaction}' on post")
@@ -1128,12 +1153,27 @@ def _roster_activity_url(profile_url: str) -> str:
     return f"{base}/recent-activity/all/"
 
 
+def _feed_sort_control_expected(driver) -> bool:
+    """'Sort by' is a HOME-FEED control. Absent there it is selector rot and must warn; on a group
+    feed or an activity page it was never part of the surface (issue #872), and warning would repeat
+    every run until the recurrence rule filed a defect for working behaviour. An unreadable URL
+    counts as not-expected — a false silence loses one signal, a false defect costs a triage."""
+    try:
+        return "/feed" in str(driver.current_url or "")
+    except Exception:
+        return False
+
+
 def _switch_feed_to_recent(driver, wait) -> None:
     """Best-effort: flip the feed sort from 'Top' to 'Recent' so golden-hour posts surface for
     commenting. Silent no-op if the 'Sort by' control isn't present."""
     try:
+        # Only the home feed has the control, so only there is a miss worth waiting out (15s x
+        # MAX_WAIT_RETRY per group run, otherwise) or worth warning about.
+        expected = _feed_sort_control_expected(driver)
         btn = find_first(driver, wait, [(By.XPATH, "//button[contains(normalize-space(),'Sort by')]")],
-                         "Feed sort control", required=False)
+                         "Feed sort control", required=False, warn_on_miss=expected,
+                         max_try=MAX_WAIT_RETRY if expected else 1)
         if btn is None:
             return
         # The control reads "Sort by: Recent" once flipped — skip re-opening the menu so the second
@@ -1562,31 +1602,131 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     return posted
 
 
+# How far ABOVE a comment's own top edge a composer may still start and count as its reply box.
+# Only absorbs sub-pixel/rounding drift — a real reply box opens below the comment, never above it.
+_COMPOSER_ABOVE_SLACK_PX = 8
+
+
+def _visible_rect(element: WebElement) -> dict | None:
+    """Page-coordinate rect of a RENDERED element, else None. Zero-size IS the hidden case here —
+    the same width>0 && height>0 test #478 applies to composer candidates."""
+    try:
+        r = element.rect or {}
+    except Exception:
+        return None  # stale/detached element is not a candidate
+    if not r.get("width") or not r.get("height"):
+        return None
+    return r
+
+
+def _visible_composers(root: WebDriver | WebElement) -> list[tuple[WebElement, dict]]:
+    """`(element, rect)` for every rendered role=textbox under `root` — a WebElement to search one
+    comment's subtree, or the driver to search the page."""
+    found = []
+    try:
+        for box in root.find_elements(By.CSS_SELECTOR, "div[role='textbox']"):
+            rect = _visible_rect(box)
+            if rect:
+                found.append((box, rect))
+    except Exception:
+        pass  # a stale root has no candidates; the caller skips
+    return found
+
+
+def _in_same_comment(driver: WebDriver, comment_el: WebElement, other: WebElement | None) -> bool:
+    """True when `other` is this comment or shares its subtree (a reply wrapper inside it, or a
+    wrapper holding it) — i.e. the composer that resolved to it is ours to type into."""
+    if other is None:
+        return False
+    if other == comment_el:
+        return True
+    try:
+        return bool(driver.execute_script(
+            "return arguments[0].contains(arguments[1]) || arguments[1].contains(arguments[0]);",
+            comment_el, other))
+    except Exception:
+        return False
+
+
+def _reply_composer_for_comment(driver: WebDriver, comment_el: WebElement,
+                                user_id: int = None) -> WebElement | None:
+    """The reply composer belonging to THIS comment — never a page-wide first match.
+
+    A document-wide role=textbox lookup returns the first VISIBLE composer in DOM order, so the reply
+    was typed into the post's main 'Add a comment' box (it posts as a standalone comment) or into one
+    left mounted by a comment replied to earlier in the same sweep. Same bug class as #478 on the
+    other reply path and #876 on the post card; this is issue #883.
+
+    Two rules, in order. A composer inside the comment's own subtree is unambiguous — LinkedIn nests
+    a comment's replies, and the box that opens at the end of them, in the comment container. If this
+    render puts it outside, fall back to #478's geometry: the visible composer NEAREST the comment's
+    bottom edge, with anything above the comment rejected OUTRIGHT — that hard above-filter is what
+    keeps the post's main box out, where #478 merely penalises it and still hands it back when it is
+    the only candidate — and with a box that resolves to a DIFFERENT comment rejected too. No
+    candidate means skip; we never borrow a composer.
+    """
+    anchor = _visible_rect(comment_el)
+    if anchor is None:
+        # The callers now rely on THIS function to log every miss (#886 dropped their own warning),
+        # so a stale/unrendered comment must not return None silently.
+        log_debug("Comment is not rendered; no reply composer to resolve",
+                  action_type="reply", user_id=user_id)
+        return None
+    bottom = anchor["y"] + anchor["height"]
+    nested = _visible_composers(comment_el)
+    candidates = nested or [(box, rect) for box, rect in _visible_composers(driver)
+                            if rect["y"] >= anchor["y"] - _COMPOSER_ABOVE_SLACK_PX]
+    best = min(candidates, key=lambda br: abs(br[1]["y"] - bottom), default=None)
+    if best is None:
+        log_debug("No reply composer belongs to this comment", action_type="reply", user_id=user_id)
+        return None
+    if nested:
+        return best[0]
+    # Sibling render: reject a box that resolves to a DIFFERENT comment — the nearest box below can
+    # belong to a LATER comment when our own reply box never opened, and borrowing it answers the
+    # wrong person. An UNRESOLVED owner is not proof of that: `_comment_container` was written for a
+    # comment BODY (`expandable-text-box`) and rejects any ancestor holding a GIF/Emoji composer
+    # button, which is the composer's OWN toolbar here — requiring it to resolve would make this
+    # branch skip every time, silently, whenever LinkedIn renders the reply box outside the comment.
+    # Unresolved therefore falls through to #478's proven geometry, still under the hard above-filter
+    # that is what actually keeps the post's main comment box out.
+    owner = _comment_container(driver, best[0])
+    if owner is not None and not _in_same_comment(driver, comment_el, owner):
+        log_debug("Nearest reply composer belongs to another comment", action_type="reply", user_id=user_id)
+        return None
+    return best[0]
+
+
+def _type_and_submit_reply(driver: WebDriver, composer: WebElement, reply_text: str,
+                           user_id: int = None) -> bool:
+    """Type into an ALREADY-resolved composer and submit (role=textbox + Ctrl+Enter fallback). Both
+    reply paths share this so the submit/verify contract can never drift between them. True only when
+    `_composer_submitted` confirms the post."""
+    reply_text = _strip_non_bmp(reply_text)
+    if not reply_text.strip():
+        return False
+    _focus_composer(driver, composer)  # sticky nav steals a top-of-viewport click (#815)
+    composer.send_keys(reply_text)
+    time.sleep(random.uniform(1, 2))
+    if not driver.execute_script(_SUBMIT_NEAR_COMPOSER_JS, composer):
+        composer.send_keys(Keys.CONTROL, Keys.RETURN)  # fallback
+    time.sleep(random.uniform(3, 5))
+    return _composer_submitted(driver, composer, reply_text)
+
+
 def _reply_to_comment_inline(driver, wait, comment_el, reply_text: str, user_id: int = None) -> bool:
     """Open a comment's inline reply box, type the reply, and submit (same SDUI pattern as
-    post_comment_inline: role=textbox composer + Ctrl+Enter fallback). Returns True if posted."""
+    post_comment_inline: role=textbox composer + Ctrl+Enter fallback). The composer is resolved
+    against THIS comment (`_reply_composer_for_comment`), never page-wide. Returns True if posted."""
     try:
         if click_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label='Reply']")],
                        "Open reply box", parent_element=comment_el, required=False, user_id=user_id) is None:
             return False
         time.sleep(random.uniform(1.5, 3))
-        composer = find_first(driver, wait,
-                              [(By.CSS_SELECTOR, "div[role='textbox'][aria-label*='reply']"),
-                               (By.CSS_SELECTOR, "div[role='textbox'][aria-label*='comment']"),
-                               (By.CSS_SELECTOR, "div[role='textbox']")],
-                              "Reply composer", visible_only=True, required=False, user_id=user_id)
+        composer = _reply_composer_for_comment(driver, comment_el, user_id=user_id)
         if composer is None:
             return False
-        reply_text = _strip_non_bmp(reply_text)
-        if not reply_text.strip():
-            return False
-        _focus_composer(driver, composer)  # sticky nav steals a top-of-viewport click (#815)
-        composer.send_keys(reply_text)
-        time.sleep(random.uniform(1, 2))
-        if not driver.execute_script(_SUBMIT_NEAR_COMPOSER_JS, composer):
-            composer.send_keys(Keys.CONTROL, Keys.RETURN)  # fallback
-        time.sleep(random.uniform(3, 5))
-        return _composer_submitted(driver, composer, reply_text)
+        return _type_and_submit_reply(driver, composer, reply_text, user_id=user_id)
     except Exception as e:
         log_warning("Inline reply post failed", exc=e, action_type="reply", user_id=user_id)
         return False
@@ -2177,6 +2317,17 @@ def _post_analytics_counts(driver, post_url: str) -> dict:
         return {}
 
 
+def _post_stats_backfill_bounds() -> Tuple[int, int]:
+    """(window days, per-run cap) for the never-captured backfill (issue #809). A typo'd env value
+    falls back to the defaults rather than taking the whole sweep down."""
+    def _read(name: str, default: int) -> int:
+        try:
+            return max(0, int((os.environ.get(name) or "").strip() or default))
+        except ValueError:
+            return default
+    return _read("POST_STATS_BACKFILL_DAYS", 90), _read("POST_STATS_BACKFILL_MAX", 5)
+
+
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
                   queue='se_content')
 def auto_scrape_post_stats(self, user_id: int):
@@ -2185,6 +2336,14 @@ def auto_scrape_post_stats(self, user_id: int):
     social-count extraction on each post's detail page, then on its analytics page for the
     signals the detail page never renders (saves, impressions)."""
     post_ids = get_recent_posted_post_ids(user_id)
+    # The analytics dashboard reads a 90-day window while this sweep only walks the last few weeks,
+    # so a post that missed its capture while it was fresh stayed unmeasurable forever (issue #809).
+    # Top the sweep up with a bounded number of never-captured posts from the wider window.
+    backfill_days, backfill_max = _post_stats_backfill_bounds()
+    if backfill_max:
+        already = set(post_ids)
+        post_ids = post_ids + [pid for pid in get_uncaptured_posted_post_ids(
+            user_id, days=backfill_days, limit=backfill_max) if pid not in already]
     if not post_ids:
         return "No recent posts to scrape"
     # One query for the whole sweep, so every outcome event can name the A/B variant its post shipped
@@ -2214,6 +2373,15 @@ def auto_scrape_post_stats(self, user_id: int):
             # the analytics view doesn't render can't zero out one the detail page did.
             for key, val in _post_analytics_counts(driver, url).items():
                 counts[key] = max(counts.get(key) or 0, val)
+            # NOTHING parsed (a readable page always yields the full zero-filled dict) means the page
+            # never rendered — auth wall, 429, dead permalink — not that the post earned nothing.
+            # Recording those zeros publishes a fabricated row to the analytics panel, and for a
+            # backfilled post it is permanent: one bad read retires it from the never-captured queue
+            # and the dashboard measures a lie instead of a gap (#809).
+            if not counts:
+                log_debug("Post page unreadable — leaving it uncaptured", user_id=user_id,
+                          post_id=pid, task_name="auto_scrape_post_stats")
+                continue
             record_post_stats(user_id, pid, counts.get("reactions", 0), counts.get("comments", 0),
                               reposts=counts.get("reposts") or 0,
                               impressions=counts.get("impressions") or None,
@@ -3124,8 +3292,15 @@ def _react_to_comment_inline(driver, wait, comment_el, user_id: int = None) -> b
 def _reply_under_comment_inline(driver, wait, comment_el, reply_text: str, user_id: int = None) -> bool:
     """Reply UNDER a specific comment — NOT as a new top-level comment. The bug: clicking a comment's
     Reply then taking the first page-wide role=textbox grabbed the post's main 'Add a comment' box, so
-    the reply posted as a standalone comment. Fix: after opening the reply box, type into the composer
-    NEAREST the comment (the inline reply box opens right below it), never the far-away main box."""
+    the reply posted as a standalone comment (#478).
+
+    #478's own fix only PENALISED a composer above the comment, so the main box still won when it was
+    the only visible one — the exact failure this function exists to prevent (#886). Composer
+    resolution is now `_reply_composer_for_comment`, shared with `_reply_to_comment_inline` (#883):
+    a box inside this comment wins, a box above it is rejected outright, a box owned by a DIFFERENT
+    comment is rejected, and no box of ours means skip. This function keeps only its own way of
+    OPENING the box — the #478 thread path needs the scroll + hover that renders a hover-hidden Reply
+    button before it can be clicked."""
     try:
         driver.execute_script("arguments[0].scrollIntoView({block:'center'});", comment_el)
         try:
@@ -3141,29 +3316,10 @@ def _reply_under_comment_inline(driver, wait, comment_el, reply_text: str, user_
         except Exception:
             driver.execute_script("arguments[0].click();", rbtns[0])
         time.sleep(random.uniform(1.5, 2.8))
-        # Pick the VISIBLE composer nearest the comment (the reply box that just opened below it);
-        # heavily penalise any composer above the comment (that's the main top comment box).
-        composer = driver.execute_script(
-            "const a=arguments[0].getBoundingClientRect();"
-            "const boxes=[...document.querySelectorAll(\"div[role='textbox']\")].filter(e=>{"
-            "  const r=e.getBoundingClientRect(); return r.width>0 && r.height>0;});"
-            "let best=null,bd=1e12;"
-            "for(const e of boxes){const r=e.getBoundingClientRect();"
-            "  let d=Math.abs(r.top-a.bottom)+(r.top<a.top?1e6:0);"
-            "  if(d<bd){bd=d;best=e;}} return best;", comment_el)
+        composer = _reply_composer_for_comment(driver, comment_el, user_id=user_id)
         if composer is None:
-            log_warning("Reply-under-comment: no composer near the comment", action_type="reply", user_id=user_id)
-            return False
-        reply_text = _strip_non_bmp(reply_text)
-        if not reply_text.strip():
-            return False
-        _focus_composer(driver, composer)  # sticky nav steals a top-of-viewport click (#815)
-        composer.send_keys(reply_text)
-        time.sleep(random.uniform(1, 2))
-        if not driver.execute_script(_SUBMIT_NEAR_COMPOSER_JS, composer):
-            composer.send_keys(Keys.CONTROL, Keys.RETURN)  # fallback
-        time.sleep(random.uniform(3, 5))
-        return _composer_submitted(driver, composer, reply_text)
+            return False  # expected no-op (the box never opened) — `_reply_composer_for_comment` logs it DEBUG
+        return _type_and_submit_reply(driver, composer, reply_text, user_id=user_id)
     except Exception as e:
         log_warning("Reply-under-comment failed", exc=e, action_type="reply", user_id=user_id)
         return False

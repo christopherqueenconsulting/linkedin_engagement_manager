@@ -10,29 +10,13 @@ import OnboardingChecklist from '../components/OnboardingChecklist'
 import PostHogStatsPanel from '../components/PostHogStatsPanel'
 import LineChart, { type LinePoint } from '../components/charts/LineChart'
 import Leaderboard, { type RankEntry } from '../components/charts/Leaderboard'
-import { compactNumber, formatRate } from '../components/charts/palette'
+import PerPostTable, { type PerPost } from '../components/charts/PerPostTable'
+import { compactNumber, formatRate, shortDate, titleCase } from '../components/charts/palette'
 
 interface PostStats {
   recommendations: { weekday: string; hour: number; avg_engagement: number; sample: number }[]
   rankings: Record<string, RankEntry[]>
   sample_size: number
-}
-
-interface PerPost {
-  post_id: number
-  scheduled_time: string | null
-  format: string | null
-  archetype: string | null
-  hook_style: string | null
-  topic: string | null
-  buyer_stage: string | null
-  reactions: number
-  comments: number
-  reposts: number
-  saves: number
-  impressions: number | null
-  engagement: number
-  engagement_rate: number | null
 }
 
 interface TrendPoint {
@@ -119,11 +103,40 @@ interface ContentQuality {
   alerts: ContentQualityAlert[]
 }
 
+// Why the panel below is measuring a SUBSET of the account (#809). Only a post with a captured
+// post_stats row can be measured, so these are what reconcile "Posts measured" with the all-time
+// "posted" tile — without them a partial window reads as the analytics being broken.
+interface AnalyticsCoverage {
+  posted_total: number
+  posted_in_window: number
+  measured: number
+  awaiting_capture: number
+}
+
+// Built as one string rather than inline JSX: a newline between text and an expression container
+// becomes a space, which would render "post s" and " ." mid-sentence.
+function coverageSummary(coverage: AnalyticsCoverage, days: number): string {
+  const scope =
+    coverage.posted_total > coverage.posted_in_window
+      ? ` (${coverage.posted_total} posted all time).`
+      : '.'
+  const backlog =
+    coverage.awaiting_capture > 0
+      ? ` ${coverage.awaiting_capture} still need their stats read from LinkedIn — they join the` +
+        ' numbers below once a capture succeeds.'
+      : ''
+  return (
+    `Measuring ${coverage.measured} of ${coverage.posted_in_window} post(s) published in the last ` +
+    `${days} days${scope}${backlog}`
+  )
+}
+
 interface Analytics {
   per_post: PerPost[]
   trend: TrendPoint[]
   sample_size: number
   days: number
+  coverage?: AnalyticsCoverage
   content_mix?: ContentMix
   comment_quality?: CommentQuality
   content_quality?: ContentQuality
@@ -206,20 +219,6 @@ function deltaColor(d: AudienceDelta | null | undefined): string {
 // letting the tile imply a window it didn't cover.
 function deltaSince(d: AudienceDelta | null | undefined): string {
   return d ? `since ${shortDate(d.from_date)}` : 'not enough history'
-}
-
-// "2026-07-20" → "Jul 20" for compact chart/table axes (dates are tz-agnostic calendar days).
-const _MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-function shortDate(iso: string): string {
-  const [, m, d] = iso.split('-')
-  const mi = Number(m) - 1
-  return mi >= 0 && mi < 12 ? `${_MONTHS[mi]} ${Number(d)}` : iso
-}
-
-function titleCase(k: string | null): string {
-  if (!k) return '—'
-  const s = String(k).replace(/[_-]+/g, ' ').trim()
-  return s.charAt(0).toUpperCase() + s.slice(1)
 }
 
 interface DashboardStats {
@@ -365,6 +364,8 @@ export default function Dashboard() {
   const perPost = analytics?.per_post ?? []
   const trend = analytics?.trend ?? []
   const hasAnalytics = (analytics?.sample_size ?? 0) > 0
+  const coverage = analytics?.coverage
+  const analyticsDays = analytics?.days ?? 90
   const mix = analytics?.content_mix
   const commentQuality = analytics?.comment_quality
   const contentQuality = analytics?.content_quality
@@ -510,8 +511,16 @@ export default function Dashboard() {
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-6">
           <div className="flex items-baseline justify-between">
             <h2 className="text-lg font-semibold text-gray-700">Engagement Analytics</h2>
-            <span className="text-xs text-gray-400">Last {analytics?.days ?? 90} days</span>
+            <span className="text-xs text-gray-400">Last {analyticsDays} days</span>
           </div>
+
+          {/* Coverage (#809) — the panel only measures posts whose LinkedIn numbers were captured, so
+              say so explicitly rather than letting a partial window read as missing analytics. */}
+          {coverage && (
+            <p className="text-xs text-gray-500 -mt-4" data-testid="analytics-coverage">
+              {coverageSummary(coverage, analyticsDays)}
+            </p>
+          )}
 
           {/* Content mix governor (#618) — how much of the plan sells vs. gives value */}
           {mix && mix.total > 0 && (
@@ -543,7 +552,9 @@ export default function Dashboard() {
               </div>
               <p className="text-xs text-gray-400 mt-2">
                 One soft-promo post per {mix.promo_every_n} planned posts, case-study shaped with an
-                artifact CTA — never a meeting ask.
+                artifact CTA — never a meeting ask. Measured across the {mix.total} planned post(s)
+                in the last {analyticsDays} days — the plan includes drafts and scheduled posts, so
+                this denominator is not the same as the posts measured above.
                 {(mix.counts.unclassified ?? 0) > 0 &&
                   ` ${mix.counts.unclassified} older post(s) predate the mix governor and are not counted.`}
               </p>
@@ -698,7 +709,11 @@ export default function Dashboard() {
           {!hasAnalytics ? (
             <p className="text-sm text-gray-400 py-4 text-center">
               Gathering data — engagement analytics appear once your posted content has captured
-              stats{analytics ? ` (currently ${analytics.sample_size})` : ''}.
+              stats.
+              {coverage &&
+                (coverage.posted_in_window > 0
+                  ? ` None of your ${coverage.posted_in_window} post(s) from the last ${analyticsDays} days have been read from LinkedIn yet.`
+                  : ` No posts published in the last ${analyticsDays} days yet.`)}
             </p>
           ) : (
             <>
@@ -750,44 +765,8 @@ export default function Dashboard() {
                 <Leaderboard title="Top hooks" entries={hookBoard} humanizeKey={titleCase} />
               </div>
 
-              {/* Per-post performance drill-down */}
-              <div>
-                <h3 className="text-sm font-semibold text-gray-700 mb-2">Per-post performance</h3>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs text-left tabular-nums">
-                    <thead>
-                      <tr className="text-gray-500 border-b border-gray-200">
-                        <th className="py-1.5 pr-3 font-medium">Date</th>
-                        <th className="py-1.5 pr-3 font-medium">Format</th>
-                        <th className="py-1.5 pr-3 font-medium">Hook</th>
-                        <th className="py-1.5 pr-3 font-medium text-right">Impr.</th>
-                        <th className="py-1.5 pr-3 font-medium text-right">Reactions</th>
-                        <th className="py-1.5 pr-3 font-medium text-right">Comments</th>
-                        <th className="py-1.5 pr-3 font-medium text-right">Reposts</th>
-                        <th className="py-1.5 pr-3 font-medium text-right">Saves</th>
-                        <th className="py-1.5 font-medium text-right">Eng. rate</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {perPost.map((p) => (
-                        <tr key={p.post_id} className="border-b border-gray-100 last:border-0 text-gray-700">
-                          <td className="py-1.5 pr-3 whitespace-nowrap">
-                            {p.scheduled_time ? shortDate(p.scheduled_time.slice(0, 10)) : '—'}
-                          </td>
-                          <td className="py-1.5 pr-3">{titleCase(p.format)}</td>
-                          <td className="py-1.5 pr-3">{titleCase(p.hook_style)}</td>
-                          <td className="py-1.5 pr-3 text-right">{p.impressions != null ? compactNumber(p.impressions) : '—'}</td>
-                          <td className="py-1.5 pr-3 text-right">{p.reactions.toLocaleString()}</td>
-                          <td className="py-1.5 pr-3 text-right">{p.comments.toLocaleString()}</td>
-                          <td className="py-1.5 pr-3 text-right">{p.reposts.toLocaleString()}</td>
-                          <td className="py-1.5 pr-3 text-right">{p.saves.toLocaleString()}</td>
-                          <td className="py-1.5 text-right">{p.engagement_rate != null ? formatRate(p.engagement_rate) : '—'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+              {/* Per-post performance drill-down — collapsed by default (#808) */}
+              <PerPostTable posts={perPost} />
             </>
           )}
         </div>

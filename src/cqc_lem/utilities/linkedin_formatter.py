@@ -133,17 +133,54 @@ def enforce_post_readability(text: str, max_chars: int = 2200, target_paragraph_
     return text
 
 
+# A URL is markdown-shaped by accident: `?utm_source=a&utm_medium=b` is exactly the `_word_` the
+# italic pass eats, and `**`/backtick/`---` can fall inside one just as easily. Mask every http(s)
+# span before the markdown transforms and restore it verbatim after, so a link publishes
+# byte-identical to the one the user configured (issue #823).
+#
+# Two character classes, because a markdown marker means different things inside a URL and at its
+# edge. `*` and `_` are legal URL characters, so the span must be allowed to CONTAIN them (stopping
+# at the first `*` exposes the rest of the URL to the italic pass: `?q=a*b*c` -> `?q=abc`). But a
+# span may not END on one, or emphasis wrapped around a URL gets swallowed: `_url_` would absorb the
+# closing `_`, leaving the opener unpaired and publishing a link with a trailing underscore. Trailing
+# sentence punctuation is excluded for the same reason — it belongs to the prose, not the link.
+# `)`, `]`, quotes and backtick are excluded outright: those are what markdown wraps a URL IN, so
+# `[text](url)` still converts (it matches against the masked token) and `` `url` `` still unwraps.
+_URL_SPAN_RE = re.compile(r"https?://[^\s<>\"'`)\]]*[^\s<>\"'`)\]*_.,;:!?]")
+# Starts with a control char, so no line-start rule (header, bullet, numbered list) can match it.
+# normalize_public_text has already dropped any control char the input itself carried.
+_URL_TOKEN = "\x00lemurl{}\x00"
+
+
+def _mask_urls(text: str) -> tuple[str, list[str]]:
+    urls: list[str] = []
+
+    def _capture(match: re.Match) -> str:
+        urls.append(match.group(0))
+        return _URL_TOKEN.format(len(urls) - 1)
+
+    return _URL_SPAN_RE.sub(_capture, text), urls
+
+
+def _unmask_urls(text: str, urls: list[str]) -> str:
+    for index, url in enumerate(urls):
+        text = text.replace(_URL_TOKEN.format(index), url)
+    return text
+
+
 def sanitize_for_linkedin(text: str) -> str:
     """Strip markdown syntax from AI-generated text so it renders cleanly on LinkedIn.
 
     LinkedIn does not render standard markdown. This function removes formatting
     markers while preserving the underlying text, emojis, hashtags, and line breaks.
     Also normalizes rogue typographic characters (em dashes, smart quotes, ...) to plain ASCII.
+    URLs are exempt from every markdown transform and survive byte-identical.
     """
     if not text:
         return text
 
     text = normalize_public_text(text)
+    text, urls = _mask_urls(text)
 
     # Remove markdown headers (# through ######) at line start, keep the text
     text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
@@ -178,7 +215,7 @@ def sanitize_for_linkedin(text: str) -> str:
     # Normalize excessive blank lines (3 or more newlines → 2)
     text = re.sub(r"\n{3,}", "\n\n", text)
 
-    return text.strip()
+    return _unmask_urls(text, urls).strip()
 
 
 # Classic engagement-bait patterns LinkedIn's 2026 algorithm penalizes. Deliberately does NOT match

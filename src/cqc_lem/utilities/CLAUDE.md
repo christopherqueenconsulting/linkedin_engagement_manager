@@ -48,7 +48,24 @@ Two things follow for anyone writing a call site here:
    `Could not leave a reaction on post`. It now returns `None` for the no-op — still falsy, so
    truthiness callers are unaffected — and only real failures warn.
    Same idea for empty-result chatter: `db.get_ready_to_post_posts` logs INFO only when the list is
-   non-empty, DEBUG otherwise.
+   non-empty, DEBUG otherwise. For Selenium, `find_first(..., required=False, warn_on_miss=False)`
+   logs the miss at DEBUG — use it when the element is legitimately absent on some surfaces
+   (`_switch_feed_to_recent`'s 'Sort by' control does not exist on a group feed). `click_first`
+   carries the same flag across BOTH of its miss paths — `Selector miss:` (never found) and
+   `Click miss:` (found, then un-clickable), which return None identically. Decide it PER SURFACE,
+   not once for the call site: the same lookup on the
+   home feed, where the control does exist, is selector rot and must still warn. The other half of
+   the test is whether a FALLBACK is in hand — `react_to_post_inline` warns on a missing
+   'Open reactions menu' only when it found no React toggle to default-Like instead (issue #873),
+   and on a missing post-click 'Reaction state' only when the pre-click read found that toggle: a
+   card that never carried one has nothing to re-read, so the miss IS the documented
+   trust-the-click fallback (issue #875). Third rule, from the same function: **one condition gets
+   ONE warning.** The React toggle is one of two ways into a reaction, so its miss never warns — when
+   both it and the fly-out opener miss, the opener's warning already stands for "this card's reaction
+   controls are unreadable", and a second just files another defect for the same fault (issue #877).
+   That rule is not fully applied here yet: ONE unreadable card still warns twice more — from the
+   pre-click 'Reaction state' read (issue #874, open) and from the caller's 'Could not leave a
+   reaction on post' (issue #878, open). Collapse those into the opener's signal; never add a fourth.
 2. **Keep the message a stable template.** The dedup key masks volatile tokens (URLs, emails, UUIDs,
    URNs, hex, `[...]`, quoted strings, numbers) and combines them with the call site, so
    `Selector miss: Feed sort control` and `Selector miss: Reaction state` stay two distinct problems

@@ -3,6 +3,8 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
+from cqc_lem.utilities.env_constants import MAX_WAIT_RETRY
+
 pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"
@@ -151,6 +153,76 @@ class TestPostCommentInline:
         composer.send_keys.assert_called_once()
 
 
+def _wait():
+    """Minimal WebDriverWait stand-in so `find_first` can run for real: poll once, TimeoutException
+    on a falsy result (which is what a total selector miss looks like to it)."""
+    from selenium.common import TimeoutException
+    w = MagicMock()
+
+    def until(fn, label=None):
+        found = fn(None)
+        if not found:
+            raise TimeoutException(label)
+        return found
+
+    w.until.side_effect = until
+    return w
+
+
+def _textbox_source(*elements):
+    """find_elements stand-in that answers the composer locators and nothing else."""
+    return lambda by, value: list(elements) if "textbox" in value else []
+
+
+class TestComposerIsScopedToTheCard:
+    """Issue #876. The feed walk comments on several posts WITHOUT reloading the page and LinkedIn
+    leaves each composer mounted after it submits, so a document-wide role=textbox lookup returned
+    the first one in DOM order — an earlier post's composer, by then scrolled off the top. That is
+    the click Chrome reported intercepted at y=9, and centering it (#815) would not have fixed the
+    run: it would have typed this post's comment into the previous post."""
+
+    def test_types_into_this_cards_composer_not_an_earlier_posts(self):
+        from cqc_lem.app import run_automation as ra
+        earlier = MagicMock()                 # first in document order, from the post we just did
+        mine = MagicMock(); mine.text = ""    # this card's own composer
+        driver = MagicMock()
+        driver.find_elements.side_effect = _textbox_source(earlier, mine)
+        driver.execute_script.return_value = True
+        card = MagicMock()
+        card.find_elements.side_effect = _textbox_source(mine)
+        with patch(f"{_RA}.click_first", return_value=MagicMock()):
+            ok = ra.post_comment_inline(driver, _wait(), card, "Great post, thanks", user_id=1)
+        assert ok is True
+        mine.send_keys.assert_called_once()
+        earlier.send_keys.assert_not_called()
+        earlier.click.assert_not_called()
+
+    def test_card_without_a_composer_skips_instead_of_borrowing_one(self):
+        # No document-wide fallback on purpose — commenting on the wrong post is worse than not
+        # commenting, and the caller releases the claim so a later run retries this post.
+        from cqc_lem.app import run_automation as ra
+        earlier = MagicMock()
+        driver = MagicMock()
+        driver.find_elements.side_effect = _textbox_source(earlier)
+        card = MagicMock(); card.find_elements.return_value = []
+        with patch(f"{_RA}.click_first", return_value=MagicMock()), \
+             patch("cqc_lem.utilities.selenium_util.time.sleep"), \
+             patch("cqc_lem.utilities.selenium_util.log_warning"):
+            ok = ra.post_comment_inline(driver, _wait(), card, "Great post, thanks", user_id=1)
+        assert ok is False
+        earlier.send_keys.assert_not_called()
+
+    def test_lookup_is_scoped_to_the_card(self):
+        from cqc_lem.app import run_automation as ra
+        composer = MagicMock(); composer.text = ""
+        card = MagicMock()
+        driver = MagicMock(); driver.execute_script.return_value = True
+        with patch(f"{_RA}.click_first", return_value=MagicMock()), \
+             patch(f"{_RA}.find_first", return_value=composer) as ff:
+            ra.post_comment_inline(driver, MagicMock(), card, "Great post, thanks", user_id=1)
+        assert ff.call_args.kwargs["parent_element"] is card
+
+
 class TestPostCommentInlineStepNaming:
     """One `try` over the whole sequence reported every failure mode as the same warning, so the
     escalated issue never said which step broke — and unrelated faults collapsed into one."""
@@ -235,6 +307,88 @@ class TestReactToPostInline:
              patch(f"{_RA}.click_first", return_value=None):
             ok = ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
         assert ok is False  # fly-out never opened and the default-Like fallback didn't register
+
+    def test_missing_menu_is_not_a_warning_when_a_fallback_toggle_exists(self):
+        """The fly-out opener is optional — with a React toggle in hand its absence just takes the
+        default-Like fallback, which is working behaviour. Warning per card escalated it to ERROR
+        and filed a PostHog defect (issue #873)."""
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
+             patch(f"{_RA}.wait_for_ajax"), \
+             patch(f"{_RA}.find_first", return_value=_state("Reaction button state: no reaction")), \
+             patch(f"{_RA}.click_first", return_value=None) as cf:
+            ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
+        assert cf.call_args_list[0].kwargs["warn_on_miss"] is False
+
+    def test_missing_menu_still_warns_when_there_is_no_fallback(self):
+        """No Reaction-state button and no React toggle means the card's reaction controls are
+        genuinely unreadable — silencing that would hide real SDUI rot."""
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
+             patch(f"{_RA}.wait_for_ajax"), \
+             patch(f"{_RA}.find_first", return_value=None), \
+             patch(f"{_RA}.click_first", return_value=None) as cf:
+            ok = ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
+        assert ok is False
+        assert cf.call_args_list[0].kwargs["warn_on_miss"] is True
+
+    def test_missing_react_toggle_is_never_a_warning(self):
+        """The React toggle is only one of the two ways into a reaction — the fly-out opener is the
+        other — so its absence alone is not a failure. And when BOTH miss, the opener's own miss
+        already warns (issue #873) and the caller warns again, so warning here too filed a third
+        PostHog defect for one condition (issue #877)."""
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
+             patch(f"{_RA}.wait_for_ajax"), \
+             patch(f"{_RA}.find_first", return_value=None) as ff, \
+             patch(f"{_RA}.click_first", return_value=None):
+            ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
+        toggle = [c for c in ff.call_args_list if c.args[3] == "React toggle"]
+        assert len(toggle) == 1
+        assert toggle[0].kwargs["warn_on_miss"] is False
+
+    def test_react_toggle_is_not_looked_up_when_the_state_button_is_the_trigger(self):
+        """A readable 'no reaction' state button IS the trigger, so the toggle chain never runs and
+        can't miss — the warning this issue is about only ever fires on state-less cards."""
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
+             patch(f"{_RA}.wait_for_ajax"), \
+             patch(f"{_RA}.find_first",
+                   side_effect=[_state("Reaction button state: no reaction"),
+                                _state("Reaction button state: Like reaction")]) as ff, \
+             patch(f"{_RA}.click_first", return_value=MagicMock()):
+            ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
+        assert not [c for c in ff.call_args_list if c.args[3] == "React toggle"]
+
+    def test_post_click_confirm_is_not_a_warning_when_the_card_never_had_the_toggle(self):
+        """With no Reaction-state button before the click there is nothing to re-read after it, so
+        the miss is the documented trust-the-click fallback. Warning per card escalated it to ERROR
+        and filed a PostHog defect for working behaviour (issue #875)."""
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
+             patch(f"{_RA}.wait_for_ajax"), \
+             patch(f"{_RA}.find_first", return_value=None) as ff, \
+             patch(f"{_RA}.click_first", return_value=MagicMock()):
+            ok = ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
+        assert ok is True  # unreadable toggle never false-negatives a click that landed
+        confirm = [c for c in ff.call_args_list if c.args[3] == "Reaction state (post-click)"]
+        assert len(confirm) == 1
+        assert confirm[0].kwargs["warn_on_miss"] is False
+        assert confirm[0].kwargs["max_try"] == 1  # no retry sleep for a control this card lacks
+
+    def test_post_click_confirm_still_warns_when_the_toggle_was_readable_before(self):
+        """It was there before the click and isn't after — that IS selector rot, keep the signal."""
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
+             patch(f"{_RA}.wait_for_ajax"), \
+             patch(f"{_RA}.find_first",
+                   side_effect=[_state("Reaction button state: no reaction"), None]) as ff, \
+             patch(f"{_RA}.click_first", return_value=MagicMock()):
+            ok = ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
+        assert ok is True
+        confirm = [c for c in ff.call_args_list if c.args[3] == "Reaction state (post-click)"]
+        assert confirm[0].kwargs["warn_on_miss"] is True
+        assert confirm[0].kwargs["max_try"] == MAX_WAIT_RETRY
 
     def test_clicks_the_ai_chosen_reaction(self):
         from cqc_lem.app import run_automation as ra

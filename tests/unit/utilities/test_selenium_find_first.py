@@ -65,6 +65,31 @@ class TestFindFirst:
         assert kwargs["user_id"] == 7 and kwargs["post_id"] == 3
         assert any("a" in s for s in kwargs["selectors"])
 
+    def test_expected_miss_logs_debug_not_warning(self):
+        """warn_on_miss=False keeps a legitimately-absent control out of recurrence escalation."""
+        from cqc_lem.utilities.selenium_util import find_first
+        driver = _driver_with({})
+        wait = _FakeWait(driver)
+        with patch(f"{_MOD}.log_warning") as warn, patch(f"{_MOD}.log_debug") as debug:
+            got = find_first(driver, wait, [("css", "a")], "Feed sort control",
+                             required=False, warn_on_miss=False, max_try=1, user_id=7)
+        assert got is None
+        warn.assert_not_called()
+        debug.assert_called_once()
+        assert debug.call_args.args[0] == "Selector miss: Feed sort control"
+        assert debug.call_args.kwargs["user_id"] == 7
+
+    def test_expected_miss_survives_the_retry_pass(self):
+        """The retry recursion must carry warn_on_miss through, or the last attempt warns anyway."""
+        from cqc_lem.utilities.selenium_util import find_first
+        driver = _driver_with({})
+        wait = _FakeWait(driver)
+        with patch(f"{_MOD}.log_warning") as warn, patch(f"{_MOD}.log_debug") as debug:
+            find_first(driver, wait, [("css", "a")], "Feed sort control",
+                       required=False, warn_on_miss=False, max_try=2)
+        warn.assert_not_called()
+        debug.assert_called_once()
+
     def test_visible_only_skips_hidden(self):
         from cqc_lem.utilities.selenium_util import find_first
         hidden = MagicMock(); hidden.is_displayed.return_value = False
@@ -100,3 +125,54 @@ class TestClickFirst:
             out = su.click_first(driver, wait, [("css", "btn")], "button")
         el.click.assert_called_once()
         assert out is el
+
+    def test_carries_warn_on_miss_into_find_first(self):
+        """click_first is the only way most call sites reach find_first — without the passthrough a
+        caller with a working fallback (issue #873) has no way to keep its miss out of escalation."""
+        from cqc_lem.utilities import selenium_util as su
+        driver = _driver_with({})
+        wait = _FakeWait(driver)
+        with patch(f"{_MOD}.log_warning") as warn, patch(f"{_MOD}.log_debug") as debug:
+            out = su.click_first(driver, wait, [("css", "btn")], "Open reactions menu",
+                                 required=False, warn_on_miss=False, max_try=1, user_id=4)
+        assert out is None
+        warn.assert_not_called()
+        debug.assert_called_once()
+        assert debug.call_args.args[0] == "Selector miss: Open reactions menu"
+
+    def test_warns_on_miss_by_default(self):
+        from cqc_lem.utilities import selenium_util as su
+        driver = _driver_with({})
+        wait = _FakeWait(driver)
+        with patch(f"{_MOD}.log_warning") as warn:
+            su.click_first(driver, wait, [("css", "btn")], "Open reactions menu",
+                           required=False, max_try=1)
+        warn.assert_called_once()
+
+    def test_click_miss_also_honours_warn_on_miss(self):
+        """A hover-revealed control found-then-un-clickable returns None just like a selector miss,
+        so the caller takes the same fallback. Warning here anyway would keep escalating the very
+        recurrence warn_on_miss was added to close (issue #873)."""
+        from cqc_lem.utilities import selenium_util as su
+        el = MagicMock(); el.is_displayed.return_value = True
+        driver = _driver_with({"btn": [el]})
+        wait = _FakeWait(driver)
+        with patch.object(su.EC, "element_to_be_clickable", return_value=lambda d: False), \
+             patch(f"{_MOD}.log_warning") as warn, patch(f"{_MOD}.log_debug") as debug:
+            out = su.click_first(driver, wait, [("css", "btn")], "Open reactions menu",
+                                 required=False, warn_on_miss=False, max_try=1, user_id=4)
+        assert out is None
+        warn.assert_not_called()
+        assert debug.call_args.args[0] == "Click miss: Open reactions menu"
+
+    def test_click_miss_warns_by_default(self):
+        from cqc_lem.utilities import selenium_util as su
+        el = MagicMock(); el.is_displayed.return_value = True
+        driver = _driver_with({"btn": [el]})
+        wait = _FakeWait(driver)
+        with patch.object(su.EC, "element_to_be_clickable", return_value=lambda d: False), \
+             patch(f"{_MOD}.log_warning") as warn:
+            out = su.click_first(driver, wait, [("css", "btn")], "Open reactions menu",
+                                 required=False, max_try=1)
+        assert out is None
+        assert warn.call_args.args[0] == "Click miss: Open reactions menu"

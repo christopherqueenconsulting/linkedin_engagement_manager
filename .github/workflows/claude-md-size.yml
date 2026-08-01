@@ -24,7 +24,8 @@ jobs:
           fetch-depth: 0
       - name: Check CLAUDE.md is within the harness cap
         # scripts/check_claude_md_size.py is stdlib-only and exits 1 over the cap.
-        # Required status check — gates merges.
+        # NOT currently in branch protection's required status checks — this job
+        # surfaces the failure on the PR but does not block merge on its own.
         run: python3 scripts/check_claude_md_size.py
       - name: Annotate where the relocated detail goes
         if: failure()

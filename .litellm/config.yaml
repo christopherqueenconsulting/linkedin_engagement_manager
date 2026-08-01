@@ -4,9 +4,16 @@
 #     `gpt-oss:120b-cloud` and not `gpt-oss:120b:cloud`. OLLAMA_CLOUD_URL is the direct
 #     ollama.com/v1 API (docs.ollama.com/cloud, "Cloud API access"), which serves exactly the ids
 #     `ollama.com/api/tags` lists; the `-cloud` suffix is the `ollama pull` form for the LOCAL
-#     runtime. Get this wrong and the deployment 404s on every call — and under (1) a 404 is the
+#     runtime. An id that catalog has never listed 404s on every call — and under (1) a 404 is the
 #     FASTEST answer in the group, so the broken deployment wins the race and takes the traffic.
 #     That is how the retired ministral-3:8b kept winning lem-simple.
+#     Careful: a WRONG-BUT-ACCEPTED spelling is the nastier case, because it does not 404. Probed
+#     2026-08-01 (issue #844): `glm-5.2:cloud` and `glm-5.2:latest` both answer 200 and serve the
+#     same model as bare `glm-5.2`, while `glm-5.2:bogus` 404s — so `:cloud`/`:latest` are tag
+#     ALIASES the endpoint resolves, not typos it rejects. Nothing in the request path notices,
+#     but everything that reads this file by id does: the catalog check, the advance-retirement
+#     scan (scripts/model_health_check.py keys on the bare id and matches the retirement table
+#     verbatim) and shadow-cost pricing all key on the exact string. Keep ids verbatim-catalog.
 #  1. `routing_strategy: latency-based-routing` means the order of deployments inside a
 #     model_name group is NOT a priority list — every deployment in the group competes and the
 #     fastest wins. Order still matters for ONE thing: scripts/benchmark_models.py treats the
@@ -186,14 +193,19 @@ model_list:
   # ANTHROPIC_AUTH_TOKEN=$LITELLM_MASTER_KEY) with --model = one of these aliases. LiteLLM serves
   # the Anthropic /v1/messages endpoint and translates to the underlying Ollama Cloud model.
   # CLOUD-ONLY by policy (Ollama Max subscription) — no local models on this path.
-  #   tier1   glm-5.2:cloud        hardest long-horizon / architecture / multi-step plans
-  #   tier2   kimi-k2.7-code:cloud  default coding / patches / tests / multi-file edits
-  #   tier2a  minimax-m3:cloud      premium parallel / vision-capable alternate
-  #   tier3   nemotron-3-super:cloud fallback / reviewer / reasoning lane
+  #   tier1   glm-5.2         hardest long-horizon / architecture / multi-step plans
+  #   tier2   kimi-k2.7-code  default coding / patches / tests / multi-file edits
+  #   tier2a  minimax-m3      premium parallel / vision-capable alternate
+  #   tier3   nemotron-3-super fallback / reviewer / reasoning lane
+  # These four carried a `:cloud` tag until #844. It served fine (see note 0 — the endpoint
+  # resolves `:cloud` as a tag alias), but it is not what the catalog lists, so the advance-
+  # retirement scan could not see them. Bare ids now, like every tier above. Their price-snapshot
+  # entries keep the roster uniform and price them from day one if one is promoted into a serving
+  # tier; this lane's own cost is LiteLLM's `$ai_generation`, not the app's `llm_call`.
   # See docs/agent-pipeline-routing.md for the capacity-aware lane-selection rule.
   - model_name: lem-agent-tier1
     litellm_params:
-      model: openai/glm-5.2:cloud
+      model: openai/glm-5.2
       api_base: os.environ/OLLAMA_CLOUD_URL
       api_key: os.environ/OLLAMA_CLOUD_API_KEY
       max_parallel_requests: 2
@@ -202,7 +214,7 @@ model_list:
 
   - model_name: lem-agent-tier2
     litellm_params:
-      model: openai/kimi-k2.7-code:cloud
+      model: openai/kimi-k2.7-code
       api_base: os.environ/OLLAMA_CLOUD_URL
       api_key: os.environ/OLLAMA_CLOUD_API_KEY
       max_parallel_requests: 4
@@ -211,7 +223,7 @@ model_list:
 
   - model_name: lem-agent-tier2-alt
     litellm_params:
-      model: openai/minimax-m3:cloud
+      model: openai/minimax-m3
       api_base: os.environ/OLLAMA_CLOUD_URL
       api_key: os.environ/OLLAMA_CLOUD_API_KEY
       max_parallel_requests: 4
@@ -220,7 +232,7 @@ model_list:
 
   - model_name: lem-agent-tier3
     litellm_params:
-      model: openai/nemotron-3-super:cloud
+      model: openai/nemotron-3-super
       api_base: os.environ/OLLAMA_CLOUD_URL
       api_key: os.environ/OLLAMA_CLOUD_API_KEY
       max_parallel_requests: 4

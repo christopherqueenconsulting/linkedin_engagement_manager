@@ -222,11 +222,12 @@ cold. Move detail to `docs/*.md` and leave CLAUDE.md as the map (locations,
 symbols, constants, invariants, where to find the detail). Subsections already
 follow this `Full posture: docs/<file>.md` pattern.
 
-The guard is two layers, both enforced:
+The guard is two layers:
 
-- **CI check** (`.github/workflows/claude-md-size.yml`): required status check on
-  every PR touching `CLAUDE.md` or `scripts/check_claude_md_size.py`. Fails the
-  build, blocks the merge.
+- **CI check** (`.github/workflows/claude-md-size.yml`): runs on every PR touching
+  `CLAUDE.md` or `scripts/check_claude_md_size.py` and fails red over the cap, but
+  it is NOT in branch protection's required status checks, so a red run does not
+  block merge on its own — treat it as required anyway.
 - **`scripts/check_claude_md_size.py`**: stdlib-only Python script, prints the
   current size, exits 1 over the cap. Run it locally before pushing:
   ```bash

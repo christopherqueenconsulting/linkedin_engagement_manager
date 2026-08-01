@@ -88,6 +88,26 @@ class TestGenerateCarouselContent:
         assert isinstance(post_text, str)
         assert isinstance(carousel_dict, dict)
 
+    def test_guidance_reaches_the_slide_prompt(self):
+        """Issue #794: the regenerate flow's free-text guidance must steer the SLIDES, not just the
+        caption — and must not license an invented number to satisfy the request."""
+        payload = _educational_carousel_json()
+        with self._patch_llm(payload) as mock_llm, self._patch_profile():
+            from cqc_lem.utilities.ai.ai_helper import generate_carousel_content
+            generate_carousel_content(user_id=1, stage="awareness", guidance="drop the pricing slide")
+        prompt = mock_llm.call_args.kwargs["messages"][1]["content"][0]["text"]
+        assert "drop the pricing slide" in prompt
+        assert "every slide" in prompt
+        assert "never invent a number" in prompt
+
+    def test_no_guidance_adds_no_revision_block(self):
+        payload = _educational_carousel_json()
+        with self._patch_llm(payload) as mock_llm, self._patch_profile():
+            from cqc_lem.utilities.ai.ai_helper import generate_carousel_content
+            generate_carousel_content(user_id=1, stage="awareness", guidance="   ")
+        prompt = mock_llm.call_args.kwargs["messages"][1]["content"][0]["text"]
+        assert "AUTHOR'S REVISION REQUEST" not in prompt
+
     def test_uses_lem_complex_model(self):
         payload = _educational_carousel_json()
         with self._patch_llm(payload) as mock_llm, self._patch_profile():

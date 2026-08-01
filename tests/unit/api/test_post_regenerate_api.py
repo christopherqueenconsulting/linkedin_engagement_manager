@@ -116,3 +116,19 @@ class TestRegeneratePostEndpoint:
             resp = client.post("/api/user/post/regenerate",
                                json={"session_token": "bad", "post_id": 7})
         assert resp.status_code == 401
+
+
+class TestRegeneratePostEndpointAllTypes:
+    """POST /api/user/post/regenerate works for every post type (issue #794)."""
+
+    @pytest.mark.parametrize("post_type", ["text", "carousel", "document", "video"])
+    def test_200_for_any_post_type(self, client, post_type):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_post_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_post_status", return_value="pending"), \
+             patch("cqc_lem.api.main.get_post_type", return_value=post_type), \
+             patch("cqc_lem.app.run_content_plan.regenerate_post_task") as task:
+            resp = client.post("/api/user/post/regenerate",
+                               json={"session_token": _SESSION, "post_id": 7, "guidance": "punchier"})
+        assert resp.status_code == 200
+        task.apply_async.assert_called_once()

@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.117.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.116.0...v0.117.0) (2026-08-01)
+
+
+### Features
+
+* **ui:** collapse per-post performance on the dashboard by default ([ca058b5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ca058b522e1e2c7ed170becb3aefa19981f576da)), closes [#808](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/808)
+* **ui:** collapse per-post performance on the Home dashboard by default (closes [#808](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/808)) ([#870](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/870)) ([ca058b5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ca058b522e1e2c7ed170becb3aefa19981f576da))
+* **ui:** prompt to refresh when /api/app-info reports a new release (closes [#754](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/754)) ([#867](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/867)) ([cf99c67](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/cf99c6750c06572733165bbc9e5e60159e8bfb65))
+
+
+### Bug Fixes
+
+* **engagement:** hard-filter the [#478](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/478) reply composer so the post's main comment box can never win (closes [#886](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/886)) ([#889](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/889)) ([cf7d8e7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/cf7d8e786e81ae4b0552ac564298eecce873e4cf))
+* **engagement:** scope the inline comment composer to its own post card (closes [#876](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/876)) ([#884](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/884)) ([f0f97bd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f0f97bd4b16daba5ca8d29ea34cca7f814bd646c))
+* **engagement:** scope the own-post reply composer to its own comment (closes [#883](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/883)) ([#887](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/887)) ([c9a87eb](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c9a87eb8a5003ed2ebb98861939437a8cab4a72b))
+* **errors:** stop the group-feed sort-control miss escalating as a defect (closes [#872](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/872)) ([#879](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/879)) ([84bb3df](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/84bb3df5bc3ce13a8df6afaf047afa08c2233fa8))
+* **errors:** stop the optional reaction fly-out miss escalating as a defect (closes [#873](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/873)) ([#880](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/880)) ([21592f6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/21592f64600ffde3914c0b2ffdadf38912cea9f0))
+* **errors:** stop the post-click reaction-state miss escalating as a defect ([b17aa53](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b17aa534c81200e3b4272473f6595919e10811f5))
+* **errors:** stop the post-click reaction-state miss escalating as a defect (closes [#875](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/875)) ([#882](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/882)) ([b17aa53](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b17aa534c81200e3b4272473f6595919e10811f5))
+
+## [0.116.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.115.0...v0.116.0) (2026-08-01)
+
+
+### Features
+
+* **content-generation:** allow regeneration of all post types with suggestions (closes [#794](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/794)) ([#857](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/857)) ([d914d22](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d914d221e955b904b88c7b892bb6690455eaf0eb))
+* **groups:** make group posting a visible, per-group choice (closes [#769](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/769)) ([#856](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/856)) ([121aeef](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/121aeefd4a78496f8b3b48e7db9b30a8bca19c41))
+* **marketing:** keep the YouTube OAuth token alive — weekly probe, DB storage, preflight (closes [#742](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/742)) ([#846](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/846)) ([e309aec](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e309aecde91fb219d9b63f803a388e001a1f771d))
+* **observability:** group a post's whole generation chain into one $ai_trace (closes [#746](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/746)) ([#851](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/851)) ([34d93b2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/34d93b285036765c67890bd9e57d951d3b374674))
+
+
+### Bug Fixes
+
+* **ai:** guard second-wave comment against LLM responses with missing choices (closes [#768](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/768)) ([#853](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/853)) ([512016b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/512016b993eb2246eb56111d1cbaf80a2081f084))
+* **analytics:** explain and widen the subset of posts the dashboard measures (closes [#809](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/809)) ([#859](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/859)) ([9ce0e95](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9ce0e95f0cff50663319fdd97733777f5c2b2334))
+* **ci:** fast lane must wait for release-please, not for "a release PR exists" ([#847](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/847)) ([9aa9bdb](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9aa9bdb76f9e07b3eadf049a89c5694fb31ee3a0))
+* **content:** keep URLs byte-identical through sanitize_for_linkedin (closes [#823](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/823)) ([#863](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/863)) ([59a5a54](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/59a5a546443181008408b00b831ad1af54fb178a))
+* **feedback:** stop a GitHub DNS blip from filing itself as a defect (closes [#767](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/767)) ([#852](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/852)) ([ec15250](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ec152509467fa01ce355563a59e595dbd9fc5c0a))
+* **litellm:** use the bare catalog ids for the agent-lane Ollama tiers (closes [#844](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/844)) ([#866](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/866)) ([92a2aaf](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/92a2aafd3fa4854f956aced3ff15e9313cfcb75b))
+* **security:** don't let a failed cookie write delete the user's LinkedIn password (refs [#745](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/745)) ([#848](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/848)) ([ef0587f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ef0587faac8a4005e918d97cb9e3b18775d9aa98))
+
+
+### Documentation
+
+* **deployment:** version milestones and owner-triggered 1.0.0/2.0.0 procedure (closes [#738](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/738)) ([#850](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/850)) ([14adc45](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/14adc45bc37ab0cc36bffd8ef20c2255cf1a16e6))
+
 ## [0.115.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.114.0...v0.115.0) (2026-08-01)
 
 
