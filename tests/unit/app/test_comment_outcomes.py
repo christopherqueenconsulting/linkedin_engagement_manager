@@ -8,6 +8,7 @@ from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
 
 import pytest
+from selenium.webdriver.common.by import By
 
 pytestmark = pytest.mark.unit
 
@@ -28,6 +29,10 @@ def _fn(name):
 
 def _p(es, name, **kw):
     return es.enter_context(patch(f"{RA}.{name}", **kw))
+
+
+def _sort_chain() -> list:
+    return list(_fn("_COMMENT_SORT_LOCATORS"))
 
 
 class TestCommentTextMatches:
@@ -76,6 +81,66 @@ class TestCommentSortLabel:
     def test_unrecognized_label_is_empty(self):
         with patch(f"{RA}.find_first", return_value=self._btn(text="Sort by")):
             assert _fn("_comment_sort_label")(MagicMock(), MagicMock()) == ""
+
+
+class TestFindCommentSortControl:
+    def _el(self, aria="", text=""):
+        e = MagicMock()
+        e.get_attribute.return_value = aria
+        e.text = text
+        return e
+
+    def _driver(self, per_locator):
+        """A driver whose find_elements answers each locator in chain order from `per_locator`."""
+        driver = MagicMock()
+        answers = list(per_locator) + [[]] * len(_sort_chain())
+        driver.find_elements.side_effect = lambda *a, **k: answers.pop(0) if answers else []
+        return driver
+
+    def test_prefers_a_candidate_that_actually_names_a_sort(self):
+        # An unrelated 'sort' button matched by an earlier locator must not short-circuit the chain:
+        # find_first would hand it back and the reading would be unreadable forever, with no
+        # 'Selector miss' warning to say so.
+        wrong = self._el(aria="Sort your saved items")
+        right = self._el(text="Most relevant")
+        driver = self._driver([[wrong], [], [right]])
+        assert _fn("_find_comment_sort_control")(driver, MagicMock()) is right
+
+    def test_falls_back_to_the_first_match_when_none_name_a_sort(self):
+        # Some renders label the control only inside its popup — the click path still needs it.
+        first = self._el(aria="Sort")
+        later = self._el(aria="Sort by")
+        driver = self._driver([[first], [later]])
+        assert _fn("_find_comment_sort_control")(driver, MagicMock()) is first
+
+    def test_total_miss_defers_to_find_first_for_the_selector_miss_warning(self):
+        driver = self._driver([])
+        with patch(f"{RA}.find_first", return_value=None) as ff:
+            assert _fn("_find_comment_sort_control")(driver, MagicMock()) is None
+        assert ff.call_count == 1
+
+    def test_a_locator_that_raises_does_not_abort_the_chain(self):
+        right = self._el(text="Most recent")
+        driver = MagicMock()
+        answers = [RuntimeError("stale"), [right]]
+
+        def _find(*_a, **_k):
+            nxt = answers.pop(0) if answers else []
+            if isinstance(nxt, Exception):
+                raise nxt
+            return nxt
+
+        driver.find_elements.side_effect = _find
+        assert _fn("_find_comment_sort_control")(driver, MagicMock()) is right
+
+    def test_scan_is_bounded_per_locator(self):
+        # Reading a label is two Selenium round-trips; the broad tail of the chain can match many
+        # nodes on a busy thread.
+        noise = [self._el(aria="nope") for _ in range(50)]
+        driver = self._driver([noise])
+        _fn("_find_comment_sort_control")(driver, MagicMock())
+        read = [e for e in noise if e.get_attribute.called]
+        assert len(read) == _fn("_SORT_CANDIDATE_SCAN_CAP")
 
 
 class TestSwitchCommentSort:
@@ -160,10 +225,51 @@ class TestSortOptionLocators:
             assert "translate(normalize-space()" in xpath
 
     def test_sort_control_locators_are_case_folded_too(self):
-        import importlib
-        for _by, xpath in getattr(importlib.import_module(RA), "_COMMENT_SORT_LOCATORS"):
-            assert "Most relevant" not in xpath and "Most recent" not in xpath
-            assert "translate(" in xpath
+        # CSS selectors have no case folding to do; every XPath that names a sort label must
+        # compare lowercase literals through translate(), or it silently never fires.
+        for by, expr in _sort_chain():
+            if by != By.XPATH:
+                continue
+            assert "Most relevant" not in expr and "Most recent" not in expr
+            if "relevant" in expr or "recent" in expr:
+                assert "translate(" in expr
+                assert "'most relevant'" in expr and "'most recent'" in expr
+
+    def test_sort_control_chain_includes_data_testid_fallback(self):
+        chain = _sort_chain()
+        exprs = [expr for (_by, expr) in chain]
+        assert any("data-testid" in e for e in exprs)
+        assert any("@role='button'" in e for e in exprs if "[" in e)
+        assert len(chain) > 3  # original three plus the new fallbacks
+
+    def test_testid_wildcard_cannot_claim_an_unrelated_sort_control(self):
+        # A bare [data-testid*='sort'] sits FIRST in the chain, so any other 'sort' button on the
+        # page would be handed back and read as unreadable forever — with no 'Selector miss'
+        # warning, because find_first did find something.
+        for by, expr in _sort_chain():
+            if by == By.CSS_SELECTOR and "*='sort'" in expr:
+                assert "comment" in expr
+
+    def test_the_known_comment_testid_leads_the_wildcard(self):
+        # Ordered most-specific first: the exact testid can only be the comment sort control, the
+        # wildcard behind it merely probably is.
+        exprs = [e for _by, e in _sort_chain()]
+        assert exprs.index("[data-testid='comment-sort-dropdown']") < \
+            min(i for i, e in enumerate(exprs) if "*='sort'" in e)
+
+    def test_subtree_text_locators_cannot_match_a_wrapper(self):
+        # normalize-space() is the WHOLE SUBTREE's text, so an unbounded contains() on a generic
+        # element matches every ancestor up to <body>, and find_first returns the outermost match.
+        # The sort would then be decided by any comment saying 'most recent', and a click on that
+        # wrapper would never open the real control.
+        for by, expr in _sort_chain():
+            if by != By.XPATH or "normalize-space()," not in expr:
+                continue
+            if expr.startswith("//button["):
+                continue  # a <button> cannot wrap the page
+            assert "string-length(normalize-space()) <" in expr, expr
+        divs = [e for by, e in _sort_chain() if by == By.XPATH and e.startswith("//div[")]
+        assert divs and all("not(.//div)" in e for e in divs)
 
 
 class TestCommentLikeCount:
@@ -458,6 +564,7 @@ class TestWeeklyQualityReport:
             result, hold, track, _crit = self._run(es, self._rows(12, 1))
         assert "1/1" in result and "0 held" in result
         assert track.called and not hold.called
+        assert track.call_args.args[1]["unreadable_readings"] == 0
 
     def test_demoted_user_is_held_and_escalated(self):
         with ExitStack() as es:
@@ -475,6 +582,19 @@ class TestWeeklyQualityReport:
         with ExitStack() as es:
             result, hold, track, _crit = self._run(es, [])
         assert "0/1" in result and not track.called and not hold.called
+
+    def test_unreadable_readings_are_tracked(self):
+        from cqc_lem.app.run_scheduler import auto_weekly_comment_quality
+        rows = [{"status": "checked", "author_replied": 0, "reply_count": 0, "like_count": 0,
+                 "visible_most_relevant": None, "our_reply_sent": 0}]
+        with patch(f"{RS}.get_active_user_ids", return_value=[1]), \
+             patch("cqc_lem.utilities.db.get_comment_outcomes", return_value=rows), \
+             patch("cqc_lem.utilities.linkedin.rate_limit.hold_commenting") as hold, \
+             patch("cqc_lem.utilities.observability.track_comment_quality") as track:
+            auto_weekly_comment_quality(days=7)
+        assert track.called
+        assert track.call_args.args[1]["unreadable_readings"] == 1
+        assert not hold.called
 
     def test_no_active_users(self):
         from cqc_lem.app.run_scheduler import auto_weekly_comment_quality
