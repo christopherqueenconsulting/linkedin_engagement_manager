@@ -1,5 +1,12 @@
 # ── Ollama Cloud roster (refreshed 2026-07-31, issue #717) ───────────────────────
-# TWO things about this file that are easy to get wrong:
+# THREE things about this file that are easy to get wrong:
+#  0. Ollama model ids on this path are the BARE catalog names — `gpt-oss:120b`, not
+#     `gpt-oss:120b-cloud` and not `gpt-oss:120b:cloud`. OLLAMA_CLOUD_URL is the direct
+#     ollama.com/v1 API (docs.ollama.com/cloud, "Cloud API access"), which serves exactly the ids
+#     `ollama.com/api/tags` lists; the `-cloud` suffix is the `ollama pull` form for the LOCAL
+#     runtime. Get this wrong and the deployment 404s on every call — and under (1) a 404 is the
+#     FASTEST answer in the group, so the broken deployment wins the race and takes the traffic.
+#     That is how the retired ministral-3:8b kept winning lem-simple.
 #  1. `routing_strategy: latency-based-routing` means the order of deployments inside a
 #     model_name group is NOT a priority list — every deployment in the group competes and the
 #     fastest wins. Order still matters for ONE thing: scripts/benchmark_models.py treats the
@@ -48,7 +55,7 @@ model_list:
   # departed minimax-m2.7 sit in — so adding it is flat on quota, not a step up.
   - model_name: lem-medium
     litellm_params:
-      model: openai/deepseek-v4-flash:cloud
+      model: openai/deepseek-v4-flash
       api_base: os.environ/OLLAMA_CLOUD_URL
       api_key: os.environ/OLLAMA_CLOUD_API_KEY
       max_parallel_requests: 4
@@ -96,12 +103,15 @@ model_list:
   # deepseek-v4-flash joins this tier AHEAD of the paid OpenAI/Anthropic fallbacks: a MEDIUM
   # usage-level model on a tier whose only other Ollama deployment is qwen3.5:397b, so long-form
   # work that lands here costs less quota, and a qwen outage no longer drops straight onto a paid
-  # key. It is NOT ahead of qwen3.5 — see the champion note at the top of this file; promoting it
-  # (or adopting the HIGH usage-level minimax-m3:cloud / glm-5.2:cloud as the quality option) is a
-  # scripts/benchmark_models.py decision, not a config-time one.
+  # key. Be honest about what latency-based routing does with it: 13B active params answer faster
+  # than qwen3.5:397b, so it will win a large share of this tier's traffic from the first restart —
+  # it is not a standby. What it is NOT is the tier's CHAMPION (still qwen3.5:397b, first in the
+  # group — see the note at the top of this file); the long-form quality reading, and any adoption
+  # of the HIGH usage-level minimax-m3 / glm-5.2 as the quality option, is a
+  # scripts/benchmark_models.py decision on #842, not a config-time one.
   - model_name: lem-complex
     litellm_params:
-      model: openai/deepseek-v4-flash:cloud
+      model: openai/deepseek-v4-flash
       api_base: os.environ/OLLAMA_CLOUD_URL
       api_key: os.environ/OLLAMA_CLOUD_API_KEY
       max_parallel_requests: 3

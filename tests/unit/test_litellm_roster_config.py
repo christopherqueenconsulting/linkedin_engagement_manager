@@ -20,6 +20,13 @@ pytestmark = pytest.mark.unit
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 CONFIG_TEXT = (REPO_ROOT / ".litellm" / "config.yaml").read_text()
 SNAPSHOT = json.loads((REPO_ROOT / ".litellm" / "ollama_catalog_snapshot.json").read_text())
+PRICES = json.loads((REPO_ROOT / ".litellm" / "model_prices_snapshot.json").read_text())["models"]
+
+# The `lem-agent-*` aliases back the agent-pipeline's Ollama lane, not LEM's own serving tiers, and
+# they are configured with a `:cloud` tag the direct ollama.com API does not list. That predates
+# #717 and is tracked separately — it is excluded here rather than silently normalized away, so the
+# serving tiers can be checked strictly.
+AGENT_GROUPS = tuple(sorted({d for d in re.findall(r"model_name:\s*(lem-agent-[\w-]+)", CONFIG_TEXT)}))
 
 
 def _load(name: str):
@@ -42,10 +49,14 @@ def _ollama_models(group: str) -> list:
     return [d["bare"] for d in DEPLOYMENTS if d["group"] == group and d["is_ollama"]]
 
 
+def _serving_ollama_deployments() -> list:
+    return [d for d in DEPLOYMENTS if d["is_ollama"] and d["group"] not in AGENT_GROUPS]
+
+
 class TestRoster:
     def test_deepseek_v4_flash_serves_both_the_medium_and_complex_tiers(self):
-        assert "deepseek-v4-flash:cloud" in _ollama_models("lem-medium")
-        assert "deepseek-v4-flash:cloud" in _ollama_models("lem-complex")
+        assert "deepseek-v4-flash" in _ollama_models("lem-medium")
+        assert "deepseek-v4-flash" in _ollama_models("lem-complex")
 
     def test_gemma4_serves_the_medium_tier(self):
         assert "gemma4:31b" in _ollama_models("lem-medium")
@@ -56,16 +67,27 @@ class TestRoster:
         for group in ("lem-simple", "lem-medium", "lem-complex", "lem-router"):
             assert not any(m.startswith("minimax-m2") for m in _ollama_models(group))
 
-    def test_every_ollama_tag_exists_in_the_committed_catalog(self):
-        """A tag the catalog has never listed is a 404 the router treats as a fast deployment.
-        Cloud-only models are configured with a `:cloud` tag; the catalog lists them bare."""
+    def test_every_serving_tier_tag_exists_verbatim_in_the_committed_catalog(self):
+        """A tag the catalog has never listed is a 404, and a 404 is the FASTEST answer in the
+        group — latency routing then sends it MORE traffic (how retired ministral-3:8b kept winning
+        lem-simple). The catalog snapshot is `ollama.com/api/tags`, i.e. exactly the ids the direct
+        ollama.com/v1 API serves, so the comparison is verbatim: no `:cloud`/`-cloud` normalizing,
+        because that suffix is the local `ollama pull` form and would mask precisely this typo."""
         catalog = SNAPSHOT["models"]
-        for deployment in DEPLOYMENTS:
-            if not deployment["is_ollama"]:
-                continue
+        for deployment in _serving_ollama_deployments():
             bare = deployment["bare"]
-            name = bare[: -len(":cloud")] if bare.endswith(":cloud") else bare
-            assert name in catalog, f"{bare} ({deployment['group']}) is not in the catalog snapshot"
+            assert bare in catalog, f"{bare} ({deployment['group']}) is not in the catalog snapshot"
+
+    def test_every_serving_tier_tag_is_priced_so_shadow_cost_never_silently_drops(self):
+        """track_llm_call prices the SERVING model. estimate_shadow_cost_usd looks the id up
+        EXACTLY (no substring fallback, unlike estimate_llm_cost_usd), so an Ollama deployment
+        missing from the price snapshot reports no shadow cost at all — subscription traffic that
+        the margin report cannot see."""
+        for deployment in _serving_ollama_deployments():
+            key = f"openai/{deployment['bare']}"
+            spec = PRICES.get(key)
+            assert spec, f"{key} ({deployment['group']}) has no model_prices_snapshot entry"
+            assert spec.get("shadow_reference"), f"{key} has no shadow_reference"
 
     def test_every_serving_tier_keeps_more_than_one_ollama_deployment(self):
         """A single-deployment tier falls straight onto a paid OpenAI/Anthropic key — or onto
@@ -83,8 +105,19 @@ class TestWeeklyModelCheck:
     def test_the_new_names_are_recognized_as_ollama_deployments(self):
         """The cron only probes deployments whose api_base points at Ollama Cloud — a new entry
         that missed the api_base line would never be checked for retirement at all."""
-        new = [d for d in DEPLOYMENTS if d["bare"] in ("deepseek-v4-flash:cloud", "gemma4:31b")]
+        new = [d for d in DEPLOYMENTS if d["bare"] in ("deepseek-v4-flash", "gemma4:31b")]
         assert new and all(d["is_ollama"] for d in new)
+
+    def test_a_retirement_announcement_can_reach_the_new_names(self):
+        """scan_retirements keys configured deployments by their bare id and matches the
+        docs.ollama.com/cloud retirement table verbatim. An id spelled in a way that table never
+        uses (a `:cloud` tag, say) makes that deployment invisible to the advance-retirement
+        warning — the one thing this cron exists to give us."""
+        announced = [{"model": name, "date": "2026-12-31", "alternative": None}
+                     for name in sorted(SNAPSHOT["models"])]
+        notices, _ = mhc.plan_retirement_notices(DEPLOYMENTS, announced, {}, today="2026-08-01")
+        assert ({n["bare"] for n in notices}
+                == {d["bare"] for d in _serving_ollama_deployments()})
 
 
 class TestBenchmarkChampions:
