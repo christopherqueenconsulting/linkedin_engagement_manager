@@ -123,18 +123,27 @@ persist_image_tag() {
 #
 # Only ever removes containers that are this project's, match Docker's rename prefix exactly, and
 # are NOT running — compose recreates them on the `up` that follows.
+# Best-effort by design and defensive under `set -e`: every docker call here is a diagnostic, so a
+# missing binary or an unreadable container must degrade to "sweep nothing" and let the converge
+# proceed — never abort the deploy. (An un-guarded `x="$(docker ...)"` assignment exits the shell
+# under `set -e` when docker is absent, which is exactly how this wedged the unit tests.)
 sweep_rename_orphans() {
-  local ids id name
-  ids="$(${COMPOSE} ps -aq 2>/dev/null || true)"
+  local ids id name running
+  command -v docker >/dev/null 2>&1 || return 0
+  # `docker ps` (not `compose ps`) on purpose: the orphan has been renamed out from under compose,
+  # and going direct also keeps this off the compose CLI the deploy tests stub out.
+  ids="$(docker ps -aq --filter 'label=com.docker.compose.project' 2>/dev/null || true)"
   [[ -n "${ids}" ]] || return 0
   while read -r id; do
     [[ -n "${id}" ]] || continue
-    name="$(docker inspect -f '{{.Name}}' "${id}" 2>/dev/null | sed 's|^/||')"
+    name="$(docker inspect -f '{{.Name}}' "${id}" 2>/dev/null | sed 's|^/||' || true)"
     [[ "${name}" =~ ^[0-9a-f]{12}_.+$ ]] || continue
-    [[ "$(docker inspect -f '{{.State.Running}}' "${id}" 2>/dev/null)" == "false" ]] || continue
+    running="$(docker inspect -f '{{.State.Running}}' "${id}" 2>/dev/null || true)"
+    [[ "${running}" == "false" ]] || continue
     log "Removing leftover rename-orphan container ${name} (interrupted prior converge)"
     docker rm "${id}" >/dev/null 2>&1 || log "WARN: could not remove orphan ${name}"
   done <<< "${ids}"
+  return 0
 }
 
 # Converge the worker/standby tier, retrying once on the Docker "No such container"
