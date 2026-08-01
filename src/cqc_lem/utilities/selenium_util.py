@@ -105,7 +105,11 @@ def _wait_for_selenium_ready(host: str, port: str, timeout: int = 60) -> None:
 
 
 def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", coordinates: dict = None,
-                      user_id: int = None, lat: float = None, lng: float = None) -> webdriver.Remote:
+                      user_id: int = None, lat: float = None, lng: float = None,
+                      debug: bool = None) -> webdriver.Remote:
+    if debug is None:
+        debug = isTrue(os.getenv("SELENIUM_DEBUG_NODE", "False"))
+
     if DEVICE_FARM_PROJECT_ARN and TEST_GRID_PROJECT_ARN:
         remote_url = get_aws_device_farm_url(DEVICE_FARM_PROJECT_ARN, TEST_GRID_PROJECT_ARN)
     else:
@@ -164,6 +168,7 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
     options.set_capability("se:timeZone", user_timezone)
     options.set_capability("se:screenResolution", "1920x1080")
     options.set_capability("se:name", f"CQC_LEM ({session_name})")
+    apply_debug_node(options, debug)
 
     # A free slot answers in seconds; a full pool blocks HERE until one frees up, which is the only
     # direct measurement of the session cap being the binding constraint (capacity_alerts §552).
@@ -268,6 +273,57 @@ def _proxy_label(proxy_url: Optional[str]) -> str:
         return f"{parsed.hostname}:{parsed.port}" if parsed.port else parsed.hostname
     except Exception:
         return "invalid"
+
+
+SELENIUM_DEBUG_CAPABILITY = "lem:debug"
+
+
+def _debug_node_has_free_slot() -> bool:
+    """True if the Grid's watchable debug node has a free session slot right now."""
+    if not SELENIUM_DEBUG_NODE_HOST:
+        return False
+    try:
+        url = f"http://{SELENIUM_HUB_HOST}:{SELENIUM_HUB_PORT}/status"
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()
+        nodes = (response.json().get("value") or {}).get("nodes") or []
+    except Exception:
+        return False
+
+    for node in nodes:
+        uri = str(node.get("uri") or "")
+        if f"//{SELENIUM_DEBUG_NODE_HOST}:" not in uri:
+            continue
+        for slot in node.get("slots") or []:
+            if not slot.get("session"):
+                return True
+        return False  # found the node, but every slot is claimed
+    return False  # debug node is not registered
+
+
+def apply_debug_node(options: Options, debug: bool = False) -> bool:
+    """Best-effort pin a session to the watchable Grid debug node.
+
+    Adds the ``lem:debug`` capability only when ``debug`` is requested AND the Grid
+    has a registered ``SELENIUM_DEBUG_NODE_HOST`` with a free slot. Otherwise the
+    caller falls back to the normal pool, so a debugging convenience never blocks
+    real work by queueing on a busy debug node. Returns True if the capability was
+    added.
+    """
+    if not debug:
+        return False
+    if not SELENIUM_DEBUG_NODE_HOST:
+        log_warning("Debug node requested but SELENIUM_DEBUG_NODE_HOST is empty; using pool",
+                    action_type="login")
+        return False
+    if _debug_node_has_free_slot():
+        options.set_capability(SELENIUM_DEBUG_CAPABILITY, True)
+        log_info(f"Pinning session to debug node {SELENIUM_DEBUG_NODE_HOST}",
+                 action_type="login")
+        return True
+    log_warning(f"Debug node {SELENIUM_DEBUG_NODE_HOST} busy or absent; using pool",
+                action_type="login")
+    return False
 
 
 def apply_proxy(options: Options, proxy_url: str) -> None:
@@ -688,12 +744,12 @@ def get_driver_wait(driver, wait_time: int = None):
 
 
 def get_driver_wait_pair(headless=False, session_name: str = "ChromeTests", max_retry=3, coordinates: dict = None,
-                         user_id: int = None):
+                         user_id: int = None, debug: bool = None):
     # Create the driver. Passing user_id applies that user's geo/timezone/locale spoofing.
     for attempt in range(max_retry):
         try:
             driver = get_docker_driver(headless=headless, session_name=session_name, coordinates=coordinates,
-                                       user_id=user_id)
+                                       user_id=user_id, debug=debug)
             break  # Exit the loop if successful
         except SessionNotCreatedException as e:
             if attempt == max_retry - 1:

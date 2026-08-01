@@ -150,6 +150,10 @@ services:
       - SE_NODE_OVERRIDE_MAX_SESSIONS=true
       - SE_NODE_SESSION_TIMEOUT=600
       - SE_LOG_LEVEL=WARN
+      # Distinguish this node from the pool with a custom capability so clients can
+      # request it deliberately. SE_NODE_STEREOTYPE_EXTRA merges into the default
+      # browser stereotype instead of replacing it. See docs/SELENIUM_GRID.md.
+      - SE_NODE_STEREOTYPE_EXTRA='{"lem:debug":true}'
       # The name this node REGISTERS under, so `/status` reports its uri as
       # `http://selenium-node-debug:5555` instead of a per-restart container IP. That is what lets
       # the capacity monitor drop this node from the saturation denominator
