@@ -1,8 +1,9 @@
-export default function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
+export default function Toggle({ on, onClick, ariaLabel }: { on: boolean; onClick: () => void; ariaLabel?: string }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      aria-label={ariaLabel}
       className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${on ? 'bg-blue-600' : 'bg-gray-200'}`}
       role="switch"
       aria-checked={on}

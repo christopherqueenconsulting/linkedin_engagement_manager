@@ -6,6 +6,8 @@ import Toggle from '../../components/Toggle'
 import type { UserGroup } from './types'
 import { useRegisterSaveSection, sectionSaveCallbacks } from './SettingsSaveContext'
 
+const groupLabel = (g: UserGroup) => g.group_name || `Group ${g.group_id}`
+
 export default function GroupsCard() {
   const { sessionToken } = useAuth()
   const queryClient = useQueryClient()
@@ -25,20 +27,25 @@ export default function GroupsCard() {
   })
   useEffect(() => {
     if (groupsData && !groupsInit) {
-      setGroups(groupsData)
-      setSavedSig(JSON.stringify(groupsData))
+      // A group synced before #769 has no post_enabled in an older cached payload — treat a missing
+      // flag as ON, which is what the column defaults to server-side.
+      const normalized = groupsData.map((g) => ({ ...g, post_enabled: g.post_enabled !== false }))
+      setGroups(normalized)
+      setSavedSig(JSON.stringify(normalized))
       setGroupsInit(true)
     }
   }, [groupsData, groupsInit])
 
-  const toggleGroup = (gid: string) =>
-    setGroups((gs) => gs.map((g) => (g.group_id === gid ? { ...g, enabled: !g.enabled } : g)))
+  const toggleGroup = (gid: string, field: 'enabled' | 'post_enabled') =>
+    setGroups((gs) => gs.map((g) => (g.group_id === gid ? { ...g, [field]: !g[field] } : g)))
 
   const groupsMutation = useMutation({
     mutationFn: () =>
       api.put('/user/groups', {
         session_token: sessionToken,
-        groups: Object.fromEntries(groups.map((g) => [g.group_id, g.enabled])),
+        groups: Object.fromEntries(
+          groups.map((g) => [g.group_id, { enabled: g.enabled, post_enabled: !!g.post_enabled }])
+        ),
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['user-groups'] })
@@ -58,15 +65,65 @@ export default function GroupsCard() {
 
   if (!(groupsInit && groups.length > 0)) return null
 
+  // The server decides the rotation (least-recently-posted first) and marks the row; we only hide
+  // the badge when this row's own toggles rule it out, so an unsaved edit never shows a
+  // contradiction. The real next group is re-resolved on save.
+  const markedNext = groups.find((g) => g.is_next_post && g.post_enabled)
+  const postingGroups = groups.filter((g) => g.post_enabled)
+
   return (
     <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-4">
       <h2 className="text-base font-semibold text-gray-700">LinkedIn Groups</h2>
-      <p className="text-xs text-gray-500">Choose which of your joined groups LEM engages in (value-add comments + occasional posts). All on by default.</p>
+      <div className="text-xs text-gray-500 space-y-1">
+        <p>Two separate things happen in your joined groups, and each has its own switch per group. Both are on by default.</p>
+        <p>
+          <span className="font-semibold text-gray-700">Comment</span> — LEM leaves value-add comments on
+          other members' posts in that group, daily, out of your normal daily comment budget.
+        </p>
+        <p>
+          <span className="font-semibold text-gray-700">Post</span> — about once a week LEM publishes{' '}
+          <span className="font-semibold text-gray-700">one original post into one group</span>, written fresh
+          for that group's members. Your scheduled feed posts are never duplicated, reshared or cross-posted
+          into groups, and the same post never goes to more than one group.
+        </p>
+        <p>
+          The weekly slot rotates: it goes to whichever group with <span className="font-semibold text-gray-700">Post</span>{' '}
+          on has gone longest without one.
+        </p>
+      </div>
+
+      <p className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded p-2">
+        {postingGroups.length === 0
+          ? 'Next group post: none — no group has Post turned on, so LEM will not post in any group.'
+          : markedNext
+            ? `Next group post: ${groupLabel(markedNext)}.`
+            : 'Next group post: picked from the groups below when you save.'}
+      </p>
+
       <div className="divide-y divide-gray-100">
+        <div className="flex items-center justify-between pb-2 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+          <span>Group</span>
+          <span className="flex items-center gap-3">
+            <span className="w-11 text-center">Comment</span>
+            <span className="w-11 text-center">Post</span>
+          </span>
+        </div>
         {groups.map((g) => (
           <div key={g.group_id} className="flex items-center justify-between py-2">
-            <span className="text-sm text-gray-700 truncate pr-3">{g.group_name || `Group ${g.group_id}`}</span>
-            <Toggle on={g.enabled} onClick={() => toggleGroup(g.group_id)} />
+            <span className="text-sm text-gray-700 truncate pr-3">
+              {groupLabel(g)}
+              {markedNext?.group_id === g.group_id && (
+                <span className="ml-2 text-[10px] font-semibold uppercase text-blue-700 bg-blue-50 rounded px-1.5 py-0.5">
+                  Next post
+                </span>
+              )}
+            </span>
+            <span className="flex items-center gap-3">
+              <Toggle on={g.enabled} onClick={() => toggleGroup(g.group_id, 'enabled')}
+                ariaLabel={`Comment in ${groupLabel(g)}`} />
+              <Toggle on={!!g.post_enabled} onClick={() => toggleGroup(g.group_id, 'post_enabled')}
+                ariaLabel={`Post in ${groupLabel(g)}`} />
+            </span>
           </div>
         ))}
       </div>

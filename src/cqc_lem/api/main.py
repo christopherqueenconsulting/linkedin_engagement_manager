@@ -59,7 +59,8 @@ from cqc_lem.utilities.db import (
     get_newsletter_settings, update_newsletter_settings,
     get_pending_newsletter_editions,
     get_latest_edition_scheduled_for, update_newsletter_edition, get_newsletter_edition,
-    get_user_groups, set_groups_enabled, get_post_engagement_rows, get_post_performance_rows,
+    get_user_groups, set_groups_enabled, get_next_group_for_post,
+    get_post_engagement_rows, get_post_performance_rows,
     get_content_mix_counts, get_comment_outcomes,
     get_follower_stats, get_daily_action_counts,
     get_lead_magnet_settings, update_lead_magnet_settings,
@@ -2876,7 +2877,8 @@ def delete_catchup_touch_endpoint(request: CatchupTouchDeleteRequest) -> Respons
 
 class GroupTogglesRequest(BaseModel):
     session_token: str
-    groups: dict = {}  # {group_id: enabled}
+    # {group_id: enabled} or {group_id: {"enabled": bool, "post_enabled": bool}} (issue #769)
+    groups: dict = {}
 
 
 @router.get("/user/groups")
@@ -2884,7 +2886,14 @@ def get_user_groups_endpoint(session_token: str) -> ResponseModel:
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
-    return ResponseModel(status_code=200, detail=get_user_groups(user_id))
+    groups = get_user_groups(user_id)
+    # Which group the next weekly group post lands in — marked on the row rather than returned
+    # beside the list, so an older SPA bundle still reads `detail` as a plain array (issue #743).
+    nxt = get_next_group_for_post(user_id)
+    next_gid = nxt.get("group_id") if nxt else None
+    for g in groups:
+        g["is_next_post"] = g.get("group_id") == next_gid
+    return ResponseModel(status_code=200, detail=groups)
 
 
 @router.put("/user/groups")
