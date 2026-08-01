@@ -236,6 +236,30 @@ class TestReactToPostInline:
             ok = ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
         assert ok is False  # fly-out never opened and the default-Like fallback didn't register
 
+    def test_missing_menu_is_not_a_warning_when_a_fallback_toggle_exists(self):
+        """The fly-out opener is optional — with a React toggle in hand its absence just takes the
+        default-Like fallback, which is working behaviour. Warning per card escalated it to ERROR
+        and filed a PostHog defect (issue #873)."""
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
+             patch(f"{_RA}.wait_for_ajax"), \
+             patch(f"{_RA}.find_first", return_value=_state("Reaction button state: no reaction")), \
+             patch(f"{_RA}.click_first", return_value=None) as cf:
+            ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
+        assert cf.call_args_list[0].kwargs["warn_on_miss"] is False
+
+    def test_missing_menu_still_warns_when_there_is_no_fallback(self):
+        """No Reaction-state button and no React toggle means the card's reaction controls are
+        genuinely unreadable — silencing that would hide real SDUI rot."""
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
+             patch(f"{_RA}.wait_for_ajax"), \
+             patch(f"{_RA}.find_first", return_value=None), \
+             patch(f"{_RA}.click_first", return_value=None) as cf:
+            ok = ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
+        assert ok is False
+        assert cf.call_args_list[0].kwargs["warn_on_miss"] is True
+
     def test_clicks_the_ai_chosen_reaction(self):
         from cqc_lem.app import run_automation as ra
         seen = []

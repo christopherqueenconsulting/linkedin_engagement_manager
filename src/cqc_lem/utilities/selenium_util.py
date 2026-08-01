@@ -618,12 +618,15 @@ def find_first(driver: WebDriver, wait: WebDriverWait, locators: list[tuple[str,
 def click_first(driver: WebDriver, wait: WebDriverWait, locators: list[tuple[str, str]], label: str,
                 *, required: bool = True, parent_element: WebElement = None,
                 use_action_chain: bool = False, max_try: int = MAX_WAIT_RETRY,
+                warn_on_miss: bool = True,
                 user_id: int = None, post_id: int = None) -> WebElement | None:
     """Find (via `find_first`) then click the first matching element, with the same resilient
-    fallback + structured-miss-logging behavior. Returns the clicked element or None."""
+    fallback + structured-miss-logging behavior — including `warn_on_miss`, so a control the caller
+    already has a working fallback for logs BOTH of its miss paths (not found, and found but not
+    clickable) at DEBUG. Returns the clicked element or None."""
     element = find_first(driver, wait, locators, label, required=required,
                          parent_element=parent_element, max_try=max_try, visible_only=True,
-                         user_id=user_id, post_id=post_id)
+                         warn_on_miss=warn_on_miss, user_id=user_id, post_id=post_id)
     if element is None:
         return None
     try:
@@ -636,7 +639,11 @@ def click_first(driver: WebDriver, wait: WebDriverWait, locators: list[tuple[str
     except (ElementNotInteractableException, StaleElementReferenceException, TimeoutException) as se:
         if required:
             raise se
-        log_warning(f"Click miss: {label}", action_type="scrape", user_id=user_id, post_id=post_id)
+        # A hover-revealed control can go un-clickable between the find and the click, which returns
+        # None exactly like a selector miss does — so the caller's fallback is the same one. Warning
+        # here regardless of warn_on_miss would re-open the escalation the flag was added to close.
+        emit = log_warning if warn_on_miss else log_debug
+        emit(f"Click miss: {label}", action_type="scrape", user_id=user_id, post_id=post_id)
         return None
     return element
 
