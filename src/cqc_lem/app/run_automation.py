@@ -1687,6 +1687,22 @@ def _reply_composer_for_comment(driver: WebDriver, comment_el: WebElement,
     return best[0]
 
 
+def _type_and_submit_reply(driver, composer: WebElement, reply_text: str, user_id: int = None) -> bool:
+    """Type into an ALREADY-resolved composer and submit (role=textbox + Ctrl+Enter fallback). Both
+    reply paths share this so the submit/verify contract can never drift between them. True only when
+    `_composer_submitted` confirms the post."""
+    reply_text = _strip_non_bmp(reply_text)
+    if not reply_text.strip():
+        return False
+    _focus_composer(driver, composer)  # sticky nav steals a top-of-viewport click (#815)
+    composer.send_keys(reply_text)
+    time.sleep(random.uniform(1, 2))
+    if not driver.execute_script(_SUBMIT_NEAR_COMPOSER_JS, composer):
+        composer.send_keys(Keys.CONTROL, Keys.RETURN)  # fallback
+    time.sleep(random.uniform(3, 5))
+    return _composer_submitted(driver, composer, reply_text)
+
+
 def _reply_to_comment_inline(driver, wait, comment_el, reply_text: str, user_id: int = None) -> bool:
     """Open a comment's inline reply box, type the reply, and submit (same SDUI pattern as
     post_comment_inline: role=textbox composer + Ctrl+Enter fallback). The composer is resolved
@@ -1699,16 +1715,7 @@ def _reply_to_comment_inline(driver, wait, comment_el, reply_text: str, user_id:
         composer = _reply_composer_for_comment(driver, comment_el, user_id=user_id)
         if composer is None:
             return False
-        reply_text = _strip_non_bmp(reply_text)
-        if not reply_text.strip():
-            return False
-        _focus_composer(driver, composer)  # sticky nav steals a top-of-viewport click (#815)
-        composer.send_keys(reply_text)
-        time.sleep(random.uniform(1, 2))
-        if not driver.execute_script(_SUBMIT_NEAR_COMPOSER_JS, composer):
-            composer.send_keys(Keys.CONTROL, Keys.RETURN)  # fallback
-        time.sleep(random.uniform(3, 5))
-        return _composer_submitted(driver, composer, reply_text)
+        return _type_and_submit_reply(driver, composer, reply_text, user_id=user_id)
     except Exception as e:
         log_warning("Inline reply post failed", exc=e, action_type="reply", user_id=user_id)
         return False
@@ -3274,8 +3281,15 @@ def _react_to_comment_inline(driver, wait, comment_el, user_id: int = None) -> b
 def _reply_under_comment_inline(driver, wait, comment_el, reply_text: str, user_id: int = None) -> bool:
     """Reply UNDER a specific comment — NOT as a new top-level comment. The bug: clicking a comment's
     Reply then taking the first page-wide role=textbox grabbed the post's main 'Add a comment' box, so
-    the reply posted as a standalone comment. Fix: after opening the reply box, type into the composer
-    NEAREST the comment (the inline reply box opens right below it), never the far-away main box."""
+    the reply posted as a standalone comment (#478).
+
+    #478's own fix only PENALISED a composer above the comment, so the main box still won when it was
+    the only visible one — the exact failure this function exists to prevent (#886). Composer
+    resolution is now `_reply_composer_for_comment`, shared with `_reply_to_comment_inline` (#883):
+    a box inside this comment wins, a box above it is rejected outright, a box owned by a DIFFERENT
+    comment is rejected, and no box of ours means skip. This function keeps only its own way of
+    OPENING the box — the #478 thread path needs the scroll + hover that renders a hover-hidden Reply
+    button before it can be clicked."""
     try:
         driver.execute_script("arguments[0].scrollIntoView({block:'center'});", comment_el)
         try:
@@ -3291,29 +3305,10 @@ def _reply_under_comment_inline(driver, wait, comment_el, reply_text: str, user_
         except Exception:
             driver.execute_script("arguments[0].click();", rbtns[0])
         time.sleep(random.uniform(1.5, 2.8))
-        # Pick the VISIBLE composer nearest the comment (the reply box that just opened below it);
-        # heavily penalise any composer above the comment (that's the main top comment box).
-        composer = driver.execute_script(
-            "const a=arguments[0].getBoundingClientRect();"
-            "const boxes=[...document.querySelectorAll(\"div[role='textbox']\")].filter(e=>{"
-            "  const r=e.getBoundingClientRect(); return r.width>0 && r.height>0;});"
-            "let best=null,bd=1e12;"
-            "for(const e of boxes){const r=e.getBoundingClientRect();"
-            "  let d=Math.abs(r.top-a.bottom)+(r.top<a.top?1e6:0);"
-            "  if(d<bd){bd=d;best=e;}} return best;", comment_el)
+        composer = _reply_composer_for_comment(driver, comment_el, user_id=user_id)
         if composer is None:
-            log_warning("Reply-under-comment: no composer near the comment", action_type="reply", user_id=user_id)
-            return False
-        reply_text = _strip_non_bmp(reply_text)
-        if not reply_text.strip():
-            return False
-        _focus_composer(driver, composer)  # sticky nav steals a top-of-viewport click (#815)
-        composer.send_keys(reply_text)
-        time.sleep(random.uniform(1, 2))
-        if not driver.execute_script(_SUBMIT_NEAR_COMPOSER_JS, composer):
-            composer.send_keys(Keys.CONTROL, Keys.RETURN)  # fallback
-        time.sleep(random.uniform(3, 5))
-        return _composer_submitted(driver, composer, reply_text)
+            return False  # expected no-op (the box never opened) — `_reply_composer_for_comment` logs it DEBUG
+        return _type_and_submit_reply(driver, composer, reply_text, user_id=user_id)
     except Exception as e:
         log_warning("Reply-under-comment failed", exc=e, action_type="reply", user_id=user_id)
         return False
