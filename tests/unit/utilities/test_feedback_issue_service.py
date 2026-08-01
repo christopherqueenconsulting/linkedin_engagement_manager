@@ -26,6 +26,15 @@ def _mod():
     return issue_service
 
 
+@pytest.fixture(autouse=True)
+def _clear_transport_cool_off():
+    """Issue #767: the unreachable cool-off is process-global by design, so one test's simulated
+    outage would silently short-circuit the next test's request."""
+    _mod()._unreachable_until = 0.0
+    yield
+    _mod()._unreachable_until = 0.0
+
+
 def _classification(**overrides):
     from cqc_lem.utilities.feedback.classifier import (
         FeedbackCategory, FeedbackClassification, FeedbackRisk, FeedbackSeverity)
@@ -520,6 +529,20 @@ class TestGithubIO:
         assert any("could not be assigned" in m for m in messages)
         warning.assert_not_called()
 
+    def test_a_lost_attach_does_not_blame_the_token_while_github_is_unreachable(self, monkeypatch):
+        # Issue #767: the create landed, then the network went. Nothing was "refused", so the #718
+        # token hint would be a lie — and at ERROR it files the outage as a defect all over again.
+        svc = _mod()
+        monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
+        with patch(f"{_SVC}.github_request", side_effect=[{"number": 31}, None, None]), \
+                patch(f"{_SVC}.github_unreachable", return_value=True), \
+                patch(f"{_SVC}.log_error") as error, patch(f"{_SVC}.log_warning") as warning:
+            assert svc.create_github_issue("t", "b", ["bug"], assignees=["gitchrisqueen"]) == 31
+        error.assert_not_called()
+        assert warning.call_count == 2
+        assert all("unreachable" in call[0][0] for call in warning.call_args_list)
+        assert not any("Issues: Read and write" in call[0][0] for call in warning.call_args_list)
+
     def test_a_held_issue_with_no_decision_comment_is_an_error(self):
         # The owner is asked to answer a Decision Comment that never posted — a silent dead end.
         svc = _mod()
@@ -562,7 +585,7 @@ class TestGithubIO:
         monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
         requests = MagicMock()
         requests.request.side_effect = OSError("connection reset")
-        with patch.dict("sys.modules", {"requests": requests}):
+        with patch.dict("sys.modules", {"requests": requests}), patch(f"{_SVC}.time.sleep"):
             assert svc.comment_on_issue(5, "body") is False
 
     def test_comment_targets_the_issue_number(self, monkeypatch):
@@ -588,6 +611,127 @@ class TestGithubIO:
 
     def test_comment_without_an_issue_number_is_a_no_op(self):
         assert _mod().comment_on_issue(None, "+1") is False
+
+
+class TestTransportFailures:
+    """Issue #767: a DNS/connect blip is the network, not a defect in this loop. It is retried in
+    place and reported ONCE as a WARNING (recurrence escalation decides whether it is a defect) —
+    an ERROR per lost request turned a 100ms outage into an auto-filed GitHub issue."""
+
+    def _response(self, status=200, payload=None):
+        response = MagicMock(status_code=status, text="")
+        response.json.return_value = payload if payload is not None else {}
+        return response
+
+    def test_a_dns_failure_is_retried_then_warned_not_errored(self, monkeypatch):
+        svc = _mod()
+        monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
+        requests = MagicMock()
+        requests.request.side_effect = ConnectionError(
+            "Failed to resolve 'api.github.com' ([Errno -3] Temporary failure in name resolution)")
+        with patch.dict("sys.modules", {"requests": requests}), \
+                patch(f"{_SVC}.time.sleep") as sleep, \
+                patch(f"{_SVC}.log_warning") as warning, patch(f"{_SVC}.log_error") as error:
+            assert svc.github_request("GET", "issues/727") is None
+        assert requests.request.call_count == svc.GITHUB_RETRY_ATTEMPTS
+        assert sleep.call_count == svc.GITHUB_RETRY_ATTEMPTS - 1
+        error.assert_not_called()
+        assert "unreachable" in warning.call_args[0][0]
+        assert warning.call_args.kwargs["exc"] is not None
+
+    def test_a_transport_failure_that_recovers_is_never_reported(self, monkeypatch):
+        svc = _mod()
+        monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
+        requests = MagicMock()
+        requests.request.side_effect = [TimeoutError("read timed out"),
+                                        self._response(200, {"number": 5})]
+        with patch.dict("sys.modules", {"requests": requests}), \
+                patch(f"{_SVC}.time.sleep"), \
+                patch(f"{_SVC}.log_warning") as warning, patch(f"{_SVC}.log_error") as error:
+            assert svc.github_request("GET", "issues/5") == {"number": 5}
+        assert requests.request.call_count == 2
+        warning.assert_not_called()
+        error.assert_not_called()
+        assert svc.github_unreachable() is False
+
+    def test_a_failure_that_is_not_the_transport_is_still_an_error(self, monkeypatch):
+        # A bug in this module must not be retried three times and filed away as "the network".
+        svc = _mod()
+        monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
+        requests = MagicMock()
+        requests.request.side_effect = ValueError("bad payload")
+        with patch.dict("sys.modules", {"requests": requests}), \
+                patch(f"{_SVC}.time.sleep") as sleep, patch(f"{_SVC}.log_error") as error:
+            assert svc.github_request("POST", "issues") is None
+        assert requests.request.call_count == 1
+        sleep.assert_not_called()
+        assert "failed" in error.call_args[0][0]
+
+    def test_one_outage_is_reported_once_and_short_circuits_the_rest_of_the_pass(self,
+                                                                                monkeypatch):
+        # Three lost requests in one pass = three warnings = the escalation threshold, i.e. the
+        # outage would file itself as a defect. The cool-off is what keeps it to one.
+        svc = _mod()
+        monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
+        requests = MagicMock()
+        requests.request.side_effect = ConnectionError("no route to host")
+        with patch.dict("sys.modules", {"requests": requests}), \
+                patch(f"{_SVC}.time.sleep"), patch(f"{_SVC}.log_warning") as warning, \
+                patch(f"{_SVC}.log_error") as error:
+            assert svc.github_request("GET", "issues/101") is None
+            assert svc.github_unreachable() is True
+            assert svc.github_request("GET", "issues/102") is None
+            assert svc.github_request("POST", "issues/103/comments", {"body": "x"}) is None
+        assert requests.request.call_count == svc.GITHUB_RETRY_ATTEMPTS
+        assert warning.call_count == 1
+        error.assert_not_called()
+
+    def test_a_write_is_never_replayed(self, monkeypatch):
+        # A POST that died AFTER GitHub accepted it looks identical to one that never landed, so a
+        # replayed `POST /issues` files the duplicate this module exists to prevent. Reported the
+        # same way — the write is simply left for the next pass.
+        svc = _mod()
+        monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
+        requests = MagicMock()
+        requests.request.side_effect = TimeoutError("read timed out")
+        with patch.dict("sys.modules", {"requests": requests}), \
+                patch(f"{_SVC}.time.sleep") as sleep, \
+                patch(f"{_SVC}.log_warning") as warning, patch(f"{_SVC}.log_error") as error:
+            assert svc.github_request("POST", "issues", {"title": "t"}) is None
+        assert requests.request.call_count == 1
+        sleep.assert_not_called()
+        error.assert_not_called()
+        assert "unreachable" in warning.call_args[0][0]
+        assert svc.github_unreachable() is True
+
+    def test_a_deterministic_requests_fault_is_ours_not_the_network(self, monkeypatch):
+        # `requests.exceptions.MissingSchema` inherits IOError like every transport error does, but
+        # a malformed URL is a config/code bug — retrying it and calling it "unreachable" would both
+        # hide the real fault and silently skip the rest of the pass on the cool-off.
+        from requests.exceptions import MissingSchema
+        svc = _mod()
+        monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
+        requests = MagicMock()
+        requests.request.side_effect = MissingSchema("Invalid URL 'repos/o r/issues'")
+        with patch.dict("sys.modules", {"requests": requests}), \
+                patch(f"{_SVC}.time.sleep") as sleep, \
+                patch(f"{_SVC}.log_warning") as warning, patch(f"{_SVC}.log_error") as error:
+            assert svc.github_request("GET", "issues/1") is None
+        assert requests.request.call_count == 1
+        sleep.assert_not_called()
+        warning.assert_not_called()
+        assert "failed" in error.call_args[0][0]
+        assert svc.github_unreachable() is False
+
+    def test_a_successful_call_clears_the_cool_off(self, monkeypatch):
+        svc = _mod()
+        monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
+        svc._unreachable_until = 0.0
+        requests = MagicMock()
+        requests.request.return_value = self._response(200, {"ok": True})
+        with patch.dict("sys.modules", {"requests": requests}):
+            assert svc.github_request("GET", "issues/1") == {"ok": True}
+        assert svc.github_unreachable() is False
 
 
 class TestFileFeedbackIssue:
@@ -1193,6 +1337,20 @@ class TestRepairFiledIssue:
         comment.assert_not_called()
         assert "Issues: Read and write" in error.call_args[0][0]
 
+    def test_a_repair_write_lost_to_the_transport_is_not_a_token_error(self):
+        # Issue #767: same write, but the host cannot reach GitHub at all — a warning the next beat
+        # clears, not the ERROR/$exception that files the outage as a permissions defect.
+        svc = _mod()
+        from cqc_lem.utilities.feedback.classifier import FeedbackRisk
+        issue = self._issue(classification=_classification(risk=FeedbackRisk.SECURITY))
+        with patch(f"{_SVC}.github_request", return_value=None), \
+                patch(f"{_SVC}.github_unreachable", return_value=True), \
+                patch(f"{_SVC}.comment_on_issue"), \
+                patch(f"{_SVC}.log_error") as error, patch(f"{_SVC}.log_warning") as warning:
+            assert svc.repair_filed_issue(issue) == svc.RepairAction.ERROR
+        error.assert_not_called()
+        assert "unreachable" in warning.call_args[0][0]
+
 
 class TestRepairAutoFiledIssues:
     """The sweep that runs on every filing beat — issue #718."""
@@ -1264,6 +1422,21 @@ class TestRepairAutoFiledIssues:
             assert svc.repair_auto_filed_issues() == {"scanned": 3, "repaired": 0, "failed": 3}
         assert request.call_count == svc.REPAIR_READ_FAILURE_STOP
         assert "Issues: Read and write" in error.call_args[0][0]
+
+    def test_an_unreachable_transport_defers_the_sweep_without_blaming_the_token(self, monkeypatch):
+        # Issue #767: these reads were lost to the network, so the #718 token hint would be a lie —
+        # and every remaining GET would only re-report the same outage.
+        svc = _mod()
+        monkeypatch.setenv("FEEDBACK_GITHUB_TOKEN", "tok")
+        clusters = [_cluster(n, issue=100 + n) for n in range(1, 8)]
+        with patch(f"{_SVC}.get_open_feedback_clusters", return_value=clusters), \
+                patch(f"{_SVC}.github_request", return_value=None) as request, \
+                patch(f"{_SVC}.github_unreachable", return_value=True), \
+                patch(f"{_SVC}.log_warning") as warning, patch(f"{_SVC}.log_error") as error:
+            assert svc.repair_auto_filed_issues() == {"scanned": 1, "repaired": 0, "failed": 1}
+        assert request.call_count == 1
+        assert "unreachable" in warning.call_args[0][0]
+        error.assert_not_called()
 
     def test_the_work_list_is_bounded(self, monkeypatch):
         svc = _mod()
