@@ -11,6 +11,9 @@ interface AuthUser {
 // GET /auth/session — identity plus the non-sensitive person facts PostHog is identified with.
 interface SessionDetail {
   user_id: number
+  // Non-sequential public identifier (issue #745, 2b) — the id that may appear in a URL or a
+  // support ticket. The row id stays server-side.
+  public_uid?: string | null
   email: string
   plan?: string | null
   plan_status?: string | null
@@ -37,6 +40,15 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | null>(null)
 
 const SESSION_KEY = 'lem_session'
+
+/**
+ * Since issue #745 (2b) the session token lives in an httpOnly cookie the browser attaches to every
+ * same-origin request, so no script on this page — ours or an injected one — can read it. What
+ * `sessionToken` carries is this non-secret sentinel: the ~150 call sites that pass
+ * `session_token` keep their shape, and the API resolves the request from the cookie instead.
+ * A real token is only ever held as the fallback below.
+ */
+export const COOKIE_SESSION = 'cookie'
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null)
@@ -89,15 +101,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   function login(token: string, email: string) {
-    localStorage.setItem(SESSION_KEY, token)
+    // The token is NOT stored: the login response already set the httpOnly cookie, and what goes
+    // into localStorage is the sentinel — a marker that a session exists, worth nothing if stolen.
+    localStorage.setItem(SESSION_KEY, COOKIE_SESSION)
     localStorage.setItem('lem_email', email)
-    setSessionToken(token)
+    setSessionToken(COOKIE_SESSION)
     setUser({ email })
     setIsLoginModalOpen(false)
     // The verify response carries no user id, so read the session back: it resolves the id every
     // authenticated feature already needs AND the person facts to identify with. A failure here
     // leaves the optimistic (email-only) user in place rather than bouncing a valid login.
-    loadSession(token).catch(() => {})
+    loadSession(COOKIE_SESSION).catch(() => {
+      // The cookie did not stick — an http:// origin with Secure cookies, or a browser blocking
+      // them. Fall back to holding the token so a valid login is never turned into a lockout; the
+      // cookie is the upgrade, not a hard requirement.
+      localStorage.setItem(SESSION_KEY, token)
+      setSessionToken(token)
+      loadSession(token).catch(() => {})
+    })
   }
 
   async function logout() {

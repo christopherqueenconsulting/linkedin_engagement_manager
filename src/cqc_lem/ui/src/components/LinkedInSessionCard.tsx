@@ -22,14 +22,18 @@ export default function LinkedInSessionCard({
   const [tokenCopied, setTokenCopied] = useState(false)
   const [dropPassword, setDropPassword] = useState(true)
 
+  // Since #745 (2b) the app's own session is an httpOnly cookie, so there is no token to hand over
+  // — the extension is minted its OWN session instead. That is the better shape anyway: it shows up
+  // as its own device on the Security card and can be revoked without signing the person out here.
   const copyToken = async () => {
     if (!sessionToken) return
     try {
-      await navigator.clipboard.writeText(sessionToken)
+      const r = await api.post('/user/extension-token', { session_token: sessionToken })
+      await navigator.clipboard.writeText(r.data.detail.session_token as string)
       setTokenCopied(true)
       setTimeout(() => setTokenCopied(false), 2500)
     } catch {
-      setMsg({ ok: false, text: 'Could not copy — select and copy your token manually.' })
+      setMsg({ ok: false, text: 'Could not create an extension token — please try again.' })
       setTimeout(() => setMsg(null), 4000)
     }
   }

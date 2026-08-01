@@ -13,8 +13,11 @@ api.interceptors.request.use((config) => {
   if (apiToken) {
     config.headers['Authorization'] = `Bearer ${apiToken}`
   }
+  // Since #745 (2b) the session normally rides in an httpOnly cookie the browser attaches itself,
+  // and localStorage holds only the 'cookie' sentinel — there is nothing to put in this header.
+  // It is still sent when a real token is held (cookie-less fallback, tutorial capture harness).
   const token = localStorage.getItem('lem_session')
-  if (token) {
+  if (token && token !== 'cookie') {
     config.headers['X-Session-Token'] = token
   }
   return config

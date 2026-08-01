@@ -189,6 +189,21 @@ SMTP_PASSWORD = get_constant_from_env('SMTP_PASSWORD')
 SESSION_IDLE_HOURS        = int(get_constant_from_env('SESSION_IDLE_HOURS', default_value='24'))
 SESSION_ABSOLUTE_MAX_DAYS = int(get_constant_from_env('SESSION_ABSOLUTE_MAX_DAYS', default_value='30'))
 
+# Session cookie (issue #745, phase 2b). The token lives in an httpOnly cookie so a script on the
+# page can never read it. Secure defaults to on; local http:// dev sets SESSION_COOKIE_SECURE=false
+# or the browser silently drops the cookie and every request looks logged out.
+SESSION_COOKIE_NAME       = get_constant_from_env('SESSION_COOKIE_NAME', default_value='lem_session')
+SESSION_COOKIE_SECURE     = get_constant_from_env('SESSION_COOKIE_SECURE', default_value='true').lower() == 'true'
+SESSION_COOKIE_SAMESITE   = get_constant_from_env('SESSION_COOKIE_SAMESITE', default_value='lax').lower()
+
+# Auth rate limiting (issue #745, phase 2b). Windows are per-email AND per-IP; the PIN attempt
+# counter is the harder, DB-backed gate against a 6-digit PIN space.
+AUTH_INIT_MAX_PER_HOUR    = int(get_constant_from_env('AUTH_INIT_MAX_PER_HOUR', default_value='5'))
+AUTH_VERIFY_MAX_PER_HOUR  = int(get_constant_from_env('AUTH_VERIFY_MAX_PER_HOUR', default_value='10'))
+AUTH_IP_MAX_PER_HOUR      = int(get_constant_from_env('AUTH_IP_MAX_PER_HOUR', default_value='30'))
+PIN_MAX_ATTEMPTS          = int(get_constant_from_env('PIN_MAX_ATTEMPTS', default_value='5'))
+PIN_LOCKOUT_MINUTES       = int(get_constant_from_env('PIN_LOCKOUT_MINUTES', default_value='15'))
+
 STRIPE_API_KEY            = get_constant_from_env('STRIPE_API_KEY')
 STRIPE_WEBHOOK_SECRET     = get_constant_from_env('STRIPE_WEBHOOK_SECRET')
 STRIPE_PRICE_ID_STARTER       = get_constant_from_env('STRIPE_PRICE_ID_STARTER')
