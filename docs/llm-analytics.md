@@ -156,5 +156,12 @@ Two invariants worth knowing before you add either:
 plus LEM's `feature` / `user_id` and `$ai_is_error` / `$ai_error` when the step raised. distinct_id
 follows the same rule as every other event here: the user id, or the `"system"` sentinel.
 
+**The root span IS the trace.** `llm_trace()` uses the trace id as its own span id, so a top-level
+step's `$ai_parent_id` — and the `parent_run_id` of a call made directly under the root — is the
+trace id itself. That is not cosmetic: PostHog assembles a trace's children with
+`toString($ai_parent_id) = toString($ai_trace_id)` (`traces_query_runner.py`), and totals its latency
+over the same set. Mint a separate root-span uuid and every event still carries the right
+`$ai_trace_id` while the trace opens **empty, at zero latency**.
+
 The de-dupe rule above still holds inside a trace — the money number is `llm_call`, and summing the
 generations under one trace gives you the provider's charge, not LEM's ledger.

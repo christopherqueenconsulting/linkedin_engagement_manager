@@ -90,22 +90,25 @@ class TestEmittedEvents:
         assert event == "$ai_trace"
         assert props["$ai_trace_id"] == trace_id
         assert props["$ai_span_name"] == "post_generation"
-        assert props["$ai_span_id"]
+        assert props["$ai_span_id"] == trace_id
         assert "$ai_parent_id" not in props
         assert props["$ai_latency"] >= 0
         assert props["feature"] == "content"
         assert mock_ph.capture.call_args_list[0][1]["distinct_id"] == "7"
 
-    def test_a_span_hangs_off_the_root_span(self):
+    def test_a_top_level_span_parents_onto_the_trace_id_itself(self):
+        """PostHog collects a trace's children with `$ai_parent_id = $ai_trace_id` (see
+        traces_query_runner.py). Parent a step onto a separate root-span uuid instead and the trace
+        opens empty — every generation still carries the right trace id, and none of them show."""
         from cqc_lem.utilities.observability import llm_trace, llm_span
         with patch(f"{_MOD}.posthog") as mock_ph:
-            with llm_trace("post_generation", user_id=7, feature="content"):
+            with llm_trace("post_generation", user_id=7, feature="content") as trace_id:
                 with llm_span("draft"):
                     pass
         (span_event, span), (trace_event, trace) = _events(mock_ph)
         assert (span_event, trace_event) == ("$ai_span", "$ai_trace")
-        assert span["$ai_trace_id"] == trace["$ai_trace_id"]
-        assert span["$ai_parent_id"] == trace["$ai_span_id"]
+        assert span["$ai_trace_id"] == trace["$ai_trace_id"] == trace_id
+        assert span["$ai_parent_id"] == trace_id
         assert span["$ai_span_name"] == "draft"
 
     def test_nested_spans_parent_onto_each_other(self):

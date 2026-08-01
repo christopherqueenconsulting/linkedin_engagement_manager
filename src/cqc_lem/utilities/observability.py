@@ -423,7 +423,13 @@ def llm_trace(name: str, user_id: Optional[int] = None,
         if not llm_tracing_enabled():
             yield None
             return
-        trace_id, span_id = str(uuid.uuid4()), str(uuid.uuid4())
+        # The root span IS the trace: PostHog puts an event in a trace's child list only when its
+        # $ai_parent_id equals the $ai_trace_id itself (traces_query_runner.py builds `events` from
+        # `toString($ai_parent_id) = toString($ai_trace_id)`, and total_latency sums the same set).
+        # Minting a separate root-span uuid would parent every step onto an id no node carries, so
+        # the trace would open EMPTY with zero latency — the one thing this feature exists to show.
+        trace_id = str(uuid.uuid4())
+        span_id = trace_id
         # Resolved once, inside the scope: the finally block runs after llm_attribution has been
         # reset, and a trace attributed to "system" would be worse than no trace at all.
         scope_user_id, scope_feature = current_llm_attribution()

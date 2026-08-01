@@ -84,14 +84,16 @@ class TestTraceOnTheWire:
         assert parents == [draft_span, humanize_span]
         assert draft_span != humanize_span
 
-    def test_a_call_directly_under_the_trace_parents_onto_its_root_span(self):
+    def test_a_call_directly_under_the_trace_parents_onto_the_trace_itself(self):
+        """A step-less call is a DIRECT child of the trace, and PostHog only counts one as such when
+        $ai_parent_id is the trace id (traces_query_runner.py) — anything else and it disappears."""
         from cqc_lem.utilities.observability import llm_trace
         client, recorder = _client()
         with _silent_posthog():
-            with llm_trace("post_generation", user_id=7, feature="content"):
+            with llm_trace("post_generation", user_id=7, feature="content") as trace_id:
                 _send(client)
         _, body = recorder.requests[-1]
-        assert body["metadata"]["parent_run_id"]
+        assert body["metadata"]["parent_run_id"] == trace_id
 
     def test_a_callers_own_metadata_still_joins_the_trace(self):
         """`_call_llm` always sets its own metadata, which is why tracing cannot ride inside the
