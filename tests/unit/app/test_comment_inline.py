@@ -418,3 +418,76 @@ class TestReactToPostInline:
              patch(f"{_RA}.click_first", return_value=MagicMock()):
             ok = ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
         assert ok is False  # toggle never flipped away from 'no reaction'
+
+    def test_a_click_that_never_registered_warns_exactly_once(self):
+        """Readable controls, a click that didn't take: the one reaction failure none of the
+        selector misses stand for. It warns HERE, where it's detected, so the caller doesn't have
+        to warn blindly for every False (issue #878)."""
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
+             patch(f"{_RA}.wait_for_ajax"), \
+             patch(f"{_RA}.find_first", side_effect=[_state("Reaction button state: no reaction"),
+                                                     _state("Reaction button state: no reaction")]), \
+             patch(f"{_RA}.click_first", return_value=MagicMock()), \
+             patch(f"{_RA}.log_warning") as warn:
+            ok = ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
+        assert ok is False
+        assert len(warn.call_args_list) == 1
+        assert warn.call_args_list[0].args[0] == "Reaction did not register after clicking"
+
+    def test_an_unreadable_card_adds_no_warning_of_its_own(self):
+        """No Reaction-state button and no React toggle: the fly-out opener's miss already warns for
+        that condition (issue #873), so nothing in this function may warn a second time."""
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
+             patch(f"{_RA}.wait_for_ajax"), \
+             patch(f"{_RA}.find_first", return_value=None), \
+             patch(f"{_RA}.click_first", return_value=None), \
+             patch(f"{_RA}.log_warning") as warn:
+            ok = ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
+        assert ok is False
+        warn.assert_not_called()
+
+
+class TestEngageCardReactionLogging:
+    """`_engage_card`'s reaction outcome must never be the thing that files a defect: a reaction is
+    best-effort and never blocks the comment, and every real failure already warned inside
+    `react_to_post_inline` (issue #878)."""
+
+    @staticmethod
+    def _engage(reaction_outcome, warn, debug):
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.claim_post_for_comment", return_value=True), \
+             patch(f"{_RA}.select_blueprint", return_value={"format": "expander"}), \
+             patch(f"{_RA}.generate_ai_response", return_value="A real comment."), \
+             patch(f"{_RA}._author_is_me", return_value=False), \
+             patch(f"{_RA}.react_to_post_inline", return_value=reaction_outcome), \
+             patch(f"{_RA}.mark_post_reacted"), \
+             patch(f"{_RA}.post_comment_inline", return_value=True), \
+             patch(f"{_RA}.mark_post_commented"), \
+             patch(f"{_RA}.insert_new_log"), \
+             patch(f"{_RA}.record_action"), \
+             patch(f"{_RA}.pace_read", return_value=0.0), \
+             patch(f"{_RA}.log_warning", warn), \
+             patch(f"{_RA}.log_debug", debug):
+            return ra._engage_card(MagicMock(), MagicMock(), MagicMock(), 1, MagicMock(),
+                                   "feedurn://x", "a post body", "Jane", {}, "synth", [], [])
+
+    def test_a_failed_reaction_is_debug_not_a_warning(self):
+        warn, debug = MagicMock(), MagicMock()
+        assert self._engage(False, warn, debug) is True  # the comment still lands
+        warn.assert_not_called()
+        assert debug.call_args_list[0].args[0].startswith("No reaction landed on post")
+
+    def test_an_already_reacted_post_is_still_debug(self):
+        # None = the post already carried our reaction: a no-op, and mark_post_reacted is not owed.
+        warn, debug = MagicMock(), MagicMock()
+        assert self._engage(None, warn, debug) is True
+        warn.assert_not_called()
+        assert debug.call_args_list[0].args[0].startswith("Post already carried our reaction")
+
+    def test_a_landed_reaction_logs_nothing(self):
+        warn, debug = MagicMock(), MagicMock()
+        assert self._engage(True, warn, debug) is True
+        warn.assert_not_called()
+        debug.assert_not_called()

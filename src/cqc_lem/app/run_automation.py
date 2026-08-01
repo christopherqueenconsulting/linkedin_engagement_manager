@@ -1021,6 +1021,11 @@ def react_to_post_inline(driver, wait, card, post_content: str = None, comment_t
                            visible_only=True, warn_on_miss=expected,
                            max_try=MAX_WAIT_RETRY if expected else 1, user_id=user_id)
         if after is not None and "no reaction" in (after.get_attribute("aria-label") or "").lower():
+            # The card's controls were readable and the click STILL didn't take — the one reaction
+            # failure none of the selector misses above stand for, so it gets its single warning
+            # here, where it is detected. The caller's blanket warning is DEBUG (issue #878).
+            log_warning("Reaction did not register after clicking", user_id=user_id,
+                        action_type="comment")
             return False
         myprint(f"Reacted '{reaction}' on post")
         return True
@@ -1273,7 +1278,12 @@ def _engage_card(driver, wait, my_profile: LinkedInProfile, user_id: int, card, 
         elif outcome:
             mark_post_reacted(user_id, key)
         else:
-            log_warning("Could not leave a reaction on post", user_id=user_id, action_type="comment")
+            # Every way react_to_post_inline reports a failure has already warned where it happened
+            # — the fly-out opener's miss when there was no toggle to default-Like (issue #873), the
+            # reaction click's own miss, the wrapped exception, or the click that never registered.
+            # Warning again from out here filed a SECOND PostHog defect for one condition (#878).
+            log_debug("No reaction landed on post — continuing to the comment", user_id=user_id,
+                      action_type="comment")
     if not post_comment_inline(driver, wait, card, comment_text, user_id=user_id):
         release_post_claim(user_id, key)  # posting failed — let a later run retry
         return False

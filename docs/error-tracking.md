@@ -105,6 +105,10 @@ return `False` both for "already reacted" (a no-op) and for genuine failure, so 
 working skip as `Could not leave a reaction on post`; it now returns `None` for the no-op — still
 falsy, so truthiness callers are unaffected — and only real failures warn.
 
+The second half of that pattern is **warn where you detect, not where you notice**. Restating a
+failure one frame up files a second defect for one fault, so that caller now logs the outcome at
+DEBUG and each failing path inside `react_to_post_inline` owns its single warning (issue #878).
+
 | Env | Default | Purpose |
 |---|---|---|
 | `LOG_ESCALATION_ENABLED` | `true` | master switch; false → zero Redis calls |

@@ -63,9 +63,13 @@ Two things follow for anyone writing a call site here:
    ONE warning.** The React toggle is one of two ways into a reaction, so its miss never warns — when
    both it and the fly-out opener miss, the opener's warning already stands for "this card's reaction
    controls are unreadable", and a second just files another defect for the same fault (issue #877).
-   That rule is not fully applied here yet: ONE unreadable card still warns twice more — from the
-   pre-click 'Reaction state' read (issue #874, open) and from the caller's 'Could not leave a
-   reaction on post' (issue #878, open). Collapse those into the opener's signal; never add a fourth.
+   By the same rule the CALLER never warns either: `_engage_card`'s blanket
+   `Could not leave a reaction on post` restated a failure that had already warned where it
+   happened, so it is DEBUG (issue #878) and the one path the selector misses did NOT cover — the
+   click the toggle never registered — warns once, inside the function that detects it. **Warn
+   where you detect, not where you notice.** ONE unreadable card still warns twice, because the
+   pre-click 'Reaction state' read warns too (issue #874, open); collapse that into the opener's
+   signal as well, and never add a fourth.
 2. **Keep the message a stable template.** The dedup key masks volatile tokens (URLs, emails, UUIDs,
    URNs, hex, `[...]`, quoted strings, numbers) and combines them with the call site, so
    `Selector miss: Feed sort control` and `Selector miss: Reaction state` stay two distinct problems
