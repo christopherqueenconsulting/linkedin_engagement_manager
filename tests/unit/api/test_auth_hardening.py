@@ -86,6 +86,31 @@ class TestSessionCookie:
         assert resp.status_code == 200
         assert f"{_COOKIE}=tok_bypass" in resp.headers.get("set-cookie", "")
 
+    def test_the_bypass_login_does_not_claim_the_email_was_verified(self, client):
+        """No mail provider means no PIN reached the address, so nothing proved control of it.
+        email_verified_at records that proof and must stay empty here."""
+        with patch(f"{_M}.get_user_id", return_value=_UID), \
+             patch(f"{_M}.generate_pin", return_value="123456"), \
+             patch(f"{_M}.hash_pin", return_value="h"), \
+             patch(f"{_M}.send_pin_email", return_value=(True, True)), \
+             patch(f"{_M}.create_session", return_value="tok_bypass"), \
+             patch(f"{_M}.mark_email_verified") as mev:
+            resp = client.post("/api/auth/email/init", json={"email": "user@example.com"})
+        assert resp.status_code == 200
+        mev.assert_not_called()
+
+    def test_a_verified_pin_does_stamp_the_email_as_verified(self, client):
+        with patch(f"{_M}.hash_pin", return_value="h"), \
+             patch(f"{_M}.verify_pin_for_email", return_value=True), \
+             patch(f"{_M}.get_pin_lockout", return_value=None), \
+             patch(f"{_M}.get_user_id", return_value=_UID), \
+             patch(f"{_M}.create_session", return_value="tok"), \
+             patch(f"{_M}.mark_email_verified") as mev:
+            resp = client.post("/api/auth/email/verify",
+                               json={"email": "user@example.com", "pin": "123456"})
+        assert resp.status_code == 200
+        mev.assert_called_once_with(_UID)
+
     def test_logout_clears_the_cookie_and_deletes_the_session(self, client):
         with patch(f"{_M}.delete_session") as ds, \
              patch(f"{_M}._db_get_session_user_id", return_value=_UID):
@@ -137,6 +162,48 @@ class TestCookieResolution:
                               cookies={_COOKIE: "real"})
         assert resp.status_code == 200
         assert resp.json()["detail"]["user_id"] == _UID
+
+    def test_a_stale_token_does_not_become_the_acting_session(self, client):
+        """The seam between the two resolvers. When a stale explicit token falls through to the
+        cookie, the token the request ACTS as has to fall through with it — otherwise logout deletes
+        a row that no longer exists and leaves the live one signed in, and "sign out all other
+        devices" fails to match the caller's own session as the one to keep and revokes it."""
+        with patch(f"{_M}._db_get_session_user_id", side_effect=lambda t: _UID if t == "real" else None), \
+             patch(f"{_M}.delete_session") as ds:
+            resp = client.post("/api/auth/logout", json={"session_token": "expired"},
+                               cookies={_COOKIE: "real"})
+        assert resp.status_code == 200
+        ds.assert_called_once_with("real")
+
+    def test_revoke_all_others_keeps_the_cookie_session_not_a_stale_token(self, client):
+        with patch(f"{_M}._db_get_session_user_id", side_effect=lambda t: _UID if t == "real" else None), \
+             patch(f"{_M}.revoke_other_sessions", return_value=1) as ro:
+            resp = client.post("/api/user/sessions/revoke",
+                               json={"session_token": "expired", "all_others": True},
+                               cookies={_COOKIE: "real"})
+        assert resp.status_code == 200
+        assert ro.call_args[1]["keep_token"] == "real"
+
+
+class TestClientAddress:
+    """The per-IP limiter and every ip_hash are only worth the header they are read from."""
+
+    def test_cloudflare_header_wins_over_a_spoofed_forwarded_for(self, client):
+        with patch(f"{_M}.check_auth_init", return_value=_Blocked()), \
+             patch(f"{_M}.record_auth_event") as rec:
+            resp = client.post("/api/auth/email/init", json={"email": "user@example.com"},
+                               headers={"CF-Connecting-IP": "203.0.113.9",
+                                        "X-Forwarded-For": "1.1.1.1, 203.0.113.9"})
+        assert resp.status_code == 429
+        # A caller who prepends their own X-Forwarded-For entry must not get a fresh IP bucket.
+        assert rec.call_args[1]["ip"] == "203.0.113.9"
+
+    def test_forwarded_for_is_still_used_when_there_is_no_cloudflare(self, client):
+        with patch(f"{_M}.check_auth_init", return_value=_Blocked()), \
+             patch(f"{_M}.record_auth_event") as rec:
+            client.post("/api/auth/email/init", json={"email": "user@example.com"},
+                        headers={"X-Forwarded-For": "198.51.100.4"})
+        assert rec.call_args[1]["ip"] == "198.51.100.4"
 
 
 # ---------------------------------------------------------------------------

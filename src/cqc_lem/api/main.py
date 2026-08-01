@@ -269,9 +269,19 @@ def _explicit_token(session_token: Optional[str]) -> Optional[str]:
 
 
 def current_session_token(session_token: Optional[str] = None) -> Optional[str]:
-    """The token this request is actually authenticated by — explicit first, then the cookie.
-    Used where the token itself is needed (logout, "this device" in the session list)."""
-    return _explicit_token(session_token) or _request_session_cookie.get()
+    """The token this request is actually authenticated by — resolved in the SAME order as
+    get_session_user_id, so the two can never name different sessions for one request.
+
+    An explicit token only wins when it RESOLVES. get_session_user_id falls through a stale explicit
+    token to the cookie, so returning that stale token here would mean logout deletes nothing (the
+    live session row outlives the logout) and "sign out all other devices" revokes the caller's OWN
+    live session, having failed to match it as the one to keep. The resolve is skipped when there is
+    no cookie to fall through to — a non-browser caller costs no extra query."""
+    explicit = _explicit_token(session_token)
+    cookie_token = _request_session_cookie.get()
+    if explicit and (not cookie_token or _db_get_session_user_id(explicit)):
+        return explicit
+    return cookie_token or explicit
 
 
 def get_session_user_id(session_token: Optional[str] = None) -> Optional[int]:
@@ -292,10 +302,20 @@ def get_session_user_id(session_token: Optional[str] = None) -> Optional[int]:
 
 
 def _client_ip(request: Optional[Request]) -> Optional[str]:
-    """The caller's address behind the Cloudflare tunnel + nginx edge. X-Forwarded-For is a list;
-    the ORIGINAL client is the first entry."""
+    """The caller's address behind the Cloudflare tunnel + nginx edge.
+
+    CF-Connecting-IP first, and this ordering is the security-relevant part: Cloudflare sets that
+    header on every request it proxies and OVERWRITES whatever the client sent, so it is the one
+    value here an attacker cannot choose. X-Forwarded-For cannot be trusted the same way — a proxy
+    APPENDS to the chain the client supplied, so its first entry is attacker-controlled, and reading
+    it as the client would let a single host reset its own per-IP auth limit with one header and
+    write a forged ip_hash into the audit log. It stays only as the fallback for a deployment with
+    no Cloudflare in front, where nothing else knows the original address."""
     if request is None:
         return None
+    cf_ip = (request.headers.get("CF-Connecting-IP") or "").strip()
+    if cf_ip:
+        return cf_ip
     forwarded = request.headers.get("X-Forwarded-For")
     if forwarded:
         first = forwarded.split(",")[0].strip()
@@ -2107,7 +2127,10 @@ def auth_email_init(request: AuthInitRequest, http_request: Request = None,
         if is_new_user:
             _track_signup_funnel(user_id, email, attribution, pin_bypassed=True)
             _start_affiliate_membership(user_id, attribution)
-        mark_email_verified(user_id)
+        # NOT mark_email_verified: this branch is the no-mail-provider bypass, so nobody proved
+        # control of the address. email_verified_at exists to record that a PIN actually reached
+        # it — stamping it here would make the column say "verified" about the one login that
+        # verifies nothing, and 2c's step-up gate is meant to read it.
         clear_auth_limits(email, ip)
         record_auth_event(AuthAuditEvent.LOGIN_SUCCESS, user_id=user_id, email=email, ip=ip,
                           user_agent=user_agent, details={"method": "pin_bypass"})
@@ -2208,11 +2231,16 @@ def auth_logout(request: LogoutRequest, http_request: Request = None,
         user_id = None
     if token:
         delete_session(token)
-    if user_id:
-        record_auth_event(AuthAuditEvent.LOGOUT, user_id=user_id, ip=_client_ip(http_request),
-                          user_agent=_user_agent(http_request))
     if response is not None:
         _clear_session_cookie(response)
+    # Audited LAST and swallowed: the row and the cookie are the logout, and a DB hiccup on the
+    # audit write must not turn a completed sign-out into a 500 the browser reads as "still in".
+    if user_id:
+        try:
+            record_auth_event(AuthAuditEvent.LOGOUT, user_id=user_id, ip=_client_ip(http_request),
+                              user_agent=_user_agent(http_request))
+        except Exception as e:
+            log_debug(f"Could not record logout audit event: {e}")
     return ResponseModel(status_code=200, detail="Logged out")
 
 

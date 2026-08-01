@@ -49,7 +49,11 @@ them, `AuthContext` now holds the non-secret sentinel `COOKIE_SESSION = 'cookie'
    `session_cookie_middleware`, so handlers that never took a `Request` still get cookie auth).
 
 A stale explicit token falls **through** to the cookie rather than 401ing: a browser holding a token
-from before the cutover is still the signed-in person on that cookie.
+from before the cutover is still the signed-in person on that cookie. `current_session_token()`
+follows the SAME order — an explicit token only wins there if it resolves — so the two can never
+name different sessions for one request. They must not: logout would delete a row that is already
+gone and leave the live session signed in, and "sign out all other devices" would fail to match the
+caller's own session as the one to keep and revoke it.
 
 `login()` in `AuthContext` verifies the cookie stuck by reading the session back; if that fails (an
 `http://` origin with `Secure` cookies, or a browser blocking them) it falls back to holding the
@@ -90,6 +94,11 @@ The SPA surface is `SecurityCard.tsx` (Account & Billing section).
 `users.public_uid` (UUID, unique, backfilled for every existing row) is the identifier that may
 appear in a URL, a log line or a support ticket. The sequential row id stays server-side.
 
+`users.email_verified_at` is stamped only where a PIN was actually consumed — the email-PIN login
+and the email change. The **no-mail-provider bypass login deliberately does not stamp it**: nobody
+proved control of the address on that path, and 2c's step-up gate is meant to be able to trust the
+column.
+
 Changing an address is two calls: `/api/user/email/change/init` sends a PIN **to the new address**,
 `/api/user/email/change/verify` consumes it and moves the account. On success every OTHER session is
 revoked — an email change is exactly what an attacker does after stealing a session, so taking the
@@ -115,6 +124,16 @@ Two layers, deliberately different in kind:
 
 A new `/auth/email/init` clears the unused PIN rows and therefore the lock — that is what the
 per-email init limiter bounds. Worst case is ~25 guesses an hour against a 10^6 space.
+
+### Which address the per-IP bucket counts
+
+`_client_ip` reads **`CF-Connecting-IP` first**, and that ordering is load-bearing. Cloudflare sets
+that header on everything it proxies and overwrites whatever the client sent, so it is the one value
+an attacker cannot choose. `X-Forwarded-For` is only the fallback for a deployment with no
+Cloudflare in front: a proxy *appends* to the chain the client supplied, so its first entry is
+attacker-controlled — reading that as the client would let one host mint itself a fresh per-IP
+bucket per request and write a forged `ip_hash` into `auth_audit_log`. If a different edge is ever
+put in front of the app, whatever header IT overwrites is what belongs at the top of that function.
 
 ## `auth_audit_log`
 
