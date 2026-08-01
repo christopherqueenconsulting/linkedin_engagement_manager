@@ -305,6 +305,28 @@ class TestSanitizeLeavesUrlsIntact:
         text = "Intro.\n\nhttps://host/___?utm_source=a&utm_medium=b\n\nOutro."
         assert sanitize_for_linkedin(text) == text
 
+    @pytest.mark.parametrize("marker", ["*", "**", "_", "__"])
+    def test_emphasis_wrapped_around_a_url_still_unwraps(self, marker):
+        # The span must not END on `*`/`_`: absorbing the closing marker leaves the opener unpaired,
+        # so the post publishes `_https://host/a_` and the auto-linked href gains a trailing
+        # underscore — a dead link, the very failure #823 exists to stop.
+        url = "https://host/a?utm_source=x&utm_medium=y"
+        assert sanitize_for_linkedin(f"Read {marker}{url}{marker} now") == f"Read {url} now"
+
+    def test_url_containing_asterisks_survives_the_italic_pass(self):
+        # `*` is a legal URL character, so the span has to CONTAIN it — stopping at the first one
+        # exposes the remainder of the URL to the italic pass (`?q=a*b*c` published as `?q=abc`).
+        text = "Search https://host/find?q=a*b*c today."
+        assert sanitize_for_linkedin(text) == text
+
+    def test_a_url_that_really_ends_in_an_underscore_is_still_untouched(self):
+        text = "Grab https://host/trailing_ now."
+        assert sanitize_for_linkedin(text) == text
+
+    def test_no_mask_token_ever_reaches_the_output(self):
+        out = sanitize_for_linkedin("**Bold** https://host/a_b_c and [x](https://host/d_e_f).")
+        assert "\x00" not in out and "lemurl" not in out
+
 
 @pytest.mark.unit
 class TestEnforcePostReadability:
