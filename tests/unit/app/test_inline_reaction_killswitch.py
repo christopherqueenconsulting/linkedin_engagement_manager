@@ -7,7 +7,7 @@ that must stay true while it is off: the reaction path is not entered at all, an
 completely unaffected by the stand-down."""
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 pytestmark = pytest.mark.unit
 
