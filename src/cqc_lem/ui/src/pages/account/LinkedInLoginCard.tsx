@@ -4,6 +4,7 @@ import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
 import { useAccountReadiness } from '../../hooks/useAccountReadiness'
 import LinkedInSessionCard from '../../components/LinkedInSessionCard'
+import LinkedInSignInStatusCard from './LinkedInSignInStatusCard'
 import { useStepUp } from '../../hooks/useStepUp'
 
 const LI_AUTH_URL = '/api/auth/linkedin/'
@@ -175,6 +176,11 @@ export default function LinkedInLoginCard() {
 
       {/* LinkedIn Session (cookie) — the DEFAULT engagement login (issue #745, decision 2A) */}
       <LinkedInSessionCard connected={sessionOk} migrationNeeded={cookieMigrationNeeded} />
+
+      {/* Whether the automation's last sign-in landed, and whether it is waiting on the device
+          approval the user was emailed about (issue #933). A saved session says only that a
+          credential exists — this says whether it worked. */}
+      <LinkedInSignInStatusCard />
 
       {/* LinkedIn Automation Password — DEPRECATED, collapsed behind a disclosure so the cookie
           path above is the one users take. Kept working for accounts that already rely on it. */}
