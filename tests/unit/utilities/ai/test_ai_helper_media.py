@@ -42,7 +42,8 @@ class TestFluxImagePrompt:
             assert create.call_args[1]["model"] == "lem-medium"
             assert "Software Engineer" in _user_text(create)
             sys = _system_text(create)
-            assert "NO text" in sys  # the no-garbled-text constraint
+            # The author must never NAME text/logos in a render prompt — positive phrasing rule.
+            assert "NEVER mention" in sys and "logos" in sys
 
     def test_works_without_profile(self, mock_openai_client):
         with patch("cqc_lem.utilities.ai.ai_helper.client", mock_openai_client):

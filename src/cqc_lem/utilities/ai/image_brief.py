@@ -15,51 +15,66 @@ from typing import Optional
 
 from cqc_lem.utilities.logger import log_debug, log_warning
 
-# Per-surface art direction. Composition/lighting fundamentals live in the system prompt; a
-# preset only says what THIS surface is for.
+# Per-surface art direction. The photographic fundamentals (order, lighting, camera, realism
+# texture) live in the system prompt; a preset only says what THIS surface is for.
 _STYLE_PRESETS: dict[str, str] = {
     "newsletter": (
-        "A cinematic, editorial magazine-cover-worthy WIDE scene for a LinkedIn newsletter "
-        "edition. It must telegraph the edition's core idea at thumbnail size — bold, "
-        "atmospheric, instantly readable."),
+        "A wide editorial photograph for a LinkedIn newsletter cover. One bold scene drawn from "
+        "the edition's core idea, readable at thumbnail size, with environmental depth."),
     "post_image": (
-        "A scroll-stopping single-subject image for a LinkedIn feed post. One person or "
-        "tangible object central to the post's message, strong color accent, credible and "
-        "professional."),
+        "A scroll-stopping single-subject photograph for a LinkedIn feed post. One person or "
+        "tangible object central to the post's message, one strong color accent."),
     "carousel": (
-        "A clean supporting visual for ONE carousel slide's single idea. Simple, uncluttered "
-        "background that a text panel can sit beside — the image reinforces, never competes."),
+        "A quiet supporting photograph for ONE carousel slide's single idea. Simple, "
+        "uncluttered background a text panel can sit beside — it reinforces, never competes."),
     "video": (
-        "A photorealistic opening frame for a short professional video. A person or subject "
-        "positioned to come alive with subtle motion, cinematic depth."),
+        "An opening frame for a short professional video: a person or subject posed so subtle "
+        "motion can bring the frame alive, with layered foreground and background depth."),
     "thumbnail": (
         "A clean, flat product-tutorial thumbnail illustration. Calm palette, simple shapes, "
         "one clear subject."),
 }
 _DEFAULT_PRESET = "post_image"
 
-_SYSTEM_PROMPT = """Act as a world-class commercial visual director creating scroll-stopping
-LinkedIn imagery. You turn written content into a brief for a professional photoshoot.
+# Encodes the BFL/Replicate/fal prompting research (2026): subject-first ordering, 40-80 word
+# flowing prose, concrete camera/lighting vocabulary instead of generic quality tags, positive
+# phrasing only (FLUX has no negative prompts — naming a thing summons it), and skin texture
+# rules that kill the AI sheen. Written to hold for BOTH FLUX.1 LoRA renders and FLUX.2/gpt-image.
+_SYSTEM_PROMPT = """Act as a professional photographer writing the brief for ONE real photograph
+of LinkedIn visual content. You turn written content into a single render-ready prompt.
 
-### Required qualities
-- ONE clear focal subject in the foreground, drawn from the content's actual message — never
-  generic office stock. When a person is present, they make confident eye contact with the
-  camera.
-- Attention-drawing composition: strong foreground/background separation, shallow depth of
-  field, a bold high-contrast color accent that pops in a busy feed.
-- Professional & on-brand: modern, clean, credible for the author's stated industry.
-  Photorealistic by default; tasteful editorial illustration only when it clearly fits.
-- Specific and grounded — not abstract, surreal, or symbolic clip-art.
+### Write the prompt in this order (earlier = more weight)
+1. SUBJECT and its action or pose — drawn from the content's actual message, never generic
+   office stock. 2. SETTING. 3. COMPOSITION and framing (rule of thirds, eye-level, medium
+   shot, negative space — phrased to suit the requested aspect ratio). 4. LIGHTING, precisely
+   named — this has the highest impact ("soft window light from camera left with natural
+   fill", "golden hour rim light", "large softbox key 45 degrees camera left"). 5. CAMERA:
+   one body, one focal length, one aperture ("shot on Sony A7R IV, 85mm f/1.8, ISO 200").
+   6. FINISH: film stock or color grade, plus controlled imperfection ("Kodak Portra 400
+   tones, subtle film grain, tactile materials").
 
-### Hard constraints
-- NO text, letters, words, numbers, logos, watermarks, captions, charts, or UI anywhere in the
-  image — generators render these as garbled artifacts.
-- No collages, split screens, or busy montages — one cohesive scene.
+### Hard rules
+- ONE flowing natural-language paragraph of 40-80 words. No keyword stacking, no weight
+  syntax, no quotation marks inside the prompt.
+- Specificity IS realism. Never lean on generic tags — "photorealistic", "cinematic", "8k",
+  "masterpiece", "ultra-detailed" are dead words; concrete gear, named lighting and tactile
+  texture do that work.
+- Photography vocabulary only. A single word like illustration, painting, render, CGI,
+  artstation or stock photo drags the image away from a photograph.
+- The renderer ignores negation, so never write "no X" or "without X" — and NEVER mention
+  text, letters, numbers, logos, watermarks, brands, charts, or UI at all: naming them
+  summons them, garbled. Describe surfaces positively instead: plain unbranded clothing,
+  blank screens, clean unmarked walls.
+- One cohesive scene — no collages or split screens.
+- When a person appears: face clearly visible and well-lit; describe wardrobe, expression
+  and pose, never facial features beyond what the context already declares (identity is
+  supplied separately and must not be contradicted). Give them natural skin texture with
+  visible pores and realistic uneven skin tone — never flawless, porcelain, or smooth skin.
 
 ### Output
 Respond with ONLY a JSON object:
 {"focal_concept": "<the one idea the image depicts, under 20 words>",
- "prompt": "<one richly descriptive render-ready paragraph: scene, subject, setting, lighting, color>"}"""
+ "prompt": "<the photograph brief, one 40-80 word paragraph>"}"""
 
 # A refusal or meta-answer leaking into a render prompt produces surreal garbage. Anchored to
 # refusal PHRASING on purpose: a bare "language model" entry here rejected every legitimate brief
@@ -114,10 +129,12 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str) -> 
     """Deterministic last resort when the brief author is down — bland beats broken."""
     summary = " ".join((content or "").split())[:300]
     direction = _STYLE_PRESETS.get(surface, _STYLE_PRESETS[_DEFAULT_PRESET])
-    prompt = (f"{context}{direction} A single photorealistic, professional scene representing: "
-              f"{summary}. One clear focal subject, shallow depth of field, natural lighting, "
-              f"bold color accent, composed for a {ratio} aspect ratio. No text, letters, "
-              f"logos, watermarks, charts, or UI anywhere in the image.")
+    # Positive phrasing throughout — FLUX ignores negation, so "no logos" summons logos.
+    prompt = (f"{context}{direction} A single professional photograph representing: "
+              f"{summary}. One clear focal subject, eye-level medium shot composed for a "
+              f"{ratio} aspect ratio, shallow depth of field, soft window light with natural "
+              f"fill, shot on an 85mm lens at f/1.8, subtle film grain, plain unbranded "
+              f"clothing and surfaces, blank screens, clean unmarked walls.")
     return ImageBrief(prompt=prompt, ratio=ratio, surface=surface,
                       style_preset=surface if surface in _STYLE_PRESETS else _DEFAULT_PRESET,
                       focal_concept=summary[:120] or "professional LinkedIn visual")

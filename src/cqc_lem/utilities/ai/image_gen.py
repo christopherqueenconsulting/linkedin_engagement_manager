@@ -49,14 +49,24 @@ _GENERATED_SUBDIR = os.path.join("images", "generated")
 # entirely on its own, and the two covers it did that to both reached review carrying someone
 # else's trademark. Belongs here rather than in the brief so a hand-written or retried prompt
 # cannot lose it.
-_NO_MARKS_SUFFIX = (" Absolutely no text, letters, words, numbers, captions, watermarks, logos, "
-                    "brand marks, app icons, social-media icons, charts, or UI elements anywhere "
-                    "in the image.")
+#
+# BACKEND-AWARE on purpose (BFL prompting docs): gpt-image is instruction-following, so an
+# explicit prohibition works. FLUX has no negative prompting and largely ignores negation —
+# naming "logos" in a FLUX prompt can SUMMON one — so FLUX renders get the same constraint
+# phrased positively instead.
+_NO_MARKS_GPT = (" Absolutely no text, letters, words, numbers, captions, watermarks, logos, "
+                 "brand marks, app icons, social-media icons, charts, or UI elements anywhere "
+                 "in the image.")
+_NO_MARKS_FLUX = (" Every garment and surface is plain and unbranded, screens are blank, walls "
+                  "clean and unmarked.")
 
 
-def with_no_marks(prompt: str) -> str:
-    """The render prompt plus the no-marks constraint, added at most once."""
-    return prompt if _NO_MARKS_SUFFIX in prompt else f"{prompt}{_NO_MARKS_SUFFIX}"
+def with_no_marks(prompt: str, backend: str = "gpt-image") -> str:
+    """The render prompt plus the no-marks constraint for that backend, added at most once."""
+    suffix = _NO_MARKS_FLUX if backend == "flux" else _NO_MARKS_GPT
+    if _NO_MARKS_GPT in prompt or _NO_MARKS_FLUX in prompt:
+        return prompt
+    return f"{prompt}{suffix}"
 
 
 @dataclass
@@ -162,7 +172,6 @@ def render_image_from_prompt(prompt: str, *, ratio: str = "1:1",
     Never renders a likeness — callers that may include the author go through
     ``generate_post_image`` so the avatar guardrails stay the single decision point.
     """
-    prompt = with_no_marks(prompt)
     backend = (IMAGE_BACKEND or "auto").strip().lower()
     if backend not in ("auto", "gpt-image", "flux"):
         log_warning(f"Unknown IMAGE_BACKEND '{backend}' — using auto")
@@ -170,14 +179,15 @@ def render_image_from_prompt(prompt: str, *, ratio: str = "1:1",
 
     if backend in ("auto", "gpt-image"):
         try:
-            return _render_via_gpt_image(prompt, ratio=ratio, quality=quality,
-                                         user_id=user_id, post_id=post_id)
+            return _render_via_gpt_image(with_no_marks(prompt, "gpt-image"), ratio=ratio,
+                                         quality=quality, user_id=user_id, post_id=post_id)
         except Exception as e:
             if backend == "gpt-image":
                 raise
             log_warning("gpt-image render failed — falling back to FLUX", exc=e,
                         user_id=user_id, post_id=post_id, api_provider="openai")
-    return _render_via_flux(prompt, ratio=ratio, image_model=image_model, user_id=user_id)
+    return _render_via_flux(with_no_marks(prompt, "flux"), ratio=ratio,
+                            image_model=image_model, user_id=user_id)
 
 
 _VISION_GATE_PROMPT = """You are grading ONE AI-generated image intended as professional \
@@ -248,8 +258,8 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
 
     for attempt in range(1, attempts + 1):
         # The likeness path talks to Replicate directly, so it never passes through
-        # render_image_from_prompt where the constraint is otherwise added.
-        marked = with_no_marks(current_prompt)
+        # render_image_from_prompt where the constraint is otherwise added. Always FLUX.
+        marked = with_no_marks(current_prompt, "flux")
         path, used_avatar = generate_image_with_avatar(
             apply_subject_clause(marked, avatar), avatar["model_ref"],
             ratio=ratio, fallback_prompt=marked)
