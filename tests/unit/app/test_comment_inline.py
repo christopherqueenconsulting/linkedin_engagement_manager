@@ -320,32 +320,52 @@ class TestReactToPostInline:
             ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
         assert cf.call_args_list[0].kwargs["warn_on_miss"] is False
 
-    def test_missing_menu_still_warns_when_there_is_no_fallback(self):
-        """No Reaction-state button and no React toggle means the card's reaction controls are
-        genuinely unreadable — silencing that would hide real SDUI rot."""
+    def test_unreadable_reaction_controls_warn_once_at_the_trigger(self):
+        """A total trigger miss means the card's reaction controls are genuinely unreadable, and
+        that must still warn — silencing it would hide real SDUI rot.
+
+        It warns WHERE IT IS DETECTED (the trigger chain), not at the opener. Pre-#816 the signal
+        rode on the opener's `warn_on_miss=trigger is None`; the opener no longer exists on the
+        live SDUI (count: 0), so hanging the one real signal off a control that is always absent
+        would either warn on every card or never warn at all."""
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
+             patch(f"{_RA}.wait_for_ajax"), \
+             patch(f"{_RA}.find_first", return_value=None) as ff, \
+             patch(f"{_RA}.click_first", return_value=None) as cf:
+            ok = ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
+        assert ok is False
+        trigger = [c for c in ff.call_args_list if c.args[3] == "Reaction state"]
+        assert len(trigger) == 1
+        # find_first warns on a miss by default; the trigger lookup must NOT opt out of it.
+        assert trigger[0].kwargs.get("warn_on_miss", True) is True
+        # ...and nothing downstream warns again for the same one condition (#877/#878).
+        assert all(c.kwargs.get("warn_on_miss") is False for c in cf.call_args_list)
+
+    def test_the_obsolete_opener_never_warns(self):
+        """'Open reactions menu' matched ZERO elements on the live feed — hovering the trigger is
+        what opens the fly-out now. Its absence is the documented happy path, and warning on the
+        happy path is exactly the expected-no-op the recurrence rule turns into a filed defect."""
         from cqc_lem.app import run_automation as ra
         with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
              patch(f"{_RA}.wait_for_ajax"), \
              patch(f"{_RA}.find_first", return_value=None), \
              patch(f"{_RA}.click_first", return_value=None) as cf:
-            ok = ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
-        assert ok is False
-        assert cf.call_args_list[0].kwargs["warn_on_miss"] is True
+            ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
+        opener = [c for c in cf.call_args_list if c.args[3] == "Open reactions menu"]
+        assert len(opener) == 1
+        assert opener[0].kwargs["warn_on_miss"] is False
 
-    def test_missing_react_toggle_is_never_a_warning(self):
-        """The React toggle is only one of the two ways into a reaction — the fly-out opener is the
-        other — so its absence alone is not a failure. And when BOTH miss, the opener's own miss
-        already warns (issue #873) and the caller warns again, so warning here too filed a third
-        PostHog defect for one condition (issue #877)."""
+    def test_there_is_no_second_toggle_lookup(self):
+        """One chain now serves state AND toggle (the state button's text is literally 'Like'), so
+        the separate 'React toggle' lookup is gone — one control, one lookup, one possible warning."""
         from cqc_lem.app import run_automation as ra
         with patch(f"{_RA}.choose_post_reaction", return_value="Like"), \
              patch(f"{_RA}.wait_for_ajax"), \
              patch(f"{_RA}.find_first", return_value=None) as ff, \
              patch(f"{_RA}.click_first", return_value=None):
             ra.react_to_post_inline(MagicMock(), MagicMock(), MagicMock(), user_id=1)
-        toggle = [c for c in ff.call_args_list if c.args[3] == "React toggle"]
-        assert len(toggle) == 1
-        assert toggle[0].kwargs["warn_on_miss"] is False
+        assert [c for c in ff.call_args_list if c.args[3] == "React toggle"] == []
 
     def test_react_toggle_is_not_looked_up_when_the_state_button_is_the_trigger(self):
         """A readable 'no reaction' state button IS the trigger, so the toggle chain never runs and
@@ -461,6 +481,7 @@ class TestEngageCardReactionLogging:
              patch(f"{_RA}.select_blueprint", return_value={"format": "expander"}), \
              patch(f"{_RA}.generate_ai_response", return_value="A real comment."), \
              patch(f"{_RA}._author_is_me", return_value=False), \
+             patch(f"{_RA}.INLINE_REACTIONS_ENABLED", True), \
              patch(f"{_RA}.react_to_post_inline", return_value=reaction_outcome), \
              patch(f"{_RA}.mark_post_reacted"), \
              patch(f"{_RA}.post_comment_inline", return_value=True), \

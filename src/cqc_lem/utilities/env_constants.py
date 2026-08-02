@@ -87,6 +87,18 @@ CAROUSEL_IMAGE_QUERY_LLM = isTrue(get_constant_from_env('CAROUSEL_IMAGE_QUERY_LL
 # inference money but no training credit, so without it "Regenerate" is an unbounded spend.
 AVATAR_SAMPLE_REGEN_MAX = int(get_constant_from_env('AVATAR_SAMPLE_REGEN_MAX', default_value='3'))
 
+# Inline feed reactions. Back ON: the #816 stand-down is lifted.
+#
+# The real break was never the reaction anchors — it was the card walk (#901): `Comment` lost its
+# aria-label, so `_card_for_textbox` returned null for every post and every card-scoped lookup ran
+# against a card that was never found. With the multi-route chains in place this was verified
+# END-TO-END against a live session (2026-08-02): 'Reaction button state: no reaction' ->
+# 'Reaction button state: Insightful' on a real post.
+#
+# Kept as a flag rather than deleted: it is the tourniquet for the next SDUI rotation, and flipping
+# an env var beats shipping a revert.
+INLINE_REACTIONS_ENABLED = isTrue(get_constant_from_env('INLINE_REACTIONS_ENABLED', default_value='True'))
+
 # AI disclosure: append a short caption line to AI-visual posts. Guaranteed-visible
 # fallback for C2PA (which self-signed certs can't make LinkedIn trust yet).
 AI_DISCLOSURE_ENABLED = isTrue(get_constant_from_env('AI_DISCLOSURE_ENABLED', default_value='True'))
