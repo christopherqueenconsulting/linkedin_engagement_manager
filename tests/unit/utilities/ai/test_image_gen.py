@@ -171,13 +171,17 @@ class TestNoBrandMarksConstraint:
         sent = gpt.call_args[0][0]
         assert "logos" in sent and "brand marks" in sent
 
-    def test_flux_fallback_keeps_the_constraint(self):
+    def test_flux_fallback_gets_the_positive_phrasing(self):
+        """FLUX ignores negation — naming 'logos' can summon one — so the FLUX path carries
+        the constraint phrased positively, never as a prohibition."""
         with patch.object(image_gen, "_render_via_gpt_image", side_effect=RuntimeError("down")), \
              patch.object(image_gen, "_render_via_flux", return_value="/tmp/f.webp") as flux:
             image_gen.render_image_from_prompt("a founder at a desk", user_id=3)
-        assert "brand marks" in flux.call_args[0][0]
+        sent = flux.call_args[0][0]
+        assert "plain and unbranded" in sent
+        assert "logos" not in sent and "brand marks" not in sent
 
-    def test_avatar_render_carries_it_too(self):
+    def test_avatar_render_carries_the_flux_phrasing_too(self):
         avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK",
                   "gender_presentation": "man", "age_band": "40s"}
         with patch("cqc_lem.utilities.avatar.replicate_avatar.generate_image_with_avatar",
@@ -187,10 +191,14 @@ class TestNoBrandMarksConstraint:
                           return_value=QualityVerdict(acceptable=True)):
             image_gen.render_avatar_image_gated("a founder at a desk", avatar=avatar, user_id=3,
                                                 surface="post_image")
-        assert "brand marks" in lora.call_args[0][0]
+        assert "plain and unbranded" in lora.call_args[0][0]
         # The fallback prompt must carry it as well — that render is still published.
-        assert "brand marks" in lora.call_args[1]["fallback_prompt"]
+        assert "plain and unbranded" in lora.call_args[1]["fallback_prompt"]
 
-    def test_constraint_is_never_doubled(self):
-        once = image_gen.with_no_marks("scene")
-        assert image_gen.with_no_marks(once) == once
+    def test_constraint_is_never_doubled_and_never_mixed(self):
+        once_gpt = image_gen.with_no_marks("scene", "gpt-image")
+        assert image_gen.with_no_marks(once_gpt, "gpt-image") == once_gpt
+        # A prompt already carrying one variant never gains the other.
+        assert image_gen.with_no_marks(once_gpt, "flux") == once_gpt
+        once_flux = image_gen.with_no_marks("scene", "flux")
+        assert image_gen.with_no_marks(once_flux, "gpt-image") == once_flux

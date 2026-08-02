@@ -37,10 +37,14 @@ class TestBuildImageBrief:
         assert "My post about growth" in user_msg
 
     def test_no_text_constraint_is_always_in_the_system_prompt(self):
+        """The author must never NAME text/logos in a render prompt (FLUX summons what is
+        named) — the system prompt instructs positive phrasing instead."""
         with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_resp(_GOOD)) as llm:
             build_image_brief("content", surface="post_image")
         system_msg = llm.call_args[1]["messages"][0]["content"]
-        assert "NO text, letters, words, numbers, logos" in system_msg
+        assert "NEVER mention" in system_msg
+        assert "logos" in system_msg and "watermarks" in system_msg
+        assert "plain unbranded clothing" in system_msg
 
     def test_invalid_json_retries_then_falls_back_deterministically(self):
         with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
@@ -49,7 +53,8 @@ class TestBuildImageBrief:
 
         assert llm.call_count == 2
         assert "Quarterly revenue lessons" in brief.prompt
-        assert "No text" in brief.prompt
+        # Positive phrasing only — FLUX ignores negation, so the fallback never says "No text".
+        assert "plain unbranded" in brief.prompt
         assert brief.focal_concept  # never empty
 
     def test_refusal_text_is_rejected(self):
