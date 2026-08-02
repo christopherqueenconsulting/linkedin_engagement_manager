@@ -168,6 +168,26 @@ def judge_timeout_seconds() -> int:
     return _env_int("BENCHMARK_JUDGE_TIMEOUT_SECONDS", 90, low=5, high=900)
 
 
+# Reasoning models bill their chain-of-thought against `max_tokens`, and the visible answer is
+# whatever is left. Every case fixture and the in-runner judge were written against non-reasoning
+# models, so on `minimax-m3` / `glm-5.2` / `gpt-oss:120b` the budget is spent thinking and the reply
+# arrives EMPTY with `finish_reason='length'` — which scores as "the model produced nothing" rather
+# than "the harness cut it off". That is the difference between measuring a model and rejecting it
+# for a harness artifact, so a truncated-before-the-answer reply is retried at a doubled budget.
+# Bounded, and applied identically to champion and candidate so neither side gets a bigger budget
+# than the other.
+
+def truncation_retries() -> int:
+    """How many times a completion truncated before its answer may be retried at double budget."""
+    return _env_int("BENCHMARK_TRUNCATION_RETRIES", 2, low=0, high=4)
+
+
+def judge_max_tokens() -> int:
+    """Completion budget for one in-runner judge verdict. The verdict itself is ~40 tokens; the rest
+    is headroom for a reasoning judge, since `lem-medium` is currently served by `gpt-oss:120b`."""
+    return _env_int("BENCHMARK_JUDGE_MAX_TOKENS", 900, low=200, high=8000)
+
+
 def _today() -> str:
     return datetime.now(timezone.utc).date().isoformat()
 
@@ -527,6 +547,8 @@ def merge_scorecard(tier: str, model: str, role: str, case_results: list,
     latencies = [v for v in latencies if isinstance(v, (int, float))]
     tokens = sum(int(timings.get(r["case_id"], {}).get("total_tokens") or 0)
                  for r in case_results)
+    escalated = [r["case_id"] for r in case_results
+                 if int(timings.get(r["case_id"], {}).get("budget_escalations") or 0) > 0]
 
     return {
         "tier": tier, "model": model, "role": role,
@@ -547,6 +569,7 @@ def merge_scorecard(tier: str, model: str, role: str, case_results: list,
         "latency_p50_ms": _percentile(latencies, 0.5),
         "latency_p90_ms": _percentile(latencies, 0.9),
         "total_tokens": tokens,
+        "budget_escalated_cases": escalated,
         "case_results": case_results,
     }
 
@@ -942,6 +965,11 @@ def render_report(run: dict) -> str:
         if card.get("unscored_assertions"):
             lines.append(f"- {card['unscored_assertions']} assertion(s) unscored "
                          "(not counted either way)")
+        escalated = card.get("budget_escalated_cases") or []
+        if escalated:
+            lines.append(f"- 🧠 reasoning headroom — {len(escalated)} case(s) spent the fixture's "
+                         "whole completion budget thinking and were retried at a larger one: "
+                         + ", ".join(f"`{c}`" for c in escalated))
         for note in card.get("judge_notes") or []:
             lines.append(f"- 🧑‍⚖️ `{note['case_id']}`: {note['reasoning']}")
         lines.append("")
@@ -1313,16 +1341,33 @@ class ProviderClient:
 
     def complete(self, model: str, messages: list, params: Optional[dict] = None) -> dict:
         started = time.time()
-        try:
-            response = self._openai().chat.completions.create(
-                model=model, messages=messages, **(params or {}))
-        except Exception as exc:  # noqa: BLE001 - a provider failure is a case result, not a crash
-            return {"text": None, "error": str(exc)[:200],
-                    "latency_ms": (time.time() - started) * 1000.0, "usage": {}}
+        call_params = dict(params or {})
+        budget = call_params.get("max_tokens")
+        escalations = 0
+        allowed = truncation_retries() if isinstance(budget, int) and budget > 0 else 0
+        while True:
+            try:
+                response = self._openai().chat.completions.create(
+                    model=model, messages=messages, **call_params)
+            except Exception as exc:  # noqa: BLE001 - a provider failure is a case result, not a crash
+                return {"text": None, "error": str(exc)[:200], "budget_escalations": escalations,
+                        "latency_ms": (time.time() - started) * 1000.0, "usage": {}}
+            choice = response.choices[0]
+            text = (choice.message.content or "").strip()
+            # Only an EMPTY reply is retried. A truncated-but-present answer is the model's real
+            # output at this budget, and re-rolling it would quietly hand the verbose models a
+            # second chance the concise ones never needed.
+            if text or escalations >= allowed or getattr(choice, "finish_reason", None) != "length":
+                break
+            escalations += 1
+            call_params["max_tokens"] = budget * (2 ** escalations)
+            print(f"  {model} spent its whole {budget * (2 ** (escalations - 1))}-token budget "
+                  f"before answering — retrying at {call_params['max_tokens']}", file=sys.stderr)
         usage = getattr(response, "usage", None)
         return {
-            "text": (response.choices[0].message.content or "").strip(),
+            "text": text,
             "error": None,
+            "budget_escalations": escalations,
             "latency_ms": (time.time() - started) * 1000.0,
             "usage": {"prompt_tokens": getattr(usage, "prompt_tokens", None),
                       "completion_tokens": getattr(usage, "completion_tokens", None),
@@ -1438,10 +1483,19 @@ def fallback_judge(suite: dict, case: dict, output: str) -> dict:
     provider configured (Ollama Cloud is not one) or the evaluation API is unreachable."""
     try:
         from cqc_lem.utilities.ai.client import client
-        response = client.chat.completions.create(
-            model="lem-medium", messages=judge_messages(suite, case, output),
-            temperature=0, max_tokens=200)
-        return parse_judge_verdict(response.choices[0].message.content)
+        budget = judge_max_tokens()
+        for attempt in range(truncation_retries() + 1):
+            response = client.chat.completions.create(
+                model="lem-medium", messages=judge_messages(suite, case, output),
+                temperature=0, max_tokens=budget * (2 ** attempt))
+            choice = response.choices[0]
+            text = str(choice.message.content or "").strip()
+            if text or getattr(choice, "finish_reason", None) != "length":
+                return parse_judge_verdict(text)
+        # Unscored, but NOT `judge:unavailable` — that flag stops the runner asking for the rest of
+        # the run, and a judge that reasoned past its budget on ONE answer is still reachable.
+        return {"passes": None, "status": JUDGE_TIMEOUT,
+                "reasoning": "judge reasoned past its token budget before reaching a verdict"}
     except Exception as exc:  # noqa: BLE001 - an unavailable judge is unscored, never a pass
         return {"passes": None, "status": JUDGE_UNAVAILABLE,
                 "reasoning": f"fallback judge unavailable: {str(exc)[:120]}"}
@@ -1557,7 +1611,8 @@ def run_benchmark(suites: dict, models: list, champions: dict, *, run_id: str, t
             outputs[case_id] = completion.get("text")
             errors[case_id] = completion.get("error")
             timings[case_id] = {"latency_ms": completion.get("latency_ms"),
-                                "total_tokens": (completion.get("usage") or {}).get("total_tokens")}
+                                "total_tokens": (completion.get("usage") or {}).get("total_tokens"),
+                                "budget_escalations": completion.get("budget_escalations") or 0}
             if not dry_run and completion.get("text") and evals is not None:
                 event_id = emit_generation(run_id, tier, case, model, role, completion)
                 if event_id:

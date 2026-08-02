@@ -43,6 +43,23 @@ Suite inputs are **synthetic** prompt templates in `tests/benchmarks/model_tiers
 content, credentials or production logs appear in a report; the renderer refuses any run that is
 not tagged as benchmark output.
 
+### Reasoning headroom — measuring a model, not the harness's budget (#842)
+
+Every case fixture carries a `max_tokens`, and a **reasoning** model bills its chain-of-thought
+against it: the answer is whatever is left. At the fixtures' budgets `minimax-m3` and `glm-5.2`
+returned an EMPTY string with `finish_reason='length'`, which the deterministic layer scores as *the
+model produced nothing* — a `reject` earned by the harness, not by the model. The in-runner judge had
+the same failure at its old 200-token budget: every verdict came back empty and read as
+`judge:timeout`, so a run could never produce the judge RATE the standing spend policy needs.
+
+So a completion that spent its whole budget **before emitting anything** is retried at double
+(`BENCHMARK_TRUNCATION_RETRIES`, default 2 — 1400 → 2800 → 5600), champion and candidate alike. A
+truncated-but-**non-empty** answer is never re-rolled: that is the model's real output at that
+budget, and re-rolling it would hand the verbose models a second attempt the concise ones never got.
+Cases that needed the headroom are named in the report under 🧠 *reasoning headroom* rather than
+silently absorbed. Production long-form calls set no `max_tokens` at all, so the retry measures the
+model the way LEM actually uses it.
+
 ## The gate
 
 A candidate is emitted as a **swap recommendation** only when it clears the tier's absolute
