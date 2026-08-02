@@ -1114,9 +1114,13 @@ def react_to_post_inline(driver, wait, card, post_content: str = None, comment_t
         # opens the fly-out. Kept as a trailing fallback for surfaces that still ship it, but its
         # absence is now the NORMAL path, so it must never warn: warning on the documented happy
         # path is exactly the expected-no-op the recurrence rule turns into a filed defect.
+        # max_try=1: this control is KNOWN absent on the current SDUI (live count 0), and the
+        # supervised end-to-end run showed it still burning a full retry round — "Open reactions
+        # menu | not found | .....retrying" — on every single card, for a lookup we expect to miss.
+        # That retry cost on a doomed lookup is precisely what made the broken flow expensive.
         opened = click_first(driver, wait, _REACTION_OPENER_LOCATORS,
                              "Open reactions menu", parent_element=card, required=False,
-                             warn_on_miss=False, user_id=user_id)
+                             warn_on_miss=False, max_try=1, user_id=user_id)
         time.sleep(random.uniform(0.8, 1.6))
         # Document-scoped: the fly-out renders outside the card subtree (confirmed live — the
         # options were reachable only from `driver`). Try the chosen reaction, then plain Like.
