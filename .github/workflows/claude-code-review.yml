@@ -132,10 +132,20 @@ jobs:
 
       - name: Post review comment
         uses: actions/github-script@v7
+        env:
+          # Through env, NEVER interpolated into the script body. `const review = ${{ ... }}` splices
+          # model output into JS SOURCE: one backtick or `${` in the review is a syntax error (which
+          # is exactly how this step failed), and anything worse is arbitrary code execution in a
+          # job holding a pull-requests:write token.
+          REVIEW: ${{ steps.review.outputs.review }}
         with:
           script: |
-            const review = `${{ steps.review.outputs.review }}`;
-            if (!review || review.includes('skipped')) {
+            const review = (process.env.REVIEW || '').trim();
+            // startsWith, not includes: the review BODY legitimately discusses skipped tests, and
+            // `includes('skipped')` silently swallowed those reviews. Only our own bail-out
+            // sentinels begin with this.
+            if (!review || review.startsWith('Review skipped:')
+                || review.startsWith('Claude review skipped:')) {
               console.log('Skipping comment post:', review);
               return;
             }
