@@ -167,3 +167,17 @@ class TestAnonymousPersonSteer:
         user_msg = llm.call_args[1]["messages"][1]["content"]
         assert "anonymous person" not in user_msg
         assert "it IS the author" in user_msg
+
+
+@pytest.mark.unit
+class TestHandsGuidance:
+    """Owner verdict after the Aug 2026 bake-off: FLUX.1 stays; its one quality gap is hands.
+    The brief must steer toward low-risk hand positions and never complex gestures."""
+
+    def test_system_prompt_steers_hands_low_risk(self):
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_resp(_GOOD)) as llm:
+            build_image_brief("content", surface="post_image")
+        sys_msg = llm.call_args[1]["messages"][0]["content"]
+        assert "HANDS" in sys_msg
+        assert "out of frame" in sys_msg
+        assert "interlocked" in sys_msg  # the banned gesture class is named
