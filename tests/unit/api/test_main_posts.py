@@ -317,7 +317,8 @@ class TestDeletePostsEndpoint:
                 "/api/posts/",
                 json={"session_token": SESSION_TOKEN, "post_ids": [7, 8, 9]},
             )
-        mock_delete.assert_called_once_with([7, 8, 9], rejection_reason=None)
+        mock_delete.assert_called_once_with([7, 8, 9], rejection_reason=None,
+                                            user_id=SESSION_USER_ID)
 
     def test_passes_rejection_reason_to_soft_delete(self, client, signed_in):
         with patch(f"{_DB}.soft_delete_posts", return_value=True) as mock_delete:
@@ -327,7 +328,8 @@ class TestDeletePostsEndpoint:
                 json={"session_token": SESSION_TOKEN, "post_ids": [7], "rejection_reason": "Too salesy"},
             )
         assert resp.status_code == 200
-        mock_delete.assert_called_once_with([7], rejection_reason="Too salesy")
+        mock_delete.assert_called_once_with([7], rejection_reason="Too salesy",
+                                            user_id=SESSION_USER_ID)
 
     def test_blank_rejection_reason_becomes_none(self, client, signed_in):
         with patch(f"{_DB}.soft_delete_posts", return_value=True) as mock_delete:
@@ -336,7 +338,7 @@ class TestDeletePostsEndpoint:
                 "/api/posts/",
                 json={"session_token": SESSION_TOKEN, "post_ids": [7], "rejection_reason": "   "},
             )
-        mock_delete.assert_called_once_with([7], rejection_reason=None)
+        mock_delete.assert_called_once_with([7], rejection_reason=None, user_id=SESSION_USER_ID)
 
     def test_rejection_reason_too_long_returns_422(self, client, signed_in):
         resp = client.request(

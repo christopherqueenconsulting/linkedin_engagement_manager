@@ -910,7 +910,8 @@ def insert_planned_post(user_id: int, scheduled_time: datetime, post_type: PostT
 
 
 def update_db_post(content: str, video_url: str, scheduled_time: datetime, post_type: PostType, post_id: int,
-                   post_status: PostStatus) -> bool:
+                   post_status: PostStatus, user_id: Optional[int] = None) -> bool:
+    """`user_id` scopes the write to one account's row — same reason as `bulk_update_posts`."""
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -920,9 +921,16 @@ def update_db_post(content: str, video_url: str, scheduled_time: datetime, post_
 
         scheduled_time = to_naive_utc(scheduled_time)
 
+        params: list = [content, video_url, scheduled_time, post_type.value, post_status.value, post_id]
+        owner_clause = ""
+        if user_id is not None:
+            owner_clause = " AND user_id = %s"
+            params.append(user_id)
+
         cursor.execute(
-            "UPDATE posts SET content = %s, video_url = %s, scheduled_time =%s, post_type = %s, status = %s WHERE id = %s",
-            (content, video_url, scheduled_time, post_type.value, post_status.value, post_id)
+            "UPDATE posts SET content = %s, video_url = %s, scheduled_time =%s, post_type = %s, "
+            f"status = %s WHERE id = %s{owner_clause}",
+            params
         )
 
         connection.commit()
@@ -1593,7 +1601,13 @@ _ALLOWED_POST_CLAUSES = frozenset({"status = %s", "scheduled_time = %s", "reject
 
 def bulk_update_posts(post_ids: list[int], status: Optional[PostStatus] = None,
                       scheduled_time: Optional[datetime] = None,
-                      rejection_reason: Optional[str] = None) -> bool:
+                      rejection_reason: Optional[str] = None,
+                      user_id: Optional[int] = None) -> bool:
+    """`user_id` scopes the WHERE clause to one account's rows (issue #914).
+
+    The API checks ownership before it calls this, so the scope is redundant today — that is the
+    point. It closes the window between the check and the write, and it means a future caller that
+    forgets the check cannot reach across accounts anyway."""
     if not post_ids:
         return False
 
@@ -1625,8 +1639,13 @@ def bulk_update_posts(post_ids: list[int], status: Optional[PostStatus] = None,
         placeholders = ', '.join(['%s'] * len(post_ids))
         params.extend(post_ids)
 
+        owner_clause = ""
+        if user_id is not None:
+            owner_clause = " AND user_id = %s"
+            params.append(user_id)
+
         cursor.execute(
-            f"UPDATE posts SET {', '.join(sets)} WHERE id IN ({placeholders})",
+            f"UPDATE posts SET {', '.join(sets)} WHERE id IN ({placeholders}){owner_clause}",
             params
         )
         connection.commit()
@@ -1642,8 +1661,10 @@ def bulk_update_posts(post_ids: list[int], status: Optional[PostStatus] = None,
     return success
 
 
-def soft_delete_posts(post_ids: list[int], rejection_reason: Optional[str] = None) -> bool:
-    return bulk_update_posts(post_ids, status=PostStatus.REJECTED, rejection_reason=rejection_reason)
+def soft_delete_posts(post_ids: list[int], rejection_reason: Optional[str] = None,
+                      user_id: Optional[int] = None) -> bool:
+    return bulk_update_posts(post_ids, status=PostStatus.REJECTED, rejection_reason=rejection_reason,
+                             user_id=user_id)
 
 
 def update_db_post_rejection_reason(post_id: int, rejection_reason: Optional[str]) -> bool:

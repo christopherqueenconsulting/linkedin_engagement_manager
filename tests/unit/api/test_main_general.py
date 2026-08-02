@@ -189,13 +189,13 @@ class TestUpdateUser:
         assert resp.status_code == 404
 
     def test_new_email_is_no_longer_an_account_takeover_lever(self, client, signed_in):
-        """`new_email` is gone: the address moves only through the PIN-verified change flow."""
+        """`new_email` no longer moves the address — and says so rather than answering 200."""
         with patch(f"{_MAIN}.update_user", return_value=True) as upd:
             resp = client.put(self.BASE, json={"session_token": SESSION_TOKEN,
                                                "new_email": "attacker@evil.example",
                                                "blog_url": "https://blog.example.com"})
-        assert resp.status_code == 200
-        assert "email" not in upd.call_args.kwargs
+        assert resp.status_code == 400
+        upd.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

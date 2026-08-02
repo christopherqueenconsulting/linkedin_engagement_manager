@@ -106,6 +106,63 @@ class TestUserOwnsPosts:
 
 
 @pytest.mark.unit
+class TestPostMutationsAreOwnerScoped:
+    """Issue #914: the ownership check is the gate, the WHERE scope is what makes forgetting it
+    harmless — and it closes the window between the check and the write."""
+
+    def test_bulk_update_scopes_the_where_clause(self, mock_database_connection):
+        from cqc_lem.utilities.db import bulk_update_posts, PostStatus
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].rowcount = 2
+            assert bulk_update_posts([1, 2], status=PostStatus.APPROVED, user_id=7) is True
+        sql, params = mock_database_connection["cursor"].execute.call_args[0]
+        assert "AND user_id = %s" in sql
+        assert params[-1] == 7
+
+    def test_bulk_update_without_a_user_id_is_unscoped(self, mock_database_connection):
+        """The parameter is optional so the non-API callers keep working unchanged."""
+        from cqc_lem.utilities.db import bulk_update_posts, PostStatus
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].rowcount = 1
+            bulk_update_posts([1], status=PostStatus.APPROVED)
+        sql, _ = mock_database_connection["cursor"].execute.call_args[0]
+        assert "user_id" not in sql
+
+    def test_soft_delete_forwards_the_owner(self, mock_database_connection):
+        from cqc_lem.utilities.db import soft_delete_posts
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].rowcount = 1
+            soft_delete_posts([9], rejection_reason="nope", user_id=7)
+        sql, params = mock_database_connection["cursor"].execute.call_args[0]
+        assert "AND user_id = %s" in sql
+        assert params[-1] == 7
+
+    def test_update_db_post_scopes_the_where_clause(self, mock_database_connection):
+        from cqc_lem.utilities.db import update_db_post, PostType, PostStatus
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].rowcount = 1
+            assert update_db_post("body", None, datetime(2026, 8, 2, 12, 0), PostType.TEXT, 9,
+                                  PostStatus.PENDING, user_id=7) is True
+        sql, params = mock_database_connection["cursor"].execute.call_args[0]
+        assert sql.rstrip().endswith("AND user_id = %s")
+        assert params[-1] == 7
+
+    def test_update_db_post_without_a_user_id_is_unscoped(self, mock_database_connection):
+        from cqc_lem.utilities.db import update_db_post, PostType, PostStatus
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].rowcount = 1
+            update_db_post("body", None, datetime(2026, 8, 2, 12, 0), PostType.TEXT, 9,
+                           PostStatus.PENDING)
+        sql, _ = mock_database_connection["cursor"].execute.call_args[0]
+        assert "user_id" not in sql
+
+
+@pytest.mark.unit
 class TestPostMessageFromLogForUser:
     def test_returns_message_when_log_row_exists(self, mock_database_connection):
         from cqc_lem.utilities.db import get_post_message_from_log_for_user

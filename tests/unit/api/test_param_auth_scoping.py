@@ -197,11 +197,69 @@ class TestBulkUpdateChecksEveryId:
 class TestEmailChangeIsNotHere:
     """`PUT /user/` used to move the account email on the strength of knowing the current one."""
 
-    def test_new_email_is_ignored(self, client, signed_in):
+    def test_new_email_is_refused_out_loud_not_ignored(self, client, signed_in):
+        """400 and a pointer, never a silent 200 — a client that believes it moved the address
+        while the account still answers to the old one is its own failure mode."""
         with patch(f"{_M}.update_user", return_value=True) as upd:
             resp = client.put("/api/user/", json={"session_token": SESSION_TOKEN,
                                                   "new_email": "attacker@evil.example",
                                                   "blog_url": "https://blog.example.com"})
+        assert resp.status_code == 400
+        assert "/user/email/change/init" in resp.json()["detail"]
+        upd.assert_not_called()
+
+    def test_settings_without_new_email_still_save(self, client, signed_in):
+        with patch(f"{_M}.update_user", return_value=True) as upd:
+            resp = client.put("/api/user/", json={"session_token": SESSION_TOKEN,
+                                                  "blog_url": "https://blog.example.com"})
         assert resp.status_code == 200
         assert "email" not in upd.call_args.kwargs
         assert upd.call_args[0][0] == SESSION_USER_ID
+
+
+class TestDenialsAreVisible:
+    """A 403 here is a broken client or somebody working the hole #914 closed. Neither is an
+    expected no-op, so both warn — and the recurrence escalation turning a repeat into a filed
+    defect is the point. A 401 is the opposite: sessions expire in the ordinary course of things
+    and the SPA polls, so warning on one would file a defect for working behaviour."""
+
+    def test_a_foreign_target_warns(self):
+        from cqc_lem.api.main import _reject_foreign_user_id
+        from fastapi import HTTPException
+
+        with patch(f"{_M}.log_warning") as warn:
+            with pytest.raises(HTTPException) as exc:
+                _reject_foreign_user_id(SESSION_USER_ID, _OTHER_USER_ID)
+        assert exc.value.status_code == 403
+        warn.assert_called_once()
+        assert warn.call_args.kwargs["user_id"] == SESSION_USER_ID
+
+    def test_an_expired_session_does_not_warn(self):
+        from cqc_lem.api.main import require_session_user_id
+        from fastapi import HTTPException
+
+        with patch(f"{_M}.get_session_user_id", return_value=None), \
+             patch(f"{_M}.log_warning") as warn, patch(f"{_M}.log_debug") as dbg:
+            with pytest.raises(HTTPException) as exc:
+                require_session_user_id("stale")
+        assert exc.value.status_code == 401
+        warn.assert_not_called()
+        dbg.assert_called_once()
+
+    def test_an_unparseable_target_fails_closed_instead_of_500ing(self):
+        """FastAPI coerces today's query parameters; the helper has to hold on its own the day it
+        is reused from a body model."""
+        from cqc_lem.api.main import _reject_foreign_user_id
+        from fastapi import HTTPException
+
+        with patch(f"{_M}.log_warning"):
+            with pytest.raises(HTTPException) as exc:
+                _reject_foreign_user_id(SESSION_USER_ID, "not-a-number")
+        assert exc.value.status_code == 403
+
+    def test_the_caller_naming_their_own_id_is_silent(self):
+        from cqc_lem.api.main import _reject_foreign_user_id
+
+        with patch(f"{_M}.log_warning") as warn:
+            _reject_foreign_user_id(SESSION_USER_ID, SESSION_USER_ID)
+        warn.assert_not_called()

@@ -92,9 +92,21 @@ Three deliberate choices in there:
   batch is rejected whole: a list is only as scoped as its worst entry.
 - **403, not 404-per-id.** Which post ids exist is the enumeration these endpoints used to hand out.
 
-`new_email` is gone from `PUT /user/` rather than gated: the address moves through
+A denied TARGET is logged (`log_warning`, so the recurrence escalation files it) because a caller
+who resolved a session and then named another account is a broken client or somebody working this
+hole. A **401 is not**, and deliberately: sessions expire in the ordinary course of things and the
+SPA polls, so warning on one would file a defect for working behaviour (`utilities/CLAUDE.md`).
+
+The post-mutating writes carry the same rule twice. `bulk_update_posts`, `soft_delete_posts` and
+`update_db_post` take an optional `user_id=` that scopes their `WHERE` clause, and the API passes
+it. The check in front is the gate; the scope is what closes the window between the check and the
+write, and what makes a future caller that forgets the check harmless rather than cross-account.
+
+`new_email` no longer moves the account from `PUT /user/`: the address moves through
 `POST /user/email/change/init|verify`, which PINs the NEW address, is step-up gated, and revokes
-every other session.
+every other session. The field stays **declared** on the request model and answers **400** with a
+pointer — dropping it would let Pydantic discard it and answer 200, and a silent success on an
+email change is how somebody believes their address moved when it did not.
 
 `POST /generate-carousel` was importing `db.get_session_user_id` directly, so it never saw the
 cookie sentinel (and no session scope reached it). It goes through the module resolver like

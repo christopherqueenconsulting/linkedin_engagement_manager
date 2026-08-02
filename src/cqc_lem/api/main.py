@@ -563,8 +563,23 @@ def require_session_user_id(session_token: Optional[str] = None) -> int:
     parameter now only ever names a TARGET, and a target has to be authorised against this."""
     user_id = get_session_user_id(session_token)
     if not user_id:
+        # DEBUG, not WARNING: sessions expire in the ordinary course of things and the SPA polls,
+        # so warning here would escalate working behaviour into a filed defect
+        # (utilities/CLAUDE.md). A denied TARGET below is the opposite — see _deny().
+        log_debug("Rejected an /api call with no resolvable session")
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     return user_id
+
+
+def _deny(reason: str, user_id: int, **context) -> None:
+    """403 on an authorised-caller-wrong-target, logged as the anomaly it is.
+
+    A caller who resolves a session and then names ANOTHER account is either a broken client or
+    somebody working the hole #914 closed, and neither is an expected no-op — so this warns, and
+    the recurrence escalation (utilities/CLAUDE.md) turning a repeat into a filed defect is the
+    behaviour we want. The message stays a stable template so the dedup key groups."""
+    log_warning(f"Rejected a foreign target on /api: {reason}", user_id=user_id, **context)
+    raise HTTPException(status_code=403, detail="Forbidden")
 
 
 def _reject_foreign_email(user_id: int, email: Optional[str]) -> None:
@@ -577,13 +592,24 @@ def _reject_foreign_email(user_id: int, email: Optional[str]) -> None:
     if not named:
         return
     if named != (get_user_email(user_id) or "").strip().lower():
-        raise HTTPException(status_code=403, detail="Forbidden")
+        # The address itself is never logged — it is the caller-supplied half and the audit log is
+        # not the place to accumulate other people's addresses.
+        _deny("email", user_id)
 
 
 def _reject_foreign_user_id(user_id: int, target_user_id: Optional[int]) -> None:
     """Same rule as `_reject_foreign_email`, for the routes that name the target by id."""
-    if target_user_id is not None and int(target_user_id) != user_id:
-        raise HTTPException(status_code=403, detail="Forbidden")
+    if target_user_id is None:
+        return
+    try:
+        named = int(target_user_id)
+    except (TypeError, ValueError):
+        # A non-numeric target is unauthorisable, so it fails closed rather than 500ing. FastAPI
+        # coerces today's query parameters; the helper must hold on its own for a body model.
+        _deny("user_id (unparseable)", user_id)
+        return
+    if named != user_id:
+        _deny("user_id", user_id)
 
 
 def _require_own_posts(user_id: int, post_ids: List[int]) -> None:
@@ -592,7 +618,7 @@ def _require_own_posts(user_id: int, post_ids: List[int]) -> None:
     Deliberately NOT a 404 per id: telling an attacker which ids exist is the enumeration this
     endpoint used to hand out for free."""
     if not user_owns_posts(user_id, post_ids):
-        raise HTTPException(status_code=403, detail="Forbidden")
+        _deny("post_ids", user_id)
 
 
 def _client_ip(request: Optional[Request]) -> Optional[str]:
@@ -790,11 +816,15 @@ class BulkDeleteRequest(BaseModel):
 
 class UserSettingsRequest(BaseModel):
     session_token: Optional[str] = None
-    # The caller's OWN address, and only ever as a target to check (issue #914). `new_email` is
-    # gone with it: changing the account email is POST /user/email/change/init|verify — PIN to the
-    # NEW address, step-up gated, every other session revoked. This endpoint used to do it on the
-    # strength of knowing the CURRENT address, which is the whole account for one query parameter.
+    # The caller's OWN address, and only ever as a target to check (issue #914).
     email: Optional[str] = None
+    # `new_email` no longer moves the account: that is POST /user/email/change/init|verify — PIN to
+    # the NEW address, step-up gated, every other session revoked. This endpoint used to do it on
+    # the strength of knowing the CURRENT address, which is the whole account for one parameter.
+    # It stays DECLARED so a client still sending it gets told (400). Dropping the field would let
+    # Pydantic discard it and answer 200, and a silent success on an email change is how somebody
+    # believes their address moved when it did not.
+    new_email: Optional[str] = None
     blog_url: Optional[str] = None
     sitemap_url: Optional[str] = None
 
@@ -2153,11 +2183,21 @@ async def linkedin_comment_notification_inbound(request: Request) -> ResponseMod
 
 @router.put("/user/", responses={
     200: {"description": "User settings updated"},
-    **{k: v for k, v in error_responses.items() if k in [401, 403, 404]}
+    **{k: v for k, v in error_responses.items() if k in [400, 401, 403, 404]}
 })
 def update_user_endpoint(settings: UserSettingsRequest) -> ResponseModel:
     user_id = require_session_user_id(settings.session_token)
     _reject_foreign_email(user_id, settings.email)
+
+    if settings.new_email:
+        # Never silently: a client that still expects this endpoint to move the address has to hear
+        # that it did not, or the account keeps answering to the old one while the user believes
+        # otherwise (issue #914).
+        raise HTTPException(
+            status_code=400,
+            detail="Changing the account email moved to POST /user/email/change/init "
+                   "and POST /user/email/change/verify",
+        )
 
     if not any([settings.blog_url, settings.sitemap_url]):
         return ResponseModel(status_code=200, detail="User settings unchanged")
@@ -2178,7 +2218,7 @@ def automate_reply_commenting_for_post_id(post_id: int, session_token: Optional[
                                               default=0,
                                               description="Forward index (0-5) to use for future calls",
                                               examples=[0, 1, 2, 3, 4, 5]
-                                          )):
+                                          )) -> ResponseModel:
     # The post used to name the account this ran as, so any bearer holder could point a Selenium
     # session at somebody else's post (issue #914). It names a target now.
     user_id = require_session_user_id(session_token)
@@ -2387,7 +2427,10 @@ def bulk_update_posts_endpoint(request: BulkUpdateRequest) -> ResponseModel:
 
     _warn_if_naive_schedule(request.scheduled_datetime, "/posts/bulk_update/", user_id=user_id)
 
-    if bulk_update_posts(request.post_ids, status=request.status, scheduled_time=request.scheduled_datetime):
+    # `user_id=` scopes the WHERE clause as well as the check in front of it — the check is the
+    # gate, the scope is what makes forgetting it harmless (issue #914).
+    if bulk_update_posts(request.post_ids, status=request.status,
+                         scheduled_time=request.scheduled_datetime, user_id=user_id):
         return ResponseModel(status_code=200, detail="Posts updated successfully")
     else:
         raise HTTPException(status_code=405, detail="Posts could not be updated")
@@ -2404,7 +2447,7 @@ def delete_posts_endpoint(request: BulkDeleteRequest) -> ResponseModel:
     _require_own_posts(user_id, request.post_ids)
 
     reason = (request.rejection_reason or "").strip() or None
-    if soft_delete_posts(request.post_ids, rejection_reason=reason):
+    if soft_delete_posts(request.post_ids, rejection_reason=reason, user_id=user_id):
         return ResponseModel(status_code=200, detail="Posts deleted successfully")
     else:
         raise HTTPException(status_code=405, detail="Posts could not be deleted")
@@ -2436,7 +2479,8 @@ def update_post(post_id: int, post: PostRequest) -> ResponseModel:
     _warn_if_naive_schedule(post.scheduled_datetime, "/update_post/", post_id=post_id,
                             user_id=user_id)
 
-    if update_db_post(post.content, post.video_url, post.scheduled_datetime, post.post_type, post_id, post.status):
+    if update_db_post(post.content, post.video_url, post.scheduled_datetime, post.post_type, post_id,
+                      post.status, user_id=user_id):
         reason = (post.rejection_reason or "").strip() or None
         if reason:
             update_db_post_rejection_reason(post_id, reason)
