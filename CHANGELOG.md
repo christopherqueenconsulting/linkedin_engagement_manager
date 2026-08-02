@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.120.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.119.0...v0.120.0) (2026-08-02)
+
+
+### Features
+
+* **ops:** host watchdog + deep health check for the failure healthchecks cannot see ([#900](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/900)) ([a7d5ecc](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a7d5ecc0ed6512d9d2a035b162f90b2ab9a70461))
+
+
+### Bug Fixes
+
+* **ci:** repair claude-code-review workflow — invalid YAML meant it never ran ([#896](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/896)) ([ce62891](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ce62891caed2ad53c7ad17d5bc4b1bbad24d75d1))
+* **deploy:** sweep rename-orphan containers so one bad converge can't wedge every deploy (refs [#831](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/831)) ([#895](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/895)) ([d8ece2f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d8ece2f3a8eafce939a3ff606e530549c64cbaee))
+* **engagement:** multi-route comment + reaction locator chains, verified end-to-end (closes [#816](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/816), closes [#901](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/901)) ([#899](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/899)) ([20634ad](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/20634ada79502a5cc2f8ece209102b30591ae53f))
+
 ## [0.119.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.118.0...v0.119.0) (2026-08-01)
 
 
