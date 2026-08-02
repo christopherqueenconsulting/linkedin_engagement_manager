@@ -615,8 +615,13 @@ class TestFailedWrites:
         assert resp.status_code == 500
 
     def test_a_missing_factor_is_a_404(self, client):
+        from cqc_lem.utilities.auth_factors import FactorSummary
+        empty = FactorSummary(factors=[], recovery_unused=0, recovery_total=0,
+                              passkeys_supported=True, has_strong_factor=False,
+                              pin_is_bootstrap_only=False)
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.step_up_satisfied", return_value=True), \
+             patch(f"{_M}.factor_summary", return_value=empty), \
              patch(f"{_M}.delete_auth_factor", return_value=False):
             resp = client.post("/api/user/auth-factors/delete",
                                json={"session_token": _TOKEN, "factor_id": 99})
@@ -698,3 +703,129 @@ class TestFactorSummaryEndpoint:
         with patch(f"{_M}.get_session_user_id", return_value=None):
             resp = client.get("/api/user/auth-factors?session_token=nope")
         assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Seams the two-stage login opened (owner review on PR #906)
+# ---------------------------------------------------------------------------
+
+class TestTwoStageLoginSeams:
+    """A login that used to be one request is now two, and the two share a rate-limit bucket, an
+    audit trail and a session stamp. Each test here is a way that seam can leak."""
+
+    def test_a_correct_pin_clears_the_limiter_before_handing_over_to_the_factor(self, client):
+        """Without this the user's own earlier PIN typos throttle the passkey/TOTP prompt they are
+        about to answer correctly — self-inflicted lockout on the one path that has no way around
+        it."""
+        with patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_M}.get_pin_lockout", return_value=None), \
+             patch(f"{_M}.hash_pin", return_value="h"), \
+             patch(f"{_M}.verify_pin_for_email", return_value=True), \
+             patch(f"{_M}.get_user_id", return_value=_UID), \
+             patch(f"{_M}.has_strong_factor", return_value=True), \
+             patch(f"{_M}.available_methods", return_value=["totp"]), \
+             patch(f"{_M}.create_auth_challenge", return_value="pending-handle"), \
+             patch(f"{_M}.clear_auth_limits") as cleared:
+            resp = client.post("/api/auth/email/verify", json={"email": _EMAIL, "pin": "123456"})
+        assert resp.json()["detail"]["second_factor_required"] is True
+        cleared.assert_called_once()
+        assert cleared.call_args.args[0] == _EMAIL
+
+    def test_the_bypass_path_clears_it_too(self, client):
+        with patch(f"{_M}.check_auth_init", return_value=_Allowed()), \
+             patch(f"{_M}.get_user_id", return_value=_UID), \
+             patch(f"{_M}.send_pin_email", return_value=(True, True)), \
+             patch(f"{_M}.has_strong_factor", return_value=True), \
+             patch(f"{_M}.available_methods", return_value=["passkey"]), \
+             patch(f"{_M}.create_auth_challenge", return_value="pending-handle"), \
+             patch(f"{_M}.clear_auth_limits") as cleared:
+            resp = client.post("/api/auth/email/init", json={"email": _EMAIL})
+        assert resp.json()["detail"]["second_factor_required"] is True
+        cleared.assert_called_once()
+
+    def test_the_public_passkey_begin_is_rate_limited(self, client):
+        """Unauthenticated, and it writes a challenge row per call."""
+        with patch(f"{_M}.webauthn_relying_party"), \
+             patch(f"{_M}.check_auth_init", return_value=_Blocked()), \
+             patch(f"{_M}.create_auth_challenge") as challenge:
+            resp = client.post("/api/auth/passkey/login/begin", json={})
+        assert resp.status_code == 429
+        challenge.assert_not_called()
+
+    def test_a_duplicate_passkey_is_not_a_cross_account_oracle(self, client):
+        """Credential ids are globally unique, so "already registered" would tell this caller a
+        passkey they hold is enrolled on somebody ELSE's account."""
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.webauthn_relying_party"), \
+             patch(f"{_M}.consume_auth_challenge",
+                   return_value={"user_id": _UID, "challenge": "chal"}), \
+             patch(f"{_M}.verify_passkey_registration",
+                   return_value=type("R", (), {"credential_id": "c", "public_key": "pk",
+                                               "sign_count": 0})()), \
+             patch(f"{_M}.add_passkey_factor", return_value=None):
+            resp = client.post("/api/user/passkeys/register/complete",
+                               json={"session_token": _TOKEN, "handle": "h",
+                                     "credential": {"id": "c"}})
+        assert resp.status_code == 400
+        assert "already" not in resp.json()["detail"].lower()
+
+    def test_a_verified_step_up_that_does_not_stamp_is_a_500_not_a_silent_loop(self, client):
+        """A 200 with no stamp means the very next write asks again, forever, with nothing logged
+        anywhere — the failure mode is invisible, so it has to be loud."""
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_M}.verify_totp_code", return_value=True), \
+             patch(f"{_M}.record_step_up", return_value=False):
+            resp = client.post("/api/user/step-up/verify",
+                               json={"session_token": _TOKEN, "method": "totp", "code": "123456"})
+        assert resp.status_code == 500
+
+    def test_an_account_with_no_email_still_gets_its_own_limiter_bucket(self, client):
+        """A blank identity is skipped by the limiter, so falling back to "" would leave these
+        accounts unlimited at step-up."""
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.get_user_email", return_value=None), \
+             patch(f"{_M}.check_auth_verify", return_value=_Allowed()) as limiter, \
+             patch(f"{_M}.verify_totp_code", return_value=True), \
+             patch(f"{_M}.record_step_up", return_value=True):
+            client.post("/api/user/step-up/verify",
+                        json={"session_token": _TOKEN, "method": "totp", "code": "123456"})
+        assert limiter.call_args.args[0] == f"user-{_UID}"
+
+    def test_a_denied_step_up_audits_the_client_that_was_refused(self, client):
+        """STEP_UP_DENIED is the row that most often means someone else is holding this session —
+        without ip/user-agent on it there is nothing to chase."""
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.step_up_satisfied", return_value=False), \
+             patch(f"{_M}.available_methods", return_value=["passkey"]), \
+             patch(f"{_M}.record_auth_event") as audit:
+            resp = client.post("/api/user/linkedin-cookie",
+                               json={"session_token": _TOKEN, "li_at": "x" * 40},
+                               headers={"User-Agent": "test-agent"})
+        assert resp.status_code == 403
+        denial = next(c for c in audit.call_args_list
+                      if c.kwargs.get("details", {}).get("action") == "store_linkedin_cookie")
+        assert denial.kwargs["user_agent"] == "test-agent"
+        assert "ip" in denial.kwargs
+
+    def test_removing_a_factor_records_what_was_removed_and_what_is_left(self, client):
+        from cqc_lem.utilities.auth_factors import FactorSummary
+        summary = FactorSummary(
+            factors=[{"id": 3, "kind": "totp", "label": None, "created_at": None,
+                      "last_used_at": None}],
+            recovery_unused=5, recovery_total=10, passkeys_supported=True,
+            has_strong_factor=True, pin_is_bootstrap_only=True)
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.step_up_satisfied", return_value=True), \
+             patch(f"{_M}.factor_summary", return_value=summary), \
+             patch(f"{_M}.delete_auth_factor", return_value=True), \
+             patch(f"{_M}.has_strong_factor", return_value=False), \
+             patch(f"{_M}.record_auth_event") as audit:
+            resp = client.post("/api/user/auth-factors/delete",
+                               json={"session_token": _TOKEN, "factor_id": 3})
+        assert resp.status_code == 200
+        assert resp.json()["detail"]["has_strong_factor"] is False
+        details = audit.call_args.kwargs["details"]
+        assert details["kind"] == "totp"
+        assert details["has_strong_factor"] is False

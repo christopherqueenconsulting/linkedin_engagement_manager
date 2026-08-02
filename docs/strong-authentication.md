@@ -148,6 +148,15 @@ limiter), and a challenge store that failed open would let a replayed assertion 
 is returned to the caller and the row stores its SHA-256, the same posture as a session token, and
 it is claimed by an `UPDATE ... WHERE consumed_at IS NULL` so two replays cannot both win.
 
+**A pending handle is spent by the attempt, not by the success** — `/auth/second-factor/verify`
+consumes it before it looks at the code, so a wrong TOTP or recovery code ends that sign-in and the
+user starts again from the email PIN. That is the brute-force bound on the second stage: the 6-digit
+space is never walked, because there is exactly one guess per handle. It is a real UX cliff (a
+mistyped digit costs a whole login), and it is the deliberate trade — the alternative, a handle that
+survives wrong codes, is an unauthenticated 6-digit oracle. The stage is additionally bounded by the
+per-email/per-IP auth limiter, and `clear_auth_limits` runs when the PIN validates so the first
+stage's failed attempts can never throttle the second.
+
 ## Schema
 
 `V20260802020439__strong_auth_phase_2c.sql` — additive, nothing backfilled:
@@ -170,6 +179,23 @@ it is claimed by an `UPDATE ... WHERE consumed_at IS NULL` so two replays cannot
 | `AUTH_CHALLENGE_TTL_SECONDS` | `300` | how long a ceremony may sit half-finished |
 | `RECOVERY_CODE_COUNT` | `10` | size of the sheet |
 | `STRONG_AUTH_ENABLED` | `true` | `false` rolls 2c back without deleting a factor |
+
+## When a user loses everything
+
+T5 (root on the VPS) is out of scope; support tickets are not. If someone loses every enrolled
+factor **and** their recovery sheet, there is no self-serve path back — that is the point of the
+design, not a gap in it. The operator path is deliberately manual and deliberately at the database,
+so it leaves a trace and cannot be triggered by anything reaching the app:
+
+1. Verify the person out of band. A mailbox is not proof here — the whole premise of 2c is that a
+   mailbox alone no longer signs this account in.
+2. Delete their `user_auth_factors` rows. The account drops to zero factors, `has_strong_factor()`
+   goes false, and the email PIN is a full login again exactly as it was in 2b.
+3. Tell them to enrol a passkey and save a new sheet on that first sign-in — step 2 left the account
+   with no strong factor at all.
+
+Rotating just the recovery sheet (`POST /user/recovery-codes/regenerate`) is the lighter case and
+needs no operator: it is step-up gated, so it only works for someone who still holds a factor.
 
 ## Still open after 2c
 
