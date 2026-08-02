@@ -5,6 +5,14 @@ description: Use when a LinkedIn selector, scrape, or automation flow may have d
 
 # Live LinkedIn selector grounding
 
+> **Who may RUN the probe: the owner, from an interactive session on the VPS.** A pipeline agent
+> (`tick.sh` MODE=*) must **not** — the RUNBOOK forbids running `docker` and touching prod, headless
+> lanes launch with `--dangerously-skip-permissions` so nothing will stop the command, and the probe
+> drives the owner's **real LinkedIn session** (an account with a 429-lockout history) while taking a
+> Chrome slot out of the pool the Selenium Celery lanes share. If an issue genuinely needs a live
+> probe, that is an explicit RUNBOOK escalation (`needs-human` + a Decision Comment), not a command
+> to run. The **Fix invariants** below apply to every agent and need no probe run.
+
 The probe (`scripts/linkedin_live_validation.py`) is **read-only** — it navigates and reads, posts/comments/changes nothing. `scripts/` is not baked into the image, so pipe it in on stdin:
 
 ```bash
