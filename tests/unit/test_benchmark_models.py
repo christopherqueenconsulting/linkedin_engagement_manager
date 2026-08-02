@@ -799,6 +799,15 @@ class TestHarnessOutage:
         with pytest.raises(ValueError, match="harness outage"):
             bm.render_report(run)
 
+    def test_a_run_that_measured_no_champion_is_refused_on_the_same_condition(self):
+        """The champion is the TELL, not a precondition. A tier with no configured incumbent still
+        measured nothing, and requiring a champion card would let exactly that run publish zeros."""
+        run = _outage_run([_measured_card(model="cand")])
+        outage = bm.harness_outage(run)
+        assert outage["champions"] == [] and "plumbing and not the roster" not in outage["detail"]
+        with pytest.raises(ValueError, match="harness outage"):
+            bm.render_report(run)
+
 
 class TestUnmeasuredHeader:
     """The distinction belongs in the report HEADER, not only under the per-case ❌ details."""
@@ -810,6 +819,19 @@ class TestUnmeasuredHeader:
         assert "**Unmeasured cases:** 2 of 4" in text
         assert "`cand` answered nothing at all" in text
         assert "not a zero-quality result" in text
+
+    def test_a_model_silent_across_every_tier_is_named_once(self):
+        """The weekly run scores one candidate against 3–4 tiers. Naming it per tier reads as four
+        dead models instead of one."""
+        run = _outage_run([_measured_card(tier="lem-simple", model="champ", role="champion",
+                                          errors=()),
+                           _measured_card(tier="lem-medium", model="champ", role="champion",
+                                          errors=()),
+                           _measured_card(tier="lem-simple", model="cand"),
+                           _measured_card(tier="lem-medium", model="cand")])
+        header = next(line for line in bm.render_report(run).splitlines()
+                      if "Unmeasured cases" in line)
+        assert header.count("`cand`") == 1
 
     def test_a_clean_run_carries_no_unmeasured_line(self):
         run = _outage_run([_measured_card(model="champ", role="champion", errors=()),

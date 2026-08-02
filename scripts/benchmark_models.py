@@ -1078,7 +1078,12 @@ def harness_outage(run: dict) -> Optional[dict]:
     same principle at run scope.
 
     A run with ANY measurement left in it (one model 500s, some cases time out) is an honest result
-    and returns None."""
+    and returns None.
+
+    The champion is the TELL, not a precondition: a run that measured no champion at all (a tier
+    with no configured incumbent) still has nothing to publish, so it is refused on the same
+    condition and the detail simply omits the champion clause. Requiring a champion card here would
+    let exactly that run render its zeros."""
     cards = [c for c in (run.get("scorecards") or []) if int(c.get("cases") or 0) > 0]
     if not cards:
         return None
@@ -1129,9 +1134,11 @@ def render_report(run: dict) -> str:
     cards = run.get("scorecards") or []
     total_cases = sum(int(card.get("cases") or 0) for card in cards)
     unmeasured = sum(len(card.get("errors") or []) for card in cards)
-    silent = [str(card.get("model")) for card in cards
-              if int(card.get("cases") or 0)
-              and len(card.get("errors") or []) >= int(card.get("cases") or 0)]
+    # Deduped: the weekly run scores the same model across every tier, and a candidate that answered
+    # nothing is silent on all of them — listing it once per tier reads as several dead models.
+    silent = sorted({str(card.get("model")) for card in cards
+                     if int(card.get("cases") or 0)
+                     and len(card.get("errors") or []) >= int(card.get("cases") or 0)})
     lines = [
         f"# Model-tier benchmark — {run.get('date')} (`{run.get('run_id')}`)",
         "",

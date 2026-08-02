@@ -150,7 +150,10 @@ would ship a PR asserting that every model LEM runs scores zero.
 
 The tell is **every case of every model, the tier's own champion included**. A roster of candidates
 can genuinely be bad; the incumbent that serves production scoring zero on every single case means
-nothing reached a provider at all. On that condition the run is **refused**, not published:
+nothing reached a provider at all. The champion is the tell, not a precondition — a run that
+measured no champion at all (a tier with no configured incumbent) still measured nothing, so it is
+refused on the same condition, with the champion clause simply absent from the message. On that
+condition the run is **refused**, not published:
 
 - no per-run report is written and **no leaderboard rows** are appended — nothing measured, nothing
   to record;
