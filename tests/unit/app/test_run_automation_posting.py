@@ -30,6 +30,7 @@ class TestPostToLinkedinTypeBranching:
             for target, kwargs in BASE_PATCHES:
                 stack.enter_context(patch(target, **kwargs))
             stack.enter_context(patch("cqc_lem.app.run_automation.get_post_type", return_value=PostType.TEXT))
+            stack.enter_context(patch("cqc_lem.utilities.db.get_post_image_url", return_value=None))
             mock_share = stack.enter_context(
                 patch("cqc_lem.app.run_automation.share_on_linkedin", return_value="urn:li:ugcPost:1")
             )
@@ -39,8 +40,28 @@ class TestPostToLinkedinTypeBranching:
 
             post_to_linkedin.run(1, 10)
 
+            # No image on the row -> the post publishes bare; a missing image never blocks it.
             mock_share.assert_called_once_with(1, "Post text")
             mock_carousel.assert_not_called()
+
+    def test_text_post_attaches_its_generated_image(self):
+        from cqc_lem.utilities.db import PostType
+        from cqc_lem.app.run_automation import post_to_linkedin
+
+        with ExitStack() as stack:
+            for target, kwargs in BASE_PATCHES:
+                stack.enter_context(patch(target, **kwargs))
+            stack.enter_context(patch("cqc_lem.app.run_automation.get_post_type", return_value=PostType.TEXT))
+            stack.enter_context(patch("cqc_lem.utilities.db.get_post_image_url",
+                                      return_value="https://api.example.com/api/assets?file_name=images/posts/10/a.png"))
+            mock_share = stack.enter_context(
+                patch("cqc_lem.app.run_automation.share_on_linkedin", return_value="urn:li:ugcPost:1")
+            )
+
+            post_to_linkedin.run(1, 10)
+
+            mock_share.assert_called_once_with(
+                1, "Post text", "https://api.example.com/api/assets?file_name=images/posts/10/a.png")
 
     def test_success_log_stores_actual_post_content_not_status_string(self):
         """Regression: the POST success log must store the real post body — seed comments and

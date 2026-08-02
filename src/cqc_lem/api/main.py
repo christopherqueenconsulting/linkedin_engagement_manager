@@ -898,6 +898,9 @@ class EngagementPreferencesRequest(BaseModel):
     # Which weekdays those slots may land on, Mon=0 … Sun=6 (issue #581). Default Mon-Fri; all
     # seven remain selectable.
     posting_days: List[int] = list(DEFAULT_POSTING_DAYS)
+    # AI image on generated TEXT posts (image-generation overhaul). The review queue stays the
+    # human gate on every image; this only controls whether one is generated at all.
+    text_post_images: bool = True
     # Catch-up congratulations (issue #482)
     max_catchup_touches_per_day: int = CATCHUP_TOUCHES_MAX_STANDARD
     catchup_touch_mode: str = "pre_review"  # 'pre_review' (default) | 'auto_approve'
@@ -2065,6 +2068,7 @@ def get_posts_for_email(
             "post_id": post["id"],
             "content": post["content"],
             "video_url": post["video_url"],
+            "image_url": post.get("image_url"),
             "scheduled_time": _utc_iso(post["scheduled_time"]),
             "post_type": post["post_type"],
             "status": post["status"],

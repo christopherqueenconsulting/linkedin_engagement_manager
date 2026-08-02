@@ -57,6 +57,10 @@ export default function ContentSection() {
         <Toggle on={eng.link_in_first_comment}
           onClick={() => setEng({ link_in_first_comment: !eng.link_in_first_comment })} />
       </Field>
+      <Field settingKey="text_post_images">
+        <Toggle on={eng.text_post_images ?? true}
+          onClick={() => setEng({ text_post_images: !(eng.text_post_images ?? true) })} />
+      </Field>
       <Field settingKey="default_video_quality">
         <select value={eng.default_video_quality ?? 'standard'}
           onChange={(e) => setEng({ default_video_quality: e.target.value })} className={inputClass}>
