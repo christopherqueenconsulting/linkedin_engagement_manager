@@ -60,6 +60,13 @@ model_list:
   # deepseek-v4-flash (284B MoE / 13B active, 1M context, native structured output, fast
   # no-thinking mode) is a MEDIUM usage-level model — the same quota class gpt-oss:120b and the
   # departed minimax-m2.7 sit in — so adding it is flat on quota, not a step up.
+  #
+  # Keep this id UNVERSIONED. The catalog's `deepseek-v4-flash:0731` is a DIFFERENT build (167GB vs
+  # 140GB, published 2026-07-31), and it was benchmarked against this one on 2026-08-02 for #921
+  # (`bm-20260802-b84f19`): it scored BELOW the build below on the contract rate on every tier
+  # measured — 80% vs 90% here, 80% vs 90% on lem-complex, 40% vs 50% on lem-simple — at the same
+  # Medium usage level, so there is nothing a pin would buy. Declined; see
+  # docs/model-benchmarks/README.md. Newer tag ≠ better model is the whole point of the harness.
   - model_name: lem-medium
     litellm_params:
       model: openai/deepseek-v4-flash
@@ -95,6 +102,13 @@ model_list:
       api_key: os.environ/OPENAI_API_KEY
 
   # ── COMPLEX tier: long-form, high-quality content ────────────────────────────
+  # NOTE: openai/kimi-k3 was EVALUATED and DECLINED 2026-08-02 (issue #921). It is not a quality
+  # call and it was never benchmarked: the Ollama Cloud API answers HTTP 402 for it — "this model
+  # uses extra usage only (not included plan usage)". Its page prices per token ($3.00/$15.00 per
+  # 1M) instead of publishing a usage-level pip, so the benchmark reads its level as `unknown`,
+  # which the #842 standing spend policy holds by default. Every deployment in this file is served
+  # inside plan usage; kimi-k3 would move a tier onto metered extra-usage billing, which is an
+  # owner spend decision, not a roster refresh. Re-evaluate only if the plan changes.
   # NOTE: openai/kimi-k2:1t was RETIRED 2026-06-16 (returns 410) and was removed — it was
   # the primary here, so content generation fell through to the OpenAI/Anthropic fallbacks,
   # which fail when those keys aren't set. qwen3.5:397b (OLLAMA) is now primary.
@@ -116,6 +130,8 @@ model_list:
   # group — see the note at the top of this file); the long-form quality reading, and any adoption
   # of the HIGH usage-level minimax-m3 / glm-5.2 as the quality option, is a
   # scripts/benchmark_models.py decision on #842, not a config-time one.
+  # Unversioned for the same reason as the lem-medium deployment above — the `:0731` build measured
+  # worse here too (80% contract vs this build's 90%, #921).
   - model_name: lem-complex
     litellm_params:
       model: openai/deepseek-v4-flash
