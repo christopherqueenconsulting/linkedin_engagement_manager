@@ -179,3 +179,11 @@ is now two beats with a review window between them.
   (#858) marks it `failed` as well as stamping `last_post_run_at`, and a group whose *Post* switch
   was turned off between the two beats marks it `skipped` rather than publishing into a group the
   user opted out of. Either way the next draft is written fresh for whichever group is next.
+- **Only a user may cancel a post they approved.** "No group takes posts" is what cancels a draft, so
+  `get_post_enabled_group_ids` answers `None` — never `[]` — when the read FAILS: a DB hiccup that
+  said "empty" would silently skip every user's reviewed draft for the week, edits and all. Unknown
+  leaves the draft open and it ships at the next slot.
+- **An unsaved rewrite is unsaved changes.** The editor registers with the settings page's save
+  registry (`useRegisterSaveSection('group-post', …)`), so *Save All* writes it and the
+  unsaved-changes guard fires on leaving. Without that the page would report a clean save having
+  written only the toggles, and the text the user thought they'd replaced is what would publish.

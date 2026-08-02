@@ -7071,17 +7071,21 @@ def set_groups_enabled(user_id: int, group_states: dict) -> bool:
         connection.close()
 
 
-def get_post_enabled_group_ids(user_id: int) -> list:
+def get_post_enabled_group_ids(user_id: int) -> Optional[list]:
     """The groups the user has opted into for POSTING. Separate from get_enabled_group_ids, which
-    reads the independent commenting flag."""
+    reads the independent commenting flag.
+
+    None (never []) when the read FAILED, so a caller can tell "opted out of every group" from "we
+    could not tell": the weekly publish run cancels a reviewed draft on the former, and a read error
+    that answered [] would silently cancel every user's approved group post (issue #932)."""
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
         cursor.execute("SELECT group_id FROM user_groups WHERE user_id=%s AND post_enabled=1", (user_id,))
         return [r[0] for r in cursor.fetchall()]
     except mysql.connector.Error as err:
-        myprint(f"Could not list post-enabled groups for user {user_id} | Error: {err}")
-        return []
+        log_error("Could not list post-enabled groups", exc=err, user_id=user_id)
+        return None
     finally:
         cursor.close()
         connection.close()
@@ -7131,7 +7135,7 @@ def get_open_group_post_draft(user_id: int) -> Optional[dict]:
         row = cursor.fetchone()
         return _group_post_draft_row(row) if row else None
     except mysql.connector.Error as err:
-        myprint(f"Could not read group post draft for user {user_id} | Error: {err}")
+        log_error("Could not read the open group post draft", exc=err, user_id=user_id)
         return None
     finally:
         cursor.close()
@@ -7149,7 +7153,7 @@ def get_group_post_draft(draft_id: int) -> Optional[dict]:
         row = cursor.fetchone()
         return _group_post_draft_row(row) if row else None
     except mysql.connector.Error as err:
-        myprint(f"Could not read group post draft {draft_id} | Error: {err}")
+        log_error("Could not read group post draft", exc=err, task_name="get_group_post_draft")
         return None
     finally:
         cursor.close()

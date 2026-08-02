@@ -1190,7 +1190,15 @@ def auto_group_posts():
         draft = get_open_group_post_draft(uid)
         if not draft:
             continue
-        if draft['group_id'] not in get_post_enabled_group_ids(uid):
+        post_enabled = get_post_enabled_group_ids(uid)
+        if post_enabled is None:
+            # Could not read the switches (the read itself already logged the error). Cancelling a
+            # post the user reviewed and approved is not something a transient DB fault gets to do,
+            # so the draft is left open and publishes at the next weekly slot.
+            log_debug("Group post draft held — post switches unreadable this run", user_id=uid,
+                      task_name="auto_group_posts")
+            continue
+        if draft['group_id'] not in post_enabled:
             update_group_post_draft(draft['id'], status=GroupPostDraftStatus.SKIPPED)
             log_info("Group post draft dropped — its group no longer takes posts", user_id=uid,
                      task_name="auto_group_posts")

@@ -8,6 +8,9 @@ import type { GroupPostDraft, UserGroup } from './types'
 import { useRegisterSaveSection, sectionSaveCallbacks } from './SettingsSaveContext'
 
 const groupLabel = (g: UserGroup) => g.group_name || `Group ${g.group_id}`
+// LinkedIn's own post cap, mirrored from the API's _LEN_GROUP_POST so the counter, the Save button
+// and the server's 422 all gate on the same number.
+const GROUP_POST_MAX = 3000
 // A group synced before #769 has no post_enabled in an older cached payload — treat a missing flag
 // as ON, which is what the column defaults to server-side.
 const normalize = (rows: UserGroup[]) => rows.map((g) => ({ ...g, post_enabled: g.post_enabled !== false }))
@@ -112,6 +115,14 @@ export default function GroupsCard() {
   useRegisterSaveSection('groups', 'LinkedIn Groups', isDirty,
     async () => { await groupsMutation.mutateAsync(); return true })
 
+  // A rewrite of the queued post is a settings change like any other on this page: without its own
+  // registration, Save All would report success having saved only the toggles, and the unsaved-guard
+  // would let the user walk away — and the text they thought they'd replaced would publish.
+  const draftDirty = !!draft && draftText !== null && draftText !== draft.content &&
+    !!draftText.trim() && draftText.length <= GROUP_POST_MAX
+  useRegisterSaveSection('group-post', 'Next group post', draftDirty,
+    async () => { await draftMutation.mutateAsync({ content: draftText as string }); return true })
+
   if (!(groupsInit && groups.length > 0)) return null
 
   // The server decides the rotation (least-recently-posted first) and marks the row. Any unsaved
@@ -166,8 +177,8 @@ export default function GroupsCard() {
             {...maskProps('w-full border border-gray-300 rounded p-2 text-sm text-gray-800')}
           />
           <div className="flex items-center justify-between gap-3">
-            <span className={`text-xs ${draftText.length > 3000 ? 'text-red-600' : 'text-gray-500'}`}>
-              {draftText.length}/3000
+            <span className={`text-xs ${draftText.length > GROUP_POST_MAX ? 'text-red-600' : 'text-gray-500'}`}>
+              {draftText.length}/{GROUP_POST_MAX}
             </span>
             <span className="flex items-center gap-2">
               <button type="button"
@@ -177,9 +188,8 @@ export default function GroupsCard() {
                 Skip this week
               </button>
               <button type="button"
-                onClick={() => draftMutation.mutate({ content: draftText })}
-                disabled={draftMutation.isPending || !draftText.trim() || draftText.length > 3000 ||
-                  draftText === draft.content}
+                onClick={() => draftMutation.mutate({ content: draftText }, sectionSaveCallbacks('group-post'))}
+                disabled={draftMutation.isPending || !draftDirty}
                 className="px-3 py-1.5 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors">
                 {draftMutation.isPending ? 'Saving…' : 'Save post'}
               </button>

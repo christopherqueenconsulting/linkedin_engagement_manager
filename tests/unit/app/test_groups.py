@@ -191,6 +191,16 @@ class TestGroupPostDraftDB:
             assert get_post_enabled_group_ids(1) == ["g1", "g2"]
         assert "post_enabled=1" in cur.execute.call_args[0][0]
 
+    def test_an_unreadable_switch_answers_unknown_not_opted_out(self):
+        """[] means "no group takes posts", which CANCELS a reviewed draft — a failed read must
+        never be able to say that, so it answers None."""
+        import mysql.connector
+        conn, cur = self._conn()
+        cur.execute.side_effect = mysql.connector.Error("db down")
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_post_enabled_group_ids
+            assert get_post_enabled_group_ids(1) is None
+
 
 class TestDraftGroupPost:
     def test_writes_the_draft_for_that_group_without_a_browser(self):
@@ -442,6 +452,21 @@ class TestGroupDispatchers:
         assert str(upd.call_args.kwargs["status"]) == "skipped"
         assert "0/1" in result
 
+    def test_unreadable_post_switches_hold_the_draft_rather_than_cancelling_it(self):
+        """A DB hiccup must not be able to cancel a post the user read and approved — the draft
+        stays open and ships at the next slot."""
+        from cqc_lem.app.run_scheduler import auto_group_posts
+        with patch(f"{_RS}.get_active_user_ids", return_value=[1]), \
+             patch(f"{_RS}.has_linkedin_session", return_value=True), \
+             patch(f"{_DB}.get_open_group_post_draft", return_value=dict(_READY_DRAFT)), \
+             patch(f"{_DB}.get_post_enabled_group_ids", return_value=None), \
+             patch(f"{_DB}.update_group_post_draft") as upd, \
+             patch("cqc_lem.app.run_automation.auto_post_to_group") as t:
+            result = auto_group_posts()
+        t.apply_async.assert_not_called()
+        upd.assert_not_called()
+        assert "0/1" in result
+
 
     def test_group_engagement_dispatches_connected(self):
         from cqc_lem.app.run_scheduler import auto_group_engagement
@@ -465,3 +490,15 @@ class TestGroupDispatchers:
         t.apply_async.assert_called_once_with(kwargs={'user_id': 2})
         assert due.call_args[0][1] is STAGGER_GROUP_ENGAGEMENT
         assert "1/2" in result
+
+
+class TestGroupPostBeats:
+    def test_the_draft_beat_lands_before_the_publish_beat(self):
+        """The review window IS the feature (#932): a draft written after the publish slot would
+        only ever be read once the post it describes had already gone out."""
+        from cqc_lem.app.my_celery import app
+        drafts = app.conf.beat_schedule["group-post-drafts"]
+        posts = app.conf.beat_schedule["group-posts"]
+        assert drafts["task"] == "cqc_lem.app.run_scheduler.auto_group_post_drafts"
+        assert posts["task"] == "cqc_lem.app.run_scheduler.auto_group_posts"
+        assert min(drafts["schedule"].day_of_week) < min(posts["schedule"].day_of_week)

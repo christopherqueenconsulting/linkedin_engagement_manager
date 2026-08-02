@@ -905,9 +905,9 @@ def generate_group_post(profile: "LinkedInProfile", group_name: str = None, pref
         content = response.choices[0].message.content
         return content.strip() if content is not None else None
 
-    # A group post publishes straight from here — it never reaches the content-plan review queue the
-    # `ai_slop` gate holds a draft in, so it gets the same bounded re-draft the other queue-less
-    # surfaces do (issue #625 / D1).
+    # Since #932 a group post does wait in a review queue, but an UNATTENDED one — silence ships it —
+    # so it still gets the bounded re-draft the other queue-less surfaces do rather than the hold the
+    # `ai_slop` gate puts a content-plan draft in (issue #625 / D1).
     return lint_repaired(_draft(), "post", _draft, action_type="post")
 
 
