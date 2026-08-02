@@ -1,7 +1,8 @@
 # Affiliate / Ambassador Program
 
-**Issues:** #737 (status + consent + disclosure), #770 (the (B) writer) · **Status:** built, owner
-decision applied (1A 2A 3A) · **Created:** 2026-07-27 · **Updated:** 2026-07-31
+**Issues:** #737 (status + consent + disclosure), #770 (the (B) writer) · **Status:** built; reward
+policy set by the owner's 2026-08-01 decision (per-referral, capped) · **Created:** 2026-07-27 ·
+**Updated:** 2026-08-02
 
 LEM's marketing arm is its own users. Every account joins the referral program by default, gets a
 referral link, and earns extra free-trial time for people they bring in who actually get set up.
@@ -109,14 +110,23 @@ LEM to the author's connections, are both a different risk class and neither shi
 
 ## 3. Reward mechanics
 
-Two rewards, deliberately different kinds — and the difference is what makes the opt-out honest
-rather than a dark pattern:
+**The reward pays for outcomes, not for joining** (owner decision, 2026-08-01). Holding affiliate
+status earns nothing; a referral that ACTIVATES earns trial days, up to a per-user ceiling.
 
 | Reward | Trigger | Env | Revoked on opt-out? |
 |---|---|---|---|
-| **Enrollment bonus** | Holding affiliate status | `AFFILIATE_ENROLLMENT_BONUS_DAYS` (default **7**) | **Yes** — the user returns to the standard trial |
 | **Referral bonus** | A referred user **ACTIVATES** | `AFFILIATE_REFERRAL_BONUS_DAYS` (default **14**) | **Never** — it was earned |
 | Ceiling | Total granted days per user | `AFFILIATE_MAX_REWARD_DAYS` (default **90**) | — |
+| ~~Enrollment bonus~~ | Holding affiliate status | `AFFILIATE_ENROLLMENT_BONUS_DAYS` (default **0** = off) | Yes, when configured non-zero |
+
+The enrollment bonus is kept as a knob (a launch push may want a join incentive) but ships at **0**:
+a flat join bonus pays every enrollee whether or not they ever refer anyone. Everything the machinery
+does with it — the negative ledger row, the baseline floor, the "your trial returns to the standard
+N days" copy — still works, and is exercised by tests, for any deployment that sets it.
+
+At 0 the opt-out has no reward consequence at all: leaving takes nothing away, because nothing was
+given for joining. `POST /user/affiliate/status` still reports the resulting `trial_ends_at` (read
+back off the user when no reward moved), so the user is told their trial length either way.
 
 - A referral converts on **activation** (the #500 aha moment: a published post AND automated
   engagement), not on a click and not on a raw signup. A farm of dormant accounts pays nobody.
@@ -129,37 +139,63 @@ rather than a dark pattern:
   render as a granted reward that isn't one.
 - A lapsed trial is extended from **today**, not from its past end date.
 
-### 3.1 Why these numbers (owner decision: 1A 2A 3A)
+### 3.1 Sizing the reward — what N and the cap were measured against
 
-These defaults were confirmed by the owner at merge. They remain overridable per environment, but the
-production values are fixed below.
+The owner fixed the SHAPE (per-referral, capped) and asked for N and the ceiling to be proposed
+against LEM's real per-user cost and SaaS norms. This is that reasoning; the shipped defaults are
+**+14 / 90**, and both remain one env change.
 
-**What a trial day costs us.** A trial day is variable COGS (LLM + proxy + render) against **zero**
-MRR. It is not lost revenue — a trialling user was not paying — but it is real spend and it delays
-conversion. The margin plan targets ≥70% blended gross margin and ≥60% per-user CM at 100+ users, so
-the reward has to be bounded rather than open-ended.
+**What a trial day actually costs (measured, not assumed).** PostHog `llm_call`, the 10 days to
+2026-08-02 that carry per-user cost attribution: **mean ≈ $0.19, median ≈ $0.15, worst day $0.38 of
+LLM spend per active user per day**. That is one heavily-active account (the brand user), so read it
+as the cost of a *fully engaged* trial day rather than a fleet average — the right end to size a
+giveaway from. Proxy and render ride on top and are not in that number.
 
-**What the market does.** SaaS referral programs cluster around *give one month, get one month* on
-monthly plans (Dropbox/Evernote-style storage or time grants; Notion, Airtable and most PLG B2B tools
-land in the same shape). Extra trial time is the cheapest currency available to a pre-revenue product:
-it costs COGS, not cash, it needs no payout rail, and it has no tax/1099 exposure.
+So, in variable spend:
 
-**Why 7 / 14 / 90.**
-- **+7 enrollment** — a visible, immediate "you're in" that is half the standard 14-day trial, i.e.
-  meaningful without materially changing anyone's evaluation window. Cheap enough to give everybody.
-- **+14 per activated referral** — the industry "one free month"-shaped reward, at the same size as
-  the standard trial, so it is legible ("another full trial") and it only pays for outcomes.
-- **90-day ceiling** — roughly the point at which someone is using LEM indefinitely for free.
-  Anyone who drove 6 activations is a real advocate; a conversation with them beats an unbounded grant.
+| Grant | LLM cost at $0.19/day | What it buys |
+|---|---|---|
+| +14 days (one activated referral) | ≈ **$2.70** | one more full trial's worth of evaluation |
+| 90-day cap (≈6 activated referrals) | ≈ **$17** | the ceiling on any one user's lifetime giveaway |
 
-**Alternatives the owner explicitly rejected** (kept here for reference; each is still a one-line env
-change if policy changes later):
-- *Enrollment-only* (`REFERRAL=0`): the owner's literal phrasing — affiliates simply get a longer
-  trial. Simplest to explain; rewards nothing. Rejected in favor of outcome-based rewards.
-- *Performance-only* (`ENROLLMENT=0`): nothing is given away by default, so nothing is revoked on
-  opt-out, and the whole "reduced trial" framing disappears. Weakest enrollment hook. Rejected.
-- *Bigger per-referral* (e.g. 30): stronger incentive, but 3 referrals ≈ a free quarter. Rejected
-  because the 90-day cap is the intended guardrail, not the per-referral size.
+A trial day is COGS against **zero** MRR — not lost revenue, since a trialling user was not paying,
+but real spend that also delays conversion. The margin plan targets ≥70% blended gross margin and
+≥60% per-user CM at 100+ users (`docs/cost-performance-margin-plan.md`), and a bounded ~$17 worst
+case per user sits far inside that.
+
+**What the market pays.** B2B SaaS referral programs pay the referrer **on conversion**, typically
+$50–150 in mid-market or 100–150% of first-month value; the referred account is usually given a
+trial extension or credit rather than cash; flat "join bonuses" are uncommon; and caps (per referral,
+per quarter, or tied to blended CAC) are standard practice. Against a $50–150 cash norm, ~$2.70 of
+COGS per activated referral is a rounding error — trial time is simply the cheapest currency a
+pre-revenue product has: no payout rail, no 1099 exposure, no cash out the door.
+
+**Why 14 and 90 specifically.**
+- **+14 per activated referral** — equal to the standard trial, so it is legible as "another full
+  trial", and it pays only on the #500 activation event, never on a click or a raw signup.
+- **90-day ceiling** — about the point where someone would be running LEM indefinitely for free.
+  Anyone who has driven ~6 activations is a genuine advocate, and a conversation with them (a comped
+  plan, a case study) beats an unbounded automatic grant.
+- **0 for joining** — the owner's decision: a flat enrollment bonus pays everybody regardless of
+  outcome, and it is the only thing that makes opting out cost the user anything, which is exactly
+  the dark-pattern shape the issue rules out.
+
+**The levers, if the numbers should move** (each is one env value, no code change):
+
+| | Per referral | Cap | Worst-case LLM cost/user | Trade-off |
+|---|---|---|---|---|
+| Conservative | 7 | 60 | ≈ $11 | Weakest pull; ~9 referrals to cap |
+| **Shipped** | **14** | **90** | ≈ **$17** | Legible "another full trial"; ~6 referrals to cap |
+| Aggressive | 30 | 90 | ≈ $17 | Strong pull; 3 referrals ≈ a free quarter, same ceiling |
+| Uncapped | 14 | 0/∞ | unbounded | Rejected — a referral chain becomes unbounded free service |
+
+**Alternatives considered and not shipped:**
+- *Enrollment-only* (`REFERRAL=0`) — affiliates simply get a longer trial. Simplest to explain;
+  rewards nobody for actually referring.
+- *Flat join bonus alongside the referral bonus* (the pre-2026-08-01 default, +7) — a visible
+  "you're in", but it pays every enrollee and creates the loss-framing problem on opt-out.
+- *Cash or revenue share* — the B2B norm, and the right answer once there is revenue to share; it
+  needs a payout rail, tax handling and fraud review that trial days do not.
 
 ## 4. Abuse guards
 
@@ -198,9 +234,13 @@ never wrote.
 
 Default enrollment is only fair if the user is told. The notice states what they are in, what they
 get, how to leave — and that **nothing is posted from their LinkedIn account for this**. The opt-out
-is one click, immediate, and the copy reads *"your trial returns to the standard N days"*, never
-*"you will lose N days"*: the bonus is framed as a bonus on top, so leaving is a return to normal
-rather than a punishment.
+is one click and immediate.
+
+The copy is written off `bonus_days`, not hardcoded, because the two policies say different true
+things and the wrong one is a dark pattern either way. With a join bonus configured it reads *"your
+trial returns to the standard N days"*, never *"you will lose N days"*. At the shipped 0 it says
+leaving takes nothing — *"you keep every trial day you have already earned"* — because that is what
+happens: referral days are earned and never revoked.
 
 ## 6. Analytics
 
@@ -210,6 +250,11 @@ rather than a punishment.
 `affiliate_disclosure_blocked`, plus the (B) writer's own three: `affiliate_promo_generated`,
 `affiliate_promo_published`, `affiliate_promo_blocked`. The SPA adds `referral_link_copied` and
 `affiliate_notice_acknowledged`.
+
+`affiliate_enrolled` fires on the call that **created** the enrollment row (`ensure_affiliate_enrollment`
+reports `created`), not on the join bonus being paid — with the bonus at 0 there is no grant to hang
+it on, and every Account page load calls `enroll_user`, so a create-flag is the only thing that
+counts each user once.
 
 `affiliate_promo_blocked` (generation could not produce compliant copy) and
 `affiliate_disclosure_blocked` (the publish gate caught content that arrived undisclosed) are
@@ -230,7 +275,7 @@ Inbound referral traffic is already visible on the #658 **LEM Channels** dashboa
 |---|---|---|
 | `AFFILIATE_PROGRAM_ENABLED` | `True` | Master switch. Off = no links minted, no rewards, no gate. |
 | `AFFILIATE_DEFAULT_ENROLLED` | `True` | Whether new users start enrolled in (A). |
-| `AFFILIATE_ENROLLMENT_BONUS_DAYS` | `7` | Trial days for holding status (revoked on opt-out). |
+| `AFFILIATE_ENROLLMENT_BONUS_DAYS` | `0` | Trial days for merely holding status. 0 = per-referral rewards only (shipped policy); non-zero pays every enrollee and is revoked on opt-out. |
 | `AFFILIATE_REFERRAL_BONUS_DAYS` | `14` | Trial days per **activated** referral (never revoked). |
 | `AFFILIATE_MAX_REWARD_DAYS` | `90` | Per-user ceiling on total granted days. |
 | `AFFILIATE_REQUIRE_COMPANY_PAGE` | `False` | Restrict eligibility to accounts with a company page. Evaluated live. |

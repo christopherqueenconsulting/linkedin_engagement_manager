@@ -183,17 +183,20 @@ export default function AffiliateCard() {
 
       {data.eligible && !data.enrolled && (
         <p className="text-sm text-gray-600">
-          You are not in the affiliate program. Your trial is the standard{' '}
-          {data.standard_trial_days} days. Join any time to get your referral link back and{' '}
-          {data.bonus_days} bonus trial days.
+          You are not in the affiliate program.{' '}
+          {data.bonus_days > 0
+            ? `Your trial is the standard ${data.standard_trial_days} days. Join any time to get your referral link back and ${data.bonus_days} bonus trial days.`
+            : `Join any time to get your referral link back and earn ${data.referral_bonus_days} extra trial days for each person you refer.`}
         </p>
       )}
 
       {setStatus.isSuccess && trialEnds && (
         <p className="text-sm font-medium text-green-600" data-testid="affiliate-trial-note">
           {data.enrolled
-            ? `Joined — your trial now runs to ${trialEnds}.`
-            : `You've left the program — your trial returns to the standard ${data.standard_trial_days} days, ending ${trialEnds}.`}
+            ? `Joined — your trial runs to ${trialEnds}.`
+            : (data.reward_days ?? 0) > 0
+              ? `You've left the program — your trial returns to the standard ${data.standard_trial_days} days, ending ${trialEnds}.`
+              : `You've left the program — you keep the trial days you earned, so your trial still ends ${trialEnds}.`}
         </p>
       )}
       {(setStatus.isError || setPromo.isError) && (

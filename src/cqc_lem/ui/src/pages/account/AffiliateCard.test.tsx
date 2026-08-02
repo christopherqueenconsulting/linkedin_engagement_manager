@@ -144,6 +144,18 @@ describe('AffiliateCard (issue #737)', () => {
     expect(screen.getAllByRole('switch')).toHaveLength(1)
   })
 
+  it('never advertises a join bonus when the reward is per-referral only', async () => {
+    get.mockResolvedValue(
+      payload({ ...BASE, bonus_days: 0, enrolled: false, status: 'opted_out', referral_url: '' })
+    )
+    const { container } = harness(<AffiliateCard />)
+    await waitFor(() =>
+      expect(container.textContent).toContain('14 extra trial days for each person you refer')
+    )
+    expect(container.textContent).not.toContain('0 bonus trial days')
+    expect(container.textContent).not.toContain('lose')
+  })
+
   it('explains the company-page boundary rather than showing an empty card', async () => {
     get.mockResolvedValue(
       payload({ ...BASE, eligible: false, status: 'ineligible', enrolled: false })

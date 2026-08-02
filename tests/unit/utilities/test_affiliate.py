@@ -305,6 +305,42 @@ def test_enroll_user_is_a_no_op_when_ineligible():
         assert affiliate.enroll_user(1) == {}
 
 
+def _enroll(bonus_days, created, grant=None):
+    """Run `enroll_user` against a stubbed db and return the emitted affiliate events."""
+    row = {"status": affiliate.STATUS_ENROLLED, "created": created}
+    with patch(f"{_AFF}.AFFILIATE_PROGRAM_ENABLED", True), \
+         patch(f"{_AFF}.AFFILIATE_DEFAULT_ENROLLED", True), \
+         patch(f"{_AFF}.AFFILIATE_REQUIRE_COMPANY_PAGE", False), \
+         patch(f"{_AFF}.AFFILIATE_ENROLLMENT_BONUS_DAYS", bonus_days), \
+         patch("cqc_lem.utilities.db.ensure_affiliate_enrollment", return_value=row), \
+         patch("cqc_lem.utilities.db.grant_affiliate_trial_days",
+               return_value=grant or {"granted": True, "reason": "granted", "days": bonus_days}) as grant_mock, \
+         patch("cqc_lem.utilities.observability.track_affiliate_event") as event:
+        affiliate.enroll_user(1)
+    return event.call_args_list, grant_mock
+
+
+def test_joining_is_counted_even_when_no_join_bonus_is_configured():
+    """The shipped policy pays nothing for joining, so `affiliate_enrolled` cannot hang off a grant —
+    the marketing funnel still has to count the enrollment."""
+    events, grant = _enroll(bonus_days=0, created=True)
+    assert grant.call_count == 0
+    assert [c.args[0] for c in events] == ["affiliate_enrolled"]
+    assert events[0].kwargs["bonus_days"] == 0
+
+
+def test_a_repeat_page_load_does_not_re_emit_the_enrollment_event():
+    events, grant = _enroll(bonus_days=0, created=False)
+    assert grant.call_count == 0
+    assert events == []
+
+
+def test_a_configured_join_bonus_is_still_granted_and_reported():
+    events, grant = _enroll(bonus_days=7, created=True)
+    grant.assert_called_once()
+    assert events[0].kwargs["bonus_days"] == 7
+
+
 def test_affiliate_state_reports_ineligible_when_company_page_required_and_missing():
     with patch(f"{_AFF}.AFFILIATE_PROGRAM_ENABLED", True), \
          patch(f"{_AFF}.AFFILIATE_REQUIRE_COMPANY_PAGE", True), \

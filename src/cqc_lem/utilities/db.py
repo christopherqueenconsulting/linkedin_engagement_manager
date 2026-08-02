@@ -10481,10 +10481,15 @@ def ensure_affiliate_enrollment(user_id: int, status: str = 'enrolled',
 
     Idempotent by INSERT IGNORE rather than read-then-write: two requests racing on a first page
     load must not produce two rows or a duplicate-key 500. An existing row is never re-statused
-    here — an opted-out user staying opted out is the entire point of the opt-out."""
+    here — an opted-out user staying opted out is the entire point of the opt-out.
+
+    The returned row carries `created` — whether THIS call is the one that enrolled them. Every
+    Account page load calls this, so it is the only way the caller can emit an enrollment event once
+    instead of on every render."""
     code = str(referral_code or user_id)
     connection = get_db_connection()
     cursor = connection.cursor()
+    created = False
     try:
         cursor.execute(
             "INSERT IGNORE INTO affiliate_enrollments (user_id, status, referral_code, enrolled_at) "
@@ -10492,6 +10497,7 @@ def ensure_affiliate_enrollment(user_id: int, status: str = 'enrolled',
             (user_id, str(status), code,
              datetime.now(timezone.utc) if str(status) == str(AffiliateStatus.ENROLLED) else None),
         )
+        created = cursor.rowcount == 1
         connection.commit()
     except mysql.connector.Error as err:
         log_error("Could not create affiliate enrollment", exc=err, user_id=user_id)
@@ -10499,7 +10505,10 @@ def ensure_affiliate_enrollment(user_id: int, status: str = 'enrolled',
     finally:
         cursor.close()
         connection.close()
-    return get_affiliate_enrollment(user_id)
+    row = get_affiliate_enrollment(user_id)
+    if row is not None:
+        row["created"] = created
+    return row
 
 
 def set_affiliate_status(user_id: int, enrolled: bool) -> Optional[dict]:

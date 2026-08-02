@@ -24,12 +24,15 @@ export default function AffiliateNotice() {
   return (
     <div className="bg-blue-50 border border-blue-200 rounded-lg p-4" data-testid="affiliate-notice">
       <p className="text-sm font-semibold text-blue-900">
-        🎉 You're in the LEM affiliate program — and your trial is {data.bonus_days} days longer
+        {data.bonus_days > 0
+          ? `🎉 You're in the LEM affiliate program — and your trial is ${data.bonus_days} days longer`
+          : '🎉 You’re in the LEM affiliate program — earn extra trial time for anyone you refer'}
       </p>
       <p className="mt-1 text-sm text-blue-800">
-        Every LEM account joins automatically. You get a referral link, {data.bonus_days} bonus trial
-        days for joining, and {data.referral_bonus_days} more each time someone who signs up through
-        your link gets set up and posting (up to {data.max_reward_days} days).
+        Every LEM account joins automatically. You get a referral link
+        {data.bonus_days > 0 ? `, ${data.bonus_days} bonus trial days for joining,` : ','} and{' '}
+        {data.referral_bonus_days} extra trial days each time someone who signs up through your link
+        gets set up and posting (up to {data.max_reward_days} days).
       </p>
       <p className="mt-2 text-sm text-blue-800">
         Nothing is posted from your LinkedIn account for this. Promoting LEM from your own account is
@@ -40,7 +43,10 @@ export default function AffiliateNotice() {
         <Link to="/account?section=billing" className="underline font-medium">
           Settings → Billing → Affiliate program
         </Link>
-        . Your trial simply returns to the standard {data.standard_trial_days} days.
+        .{' '}
+        {data.bonus_days > 0
+          ? `Your trial simply returns to the standard ${data.standard_trial_days} days.`
+          : 'You keep every trial day you have already earned.'}
       </p>
       <button
         type="button"

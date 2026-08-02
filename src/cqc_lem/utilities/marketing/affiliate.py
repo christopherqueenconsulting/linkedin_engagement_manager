@@ -295,8 +295,13 @@ def _company_page(user_id: int) -> bool:
 
 
 def enroll_user(user_id: int, grant_bonus: bool = True) -> dict:
-    """Enrol a user in (A) and pay the enrollment bonus. Idempotent: an existing row is left alone
-    (an opted-out user is NOT re-enrolled by a page load) and the bonus grant is a no-op once paid.
+    """Enrol a user in (A), and pay the enrollment bonus if one is configured (it is 0 by default —
+    the reward is per-referral). Idempotent: an existing row is left alone (an opted-out user is NOT
+    re-enrolled by a page load) and the bonus grant is a no-op once paid.
+
+    `affiliate_enrolled` is emitted on the call that actually CREATED the row, not on the one that
+    paid a bonus: with no join bonus there is no grant to hang it on, and enrollment is exactly the
+    thing the marketing funnel needs counted.
 
     Returns the enrollment row, or `{}` when the program is off / the user is ineligible."""
     from cqc_lem.utilities.db import ensure_affiliate_enrollment, grant_affiliate_trial_days
@@ -309,13 +314,15 @@ def enroll_user(user_id: int, grant_bonus: bool = True) -> dict:
                                              referral_code=code_for_user(user_id)) or {}
     if status != STATUS_ENROLLED or enrollment.get("status") != STATUS_ENROLLED:
         return enrollment
+    result: dict = {}
     if grant_bonus and enrollment_bonus_days() > 0:
         result = grant_affiliate_trial_days(user_id, enrollment_bonus_days(), REWARD_ENROLLMENT,
-                                            reason="enrollment_bonus")
-        if result.get("granted") and result.get("reason") == "granted":
-            track_affiliate_event(AFFILIATE_ENROLLED, user_id=user_id,
-                                  bonus_days=result.get("days"),
-                                  trial_ends_at=str(result.get("trial_ends_at") or ""))
+                                            reason="enrollment_bonus") or {}
+    paid = bool(result.get("granted")) and result.get("reason") == "granted"
+    if enrollment.get("created") or paid:
+        track_affiliate_event(AFFILIATE_ENROLLED, user_id=user_id,
+                              bonus_days=int(result.get("days") or 0),
+                              trial_ends_at=str(result.get("trial_ends_at") or ""))
     return enrollment
 
 

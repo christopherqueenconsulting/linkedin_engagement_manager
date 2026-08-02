@@ -66,11 +66,15 @@ class _Cursor:
             self._set([dict(row)] if row else [])
         elif s.startswith("INSERT IGNORE INTO affiliate_enrollments"):
             user_id, status, code, enrolled_at = params
+            existed = user_id in self.store.enrollments
             self.store.enrollments.setdefault(user_id, {
                 "user_id": user_id, "status": status, "referral_code": code,
                 "enrolled_at": enrolled_at, "opted_out_at": None, "notice_seen_at": None,
                 "promo_content_opt_in": 0, "promo_consent_at": None,
                 "promo_consent_version": None})
+            # MySQL reports 1 for the row it inserted and 0 for the one INSERT IGNORE dropped —
+            # that count is what tells the caller this call is the one that enrolled the user.
+            self.rowcount = 0 if existed else 1
         elif s.startswith("UPDATE affiliate_enrollments SET status="):
             status, enrolled, now_enrolled, enrolled2, now_out, user_id = params
             row = self.store.enrollments[user_id]
@@ -137,6 +141,9 @@ class _Cursor:
                                        "kind": kind, "trial_days": days, "reason": reason})
         elif "FROM early_adopter_grants" in s:
             self._set([])
+        elif s.startswith("SELECT subscription_status, subscription_tier"):
+            user = self.store.users.get(params[0])
+            self._set([dict(user)] if user else [])
         elif s.startswith("SELECT subscription_status, trial_started_at, trial_ends_at FROM users"):
             self._set([dict(self.store.users[params[0]])])
         elif s.startswith("SELECT trial_started_at, trial_ends_at FROM users"):
@@ -362,3 +369,52 @@ def test_duplicate_referral_attribution_is_rejected(client, env, store):
     second = attribute_referral(7, {"ref": str(USER)})
     assert second["reason"] == "duplicate"
     assert len(store.referrals) == 1
+
+
+# --- the SHIPPED reward policy: per-referral only (owner decision 2026-08-01) ----------------------
+# The `env` fixture above pins a 7-day join bonus on purpose — that path still has to work for any
+# deployment that configures one. These run the default the product actually ships.
+
+@pytest.fixture
+def env_no_join_bonus(env):
+    with patch(f"{_AFF}.AFFILIATE_ENROLLMENT_BONUS_DAYS", 0):
+        yield
+
+
+def test_joining_pays_nothing_and_only_referrals_earn(client, env_no_join_bonus, store):
+    detail = _get(client)
+    assert detail["enrolled"] is True
+    assert detail["referral_url"].endswith(f"ref={USER}")
+    assert detail["bonus_days"] == 0
+    assert detail["days_earned"] == 0
+    assert store.trial_days() == 14                      # the standard trial, untouched
+    assert store.rewards == []
+
+    from cqc_lem.utilities.marketing.affiliate import attribute_referral, convert_referral
+    attribute_referral(7, {"ref": str(USER)})
+    assert convert_referral(7)["days"] == 14
+    assert store.trial_days() == 28
+    assert _get(client)["days_earned"] == 14
+
+
+def test_the_enrollment_event_fires_once_per_user_not_once_per_page_load(client, env_no_join_bonus):
+    with patch("cqc_lem.utilities.observability.track_affiliate_event") as event:
+        _get(client)
+        _get(client)
+    assert [c.args[0] for c in event.call_args_list].count("affiliate_enrolled") == 1
+
+
+def test_opt_out_takes_nothing_away_but_still_reports_the_trial_length(client, env_no_join_bonus,
+                                                                      store):
+    """With no join bonus there is no reward to revoke — and the user must STILL be told what their
+    trial now is, which is the acceptance criterion the old grant-derived date could not meet."""
+    from cqc_lem.utilities.marketing.affiliate import attribute_referral, convert_referral
+    _get(client)
+    attribute_referral(7, {"ref": str(USER)})
+    convert_referral(7)
+
+    detail = _post(client, "/status", enrolled=False).json()["detail"]
+    assert detail["enrolled"] is False
+    assert detail["reward_days"] == 0                    # nothing was clawed back
+    assert detail["trial_ends_at"] is not None           # read back off the user, not off a grant
+    assert store.trial_days() == 28                      # the earned referral days survive
