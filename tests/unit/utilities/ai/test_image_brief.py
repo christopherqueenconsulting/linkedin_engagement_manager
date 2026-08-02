@@ -106,3 +106,39 @@ class TestRefusalFilterIsAnchoredToRefusals:
                    return_value=_resp({"focal_concept": "n/a", "prompt": refusal * 2})):
             brief = build_image_brief("some content", surface="post_image")
         assert refusal not in brief.prompt
+
+
+@pytest.mark.unit
+class TestReasoningTokenBudget:
+    """Regression: lem-medium is a REASONING model. At max_tokens=600 the whole budget went to
+    thinking tokens, the response came back EMPTY with finish_reason='length', and every image
+    silently rendered from the deterministic template."""
+
+    def test_budget_leaves_room_for_reasoning_plus_json(self):
+        from cqc_lem.utilities.ai.image_brief import _BRIEF_MAX_TOKENS
+        # A real brief measured ~870 completion tokens including reasoning.
+        assert _BRIEF_MAX_TOKENS >= 2000
+
+    def test_the_budget_is_what_is_actually_sent(self):
+        from cqc_lem.utilities.ai.image_brief import _BRIEF_MAX_TOKENS
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_resp(_GOOD)) as llm:
+            build_image_brief("content", surface="post_image")
+        assert llm.call_args[1]["max_tokens"] == _BRIEF_MAX_TOKENS
+
+    def test_an_empty_response_retries_rather_than_crashing(self):
+        empty = SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content=""), finish_reason="length")])
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   side_effect=[empty, _resp(_GOOD)]) as llm:
+            brief = build_image_brief("content", surface="post_image")
+        assert llm.call_count == 2
+        assert brief.prompt == _GOOD["prompt"], "a retry that succeeds must not fall back"
+
+    def test_the_fallback_warning_says_why(self):
+        empty = SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content=""), finish_reason="length")])
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=empty), \
+             patch("cqc_lem.utilities.ai.image_brief.log_warning") as warn:
+            build_image_brief("content", surface="post_image")
+        reason = warn.call_args[1].get("reason", "")
+        assert "empty response" in reason and "length" in reason
