@@ -104,10 +104,29 @@ class TestSurfaceMatching:
         assert _scope_allows("extension", "/api/user/linkedin-cookie") is True
 
     def test_an_unrestricted_scope_is_allowed_anywhere(self):
+        """The browser's own two, plus the legacy NULL row every 2b session carries."""
         from cqc_lem.api.main import _scope_allows
 
-        for scope in ("full", "recovery", None, "some-future-scope"):
+        for scope in ("full", "recovery", None):
             assert _scope_allows(scope, "/api/user/posts") is True
+
+    def test_an_unrecognised_scope_fails_closed(self):
+        """The table of surfaces must not itself be opt-in. A typo, a hand-edited row, or a scope a
+        later phase adds and only half wires up would otherwise be granted EVERYTHING by omission —
+        the same "remembered somewhere else" failure this design exists to remove."""
+        from cqc_lem.api.main import _scope_allows
+
+        for scope in ("some-future-scope", "enrol", "Enroll", "extension "):
+            assert _scope_allows(scope, "/api/user/posts") is False
+            # Not even its near-neighbour's surface — an unknown scope has no surface at all.
+            assert _scope_allows(scope, "/api/user/linkedin-cookie") is False
+
+    def test_an_unrecognised_scope_is_refused_at_the_resolver(self, client):
+        """End to end, not just the predicate: a row carrying a scope nobody taught the table about
+        gets a 403, not a session."""
+        with _session("enrol-typo"):
+            r = client.get("/api/user/auth-factors", params={"session_token": _TOKEN})
+        assert r.status_code == 403
 
     def test_a_prefix_is_not_a_surface_match(self):
         """Without exact matching, '/user/auth-factors' would also unlock a future
@@ -465,6 +484,48 @@ class TestEnrollmentHold:
                                json={"session_token": _TOKEN, "code": "123456"})
         assert resp.status_code == 200
         released.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# The surfaces are path LITERALS, so they can drift away from what they describe
+# ---------------------------------------------------------------------------
+
+class TestSurfacesDoNotDrift:
+    """Both surfaces are hardcoded path strings, and each has a different failure mode when the
+    thing it names moves. Rename a route and the `enroll` surface becomes a LOCKOUT — the gate's
+    own fetch 403s and the held user has nowhere to go. Change what the extension POSTs and the
+    `extension` surface breaks the one-click reconnect. Neither shows up in any other test, because
+    every other test spells the same literal the source does."""
+
+    def test_every_surface_path_is_a_real_route(self):
+        """Closes the loop against the router itself rather than against another copy of the list.
+
+        Read off `router` (the `/api` surface, where every entry in both sets lives) plus `app` (the
+        handful mounted at the root), and assert the source is non-trivial first — a guard that
+        silently compares against an empty set is worse than no guard."""
+        from cqc_lem.api.main import _SCOPE_SURFACES, _scope_path, app, router
+
+        known = {_scope_path(r.path)
+                 for r in list(router.routes) + list(app.routes)
+                 if getattr(r, "path", None)}
+        assert len(known) > 100, "route table not populated — this guard would be vacuous"
+        for scope, surface in _SCOPE_SURFACES.items():
+            missing = surface - known
+            assert not missing, f"{scope} surface names routes that do not exist: {missing}"
+
+    def test_the_extension_surface_matches_what_the_extension_actually_calls(self):
+        """Read out of `browser_extension/popup.js`, not asserted in prose. A path the extension
+        calls that is NOT on the surface is a 403 on the user's reconnect click; the reverse — a
+        surface entry the extension never calls — is blast radius handed to a stolen token for
+        nothing, so this is an equality, not a subset."""
+        import re
+        from pathlib import Path
+        from cqc_lem.api.main import _EXTENSION_SESSION_SURFACE, _scope_path
+        import cqc_lem
+
+        popup = (Path(cqc_lem.__file__).parent / "browser_extension" / "popup.js").read_text()
+        called = {_scope_path(m) for m in re.findall(r"/api/[A-Za-z0-9\-_/]+", popup)}
+        assert called == set(_EXTENSION_SESSION_SURFACE)
 
 
 class _Allowed:

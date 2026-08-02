@@ -313,8 +313,11 @@ async def session_cookie_middleware(request: Request, call_next):
 #               only add a factor and save recovery codes until it does — at which point
 #               `release_enrollment_scope` promotes it to `full`.
 #
-# A scope not listed here is unrestricted, which is what keeps legacy rows (and any future scope
-# added for an unrelated reason) behaving exactly as they did in 2b.
+# The set of UNRESTRICTED scopes is named explicitly (`_UNRESTRICTED_SCOPES`) rather than inferred
+# from "has no surface entry". Those are the same thing today and stop being the same thing the
+# first time someone adds a scope and forgets the surface — and this whole file argues that a rule
+# you have to remember somewhere else is a rule that leaks. A legacy row carrying NULL is the 2b
+# session and reads as `full`; anything else unrecognised is refused, not waved through.
 # ---------------------------------------------------------------------------
 
 # Exactly one path: `browser_extension/popup.js` POSTs li_at and nothing else. Adding an entry here
@@ -332,10 +335,14 @@ _ENROLL_SESSION_SURFACE = frozenset({
     "/user/recovery-codes/regenerate",
 })
 
-_SCOPE_SURFACES: Dict[str, frozenset] = {
+_SCOPE_SURFACES: Dict[str, frozenset[str]] = {
     SESSION_SCOPE_EXTENSION: _EXTENSION_SESSION_SURFACE,
     SESSION_SCOPE_ENROLL: _ENROLL_SESSION_SURFACE,
 }
+
+# The browser's own two sessions, and the ONLY scopes that reach everything. A NULL scope — every
+# row written before 2c — resolves to `full` before this is consulted, so 2b sessions are untouched.
+_UNRESTRICTED_SCOPES = frozenset({SESSION_SCOPE_FULL, SESSION_SCOPE_RECOVERY})
 
 _SCOPE_REFUSAL_CODE = {
     SESSION_SCOPE_EXTENSION: "session_scope_forbidden",
@@ -362,12 +369,20 @@ def _scope_path(path: Optional[str]) -> Optional[str]:
 
 def _scope_allows(scope: Optional[str], path: Optional[str]) -> bool:
     """Pure path check. Whether an `enroll` hold is still WARRANTED is a separate question with a
-    different input (the account, not the path) and is answered in `_scope_checked`."""
-    surface = _SCOPE_SURFACES.get(scope or SESSION_SCOPE_FULL)
-    if surface is None:
+    different input (the account, not the path) and is answered in `_scope_checked`.
+
+    Both unknowns fail CLOSED, and for the same reason. An unknown PATH means a restricted token
+    reached a handler by a route this middleware never saw. An unknown SCOPE means a value nobody
+    taught this table about — a typo, a hand-edited row, or a scope some later phase added and
+    only half wired up — and granting it everything by omission would make the table itself the
+    opt-in thing this design exists to avoid."""
+    effective = scope or SESSION_SCOPE_FULL
+    if effective in _UNRESTRICTED_SCOPES:
         return True
-    # An unknown path fails CLOSED. A restricted token that reached a handler by some route this
-    # middleware never saw is exactly the case the narrowing exists for.
+    surface = _SCOPE_SURFACES.get(effective)
+    if surface is None:
+        log_warning("Session carries an unrecognised scope — refusing", scope=effective)
+        return False
     return _scope_path(path) in surface
 
 
@@ -428,15 +443,18 @@ def get_session_user_id(session_token: Optional[str] = None) -> Optional[int]:
     return None
 
 
-def _enrollment_held(session_token: Optional[str] = None) -> bool:
+def _enrollment_held() -> bool:
     """Is THIS request's session the held, enrolment-only kind (2c.1)?
 
     Read off the ContextVar the resolver already stamped, NOT a fresh lookup. What the SPA is told
     and what the server enforces have to be the same verdict from the same read: deciding it again
     here would let a DB hiccup answer "not held" to the browser while every request it then made
     was refused — the app rendering over a wall of 403s, which is the exact page the gate exists to
-    prevent."""
-    del session_token  # the request's session is already resolved; this is kept for call-site shape
+    prevent.
+
+    Takes no token on purpose. An earlier draft accepted one and discarded it "for call-site
+    shape", which in an auth module is a signature that lies: it would answer about the CURRENT
+    request no matter whose token you passed."""
     return _request_session_scope.get() == SESSION_SCOPE_ENROLL
 
 
@@ -456,12 +474,33 @@ def _release_enrollment_hold(user_id: int, session_token: Optional[str]) -> None
 
 def _release_hold(token: str) -> bool:
     """Best effort. The hold is re-decided from the ACCOUNT on every request, so a promotion that
-    does not land costs one extra query next time, never access."""
+    does not land costs one extra query next time, never access — which is why this is caught at
+    all. It is still a write that should have worked, so it warns rather than whispers."""
     try:
         return release_enrollment_scope(token)
     except Exception as e:
-        log_debug(f"Could not release enrollment scope: {e}")
+        log_warning(f"Could not release enrollment scope: {e}")
         return False
+
+
+def _mint_login_session(user_id: int, *, user_agent: Optional[str],
+                        ip: Optional[str]) -> tuple[Optional[str], bool]:
+    """Mint the session a completed LOGIN gets, and decide the enrolment hold in ONE place.
+
+    Every path that signs someone in from the email PIN goes through here rather than computing
+    `enrollment_required` beside its own `create_session`. The rule was written at two call sites
+    in an earlier draft, and a rule spelled out at two call sites is a rule the third login path
+    forgets — the same argument this module already makes about enforcing the narrowing at ~150
+    handlers, applied to the minting side.
+
+    The strong-factor login paths (`/auth/passkey/login/complete`, `/auth/second-factor/verify`)
+    deliberately do NOT call this: reaching either one proves the account HOLDS a factor, so
+    `enrollment_required` is false for them by construction and a hold there would be unreachable
+    code pretending to be a control."""
+    held = enrollment_required(user_id)
+    token = create_session(user_id, user_agent=user_agent, ip=ip,
+                           scope=(SESSION_SCOPE_ENROLL if held else SESSION_SCOPE_FULL))
+    return token, held
 
 
 def _scope_checked(resolved: Dict[str, Any], token: Optional[str]) -> int:
@@ -485,25 +524,32 @@ def _scope_checked(resolved: Dict[str, Any], token: Optional[str]) -> int:
     if _scope_allows(scope, path):
         _request_session_scope.set(scope)
         return user_id
-    log_debug("Session refused outside its scope", user_id=user_id)
     if scope == SESSION_SCOPE_EXTENSION:
-        # Audited only for the extension scope. The extension calls exactly one path, so this row
-        # cannot happen by accident — it means someone else is holding that token. A held enrolment
-        # session, by contrast, produces these constantly and harmlessly while the SPA settles.
+        # Audited AND warned, for the extension scope only. The extension calls exactly one path
+        # (`browser_extension/popup.js` POSTs li_at and nothing else), so this cannot happen by
+        # accident — it means someone else is holding that token, which is the one thing here worth
+        # waking someone for. A held ENROLMENT session, by contrast, produces these constantly and
+        # harmlessly while the SPA settles, so it stays DEBUG and unaudited: warning on an expected
+        # no-op would file a defect for working behaviour and bury this row when it matters.
+        log_warning("Extension session refused outside its scope", user_id=user_id,
+                    path=_scope_path(path))
         http_request = _request_object.get()
         _safe_auth_event(AuthAuditEvent.SESSION_SCOPE_DENIED, user_id=user_id, success=False,
                          ip=_client_ip(http_request), user_agent=_user_agent(http_request),
                          details={"scope": scope, "path": _scope_path(path)})
+    else:
+        log_debug("Session refused outside its scope", user_id=user_id, scope=scope)
     raise _scope_refusal(scope)
 
 
 def _safe_auth_event(event: "AuthAuditEvent", **kwargs) -> None:
     """The audit row must never be the reason a refusal turns into a 500 — the refusal IS the
-    control, the row is the record of it."""
+    control, the row is the record of it. Losing the record still matters: this row is the only
+    signal that someone else may be holding an extension token, so a failed write warns."""
     try:
         record_auth_event(event, **kwargs)
     except Exception as e:
-        log_debug(f"Could not record auth event: {e}")
+        log_warning(f"Could not record auth event: {e}")
 
 
 def _client_ip(request: Optional[Request]) -> Optional[str]:
@@ -2471,10 +2517,7 @@ def auth_email_init(request: AuthInitRequest, http_request: Request = None,
                 "bypass": True,
                 **_begin_second_factor(user_id, email, ip, user_agent, "pin_bypass"),
             })
-        held = enrollment_required(user_id)
-        session_token = create_session(user_id, user_agent=user_agent, ip=ip,
-                                       scope=(SESSION_SCOPE_ENROLL if held
-                                              else SESSION_SCOPE_FULL))
+        session_token, held = _mint_login_session(user_id, user_agent=user_agent, ip=ip)
         if not session_token:
             raise HTTPException(status_code=500, detail="Could not create session")
         if is_new_user:
@@ -2568,9 +2611,7 @@ def auth_email_verify(request: AuthVerifyRequest, http_request: Request = None,
     # Past REQUIRE_STRONG_FACTOR_AFTER an account holding no strong factor is signed in but HELD
     # (2c.1, design §7 Stage 2): the PIN is still a valid bootstrap — nobody is ever locked out —
     # but the session it mints reaches only the enrolment surface until a factor lands.
-    held = enrollment_required(user_id)
-    session_token = create_session(user_id, user_agent=user_agent, ip=ip,
-                                   scope=(SESSION_SCOPE_ENROLL if held else SESSION_SCOPE_FULL))
+    session_token, held = _mint_login_session(user_id, user_agent=user_agent, ip=ip)
     if not session_token:
         raise HTTPException(status_code=500, detail="Could not create session")
 
@@ -2631,7 +2672,7 @@ def auth_check_session(session_token: Optional[str] = None) -> ResponseModel:
     # It is deliberately not a "dismissed" flag — dismissal is the browser's business, enrolling is
     # what makes the prompt go away for good.
     deadline = strong_factor_deadline()
-    held = _enrollment_held(session_token)
+    held = _enrollment_held()
     # Person facts the SPA sets on the PostHog person at $identify (issue #646). Plan/timezone/
     # signup only — never credentials — and the session check is the one call every authenticated
     # page already makes, so identify needs no extra round trip.
@@ -3024,7 +3065,7 @@ def get_user_auth_factors(session_token: Optional[str] = None) -> ResponseModel:
         # 2c.1: the card is also what the forced-enrolment gate renders, and it is the one place a
         # user can see the deadline they are being held against.
         "strong_factor_deadline": _utc_iso(strong_factor_deadline()),
-        "enrollment_required": _enrollment_held(session_token),
+        "enrollment_required": _enrollment_held(),
     })
 
 

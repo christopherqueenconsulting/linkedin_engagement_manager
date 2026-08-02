@@ -190,10 +190,31 @@ extension token, including a stolen one, whatever that endpoint can do. The per-
 exemption already attached.
 
 **A refusal on the extension scope writes an `auth_audit_log` row** (`session_scope_denied`, with
-the client and the path). The extension calls one endpoint, so that row cannot appear by accident —
-it is the clearest signal available that someone else is holding the token, and it is worth chasing.
-A held *enrolment* session deliberately writes nothing: those refusals are constant and harmless
-while the SPA settles, and auditing them would bury the one row that means something.
+the client and the path) **and logs a WARNING**. The extension calls one endpoint, so that row
+cannot appear by accident — it is the clearest signal available that someone else is holding the
+token, and it is worth chasing. A held *enrolment* session deliberately writes nothing and logs at
+DEBUG: those refusals are constant and harmless while the SPA settles, warning on an expected no-op
+would file a defect for working behaviour, and auditing them would bury the one row that means
+something.
+
+**Which scopes reach everything is an explicit list, not the absence of an entry.**
+`_UNRESTRICTED_SCOPES` names `full` and `recovery`; a legacy `NULL` row (every session written
+before 2c) resolves to `full` before the check and is untouched. Anything else the surface table
+does not recognise — a typo, a hand-edited row, a scope some later phase adds and only half wires
+up — is **refused**, not waved through. Deriving "unrestricted" from "has no surface entry" would
+have made the table itself the opt-in thing this whole design exists to remove.
+
+**Two drift guards, because both surfaces are path literals.** `tests/unit/api/test_session_scopes.py`
+asserts every surface entry is a route the router actually serves — rename a route and the `enroll`
+surface silently becomes a lockout, since the gate's own fetch would 403 — and asserts the extension
+surface EQUALS the set of `/api` paths `browser_extension/popup.js` fetches, in both directions: a
+path the extension calls but the surface omits breaks the reconnect click, and a surface entry the
+extension never calls is blast radius handed to a stolen token for nothing.
+
+**The hold is decided in one place on the minting side too.** `_mint_login_session` is what every
+PIN login path calls; the strong-factor login paths (`/auth/passkey/login/complete`,
+`/auth/second-factor/verify`) deliberately do not, because reaching either one proves the account
+holds a factor and `enrollment_required` is false for them by construction.
 
 ## Mandatory enrolment (2c.1, design §7 Stage 2)
 
