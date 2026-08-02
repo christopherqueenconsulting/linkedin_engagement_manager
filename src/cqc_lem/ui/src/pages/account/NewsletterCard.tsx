@@ -133,6 +133,29 @@ export default function NewsletterCard() {
             </div>
           </div>
 
+          {/* Cover images (issue #893): upload your own per edition, or let us generate one.
+              Generation costs money per edition, so it is opt-in and every generated cover waits
+              for your approval before it publishes. */}
+          <div className="border-t border-gray-100 pt-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-gray-700">Auto-generate a cover image</p>
+                <p className="text-xs text-gray-500">
+                  Opt-in. We'll create a cover for each new draft using engagement best practices —
+                  one clear subject, no text or logos. Every generated cover waits for your approval
+                  before it publishes.
+                </p>
+              </div>
+              <Toggle on={newsletter.cover_image_auto}
+                onClick={() => setNl({ cover_image_auto: !newsletter.cover_image_auto })} />
+            </div>
+            <p className="text-xs text-gray-400">
+              You can also upload your own cover for any edition on the{' '}
+              <Link to="/content?tab=newsletters" className="text-blue-600 font-medium hover:underline">Newsletters</Link>{' '}
+              review tab.
+            </p>
+          </div>
+
           {/* Subscriber growth: count over time + opt-in invite flow (capped). */}
           <div className="border-t border-gray-100 pt-4 space-y-3">
             <div className="flex items-center justify-between">

@@ -694,6 +694,9 @@ class NewsletterSettingsRequest(BaseModel):
     max_queued_drafts: int = 1
     invite_connections_enabled: bool = False
     max_invites_per_run: int = 50
+    # Opt-in AI cover generation for each new draft (issue #893) — off by default because
+    # generation costs money per edition.
+    cover_image_auto: bool = False
 
     @field_validator("max_queued_drafts")
     @classmethod
@@ -725,6 +728,15 @@ class NewsletterRegenerateRequest(BaseModel):
     session_token: str
     edition_id: int
     guidance: Optional[str] = None  # free-text "Added Guidance"; empty => AI decides a fresh take
+
+
+class NewsletterCoverRequest(BaseModel):
+    session_token: str
+    edition_id: int
+
+
+class NewsletterCoverDecisionRequest(NewsletterCoverRequest):
+    action: str = "approve"  # 'approve' publishes it with the edition; 'remove' drops it entirely
 
 
 class PostRegenerateRequest(BaseModel):
@@ -3471,10 +3483,14 @@ def get_newsletter_draft_endpoint(session_token: str) -> ResponseModel:
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+    from cqc_lem.utilities.newsletter_cover import cover_public_url
     editions = get_pending_newsletter_editions(user_id)
     for e in editions:
         if e.get("scheduled_for") is not None:
             e["scheduled_for"] = _utc_iso(e["scheduled_for"])
+        # The SPA renders the cover from a URL, never a filesystem path.
+        e["cover_image_url"] = cover_public_url(e.get("cover_image_path"))
+        e.pop("cover_image_path", None)
     # next_publish is the slot AFTER the last edition already queued, so the UI can show what's next.
     anchor = get_latest_edition_scheduled_for(user_id)
     next_pub = _compute_next_publish(user_id, anchor=anchor)
@@ -3519,6 +3535,109 @@ def regenerate_newsletter_draft_endpoint(request: NewsletterRegenerateRequest) -
     regenerate_newsletter_edition.apply_async(
         kwargs={"edition_id": request.edition_id, "guidance": guidance})
     return ResponseModel(status_code=200, detail="Regeneration started")
+
+
+def _owned_edition(session_token: str, edition_id: int) -> "tuple[int, dict]":
+    """Resolve the session and the edition it may touch, or raise. A foreign edition is a 404 (not
+    a 403) so the endpoint never confirms that another user's edition id exists."""
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    edition = get_newsletter_edition(edition_id)
+    if not edition or edition.get("user_id") != user_id:
+        raise HTTPException(status_code=404, detail="Edition not found")
+    return user_id, edition
+
+
+def _cover_detail(edition_id: int) -> dict:
+    """The cover state the SPA re-renders from after any cover action."""
+    from cqc_lem.utilities.newsletter_cover import cover_public_url
+    edition = get_newsletter_edition(edition_id) or {}
+    return {
+        "edition_id": edition_id,
+        "cover_image_url": cover_public_url(edition.get("cover_image_path")),
+        "cover_image_source": edition.get("cover_image_source"),
+        "cover_image_status": edition.get("cover_image_status"),
+    }
+
+
+@router.post("/user/newsletter-draft/cover", responses={
+    200: {"description": "Cover uploaded"},
+    **{k: v for k, v in error_responses.items() if k in [400, 401, 404]},
+    500: {"description": "Server error"}
+})
+async def upload_newsletter_cover_endpoint(
+    session_token: str = Form(...),
+    edition_id: int = Form(...),
+    file: UploadFile = File(...),
+) -> ResponseModel:
+    """Attach the author's OWN cover artwork to a queued edition (issue #893).
+
+    Their artwork needs no review, so it lands 'approved' and publishes with the edition — this is
+    the half of the feature that works standalone for a user who never touches AI generation. It
+    still passes the deterministic cover gate, so an unreadable or portrait file is a 400 here
+    rather than a broken cover at publish time.
+    """
+    from cqc_lem.utilities.db import set_edition_cover_image
+    from cqc_lem.utilities.newsletter_cover import (COVER_SOURCE_UPLOAD, COVER_STATUS_APPROVED,
+                                                    CoverRejected, remove_cover_file,
+                                                    save_cover_bytes)
+    user_id, edition = _owned_edition(session_token, edition_id)
+    data = await file.read()
+    try:
+        relative = save_cover_bytes(user_id, edition_id, data)
+    except CoverRejected as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except OSError as e:
+        myprint(f"newsletter cover upload failed for edition {edition_id} — {e}")
+        raise HTTPException(status_code=500, detail="Could not store the cover image")
+    previous = edition.get("cover_image_path")
+    if not set_edition_cover_image(edition_id, user_id, relative, COVER_SOURCE_UPLOAD,
+                                   COVER_STATUS_APPROVED):
+        remove_cover_file(relative)  # don't leave an orphan file behind a failed write
+        raise HTTPException(status_code=500, detail="Could not save the cover image")
+    if previous and previous != relative:
+        remove_cover_file(previous)
+    return ResponseModel(status_code=200, detail=_cover_detail(edition_id))
+
+
+@router.post("/user/newsletter-draft/cover/generate", responses={
+    200: {"description": "Cover generation started"},
+    **{k: v for k, v in error_responses.items() if k in [401, 404]}
+})
+def generate_newsletter_cover_endpoint(request: NewsletterCoverRequest) -> ResponseModel:
+    """Generate a cover for ONE edition. Image generation is slow and costs money, so it runs as a
+    Celery task and the result lands 'pending_review' for the author to approve."""
+    user_id, _edition = _owned_edition(request.session_token, request.edition_id)
+    from cqc_lem.app.run_scheduler import generate_newsletter_cover
+    generate_newsletter_cover.apply_async(kwargs={"edition_id": request.edition_id})
+    myprint(f"newsletter cover generation queued for edition {request.edition_id} (user {user_id})")
+    return ResponseModel(status_code=200, detail="Cover generation started")
+
+
+@router.post("/user/newsletter-draft/cover/decision", responses={
+    200: {"description": "Cover decision applied"},
+    **{k: v for k, v in error_responses.items() if k in [400, 401, 404]},
+    500: {"description": "Server error"}
+})
+def decide_newsletter_cover_endpoint(request: NewsletterCoverDecisionRequest) -> ResponseModel:
+    """The human half of the cover gate: 'approve' clears a generated cover for publish, 'remove'
+    drops it (file included) so the edition publishes with no cover at all."""
+    from cqc_lem.utilities.db import clear_edition_cover_image, set_edition_cover_status
+    from cqc_lem.utilities.newsletter_cover import COVER_STATUS_APPROVED, remove_cover_file
+    user_id, edition = _owned_edition(request.session_token, request.edition_id)
+    if not edition.get("cover_image_path"):
+        raise HTTPException(status_code=404, detail="This edition has no cover image")
+    if request.action == "remove":
+        if not clear_edition_cover_image(request.edition_id, user_id):
+            raise HTTPException(status_code=500, detail="Could not remove the cover image")
+        remove_cover_file(edition.get("cover_image_path"))
+    elif request.action == "approve":
+        if not set_edition_cover_status(request.edition_id, user_id, COVER_STATUS_APPROVED):
+            raise HTTPException(status_code=500, detail="Could not approve the cover image")
+    else:
+        raise HTTPException(status_code=400, detail="Unknown cover action")
+    return ResponseModel(status_code=200, detail=_cover_detail(request.edition_id))
 
 
 @router.post("/user/post/regenerate")

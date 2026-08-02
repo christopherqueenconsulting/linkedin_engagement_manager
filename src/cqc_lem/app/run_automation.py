@@ -2004,7 +2004,8 @@ def _fill_edition_description(driver, wait, subtitle: str) -> bool:
 
 
 def _fill_and_publish_article(driver, wait, title: str, body: str, subtitle: str = None,
-                              user_id: "int | None" = None) -> "tuple[str | None, str | None]":
+                              user_id: "int | None" = None,
+                              cover_image_path: str = None) -> "tuple[str | None, str | None]":
     """Fill LinkedIn's article editor (title textarea + contenteditable body) and run the
     Next → Publish flow. On the publish dialog, best-effort fills the edition description with
     `subtitle`.
@@ -2017,8 +2018,26 @@ def _fill_and_publish_article(driver, wait, title: str, body: str, subtitle: str
         driver, wait, _strip_non_bmp(title), _strip_non_bmp(body),
         user_id=user_id,
         subtitle=subtitle,
+        cover_image_path=cover_image_path,
         fill_description_fn=_fill_edition_description,
     )
+
+
+def _approved_cover_path(edition: dict) -> "str | None":
+    """The absolute path of an edition's cover, but ONLY once the author approved it (issue #893).
+
+    A cover is a public brand asset. Generated ones sit at `pending_review` until the author says
+    otherwise, so this is the ONE place that decides a cover may reach LinkedIn — reading
+    `cover_image_path` alone anywhere else would publish unreviewed artwork.
+    """
+    from cqc_lem.utilities.newsletter_cover import COVER_STATUS_APPROVED, cover_abs_path
+    if (edition or {}).get("cover_image_status") != COVER_STATUS_APPROVED:
+        return None
+    path = cover_abs_path(edition.get("cover_image_path"))
+    if path is None and edition.get("cover_image_path"):
+        log_warning("Approved newsletter cover file is missing — publishing without it",
+                    user_id=edition.get("user_id"), action_type="newsletter_cover")
+    return path
 
 
 def _tagged_edition_body(body: str, edition_id: "int | None" = None) -> str:
@@ -2096,7 +2115,8 @@ def auto_publish_edition(self, edition_id: int):
         url, failed_step = _fill_and_publish_article(driver, wait, edition["title"],
                                                       _tagged_edition_body(edition["body"], edition_id),
                                                       subtitle=edition.get("subtitle"),
-                                                      user_id=user_id)
+                                                      user_id=user_id,
+                                                      cover_image_path=_approved_cover_path(edition))
         if url:
             mark_edition_published(edition_id, url)
             myprint(f"Published newsletter edition {edition_id} for user {user_id}: {edition['title']}")

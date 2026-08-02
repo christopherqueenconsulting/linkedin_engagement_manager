@@ -22,6 +22,7 @@ No class names are keyed on. Use `resolve_article_editor_step(...)` directly, or
 `find_article_editor_elements(driver, wait)` to resolve all four fields/buttons at once.
 """
 
+import os
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -40,6 +41,10 @@ STEP_TITLE = "article_title"
 STEP_BODY = "article_body"
 STEP_NEXT = "article_next"
 STEP_PUBLISH = "article_publish"
+# The cover image (issue #893) is deliberately NOT one of the graded steps below: it is optional,
+# only attempted when the edition actually has an approved cover, and an edition still publishes
+# without it. Grading it would report MISSING on every cover-less publish.
+STEP_COVER = "article_cover"
 
 # Which steps each screen of the flow is allowed to require. Publish is deliberately NOT in
 # EDITOR_SCREEN_STEPS: it renders in the dialog Next opens, so demanding it on the editor screen
@@ -61,6 +66,8 @@ ROUTE_NEXT_TEXT = "next_text"
 ROUTE_NEXT_ARIA = "next_aria"
 ROUTE_PUBLISH_TEXT = "publish_text"
 ROUTE_PUBLISH_ARIA = "publish_aria"
+ROUTE_COVER_INPUT = "cover_input"
+ROUTE_COVER_TRIGGER = "cover_trigger"
 
 # Ordered fallback chains. Every locator avoids hashed class names and keys on visible text,
 # aria-label, role, or placeholder. XPath uses normalize-space() so whitespace won't break.
@@ -133,6 +140,38 @@ _PUBLISH_LOCATORS: list[tuple[str, list[tuple[str, str]], str]] = [
         (By.CSS_SELECTOR, "button[aria-label*='Publish']"),
         (By.XPATH, "//button[contains(translate(@aria-label,"
                    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'publish')]"),
+    ]),
+]
+
+
+# The cover image is attached by writing the file path into the editor's hidden <input type=file>.
+# The input is never visible (LinkedIn styles a button over it), so these are resolved with
+# visible_only=False — a visibility filter here would miss every route.
+# Ordered most-specific first ON PURPOSE: the editor can also carry an inline-image input, and
+# attaching the cover to THAT would drop the image into the article body instead. The bare
+# input[type=file] is the last resort — it is the one the "Add a cover image" trigger renders.
+_COVER_INPUT_LOCATORS: list[tuple[str, list[tuple[str, str]]]] = [
+    (ROUTE_COVER_INPUT, [
+        (By.XPATH, "//input[@type='file' and contains(translate(@aria-label,"
+                   "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'cover')]"),
+        (By.XPATH, "//input[@type='file' and contains(translate(@name,"
+                   "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'cover')]"),
+        (By.XPATH, "//input[@type='file' and contains(translate(@accept,'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
+                   "'abcdefghijklmnopqrstuvwxyz'),'image')]"),
+        (By.CSS_SELECTOR, "input[type='file']"),
+    ]),
+]
+
+# Clicked only when no file input is on the page yet: LinkedIn renders the input lazily behind an
+# "Add a cover image" affordance on some variants of the editor.
+_COVER_TRIGGER_LOCATORS: list[tuple[str, list[tuple[str, str]]]] = [
+    (ROUTE_COVER_TRIGGER, [
+        (By.XPATH, "//button[contains(translate(normalize-space(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
+                   "'abcdefghijklmnopqrstuvwxyz'),'cover image')]"),
+        (By.XPATH, "//button[contains(translate(@aria-label,'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
+                   "'abcdefghijklmnopqrstuvwxyz'),'cover image')]"),
+        (By.XPATH, "//*[@role='button'][contains(translate(normalize-space(),"
+                   "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'cover image')]"),
     ]),
 ]
 
@@ -237,7 +276,11 @@ def resolve_article_editor_step(
             user_id=user_id,
         )
         if element is not None:
-            if not _is_displayed_safe(element):
+            # The visibility filter is what `visible_only=False` turns OFF: the cover's
+            # <input type=file> is hidden BY DESIGN (LinkedIn styles a button over it), so
+            # requiring it to be displayed here would reject the only element that can be
+            # driven and every cover attach would silently miss.
+            if visible_only and not _is_displayed_safe(element):
                 log_debug(f"Article editor route found but not visible",
                           step=step, route=route_id, user_id=user_id, action_type="article_editor")
                 continue
@@ -355,6 +398,67 @@ def _click_safely(driver: WebDriver, element: WebElement) -> bool:
             return False
 
 
+def _confirm_cover_dialog(driver: WebDriver, wait: WebDriverWait,
+                          user_id: Optional[int] = None) -> bool:
+    """Best-effort: some editor variants open a crop/preview overlay after a cover is chosen, and
+    the article cannot be published while it is up. Click its confirm button when one is there.
+
+    A miss is DEBUG, not a warning: on the variants that attach the cover straight away there IS no
+    dialog, and warning would file a defect for the working path."""
+    confirm = find_first(driver, wait, [
+        (By.XPATH, "//button[normalize-space()='Apply']"),
+        (By.XPATH, "//button[normalize-space()='Save']"),
+        (By.XPATH, "//button[normalize-space()='Done']"),
+        (By.XPATH, "//button[.//span[normalize-space()='Apply']]"),
+    ], "Article cover confirm", required=False, max_try=1, visible_only=True,
+        warn_on_miss=False, user_id=user_id)
+    if confirm is None:
+        return False
+    return _click_safely(driver, confirm)
+
+
+def attach_article_cover(driver: WebDriver, wait: WebDriverWait, image_path: str, *,
+                         user_id: Optional[int] = None) -> bool:
+    """Attach a cover image to the open article editor. Returns True when the file was handed to
+    LinkedIn's uploader.
+
+    Never raises and never blocks the publish: an edition without its cover is still a published
+    edition, so every failure here is a warning and the caller carries on. The upload is done by
+    writing the path into the editor's hidden ``<input type=file>`` — clicking the styled button
+    would open the OS file chooser, which Selenium cannot drive.
+    """
+    if not image_path or not os.path.isfile(image_path):
+        log_warning("Article cover image missing on disk", user_id=user_id,
+                    action_type="article_editor", step=STEP_COVER)
+        return False
+    try:
+        file_input = resolve_article_editor_step(driver, wait, STEP_COVER, _COVER_INPUT_LOCATORS,
+                                                 user_id=user_id, visible_only=False)
+        if not file_input.ok:
+            # Some variants render the input only after the "Add a cover image" affordance is used.
+            trigger = resolve_article_editor_step(driver, wait, STEP_COVER, _COVER_TRIGGER_LOCATORS,
+                                                  user_id=user_id)
+            if trigger.ok and _click_safely(driver, trigger.element):
+                time.sleep(2)
+                file_input = resolve_article_editor_step(driver, wait, STEP_COVER,
+                                                         _COVER_INPUT_LOCATORS, user_id=user_id,
+                                                         visible_only=False)
+        if not file_input.ok:
+            log_warning("Article cover upload control not found", user_id=user_id,
+                        action_type="article_editor", step=STEP_COVER)
+            return False
+        file_input.element.send_keys(os.path.abspath(image_path))
+        time.sleep(3)
+        _confirm_cover_dialog(driver, wait, user_id=user_id)
+        log_debug("Article cover attached", user_id=user_id, action_type="article_editor",
+                  route=file_input.route)
+        return True
+    except (WebDriverException, StaleElementReferenceException) as e:
+        log_warning("Article cover attach failed", exc=e, user_id=user_id,
+                    action_type="article_editor", step=STEP_COVER)
+        return False
+
+
 def fill_article_editor(
     driver: WebDriver,
     wait: WebDriverWait,
@@ -363,6 +467,7 @@ def fill_article_editor(
     *,
     user_id: Optional[int] = None,
     subtitle: Optional[str] = None,
+    cover_image_path: Optional[str] = None,
     fill_description_fn=None,
 ) -> "tuple[str | None, str | None]":
     """Use the selector ladder to fill LinkedIn's article editor and publish.
@@ -370,6 +475,9 @@ def fill_article_editor(
     Returns ``(published_url, None)`` on success or ``(None, failed_step)`` on failure.
     ``failed_step`` is one of the STEP_* constants so callers can emit an actionable
     log_error with `failed_step=...`.
+
+    ``cover_image_path`` is optional and best-effort (issue #893): the article publishes with or
+    without its cover, so a cover that will not attach is never a ``failed_step``.
     """
     editor = find_article_editor_elements(driver, wait, user_id=user_id)
     # Only the EDITOR screen's controls gate the start of the flow. Publish is re-resolved after
@@ -395,7 +503,17 @@ def fill_article_editor(
         editor = find_article_editor_elements(driver, wait, user_id=user_id)
         return None, editor.first_missing(EDITOR_SCREEN_STEPS) or STEP_TITLE
 
-    if not _click_safely(driver, editor.next_button.element):
+    next_element = editor.next_button.element
+    if cover_image_path:
+        attach_article_cover(driver, wait, cover_image_path, user_id=user_id)
+        # The cover upload repaints the editor, so the Next resolved before it can be stale.
+        # Re-resolving is cheap; failing to publish because of an optional cover is not.
+        refreshed = resolve_article_editor_step(driver, wait, STEP_NEXT, _NEXT_LOCATORS,
+                                                user_id=user_id)
+        if refreshed.ok:
+            next_element = refreshed.element
+
+    if not _click_safely(driver, next_element):
         return None, STEP_NEXT
     time.sleep(3)
 

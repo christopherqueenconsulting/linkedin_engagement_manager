@@ -170,6 +170,8 @@ export type NewsletterSettings = {
   max_queued_drafts: number
   invite_connections_enabled: boolean
   max_invites_per_run: number
+  /** Opt-in: generate a cover image for each new draft (costs money per edition). */
+  cover_image_auto: boolean
 }
 
 export type NewsletterSubscriberStat = {
@@ -201,6 +203,11 @@ export type NewsletterEdition = {
   body: string | null
   status: string
   scheduled_for: string | null
+  /** Cover image (issue #893) — null when the edition has none. */
+  cover_image_url?: string | null
+  cover_image_source?: 'upload' | 'ai' | null
+  /** 'approved' publishes with the edition; 'pending_review' is a generated cover awaiting you. */
+  cover_image_status?: 'pending_review' | 'approved' | null
 }
 
 export type NewsletterDraft = {

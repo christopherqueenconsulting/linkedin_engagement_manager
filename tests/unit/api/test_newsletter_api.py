@@ -283,3 +283,198 @@ class TestNewsletterRegenerate:
             resp = client.post("/api/user/newsletter-draft/regenerate", json={
                 "session_token": "bad", "edition_id": 4})
         assert resp.status_code == 401
+
+
+def _png(width: int = 1280, height: int = 720) -> bytes:
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), (10, 40, 90)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+_OWNED = {"id": 4, "user_id": _USER}
+
+
+class TestNewsletterCoverUpload:
+    """Issue #893 — the author's own artwork is the half that works standalone."""
+
+    def test_upload_stores_the_cover_as_approved(self, client, tmp_path):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_newsletter_edition", return_value=dict(_OWNED)), \
+             patch("cqc_lem.utilities.newsletter_cover.assets_dir", str(tmp_path)), \
+             patch("cqc_lem.utilities.db.set_edition_cover_image", return_value=True) as store:
+            resp = client.post("/api/user/newsletter-draft/cover",
+                               data={"session_token": _SESSION, "edition_id": 4},
+                               files={"file": ("cover.png", _png(), "image/png")})
+        assert resp.status_code == 200
+        args = store.call_args[0]
+        assert args[0] == 4 and args[1] == _USER
+        assert args[3] == "upload" and args[4] == "approved"
+
+    def test_a_rejected_image_is_a_400_and_stores_nothing(self, client, tmp_path):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_newsletter_edition", return_value=dict(_OWNED)), \
+             patch("cqc_lem.utilities.newsletter_cover.assets_dir", str(tmp_path)), \
+             patch("cqc_lem.utilities.db.set_edition_cover_image") as store:
+            resp = client.post("/api/user/newsletter-draft/cover",
+                               data={"session_token": _SESSION, "edition_id": 4},
+                               files={"file": ("cover.png", _png(200, 100), "image/png")})
+        assert resp.status_code == 400
+        assert "too small" in resp.json()["detail"]
+        store.assert_not_called()
+
+    def test_a_failed_write_leaves_no_orphan_file(self, client, tmp_path):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_newsletter_edition", return_value=dict(_OWNED)), \
+             patch("cqc_lem.utilities.newsletter_cover.assets_dir", str(tmp_path)), \
+             patch("cqc_lem.utilities.db.set_edition_cover_image", return_value=False), \
+             patch("cqc_lem.utilities.newsletter_cover.remove_cover_file") as rm:
+            resp = client.post("/api/user/newsletter-draft/cover",
+                               data={"session_token": _SESSION, "edition_id": 4},
+                               files={"file": ("cover.png", _png(), "image/png")})
+        assert resp.status_code == 500
+        rm.assert_called_once()
+
+    def test_replacing_a_cover_deletes_the_previous_file(self, client, tmp_path):
+        existing = dict(_OWNED, cover_image_path="images/newsletter_covers/5/old.png")
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_newsletter_edition", return_value=existing), \
+             patch("cqc_lem.utilities.newsletter_cover.assets_dir", str(tmp_path)), \
+             patch("cqc_lem.utilities.db.set_edition_cover_image", return_value=True), \
+             patch("cqc_lem.utilities.newsletter_cover.remove_cover_file") as rm:
+            resp = client.post("/api/user/newsletter-draft/cover",
+                               data={"session_token": _SESSION, "edition_id": 4},
+                               files={"file": ("cover.png", _png(), "image/png")})
+        assert resp.status_code == 200
+        assert rm.call_args[0][0] == "images/newsletter_covers/5/old.png"
+
+    def test_404_when_not_owner(self, client, tmp_path):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_newsletter_edition", return_value={"id": 4, "user_id": 999}), \
+             patch("cqc_lem.utilities.db.set_edition_cover_image") as store:
+            resp = client.post("/api/user/newsletter-draft/cover",
+                               data={"session_token": _SESSION, "edition_id": 4},
+                               files={"file": ("cover.png", _png(), "image/png")})
+        assert resp.status_code == 404
+        store.assert_not_called()
+
+    def test_401(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=None):
+            resp = client.post("/api/user/newsletter-draft/cover",
+                               data={"session_token": "bad", "edition_id": 4},
+                               files={"file": ("cover.png", _png(), "image/png")})
+        assert resp.status_code == 401
+
+
+class TestNewsletterCoverGenerate:
+    def test_dispatches_the_task(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_newsletter_edition", return_value=dict(_OWNED)), \
+             patch("cqc_lem.app.run_scheduler.generate_newsletter_cover") as task:
+            resp = client.post("/api/user/newsletter-draft/cover/generate", json={
+                "session_token": _SESSION, "edition_id": 4})
+        assert resp.status_code == 200
+        task.apply_async.assert_called_once_with(kwargs={"edition_id": 4})
+
+    def test_404_when_not_owner_spends_nothing(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_newsletter_edition", return_value={"id": 4, "user_id": 999}), \
+             patch("cqc_lem.app.run_scheduler.generate_newsletter_cover") as task:
+            resp = client.post("/api/user/newsletter-draft/cover/generate", json={
+                "session_token": _SESSION, "edition_id": 4})
+        assert resp.status_code == 404
+        task.apply_async.assert_not_called()
+
+    def test_401(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=None):
+            resp = client.post("/api/user/newsletter-draft/cover/generate", json={
+                "session_token": "bad", "edition_id": 4})
+        assert resp.status_code == 401
+
+
+class TestNewsletterCoverDecision:
+    _WITH_COVER = dict(_OWNED, cover_image_path="images/newsletter_covers/5/a.png",
+                       cover_image_source="ai", cover_image_status="pending_review")
+
+    def test_approve_clears_the_cover_for_publish(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_newsletter_edition", return_value=dict(self._WITH_COVER)), \
+             patch("cqc_lem.utilities.db.set_edition_cover_status", return_value=True) as upd:
+            resp = client.post("/api/user/newsletter-draft/cover/decision", json={
+                "session_token": _SESSION, "edition_id": 4, "action": "approve"})
+        assert resp.status_code == 200
+        assert upd.call_args[0] == (4, _USER, "approved")
+
+    def test_remove_drops_the_row_and_the_file(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_newsletter_edition", return_value=dict(self._WITH_COVER)), \
+             patch("cqc_lem.utilities.db.clear_edition_cover_image", return_value=True) as clear, \
+             patch("cqc_lem.utilities.newsletter_cover.remove_cover_file") as rm:
+            resp = client.post("/api/user/newsletter-draft/cover/decision", json={
+                "session_token": _SESSION, "edition_id": 4, "action": "remove"})
+        assert resp.status_code == 200
+        clear.assert_called_once_with(4, _USER)
+        assert rm.call_args[0][0] == "images/newsletter_covers/5/a.png"
+
+    def test_404_when_there_is_no_cover(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_newsletter_edition", return_value=dict(_OWNED)), \
+             patch("cqc_lem.utilities.db.set_edition_cover_status") as upd:
+            resp = client.post("/api/user/newsletter-draft/cover/decision", json={
+                "session_token": _SESSION, "edition_id": 4, "action": "approve"})
+        assert resp.status_code == 404
+        upd.assert_not_called()
+
+    def test_unknown_action_is_a_400(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_newsletter_edition", return_value=dict(self._WITH_COVER)), \
+             patch("cqc_lem.utilities.db.set_edition_cover_status") as upd, \
+             patch("cqc_lem.utilities.db.clear_edition_cover_image") as clear:
+            resp = client.post("/api/user/newsletter-draft/cover/decision", json={
+                "session_token": _SESSION, "edition_id": 4, "action": "publish-now"})
+        assert resp.status_code == 400
+        upd.assert_not_called()
+        clear.assert_not_called()
+
+    def test_401(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=None):
+            resp = client.post("/api/user/newsletter-draft/cover/decision", json={
+                "session_token": "bad", "edition_id": 4, "action": "approve"})
+        assert resp.status_code == 401
+
+
+class TestNewsletterDraftCoverSurface:
+    def test_queue_returns_a_url_and_never_the_filesystem_path(self, client):
+        editions = [{"id": 4, "title": "T", "subtitle": "S", "body": "B", "status": "draft",
+                     "scheduled_for": None,
+                     "cover_image_path": "images/newsletter_covers/5/a.png",
+                     "cover_image_source": "ai", "cover_image_status": "pending_review"}]
+        settings = {"publish_day": 1, "publish_hour": 9, "cadence": "weekly",
+                    "last_published_at": None, "max_queued_drafts": 1, "generate_lead_days": 3}
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_pending_newsletter_editions", return_value=editions), \
+             patch("cqc_lem.api.main.get_latest_edition_scheduled_for", return_value=None), \
+             patch("cqc_lem.api.main.get_newsletter_settings", return_value=settings), \
+             patch("cqc_lem.api.main.get_user_timezone", return_value="UTC"):
+            resp = client.get(f"/api/user/newsletter-draft?session_token={_SESSION}")
+        edition = resp.json()["detail"]["editions"][0]
+        assert "cover_image_path" not in edition
+        assert edition["cover_image_url"].endswith(
+            "/api/assets?file_name=images/newsletter_covers/5/a.png")
+        assert edition["cover_image_status"] == "pending_review"
+
+    def test_settings_put_forwards_the_cover_opt_in(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_newsletter_settings", return_value=True) as upd:
+            resp = client.put("/api/user/newsletter-settings", json={
+                "session_token": _SESSION, "enabled": True, "cover_image_auto": True})
+        assert resp.status_code == 200
+        assert upd.call_args[0][1]["cover_image_auto"] is True
+
+    def test_cover_opt_in_defaults_off(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_newsletter_settings", return_value=True) as upd:
+            client.put("/api/user/newsletter-settings", json={
+                "session_token": _SESSION, "enabled": True})
+        assert upd.call_args[0][1]["cover_image_auto"] is False
