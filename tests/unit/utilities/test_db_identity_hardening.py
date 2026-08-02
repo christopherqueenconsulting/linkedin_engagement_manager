@@ -332,3 +332,87 @@ class TestAuthAudit:
             rows = get_auth_audit_events(7)
         assert rows[0]["event"] == "login_success"
         assert "ip_hash" not in cursor.execute.call_args[0][0]
+
+
+# ---------------------------------------------------------------------------
+# Session SCOPE plumbing (issue #745, phase 2c.1 — issue #905)
+# ---------------------------------------------------------------------------
+
+class TestSessionScopeResolution:
+    """`resolve_session` is what lets the API refuse a scoped session on the SAME query that
+    authenticates it — reading the scope separately would double a query every request makes."""
+
+    def test_resolve_returns_the_user_and_the_scope(self):
+        from cqc_lem.utilities.db import resolve_session
+
+        conn, cursor = _conn_cursor()
+        cursor.fetchone.return_value = {"user_id": 7, "created_at": datetime.now(timezone.utc),
+                                        "scope": "extension"}
+        with _patch_conn(conn):
+            assert resolve_session("tok") == {"user_id": 7, "scope": "extension"}
+        # Still hashed before it reaches SQL.
+        assert cursor.execute.call_args_list[0][0][1][0] == _sha256("tok")
+
+    def test_a_legacy_row_with_no_scope_resolves_as_full(self):
+        """`scope` arrived in 2c with a 'full' default; a NULL must not read as a restriction."""
+        from cqc_lem.utilities.db import resolve_session
+
+        conn, cursor = _conn_cursor()
+        cursor.fetchone.return_value = {"user_id": 7, "created_at": None, "scope": None}
+        with _patch_conn(conn):
+            assert resolve_session("tok")["scope"] == "full"
+
+    def test_an_expired_or_unknown_token_resolves_to_nothing(self):
+        from cqc_lem.utilities.db import resolve_session
+
+        conn, cursor = _conn_cursor()
+        cursor.fetchone.return_value = None
+        with _patch_conn(conn):
+            assert resolve_session("tok") is None
+
+    def test_get_session_user_id_still_answers_the_id_alone(self):
+        from cqc_lem.utilities.db import get_session_user_id
+
+        conn, cursor = _conn_cursor()
+        cursor.fetchone.return_value = {"user_id": 7, "created_at": None, "scope": "full"}
+        with _patch_conn(conn):
+            assert get_session_user_id("tok") == 7
+
+
+class TestEnrollmentScopeRelease:
+    def test_release_is_conditional_on_the_current_scope(self):
+        """A full, recovery or extension session enrolling a factor must not be widened by this —
+        which is why the check is inside the UPDATE and not a read-then-write."""
+        from cqc_lem.utilities.db import release_enrollment_scope
+
+        conn, cursor = _conn_cursor()
+        cursor.rowcount = 1
+        with _patch_conn(conn):
+            assert release_enrollment_scope("tok") is True
+        sql, params = cursor.execute.call_args[0]
+        assert "scope = %s" in sql and "AND scope = %s" in sql
+        assert params == ("full", _sha256("tok"), "enroll")
+
+    def test_nothing_held_is_not_an_error(self):
+        from cqc_lem.utilities.db import release_enrollment_scope
+
+        conn, cursor = _conn_cursor()
+        cursor.rowcount = 0
+        with _patch_conn(conn):
+            assert release_enrollment_scope("tok") is False
+
+    def test_a_failed_write_never_raises(self):
+        from cqc_lem.utilities.db import release_enrollment_scope
+
+        conn, cursor = _conn_cursor()
+        cursor.execute.side_effect = mysql.connector.Error("DB error")
+        with _patch_conn(conn):
+            assert release_enrollment_scope("tok") is False
+
+    def test_an_empty_token_never_reaches_sql(self):
+        from cqc_lem.utilities.db import release_enrollment_scope
+
+        conn, cursor = _conn_cursor()
+        with _patch_conn(conn):
+            assert release_enrollment_scope("") is False
+        cursor.execute.assert_not_called()

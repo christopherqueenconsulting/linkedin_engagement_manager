@@ -377,3 +377,79 @@ class TestEnrollmentGate:
         with patch(f"{_M}.get_session_auth_state", return_value=None):
             assert af.session_signed_in_with_recovery_code(_TOKEN) is False
         assert af.session_signed_in_with_recovery_code(None) is False
+
+
+# ---------------------------------------------------------------------------
+# Mandatory enrolment — the deadline (issue #905, design §7 Stage 2)
+# ---------------------------------------------------------------------------
+
+def _after(value: str):
+    """REQUIRE_STRONG_FACTOR_AFTER is read at the call site, so the environment IS the control."""
+    return patch.dict("os.environ", {"REQUIRE_STRONG_FACTOR_AFTER": value})
+
+
+class TestMandatoryEnrollment:
+    def test_no_date_is_the_default_and_means_never(self):
+        with patch.dict("os.environ", {}, clear=False):
+            import os
+            os.environ.pop("REQUIRE_STRONG_FACTOR_AFTER", None)
+            assert af.strong_factor_deadline() is None
+            assert af.enrollment_hold_active() is False
+            assert af.enrollment_required(_UID) is False
+
+    def test_a_bare_date_is_midnight_utc(self):
+        with _after("2026-10-01"):
+            deadline = af.strong_factor_deadline()
+        assert deadline == datetime(2026, 10, 1, tzinfo=timezone.utc)
+
+    def test_a_full_timestamp_is_accepted_and_z_is_utc(self):
+        with _after("2026-10-01T12:30:00Z"):
+            assert af.strong_factor_deadline() == datetime(2026, 10, 1, 12, 30, tzinfo=timezone.utc)
+
+    def test_a_naive_timestamp_is_read_as_utc(self):
+        """Everything else in the auth surface is UTC; guessing the host's zone here would move the
+        cutover by hours depending on where the container runs."""
+        with _after("2026-10-01T12:30:00"):
+            assert af.strong_factor_deadline().tzinfo is not None
+
+    def test_an_unparseable_date_is_unset_and_warns(self):
+        """Failing closed on a typo would force every account in the deployment into enrolment."""
+        with _after("october-ish"), patch(f"{_M}.log_warning") as warned:
+            assert af.strong_factor_deadline() is None
+        assert warned.call_count == 1
+
+    def test_a_future_date_holds_nobody_yet(self):
+        with _after("2099-01-01"), patch(f"{_M}.count_auth_factors", return_value=0):
+            assert af.enrollment_hold_active() is False
+            assert af.enrollment_required(_UID) is False
+            # ...but the pre-deadline nudge is due the moment a date exists.
+            assert af.strong_factor_prompt_due(_UID) is True
+
+    def test_past_the_date_an_account_with_nothing_must_enrol(self):
+        with _after("2020-01-01"), patch(f"{_M}.count_auth_factors", return_value=0):
+            assert af.enrollment_hold_active() is True
+            assert af.enrollment_required(_UID) is True
+
+    def test_an_account_that_already_enrolled_is_never_held(self):
+        with _after("2020-01-01"), patch(f"{_M}.count_auth_factors", return_value=1):
+            assert af.enrollment_required(_UID) is False
+            # Nothing to nudge about either — enrolling is what ends the prompt for good.
+            assert af.strong_factor_prompt_due(_UID) is False
+
+    def test_the_kill_switch_beats_the_deadline(self):
+        """STRONG_AUTH_ENABLED=false is the 2c rollback, and it has to roll this back with it —
+        otherwise disabling strong auth would leave people held at a screen that cannot help them.
+        It releases sessions ALREADY held, not just future logins, because every read goes through
+        enrollment_hold_active()."""
+        with _after("2020-01-01"), patch(f"{_M}.STRONG_AUTH_ENABLED", False):
+            assert af.enrollment_hold_active() is False
+            assert af.enrollment_required(_UID) is False
+            assert af.strong_factor_prompt_due(_UID) is False
+
+    def test_clearing_the_date_releases_the_hold(self):
+        with _after(""), patch(f"{_M}.count_auth_factors", return_value=0):
+            assert af.enrollment_hold_active() is False
+
+    def test_no_prompt_without_a_scheduled_date(self):
+        with _after(""), patch(f"{_M}.count_auth_factors", return_value=0):
+            assert af.strong_factor_prompt_due(_UID) is False

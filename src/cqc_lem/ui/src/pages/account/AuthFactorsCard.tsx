@@ -22,6 +22,9 @@ type FactorsDetail = {
   has_strong_factor: boolean
   pin_is_bootstrap_only: boolean
   step_up_satisfied: boolean
+  // Mandatory enrolment (issue #905) — the date after which a PIN alone stops opening a session.
+  strong_factor_deadline: string | null
+  enrollment_required: boolean
 }
 
 const KIND_LABELS: Record<string, string> = {
@@ -162,6 +165,13 @@ export default function AuthFactorsCard() {
           {data.pin_is_bootstrap_only
             ? 'An emailed code alone will no longer sign you in — it now has to be followed by one of the factors below.'
             : 'Right now, anyone who can read your email can sign in as you. Add a factor to change that.'}
+          {!data.has_strong_factor && data.strong_factor_deadline && (
+            <span className="block mt-1 font-semibold text-amber-700" data-testid="factor-deadline">
+              {data.enrollment_required
+                ? 'Required now — the rest of LEM unlocks once a factor is saved.'
+                : `Required from ${when(data.strong_factor_deadline)}.`}
+            </span>
+          )}
         </p>
       )}
 

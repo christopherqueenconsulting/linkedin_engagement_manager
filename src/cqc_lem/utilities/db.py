@@ -3172,9 +3172,15 @@ def verify_pin_for_email(email: str, pin_hash: str) -> bool:
 # A `recovery` session signed in with a recovery code. It is an ordinary session in every way except
 # one: it may enrol a factor without first proving one, because its owner is by definition the
 # person who no longer has a factor to prove.
+#
+# An `enroll` session (2c.1, issue #905) is a PIN login that landed after REQUIRE_STRONG_FACTOR_AFTER
+# on an account holding no strong factor. It is signed in — the PIN is still a valid bootstrap, so
+# nobody is locked out — but it may reach only the enrolment surface until it adds a factor, at
+# which point `release_enrollment_scope` promotes it to `full`.
 SESSION_SCOPE_FULL = "full"
 SESSION_SCOPE_EXTENSION = "extension"
 SESSION_SCOPE_RECOVERY = "recovery"
+SESSION_SCOPE_ENROLL = "enroll"
 
 
 def create_session(user_id: int, user_agent: Optional[str] = None,
@@ -3234,14 +3240,19 @@ def _device_label(user_agent: Optional[str]) -> str:
     return f"{browser} on {platform}"
 
 
-def get_session_user_id(token: str) -> Optional[int]:
-    """Validate a session token and, if live, slide its expiry forward.
+def resolve_session(token: str) -> Optional[dict]:
+    """Validate a session token and, if live, slide its expiry forward — returning WHO it is and
+    WHAT it may do in one read.
 
     Sliding idle window (SESSION_IDLE_HOURS) so an active user never has to request a new PIN,
     bounded by an absolute cap (SESSION_ABSOLUTE_MAX_DAYS from first login) for security.
     Expired/unknown/revoked tokens return None so the caller forces a fresh PIN.
 
-    The presented token is hashed before lookup (#745, 2b) — the plaintext never touches SQL."""
+    The presented token is hashed before lookup (#745, 2b) — the plaintext never touches SQL.
+
+    `scope` rides along because the API resolver has to decide, on the SAME request, whether a
+    restricted session (`extension`, `enroll`) may reach the path it is calling (2c.1, issue #905).
+    Reading it separately would double a query every authenticated request already makes."""
     token_hash = hash_session_token(token)
     if not token_hash:
         return None
@@ -3250,7 +3261,7 @@ def get_session_user_id(token: str) -> Optional[int]:
     try:
         now = datetime.now(timezone.utc)
         cursor.execute(
-            "SELECT user_id, created_at FROM sessions "
+            "SELECT user_id, created_at, scope FROM sessions "
             "WHERE session_token = %s AND expires_at > %s AND revoked_at IS NULL",
             (token_hash, now),
         )
@@ -3271,13 +3282,20 @@ def get_session_user_id(token: str) -> Optional[int]:
             (new_expiry, now, token_hash),
         )
         connection.commit()
-        return row['user_id']
+        return {"user_id": row['user_id'], "scope": row.get('scope') or SESSION_SCOPE_FULL}
     except mysql.connector.Error as err:
         myprint(f"Could not validate session token | Error: {err}")
         return None
     finally:
         cursor.close()
         connection.close()
+
+
+def get_session_user_id(token: str) -> Optional[int]:
+    """The user behind a live session token, or None. Thin wrapper over `resolve_session` so there
+    stays exactly ONE place that validates a token and slides its expiry."""
+    resolved = resolve_session(token)
+    return resolved["user_id"] if resolved else None
 
 
 def get_session_id(token: str) -> Optional[int]:
@@ -3424,6 +3442,10 @@ class AuthAuditEvent(StrEnum):
     RECOVERY_CODE_USED = "recovery_code_used"
     STEP_UP_VERIFIED = "step_up_verified"
     STEP_UP_DENIED = "step_up_denied"
+    # A scoped session (extension / enroll) was used outside its surface (2c.1). For an extension
+    # token this is the clearest signal available that someone else is holding it — the extension
+    # itself only ever calls one path, so it can never produce this row by accident.
+    SESSION_SCOPE_DENIED = "session_scope_denied"
 
 
 def record_auth_event(event: AuthAuditEvent, user_id: Optional[int] = None,
@@ -4068,6 +4090,33 @@ def get_session_auth_state(token: str) -> Optional[dict]:
     except mysql.connector.Error as err:
         myprint(f"Could not read session auth state | Error: {err}")
         return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def release_enrollment_scope(token: str) -> bool:
+    """Promote an `enroll`-held session to a full one — the account just enrolled a strong factor,
+    so the hold that forced it here is over (2c.1, issue #905).
+
+    Conditional on the CURRENT scope in the same statement: a `full`, `recovery` or `extension`
+    session enrolling a factor must not be widened by this, and two concurrent enrolments cannot
+    both promote. Returns False for the ordinary case where nothing was held — not an error."""
+    token_hash = hash_session_token(token)
+    if not token_hash:
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE sessions SET scope = %s WHERE session_token = %s AND scope = %s",
+            (SESSION_SCOPE_FULL, token_hash, SESSION_SCOPE_ENROLL),
+        )
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not release enrollment scope | Error: {err}")
+        return False
     finally:
         cursor.close()
         connection.close()

@@ -25,5 +25,7 @@ def _account_without_a_strong_factor():
          patch("cqc_lem.api.main.step_up_satisfied", return_value=True), \
          patch("cqc_lem.api.main.enrollment_allowed", return_value=True), \
          patch("cqc_lem.api.main.session_signed_in_with_recovery_code", return_value=False), \
-         patch("cqc_lem.api.main.has_confirmed_totp", return_value=False):
+         patch("cqc_lem.api.main.has_confirmed_totp", return_value=False), \
+         patch("cqc_lem.api.main.enrollment_required", return_value=False), \
+         patch("cqc_lem.api.main.enrollment_hold_active", return_value=False):
         yield

@@ -169,9 +169,83 @@ extension token is otherwise an ordinary session, so a blanket exemption would l
 change the email address and revoke every device, which is the precise escalation the gate exists to
 stop. If a future endpoint needs the extension to reach it, it has to say so explicitly.
 
-Known limit, worth naming: an `extension`-scoped session is otherwise a full session for everything
-that is NOT step-up gated, exactly as it was in 2b. Narrowing it to the cookie endpoint alone is a
-follow-up, not a 2c regression.
+**Since 2c.1 (issue #905) the scope is also a SURFACE, not just a step-up exemption.** An extension
+token used to be an ordinary full session that merely *also* satisfied the gate at the cookie
+endpoint — it could read every post, DM template and setting the SPA can. It now reaches exactly one
+path, `/api/user/linkedin-cookie`, and anything else is a **403** `session_scope_forbidden`.
+
+**Honest limit, and it is not small:** the narrowing binds every route that authenticates from the
+SESSION, which is all of them bar one group. A set of `/api` endpoints predating 2a still identify
+the user from an `email` / `user_id` **request parameter** (`PUT /user/`, `GET /posts/`,
+`GET /dashboard/stats/`, …) behind nothing but the shared bearer token the SPA ships in its build.
+Those never call the resolver, so no session scope — extension, enrolment, or any future one —
+constrains them. That is tracked as **#914** and is the ceiling on what this section can claim
+until it lands.
+
+The narrowing is enforced in `api/main.get_session_user_id` — the ONE resolver every handler already
+calls — and not at ~150 call sites, because a narrowing that has to be remembered per endpoint is a
+narrowing that leaks. `_EXTENSION_SESSION_SURFACE` is the list; adding an entry to it hands every
+extension token, including a stolen one, whatever that endpoint can do. The per-call-site
+`extension_scope_ok` flag stays as it is: a future surface entry must not arrive with a step-up
+exemption already attached.
+
+**A refusal on the extension scope writes an `auth_audit_log` row** (`session_scope_denied`, with
+the client and the path). The extension calls one endpoint, so that row cannot appear by accident —
+it is the clearest signal available that someone else is holding the token, and it is worth chasing.
+A held *enrolment* session deliberately writes nothing: those refusals are constant and harmless
+while the SPA settles, and auditing them would bury the one row that means something.
+
+## Mandatory enrolment (2c.1, design §7 Stage 2)
+
+2c shipped the first half of Stage 2 — an account that HAS a factor can no longer sign in on a PIN
+alone. `REQUIRE_STRONG_FACTOR_AFTER` is the second: after that date, an account with **no** factor
+stops getting an ordinary session too.
+
+| `REQUIRE_STRONG_FACTOR_AFTER` | PIN login for a factor-less account |
+|---|---|
+| empty (the default, and every deployment today) | a full session — 2c behaviour, unchanged |
+| a future date | a full session, plus a dismissible SPA prompt naming the date |
+| a past date | a session scoped **`enroll`** — signed in, and held |
+
+A held session is **not a lockout**, and that distinction is the whole design. The PIN still signs
+the account in; what it no longer hands over is a session that can do anything. `scope='enroll'`
+reaches `_ENROLL_SESSION_SURFACE` — who am I, sign me out, the SPA's boot payloads, and the
+enrolment ceremonies — and nothing else, with a **403** `enrollment_required` everywhere else. The
+SPA reads that state off `/auth/session` and renders `StrongFactorGate` *instead of* the app rather
+than over it, because every page behind it would 403 anyway. It reads it off the SAME resolve that
+authenticated the request (a ContextVar the resolver stamps), so the browser can never be told
+"not held" by a page whose every request is then refused.
+
+**The hold belongs to the ACCOUNT, not to the session row**, and that is the subtle half. The row
+records it, but `_scope_checked` re-asks `enrollment_required(user_id)` and releases the moment the
+answer is no. Deciding it from the row alone is a dead end on every *other* device: enrol on the
+laptop and the phone still holds a row saying `enroll`, while the account now HAS a factor — so
+enrolling again is step-up gated, and the step-up ceremony is deliberately outside the enrolment
+surface. The same re-ask is what makes the rollback real and what survives a promotion that failed
+to write.
+
+When a passkey or authenticator lands, `release_enrollment_scope` promotes the row to `full` in the
+same request (a conditional `UPDATE ... WHERE scope='enroll'`, so a full, recovery or extension
+session enrolling a factor is never widened by it). That write is bookkeeping — it saves the
+re-ask, it does not grant the access. Recovery codes are inside the surface too: being forced to
+enrol and then unable to save the sheet would be the worst possible order.
+
+Two operator notes:
+
+- **The date is read at the CALL SITE**, not captured at import, and every read of a held session
+  re-asks it. So clearing the variable, moving it forward, or setting `STRONG_AUTH_ENABLED=false`
+  releases everyone *already* held — the rollback does not strand the people who signed in during
+  the window until their sessions expire.
+- **An unparseable date is treated as unset and WARNS** (once per distinct bad value per process —
+  the parse is not cached, the warning is, or one typo would put a WARNING on every session check).
+  Failing the other way would force every user in the deployment into enrolment over that typo.
+- **A signup that lands after the date is held too**, before onboarding. That is deliberate: a new
+  account is asked for LinkedIn credentials almost immediately, which is precisely what the factor
+  is there to protect.
+
+Nobody meets the deadline cold: `StrongFactorPrompt` appears as soon as a date is scheduled, says
+when, and links to the Security card. It is dismissible in the browser only — enrolling is what ends
+it for good, because the server stops sending `strong_factor_prompt` the moment a factor exists.
 
 ## Ceremony state
 
@@ -222,7 +296,9 @@ attacker's own.
 - `user_recovery_codes` — argon2id hashes; used rows are kept so the page can say "3 of 10 left".
 - `auth_challenges` — ceremonies in flight. `attempts` is the durable guessing bound, carried across
   handles so it bounds the account and not just one pending login.
-- `sessions.last_verified_at`, `sessions.scope` (`full` / `extension` / `recovery`).
+- `sessions.last_verified_at`, `sessions.scope` (`full` / `extension` / `recovery` / `enroll`).
+  `scope` is a `VARCHAR(32)`, so 2c.1 added `enroll` with **no migration** — an ENUM would have
+  needed one.
 
 ## Environment
 
@@ -237,6 +313,7 @@ attacker's own.
 | `SECOND_FACTOR_MAX_ATTEMPTS` | `5` | `1` = the handle dies on one wrong code |
 | `SECOND_FACTOR_ATTEMPT_WINDOW_MINUTES` | `15` | how long a spent guessing budget is remembered |
 | `STRONG_AUTH_ENABLED` | `true` | `false` rolls 2c back without deleting a factor |
+| `REQUIRE_STRONG_FACTOR_AFTER` | empty (never) | the date mandatory enrolment starts — see above |
 
 ## When a user loses everything
 
@@ -255,11 +332,14 @@ so it leaves a trace and cannot be triggered by anything reaching the app:
 Rotating just the recovery sheet (`POST /user/recovery-codes/regenerate`) is the lighter case and
 needs no operator: it is step-up gated, so it only works for someone who still holds a factor.
 
-## Still open after 2c
+## Still open after 2c.1
 
-- **Enrolment is opt-in.** Design §7 Stage 2 has a `REQUIRE_STRONG_FACTOR_AFTER` date, after which
-  enrolment becomes mandatory at next login. Until then, an account with no factor passes the
-  step-up gate — the same posture it had in 2b.
+- **Nobody has scheduled the deadline yet.** `REQUIRE_STRONG_FACTOR_AFTER` is empty in every
+  deployment, so mandatory enrolment is built and off. Until a date is set, an account with no
+  factor still signs in on a PIN and still passes the step-up gate — the 2b posture, by choice.
+  Setting it is an operator decision, not a code change.
 - **`users.password` still exists.** 2a encrypted it and made cookie-only the default; dropping the
   column waits until the prompt has drained the remaining password-only accounts (design §5.4).
-- **`extension`-scoped sessions are not otherwise restricted** — see above.
+
+Closed by 2c.1 (issue #905): mandatory enrolment now exists behind that date, and `extension`-scoped
+sessions are restricted to the one endpoint the extension calls.
