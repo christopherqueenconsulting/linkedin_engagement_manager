@@ -123,14 +123,24 @@ forged write:
 - **`SameSite=Lax`** — the cookie is not attached to a cross-site POST at all. It rides only on
   top-level GET navigations, which is exactly what the LinkedIn OAuth return trip needs and nothing
   more. (`strict` would break that return trip; that is why it is `lax` and not tighter.)
-- Every mutating endpoint is `POST`/`PUT` with a JSON body — a form POST from another origin cannot
-  set `Content-Type: application/json` without a preflight, and no CORS middleware is installed, so
-  the preflight has nothing to succeed against.
+- Almost every mutating endpoint is `POST`/`PUT` with a JSON body — a form POST from another origin
+  cannot set `Content-Type: application/json` without a preflight, and no CORS middleware is
+  installed, so the preflight has nothing to succeed against.
 - In deployments with `API_ACCESS_TOKENS` set, `/api/*` also needs the bearer token, which lives in
   the SPA bundle and not in the browser's ambient credentials.
 
-If a future change adds CORS with credentials, or a form-encoded mutating endpoint, this section is
-the thing that has to be revisited first.
+**"Almost" is exact, and #914 is why.** Four mutating routes take query parameters and no body —
+`POST /create_weekly_content/`, `POST /invite_to_li_company_page/`, `POST /aws_test_get_my_profile/`
+and `POST /automate_reply_commenting`. Before #914 they authenticated on a `user_id`/`post_id`
+parameter, so the cookie was irrelevant to them; now they resolve the session like everything else,
+which is what puts them under this heading at all. A cross-site form POST reaches them without a
+preflight, so for those four the JSON-body layer is not there and `SameSite=Lax` plus the bearer
+token are the whole defence. Both hold, and each of the four only ever queues work for the CALLER's
+own account, so the worst a forged one buys is a job the user could have started themselves — but
+the layer count is two, not three, and a new query-parameter mutating route inherits that.
+
+If a future change adds CORS with credentials, or another form-encoded/query-only mutating endpoint,
+this section is the thing that has to be revisited first.
 
 ## Per-device sessions
 
