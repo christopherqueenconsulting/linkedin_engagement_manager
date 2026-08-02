@@ -1118,8 +1118,11 @@ def react_to_post_inline(driver, wait, card, post_content: str = None, comment_t
         # supervised end-to-end run showed it still burning a full retry round — "Open reactions
         # menu | not found | .....retrying" — on every single card, for a lookup we expect to miss.
         # That retry cost on a doomed lookup is precisely what made the broken flow expensive.
-        opened = click_first(driver, wait, _REACTION_OPENER_LOCATORS,
-                             "Open reactions menu", parent_element=card, required=False,
+        # Return value deliberately unused: the option lookup below is no longer gated on the
+        # opener having been clicked, because the hover alone opens the fly-out. Binding it to a
+        # name would be dead code (CodeQL py/unused-local-variable, correctly).
+        click_first(driver, wait, _REACTION_OPENER_LOCATORS,
+                    "Open reactions menu", parent_element=card, required=False,
                              warn_on_miss=False, max_try=1, user_id=user_id)
         time.sleep(random.uniform(0.8, 1.6))
         # Document-scoped: the fly-out renders outside the card subtree (confirmed live — the

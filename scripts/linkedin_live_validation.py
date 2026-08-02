@@ -657,6 +657,8 @@ def probe_feed_reactions(driver, max_cards: int = 3, open_menu: bool = False,
         out["url"] = str(driver.current_url or "")[:200]
         out["title"] = str(driver.title or "")[:120]
     except Exception:
+        # Diagnostic metadata only — a session too dead to report its own URL still has
+        # useful card evidence below, so losing this must not lose the run.
         pass
 
     # Count EVERY candidate, not just the one production happens to use. LinkedIn rotates these
@@ -734,6 +736,8 @@ def probe_feed_reactions(driver, max_cards: int = 3, open_menu: bool = False,
                 if testid:
                     ev["testid"] = str(testid)[:120]
             except Exception:
+                # data-testid is optional provenance; a stale element must not drop the control
+                # from the report, since its aria-label/text are the anchors we came for.
                 pass
             blob = " ".join(str(v) for v in ev.values()).lower()
             if "comment" in blob:
@@ -752,6 +756,8 @@ def probe_feed_reactions(driver, max_cards: int = 3, open_menu: bool = False,
         try:
             out["body_text_head"] = (driver.find_element(By.TAG_NAME, "body").text or "")[:400]
         except Exception:
+            # Best-effort context for a zero-card result. `visible_buttons` above is the
+            # primary evidence; body text is a nice-to-have.
             pass
 
     for index, card in enumerate(cards):
@@ -769,6 +775,7 @@ def probe_feed_reactions(driver, max_cards: int = 3, open_menu: bool = False,
                     if testid:
                         evidence["testid"] = str(testid)[:120]
                 except Exception:
+                    # Same as above: testid is extra provenance, never the reason to drop a control.
                     pass
                 blob = " ".join(str(v) for v in evidence.values()).lower()
                 # Only reaction-ish controls: a whole card's buttons is mostly noise.
