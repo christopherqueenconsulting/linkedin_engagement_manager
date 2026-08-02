@@ -109,6 +109,7 @@ from cqc_lem.utilities.email import generate_pin, hash_pin, send_pin_email
 from cqc_lem.utilities.linkedin.verification_pin import (
     extract_pin_from_text, extract_token_from_address, submit_pin_by_token)
 from cqc_lem.utilities.geocoding import geocode_city, GeocodeError
+from cqc_lem.utilities.linkedin.login_status import get_login_status
 from cqc_lem.utilities.linkedin.token_refresh import resolve_token_status
 from cqc_lem.utilities.env_constants import LI_CLIENT_ID, LI_CLIENT_SECRET, LI_REDIRECT_URL, LI_STATE_SALT, ADMIN_SECRET, API_ACCESS_TOKENS, \
     DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_VIDEO_RATIO, \
@@ -2459,6 +2460,30 @@ def get_user_token_status(session_token: str) -> ResponseModel:
     # One decision core shared with the daily renewal beat (issue #600), so the countdown the SPA
     # renders and the one that triggers the reconnect email can never disagree.
     return ResponseModel(status_code=200, detail=resolve_token_status(user_id))
+
+
+@router.get("/user/linkedin-signin-status")
+def get_linkedin_signin_status(session_token: str) -> ResponseModel:
+    """The last LinkedIn sign-in the automation made, and whether it is waiting on the user's
+    device approval (issue #933).
+
+    LinkedIn's "Did you just try to sign in?" challenge is approved on LinkedIn, not here, so the
+    approval email was the only place it was ever visible — a user who had already tapped Yes had
+    no way to confirm LEM received it. `unknown` means nothing is recorded (no sign-in since the
+    record expired, or Redis is down); it is NOT a failure, so the SPA says so rather than
+    implying the connection is broken.
+    """
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    status = get_login_status(user_id) or {}
+    return ResponseModel(status_code=200, detail={
+        "state": status.get("state") or "unknown",
+        "signed_in_at": status.get("signed_in_at"),
+        "approval_requested_at": status.get("approval_requested_at"),
+        "approval_cleared_at": status.get("approval_cleared_at"),
+    })
 
 
 @router.get("/user/security")

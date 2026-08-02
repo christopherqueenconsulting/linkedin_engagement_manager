@@ -7,6 +7,8 @@ from typing import Optional
 from cqc_lem.utilities.ai.ai_helper import get_industries_of_profile_from_ai
 from cqc_lem.utilities.db import get_cookies, store_cookies, get_linked_in_profile_by_email, add_linkedin_profile, \
     get_linked_in_profile_by_url, get_linked_in_profile_by_user_id
+from cqc_lem.utilities.linkedin.login_status import mark_approval_pending, \
+    mark_approval_timed_out, mark_signed_in
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited, clear_rate_limit, \
     mark_rate_limited, rate_limit_cooldown_remaining, is_automation_paused, \
@@ -340,6 +342,17 @@ def drive_email_pin_challenge(driver, user_email: str, is_logged_in) -> bool:
     return is_logged_in(driver.current_url)
 
 
+def _user_id_for_email(user_email: str) -> Optional[int]:
+    """Best-effort id lookup for the status writes below — a failed lookup only costs the SPA a
+    status line, so it can never raise into the login path."""
+    try:
+        from cqc_lem.utilities.db import get_user_id
+        return get_user_id(user_email)
+    except Exception as e:
+        log_debug(f"Could not resolve user_id for LinkedIn login status: {e}", action_type="login")
+        return None
+
+
 def _persist_session_cookies(driver: WebDriver, user_email: str) -> bool:
     """Store the freshly authenticated session and report honestly whether it landed.
 
@@ -348,6 +361,13 @@ def _persist_session_cookies(driver: WebDriver, user_email: str) -> bool:
     silent: this run works, but the next one finds no li_at, falls back to a password login and
     trips LinkedIn's new-device challenge — while the log said the cookies were saved.
     """
+    # Both success paths of `login_to_linkedin` meet here, so this is the one place that knows a
+    # sign-in actually completed — and therefore that any device approval the user was asked for
+    # was received (issue #933). Recorded before the cookie write is judged: the approval landed
+    # whether or not the cookies persisted.
+    uid = _user_id_for_email(user_email)
+    if uid:
+        mark_signed_in(uid)
     stored = store_cookies(user_email, driver.get_cookies())
     if not stored:
         log_error("Could not persist LinkedIn session cookies — the next run will have no li_at "
@@ -412,6 +432,12 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
         give them a configurable window before giving up.
         """
         timeout = int(os.getenv("LINKEDIN_APPROVAL_WAIT_SECONDS", "120"))
+        # Publish the ask to the SPA as well as the inbox (issue #933) — the email was the only
+        # place this challenge was ever visible, so a user who had already approved had nowhere
+        # in the product to confirm it.
+        uid = _user_id_for_email(user_email)
+        if uid:
+            mark_approval_pending(uid)
         log_warning(
             "LinkedIn device-approval required — open your LinkedIn mobile app and tap "
             "'Yes' to confirm this sign-in (watch via VNC). Waiting up to "
@@ -430,22 +456,40 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
                 send_login_approval_email(user_email, vnc_url=vnc_url)
             except Exception as e:
                 log_warning("Failed to send login-approval email", exc=e, action_type="login")
-        if timeout <= 0:
+
+        def _approved() -> bool:
+            # Close the pending record HERE, not only at the cookie persist further down: the
+            # approval has landed, and a login that dies in between (feed never loads, a 429 on the
+            # way in) would otherwise leave the Account page still asking a user who already tapped
+            # 'Yes' to go and tap it — the exact blind spot #933 is about.
+            if uid:
+                mark_signed_in(uid)
+            return True
+
+        def _gave_up() -> bool:
+            # The pending record self-expires, but only after the SPA has spent minutes telling the
+            # user we are still waiting. Close it out explicitly so the Account page says what
+            # actually happened: nobody approved in time and the next run will ask again.
+            if uid:
+                mark_approval_timed_out(uid)
             return False
+
+        if timeout <= 0:
+            return _gave_up()
         deadline = time.time() + timeout
         while time.time() < deadline:
             time.sleep(5)
             current = driver.current_url
             if _is_logged_in(current):
                 myprint("Device-approval confirmed — login proceeding")
-                return True
+                return _approved()
             if not _is_challenge_url(current):
                 # Left the checkpoint; give the post-approval redirect a moment to settle
                 time.sleep(3)
                 if _is_logged_in(driver.current_url):
                     myprint("Device-approval confirmed — login proceeding")
-                    return True
-        return False
+                    return _approved()
+        return _gave_up()
 
     def _handle_challenge(label: str) -> None:
         """Clear a login challenge or raise if it can't be cleared.
