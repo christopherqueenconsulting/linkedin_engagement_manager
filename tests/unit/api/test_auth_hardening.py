@@ -6,6 +6,7 @@ and revocable per device, and the email address can move without the account mov
 """
 
 import pytest
+from contextlib import contextmanager
 from unittest.mock import patch
 
 pytestmark = pytest.mark.unit
@@ -13,6 +14,21 @@ pytestmark = pytest.mark.unit
 _M = "cqc_lem.api.main"
 _COOKIE = "lem_session"
 _UID = 7
+
+
+@contextmanager
+def _live_session(token: str = "real", user_id: int = _UID, scope: str = "full"):
+    """One live token, answered by BOTH resolvers.
+
+    Since 2c.1 `get_session_user_id` reads the row (id + scope) through `_db_resolve_session` so it
+    can refuse a scoped session outside its surface; `current_session_token` still only asks whether
+    a token resolves. Patching one and not the other would let a test pass on a resolver the request
+    never used."""
+    with patch(f"{_M}._db_resolve_session",
+               side_effect=lambda t: {"user_id": user_id, "scope": scope} if t == token else None), \
+         patch(f"{_M}._db_get_session_user_id",
+               side_effect=lambda t: user_id if t == token else None):
+        yield
 
 
 @pytest.fixture(scope="module")
@@ -112,8 +128,7 @@ class TestSessionCookie:
         mev.assert_called_once_with(_UID)
 
     def test_logout_clears_the_cookie_and_deletes_the_session(self, client):
-        with patch(f"{_M}.delete_session") as ds, \
-             patch(f"{_M}._db_get_session_user_id", return_value=_UID):
+        with patch(f"{_M}.delete_session") as ds, _live_session(token="tok_secret"):
             resp = client.post("/api/auth/logout", json={"session_token": "tok_secret"})
         assert resp.status_code == 200
         ds.assert_called_once_with("tok_secret")
@@ -125,7 +140,7 @@ class TestCookieResolution:
     """The SPA sends a non-secret sentinel; the request is authenticated by the cookie."""
 
     def test_sentinel_resolves_from_the_cookie(self, client):
-        with patch(f"{_M}._db_get_session_user_id", side_effect=lambda t: _UID if t == "real" else None), \
+        with _live_session(), \
              patch(f"{_M}.get_user_email", return_value="me@example.com"), \
              patch(f"{_M}.get_user_public_uid", return_value="pub-1"), \
              patch(f"{_M}.get_user_analytics_profile", return_value={}), \
@@ -137,14 +152,14 @@ class TestCookieResolution:
         assert resp.json()["detail"]["public_uid"] == "pub-1"
 
     def test_no_cookie_and_only_the_sentinel_is_unauthenticated(self, client):
-        with patch(f"{_M}._db_get_session_user_id", return_value=None) as db:
+        with patch(f"{_M}._db_resolve_session", return_value=None) as db:
             resp = client.get("/api/auth/session", params={"session_token": "cookie"})
         assert resp.status_code == 401
         # The sentinel is never handed to the session lookup — it is not a token.
         db.assert_not_called()
 
     def test_an_explicit_token_still_works_without_a_cookie(self, client):
-        with patch(f"{_M}._db_get_session_user_id", side_effect=lambda t: _UID if t == "real" else None), \
+        with _live_session(), \
              patch(f"{_M}.get_user_email", return_value="me@example.com"), \
              patch(f"{_M}.get_user_public_uid", return_value="pub-1"), \
              patch(f"{_M}.get_user_analytics_profile", return_value={}), \
@@ -153,7 +168,7 @@ class TestCookieResolution:
         assert resp.status_code == 200
 
     def test_a_stale_explicit_token_falls_back_to_the_live_cookie(self, client):
-        with patch(f"{_M}._db_get_session_user_id", side_effect=lambda t: _UID if t == "real" else None), \
+        with _live_session(), \
              patch(f"{_M}.get_user_email", return_value="me@example.com"), \
              patch(f"{_M}.get_user_public_uid", return_value="pub-1"), \
              patch(f"{_M}.get_user_analytics_profile", return_value={}), \
@@ -168,7 +183,7 @@ class TestCookieResolution:
         cookie, the token the request ACTS as has to fall through with it — otherwise logout deletes
         a row that no longer exists and leaves the live one signed in, and "sign out all other
         devices" fails to match the caller's own session as the one to keep and revokes it."""
-        with patch(f"{_M}._db_get_session_user_id", side_effect=lambda t: _UID if t == "real" else None), \
+        with _live_session(), \
              patch(f"{_M}.delete_session") as ds:
             resp = client.post("/api/auth/logout", json={"session_token": "expired"},
                                cookies={_COOKIE: "real"})
@@ -176,7 +191,7 @@ class TestCookieResolution:
         ds.assert_called_once_with("real")
 
     def test_revoke_all_others_keeps_the_cookie_session_not_a_stale_token(self, client):
-        with patch(f"{_M}._db_get_session_user_id", side_effect=lambda t: _UID if t == "real" else None), \
+        with _live_session(), \
              patch(f"{_M}.revoke_other_sessions", return_value=1) as ro:
             resp = client.post("/api/user/sessions/revoke",
                                json={"session_token": "expired", "all_others": True},

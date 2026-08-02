@@ -6,6 +6,8 @@ import FloatingDock from './FloatingDock'
 import Footer from './Footer'
 import PostHogSurveyModal from './PostHogSurveyModal'
 import ShippedNotice from './ShippedNotice'
+import StrongFactorGate from './StrongFactorGate'
+import StrongFactorPrompt from './StrongFactorPrompt'
 import SurveyModal from './SurveyModal'
 
 // Pages whose features depend on a fully set-up account — show the readiness banner here.
@@ -23,7 +25,7 @@ const adminNavLinks = [
 ]
 
 export default function Layout() {
-  const { user, logout, openLoginModal, isAdmin } = useAuth()
+  const { user, logout, openLoginModal, isAdmin, enrollmentRequired } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   const showReadiness = !!user && AUTOMATION_PATHS.some((p) => location.pathname.startsWith(p))
@@ -103,11 +105,21 @@ export default function Layout() {
         </div>
       </nav>
       <main className="flex-1 w-full max-w-5xl mx-auto px-4 py-6">
-        {showReadiness && <AccountReadinessBanner />}
-        {/* "You asked, we shipped" + its micro-CSAT — renders only when a fix this user
-            reported has shipped and they haven't acknowledged it yet (issue #502) */}
-        {user && <ShippedNotice />}
-        <Outlet />
+        {/* Mandatory strong-factor enrolment (issue #905). The gate REPLACES the page: a held
+            session is refused everywhere but the enrolment surface, so rendering the app behind it
+            would only produce 403s. The prompt is the pre-deadline half. */}
+        {enrollmentRequired ? (
+          <StrongFactorGate />
+        ) : (
+          <>
+            {showReadiness && <AccountReadinessBanner />}
+            {user && <StrongFactorPrompt />}
+            {/* "You asked, we shipped" + its micro-CSAT — renders only when a fix this user
+                reported has shipped and they haven't acknowledged it yet (issue #502) */}
+            {user && <ShippedNotice />}
+            <Outlet />
+          </>
+        )}
       </main>
       <Footer />
       {/* Shared bottom-right stack — page-level floating controls (Settings' Save All) portal in
@@ -115,11 +127,13 @@ export default function Layout() {
       <FloatingDock>
         <FeedbackWidget />
       </FloatingDock>
-      {/* Survey modal — renders only when the server says a survey is due (issue #501) */}
-      {user && <SurveyModal />}
+      {/* Survey modal — renders only when the server says a survey is due (issue #501). Both
+          modals stand down while a session is held to enrolment: they poll endpoints outside that
+          surface, and asking someone to rate us mid-lockout is the wrong moment anyway. */}
+      {user && !enrollmentRequired && <SurveyModal />}
       {/* PostHog-targeted NPS/CSAT, drawn in LEM's own chrome (issue #653). Stands down whenever
           the bespoke modal above has something to ask, so the two can never stack. */}
-      {user && <PostHogSurveyModal />}
+      {user && !enrollmentRequired && <PostHogSurveyModal />}
     </div>
   )
 }

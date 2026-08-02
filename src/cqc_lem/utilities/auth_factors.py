@@ -13,6 +13,9 @@ server enforces can never disagree:
    public origin.
 3. **Has THIS session recently proved one?** — `step_up_satisfied`. That is the answer the
    credential-touching endpoints need before they will write.
+4. **Must this account enrol one before it gets an ordinary session?** — `enrollment_required`
+   (2c.1, issue #905). Answered at LOGIN, past `REQUIRE_STRONG_FACTOR_AFTER`, and carried on the
+   session row rather than re-asked per request.
 
 Two rules in here are load-bearing and easy to get backwards:
 
@@ -31,9 +34,12 @@ Two rules in here are load-bearing and easy to get backwards:
   cookie paste and the email change for everyone who has not enrolled yet. The gate is what makes
   enrolment WORTH something — it is not a retroactive lock. `STRONG_AUTH_ENABLED=false` returns
   the whole surface to its 2b behaviour without touching an enrolled factor.
+  Past `REQUIRE_STRONG_FACTOR_AFTER` that account no longer gets an ordinary session in the first
+  place — it gets an enrolment-only one — so the gate never has to become retroactive.
 """
 
 import hmac
+import os
 import secrets
 import time
 from dataclasses import dataclass
@@ -53,7 +59,7 @@ from cqc_lem.utilities.db import (
 from cqc_lem.utilities.env_constants import (
     RECOVERY_CODE_COUNT, STEP_UP_MAX_AGE_MINUTES, STRONG_AUTH_ENABLED, WEBAUTHN_RP_NAME,
 )
-from cqc_lem.utilities.logger import log_debug, log_info
+from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 
 METHOD_PASSKEY = AUTH_FACTOR_PASSKEY
 METHOD_TOTP = AUTH_FACTOR_TOTP
@@ -106,6 +112,87 @@ def available_methods(user_id: int) -> list[str]:
     if kinds and count_recovery_codes(user_id)[0] > 0:
         methods.append(METHOD_RECOVERY)
     return methods
+
+
+# ---------------------------------------------------------------------------
+# Mandatory enrolment (design §7 Stage 2, second half — issue #905)
+# ---------------------------------------------------------------------------
+
+REQUIRE_STRONG_FACTOR_AFTER_VAR = "REQUIRE_STRONG_FACTOR_AFTER"
+
+# Malformed values already warned about in this process. The parse itself is NOT cached — the date
+# is read at the call site on purpose — but the warning is, because this runs on every session
+# check and a per-request WARNING would bury PostHog Logs under one typo. Still loud enough to
+# escalate: it re-fires in each worker and after every restart while the value stays wrong.
+_warned_deadlines: set[str] = set()
+
+
+def strong_factor_deadline() -> Optional[datetime]:
+    """The date after which an account with NO strong factor stops getting an ordinary session, or
+    None when the rollout has not been scheduled.
+
+    Read from the environment at the CALL SITE, not captured at import, for the same reason feature
+    flags are (`utilities/flags.py`): this is the one control that can turn every factor-less login
+    into a forced enrolment, so pulling the date back — or clearing it outright when the rollout
+    goes wrong — has to land without waiting for a deploy window.
+
+    A bare date means midnight UTC, which is the shape an operator will actually write; a full ISO
+    timestamp is accepted for a deployment that wants to land the cutover mid-day. An UNPARSEABLE
+    value is treated as unset and WARNS: the alternative is forcing every user in the deployment
+    into enrolment over a typo, and a warning that repeats is exactly how a misconfiguration this
+    quiet gets noticed (see the escalation contract in utilities/CLAUDE.md)."""
+    raw = (os.environ.get(REQUIRE_STRONG_FACTOR_AFTER_VAR) or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        if raw not in _warned_deadlines:
+            _warned_deadlines.add(raw)
+            log_warning(f"{REQUIRE_STRONG_FACTOR_AFTER_VAR} is not an ISO date — "
+                        "mandatory enrolment stays OFF")
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def enrollment_hold_active() -> bool:
+    """Is the mandatory-enrolment rollout live RIGHT NOW?
+
+    Every read of an `enroll`-scoped session goes through this, not just the login that minted it,
+    so the two ways to call the rollout off — clearing `REQUIRE_STRONG_FACTOR_AFTER` or pushing it
+    forward, and `STRONG_AUTH_ENABLED=false` — release everyone already held instead of stranding
+    them until their session expires."""
+    if not strong_auth_enabled():
+        return False
+    deadline = strong_factor_deadline()
+    return deadline is not None and datetime.now(timezone.utc) >= deadline
+
+
+def enrollment_required(user_id: int) -> bool:
+    """Must THIS account enrol a strong factor before it gets an ordinary session again?
+
+    True only past the deadline, and only for an account holding nothing — an account that already
+    enrolled has been through the demoted-PIN path since 2c and is unaffected. It is deliberately
+    decided at LOGIN and carried on the session row (`SESSION_SCOPE_ENROLL`) rather than re-asked on
+    every request: design §7 Stage 2 makes enrolment mandatory "at next login", so a deadline that
+    passes mid-session does not eject someone in the middle of their work.
+
+    This is a hold, never a lockout. The email PIN still signs the account in; what it no longer
+    does is hand over a session that can reach anything but the enrolment surface."""
+    if not enrollment_hold_active():
+        return False
+    return not has_strong_factor(user_id)
+
+
+def strong_factor_prompt_due(user_id: int) -> bool:
+    """Should the SPA show the pre-deadline nudge? A deadline is scheduled (past OR future) and this
+    account still holds nothing — enrolling is what makes it go away, so it cannot be dismissed into
+    meeting the deadline cold."""
+    if not strong_auth_enabled() or strong_factor_deadline() is None:
+        return False
+    return not has_strong_factor(user_id)
 
 
 @dataclass(frozen=True)
@@ -285,10 +372,11 @@ def step_up_satisfied(user_id: int, token: Optional[str],
       it is a broken one-click reconnect and users back on stored passwords (design §6.5, "decide
       this in 2c").
 
-    That third one is opt-in PER CALL SITE, and that is the whole point: an extension token is
-    otherwise an ordinary session, so a blanket exemption would let a stolen one change the email
-    address and revoke every device — the exact escalation the gate exists to stop. Only the cookie
-    endpoint the extension actually calls passes `extension_scope_ok=True`.
+    That third one is opt-in PER CALL SITE, and that is the whole point: only the cookie endpoint
+    the extension actually calls passes `extension_scope_ok=True`. Since 2c.1 the scope is narrowed
+    at the resolver too (`api/main._EXTENSION_SESSION_SURFACE`), so an extension token cannot even
+    REACH another endpoint — but this stays per call site regardless: a surface entry added later
+    must not silently come with a step-up exemption attached.
     """
     if not strong_auth_enabled() or not has_strong_factor(user_id):
         return True

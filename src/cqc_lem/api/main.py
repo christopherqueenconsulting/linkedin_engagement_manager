@@ -44,13 +44,15 @@ from cqc_lem.utilities.db import (
     max_catchup_touches_allowed,
     create_pin_for_email, verify_pin_for_email, delete_pin_for_email, get_pin_lockout,
     create_session, get_session_user_id as _db_get_session_user_id, delete_session,
+    resolve_session as _db_resolve_session, release_enrollment_scope,
     get_session_id, list_user_sessions, revoke_session, revoke_other_sessions,
     record_auth_event, get_auth_audit_events, AuthAuditEvent,
     add_passkey_factor, get_passkey_by_credential_id, get_user_passkey_credential_ids,
     update_factor_counter, delete_auth_factor, count_recovery_codes,
     create_auth_challenge, consume_auth_challenge, claim_auth_challenge_attempt,
     count_challenge_attempts, clear_challenge_attempts,
-    finish_auth_challenge, SESSION_SCOPE_EXTENSION, SESSION_SCOPE_FULL, SESSION_SCOPE_RECOVERY,
+    finish_auth_challenge,
+    SESSION_SCOPE_ENROLL, SESSION_SCOPE_EXTENSION, SESSION_SCOPE_FULL, SESSION_SCOPE_RECOVERY,
     get_user_public_uid, mark_email_verified, change_user_email,
     add_user_by_email, get_user_email, get_user_analytics_profile, get_user_token_info,
     store_linkedin_li_at,
@@ -121,8 +123,10 @@ from cqc_lem.utilities.auth_rate_limit import check_auth_init, check_auth_verify
 from cqc_lem.utilities.auth_factors import (
     METHOD_PASSKEY, METHOD_RECOVERY, METHOD_TOTP,
     available_methods, begin_totp_enrollment, confirm_totp_enrollment, enrollment_allowed,
-    factor_summary, generate_recovery_codes, has_confirmed_totp, has_strong_factor, record_step_up,
-    session_signed_in_with_recovery_code, step_up_satisfied, verify_recovery_code, verify_totp_code,
+    enrollment_hold_active, enrollment_required, factor_summary, generate_recovery_codes,
+    has_confirmed_totp, has_strong_factor, record_step_up, session_signed_in_with_recovery_code,
+    step_up_satisfied, strong_factor_deadline, strong_factor_prompt_due, verify_recovery_code,
+    verify_totp_code,
 )
 from cqc_lem.utilities.webauthn_util import (
     RelyingParty, WebAuthnUnavailable,
@@ -270,15 +274,129 @@ async def api_token_middleware(request: Request, call_next):
 COOKIE_SESSION_SENTINEL = "cookie"
 
 _request_session_cookie: ContextVar[Optional[str]] = ContextVar("lem_session_cookie", default=None)
+_request_path: ContextVar[Optional[str]] = ContextVar("lem_request_path", default=None)
+_request_object: ContextVar[Optional[Request]] = ContextVar("lem_request", default=None)
+# The scope this request actually resolved on, stamped by the resolver. `/auth/session` reports the
+# enrolment hold off THIS, so the browser is never told something the server would then contradict.
+_request_session_scope: ContextVar[Optional[str]] = ContextVar("lem_session_scope", default=None)
 
 
 @app.middleware("http")
 async def session_cookie_middleware(request: Request, call_next):
-    reset_token = _request_session_cookie.set(request.cookies.get(SESSION_COOKIE_NAME))
+    cookie_reset = _request_session_cookie.set(request.cookies.get(SESSION_COOKIE_NAME))
+    # The request rides alongside for the SAME reason the cookie does: the scope check below belongs
+    # to the one resolver every handler already calls, and most handlers never took a Request. The
+    # path decides the verdict; the client is what makes the audit row worth reading.
+    path_reset = _request_path.set(request.url.path)
+    request_reset = _request_object.set(request)
+    scope_reset = _request_session_scope.set(None)
     try:
         return await call_next(request)
     finally:
-        _request_session_cookie.reset(reset_token)
+        _request_session_cookie.reset(cookie_reset)
+        _request_path.reset(path_reset)
+        _request_object.reset(request_reset)
+        _request_session_scope.reset(scope_reset)
+
+
+# ---------------------------------------------------------------------------
+# Session SCOPES (issue #745, phase 2c.1 — issue #905)
+#
+# `full` and `recovery` sessions are the browser's and reach everything. The other two are held to
+# a named surface, and both holds are enforced HERE, in the one resolver, rather than at each call
+# site — a narrowing that has to be remembered at ~150 handlers is a narrowing that leaks.
+#
+#   extension — minted by POST /user/extension-token behind a step-up. Until 2c.1 it was an
+#               ordinary full session that merely ALSO satisfied the step-up gate at the cookie
+#               endpoint, so a stolen extension token could read every post, every DM template and
+#               every setting the SPA can. It now reaches exactly the one path the extension calls.
+#   enroll    — a PIN login that landed past REQUIRE_STRONG_FACTOR_AFTER on an account with no
+#               strong factor (design §7 Stage 2). Signed in, so nobody is locked out, but it may
+#               only add a factor and save recovery codes until it does — at which point
+#               `release_enrollment_scope` promotes it to `full`.
+#
+# The set of UNRESTRICTED scopes is named explicitly (`_UNRESTRICTED_SCOPES`) rather than inferred
+# from "has no surface entry". Those are the same thing today and stop being the same thing the
+# first time someone adds a scope and forgets the surface — and this whole file argues that a rule
+# you have to remember somewhere else is a rule that leaks. A legacy row carrying NULL is the 2b
+# session and reads as `full`; anything else unrecognised is refused, not waved through.
+# ---------------------------------------------------------------------------
+
+# Exactly one path: `browser_extension/popup.js` POSTs li_at and nothing else. Adding an entry here
+# hands every extension token — including a stolen one — whatever that endpoint can do.
+_EXTENSION_SESSION_SURFACE = frozenset({"/user/linkedin-cookie"})
+
+# Everything the forced-enrolment screen needs and nothing else: who am I, sign me out, the boot
+# payloads the SPA fetches before any page renders, and the enrolment ceremonies themselves.
+# `/user/security` and `/user/step-up/*` are deliberately absent — there is nothing to prove yet.
+_ENROLL_SESSION_SURFACE = frozenset({
+    "/auth/session", "/auth/logout", "/app-info", "/flags",
+    "/user/auth-factors",
+    "/user/passkeys/register/begin", "/user/passkeys/register/complete",
+    "/user/totp/enroll/begin", "/user/totp/enroll/confirm",
+    "/user/recovery-codes/regenerate",
+})
+
+_SCOPE_SURFACES: Dict[str, frozenset[str]] = {
+    SESSION_SCOPE_EXTENSION: _EXTENSION_SESSION_SURFACE,
+    SESSION_SCOPE_ENROLL: _ENROLL_SESSION_SURFACE,
+}
+
+# The browser's own two sessions, and the ONLY scopes that reach everything. A NULL scope — every
+# row written before 2c — resolves to `full` before this is consulted, so 2b sessions are untouched.
+_UNRESTRICTED_SCOPES = frozenset({SESSION_SCOPE_FULL, SESSION_SCOPE_RECOVERY})
+
+_SCOPE_REFUSAL_CODE = {
+    SESSION_SCOPE_EXTENSION: "session_scope_forbidden",
+    # The SPA reads this one and renders the enrolment gate instead of a dead page.
+    SESSION_SCOPE_ENROLL: "enrollment_required",
+}
+
+
+def _scope_path(path: Optional[str]) -> Optional[str]:
+    """The surface key for a request path.
+
+    The router is mounted under `/api`, and a handful of routes (the LinkedIn OAuth redirect
+    targets, `/health`, the SPA catch-all) also sit at the root — so the `/api` prefix is stripped
+    and both spellings map to one entry. Matching is exact set membership, never a prefix, so
+    `/user/auth-factors` cannot open a future `/user/auth-factors-admin`."""
+    if not path:
+        return None
+    if path == "/api":
+        return "/"
+    if path.startswith("/api/"):
+        path = path[len("/api"):]
+    return path.rstrip("/") or "/"
+
+
+def _scope_allows(scope: Optional[str], path: Optional[str]) -> bool:
+    """Pure path check. Whether an `enroll` hold is still WARRANTED is a separate question with a
+    different input (the account, not the path) and is answered in `_scope_checked`.
+
+    Both unknowns fail CLOSED, and for the same reason. An unknown PATH means a restricted token
+    reached a handler by a route this middleware never saw. An unknown SCOPE means a value nobody
+    taught this table about — a typo, a hand-edited row, or a scope some later phase added and
+    only half wired up — and granting it everything by omission would make the table itself the
+    opt-in thing this design exists to avoid."""
+    effective = scope or SESSION_SCOPE_FULL
+    if effective in _UNRESTRICTED_SCOPES:
+        return True
+    surface = _SCOPE_SURFACES.get(effective)
+    if surface is None:
+        log_warning("Session carries an unrecognised scope — refusing", scope=effective)
+        return False
+    return _scope_path(path) in surface
+
+
+def _scope_refusal(scope: str) -> HTTPException:
+    """403, never 401: the SPA's axios interceptor reads any 401 as a dead session and signs the
+    user out, which would turn "finish enrolling" into "you have been logged out"."""
+    return HTTPException(status_code=403, detail={
+        "code": _SCOPE_REFUSAL_CODE.get(scope, "session_scope_forbidden"),
+        "message": ("Finish setting up two-factor sign-in to use the rest of LEM."
+                    if scope == SESSION_SCOPE_ENROLL
+                    else "This session is not allowed to use that."),
+    })
 
 
 def _explicit_token(session_token: Optional[str]) -> Optional[str]:
@@ -307,18 +425,133 @@ def current_session_token(session_token: Optional[str] = None) -> Optional[str]:
 def get_session_user_id(session_token: Optional[str] = None) -> Optional[int]:
     """Resolve the caller's user id from the explicit token or the httpOnly session cookie.
 
-    Wraps `db.get_session_user_id`, which is the only thing that touches the sessions table. An
+    Wraps `db.resolve_session`, which is the only thing that touches the sessions table. An
     explicit token that does NOT resolve falls through to the cookie rather than 401ing: a browser
-    holding a stale token from before the cutover is still the signed-in person on that cookie."""
+    holding a stale token from before the cutover is still the signed-in person on that cookie.
+
+    A session that resolves but is SCOPED away from this path raises 403 rather than falling
+    through (2c.1): falling through would let a request that carried both a restricted token and a
+    full cookie be served on the cookie, which is the narrowing quietly not happening."""
     explicit = _explicit_token(session_token)
     if explicit:
-        user_id = _db_get_session_user_id(explicit)
-        if user_id:
-            return user_id
+        resolved = _db_resolve_session(explicit)
+        if resolved:
+            return _scope_checked(resolved, explicit)
     cookie_token = _request_session_cookie.get()
     if cookie_token and cookie_token != explicit:
-        return _db_get_session_user_id(cookie_token)
+        resolved = _db_resolve_session(cookie_token)
+        if resolved:
+            return _scope_checked(resolved, cookie_token)
     return None
+
+
+def _enrollment_held() -> bool:
+    """Is THIS request's session the held, enrolment-only kind (2c.1)?
+
+    Read off the ContextVar the resolver already stamped, NOT a fresh lookup. What the SPA is told
+    and what the server enforces have to be the same verdict from the same read: deciding it again
+    here would let a DB hiccup answer "not held" to the browser while every request it then made
+    was refused — the app rendering over a wall of 403s, which is the exact page the gate exists to
+    prevent.
+
+    Takes no token on purpose. An earlier draft accepted one and discarded it "for call-site
+    shape", which in an auth module is a signature that lies: it would answer about the CURRENT
+    request no matter whose token you passed."""
+    return _request_session_scope.get() == SESSION_SCOPE_ENROLL
+
+
+def _release_enrollment_hold(user_id: int, session_token: Optional[str]) -> None:
+    """A factor just landed, so the hold that forced this session to the enrolment screen is over.
+
+    Conditional on the scope inside the UPDATE, so this is a no-op for the ordinary case — a full,
+    recovery or extension session enrolling a factor is not widened by it. Short-circuited on the
+    rollout being live for the same reason the login path is: a deployment with no deadline cannot
+    hold a session, so it should not pay a write to find that out."""
+    if not enrollment_hold_active():
+        return
+    token = current_session_token(session_token)
+    if token and _release_hold(token):
+        log_info("Mandatory enrolment satisfied — session released", user_id=user_id)
+
+
+def _release_hold(token: str) -> bool:
+    """Best effort. The hold is re-decided from the ACCOUNT on every request, so a promotion that
+    does not land costs one extra query next time, never access — which is why this is caught at
+    all. It is still a write that should have worked, so it warns rather than whispers."""
+    try:
+        return release_enrollment_scope(token)
+    except Exception as e:
+        log_warning(f"Could not release enrollment scope: {e}")
+        return False
+
+
+def _mint_login_session(user_id: int, *, user_agent: Optional[str],
+                        ip: Optional[str]) -> tuple[Optional[str], bool]:
+    """Mint the session a completed LOGIN gets, and decide the enrolment hold in ONE place.
+
+    Every path that signs someone in from the email PIN goes through here rather than computing
+    `enrollment_required` beside its own `create_session`. The rule was written at two call sites
+    in an earlier draft, and a rule spelled out at two call sites is a rule the third login path
+    forgets — the same argument this module already makes about enforcing the narrowing at ~150
+    handlers, applied to the minting side.
+
+    The strong-factor login paths (`/auth/passkey/login/complete`, `/auth/second-factor/verify`)
+    deliberately do NOT call this: reaching either one proves the account HOLDS a factor, so
+    `enrollment_required` is false for them by construction and a hold there would be unreachable
+    code pretending to be a control."""
+    held = enrollment_required(user_id)
+    token = create_session(user_id, user_agent=user_agent, ip=ip,
+                           scope=(SESSION_SCOPE_ENROLL if held else SESSION_SCOPE_FULL))
+    return token, held
+
+
+def _scope_checked(resolved: Dict[str, Any], token: Optional[str]) -> int:
+    scope = resolved.get("scope") or SESSION_SCOPE_FULL
+    path = _request_path.get()
+    user_id = resolved["user_id"]
+
+    if scope == SESSION_SCOPE_ENROLL and not enrollment_required(user_id):
+        # **The hold belongs to the ACCOUNT, not to this session row.** Deciding it from the row
+        # alone strands every OTHER device: enrol on the laptop and the phone still holds a row
+        # that says `enroll`, while the account now HAS a factor — so enrolling again is step-up
+        # gated and the step-up ceremony is outside the enrolment surface. That is a dead end with
+        # no way out but signing out. Re-asking the account also covers the rollout being pulled
+        # back (cleared date, date moved forward, `STRONG_AUTH_ENABLED=false`), and a promotion
+        # that failed to write. Promote the row so this costs one extra query once, not forever.
+        if token:
+            _release_hold(token)
+        _request_session_scope.set(SESSION_SCOPE_FULL)
+        return user_id
+
+    if _scope_allows(scope, path):
+        _request_session_scope.set(scope)
+        return user_id
+    if scope == SESSION_SCOPE_EXTENSION:
+        # Audited AND warned, for the extension scope only. The extension calls exactly one path
+        # (`browser_extension/popup.js` POSTs li_at and nothing else), so this cannot happen by
+        # accident — it means someone else is holding that token, which is the one thing here worth
+        # waking someone for. A held ENROLMENT session, by contrast, produces these constantly and
+        # harmlessly while the SPA settles, so it stays DEBUG and unaudited: warning on an expected
+        # no-op would file a defect for working behaviour and bury this row when it matters.
+        log_warning("Extension session refused outside its scope", user_id=user_id,
+                    path=_scope_path(path))
+        http_request = _request_object.get()
+        _safe_auth_event(AuthAuditEvent.SESSION_SCOPE_DENIED, user_id=user_id, success=False,
+                         ip=_client_ip(http_request), user_agent=_user_agent(http_request),
+                         details={"scope": scope, "path": _scope_path(path)})
+    else:
+        log_debug("Session refused outside its scope", user_id=user_id, scope=scope)
+    raise _scope_refusal(scope)
+
+
+def _safe_auth_event(event: "AuthAuditEvent", **kwargs) -> None:
+    """The audit row must never be the reason a refusal turns into a 500 — the refusal IS the
+    control, the row is the record of it. Losing the record still matters: this row is the only
+    signal that someone else may be holding an extension token, so a failed write warns."""
+    try:
+        record_auth_event(event, **kwargs)
+    except Exception as e:
+        log_warning(f"Could not record auth event: {e}")
 
 
 def _client_ip(request: Optional[Request]) -> Optional[str]:
@@ -2296,7 +2529,7 @@ def auth_email_init(request: AuthInitRequest, http_request: Request = None,
                 "bypass": True,
                 **_begin_second_factor(user_id, email, ip, user_agent, "pin_bypass"),
             })
-        session_token = create_session(user_id, user_agent=user_agent, ip=ip)
+        session_token, held = _mint_login_session(user_id, user_agent=user_agent, ip=ip)
         if not session_token:
             raise HTTPException(status_code=500, detail="Could not create session")
         if is_new_user:
@@ -2316,6 +2549,7 @@ def auth_email_init(request: AuthInitRequest, http_request: Request = None,
             "session_token": session_token,
             "email": email,
             "is_new_user": is_new_user,
+            "enrollment_required": held,
         })
 
     # Write PIN to DB BEFORE sending email — if send fails we can delete the row;
@@ -2386,7 +2620,10 @@ def auth_email_verify(request: AuthVerifyRequest, http_request: Request = None,
         clear_auth_limits(email, ip)
         return ResponseModel(status_code=200, detail=detail)
 
-    session_token = create_session(user_id, user_agent=user_agent, ip=ip)
+    # Past REQUIRE_STRONG_FACTOR_AFTER an account holding no strong factor is signed in but HELD
+    # (2c.1, design §7 Stage 2): the PIN is still a valid bootstrap — nobody is ever locked out —
+    # but the session it mints reaches only the enrolment surface until a factor lands.
+    session_token, held = _mint_login_session(user_id, user_agent=user_agent, ip=ip)
     if not session_token:
         raise HTTPException(status_code=500, detail="Could not create session")
 
@@ -2397,13 +2634,15 @@ def auth_email_verify(request: AuthVerifyRequest, http_request: Request = None,
 
     clear_auth_limits(email, ip)
     record_auth_event(AuthAuditEvent.LOGIN_SUCCESS, user_id=user_id, email=email, ip=ip,
-                      user_agent=user_agent, details={"method": "email_pin"})
+                      user_agent=user_agent, details={"method": "email_pin",
+                                                      "enrollment_required": held})
     if response is not None:
         _set_session_cookie(response, session_token)
 
     return ResponseModel(
         status_code=200,
-        detail={"session_token": session_token, "email": email, "is_new_user": is_new_user},
+        detail={"session_token": session_token, "email": email, "is_new_user": is_new_user,
+                "enrollment_required": held},
     )
 
 
@@ -2439,6 +2678,13 @@ def auth_check_session(session_token: Optional[str] = None) -> ResponseModel:
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     email = get_user_email(user_id)
+    # The mandatory-enrolment state (2c.1). `enrollment_required` is the HARD one — this session is
+    # held and the SPA must render the gate instead of the app. `strong_factor_prompt` is the soft
+    # one: a deadline exists and this account still has nothing, so the pre-deadline nudge is due.
+    # It is deliberately not a "dismissed" flag — dismissal is the browser's business, enrolling is
+    # what makes the prompt go away for good.
+    deadline = strong_factor_deadline()
+    held = _enrollment_held()
     # Person facts the SPA sets on the PostHog person at $identify (issue #646). Plan/timezone/
     # signup only — never credentials — and the session check is the one call every authenticated
     # page already makes, so identify needs no extra round trip.
@@ -2459,6 +2705,9 @@ def auth_check_session(session_token: Optional[str] = None) -> ResponseModel:
         "onboarding_completed_at": _utc_iso(profile.get("onboarding_completed_at")),
         "posts_approved": int(profile.get("posts_approved") or 0),
         "is_admin": is_user_admin(user_id),
+        "enrollment_required": held,
+        "strong_factor_deadline": _utc_iso(deadline),
+        "strong_factor_prompt": bool(deadline) and strong_factor_prompt_due(user_id),
     })
 
 
@@ -2568,7 +2817,12 @@ def mint_extension_token(request: ExtensionTokenRequest, http_request: Request =
     The extension needs a token it can hold; the SPA no longer has one to give it, because the
     browser's own session is an httpOnly cookie. So it gets its OWN session row — labelled, listed
     beside every other device on the Security card, and revocable on its own without signing the
-    person out of the app."""
+    person out of the app.
+
+    Since 2c.1 that row is also NARROW: `scope='extension'` reaches `/user/linkedin-cookie` and
+    nothing else (`_EXTENSION_SESSION_SURFACE`). The token lives in extension storage on a machine
+    we do not control, so the blast radius of losing one is now "someone can overwrite my li_at",
+    not "someone can read my whole account"."""
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -2844,6 +3098,10 @@ def get_user_auth_factors(session_token: Optional[str] = None) -> ResponseModel:
         "has_strong_factor": summary.has_strong_factor,
         "pin_is_bootstrap_only": summary.pin_is_bootstrap_only,
         "step_up_satisfied": step_up_satisfied(user_id, token),
+        # 2c.1: the card is also what the forced-enrolment gate renders, and it is the one place a
+        # user can see the deadline they are being held against.
+        "strong_factor_deadline": _utc_iso(strong_factor_deadline()),
+        "enrollment_required": _enrollment_held(),
     })
 
 
@@ -2904,6 +3162,7 @@ def passkey_register_complete(request: PasskeyRegisterCompleteRequest,
         raise HTTPException(status_code=400, detail="That passkey could not be verified")
 
     _stamp_enrollment(user_id, request.session_token, "Passkey")
+    _release_enrollment_hold(user_id, request.session_token)
     record_auth_event(AuthAuditEvent.FACTOR_ADDED, user_id=user_id, ip=_client_ip(http_request),
                       user_agent=_user_agent(http_request), details={"kind": "passkey"})
     log_info("Passkey enrolled", user_id=user_id)
@@ -2952,6 +3211,7 @@ def totp_enroll_confirm(request: TotpConfirmRequest, http_request: Request = Non
         raise HTTPException(status_code=400, detail="That code did not match — check the time on "
                                                     "your phone and try the next one")
     _stamp_enrollment(user_id, request.session_token, "TOTP")
+    _release_enrollment_hold(user_id, request.session_token)
     record_auth_event(AuthAuditEvent.FACTOR_ADDED, user_id=user_id, ip=_client_ip(http_request),
                       user_agent=_user_agent(http_request), details={"kind": "totp"})
     return ResponseModel(status_code=200, detail={

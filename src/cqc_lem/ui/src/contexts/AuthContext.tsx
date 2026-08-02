@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useRef } from 'react'
+import { createContext, useCallback, useContext, useState, useEffect, useRef } from 'react'
 import type { ReactNode } from 'react'
 import api from '../api/client'
 import { identifyUser, resetAnalytics } from '../utils/analytics'
@@ -23,6 +23,12 @@ interface SessionDetail {
   onboarding_completed_at?: string | null
   posts_approved?: number | null
   is_admin?: boolean
+  // Mandatory strong-factor enrolment (issue #905). `enrollment_required` is the HARD state — this
+  // session is held to the enrolment surface server-side, so the SPA renders the gate instead of
+  // the app. `strong_factor_prompt` is the soft one: a deadline exists and nothing is enrolled yet.
+  enrollment_required?: boolean
+  strong_factor_deadline?: string | null
+  strong_factor_prompt?: boolean
 }
 
 interface AuthContextValue {
@@ -30,6 +36,13 @@ interface AuthContextValue {
   sessionToken: string | null
   isLoading: boolean
   isAdmin: boolean
+  /** This session may only enrol a strong factor until it does (issue #905). */
+  enrollmentRequired: boolean
+  /** A deadline is scheduled and this account still has no factor — show the nudge. */
+  strongFactorPrompt: boolean
+  strongFactorDeadline: string | null
+  /** Re-read /auth/session — the gate calls it once a factor lands, to drop itself. */
+  refreshSession: () => Promise<void>
   login: (token: string, email: string) => void
   logout: () => Promise<void>
   openLoginModal: () => void
@@ -55,6 +68,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [sessionToken, setSessionToken] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isAdmin, setIsAdmin] = useState(false)
+  const [enrollmentRequired, setEnrollmentRequired] = useState(false)
+  const [strongFactorPrompt, setStrongFactorPrompt] = useState(false)
+  const [strongFactorDeadline, setStrongFactorDeadline] = useState<string | null>(null)
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false)
   // Identify once per user per page load — re-identifying on every session check would burn a
   // $identify on each mount for no new information.
@@ -64,6 +80,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSessionToken(token)
     setUser({ email: detail.email, userId: detail.user_id })
     setIsAdmin(!!detail.is_admin)
+    setEnrollmentRequired(!!detail.enrollment_required)
+    setStrongFactorPrompt(!!detail.strong_factor_prompt)
+    setStrongFactorDeadline(detail.strong_factor_deadline ?? null)
     if (detail.user_id && identifiedUserId.current !== detail.user_id) {
       identifiedUserId.current = detail.user_id
       identifyUser({
@@ -100,6 +119,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Memoised on the token, and that is load-bearing rather than tidiness: the enrolment gate waits
+  // on this in an effect, so a fresh closure every render would re-fire the effect on the state
+  // update this very call produces — one /auth/session request per render, forever.
+  const refreshSession = useCallback(
+    () => (sessionToken ? loadSession(sessionToken) : Promise.resolve()),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sessionToken],
+  )
+
   function login(token: string, email: string) {
     // The token is NOT stored: the login response already set the httpOnly cookie, and what goes
     // into localStorage is the sentinel — a marker that a session exists, worth nothing if stolen.
@@ -131,9 +159,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem('lem_li_connected')
     localStorage.removeItem('lem_blog_url')
     localStorage.removeItem('lem_sitemap_url')
+    // The two-factor nudge is dismissed per BROWSER, so the next person to sign in on this machine
+    // would otherwise inherit a dismissal they never made — and never be warned about the deadline.
+    localStorage.removeItem('lem_strong_factor_prompt_dismissed')
     setSessionToken(null)
     setUser(null)
     setIsAdmin(false)
+    setEnrollmentRequired(false)
+    setStrongFactorPrompt(false)
     // Break the browser↔person link, or the next person to sign in on this machine inherits it.
     identifiedUserId.current = null
     resetAnalytics()
@@ -146,6 +179,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         sessionToken,
         isLoading,
         isAdmin,
+        enrollmentRequired,
+        strongFactorPrompt,
+        strongFactorDeadline,
+        // The gate calls this after a factor lands: the server has already promoted the session
+        // out of the enrolment scope, so re-reading it is what makes the gate disappear.
+        refreshSession,
         login,
         logout,
         openLoginModal: () => setIsLoginModalOpen(true),
