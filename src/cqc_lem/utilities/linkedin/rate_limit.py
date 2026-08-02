@@ -13,7 +13,7 @@ import json
 import os
 from datetime import datetime, timezone
 
-from cqc_lem.utilities.logger import log_warning
+from cqc_lem.utilities.logger import log_info, log_warning
 
 _COOLDOWN_KEY = "linkedin:429_cooldown"
 _TRIP_COUNT_KEY = "linkedin:429_trip_count"   # consecutive trips → escalating cooldown
@@ -164,9 +164,17 @@ def pause_automation(seconds: int, reason: str = "manual") -> bool:
     client = _redis_client()
     if client is None:
         return False
+    stored_reason = reason or "manual"
     try:
-        client.set(_PAUSE_KEY, reason or "manual", ex=max(1, int(seconds)))
-        log_warning(f"Automation PAUSED for {int(seconds)}s (reason: {reason})", action_type="rate_limit")
+        client.set(_PAUSE_KEY, stored_reason, ex=max(1, int(seconds)))
+        # INFO, not WARNING (issue #917): storing a pause is a deliberate state transition, never a
+        # degraded path detected HERE. Every caller that considers its own pause a defect already
+        # says so where it detects it — the suppression tripwire escalates CRITICAL (#629), the 429
+        # breaker warns in mark_rate_limited, and maintenance mode logs its own INFO with the drain
+        # detail. The deploy pause is routine (one per release, 4x daily), so a warning here was
+        # re-emitted at ERROR on repeat and filed a grouped $exception for working behaviour.
+        log_info(f"Automation PAUSED for {int(seconds)}s (reason: {stored_reason})",
+                 action_type="rate_limit")
         return True
     except Exception as e:
         log_warning("Failed to set automation pause", exc=e, action_type="rate_limit")

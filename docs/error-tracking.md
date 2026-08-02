@@ -109,6 +109,14 @@ The second half of that pattern is **warn where you detect, not where you notice
 failure one frame up files a second defect for one fault, so that caller now logs the outcome at
 DEBUG and each failing path inside `react_to_post_inline` owns its single warning (issue #878).
 
+The same rule reads sideways for a **state-setter**: succeeding at what you were asked to do is never
+a degraded path, however serious the state is. `pause_automation` warned whenever it stored the global
+Selenium kill-switch, and maintenance mode sets one on every release — 4x daily — so a routine deploy
+escalated to ERROR and filed `RecurringWarning: Automation PAUSED for 1800s (reason: deploy)`
+(issue #917). It logs INFO now; the callers for which a pause IS the defect already say so where they
+detect it (the suppression tripwire escalates CRITICAL, the 429 breaker warns in `mark_rate_limited`),
+and only failing to store the pause — a kill-switch that didn't take — still warns.
+
 | Env | Default | Purpose |
 |---|---|---|
 | `LOG_ESCALATION_ENABLED` | `true` | master switch; false → zero Redis calls |

@@ -70,6 +70,13 @@ Two things follow for anyone writing a call site here:
    where you detect, not where you notice.** ONE unreadable card still warns twice, because the
    pre-click 'Reaction state' read warns too (issue #874, open); collapse that into the opener's
    signal as well, and never add a fourth.
+   The rule reads sideways for a **state-setter**: doing what you were asked is not a degraded path,
+   however serious the state is. `pause_automation` warned every time it stored the global Selenium
+   kill-switch, and maintenance mode sets one on EVERY release, so a routine deploy filed
+   `RecurringWarning: Automation PAUSED for 1800s (reason: deploy)` (issue #917). It logs INFO now —
+   the callers for which a pause IS the defect already say so where they detect it (suppression
+   escalates CRITICAL, the 429 breaker warns in `mark_rate_limited`) — and only a kill-switch that
+   FAILED to store still warns.
 2. **Keep the message a stable template.** The dedup key masks volatile tokens (URLs, emails, UUIDs,
    URNs, hex, `[...]`, quoted strings, numbers) and combines them with the call site, so
    `Selector miss: Feed sort control` and `Selector miss: Reaction state` stay two distinct problems
