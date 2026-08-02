@@ -3,7 +3,7 @@
   "version": 1,
   "contract": "Short outputs of at most 300 characters: refine, summarize briefly, produce comma-separated lists or one-word classifications. The answer is pasted straight into LinkedIn copy or parsed by code, so it must obey the stated length and shape exactly and must never open with a preamble, a restatement of the task, or a markdown fence.",
   "judge_rubric": "Pass only if the answer is exactly the artefact that was asked for, at or under the stated length, with no preamble, no closing offer of further help, and no fact, number, company or person that the prompt did not supply.",
-  "thresholds": {"deterministic_pass_rate": 0.9, "judge_pass_rate": 0.8, "min_judged": 4},
+  "thresholds": {"contract_pass_rate": 0.9, "deterministic_pass_rate": 0.9, "judge_pass_rate": 0.8, "min_judged": 4},
   "cases": [
     {
       "id": "simple-industries-comma-list",
@@ -53,6 +53,7 @@
         {"role": "user", "content": "Allowed: like, celebrate, support, love, insightful, funny. Post: 'After eleven months of interviews, I signed my first enterprise customer this morning.' Which reaction fits best?"}
       ],
       "params": {"temperature": 0, "max_tokens": 5},
+      "budget_mirrors_production": true,
       "assertions": [
         {"type": "max_chars", "value": 20},
         {"type": "max_lines", "value": 1},
@@ -69,6 +70,7 @@
         {"role": "user", "content": "Topics of interest: platform engineering, developer experience. Post: 'Our new office plants have transformed the mood on the third floor.' Is the post relevant to any topic of interest?"}
       ],
       "params": {"temperature": 0, "max_tokens": 3},
+      "budget_mirrors_production": true,
       "assertions": [
         {"type": "max_chars", "value": 10},
         {"type": "max_lines", "value": 1},
@@ -164,6 +166,7 @@
         {"role": "user", "content": "Profile location line: 'Greater Boston Area, Massachusetts, United States'. Reply with the city name only."}
       ],
       "params": {"temperature": 0, "max_tokens": 8},
+      "budget_mirrors_production": true,
       "assertions": [
         {"type": "max_chars", "value": 40},
         {"type": "max_lines", "value": 1},

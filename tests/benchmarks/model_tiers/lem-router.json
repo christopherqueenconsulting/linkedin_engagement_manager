@@ -4,6 +4,7 @@
   "contract": "The routing tier. Two things are graded here. The `LEMComplexityRouter` contract (`.litellm/complexity_router.py` delegating to `routing_policy.complexity_tier`) must resolve each prompt shape to the tier named on the case — that check is deterministic and model-independent, and it is a regression guard on the router itself. Separately, the model deployed behind the `lem-router` alias must still answer these prompts cleanly: short, no preamble, no markdown fence.",
   "judge_rubric": "Pass only if the answer is the artefact asked for, with no preamble and no invented specifics.",
   "thresholds": {
+    "contract_pass_rate": 1.0,
     "deterministic_pass_rate": 1.0,
     "judge_pass_rate": 0.8,
     "min_judged": 3
@@ -127,6 +128,7 @@
         "temperature": 0,
         "max_tokens": 5
       },
+      "budget_mirrors_production": true,
       "assertions": [
         {
           "type": "router_tier",

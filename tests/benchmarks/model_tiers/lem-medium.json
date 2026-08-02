@@ -4,6 +4,7 @@
   "contract": "Balanced work: LinkedIn feed comments (which must satisfy LEM's comment quality contract — reference a specific claim from the target post, add own experience, a data point, respectful disagreement or a genuine question, run at least two sentences, and never open with validation filler), post refinement, blog summaries and direct messages. Output is published under a real person's name, so it must read as a specific practitioner rather than generic AI filler.",
   "judge_rubric": "Pass only if the answer engages with the SPECIFIC content it was given (not a template that would fit any post), adds something a reader did not already have, states no fact, number, employer or customer that the prompt did not supply, and contains no preamble, hashtags-as-filler or closing 'let me know if you need anything else'.",
   "thresholds": {
+    "contract_pass_rate": 0.9,
     "deterministic_pass_rate": 0.9,
     "judge_pass_rate": 0.8,
     "min_judged": 4

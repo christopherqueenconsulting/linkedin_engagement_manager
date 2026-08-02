@@ -3,7 +3,7 @@
   "version": 1,
   "contract": "Long-form LinkedIn content: thought leadership, personal story, industry-news commentary, carousel outlines and newsletter editions. The output must follow the requested blueprint, hold a varied human sentence rhythm rather than uniform AI cadence, survive LEM's deterministic slop lint, and state no specific number, customer, employer or outcome that the prompt did not supply. A promotional post must ask for an artefact (a resource or a newsletter subscription), never a meeting.",
   "judge_rubric": "Pass only if the piece follows the requested structure, sounds like one identifiable practitioner writing from the supplied material, invents no statistic, customer name or outcome beyond what the prompt gave, avoids the contrastive 'it's not X, it's Y' frame and bait closers, and ends on the CTA the prompt asked for rather than a meeting request.",
-  "thresholds": {"deterministic_pass_rate": 0.9, "judge_pass_rate": 0.8, "min_judged": 4},
+  "thresholds": {"contract_pass_rate": 0.9, "deterministic_pass_rate": 0.9, "judge_pass_rate": 0.8, "min_judged": 4},
   "cases": [
     {
       "id": "complex-thought-leadership",
@@ -37,7 +37,8 @@
       "params": {"temperature": 0.8, "max_tokens": 1200},
       "assertions": [
         {"type": "min_chars", "value": 700},
-        {"type": "max_chars", "value": 2600},
+        {"type": "max_chars", "value": 2600, "production": "repairable"},
+        {"type": "max_chars", "value": 3000, "production": "contract"},
         {"type": "no_preamble"},
         {"type": "slop_lint", "content_type": "post"},
         {"type": "min_burstiness", "value": 0.2},
@@ -59,7 +60,8 @@
       "params": {"temperature": 0.8, "max_tokens": 1200},
       "assertions": [
         {"type": "min_chars", "value": 600},
-        {"type": "max_chars", "value": 2400},
+        {"type": "max_chars", "value": 2400, "production": "repairable"},
+        {"type": "max_chars", "value": 3000, "production": "contract"},
         {"type": "no_preamble"},
         {"type": "slop_lint", "content_type": "post"},
         {"type": "required_phrases", "values": ["61", "1,200"], "mode": "any"},
@@ -81,7 +83,8 @@
       "params": {"temperature": 0.7, "max_tokens": 1200},
       "assertions": [
         {"type": "min_chars", "value": 500},
-        {"type": "max_chars", "value": 2400},
+        {"type": "max_chars", "value": 2400, "production": "repairable"},
+        {"type": "max_chars", "value": 3000, "production": "contract"},
         {"type": "no_preamble"},
         {"type": "slop_lint", "content_type": "post"},
         {"type": "required_phrases", "values": ["11"], "mode": "all"},
@@ -143,7 +146,8 @@
       "params": {"temperature": 0.8, "max_tokens": 1100},
       "assertions": [
         {"type": "min_chars", "value": 500},
-        {"type": "max_chars", "value": 2200},
+        {"type": "max_chars", "value": 2200, "production": "repairable"},
+        {"type": "max_chars", "value": 3000, "production": "contract"},
         {"type": "no_preamble"},
         {"type": "slop_lint", "content_type": "post", "exempt_keyword": "RECEIPTS"},
         {"type": "forbidden_phrases", "values": ["book a call", "schedule a demo", "calendly", "hop on a call", "let's chat", "dm me for a quick call"]},
@@ -185,7 +189,8 @@
       "params": {"temperature": 0.8, "max_tokens": 1200},
       "assertions": [
         {"type": "min_chars", "value": 600},
-        {"type": "max_chars", "value": 2400},
+        {"type": "max_chars", "value": 2400, "production": "repairable"},
+        {"type": "max_chars", "value": 3000, "production": "contract"},
         {"type": "no_preamble"},
         {"type": "slop_lint", "content_type": "post"},
         {"type": "max_similarity", "value": 0.4, "against": ["complex-thought-leadership", "complex-personal-story", "complex-industry-news"]}
@@ -206,7 +211,8 @@
       "params": {"temperature": 0.8, "max_tokens": 700},
       "assertions": [
         {"type": "min_chars", "value": 300},
-        {"type": "max_chars", "value": 1400},
+        {"type": "max_chars", "value": 1400, "production": "repairable"},
+        {"type": "max_chars", "value": 3000, "production": "contract"},
         {"type": "no_preamble"},
         {"type": "slop_lint", "content_type": "post"},
         {"type": "forbidden_phrases", "values": ["thoughts?", "agree?", "who else", "double tap"]}

@@ -14,7 +14,11 @@ Two scoring layers, in this order:
   1. DETERMINISTIC (free, in-repo, the source of truth) — length caps, comma-list shape, JSON
      validity, `slop_lint.lint_report`, `content_framework.comment_contract_report`, burstiness,
      lexical self-similarity, the `LEMComplexityRouter` tier contract. A case that fails HARD here
-     never spends a judge call.
+     never spends a judge call. Every deterministic check is additionally classified by what
+     PRODUCTION does with that failure (#910): a CONTRACT failure is what the call site consumes,
+     a REPAIRABLE one is what a regeneration gate catches and retries. The suite scores a FIRST
+     draft; production ships an n-th, so the absolute floor is on the contract rate and the
+     first-draft rate is advisory (still compared against the champion).
   2. LLM JUDGE (paid, sampled, capped) — PostHog Evaluations scoring our own tagged
      `$ai_generation` events, or, when no judge provider is configured, an in-runner `lem-medium`
      judge whose verdicts are emitted as `$ai_metric`. A judge that never answers is
@@ -98,13 +102,18 @@ JUDGE_UNAVAILABLE = "judge:unavailable"
 LEADERBOARD_BEGIN = "<!-- LEADERBOARD:BEGIN -->"
 LEADERBOARD_END = "<!-- LEADERBOARD:END -->"
 LEADERBOARD_MAX_ROWS = 400
-LEADERBOARD_COLUMNS = ("Date", "Run", "Tier", "Model", "Role", "Deterministic", "Judge", "p50",
-                       "Verdict")
+LEADERBOARD_COLUMNS = ("Date", "Run", "Tier", "Model", "Role", "Contract", "First draft", "Judge",
+                       "p50", "Verdict")
+# The pre-#910 table, kept ONLY so a re-render can still read the rows already committed. Dropping
+# them would silently evict real history at the first render after the column was added; they carry
+# no contract rate, so they render `n/a` there rather than a number nobody measured.
+LEADERBOARD_LEGACY_COLUMNS = ("Date", "Run", "Tier", "Model", "Role", "Deterministic", "Judge",
+                              "p50", "Verdict")
 LEADERBOARD_HEADER = "| " + " | ".join(LEADERBOARD_COLUMNS) + " |"
 LEADERBOARD_DIVIDER = "|" + "---|" * len(LEADERBOARD_COLUMNS)
 
-SCORECARD_COLUMNS = ("Tier", "Model", "Role", "Usage", "Cases", "Deterministic", "Judge", "Judged",
-                     "Timeouts", "p50", "p90")
+SCORECARD_COLUMNS = ("Tier", "Model", "Role", "Usage", "Cases", "Contract", "First draft", "Judge",
+                     "Judged", "Timeouts", "p50", "p90")
 SCORECARD_HEADER = "| " + " | ".join(SCORECARD_COLUMNS) + " |"
 SCORECARD_DIVIDER = "|" + "---|" * len(SCORECARD_COLUMNS)
 
@@ -182,6 +191,17 @@ def truncation_retries() -> int:
     return _env_int("BENCHMARK_TRUNCATION_RETRIES", 2, low=0, high=4)
 
 
+def empty_repeats() -> int:
+    """How many times an EMPTY completion is re-measured at the SAME budget (#910).
+
+    Distinct from the truncation retry above, which grows the budget. `minimax-m3` returned an empty
+    completion on two `bm-20260802-20ae40` cases after exhausting the doublings; re-run at the same
+    effective budget it answered and passed both. A reasoning model's single run is therefore not a
+    stable measurement, and an empty-then-fine case must never read as a quality verdict — so it is
+    re-measured, and the report names every case that needed it."""
+    return _env_int("BENCHMARK_EMPTY_REPEATS", 1, low=0, high=3)
+
+
 def judge_max_tokens() -> int:
     """Completion budget for one in-runner judge verdict. The verdict itself is ~40 tokens; the rest
     is headroom for a reasoning judge, since `lem-medium` is currently served by `gpt-oss:120b`."""
@@ -234,10 +254,17 @@ def load_suite(doc: dict, *, name: str = "<suite>") -> dict:
         assertions = case.get("assertions")
         if not isinstance(assertions, list) or not assertions:
             raise SuiteError(f"{name}/{case_id}: case has no assertions")
+        if "budget_mirrors_production" in case and not isinstance(
+                case.get("budget_mirrors_production"), bool):
+            raise SuiteError(f"{name}/{case_id}: budget_mirrors_production must be true or false")
         for assertion in assertions:
             kind = (assertion or {}).get("type") if isinstance(assertion, dict) else None
             if kind not in ASSERTIONS:
                 raise SuiteError(f"{name}/{case_id}: unknown assertion type {kind!r}")
+            klass = (assertion or {}).get("production")
+            if klass is not None and klass not in PRODUCTION_CLASSES:
+                raise SuiteError(f"{name}/{case_id}: assertion {kind!r} has an unknown production "
+                                 f"class {klass!r}")
     return {
         "tier": tier,
         "version": int(doc.get("version") or 1),
@@ -249,9 +276,15 @@ def load_suite(doc: dict, *, name: str = "<suite>") -> dict:
 
 
 def normalize_thresholds(raw: Optional[dict]) -> dict:
-    """A tier's absolute floors. Defaults are deliberately strict on the deterministic side (those
-    checks encode contracts LEM already enforces in production) and looser on the judge side, where
-    a single rubric disagreement should not sink a model."""
+    """A tier's floors.
+
+    `contract_pass_rate` is the ABSOLUTE one (#910): the share of cases whose failures production
+    would actually consume. `deterministic_pass_rate` — the first-draft rate over EVERY check,
+    repairable ones included — is kept as an ADVISORY reading and as the champion-relative
+    comparison; it is no longer a floor, because the checks it aggregates are the ones production
+    regenerates against, so a 90% absolute floor there was a floor on something no model (the
+    incumbents included) has ever had to clear. The judge floor stays looser, where a single rubric
+    disagreement should not sink a model."""
     doc = raw if isinstance(raw, dict) else {}
 
     def num(key: str, default: float) -> float:
@@ -264,7 +297,8 @@ def normalize_thresholds(raw: Optional[dict]) -> dict:
         min_judged = max(0, int(doc.get("min_judged", 3)))
     except (TypeError, ValueError):
         min_judged = 3
-    return {"deterministic_pass_rate": num("deterministic_pass_rate", 0.9),
+    return {"contract_pass_rate": num("contract_pass_rate", 0.9),
+            "deterministic_pass_rate": num("deterministic_pass_rate", 0.9),
             "judge_pass_rate": num("judge_pass_rate", 0.8),
             "min_judged": min_judged}
 
@@ -443,6 +477,43 @@ def _a_max_lines(spec: dict, output: str, case: dict) -> dict:
         f"{len(lines)} non-empty lines > {limit}")
 
 
+# ───────────────── what production does with a failure (#910, pure) ─────────────────
+#
+# The #842 run measured 40–80% deterministic pass rates for every model including both reigning
+# champions, against a 90% floor — a gate that can never open. The failures were real model
+# behaviour, not harness artifacts, but they are not all the same KIND of failure:
+#
+#   * a REPAIRABLE one is caught by a production regeneration gate and redrafted — `lint_repaired`
+#     for the short surfaces, `_gated_comment` for every self-authored comment (#617, up to
+#     COMMENT_GATE_MAX_ATTEMPTS, then the post is SKIPPED), `_review_generated_post` for posts
+#     (one regeneration, then `evaluate_post_gates` HOLDS the draft at pending). Nothing ships.
+#   * a CONTRACT one is what the call site actually consumes: a broken JSON body, a preamble
+#     pasted into LinkedIn copy, an answer over LinkedIn's hard character limit, a classification
+#     that came back as prose. Production has no repair for these.
+#
+# So the suite scores a first draft and production ships an n-th. The absolute floor belongs on the
+# contract rate; the first-draft rate stays reported (and champion-relative), because needing three
+# drafts is a real cost — it is just not the same thing as shipping a broken one.
+PRODUCTION_CONTRACT = "contract"
+PRODUCTION_REPAIRABLE = "repairable"
+PRODUCTION_CLASSES = (PRODUCTION_CONTRACT, PRODUCTION_REPAIRABLE)
+
+# Type-level defaults. A fixture may override per assertion with `"production": "..."` — whether a
+# check is repairable is a property of the CALL SITE, not of the check (a craft-target `max_chars`
+# on long-form is repairable; the same assertion carrying LinkedIn's hard limit is not).
+REPAIRABLE_BY_DEFAULT = ("slop_lint", "comment_contract", "max_similarity", "min_burstiness")
+
+
+def assertion_production_class(spec: Optional[dict]) -> str:
+    """`contract` / `repairable` for one assertion. Unknown or absent -> the type's default, and an
+    unrecognised type is CONTRACT: a check nobody classified must not quietly stop counting."""
+    raw = str((spec or {}).get("production") or "").strip().lower()
+    if raw in PRODUCTION_CLASSES:
+        return raw
+    return (PRODUCTION_REPAIRABLE if (spec or {}).get("type") in REPAIRABLE_BY_DEFAULT
+            else PRODUCTION_CONTRACT)
+
+
 ASSERTIONS: dict = {
     "max_chars": _a_max_chars,
     "min_chars": _a_min_chars,
@@ -466,17 +537,26 @@ def evaluate_case(case: dict, output: Optional[str],
 
     A missing output (provider error) is a case FAILURE with the error carried through, never an
     absent row: a model that couldn't answer is worse than one that answered badly, and dropping the
-    case would quietly raise its pass rate."""
+    case would quietly raise its pass rate. It is a CONTRACT failure too — the call site got
+    nothing, and there is no regeneration that repairs nothing.
+
+    Two verdicts come back per case (#910): `passes` is the first draft against every check, and
+    `contract_passes` is the same draft against only the checks production has no repair for."""
     case_id = str(case.get("id"))
     if output is None:
-        return {"case_id": case_id, "passes": False, "error": case.get("_error") or "no output",
-                "assertions": [], "failures": ["no output from the model"], "unscored": 0}
+        return {"case_id": case_id, "passes": False, "contract_passes": False,
+                "error": case.get("_error") or "no output", "assertions": [],
+                "failures": ["no output from the model"],
+                "contract_failures": ["no output from the model"], "repairable_failures": [],
+                "unscored": 0}
     results = []
     for spec in case.get("assertions") or []:
         kind = spec.get("type")
         fn = ASSERTIONS.get(kind)
+        production = assertion_production_class(spec)
         if fn is None:  # unreachable via load_suite; belt-and-braces for hand-built cases
-            results.append({"type": kind, "passes": False, "detail": f"unknown assertion {kind!r}"})
+            results.append({"type": kind, "passes": False, "production": PRODUCTION_CONTRACT,
+                            "detail": f"unknown assertion {kind!r}"})
             continue
         resolved = dict(spec)
         if kind == "max_similarity":
@@ -486,12 +566,18 @@ def evaluate_case(case: dict, output: Optional[str],
             outcome = fn(resolved, str(output), case)
         except Exception as exc:  # noqa: BLE001 - one bad assertion must not sink the whole run
             outcome = _fail(f"assertion raised {type(exc).__name__}: {str(exc)[:80]}")
-        results.append({"type": kind, "passes": outcome.get("passes"),
+        results.append({"type": kind, "passes": outcome.get("passes"), "production": production,
                         "detail": outcome.get("detail", "")})
     failures = [f"{r['type']}: {r['detail']}" for r in results if r["passes"] is False]
+    contract_failures = [f"{r['type']}: {r['detail']}" for r in results
+                         if r["passes"] is False and r["production"] == PRODUCTION_CONTRACT]
+    repairable_failures = [f"{r['type']}: {r['detail']}" for r in results
+                           if r["passes"] is False and r["production"] == PRODUCTION_REPAIRABLE]
     unscored = sum(1 for r in results if r["passes"] is None)
-    return {"case_id": case_id, "passes": not failures, "assertions": results,
-            "failures": failures, "unscored": unscored}
+    return {"case_id": case_id, "passes": not failures, "contract_passes": not contract_failures,
+            "assertions": results, "failures": failures,
+            "contract_failures": contract_failures, "repairable_failures": repairable_failures,
+            "unscored": unscored}
 
 
 def score_suite(suite: dict, outputs: dict) -> list:
@@ -523,11 +609,16 @@ def merge_scorecard(tier: str, model: str, role: str, case_results: list,
 
     Judge verdicts are three-valued: True, False, and `judge:timeout`/absent. Only the first two
     count toward `judge_pass_rate`; an unscored case is reported as unscored, so a run where the
-    judge never answered can never look like a run where it approved everything."""
+    judge never answered can never look like a run where it approved everything.
+
+    Deterministic results are TWO rates (#910): `contract_pass_rate` (what production would ship)
+    and `deterministic_pass_rate` (the first draft against every check). Both are always reported —
+    a model that clears the contract rate only by burning three drafts per case has to be visible."""
     judge = judge_results or {}
     timings = timings or {}
     total = len(case_results)
     passed = sum(1 for r in case_results if r.get("passes"))
+    contract_passed = sum(1 for r in case_results if r.get("contract_passes"))
     errors = [r["case_id"] for r in case_results if r.get("error")]
 
     judged_pass = judged_fail = judged_timeout = 0
@@ -549,14 +640,29 @@ def merge_scorecard(tier: str, model: str, role: str, case_results: list,
                  for r in case_results)
     escalated = [r["case_id"] for r in case_results
                  if int(timings.get(r["case_id"], {}).get("budget_escalations") or 0) > 0]
+    remeasured = [r["case_id"] for r in case_results
+                  if int(timings.get(r["case_id"], {}).get("repeats") or 0) > 0]
+    budget_locked = [r["case_id"] for r in case_results
+                     if timings.get(r["case_id"], {}).get("budget_locked")]
 
     return {
         "tier": tier, "model": model, "role": role,
         "cases": total,
         "deterministic_passed": passed,
         "deterministic_pass_rate": _rate(passed, total),
+        "contract_passed": contract_passed,
+        "contract_pass_rate": _rate(contract_passed, total),
+        # Passed what production consumes, but only after a redraft it would have had to pay for.
+        "repaired_cases": [r["case_id"] for r in case_results
+                           if r.get("contract_passes") and not r.get("passes")],
         "errors": errors,
-        "failed_cases": [{"case_id": r["case_id"], "failures": r.get("failures") or []}
+        "failed_cases": [{"case_id": r["case_id"], "failures": r.get("failures") or [],
+                          "contract_failures": r.get("contract_failures") or [],
+                          "repairable_failures": r.get("repairable_failures") or [],
+                          # Carried so the report can tell "nothing arrived" apart from "something
+                          # arrived that production would have shipped" — a no-output case is a
+                          # measurement that never happened, not a defect (#910).
+                          "error": r.get("error")}
                          for r in case_results if not r.get("passes")],
         "unscored_assertions": sum(int(r.get("unscored") or 0) for r in case_results),
         "judged": judged,
@@ -570,6 +676,8 @@ def merge_scorecard(tier: str, model: str, role: str, case_results: list,
         "latency_p90_ms": _percentile(latencies, 0.9),
         "total_tokens": tokens,
         "budget_escalated_cases": escalated,
+        "remeasured_cases": remeasured,
+        "budget_locked_cases": budget_locked,
         "case_results": case_results,
     }
 
@@ -770,19 +878,40 @@ def gate_decision(candidate: dict, champion: Optional[dict], thresholds: dict) -
     A missing champion is `no-baseline`, never a pass: "better than nothing" is not a comparison.
     Judge evidence that is missing on BOTH sides degrades to `recommend-deterministic-only`, which
     is reported but is NOT a swap recommendation — that distinction is the whole point of the gate.
+
+    The absolute deterministic floor is on the CONTRACT rate (#910). The first-draft rate is
+    returned as an ADVISORY reading rather than an expectation — advisories never change the
+    verdict — but it is still compared against the champion, because a model that needs more
+    redrafts than the incumbent is not an upgrade even when nothing broken ships.
     """
     expectations: list = []
+    advisories: list = []
     thresholds = normalize_thresholds(thresholds)
 
     def expect(name: str, ok: Optional[bool], detail: str) -> None:
         expectations.append({"expectation": name, "passes": ok, "detail": detail})
 
     det = candidate.get("deterministic_pass_rate")
-    floor = thresholds["deterministic_pass_rate"]
-    if det is None:
-        expect("deterministic floor", False, "no cases scored")
+    contract = candidate.get("contract_pass_rate")
+    contract_floor = thresholds["contract_pass_rate"]
+    if contract is None:
+        expect("contract floor", False, "no cases scored")
     else:
-        expect("deterministic floor", det >= floor, f"{det:.0%} vs floor {floor:.0%}")
+        expect("contract floor", contract >= contract_floor,
+               f"{contract:.0%} vs floor {contract_floor:.0%}")
+
+    advisory_floor = thresholds["deterministic_pass_rate"]
+    repaired = len(candidate.get("repaired_cases") or [])
+    if det is None:
+        advisories.append({"expectation": "first-draft yield", "passes": None,
+                           "detail": "no cases scored"})
+    else:
+        advisories.append({
+            "expectation": "first-draft yield",
+            "passes": det >= advisory_floor,
+            "detail": (f"{det:.0%} vs advisory target {advisory_floor:.0%} — {repaired} case(s) "
+                       "production would have redrafted rather than shipped (advisory: does not "
+                       "change the verdict)")})
 
     if candidate.get("errors"):
         expect("provider answered every case", False,
@@ -805,11 +934,17 @@ def gate_decision(candidate: dict, champion: Optional[dict], thresholds: dict) -
     if champion is None:
         expect("beats champion", None, "no champion scorecard for this tier")
     else:
+        champ_contract = champion.get("contract_pass_rate")
+        if contract is None or champ_contract is None:
+            expect("beats champion (contract)", False, "one side has no score")
+        else:
+            expect("beats champion (contract)", contract >= champ_contract,
+                   f"{contract:.0%} vs champion {champ_contract:.0%}")
         champ_det = champion.get("deterministic_pass_rate")
         if det is None or champ_det is None:
-            expect("beats champion (deterministic)", False, "one side has no score")
+            expect("beats champion (first-draft)", False, "one side has no score")
         else:
-            expect("beats champion (deterministic)", det >= champ_det,
+            expect("beats champion (first-draft)", det >= champ_det,
                    f"{det:.0%} vs champion {champ_det:.0%}")
         champ_judge = champion.get("judge_pass_rate")
         champ_evidence = int(champion.get("judged") or 0) >= thresholds["min_judged"]
@@ -836,6 +971,13 @@ def gate_decision(candidate: dict, champion: Optional[dict], thresholds: dict) -
     return {"tier": candidate.get("tier"), "model": candidate.get("model"),
             "champion": (champion or {}).get("model"), "verdict": verdict,
             "expectations": expectations,
+            "advisories": advisories,
+            # A floor the INCUMBENT misses is a statement about the tier, not about the challenger
+            # (#910). Carried on the verdict so the report says it out loud instead of leaving a
+            # reader to infer it from two numbers in different tables.
+            "champion_clears_contract_floor": (
+                None if champion is None or champion.get("contract_pass_rate") is None
+                else champion["contract_pass_rate"] >= contract_floor),
             "usage_delta": delta,
             "quota_policy": quota_policy(str(candidate.get("tier") or ""), delta,
                                          candidate, champion),
@@ -939,12 +1081,21 @@ def render_report(run: dict) -> str:
         lines.append(
             f"| {card['tier']} | `{card['model']}` | {card['role']} | "
             f"{usage_name(card.get('usage'))} | {card['cases']} | "
+            f"{_fmt_rate(card.get('contract_pass_rate'))} "
+            f"({card.get('contract_passed', 0)}/{card.get('cases', 0)}) | "
             f"{_fmt_rate(card.get('deterministic_pass_rate'))} "
             f"({card.get('deterministic_passed', 0)}/{card.get('cases', 0)}) | "
             f"{_fmt_rate(card.get('judge_pass_rate'))} | {card.get('judged', 0)} | "
             f"{card.get('judge_timeouts', 0)} | {_fmt_ms(card.get('latency_p50_ms'))} | "
             f"{_fmt_ms(card.get('latency_p90_ms'))} |")
     lines += ["",
+              ("**Contract** is the share of cases whose failures production would actually "
+               "consume; **First draft** is the same cases against every check, repairable ones "
+               "included. Production regenerates against the repairable ones (`lint_repaired`, the "
+               "#617 comment gate, the post review gate) and skips or holds what still fails, so "
+               "the gap between the two columns is redraft COST, not shipped defects. The absolute "
+               "floor is on Contract; First draft is advisory and champion-relative (#910)."),
+              "",
               ("**Usage** is the Ollama Cloud usage level (quota class) — `unknown` where "
                "ollama.com publishes no level for that model, which is the case for models that "
                "are also pullable locally. Supply those with `--usage-levels model=<level>`.")]
@@ -959,9 +1110,30 @@ def render_report(run: dict) -> str:
         if not failed:
             lines.append("- every case met every deterministic expectation")
         for entry in failed:
-            lines.append(f"- ❌ `{entry['case_id']}`")
-            for failure in entry.get("failures") or []:
-                lines.append(f"  - {failure}")
+            contract = entry.get("contract_failures") or []
+            repairable = entry.get("repairable_failures") or []
+            if entry.get("error"):
+                # `no output` is a CONTRACT failure — the call site got nothing — but it is not
+                # something production would ship, and since #910 turns an empty completion into no
+                # output this is the common path. Labelling it "production would ship this" is the
+                # exact misreading the two rates exist to prevent.
+                lines.append(f"- ❌ `{entry['case_id']}` — no output; nothing was measured here")
+                lines.append(f"  - {entry['error']}")
+            elif contract:
+                lines.append(f"- ❌ `{entry['case_id']}` — production would ship this")
+                for failure in contract:
+                    lines.append(f"  - {failure}")
+                for failure in repairable:
+                    lines.append(f"  - (repairable) {failure}")
+            elif repairable:
+                lines.append(f"- 🔁 `{entry['case_id']}` — first draft only; production "
+                             "regenerates against this and skips/holds what still fails")
+                for failure in repairable:
+                    lines.append(f"  - {failure}")
+            else:  # a hand-built case whose failures carry no production class
+                lines.append(f"- ❌ `{entry['case_id']}`")
+                for failure in entry.get("failures") or []:
+                    lines.append(f"  - {failure}")
         if card.get("unscored_assertions"):
             lines.append(f"- {card['unscored_assertions']} assertion(s) unscored "
                          "(not counted either way)")
@@ -970,6 +1142,20 @@ def render_report(run: dict) -> str:
             lines.append(f"- 🧠 reasoning headroom — {len(escalated)} case(s) spent the fixture's "
                          "whole completion budget thinking and were retried at a larger one: "
                          + ", ".join(f"`{c}`" for c in escalated))
+        locked = card.get("budget_locked_cases") or []
+        if locked:
+            lines.append(f"- 🔒 production budget — {len(locked)} case(s) spent a budget that "
+                         "MIRRORS a production call site's own `max_tokens` without answering, and "
+                         "were NOT retried at a larger one; a model that cannot answer inside that "
+                         "budget is disqualified at that call site, not merely truncated: "
+                         + ", ".join(f"`{c}`" for c in locked))
+        remeasured = card.get("remeasured_cases") or []
+        if remeasured:
+            lines.append(f"- ⚖️ measurement variance — {len(remeasured)} case(s) came back EMPTY at "
+                         "the full budget and were re-measured at that same budget: "
+                         + ", ".join(f"`{c}`" for c in remeasured)
+                         + ". One run of one case is a data point, not a verdict — read this "
+                           "model's rates as single-measurement.")
         for note in card.get("judge_notes") or []:
             lines.append(f"- 🧑‍⚖️ `{note['case_id']}`: {note['reasoning']}")
         lines.append("")
@@ -985,6 +1171,13 @@ def render_report(run: dict) -> str:
         for expectation in gate.get("expectations") or []:
             mark = {True: "✅", False: "❌"}.get(expectation["passes"], "➖")
             lines.append(f"- {mark} {expectation['expectation']} — {expectation['detail']}")
+        for advisory in gate.get("advisories") or []:
+            mark = {True: "✅", False: "⚠️"}.get(advisory["passes"], "➖")
+            lines.append(f"- {mark} {advisory['expectation']} (advisory) — {advisory['detail']}")
+        if gate.get("champion_clears_contract_floor") is False:
+            lines.append(f"- 🪧 the incumbent `{gate.get('champion')}` misses this tier's own "
+                         "contract floor — that is a statement about the tier's fixtures, not "
+                         "about this candidate; the relative half of the verdict is what stands.")
         delta = gate.get("usage_delta") or {}
         if delta.get("summary"):
             lines.append(f"- 💳 usage level — {delta['summary']}")
@@ -1046,6 +1239,7 @@ def leaderboard_rows(run: dict) -> list:
         rows.append({
             "date": run.get("date"), "run_id": run.get("run_id"), "tier": card["tier"],
             "model": card["model"], "role": card["role"],
+            "contract": _fmt_rate(card.get("contract_pass_rate")),
             "deterministic": _fmt_rate(card.get("deterministic_pass_rate")),
             "judge": _fmt_rate(card.get("judge_pass_rate")),
             "latency": _fmt_ms(card.get("latency_p50_ms")),
@@ -1057,8 +1251,8 @@ def leaderboard_rows(run: dict) -> list:
 
 def _row_markdown(row: dict) -> str:
     return (f"| {row['date']} | `{row['run_id']}` | {row['tier']} | `{row['model']}` | "
-            f"{row['role']} | {row['deterministic']} | {row['judge']} | {row['latency']} | "
-            f"{row['verdict']} |")
+            f"{row['role']} | {row.get('contract', 'n/a')} | {row['deterministic']} | "
+            f"{row['judge']} | {row['latency']} | {row['verdict']} |")
 
 
 def _row_key(row: dict) -> tuple:
@@ -1067,18 +1261,24 @@ def _row_key(row: dict) -> tuple:
 
 def _parse_row(line: str) -> Optional[dict]:
     cells = [c.strip() for c in line.strip().strip("|").split("|")]
-    if len(cells) != len(LEADERBOARD_COLUMNS):
+    legacy = len(cells) == len(LEADERBOARD_LEGACY_COLUMNS)
+    if len(cells) != len(LEADERBOARD_COLUMNS) and not legacy:
         return None
     # The table's own header and divider are pipe-delimited rows of the right width. Reading them
     # back as DATA is how a rolling table quietly grows two junk rows per render and evicts real
     # history at the row cap, so they are recognised and dropped here rather than re-emitted.
-    if [c.strip("`") for c in cells] == list(LEADERBOARD_COLUMNS):
+    if [c.strip("`") for c in cells] in (list(LEADERBOARD_COLUMNS),
+                                         list(LEADERBOARD_LEGACY_COLUMNS)):
         return None
     if all(c and set(c.strip("`")) <= {"-", ":"} for c in cells):
         return None
+    # A pre-#910 row has no contract rate. It renders `n/a` rather than borrowing the first-draft
+    # number: those runs measured one rate, and printing it twice would invent a measurement.
+    contract = "n/a" if legacy else cells[5]
+    rest = cells[5:] if legacy else cells[6:]
     return {"date": cells[0], "run_id": cells[1].strip("`"), "tier": cells[2],
-            "model": cells[3].strip("`"), "role": cells[4], "deterministic": cells[5],
-            "judge": cells[6], "latency": cells[7], "verdict": cells[8]}
+            "model": cells[3].strip("`"), "role": cells[4], "contract": contract,
+            "deterministic": rest[0], "judge": rest[1], "latency": rest[2], "verdict": rest[3]}
 
 
 def update_leaderboard(text: str, rows: list) -> str:
@@ -1339,11 +1539,23 @@ class ProviderClient:
                                          timeout=self.timeout)
         return self._client
 
-    def complete(self, model: str, messages: list, params: Optional[dict] = None) -> dict:
+    def complete(self, model: str, messages: list, params: Optional[dict] = None, *,
+                 allow_budget_escalation: bool = True) -> dict:
+        """One case's completion.
+
+        `allow_budget_escalation=False` is for a case whose `max_tokens` deliberately MIRRORS a
+        production call site (#910): `lem-simple`'s relevance check is `max_tokens=3` because
+        `ai_helper.py`'s is, and a model that cannot answer inside that budget is disqualified at
+        that call site rather than merely truncated. Doubling it there would score an answer LEM
+        could never actually run. The empty-completion re-measurement still applies — it re-asks at
+        the SAME budget, so it measures variance rather than buying headroom."""
         call_params = dict(params or {})
         budget = call_params.get("max_tokens")
+        bounded = isinstance(budget, int) and budget > 0
         escalations = 0
-        allowed = truncation_retries() if isinstance(budget, int) and budget > 0 else 0
+        repeats = 0
+        budget_locked = False
+        allowed = truncation_retries() if bounded and allow_budget_escalation else 0
         while True:
             # Timed PER ATTEMPT, not across the retries. A discarded attempt is harness waste that
             # production never pays (long-form calls set no `max_tokens` at all), so charging its
@@ -1355,23 +1567,45 @@ class ProviderClient:
                     model=model, messages=messages, **call_params)
             except Exception as exc:  # noqa: BLE001 - a provider failure is a case result, not a crash
                 return {"text": None, "error": str(exc)[:200], "budget_escalations": escalations,
+                        "repeats": repeats, "budget_locked": budget_locked,
                         "latency_ms": (time.time() - started) * 1000.0, "usage": {}}
             choice = response.choices[0]
             text = (choice.message.content or "").strip()
+            truncated = getattr(choice, "finish_reason", None) == "length"
             # Only an EMPTY reply is retried. A truncated-but-present answer is the model's real
             # output at this budget, and re-rolling it would quietly hand the verbose models a
             # second chance the concise ones never needed.
-            if text or escalations >= allowed or getattr(choice, "finish_reason", None) != "length":
+            if text:
                 break
-            escalations += 1
-            call_params["max_tokens"] = budget * (2 ** escalations)
-            print(f"  {model} spent its whole {budget * (2 ** (escalations - 1))}-token budget "
-                  f"before answering — retrying at {call_params['max_tokens']}", file=sys.stderr)
+            if truncated and escalations < allowed:
+                escalations += 1
+                call_params["max_tokens"] = budget * (2 ** escalations)
+                print(f"  {model} spent its whole {budget * (2 ** (escalations - 1))}-token budget "
+                      f"before answering — retrying at {call_params['max_tokens']}",
+                      file=sys.stderr)
+                continue
+            # Recorded only if the case ENDS with no answer: a production-budget case whose repeat
+            # answered was measured fine, and naming it would read as a failure it did not have.
+            budget_locked = bool(truncated and bounded and not allow_budget_escalation)
+            if repeats >= empty_repeats():
+                break
+            repeats += 1
+            print(f"  {model} returned an empty answer — re-measuring at the same budget "
+                  f"({repeats}/{empty_repeats()})", file=sys.stderr)
         usage = getattr(response, "usage", None)
         return {
-            "text": text,
-            "error": None,
+            # An answer that never arrived is NO OUTPUT, not a zero-length answer: grading "" would
+            # render as `min_chars: 0 chars < 700`, which reads as a quality verdict on a model that
+            # was never measured.
+            "text": text or None,
+            "error": None if text else (
+                f"empty completion after {escalations} budget escalation(s) and {repeats} "
+                f"re-measurement(s)"
+                + (" (this case's max_tokens mirrors a production call site, so the budget was "
+                   "never grown)" if budget_locked else "")),
             "budget_escalations": escalations,
+            "repeats": repeats,
+            "budget_locked": bool(budget_locked and not text),
             "latency_ms": (time.time() - started) * 1000.0,
             "usage": {"prompt_tokens": getattr(usage, "prompt_tokens", None),
                       "completion_tokens": getattr(usage, "completion_tokens", None),
@@ -1617,12 +1851,16 @@ def run_benchmark(suites: dict, models: list, champions: dict, *, run_id: str, t
                 completion = {"text": None, "error": "no provider client configured",
                               "latency_ms": None, "usage": {}}
             else:
-                completion = provider.complete(model, case["messages"], case.get("params"))
+                completion = provider.complete(
+                    model, case["messages"], case.get("params"),
+                    allow_budget_escalation=not case.get("budget_mirrors_production"))
             outputs[case_id] = completion.get("text")
             errors[case_id] = completion.get("error")
             timings[case_id] = {"latency_ms": completion.get("latency_ms"),
                                 "total_tokens": (completion.get("usage") or {}).get("total_tokens"),
-                                "budget_escalations": completion.get("budget_escalations") or 0}
+                                "budget_escalations": completion.get("budget_escalations") or 0,
+                                "repeats": completion.get("repeats") or 0,
+                                "budget_locked": bool(completion.get("budget_locked"))}
             if not dry_run and completion.get("text") and evals is not None:
                 event_id = emit_generation(run_id, tier, case, model, role, completion)
                 if event_id:
@@ -1809,8 +2047,14 @@ def main(argv: Optional[list] = None) -> int:
             print(f"{tier}: {len(suite['cases'])} cases ({judged} judgeable), "
                   f"thresholds={suite['thresholds']}")
             for case in suite["cases"]:
-                kinds = ", ".join(a["type"] for a in case["assertions"])
-                print(f"  - {case['id']}: {kinds}")
+                # `~` marks a check production REPAIRS rather than ships — those are outside the
+                # absolute contract floor (#910), so a calibration review can see the split.
+                kinds = ", ".join(
+                    a["type"] + ("~" if assertion_production_class(a) == PRODUCTION_REPAIRABLE
+                                 else "")
+                    for a in case["assertions"])
+                locked = " [production budget]" if case.get("budget_mirrors_production") else ""
+                print(f"  - {case['id']}: {kinds}{locked}")
         return 0
 
     if args.render:
