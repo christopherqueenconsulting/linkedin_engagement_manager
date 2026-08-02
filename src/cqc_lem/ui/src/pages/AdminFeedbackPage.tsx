@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import TableScroll from '../components/TableScroll'
 import { useAuth } from '../contexts/AuthContext'
 import { useAdminFeedback } from '../hooks/useAdminFeedback'
 import { useFeedbackReview } from '../hooks/useFeedbackReview'
@@ -128,94 +129,96 @@ export default function AdminFeedbackPage() {
       )}
 
       <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
-        <table className="w-full text-sm text-left">
-          <thead className="bg-gray-50 text-gray-600 font-medium">
-            <tr>
-              <th className="px-4 py-3">ID</th>
-              <th className="px-4 py-3">Source</th>
-              <th className="px-4 py-3">Reporter</th>
-              <th className="px-4 py-3">Body</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Issue</th>
-              <th className="px-4 py-3">Submitted</th>
-              <th className="px-4 py-3 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {items.map((item) => (
-              <tr key={item.id} className="hover:bg-gray-50">
-                <td className="px-4 py-3 text-gray-500">{item.id}</td>
-                <td className="px-4 py-3">{SOURCE_LABELS[item.source] ?? item.source}</td>
-                <td className="px-4 py-3">
-                  {item.email ? (
-                    <span className={classNames('text-gray-800', item.is_admin_reporter && 'font-semibold')}>
-                      {item.email}
-                      {item.is_admin_reporter && <span className="ml-1 text-xs text-blue-600">(admin)</span>}
-                    </span>
-                  ) : (
-                    <span className="text-gray-400 italic">Anonymous</span>
-                  )}
-                </td>
-                <td className="px-4 py-3 max-w-xs truncate" title={item.body}>{item.body}</td>
-                <td className="px-4 py-3">
-                  <span className={classNames(
-                    'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium',
-                    item.status === 'new' && 'bg-amber-100 text-amber-800',
-                    item.status === 'dismissed' && 'bg-gray-100 text-gray-600',
-                    item.status === 'issue_created' && 'bg-green-100 text-green-800',
-                    !['new', 'dismissed', 'issue_created'].includes(item.status) && 'bg-blue-100 text-blue-800'
-                  )}>
-                    {STATUS_LABELS[item.status] ?? item.status}
-                  </span>
-                </td>
-                <td className="px-4 py-3">
-                  {item.github_issue_number ? (
-                    <a
-                      href={`https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/${item.github_issue_number}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-blue-600 hover:underline"
-                    >
-                      #{item.github_issue_number}
-                    </a>
-                  ) : (
-                    <span className="text-gray-400">—</span>
-                  )}
-                </td>
-                <td className="px-4 py-3 text-gray-500">
-                  {item.created_at ? new Date(item.created_at).toLocaleString() : '—'}
-                </td>
-                <td className="px-4 py-3 text-right">
-                  {item.status === 'new' && (
-                    <div className="flex items-center justify-end gap-2">
-                      <button
-                        onClick={() => handleAction(item.id, 'approve')}
-                        disabled={review.isPending}
-                        className="text-xs bg-blue-600 text-white px-2.5 py-1 rounded hover:bg-blue-700 disabled:opacity-50"
-                      >
-                        Approve
-                      </button>
-                      <button
-                        onClick={() => handleAction(item.id, 'dismiss')}
-                        disabled={review.isPending}
-                        className="text-xs bg-gray-100 text-gray-700 px-2.5 py-1 rounded hover:bg-gray-200 disabled:opacity-50"
-                      >
-                        Dismiss
-                      </button>
-                    </div>
-                  )}
-                </td>
-              </tr>
-            ))}
-            {items.length === 0 && !isLoading && (
+        <TableScroll label="Feedback submissions" minWidth={900} testId="feedback-table">
+          <table className="w-full text-sm text-left">
+            <thead className="bg-gray-50 text-gray-600 font-medium">
               <tr>
-                <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
-                  No feedback submissions match the current filters.
-                </td>
+                <th className="px-4 py-3">ID</th>
+                <th className="px-4 py-3">Source</th>
+                <th className="px-4 py-3">Reporter</th>
+                <th className="px-4 py-3">Body</th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Issue</th>
+                <th className="px-4 py-3">Submitted</th>
+                <th className="px-4 py-3 text-right">Actions</th>
               </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {items.map((item) => (
+                <tr key={item.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3 text-gray-500">{item.id}</td>
+                  <td className="px-4 py-3">{SOURCE_LABELS[item.source] ?? item.source}</td>
+                  <td className="px-4 py-3">
+                    {item.email ? (
+                      <span className={classNames('text-gray-800', item.is_admin_reporter && 'font-semibold')}>
+                        {item.email}
+                        {item.is_admin_reporter && <span className="ml-1 text-xs text-blue-600">(admin)</span>}
+                      </span>
+                    ) : (
+                      <span className="text-gray-400 italic">Anonymous</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 max-w-xs truncate" title={item.body}>{item.body}</td>
+                  <td className="px-4 py-3">
+                    <span className={classNames(
+                      'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium',
+                      item.status === 'new' && 'bg-amber-100 text-amber-800',
+                      item.status === 'dismissed' && 'bg-gray-100 text-gray-600',
+                      item.status === 'issue_created' && 'bg-green-100 text-green-800',
+                      !['new', 'dismissed', 'issue_created'].includes(item.status) && 'bg-blue-100 text-blue-800'
+                    )}>
+                      {STATUS_LABELS[item.status] ?? item.status}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    {item.github_issue_number ? (
+                      <a
+                        href={`https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/${item.github_issue_number}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-blue-600 hover:underline"
+                      >
+                        #{item.github_issue_number}
+                      </a>
+                    ) : (
+                      <span className="text-gray-400">—</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-gray-500">
+                    {item.created_at ? new Date(item.created_at).toLocaleString() : '—'}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    {item.status === 'new' && (
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          onClick={() => handleAction(item.id, 'approve')}
+                          disabled={review.isPending}
+                          className="text-xs bg-blue-600 text-white px-2.5 py-1 rounded hover:bg-blue-700 disabled:opacity-50"
+                        >
+                          Approve
+                        </button>
+                        <button
+                          onClick={() => handleAction(item.id, 'dismiss')}
+                          disabled={review.isPending}
+                          className="text-xs bg-gray-100 text-gray-700 px-2.5 py-1 rounded hover:bg-gray-200 disabled:opacity-50"
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {items.length === 0 && !isLoading && (
+                <tr>
+                  <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
+                    No feedback submissions match the current filters.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </TableScroll>
       </div>
 
       <div className="flex items-center justify-between text-sm">

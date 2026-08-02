@@ -149,7 +149,9 @@ export default function LoginModal() {
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
       onClick={(e) => { if (e.target === e.currentTarget) closeLoginModal() }}
     >
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-8 relative">
+      {/* Height-capped and scrollable: a landscape phone is ~375px tall, and an uncapped panel put
+          the code field and the submit button below the fold with no way to reach them (#894). */}
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6 sm:p-8 relative max-h-[90vh] overflow-y-auto">
         <button
           onClick={closeLoginModal}
           className="absolute top-4 right-4 text-gray-400 hover:text-gray-600 text-2xl leading-none"

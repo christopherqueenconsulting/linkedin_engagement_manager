@@ -11,3 +11,13 @@ body {
 #root {
   min-height: 100vh;
 }
+
+/* A scroll container whose scrollbar would cost more room than it earns — the 56px nav bar on a
+   phone (issue #894). Scrolling still works by touch, wheel and keyboard; only the gutter is gone. */
+@utility scrollbar-none {
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}

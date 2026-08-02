@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import TableScroll from '../TableScroll'
 import { compactNumber, formatRate, shortDate, titleCase } from './palette'
 
 export interface PerPost {
@@ -54,7 +55,12 @@ export default function PerPostTable({ posts }: { posts: PerPost[] }) {
             No posts with captured stats in this window.
           </p>
         ) : (
-          <div className="overflow-x-auto mt-2" data-testid="per-post-table">
+          <TableScroll
+            label="Per-post performance"
+            minWidth={720}
+            className="mt-2"
+            testId="per-post-table"
+          >
             <table className="w-full text-xs text-left tabular-nums">
               <thead>
                 <tr className="text-gray-500 border-b border-gray-200">
@@ -87,7 +93,7 @@ export default function PerPostTable({ posts }: { posts: PerPost[] }) {
                 ))}
               </tbody>
             </table>
-          </div>
+          </TableScroll>
         ))}
     </div>
   )

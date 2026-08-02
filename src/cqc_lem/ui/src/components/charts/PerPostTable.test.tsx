@@ -84,6 +84,19 @@ describe('PerPostTable', () => {
     expect(cells[8]).toBe('—')
   })
 
+  // Nine columns inside a 375px phone: `w-full` alone squeezed each one to a sliver, which is what
+  // the reporter of #894 saw. The wrapper scrolls instead and the table keeps a floor width.
+  it('wraps the table in a scrollable region so a phone can read every column', () => {
+    render(<PerPostTable posts={[post()]} />)
+    fireEvent.click(toggle())
+    const wrap = screen.getByTestId('per-post-table')
+    expect(wrap.className).toContain('overflow-x-auto')
+    expect(screen.getByRole('region', { name: /Per-post performance/ })).toBe(wrap)
+    const inner = wrap.firstElementChild as HTMLElement
+    expect(parseInt(inner.style.minWidth, 10)).toBeGreaterThan(430)
+    expect(inner.querySelector('table')).toBeTruthy()
+  })
+
   it('shows an empty note instead of a headers-only table when nothing was measured', () => {
     render(<PerPostTable posts={[]} />)
     expect(toggle().textContent).toContain('(0 posts)')
