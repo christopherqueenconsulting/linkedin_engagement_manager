@@ -106,7 +106,17 @@ export default function LoginModal() {
       })
       login(r.data.detail.session_token, r.data.detail.email)
     } catch (err: unknown) {
+      // 401 is a wrong code and the pending sign-in survives it — stay here and let them retype.
+      // 400 means the handle is spent (expired, or out of attempts), so retrying this form can
+      // only fail forever: send them back to the start instead of a dead end.
+      const status = (err as { response?: { status?: number } })?.response?.status
       setError(errorText(err, 'That code did not work.'))
+      if (status === 400) {
+        setPendingToken(null)
+        setFactorCode('')
+        setPin('')
+        setStep('email')
+      }
       setLoading(false)
     }
   }

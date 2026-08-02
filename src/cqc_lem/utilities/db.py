@@ -3168,8 +3168,13 @@ def verify_pin_for_email(email: str, pin_hash: str) -> bool:
 # What a session token is allowed to do (issue #745, 2c). A `full` session is the browser's; an
 # `extension` session belongs to the LinkedIn Connect extension, which can never run a passkey
 # ceremony — its step-up happened once, in the SPA, when the token was minted.
+#
+# A `recovery` session signed in with a recovery code. It is an ordinary session in every way except
+# one: it may enrol a factor without first proving one, because its owner is by definition the
+# person who no longer has a factor to prove.
 SESSION_SCOPE_FULL = "full"
 SESSION_SCOPE_EXTENSION = "extension"
+SESSION_SCOPE_RECOVERY = "recovery"
 
 
 def create_session(user_id: int, user_agent: Optional[str] = None,
@@ -3592,7 +3597,12 @@ def update_factor_counter(factor_id: int, counter: int) -> bool:
 def upsert_totp_factor(user_id: int, secret: str, label: Optional[str] = None) -> Optional[int]:
     """Start (or restart) TOTP enrolment. The row lands UNCONFIRMED — `confirmed_at IS NULL` — so a
     secret that was generated and never proven can never satisfy a login. Restarting replaces any
-    unconfirmed attempt rather than accumulating dead seeds."""
+    unconfirmed attempt rather than accumulating dead seeds.
+
+    A CONFIRMED row is deliberately left alone here, and `auth_factors.begin_totp_enrollment` is
+    what refuses to call this while one exists: an account holds at most one authenticator app, and
+    silently deleting the working one to start an enrolment nobody may finish would hand a stolen
+    session a way to take the factor off the account."""
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -3878,6 +3888,78 @@ def consume_auth_challenge(handle: str, purpose: str) -> Optional[dict]:
     except mysql.connector.Error as err:
         myprint(f"Could not consume auth challenge ({purpose}) | Error: {err}")
         return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def claim_auth_challenge_attempt(handle: str, purpose: str,
+                                 max_attempts: int) -> Optional[dict]:
+    """Count ONE attempt against a live challenge and return it, or None when the handle is
+    unknown, expired, already finished, or out of attempts.
+
+    This is `consume_auth_challenge`'s sibling for the one ceremony a user can legitimately get
+    wrong: typing a 6-digit code. Consuming on first touch would mean a single mistyped digit ends
+    the login with no way back but the whole email round trip, so the handle survives a wrong code
+    and is burned by the `max_attempts`-th one — atomically, in the same statement that counts it,
+    so two concurrent guesses cannot both be the last.
+
+    The count is in MySQL rather than the Redis limiter in front of it on purpose: that limiter
+    fails open (utilities/auth_rate_limit.py), and a guessing bound that disappears when Redis does
+    is not a bound."""
+    handle_hash = hash_session_token(handle)
+    if not handle_hash:
+        return None
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        now = datetime.now(timezone.utc)
+        cursor.execute(
+            """UPDATE auth_challenges
+                  SET attempts = attempts + 1,
+                      consumed_at = IF(attempts + 1 >= %s, %s, NULL)
+                WHERE handle_hash = %s AND purpose = %s AND consumed_at IS NULL
+                  AND expires_at > %s""",
+            (int(max_attempts), now, handle_hash, purpose, now),
+        )
+        if cursor.rowcount != 1:
+            connection.commit()
+            return None
+        cursor.execute(
+            "SELECT id, user_id, purpose, challenge, attempts FROM auth_challenges "
+            "WHERE handle_hash = %s",
+            (handle_hash,),
+        )
+        row = cursor.fetchone()
+        connection.commit()
+        return row
+    except mysql.connector.Error as err:
+        myprint(f"Could not claim auth challenge attempt ({purpose}) | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def finish_auth_challenge(handle: str) -> bool:
+    """Burn a challenge that has served its purpose — the success half of
+    `claim_auth_challenge_attempt`, which leaves the handle live while attempts remain."""
+    handle_hash = hash_session_token(handle)
+    if not handle_hash:
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE auth_challenges SET consumed_at = %s "
+            "WHERE handle_hash = %s AND consumed_at IS NULL",
+            (datetime.now(timezone.utc), handle_hash),
+        )
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not finish auth challenge | Error: {err}")
+        return False
     finally:
         cursor.close()
         connection.close()

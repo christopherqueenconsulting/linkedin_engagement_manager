@@ -60,12 +60,19 @@ CREATE TABLE IF NOT EXISTS user_recovery_codes (
 --
 -- `user_id` is nullable: a passkey login with a discoverable credential does not know who is
 -- signing in until the assertion comes back.
+--
+-- `attempts` is the DURABLE guessing bound on a pending second-factor login. The Redis auth limiter
+-- in front of it fails open by design, so on its own it is not what stops a 6-digit code being
+-- walked; burning the handle after a fixed number of wrong codes is. It is a counter and not a
+-- consume-on-first-touch because a login that dies on one mistyped digit is a dead end, not a
+-- control — the user has no way back except starting the whole email round trip again.
 CREATE TABLE IF NOT EXISTS auth_challenges (
     id INT AUTO_INCREMENT PRIMARY KEY,
     handle_hash CHAR(64) NOT NULL,
     user_id INT NULL,
     purpose VARCHAR(32) NOT NULL,
     challenge VARCHAR(255) NULL,
+    attempts INT NOT NULL DEFAULT 0,
     expires_at TIMESTAMP NOT NULL,
     consumed_at TIMESTAMP NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -80,6 +87,10 @@ CREATE TABLE IF NOT EXISTS auth_challenges (
 -- only its own session token and can never run a passkey ceremony, so its step-up happens ONCE, in
 -- the SPA, at the moment the token is minted — after which the token itself carries the right to
 -- store a cookie and nothing else.
+--
+-- The third value, `recovery`, marks a session that got in with a recovery code. It is what keeps
+-- "you may not enrol an additional factor without proving one" from becoming a lockout for the one
+-- person who legitimately cannot: someone who lost the factor they had.
 ALTER TABLE sessions
     ADD COLUMN last_verified_at TIMESTAMP NULL,
     ADD COLUMN scope VARCHAR(32) NOT NULL DEFAULT 'full';

@@ -231,6 +231,10 @@ STEP_UP_MAX_AGE_MINUTES   = int(get_constant_from_env('STEP_UP_MAX_AGE_MINUTES',
 AUTH_CHALLENGE_TTL_SECONDS = int(get_constant_from_env('AUTH_CHALLENGE_TTL_SECONDS',
                                                        default_value='300'))
 RECOVERY_CODE_COUNT       = int(get_constant_from_env('RECOVERY_CODE_COUNT', default_value='10'))
+# Wrong codes a pending second-factor login survives before the handle is burned. This is the
+# DURABLE guessing bound (auth_challenges.attempts) — the Redis limiter in front of it fails open.
+SECOND_FACTOR_MAX_ATTEMPTS = int(get_constant_from_env('SECOND_FACTOR_MAX_ATTEMPTS',
+                                                       default_value='5'))
 # Kill switch for the whole 2c surface. OFF returns the account to its 2b behaviour (email PIN is
 # sufficient, no step-up gate) WITHOUT touching a single enrolled factor, so a rollback is a flag.
 STRONG_AUTH_ENABLED       = isTrue(get_constant_from_env('STRONG_AUTH_ENABLED', default_value='True'))

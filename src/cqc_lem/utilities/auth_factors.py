@@ -16,11 +16,16 @@ server enforces can never disagree:
 
 Two rules in here are load-bearing and easy to get backwards:
 
-- **Adding a factor never needs step-up; removing one always does.** A recovery code logs you in
-  precisely so you can enrol a new passkey after losing the old one (design §6.8) — gating
-  enrolment behind a factor you no longer have is a lockout, not a control. Removal, regeneration
-  and every LinkedIn-credential write are the other direction: they are what an attacker holding a
-  stolen session would do, so they need the physical factor.
+- **The FIRST factor needs nothing; every one after it needs step-up, and removal always does.**
+  Enrolment cannot be wide open, because enrolling stamps the session as verified: a stolen session
+  that could add its own passkey would step ITSELF up and walk straight into the LinkedIn
+  credentials, which is exactly the escalation (T4) the gate exists to stop. It cannot be closed
+  either, or an account with no factor could never get one. So the line is drawn at what the
+  account already holds — and gating the second factor creates no lockout, because every way to
+  sign in to an account that HAS one either arrives already stepped up (passkey, PIN+TOTP) or is a
+  recovery-code session, which `enrollment_allowed` lets through by name (design §6.8). Removal,
+  regeneration and every LinkedIn-credential write are the other direction: they are what an
+  attacker holding a stolen session would do, so they need the physical factor.
 - **An account with no strong factor passes the step-up gate.** The rollout is opt-in first
   (design §7 Stage 2), and there is nothing to prove with; gating those accounts would brick the
   cookie paste and the email change for everyone who has not enrolled yet. The gate is what makes
@@ -40,7 +45,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
 from cqc_lem.utilities.db import (
-    AUTH_FACTOR_PASSKEY, AUTH_FACTOR_TOTP, SESSION_SCOPE_EXTENSION,
+    AUTH_FACTOR_PASSKEY, AUTH_FACTOR_TOTP, SESSION_SCOPE_EXTENSION, SESSION_SCOPE_RECOVERY,
     confirm_totp_factor, consume_recovery_code, count_auth_factors, count_recovery_codes,
     get_session_auth_state, get_totp_factor, get_unused_recovery_codes, list_auth_factors,
     mark_session_verified, replace_recovery_codes, update_factor_counter, upsert_totp_factor,
@@ -134,12 +139,25 @@ def factor_summary(user_id: int) -> FactorSummary:
 # TOTP
 # ---------------------------------------------------------------------------
 
+def has_confirmed_totp(user_id: int) -> bool:
+    """Whether an authenticator app is already enrolled. One per account: `get_totp_factor` reads
+    the newest confirmed row, so a second one would be a factor that counts towards
+    `has_strong_factor` and shows on the Security card while none of its codes are ever checked."""
+    return get_totp_factor(user_id) is not None
+
+
 def begin_totp_enrollment(user_id: int, account_name: str) -> Optional[tuple[int, str, str]]:
     """(factor_id, secret, otpauth URI). The row is UNCONFIRMED until a code proves the user
     actually scanned it — a seed nobody can generate codes for must never be able to gate a login.
 
+    Refused outright while a confirmed authenticator exists: the caller removes that one first (a
+    step-up gated write) rather than ending up with two rows of which only the newer works.
+
     The QR is rendered in the browser from the URI: sending an image would put the seed through an
     extra encoding for no benefit, and the URI is what every authenticator app accepts anyway."""
+    if has_confirmed_totp(user_id):
+        log_debug("TOTP enrolment refused — one is already confirmed", user_id=user_id)
+        return None
     secret = pyotp.random_base32()
     factor_id = upsert_totp_factor(user_id, secret)
     if not factor_id:
@@ -281,6 +299,38 @@ def step_up_satisfied(user_id: int, token: Optional[str],
     if verified_at.tzinfo is None:
         verified_at = verified_at.replace(tzinfo=timezone.utc)
     return verified_at >= datetime.now(timezone.utc) - timedelta(minutes=STEP_UP_MAX_AGE_MINUTES)
+
+
+def session_signed_in_with_recovery_code(token: Optional[str]) -> bool:
+    """Did this session get in with a recovery code? Marked at mint time (`sessions.scope`) rather
+    than inferred, because the two things it decides — may this session enrol, and may enrolling
+    step it up — both have to stay true for the whole life of the session, not just the request
+    that created it."""
+    if not token:
+        return False
+    state = get_session_auth_state(token)
+    return bool(state) and state.get("scope") == SESSION_SCOPE_RECOVERY
+
+
+def enrollment_allowed(user_id: int, token: Optional[str]) -> bool:
+    """May THIS session add a strong factor?
+
+    Open until the account holds one — there is nothing to prove with, and an account that could
+    never enrol a first factor could never enrol at all. Once it holds one, adding another is a
+    step-up write like any other: enrolment stamps the session as verified, so leaving it open
+    would let a stolen session mint its own factor and step ITSELF up into the LinkedIn
+    credentials.
+
+    The recovery-code session is the one exception, and it is the whole reason recovery codes
+    exist: its owner lost the factor the gate would ask for (design §6.8). It gets to enrol; it
+    does NOT get stamped for doing so (see the enrolment call sites), so a found sheet of codes
+    still has to run one visible, audited step-up ceremony with the new factor before it can touch
+    a LinkedIn credential."""
+    if not strong_auth_enabled() or not has_strong_factor(user_id):
+        return True
+    if session_signed_in_with_recovery_code(token):
+        return True
+    return step_up_satisfied(user_id, token)
 
 
 def record_step_up(token: Optional[str]) -> bool:

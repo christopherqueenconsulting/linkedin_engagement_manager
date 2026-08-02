@@ -108,9 +108,43 @@ Four ways to pass, each deliberate:
 4. **The caller is the browser extension's own session** — and only at the ONE endpoint that opts
    in. See below.
 
-**Adding a factor is never gated; removing one always is.** A recovery code exists so you can enrol
-a new passkey after losing the old one — gating enrolment behind a factor you no longer hold is a
-lockout, not a control.
+### Adding a factor — the FIRST one is free, the rest are gated
+
+`auth_factors.enrollment_allowed()` is a separate verdict from `step_up_satisfied()` and it has to
+be, because the two obvious answers are both wrong:
+
+- **Wide open** hands a stolen session a step-up it never proved. Enrolling stamps the session as
+  verified (otherwise a user who just touched their sensor would be asked to touch it again to save
+  their recovery codes), so an ungated enrolment is: XSS → add my own passkey → stamped → read the
+  `li_at`. That is threat **T4**, and it would walk straight through the gate next to it.
+- **Always gated** means an account with nothing enrolled can never enrol anything.
+
+So the line is drawn at what the account already holds:
+
+| Session | May add a factor? |
+|---|---|
+| account holds no confirmed factor | yes — nothing to prove with, and this is the bootstrap |
+| proved a factor inside the freshness window | yes |
+| ordinary session, stale or never verified | **no** — 403 `step_up_required` |
+| signed in with a **recovery code** (`sessions.scope='recovery'`) | yes, and it is **not stamped** |
+
+Gating the second factor creates no lockout, and that is the whole reason it is safe: every way to
+sign in to an account that already holds a factor either arrives already stepped up (passkey login,
+PIN + TOTP) or is a recovery-code session, which is let through by name. The person §6.8 worries
+about — someone who lost the factor they had — comes back on a recovery code and enrols a
+replacement, exactly as designed.
+
+A recovery-code session enrolling does **not** get stamped for doing so. It runs the ordinary
+step-up ceremony with the factor it just enrolled: one extra touch, and an audited
+`STEP_UP_VERIFIED` row rather than a silent promotion. Be honest about what this does and does not
+buy — a recovery sheet is an account-recovery credential, so someone holding one can ultimately
+reach the LinkedIn credentials by enrolling their own factor first. What it cannot do is reach them
+*directly*, in one step, with nothing on the audit trail.
+
+**Removing a factor always needs step-up**, and one authenticator app is the maximum: starting a
+TOTP enrolment while a confirmed one exists is a 400, because a second confirmed row would count
+towards `has_strong_factor` and show on the Security card while only the newer seed's codes were
+ever checked.
 
 A refusal is **403** with `{"code": "step_up_required", "methods": [...]}`, never 401: the SPA's
 axios interceptor treats any 401 as a dead session and signs the user out, so answering "prove it's
@@ -148,14 +182,22 @@ limiter), and a challenge store that failed open would let a replayed assertion 
 is returned to the caller and the row stores its SHA-256, the same posture as a session token, and
 it is claimed by an `UPDATE ... WHERE consumed_at IS NULL` so two replays cannot both win.
 
-**A pending handle is spent by the attempt, not by the success** — `/auth/second-factor/verify`
-consumes it before it looks at the code, so a wrong TOTP or recovery code ends that sign-in and the
-user starts again from the email PIN. That is the brute-force bound on the second stage: the 6-digit
-space is never walked, because there is exactly one guess per handle. It is a real UX cliff (a
-mistyped digit costs a whole login), and it is the deliberate trade — the alternative, a handle that
-survives wrong codes, is an unauthenticated 6-digit oracle. The stage is additionally bounded by the
-per-email/per-IP auth limiter, and `clear_auth_limits` runs when the PIN validates so the first
-stage's failed attempts can never throttle the second.
+**A pending handle survives a wrong code and is burned by the last allowed one.**
+`/auth/second-factor/verify` goes through `claim_auth_challenge_attempt`, which counts the attempt
+and sets `consumed_at` in the same statement once `SECOND_FACTOR_MAX_ATTEMPTS` (default 5) is
+reached — so two concurrent guesses cannot both be the last one. `auth_challenges.attempts` is the
+DURABLE bound on guessing: 5 tries out of a million is not an oracle, and unlike the per-email/per-IP
+limiter in front of it (Redis, **fails open**) it does not disappear when Redis does.
+
+Consuming on first touch would read as safer and is not: one mistyped digit would end a login whose
+only way back is the whole email round trip, on the single path that has no way around it. Set
+`SECOND_FACTOR_MAX_ATTEMPTS=1` to get that behaviour back.
+
+The shape of the refusal is load-bearing for the SPA: **401 means the code was wrong and the pending
+sign-in is still alive** (stay on the field), **400 means the handle is gone** — expired or out of
+attempts — so `LoginModal` sends the user back to the email step instead of retyping into a login
+that no longer exists. `clear_auth_limits` runs when the PIN validates, so the first stage's failed
+attempts can never throttle the second.
 
 ## Schema
 
@@ -165,8 +207,9 @@ stage's failed attempts can never throttle the second.
   index because a raw credential id is up to 1023 bytes and a truncated-prefix unique key would
   reject a legitimate authenticator.
 - `user_recovery_codes` — argon2id hashes; used rows are kept so the page can say "3 of 10 left".
-- `auth_challenges` — ceremonies in flight.
-- `sessions.last_verified_at`, `sessions.scope`.
+- `auth_challenges` — ceremonies in flight. `attempts` is the durable guessing bound on a pending
+  second-factor login.
+- `sessions.last_verified_at`, `sessions.scope` (`full` / `extension` / `recovery`).
 
 ## Environment
 
@@ -178,6 +221,7 @@ stage's failed attempts can never throttle the second.
 | `STEP_UP_MAX_AGE_MINUTES` | `5` | longer is friendlier and weaker |
 | `AUTH_CHALLENGE_TTL_SECONDS` | `300` | how long a ceremony may sit half-finished |
 | `RECOVERY_CODE_COUNT` | `10` | size of the sheet |
+| `SECOND_FACTOR_MAX_ATTEMPTS` | `5` | `1` = the handle dies on one wrong code |
 | `STRONG_AUTH_ENABLED` | `true` | `false` rolls 2c back without deleting a factor |
 
 ## When a user loses everything

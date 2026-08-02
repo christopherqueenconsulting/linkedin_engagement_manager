@@ -61,6 +61,35 @@ describe('LoginModal — strong authentication (issue #745, phase 2c)', () => {
     expect(call?.[1]).toMatchObject({ pending_token: 'pending', method: 'totp', code: '654321' })
   })
 
+  it('lets a mistyped code be retyped instead of ending the sign-in', async () => {
+    await submitEmailThenPin({ second_factor_required: true, pending_token: 'pending',
+                               methods: ['totp'] })
+    await waitFor(() => expect(screen.getByLabelText('Authenticator code')).toBeTruthy())
+
+    // 401 — wrong code, the pending sign-in is still alive server-side.
+    post.mockRejectedValueOnce({ response: { status: 401, data: { detail: 'That code did not work' } } })
+    fireEvent.change(screen.getByLabelText('Authenticator code'), { target: { value: '000000' } })
+    fireEvent.click(screen.getByText('Sign In'))
+    await waitFor(() => expect(screen.getByText('That code did not work')).toBeTruthy())
+    expect(screen.getByLabelText('Authenticator code')).toBeTruthy()
+  })
+
+  it('sends the user back to the start once the pending sign-in is spent', async () => {
+    await submitEmailThenPin({ second_factor_required: true, pending_token: 'pending',
+                               methods: ['totp'] })
+    await waitFor(() => expect(screen.getByLabelText('Authenticator code')).toBeTruthy())
+
+    // 400 — out of attempts or expired. Retrying this form could only ever fail again.
+    post.mockRejectedValueOnce({
+      response: { status: 400, data: { detail: 'Too many incorrect codes — start the sign-in again' } },
+    })
+    fireEvent.change(screen.getByLabelText('Authenticator code'), { target: { value: '000000' } })
+    fireEvent.click(screen.getByText('Sign In'))
+
+    await waitFor(() => expect(screen.getByPlaceholderText('your@email.com')).toBeTruthy())
+    expect(screen.getByText(/start the sign-in again/i)).toBeTruthy()
+  })
+
   it('offers a recovery code as the way out of a lost device', async () => {
     await submitEmailThenPin({ second_factor_required: true, pending_token: 'pending',
                                methods: ['totp', 'recovery_code'] })

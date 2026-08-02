@@ -48,7 +48,8 @@ from cqc_lem.utilities.db import (
     record_auth_event, get_auth_audit_events, AuthAuditEvent,
     add_passkey_factor, get_passkey_by_credential_id, get_user_passkey_credential_ids,
     update_factor_counter, delete_auth_factor, count_recovery_codes,
-    create_auth_challenge, consume_auth_challenge, SESSION_SCOPE_EXTENSION,
+    create_auth_challenge, consume_auth_challenge, claim_auth_challenge_attempt,
+    finish_auth_challenge, SESSION_SCOPE_EXTENSION, SESSION_SCOPE_FULL, SESSION_SCOPE_RECOVERY,
     get_user_public_uid, mark_email_verified, change_user_email,
     add_user_by_email, get_user_email, get_user_analytics_profile, get_user_token_info,
     store_linkedin_li_at,
@@ -111,13 +112,13 @@ from cqc_lem.utilities.linkedin.token_refresh import resolve_token_status
 from cqc_lem.utilities.env_constants import LI_CLIENT_ID, LI_CLIENT_SECRET, LI_REDIRECT_URL, LI_STATE_SALT, ADMIN_SECRET, API_ACCESS_TOKENS, \
     DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_VIDEO_RATIO, \
     SESSION_ABSOLUTE_MAX_DAYS, SESSION_COOKIE_NAME, SESSION_COOKIE_SAMESITE, SESSION_COOKIE_SECURE, \
-    AUTH_CHALLENGE_TTL_SECONDS
+    AUTH_CHALLENGE_TTL_SECONDS, SECOND_FACTOR_MAX_ATTEMPTS
 from cqc_lem.utilities.auth_rate_limit import check_auth_init, check_auth_verify, clear_auth_limits
 from cqc_lem.utilities.auth_factors import (
     METHOD_PASSKEY, METHOD_RECOVERY, METHOD_TOTP,
-    available_methods, begin_totp_enrollment, confirm_totp_enrollment, factor_summary,
-    generate_recovery_codes, has_strong_factor, record_step_up, step_up_satisfied,
-    verify_recovery_code, verify_totp_code,
+    available_methods, begin_totp_enrollment, confirm_totp_enrollment, enrollment_allowed,
+    factor_summary, generate_recovery_codes, has_confirmed_totp, has_strong_factor, record_step_up,
+    session_signed_in_with_recovery_code, step_up_satisfied, verify_recovery_code, verify_totp_code,
 )
 from cqc_lem.utilities.webauthn_util import (
     RelyingParty, WebAuthnUnavailable,
@@ -2663,6 +2664,44 @@ def _require_step_up(user_id: int, session_token: Optional[str], action: str,
     raise _step_up_error(user_id)
 
 
+def _require_enrollment_allowed(user_id: int, session_token: Optional[str], action: str,
+                                http_request: Optional[Request] = None) -> None:
+    """Gate ADDING a factor once the account already holds one.
+
+    Enrolling stamps the session as verified, so an ungated enrolment is a step-up the caller never
+    had to prove: a stolen session would add its own passkey and walk into the LinkedIn credentials
+    with it. The first factor stays ungated (nothing to prove with) and a recovery-code session
+    stays allowed (its owner is the one who legitimately cannot prove one) — see
+    `auth_factors.enrollment_allowed`."""
+    if enrollment_allowed(user_id, current_session_token(session_token)):
+        return
+    record_auth_event(AuthAuditEvent.STEP_UP_DENIED, user_id=user_id, success=False,
+                      ip=_client_ip(http_request), user_agent=_user_agent(http_request),
+                      details={"action": action})
+    raise _step_up_error(user_id)
+
+
+def _stamp_enrollment(user_id: int, session_token: Optional[str], kind: str) -> None:
+    """The ceremony IS a fresh proof of possession, so the session it ran on is now stepped up —
+    otherwise a user who just touched their sensor would be asked to touch it again to save
+    recovery codes.
+
+    Except on a recovery-code session: that one enrolled WITHOUT proving anything, and handing it
+    step-up for free is precisely how a found sheet of codes would become a LinkedIn session. It
+    runs the ordinary step-up ceremony with the factor it just enrolled — one extra touch, and an
+    audited one.
+
+    Best-effort otherwise: the factor is already stored, so a missed stamp costs one extra prompt,
+    not the enrolment. Only the step-up endpoint itself treats a failed stamp as fatal."""
+    token = current_session_token(session_token)
+    if session_signed_in_with_recovery_code(token):
+        log_debug("Recovery-code session enrolled a factor — not stamping step-up",
+                  user_id=user_id)
+        return
+    if not record_step_up(token):
+        log_warning(f"{kind} enrolled but session step-up stamp failed", user_id=user_id)
+
+
 def _passkeys_or_503() -> RelyingParty:
     try:
         return webauthn_relying_party()
@@ -2700,13 +2739,17 @@ def get_user_auth_factors(session_token: Optional[str] = None) -> ResponseModel:
 
 
 @router.post("/user/passkeys/register/begin")
-def passkey_register_begin(request: SessionOnlyRequest) -> ResponseModel:
-    """Options for `navigator.credentials.create`. Enrolment needs a session but NOT step-up:
-    adding a factor is how a user recovers after losing one, and gating it behind a factor they no
-    longer hold would be a lockout (design §6.8)."""
+def passkey_register_begin(request: SessionOnlyRequest,
+                           http_request: Request = None) -> ResponseModel:
+    """Options for `navigator.credentials.create`. The FIRST factor needs only a session; adding
+    another one to an account that already has one is step-up gated, because enrolling stamps the
+    session as verified. The lockout case §6.8 worries about — someone who lost the factor they
+    had — comes back in on a recovery code, which `enrollment_allowed` lets through by name."""
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+    _require_enrollment_allowed(user_id, request.session_token, "enroll_passkey",
+                                http_request=http_request)
     _passkeys_or_503()
 
     email = get_user_email(user_id) or f"user-{user_id}"
@@ -2728,6 +2771,11 @@ def passkey_register_complete(request: PasskeyRegisterCompleteRequest,
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+    # Gated on BOTH halves of the ceremony: begin is where the options come from, but complete is
+    # where the credential actually lands, and a handle obtained before a factor existed must not
+    # still be spendable after one does.
+    _require_enrollment_allowed(user_id, request.session_token, "enroll_passkey",
+                                http_request=http_request)
     _passkeys_or_503()
 
     pending = consume_auth_challenge(request.handle, CHALLENGE_REGISTER)
@@ -2746,13 +2794,7 @@ def passkey_register_complete(request: PasskeyRegisterCompleteRequest,
         # on some OTHER account. db.add_passkey_factor logs the real reason server-side.
         raise HTTPException(status_code=400, detail="That passkey could not be verified")
 
-    # The ceremony IS a fresh proof of possession, so the session it ran on is now stepped up —
-    # otherwise a user who just touched their sensor would be asked to touch it again to save
-    # recovery codes.
-    # Best-effort: the factor is already stored, so a missed stamp costs one extra prompt, not the
-    # enrolment. Only the step-up endpoint itself treats a failed stamp as fatal.
-    if not record_step_up(current_session_token(request.session_token)):
-        log_warning("Passkey enrolled but session step-up stamp failed", user_id=user_id)
+    _stamp_enrollment(user_id, request.session_token, "Passkey")
     record_auth_event(AuthAuditEvent.FACTOR_ADDED, user_id=user_id, ip=_client_ip(http_request),
                       user_agent=_user_agent(http_request), details={"kind": "passkey"})
     log_info("Passkey enrolled", user_id=user_id)
@@ -2765,12 +2807,21 @@ def passkey_register_complete(request: PasskeyRegisterCompleteRequest,
 
 
 @router.post("/user/totp/enroll/begin")
-def totp_enroll_begin(request: SessionOnlyRequest) -> ResponseModel:
+def totp_enroll_begin(request: SessionOnlyRequest, http_request: Request = None) -> ResponseModel:
     """Mint an authenticator-app secret. Returned in the clear exactly once — the row stores it as
     a `lemv1:` envelope bound to this user, so it can never be read back out."""
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+    _require_enrollment_allowed(user_id, request.session_token, "enroll_totp",
+                                http_request=http_request)
+
+    # One authenticator per account. A second confirmed row would count towards has_strong_factor
+    # and show on the Security card while only the newer one's codes are ever checked — and
+    # replacing the old seed silently would be a way to take a working factor off the account.
+    if has_confirmed_totp(user_id):
+        raise HTTPException(status_code=400, detail="An authenticator app is already set up — "
+                                                    "remove it before adding another")
 
     email = get_user_email(user_id) or f"user-{user_id}"
     started = begin_totp_enrollment(user_id, email)
@@ -2785,13 +2836,13 @@ def totp_enroll_confirm(request: TotpConfirmRequest, http_request: Request = Non
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+    _require_enrollment_allowed(user_id, request.session_token, "enroll_totp",
+                                http_request=http_request)
 
     if not confirm_totp_enrollment(user_id, request.code):
         raise HTTPException(status_code=400, detail="That code did not match — check the time on "
                                                     "your phone and try the next one")
-    # Best-effort, same as passkey enrolment: the factor is confirmed either way.
-    if not record_step_up(current_session_token(request.session_token)):
-        log_warning("TOTP confirmed but session step-up stamp failed", user_id=user_id)
+    _stamp_enrollment(user_id, request.session_token, "TOTP")
     record_auth_event(AuthAuditEvent.FACTOR_ADDED, user_id=user_id, ip=_client_ip(http_request),
                       user_agent=_user_agent(http_request), details={"kind": "totp"})
     return ResponseModel(status_code=200, detail={
@@ -3001,11 +3052,17 @@ def auth_second_factor_verify(request: SecondFactorVerifyRequest, http_request: 
 
     A TOTP code mints a fully verified session. A RECOVERY code mints one that is signed in but NOT
     stepped up: it is meant to get someone back in to enrol a new factor, not to hand a found sheet
-    of codes the LinkedIn credentials."""
+    of codes the LinkedIn credentials.
+
+    The handle survives a WRONG code and is burned by the SECOND_FACTOR_MAX_ATTEMPTS-th one. The
+    alternative — consume on first touch — reads as safer and is not: one mistyped digit would end
+    a login whose only way back is the whole email round trip, and the durable attempt counter is a
+    harder bound on guessing than the Redis limiter, which fails open."""
     ip = _client_ip(http_request)
     user_agent = _user_agent(http_request)
 
-    pending = consume_auth_challenge(request.pending_token, CHALLENGE_SECOND_FACTOR)
+    pending = claim_auth_challenge_attempt(request.pending_token, CHALLENGE_SECOND_FACTOR,
+                                           SECOND_FACTOR_MAX_ATTEMPTS)
     if not pending or not pending.get("user_id"):
         raise HTTPException(status_code=400, detail="That sign-in expired — start again")
     user_id = pending["user_id"]
@@ -3028,11 +3085,25 @@ def auth_second_factor_verify(request: SecondFactorVerifyRequest, http_request: 
         ok = False
 
     if not ok:
+        attempts_left = max(0, SECOND_FACTOR_MAX_ATTEMPTS - int(pending.get("attempts") or 0))
         record_auth_event(AuthAuditEvent.SECOND_FACTOR_FAILED, user_id=user_id, email=email, ip=ip,
-                          user_agent=user_agent, success=False, details={"method": request.method})
+                          user_agent=user_agent, success=False,
+                          details={"method": request.method, "attempts_left": attempts_left})
+        if not attempts_left:
+            # The handle was burned by this attempt. 400, not 401, so the SPA sends the user back
+            # to the start instead of leaving them retyping into a login that no longer exists.
+            raise HTTPException(status_code=400,
+                                detail="Too many incorrect codes — start the sign-in again")
         raise HTTPException(status_code=401, detail="That code did not work")
 
-    session_token = create_session(user_id, user_agent=user_agent, ip=ip, verified=verified_session)
+    # Spend the handle: correct code, so this pending login is over either way.
+    finish_auth_challenge(request.pending_token)
+    session_token = create_session(user_id, user_agent=user_agent, ip=ip, verified=verified_session,
+                                   # A recovery-code session is marked so it may enrol a
+                                   # replacement factor without proving one it no longer has.
+                                   scope=(SESSION_SCOPE_RECOVERY
+                                          if request.method == METHOD_RECOVERY
+                                          else SESSION_SCOPE_FULL))
     if not session_token:
         raise HTTPException(status_code=500, detail="Could not create session")
 

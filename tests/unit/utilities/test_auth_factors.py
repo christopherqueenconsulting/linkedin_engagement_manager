@@ -84,12 +84,23 @@ class TestFactorState:
 
 class TestTotp:
     def test_enrollment_starts_unconfirmed_and_returns_a_scannable_uri(self):
-        with patch(f"{_M}.upsert_totp_factor", return_value=9) as upsert:
+        with patch(f"{_M}.get_totp_factor", return_value=None), \
+             patch(f"{_M}.upsert_totp_factor", return_value=9) as upsert:
             factor_id, secret, uri = af.begin_totp_enrollment(_UID, "user@example.com")
         assert factor_id == 9
         assert uri.startswith("otpauth://totp/")
         assert secret in uri
         upsert.assert_called_once_with(_UID, secret)
+
+    def test_a_second_enrollment_is_refused_while_one_is_confirmed(self):
+        """One authenticator per account. Restarting enrolment only ever replaces an UNCONFIRMED
+        attempt — letting it run against a confirmed factor leaves two rows of which only the
+        newer one is ever verified."""
+        with patch(f"{_M}.get_totp_factor",
+                   return_value={"id": 9, "secret": "S", "confirmed_at": "now"}), \
+             patch(f"{_M}.upsert_totp_factor") as upsert:
+            assert af.begin_totp_enrollment(_UID, "user@example.com") is None
+        upsert.assert_not_called()
 
     def test_a_correct_code_confirms_the_seed(self):
         secret = pyotp.random_base32()
@@ -304,3 +315,54 @@ class TestStepUpGate:
             assert af.record_step_up(None) is False
             mark.assert_not_called()
             assert af.record_step_up(_TOKEN) is True
+
+
+# ---------------------------------------------------------------------------
+# May this session ADD a factor?
+# ---------------------------------------------------------------------------
+
+class TestEnrollmentGate:
+    def test_an_account_with_no_factor_may_always_enrol(self):
+        """The bootstrap case, and the reason the gate cannot simply be step-up: an account that
+        holds nothing has nothing to prove with, so gating here would mean it never gets a first
+        factor at all."""
+        with patch(f"{_M}.count_auth_factors", return_value=0), \
+             patch(f"{_M}.get_session_auth_state") as state:
+            assert af.enrollment_allowed(_UID, _TOKEN) is True
+        state.assert_not_called()
+
+    def test_adding_another_one_needs_a_proved_factor(self):
+        """Enrolment stamps the session as verified. Leaving it open would hand a stolen session a
+        step-up it never proved — enrol your own passkey, then read the LinkedIn cookie (T4)."""
+        with patch(f"{_M}.count_auth_factors", return_value=1), \
+             patch(f"{_M}.get_session_auth_state", return_value=_session()):
+            assert af.enrollment_allowed(_UID, _TOKEN) is False
+
+    def test_a_freshly_verified_session_may_add_another(self):
+        with patch(f"{_M}.count_auth_factors", return_value=1), \
+             patch(f"{_M}.get_session_auth_state", return_value=_session(minutes_ago=1)):
+            assert af.enrollment_allowed(_UID, _TOKEN) is True
+
+    def test_a_recovery_code_session_may_enrol_without_proving_anything(self):
+        """The anti-lockout path (design §6.8): the only person who genuinely cannot prove a factor
+        is the one who lost it, and this is how they get a new one."""
+        with patch(f"{_M}.count_auth_factors", return_value=1), \
+             patch(f"{_M}.get_session_auth_state",
+                   return_value=_session(scope=af.SESSION_SCOPE_RECOVERY)):
+            assert af.enrollment_allowed(_UID, _TOKEN) is True
+
+    def test_the_extension_scope_is_not_an_enrolment_pass(self):
+        """It is opted into at exactly one endpoint, and that endpoint is not this one."""
+        with patch(f"{_M}.count_auth_factors", return_value=1), \
+             patch(f"{_M}.get_session_auth_state",
+                   return_value=_session(scope=af.SESSION_SCOPE_EXTENSION)):
+            assert af.enrollment_allowed(_UID, _TOKEN) is False
+
+    def test_the_kill_switch_leaves_enrolment_open(self):
+        with patch(f"{_M}.STRONG_AUTH_ENABLED", False):
+            assert af.enrollment_allowed(_UID, None) is True
+
+    def test_an_unknown_session_is_not_a_recovery_session(self):
+        with patch(f"{_M}.get_session_auth_state", return_value=None):
+            assert af.session_signed_in_with_recovery_code(_TOKEN) is False
+        assert af.session_signed_in_with_recovery_code(None) is False

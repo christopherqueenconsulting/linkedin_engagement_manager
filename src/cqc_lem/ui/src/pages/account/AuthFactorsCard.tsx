@@ -70,8 +70,12 @@ export default function AuthFactorsCard() {
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['auth-factors'] })
 
+  // Enrolment is guarded like every other write here, because adding a factor to an account that
+  // already has one is step-up gated server-side (the FIRST one is not — see
+  // auth_factors.enrollment_allowed). Without the guard a user adding a second passkey would just
+  // see "could not be registered" with no way to get past it.
   const addPasskey = useMutation({
-    mutationFn: () => enrollPasskey(sessionToken, 'Passkey'),
+    mutationFn: () => guard(() => enrollPasskey(sessionToken, 'Passkey')),
     onSuccess: (added) => {
       if (!added) return
       refresh()
@@ -83,16 +87,29 @@ export default function AuthFactorsCard() {
 
   const startTotp = useMutation({
     mutationFn: () =>
-      api.post('/user/totp/enroll/begin', { session_token: sessionToken }).then((r) => r.data.detail),
-    onSuccess: (detail: { secret: string; otpauth_uri: string }) =>
-      setTotpSecret({ secret: detail.secret, uri: detail.otpauth_uri }),
-    onError: () => flash(false, 'Could not start authenticator setup.'),
+      guard(() =>
+        api
+          .post('/user/totp/enroll/begin', { session_token: sessionToken })
+          .then((r) => r.data.detail as { secret: string; otpauth_uri: string }),
+      ),
+    onSuccess: (detail) => {
+      if (!detail) return
+      setTotpSecret({ secret: detail.secret, uri: detail.otpauth_uri })
+    },
+    onError: (e: { response?: { data?: { detail?: string } } }) =>
+      flash(false, e?.response?.data?.detail || 'Could not start authenticator setup.'),
   })
 
   const confirmTotp = useMutation({
     mutationFn: () =>
-      api.post('/user/totp/enroll/confirm', { session_token: sessionToken, code: totpCode.trim() }),
-    onSuccess: () => {
+      guard(() =>
+        api.post('/user/totp/enroll/confirm', {
+          session_token: sessionToken,
+          code: totpCode.trim(),
+        }),
+      ),
+    onSuccess: (result) => {
+      if (result === null) return
       setTotpSecret(null)
       setTotpCode('')
       refresh()

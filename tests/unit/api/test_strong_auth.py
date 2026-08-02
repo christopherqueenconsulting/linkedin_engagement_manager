@@ -43,6 +43,7 @@ def client():
 def _quiet():
     with patch(f"{_M}.record_auth_event", return_value=True), \
          patch(f"{_M}.mark_email_verified", return_value=True), \
+         patch(f"{_M}.finish_auth_challenge", return_value=True), \
          patch(f"{_M}.clear_auth_limits"):
         yield
 
@@ -131,9 +132,9 @@ class TestPinDemotion:
 # ---------------------------------------------------------------------------
 
 class TestSecondFactor:
-    def _pending(self):
-        return patch(f"{_M}.consume_auth_challenge", return_value={"user_id": _UID,
-                                                                   "challenge": None})
+    def _pending(self, attempts: int = 1):
+        return patch(f"{_M}.claim_auth_challenge_attempt",
+                     return_value={"user_id": _UID, "challenge": None, "attempts": attempts})
 
     def test_a_totp_code_mints_a_fully_verified_session(self, client):
         with self._pending(), \
@@ -145,6 +146,7 @@ class TestSecondFactor:
                                json={"pending_token": "p", "method": "totp", "code": "123456"})
         assert resp.status_code == 200
         assert create_session.call_args.kwargs["verified"] is True
+        assert create_session.call_args.kwargs["scope"] == "full"
         assert f"lem_session={_TOKEN}" in resp.headers.get("set-cookie", "")
 
     def test_a_recovery_code_signs_in_but_does_not_unlock_the_credentials(self, client):
@@ -161,12 +163,15 @@ class TestSecondFactor:
                                      "code": "ABCD234XYZ"})
         assert resp.status_code == 200
         assert create_session.call_args.kwargs["verified"] is False
+        # Marked so it may enrol a REPLACEMENT factor without proving one it no longer holds —
+        # and only that: the scope is not a step-up.
+        assert create_session.call_args.kwargs["scope"] == "recovery"
         assert resp.json()["detail"]["enroll_factor_required"] is True
 
     def test_a_replayed_pending_token_is_refused(self, client):
-        """The handle is claimed by an UPDATE with `consumed_at IS NULL`, so the second use finds
+        """The handle is claimed by an UPDATE with `consumed_at IS NULL`, so a spent one finds
         nothing — one bootstrapped login cannot become two sessions."""
-        with patch(f"{_M}.consume_auth_challenge", return_value=None), \
+        with patch(f"{_M}.claim_auth_challenge_attempt", return_value=None), \
              patch(f"{_M}.create_session") as create_session:
             resp = client.post("/api/auth/second-factor/verify",
                                json={"pending_token": "p", "method": "totp", "code": "123456"})
@@ -183,6 +188,45 @@ class TestSecondFactor:
                                json={"pending_token": "p", "method": "totp", "code": "000000"})
         assert resp.status_code == 401
         create_session.assert_not_called()
+
+    def test_a_mistyped_code_does_not_end_the_sign_in(self, client):
+        """The failure mode this replaced: consuming the handle on first touch meant one wrong
+        digit killed the login, and the only way back was the whole email round trip again. 401
+        (not 400) is what tells the SPA to leave the user on the code field."""
+        with self._pending(attempts=1), \
+             patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_M}.verify_totp_code", return_value=False), \
+             patch(f"{_M}.finish_auth_challenge") as finished:
+            resp = client.post("/api/auth/second-factor/verify",
+                               json={"pending_token": "p", "method": "totp", "code": "000000"})
+        assert resp.status_code == 401
+        finished.assert_not_called()
+
+    def test_the_last_allowed_attempt_burns_the_handle(self, client):
+        """Guessing is bounded in MySQL, not only in Redis — the rate limiter in front of this
+        fails open, so it cannot be the thing that stops a 6-digit space being walked."""
+        with self._pending(attempts=5), \
+             patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_M}.verify_totp_code", return_value=False), \
+             patch(f"{_M}.create_session") as create_session:
+            resp = client.post("/api/auth/second-factor/verify",
+                               json={"pending_token": "p", "method": "totp", "code": "000000"})
+        assert resp.status_code == 400
+        create_session.assert_not_called()
+
+    def test_a_correct_code_spends_the_handle(self, client):
+        with self._pending(), \
+             patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_M}.verify_totp_code", return_value=True), \
+             patch(f"{_M}.create_session", return_value=_TOKEN), \
+             patch(f"{_M}.finish_auth_challenge") as finished:
+            resp = client.post("/api/auth/second-factor/verify",
+                               json={"pending_token": "p", "method": "totp", "code": "123456"})
+        assert resp.status_code == 200
+        finished.assert_called_once_with("p")
 
     def test_an_unknown_method_is_not_a_way_in(self, client):
         with self._pending(), \
@@ -279,9 +323,9 @@ class TestPasskeyLogin:
 # ---------------------------------------------------------------------------
 
 class TestEnrollment:
-    def test_adding_a_passkey_needs_a_session_but_not_step_up(self, client):
-        """Enrolment is how a user recovers after losing a factor — gating it behind a factor they
-        no longer hold would be a lockout, not a control (design §6.8)."""
+    def test_the_first_factor_needs_a_session_but_not_step_up(self, client):
+        """An account with nothing enrolled has nothing to prove with — gating the first factor
+        would mean no account could ever get one."""
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_M}.step_up_satisfied", return_value=False), \
              patch(f"{_M}.webauthn_relying_party"), \
@@ -291,6 +335,78 @@ class TestEnrollment:
              patch(f"{_M}.create_auth_challenge", return_value="handle"):
             resp = client.post("/api/user/passkeys/register/begin", json={"session_token": _TOKEN})
         assert resp.status_code == 200
+
+    @pytest.mark.parametrize("path,body", [
+        ("/api/user/passkeys/register/begin", {"session_token": _TOKEN}),
+        ("/api/user/passkeys/register/complete",
+         {"session_token": _TOKEN, "handle": "h", "credential": {}}),
+        ("/api/user/totp/enroll/begin", {"session_token": _TOKEN}),
+        ("/api/user/totp/enroll/confirm", {"session_token": _TOKEN, "code": "123456"}),
+    ])
+    def test_adding_a_SECOND_factor_is_step_up_gated(self, client, path, body):
+        """The escalation this closes: enrolling stamps the session as verified, so an ungated
+        enrolment hands a stolen session a step-up it never proved — add your own passkey, then
+        walk into the LinkedIn credentials with it (threat T4)."""
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.enrollment_allowed", return_value=False), \
+             patch(f"{_M}.available_methods", return_value=["passkey"]), \
+             patch(f"{_M}.webauthn_relying_party"), \
+             patch(f"{_M}.consume_auth_challenge") as consumed, \
+             patch(f"{_M}.begin_totp_enrollment") as began, \
+             patch(f"{_M}.confirm_totp_enrollment") as confirmed:
+            resp = client.post(path, json=body)
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["code"] == "step_up_required"
+        consumed.assert_not_called()
+        began.assert_not_called()
+        confirmed.assert_not_called()
+
+    def test_a_recovery_code_session_may_still_enrol_a_replacement(self, client):
+        """The anti-lockout half (design §6.8): the one person who cannot prove a factor is the
+        one who lost it, and a recovery code is how they get back to enrol another."""
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.enrollment_allowed", return_value=True), \
+             patch(f"{_M}.session_signed_in_with_recovery_code", return_value=True), \
+             patch(f"{_M}.webauthn_relying_party"), \
+             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_M}.get_user_passkey_credential_ids", return_value=["old"]), \
+             patch(f"{_M}.build_registration_options", return_value=({"rp": {}}, "chal")), \
+             patch(f"{_M}.create_auth_challenge", return_value="handle"):
+            resp = client.post("/api/user/passkeys/register/begin", json={"session_token": _TOKEN})
+        assert resp.status_code == 200
+
+    def test_a_recovery_code_session_is_not_stepped_up_by_enrolling(self, client):
+        """Otherwise a found sheet of codes IS a LinkedIn session: sign in, enrol, get stamped,
+        read the cookie. It runs the ordinary step-up with the new factor instead — one touch, and
+        an audited one."""
+        class _Result:
+            credential_id = "cred"
+            public_key = "pk"
+            sign_count = 0
+
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.session_signed_in_with_recovery_code", return_value=True), \
+             patch(f"{_M}.webauthn_relying_party"), \
+             patch(f"{_M}.consume_auth_challenge",
+                   return_value={"user_id": _UID, "challenge": "chal"}), \
+             patch(f"{_M}.verify_passkey_registration", return_value=_Result()), \
+             patch(f"{_M}.add_passkey_factor", return_value=7), \
+             patch(f"{_M}.count_recovery_codes", return_value=(2, 10)), \
+             patch(f"{_M}.record_step_up") as stepped_up:
+            resp = client.post("/api/user/passkeys/register/complete",
+                               json={"session_token": _TOKEN, "handle": "h", "credential": {}})
+        assert resp.status_code == 200
+        stepped_up.assert_not_called()
+
+    def test_a_second_authenticator_app_is_refused(self, client):
+        """A second confirmed TOTP row would count towards has_strong_factor and show on the
+        Security card while only the newer seed's codes were ever checked."""
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
+             patch(f"{_M}.has_confirmed_totp", return_value=True), \
+             patch(f"{_M}.begin_totp_enrollment") as began:
+            resp = client.post("/api/user/totp/enroll/begin", json={"session_token": _TOKEN})
+        assert resp.status_code == 400
+        began.assert_not_called()
 
     def test_a_registration_challenge_belonging_to_someone_else_is_refused(self, client):
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \

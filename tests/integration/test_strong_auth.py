@@ -217,6 +217,33 @@ class TestChallenges:
         handle = db.create_auth_challenge("second_factor", expires, user_id=user_id)
         assert db.consume_auth_challenge(handle, "second_factor") is None
 
+    def test_a_pending_login_survives_a_wrong_code_and_dies_on_the_last_one(self, user_id):
+        """A mistyped digit must not end the login — the only way back would be the whole email
+        round trip. The count is what bounds guessing, and it lives here rather than in the Redis
+        limiter in front of it, which fails open."""
+        expires = datetime.now(timezone.utc) + timedelta(minutes=5)
+        handle = db.create_auth_challenge("second_factor", expires, user_id=user_id)
+
+        first = db.claim_auth_challenge_attempt(handle, "second_factor", 3)
+        assert first["attempts"] == 1 and first["user_id"] == user_id
+        assert db.claim_auth_challenge_attempt(handle, "second_factor", 3)["attempts"] == 2
+        assert db.claim_auth_challenge_attempt(handle, "second_factor", 3)["attempts"] == 3
+        # The third attempt burned it, so a fourth guess has nothing to guess against.
+        assert db.claim_auth_challenge_attempt(handle, "second_factor", 3) is None
+
+    def test_a_correct_code_finishes_the_handle_for_good(self, user_id):
+        expires = datetime.now(timezone.utc) + timedelta(minutes=5)
+        handle = db.create_auth_challenge("second_factor", expires, user_id=user_id)
+        assert db.claim_auth_challenge_attempt(handle, "second_factor", 5) is not None
+        assert db.finish_auth_challenge(handle) is True
+        assert db.finish_auth_challenge(handle) is False
+        assert db.claim_auth_challenge_attempt(handle, "second_factor", 5) is None
+
+    def test_an_expired_pending_login_cannot_be_attempted(self, user_id):
+        expires = datetime.now(timezone.utc) - timedelta(seconds=1)
+        handle = db.create_auth_challenge("second_factor", expires, user_id=user_id)
+        assert db.claim_auth_challenge_attempt(handle, "second_factor", 5) is None
+
 
 class TestStepUpState:
     def test_a_fresh_session_is_not_verified_until_a_factor_says_so(self, user_id):
@@ -241,6 +268,15 @@ class TestStepUpState:
         db.add_passkey_factor(user_id, "cred-ext", "pk")
         assert db.get_session_auth_state(token)["scope"] == db.SESSION_SCOPE_EXTENSION
         assert af.step_up_satisfied(user_id, token, extension_scope_ok=True) is True
+
+    def test_a_recovery_session_may_enrol_but_still_cannot_touch_a_credential(self, user_id):
+        """Both halves of the recovery-code bargain, against the real schema: it gets you back to
+        a factor (design §6.8) and it gets you no further."""
+        db.add_passkey_factor(user_id, "cred-lost", "pk")
+        token = db.create_session(user_id, scope=db.SESSION_SCOPE_RECOVERY)
+        assert af.session_signed_in_with_recovery_code(token) is True
+        assert af.enrollment_allowed(user_id, token) is True
+        assert af.step_up_satisfied(user_id, token) is False
         # ...and nowhere else: an extension token is otherwise an ordinary session.
         assert af.step_up_satisfied(user_id, token) is False
 
