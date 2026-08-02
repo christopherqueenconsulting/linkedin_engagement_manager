@@ -119,6 +119,34 @@ still recommended; it means the swap goes to the owner rather than into a config
 holds too, for the same reason it never renders as `flat`: a level nobody read cannot be checked
 against a rule written about increases.
 
+### What the 2026-08-02 run settled (#842)
+
+The first real run of this harness — `bm-20260802-20ae40`, four candidates against both live
+champions, report beside this file — answered the two questions #717 left open. Both answers are
+**keep**, and both are recorded here so the next roster refresh starts from a measurement rather
+than from the spec sheets again:
+
+| Question | Measurement | Decision |
+|---|---|---|
+| `minimax-m3` / `glm-5.2` as `lem-complex`'s quality option | Both **High (3)** vs champion `qwen3.5:397b` **Medium (2)** — `+1` usage level. `glm-5.2` 70% deterministic / 86% judge, `minimax-m3` 40% / 75%, champion 50% / **100%** | **Keep `qwen3.5:397b`.** Neither beat the champion on judge rate, and the standing spend policy buys a usage-level increase only on a *strict* judge-rate win. |
+| Demote `gpt-oss:120b` on `lem-medium` now that `deepseek-v4-flash` + `gemma4:31b` cover the tier | `deepseek-v4-flash` **ties** it deterministically (60% vs 60%) and beats it on judge (83% vs 50%) at the same Medium (2) level; `gemma4:31b` is worse deterministically (40%) though cheaper (Low (1)) | **Keep `gpt-oss:120b` as champion.** Nothing scored a `recommend`, and #717's own rule is that no `recommend`-less candidate gets promoted. `deepseek-v4-flash` is the model to re-measure first next time. |
+
+No swap was recommended, so `.litellm/config.yaml` is unchanged and no restart was owed. All four
+tiers were smoke-tested green against the live proxy anyway (`lem-simple`, `lem-medium`,
+`lem-complex`, `lem-router` — 1-token completions, HTTP 200 on each).
+
+Two caveats the run itself surfaced, both tracked on #910 rather than papered over here:
+
+- **The absolute deterministic floor (90%) was met by nobody, champions included.** The relative
+  half of every verdict is sound, but a floor the incumbent fails cannot open for a challenger
+  either. The per-case failures are real model behaviour (long-form overruns `max_chars`,
+  contrastive frames, the #617 comment contract), not harness artifacts — the suites score a FIRST
+  draft where production ships an n-th.
+- **A reasoning model's single-run score is not stable.** `minimax-m3` returned an empty completion
+  on two cases after exhausting the shipped truncation retry; re-run at the same effective budget it
+  answered and passed both. That would have moved it at most to a tie on each tier, so the decision
+  above stands either way — but one run of one case is a data point, not a verdict.
+
 A recommendation is **not** a change. `.litellm/model_upgrades.yaml` is the RETIREMENT map and the
 reactive half of the model-health check auto-swaps whatever lands in it, so adopting a benchmark
 winner is a deliberate edit to `.litellm/config.yaml` (or a #717-style PR). The report renders the
@@ -168,4 +196,14 @@ policy marks `hold` is named in the report and belongs to the owner, not to the 
 <!-- LEADERBOARD:BEGIN -->
 | Date | Run | Tier | Model | Role | Deterministic | Judge | p50 | Verdict |
 |---|---|---|---|---|---|---|---|---|
+| 2026-08-02 | `bm-20260802-20ae40` | lem-complex | `qwen3.5:397b` | champion | 50% | 100% | 26955 ms | baseline |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-complex | `deepseek-v4-flash` | candidate | 70% | 57% | 3275 ms | reject |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-complex | `gemma4:31b` | candidate | 80% | 57% | 2428 ms | reject |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-complex | `minimax-m3` | candidate | 40% | 75% | 30564 ms | reject |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-complex | `glm-5.2` | candidate | 70% | 86% | 14477 ms | reject |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-medium | `gpt-oss:120b` | champion | 60% | 50% | 1635 ms | baseline |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-medium | `deepseek-v4-flash` | candidate | 60% | 83% | 1310 ms | reject |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-medium | `gemma4:31b` | candidate | 40% | 100% | 807 ms | reject |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-medium | `minimax-m3` | candidate | 50% | 80% | 5405 ms | reject |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-medium | `glm-5.2` | candidate | 40% | 75% | 6315 ms | reject |
 <!-- LEADERBOARD:END -->

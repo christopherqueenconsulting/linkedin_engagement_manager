@@ -470,17 +470,25 @@ class TestRendering:
     def test_repeated_renders_never_grow_the_table_with_its_own_header(self):
         """The header and divider are pipe-delimited rows of the right width. Reading them back as
         DATA appended two junk rows per run and evicted real history at the row cap."""
+        def table_rows(doc: str) -> list:
+            inner = doc.split(bm.LEADERBOARD_BEGIN)[1].split(bm.LEADERBOARD_END)[0]
+            return [line for line in inner.splitlines() if line.strip().startswith("|")]
+
         text = (_ROOT / "docs" / "model-benchmarks" / "README.md").read_text()
+        # Measured against whatever history the committed table holds TODAY — a real run's rows
+        # land in it, so a fixed expected count would fail on the next benchmark instead of on a
+        # regression.
+        committed = len(table_rows(text)) - 2
         for run_id in ("bm-1", "bm-2", "bm-3"):
             run = self._run()
             run["run_id"] = run_id
             for card in run["scorecards"]:
                 card["benchmark_run_id"] = run_id
             text = bm.update_leaderboard(text, bm.leaderboard_rows(run))
-        inner = text.split(bm.LEADERBOARD_BEGIN)[1].split(bm.LEADERBOARD_END)[0]
-        rows = [line for line in inner.splitlines() if line.strip().startswith("|")]
+        rows = table_rows(text)
         assert rows[0] == bm.LEADERBOARD_HEADER and rows[1] == bm.LEADERBOARD_DIVIDER
-        assert len(rows) == 2 + 6  # three runs × two scorecards, and nothing else
+        # three runs × two scorecards on top of the committed history, and nothing else
+        assert len(rows) == 2 + committed + 6
         assert bm.LEADERBOARD_HEADER not in rows[2:]
 
     def test_the_committed_leaderboard_has_the_markers(self):
