@@ -18,7 +18,12 @@ export interface AffiliateState {
   days_earned: number
   days_from_referrals: number
   max_reward_days: number
+  // What joining pays TODAY (config) vs what leaving would actually take back from THIS user
+  // (their standing enrollment grant). Not the same number: a user enrolled under the old defaults
+  // still holds a revocable +7 after the config went to 0, so "what you get" copy reads the first
+  // and "what leaving costs" copy MUST read the second.
   bonus_days: number
+  revocable_bonus_days: number
   referral_bonus_days: number
   standard_trial_days: number
   promo_content_opt_in: boolean
@@ -26,9 +31,15 @@ export interface AffiliateState {
   promo_consent_version: string | null
   promo_content_allowed: boolean
   disclosure_text: string
-  // Present only on the response to a status change — what the flip actually did to the trial.
-  reward_days?: number
-  trial_ends_at?: string | null
+}
+
+// What a status FLIP did to the trial. Deliberately NOT on `AffiliateState`: the GET never returns
+// these, and the flip seeds the query cache and then invalidates it, so anything reading them off
+// `useAffiliate().data` is right for one render and wrong after the refetch. Keeping them off the
+// query type makes that a compile error instead of copy that changes under the user.
+export interface AffiliateStatusResult extends AffiliateState {
+  reward_days: number
+  trial_ends_at: string | null
 }
 
 const KEY = 'affiliate'
@@ -53,7 +64,7 @@ export function useSetAffiliateStatus() {
     mutationFn: (enrolled: boolean) =>
       api
         .post('/user/affiliate/status', { session_token: sessionToken, enrolled })
-        .then((r) => r.data.detail as AffiliateState),
+        .then((r) => r.data.detail as AffiliateStatusResult),
     onSuccess: (data) => {
       // Seed the cache from the response rather than only invalidating: the new trial end date is
       // what the confirmation copy reads, and a refetch would show it a beat late.

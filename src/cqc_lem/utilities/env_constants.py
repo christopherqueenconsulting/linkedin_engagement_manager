@@ -264,9 +264,13 @@ MARKETING_OWNED_DOMAINS   = get_constant_from_env('MARKETING_OWNED_DOMAINS', def
 #       var that can turn it on for anybody, which is why (B) has no default here at all.
 AFFILIATE_PROGRAM_ENABLED = isTrue(get_constant_from_env('AFFILIATE_PROGRAM_ENABLED', default_value='True'))
 AFFILIATE_DEFAULT_ENROLLED = isTrue(get_constant_from_env('AFFILIATE_DEFAULT_ENROLLED', default_value='True'))
-# Trial days granted for BEING enrolled — the owner's model ("affiliates receive additional free
-# trial time"). Revoked on opt-out, which is what returns the user to the standard trial.
-AFFILIATE_ENROLLMENT_BONUS_DAYS = int(get_constant_from_env('AFFILIATE_ENROLLMENT_BONUS_DAYS', default_value='7'))
+# Trial days granted for BEING enrolled. OFF by default (owner decision 2026-08-01): the reward is
+# per-referral and capped, because a flat join bonus pays every enrollee whether or not they ever
+# refer anyone. Left as a knob rather than deleted — a launch push may want a join incentive — but a
+# non-zero value here is a giveaway to the whole user base, and it is revoked on opt-out, which is
+# the only thing that makes the "your trial returns to the standard N days" copy necessary.
+# max(0, …) so a negative typo reads as "off" rather than silently skipping the > 0 guard everywhere.
+AFFILIATE_ENROLLMENT_BONUS_DAYS = max(0, int(get_constant_from_env('AFFILIATE_ENROLLMENT_BONUS_DAYS', default_value='0')))
 # Trial days per referral that ACTIVATES (not per click, not per raw signup). Earned, so opting out
 # never claws these back.
 AFFILIATE_REFERRAL_BONUS_DAYS = int(get_constant_from_env('AFFILIATE_REFERRAL_BONUS_DAYS', default_value='14'))

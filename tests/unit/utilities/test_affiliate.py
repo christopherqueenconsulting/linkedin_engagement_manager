@@ -6,7 +6,8 @@ The acceptance criteria this file owns:
   - self-referral and duplicate referrals are rejected.
   - the per-user reward cap holds.
 """
-from unittest.mock import patch
+from typing import Any, List, Optional, Tuple
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -303,6 +304,84 @@ def test_enroll_user_is_a_no_op_when_ineligible():
          patch(f"{_AFF}.AFFILIATE_REQUIRE_COMPANY_PAGE", True), \
          patch("cqc_lem.utilities.db.get_company_linked_in_url_for_user", return_value=None):
         assert affiliate.enroll_user(1) == {}
+
+
+def _enroll(bonus_days: int, created: bool,
+            grant: Optional[dict] = None) -> Tuple[List[Any], MagicMock]:
+    """Run `enroll_user` against a stubbed db and return the emitted affiliate events."""
+    row = {"status": affiliate.STATUS_ENROLLED, "created": created}
+    with patch(f"{_AFF}.AFFILIATE_PROGRAM_ENABLED", True), \
+         patch(f"{_AFF}.AFFILIATE_DEFAULT_ENROLLED", True), \
+         patch(f"{_AFF}.AFFILIATE_REQUIRE_COMPANY_PAGE", False), \
+         patch(f"{_AFF}.AFFILIATE_ENROLLMENT_BONUS_DAYS", bonus_days), \
+         patch("cqc_lem.utilities.db.ensure_affiliate_enrollment", return_value=row), \
+         patch("cqc_lem.utilities.db.grant_affiliate_trial_days",
+               return_value=grant or {"granted": True, "reason": "granted", "days": bonus_days}) as grant_mock, \
+         patch("cqc_lem.utilities.observability.track_affiliate_event") as event:
+        affiliate.enroll_user(1)
+    return event.call_args_list, grant_mock
+
+
+def test_joining_is_counted_even_when_no_join_bonus_is_configured():
+    """The shipped policy pays nothing for joining, so `affiliate_enrolled` cannot hang off a grant —
+    the marketing funnel still has to count the enrollment."""
+    events, grant = _enroll(bonus_days=0, created=True)
+    assert grant.call_count == 0
+    assert [c.args[0] for c in events] == ["affiliate_enrolled"]
+    assert events[0].kwargs["bonus_days"] == 0
+
+
+def test_a_repeat_page_load_does_not_re_emit_the_enrollment_event():
+    # The first call is asserted here too so this can never pass vacuously: if the patch ever stops
+    # intercepting (e.g. the import moves to module scope), BOTH halves fail rather than this one
+    # going green on an empty list it was never going to see events in.
+    first, _ = _enroll(bonus_days=0, created=True)
+    repeat, grant = _enroll(bonus_days=0, created=False)
+    assert [c.args[0] for c in first] == ["affiliate_enrolled"]
+    assert grant.call_count == 0
+    assert repeat == []
+
+
+def test_a_configured_join_bonus_is_still_granted_and_reported():
+    events, grant = _enroll(bonus_days=7, created=True)
+    grant.assert_called_once()
+    assert events[0].kwargs["bonus_days"] == 7
+
+
+def _state(totals: dict, bonus_days: int = 0) -> dict:
+    with patch(f"{_AFF}.AFFILIATE_PROGRAM_ENABLED", True), \
+         patch(f"{_AFF}.AFFILIATE_REQUIRE_COMPANY_PAGE", False), \
+         patch(f"{_AFF}.AFFILIATE_ENROLLMENT_BONUS_DAYS", bonus_days), \
+         patch("cqc_lem.utilities.db.get_affiliate_enrollment",
+               return_value={"status": affiliate.STATUS_ENROLLED}), \
+         patch("cqc_lem.utilities.db.get_affiliate_referral_counts", return_value={}), \
+         patch("cqc_lem.utilities.db.get_affiliate_reward_totals", return_value=totals):
+        return affiliate.affiliate_state(1)
+
+
+def test_the_state_reports_what_leaving_would_actually_revoke_not_the_configured_bonus():
+    """The user enrolled under the old defaults still HOLDS +7 that opting out claws back, even
+    though joining now pays 0 — so the copy that tells them what leaving costs cannot read config."""
+    state = _state({"total": 21, "enrollment": 7, "referral": 14, "revoked": 0})
+    assert state["bonus_days"] == 0                  # what joining pays today
+    assert state["revocable_bonus_days"] == 7        # what leaving takes back from THIS user
+
+
+def test_earned_referral_days_are_never_reported_as_revocable():
+    state = _state({"total": 28, "enrollment": 0, "referral": 28, "revoked": 0})
+    assert state["revocable_bonus_days"] == 0
+
+
+def test_an_already_revoked_join_bonus_is_no_longer_revocable():
+    """Opt out, opt back in with the bonus now off: the ledger nets to zero and leaving is free
+    again. Same arithmetic `revoke_affiliate_enrollment_bonus` uses, so the two cannot disagree."""
+    state = _state({"total": 14, "enrollment": 7, "referral": 14, "revoked": -7})
+    assert state["revocable_bonus_days"] == 0
+
+
+def test_a_missing_reward_ledger_reads_as_nothing_to_revoke():
+    state = _state({})
+    assert state["revocable_bonus_days"] == 0
 
 
 def test_affiliate_state_reports_ineligible_when_company_page_required_and_missing():

@@ -295,8 +295,17 @@ def _company_page(user_id: int) -> bool:
 
 
 def enroll_user(user_id: int, grant_bonus: bool = True) -> dict:
-    """Enrol a user in (A) and pay the enrollment bonus. Idempotent: an existing row is left alone
-    (an opted-out user is NOT re-enrolled by a page load) and the bonus grant is a no-op once paid.
+    """Enrol a user in (A), and pay the enrollment bonus if one is configured (it is 0 by default —
+    the reward is per-referral). Idempotent: an existing row is left alone (an opted-out user is NOT
+    re-enrolled by a page load) and the bonus grant is a no-op once paid.
+
+    `affiliate_enrolled` is emitted on the call that actually CREATED the row, not on the one that
+    paid a bonus: with no join bonus there is no grant to hang it on, and enrollment is exactly the
+    thing the marketing funnel needs counted.
+
+    That is deliberately ONCE PER USER, not once per enrollment: a user who opts out and re-joins
+    does not emit it again from here (`set_status` emits its own `affiliate_enrolled` with
+    `source="opt_in"` for that flip). Read the funnel's count as distinct users enrolled.
 
     Returns the enrollment row, or `{}` when the program is off / the user is ineligible."""
     from cqc_lem.utilities.db import ensure_affiliate_enrollment, grant_affiliate_trial_days
@@ -309,13 +318,15 @@ def enroll_user(user_id: int, grant_bonus: bool = True) -> dict:
                                              referral_code=code_for_user(user_id)) or {}
     if status != STATUS_ENROLLED or enrollment.get("status") != STATUS_ENROLLED:
         return enrollment
+    result: dict = {}
     if grant_bonus and enrollment_bonus_days() > 0:
         result = grant_affiliate_trial_days(user_id, enrollment_bonus_days(), REWARD_ENROLLMENT,
-                                            reason="enrollment_bonus")
-        if result.get("granted") and result.get("reason") == "granted":
-            track_affiliate_event(AFFILIATE_ENROLLED, user_id=user_id,
-                                  bonus_days=result.get("days"),
-                                  trial_ends_at=str(result.get("trial_ends_at") or ""))
+                                            reason="enrollment_bonus") or {}
+    paid = bool(result.get("granted")) and result.get("reason") == "granted"
+    if enrollment.get("created") or paid:
+        track_affiliate_event(AFFILIATE_ENROLLED, user_id=user_id,
+                              bonus_days=int(result.get("days") or 0),
+                              trial_ends_at=str(result.get("trial_ends_at") or ""))
     return enrollment
 
 
@@ -456,7 +467,16 @@ def affiliate_state(user_id: int) -> dict:
     referral counts, days earned against the cap, and the two toggles with their consent record.
 
     `standard_trial_days` and `bonus_days` ride along on purpose — the opt-out copy has to be able
-    to say "your trial returns to the standard N days" rather than "you will lose N days"."""
+    to say "your trial returns to the standard N days" rather than "you will lose N days".
+
+    `revocable_bonus_days` is the OTHER half of that, and the two are not the same number:
+    `bonus_days` is config (what joining pays TODAY, 0 under the shipped policy) while
+    `revocable_bonus_days` is this user's own standing enrollment grant (what leaving would actually
+    take back). A user enrolled under the #750 defaults holds +7 that `revoke_affiliate_enrollment_bonus`
+    still claws back after the config went to 0 — telling them "you keep every trial day you have
+    already earned" off the config value would be a factual misstatement made right before an
+    irreversible click. Same arithmetic as the revoke does (ENROLLMENT + REVOKED, revocations being
+    negative), off totals already read here, so it costs no extra query."""
     from cqc_lem.utilities.db import (get_affiliate_enrollment, get_affiliate_referral_counts,
                                       get_affiliate_reward_totals)
     from cqc_lem.utilities.env_constants import FREE_TRIAL_DAYS
@@ -480,6 +500,8 @@ def affiliate_state(user_id: int) -> dict:
         "days_from_referrals": max(0, int(totals.get("referral") or 0)),
         "max_reward_days": max_reward_days(),
         "bonus_days": enrollment_bonus_days(),
+        "revocable_bonus_days": max(0, int(totals.get("enrollment") or 0)
+                                    + int(totals.get("revoked") or 0)),
         "referral_bonus_days": referral_bonus_days(),
         "standard_trial_days": int(FREE_TRIAL_DAYS),
         "promo_content_opt_in": bool(enrollment.get("promo_content_opt_in")),

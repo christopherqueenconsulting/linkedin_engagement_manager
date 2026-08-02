@@ -40,8 +40,12 @@ export default function AffiliateCard() {
     }
   }
 
-  const trialEnds = data.trial_ends_at
-    ? new Date(data.trial_ends_at).toLocaleDateString(undefined, {
+  // The confirmation line reads the MUTATION result, never the query cache: only the flip response
+  // knows whether days actually moved, and the invalidate that follows it replaces the cache with
+  // the GET shape (no reward_days, no trial_ends_at) a beat later.
+  const flip = setStatus.data
+  const trialEnds = flip?.trial_ends_at
+    ? new Date(flip.trial_ends_at).toLocaleDateString(undefined, {
         year: 'numeric',
         month: 'short',
         day: 'numeric',
@@ -183,17 +187,27 @@ export default function AffiliateCard() {
 
       {data.eligible && !data.enrolled && (
         <p className="text-sm text-gray-600">
-          You are not in the affiliate program. Your trial is the standard{' '}
-          {data.standard_trial_days} days. Join any time to get your referral link back and{' '}
-          {data.bonus_days} bonus trial days.
+          You are not in the affiliate program.{' '}
+          {data.bonus_days > 0
+            ? `Your trial is the standard ${data.standard_trial_days} days. Join any time to get your referral link back and ${data.bonus_days} bonus trial days.`
+            : `Join any time to get your referral link back and earn ${data.referral_bonus_days} extra trial days for each person you refer.`}
         </p>
       )}
 
-      {setStatus.isSuccess && trialEnds && (
+      {/* A flip ALWAYS gets a confirmation. `trial_ends_at` is deliberately empty for an account
+          that is no longer on a trial (a paid or cancelled user must not be quoted a stale date),
+          and a toggle that moves with no acknowledgement at all is the silent half of that fix. */}
+      {flip && (
         <p className="text-sm font-medium text-green-600" data-testid="affiliate-trial-note">
-          {data.enrolled
-            ? `Joined — your trial now runs to ${trialEnds}.`
-            : `You've left the program — your trial returns to the standard ${data.standard_trial_days} days, ending ${trialEnds}.`}
+          {flip.enrolled
+            ? trialEnds
+              ? `Joined — your trial runs to ${trialEnds}.`
+              : `Joined — your referral link is ready.`
+            : !trialEnds
+              ? `You've left the program — your subscription is unchanged.`
+              : flip.reward_days > 0
+                ? `You've left the program — your trial returns to the standard ${flip.standard_trial_days} days, ending ${trialEnds}.`
+                : `You've left the program — you keep the trial days you earned, so your trial still ends ${trialEnds}.`}
         </p>
       )}
       {(setStatus.isError || setPromo.isError) && (
