@@ -32,6 +32,7 @@ const BASE = {
   days_from_referrals: 28,
   max_reward_days: 90,
   bonus_days: 7,
+  revocable_bonus_days: 7,
   referral_bonus_days: 14,
   standard_trial_days: 14,
   promo_content_opt_in: false,
@@ -170,6 +171,15 @@ describe('AffiliateCard (issue #737)', () => {
     const container = await optOut({ reward_days: 0, trial_ends_at: '2026-08-30T00:00:00Z' })
     expect(container.textContent).toContain('you keep the trial days you earned')
     expect(container.textContent).not.toContain('returns to the standard')
+    expect(container.textContent).not.toContain('lose')
+  })
+
+  // A user who is no longer on a trial gets no date back (quoting a stale one would be worse), and
+  // a toggle that moves with no acknowledgement at all is not "the user is notified".
+  it('still confirms the flip when there is no trial date to report', async () => {
+    const container = await optOut({ reward_days: 0, trial_ends_at: null })
+    expect(container.textContent).toContain("You've left the program")
+    expect(container.textContent).not.toContain('still ends')
     expect(container.textContent).not.toContain('lose')
   })
 

@@ -467,7 +467,16 @@ def affiliate_state(user_id: int) -> dict:
     referral counts, days earned against the cap, and the two toggles with their consent record.
 
     `standard_trial_days` and `bonus_days` ride along on purpose — the opt-out copy has to be able
-    to say "your trial returns to the standard N days" rather than "you will lose N days"."""
+    to say "your trial returns to the standard N days" rather than "you will lose N days".
+
+    `revocable_bonus_days` is the OTHER half of that, and the two are not the same number:
+    `bonus_days` is config (what joining pays TODAY, 0 under the shipped policy) while
+    `revocable_bonus_days` is this user's own standing enrollment grant (what leaving would actually
+    take back). A user enrolled under the #750 defaults holds +7 that `revoke_affiliate_enrollment_bonus`
+    still claws back after the config went to 0 — telling them "you keep every trial day you have
+    already earned" off the config value would be a factual misstatement made right before an
+    irreversible click. Same arithmetic as the revoke does (ENROLLMENT + REVOKED, revocations being
+    negative), off totals already read here, so it costs no extra query."""
     from cqc_lem.utilities.db import (get_affiliate_enrollment, get_affiliate_referral_counts,
                                       get_affiliate_reward_totals)
     from cqc_lem.utilities.env_constants import FREE_TRIAL_DAYS
@@ -491,6 +500,8 @@ def affiliate_state(user_id: int) -> dict:
         "days_from_referrals": max(0, int(totals.get("referral") or 0)),
         "max_reward_days": max_reward_days(),
         "bonus_days": enrollment_bonus_days(),
+        "revocable_bonus_days": max(0, int(totals.get("enrollment") or 0)
+                                    + int(totals.get("revoked") or 0)),
         "referral_bonus_days": referral_bonus_days(),
         "standard_trial_days": int(FREE_TRIAL_DAYS),
         "promo_content_opt_in": bool(enrollment.get("promo_content_opt_in")),

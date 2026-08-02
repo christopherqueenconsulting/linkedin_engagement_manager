@@ -9,6 +9,7 @@ end date immediately, a self-referral that pays nobody — and none of those are
 storage layer is a mock that returns whatever the test says.
 """
 from datetime import datetime, timedelta
+from typing import Optional
 
 import pytest
 from unittest.mock import patch
@@ -242,7 +243,7 @@ def _post(client, path, **body):
     return r
 
 
-def _iso(dt):
+def _iso(dt: Optional[datetime]) -> Optional[str]:
     """The endpoint's own serializer — asserting against it pins the SHAPE the SPA parses, which is
     the thing that would silently differ if the two producers of `trial_ends_at` ever diverged."""
     from cqc_lem.api.main import _utc_iso
@@ -453,3 +454,35 @@ def test_a_user_who_is_no_longer_on_a_trial_is_not_quoted_a_stale_trial_date(cli
     assert detail["enrolled"] is False
     assert detail["reward_days"] == 0
     assert detail["trial_ends_at"] is None
+
+
+def test_the_grandfathered_join_bonus_is_reported_as_revocable_after_the_policy_flips(client, env,
+                                                                                     store):
+    """The #750 cohort: enrolled while the join bonus was 7, still holding it after the config went
+    to 0. `bonus_days` (what joining pays now) and `revocable_bonus_days` (what leaving takes back
+    from THIS user) must disagree — the enrollment notice's "leave in one click" line reads the
+    second, and reading the first would promise them a claw-back-free exit they do not have."""
+    _get(client)                                         # enrolled under the 7-day bonus
+    assert store.trial_days() == 21
+
+    with patch(f"{_AFF}.AFFILIATE_ENROLLMENT_BONUS_DAYS", 0):
+        detail = _get(client)
+        assert detail["bonus_days"] == 0
+        assert detail["revocable_bonus_days"] == 7
+
+        # And it IS revoked, which is the whole reason the copy has to say so beforehand.
+        flip = _post(client, "/status", enrolled=False).json()["detail"]
+        assert flip["reward_days"] == 7
+        assert store.trial_days() == 14
+
+
+def test_nothing_is_revocable_when_the_only_days_were_earned_by_referring(client,
+                                                                         env_no_join_bonus, store):
+    from cqc_lem.utilities.marketing.affiliate import attribute_referral, convert_referral
+    _get(client)
+    attribute_referral(7, {"ref": str(USER)})
+    convert_referral(7)
+
+    detail = _get(client)
+    assert detail["days_earned"] == 14
+    assert detail["revocable_bonus_days"] == 0           # earned days are never clawed back

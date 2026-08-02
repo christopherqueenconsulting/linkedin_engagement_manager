@@ -44,7 +44,10 @@ export default function AffiliateNotice() {
           Settings → Billing → Affiliate program
         </Link>
         .{' '}
-        {data.bonus_days > 0
+        {/* What leaving costs is the user's OWN standing join grant, not the configured bonus:
+            an account enrolled under the old defaults still has one to give back after the config
+            went to 0, and promising them otherwise right before the click is a misstatement. */}
+        {data.revocable_bonus_days > 0
           ? `Your trial simply returns to the standard ${data.standard_trial_days} days.`
           : 'You keep every trial day you have already earned.'}
       </p>

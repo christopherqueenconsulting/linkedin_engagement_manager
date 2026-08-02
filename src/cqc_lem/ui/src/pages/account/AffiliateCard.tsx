@@ -194,13 +194,20 @@ export default function AffiliateCard() {
         </p>
       )}
 
-      {flip && trialEnds && (
+      {/* A flip ALWAYS gets a confirmation. `trial_ends_at` is deliberately empty for an account
+          that is no longer on a trial (a paid or cancelled user must not be quoted a stale date),
+          and a toggle that moves with no acknowledgement at all is the silent half of that fix. */}
+      {flip && (
         <p className="text-sm font-medium text-green-600" data-testid="affiliate-trial-note">
           {flip.enrolled
-            ? `Joined — your trial runs to ${trialEnds}.`
-            : flip.reward_days > 0
-              ? `You've left the program — your trial returns to the standard ${flip.standard_trial_days} days, ending ${trialEnds}.`
-              : `You've left the program — you keep the trial days you earned, so your trial still ends ${trialEnds}.`}
+            ? trialEnds
+              ? `Joined — your trial runs to ${trialEnds}.`
+              : `Joined — your referral link is ready.`
+            : !trialEnds
+              ? `You've left the program — your subscription is unchanged.`
+              : flip.reward_days > 0
+                ? `You've left the program — your trial returns to the standard ${flip.standard_trial_days} days, ending ${trialEnds}.`
+                : `You've left the program — you keep the trial days you earned, so your trial still ends ${trialEnds}.`}
         </p>
       )}
       {(setStatus.isError || setPromo.isError) && (

@@ -18,7 +18,12 @@ export interface AffiliateState {
   days_earned: number
   days_from_referrals: number
   max_reward_days: number
+  // What joining pays TODAY (config) vs what leaving would actually take back from THIS user
+  // (their standing enrollment grant). Not the same number: a user enrolled under the old defaults
+  // still holds a revocable +7 after the config went to 0, so "what you get" copy reads the first
+  // and "what leaving costs" copy MUST read the second.
   bonus_days: number
+  revocable_bonus_days: number
   referral_bonus_days: number
   standard_trial_days: number
   promo_content_opt_in: boolean

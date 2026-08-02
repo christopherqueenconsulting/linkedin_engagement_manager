@@ -348,6 +348,42 @@ def test_a_configured_join_bonus_is_still_granted_and_reported():
     assert events[0].kwargs["bonus_days"] == 7
 
 
+def _state(totals: dict, bonus_days: int = 0) -> dict:
+    with patch(f"{_AFF}.AFFILIATE_PROGRAM_ENABLED", True), \
+         patch(f"{_AFF}.AFFILIATE_REQUIRE_COMPANY_PAGE", False), \
+         patch(f"{_AFF}.AFFILIATE_ENROLLMENT_BONUS_DAYS", bonus_days), \
+         patch("cqc_lem.utilities.db.get_affiliate_enrollment",
+               return_value={"status": affiliate.STATUS_ENROLLED}), \
+         patch("cqc_lem.utilities.db.get_affiliate_referral_counts", return_value={}), \
+         patch("cqc_lem.utilities.db.get_affiliate_reward_totals", return_value=totals):
+        return affiliate.affiliate_state(1)
+
+
+def test_the_state_reports_what_leaving_would_actually_revoke_not_the_configured_bonus():
+    """The user enrolled under the old defaults still HOLDS +7 that opting out claws back, even
+    though joining now pays 0 — so the copy that tells them what leaving costs cannot read config."""
+    state = _state({"total": 21, "enrollment": 7, "referral": 14, "revoked": 0})
+    assert state["bonus_days"] == 0                  # what joining pays today
+    assert state["revocable_bonus_days"] == 7        # what leaving takes back from THIS user
+
+
+def test_earned_referral_days_are_never_reported_as_revocable():
+    state = _state({"total": 28, "enrollment": 0, "referral": 28, "revoked": 0})
+    assert state["revocable_bonus_days"] == 0
+
+
+def test_an_already_revoked_join_bonus_is_no_longer_revocable():
+    """Opt out, opt back in with the bonus now off: the ledger nets to zero and leaving is free
+    again. Same arithmetic `revoke_affiliate_enrollment_bonus` uses, so the two cannot disagree."""
+    state = _state({"total": 14, "enrollment": 7, "referral": 14, "revoked": -7})
+    assert state["revocable_bonus_days"] == 0
+
+
+def test_a_missing_reward_ledger_reads_as_nothing_to_revoke():
+    state = _state({})
+    assert state["revocable_bonus_days"] == 0
+
+
 def test_affiliate_state_reports_ineligible_when_company_page_required_and_missing():
     with patch(f"{_AFF}.AFFILIATE_PROGRAM_ENABLED", True), \
          patch(f"{_AFF}.AFFILIATE_REQUIRE_COMPANY_PAGE", True), \

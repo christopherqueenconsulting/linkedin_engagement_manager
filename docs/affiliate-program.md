@@ -236,11 +236,31 @@ Default enrollment is only fair if the user is told. The notice states what they
 get, how to leave — and that **nothing is posted from their LinkedIn account for this**. The opt-out
 is one click and immediate.
 
-The copy is written off `bonus_days`, not hardcoded, because the two policies say different true
-things and the wrong one is a dark pattern either way. With a join bonus configured it reads *"your
-trial returns to the standard N days"*, never *"you will lose N days"*. At the shipped 0 it says
-leaving takes nothing — *"you keep every trial day you have already earned"* — because that is what
-happens: referral days are earned and never revoked.
+The copy is written off state, not hardcoded, because the two policies say different true things and
+the wrong one is a dark pattern either way. Which state matters is the part worth getting right, and
+**it is two different numbers**:
+
+| Question the copy answers | Field | Source |
+|---|---|---|
+| What does joining pay? | `bonus_days` | config (`AFFILIATE_ENROLLMENT_BONUS_DAYS`, 0 as shipped) |
+| What does leaving take back? | `revocable_bonus_days` | THIS user's standing enrollment grant in the ledger |
+
+They disagree for the cohort enrolled before 2026-08-02: joining pays 0 now, but they still hold a
++7 that `revoke_affiliate_enrollment_bonus` claws back on opt-out (it reads the ledger, never the
+config). Driving the "how to leave" line off `bonus_days` would promise those users a free exit and
+then take a week of trial off them — the same dark pattern the issue rules out, inverted. So:
+
+- `revocable_bonus_days > 0` → *"your trial returns to the standard N days"*, never *"you will lose N days"*.
+- `revocable_bonus_days == 0` → *"you keep every trial day you have already earned"*, which is exactly
+  what happens: referral days are earned and never revoked.
+
+`revocable_bonus_days` is `ENROLLMENT + REVOKED` off `get_affiliate_reward_totals` (revocations are
+negative rows) — the same arithmetic the revoke itself does, computed from totals `affiliate_state`
+already reads, so the promise and the action cannot drift apart.
+
+The post-flip confirmation is the matching half and reads the FLIP response (`reward_days`), not the
+query cache — only the response knows whether days actually moved. Every flip gets a confirmation,
+including the one where `trial_ends_at` comes back null because the account is no longer on a trial.
 
 ## 6. Analytics
 

@@ -33,6 +33,7 @@ const BASE = {
   days_from_referrals: 0,
   max_reward_days: 90,
   bonus_days: 0,
+  revocable_bonus_days: 0,
   referral_bonus_days: 14,
   standard_trial_days: 14,
   promo_content_opt_in: false,
@@ -83,10 +84,23 @@ describe('AffiliateNotice (issue #737)', () => {
   })
 
   it('frames the opt-out as a return to the standard trial when a join bonus IS configured', async () => {
-    get.mockResolvedValue(payload({ ...BASE, bonus_days: 7 }))
+    get.mockResolvedValue(payload({ ...BASE, bonus_days: 7, revocable_bonus_days: 7 }))
     const { container } = harness(<AffiliateNotice />)
     await waitFor(() => expect(screen.getByTestId('affiliate-notice')).toBeTruthy())
     expect(container.textContent).toContain('7 bonus trial days for joining')
+    expect(container.textContent).toContain('returns to the standard 14 days')
+    expect(container.textContent).not.toContain('lose')
+  })
+
+  // The cohort enrolled before the reward policy flipped: joining pays 0 now, but they still HOLD
+  // a +7 grant that opting out claws back. Driving this line off `bonus_days` would promise them a
+  // free exit and then take a week of trial off them.
+  it('warns the grandfathered cohort that leaving still returns them to the standard trial', async () => {
+    get.mockResolvedValue(payload({ ...BASE, bonus_days: 0, revocable_bonus_days: 7 }))
+    const { container } = harness(<AffiliateNotice />)
+    await waitFor(() => expect(screen.getByTestId('affiliate-notice')).toBeTruthy())
+    expect(container.textContent).not.toContain('0 bonus trial days')
+    expect(container.textContent).not.toContain('You keep every trial day you have already earned')
     expect(container.textContent).toContain('returns to the standard 14 days')
     expect(container.textContent).not.toContain('lose')
   })
