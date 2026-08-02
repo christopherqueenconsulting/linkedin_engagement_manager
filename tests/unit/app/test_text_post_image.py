@@ -41,7 +41,7 @@ class TestGenerateTextPostImage:
              patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
                    side_effect=RuntimeError("render down") if render_raises else None,
                    return_value=rendered_path) as render, \
-             patch("cqc_lem.utilities.ai.ai_helper.generate_post_image",
+             patch("cqc_lem.utilities.ai.image_gen.render_avatar_image_gated",
                    return_value=rendered_path) as lora:
             result = _generate_text_post_image(7, "My post text", 42)
         return result, store, brief, render, lora, assets
@@ -72,10 +72,13 @@ class TestGenerateTextPostImage:
         assert result is not None
         # Avatar resolved BEFORE the brief (the #744 subject-clause ordering)...
         assert brief.call_args[1]["avatar"] == avatar
-        # ...and the render goes through generate_post_image so guardrails/C2PA stay in charge.
+        # ...and the likeness renders through the GATED avatar path, so an off-subject headshot
+        # is caught rather than shipped (C2PA/provenance stays inside that helper).
         lora.assert_called_once()
         assert lora.call_args[1]["surface"] == "post_image"
         assert lora.call_args[1]["post_id"] == 42
+        assert lora.call_args[1]["avatar"] == avatar
+        assert lora.call_args[1]["focal_concept"] == "the focal idea"
         render.assert_not_called()
 
     def test_render_failure_never_raises_and_ships_bare(self, tmp_path):

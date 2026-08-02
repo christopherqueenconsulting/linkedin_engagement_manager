@@ -216,3 +216,31 @@ class TestFlushLlmCostRollup:
         with patch(_REDIS, return_value=client):
             from cqc_lem.utilities.observability import flush_llm_cost_rollup
             assert flush_llm_cost_rollup() == 0
+
+
+class TestLongModelIdentifiersNeverBreakTheLedger:
+    """Regression: an avatar LoRA ref (~100 chars) overflowed cost_ledger.model_tier
+    VARCHAR(64), so MySQL rejected the row and the spend vanished entirely."""
+
+    _LORA = ("gitchrisqueen/lemcqv1-avatar-60:"
+             "3ac08f699b61bc2afd323d578532d28a7a62f7371da89cfc928101baebacbf76")
+
+    def test_model_tier_is_clamped_to_the_column_width(self):
+        with patch(f"{_MOD}.posthog"), patch(f"{_MOD}._write_cost_ledger") as ledger:
+            from cqc_lem.utilities.observability import track_media_cost
+            track_media_cost("image", "replicate", 0.025, user_id=1, qty=1, model=self._LORA)
+        assert len(ledger.call_args[1]["model_tier"]) <= 64
+
+    def test_replicate_render_records_the_ref_without_its_version_digest(self, tmp_path):
+        with patch("cqc_lem.utilities.ai.image_gen.run_replicate_bounded",
+                   return_value=["https://replicate.dev/pb/abc/out.webp"]), \
+             patch("cqc_lem.utilities.ai.ai_helper.save_video_url_to_dir",
+                   return_value=str(tmp_path / "out.webp")), \
+             patch("cqc_lem.utilities.ai.ai_helper.create_folder_if_not_exists"), \
+             patch(f"{_MOD}.track_media_cost") as track:
+            from cqc_lem.utilities.ai.ai_helper import get_flux_image_via_replicate
+            get_flux_image_via_replicate("p", ref=self._LORA, aspect_ratio="1:1")
+
+        recorded = track.call_args[1]["model"]
+        assert recorded == "gitchrisqueen/lemcqv1-avatar-60"
+        assert len(recorded) <= 64

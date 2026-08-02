@@ -119,3 +119,43 @@ class TestVisionGate:
              patch.object(image_gen, "inspect_render_quality", return_value=bad):
             assert render_image_gated("p", surface="carousel") == "/tmp/x.png"
         render.assert_called_once()
+
+
+class TestAvatarRenderIsGatedToo:
+    """Regression: the avatar branch was the ONE render path with no quality check, so a post
+    about LLM routing costs came back as a plain headshot and nothing questioned it."""
+
+    _AVATAR = {"model_ref": "owner/lora:v1", "trigger_word": "TOK",
+               "gender_presentation": "man", "age_band": "40s"}
+
+    def _render(self, verdicts, surface="post_image"):
+        with patch("cqc_lem.utilities.avatar.replicate_avatar.generate_image_with_avatar",
+                   side_effect=[("/tmp/1.png", True), ("/tmp/2.png", True)]) as lora, \
+             patch("cqc_lem.utilities.ai.ai_helper._record_avatar_media") as record, \
+             patch.object(image_gen, "inspect_render_quality", side_effect=verdicts):
+            path = image_gen.render_avatar_image_gated(
+                "base prompt", avatar=self._AVATAR, user_id=3, surface=surface,
+                focal_concept="the idea", post_id=9)
+        return path, lora, record
+
+    def test_rejected_avatar_render_is_retried_with_the_issues(self):
+        path, lora, record = self._render([QualityVerdict(acceptable=False, issues=["plain headshot"]),
+                                           QualityVerdict(acceptable=True)])
+        assert path == "/tmp/2.png"
+        assert lora.call_count == 2
+        assert "plain headshot" in lora.call_args[0][0]
+        # The trigger word + declared clause must survive the retry prompt.
+        assert lora.call_args[0][0].startswith("TOK, a man in his 40s")
+
+    def test_accepted_render_returns_immediately_and_signs_provenance(self):
+        path, lora, record = self._render([QualityVerdict(acceptable=True)])
+        assert path == "/tmp/1.png"
+        lora.assert_called_once()
+        record.assert_called_once_with("/tmp/1.png", 9, 3)
+
+    def test_unenforced_surface_does_not_retry(self):
+        with patch.object(image_gen, "IMAGE_QUALITY_GATE_SURFACES", ("newsletter",)):
+            path, lora, _ = self._render([QualityVerdict(acceptable=False, issues=["x"])],
+                                         surface="carousel")
+        assert path == "/tmp/1.png"
+        lora.assert_called_once()

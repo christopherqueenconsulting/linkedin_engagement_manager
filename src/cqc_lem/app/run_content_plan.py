@@ -410,9 +410,10 @@ def _generate_text_post_image(user_id: int, text_content: str, post_id: "int | N
         brief = build_image_brief(text_content, surface="post_image", ratio=DEFAULT_IMAGE_RATIO,
                                   profile=profile, avatar=avatar)
         if avatar:
-            from cqc_lem.utilities.ai.ai_helper import generate_post_image
-            image_path = generate_post_image(brief.prompt, user_id, ratio=DEFAULT_IMAGE_RATIO,
-                                             surface=AVATAR_SURFACE_POST_IMAGE, post_id=post_id)
+            from cqc_lem.utilities.ai.image_gen import render_avatar_image_gated
+            image_path = render_avatar_image_gated(
+                brief.prompt, avatar=avatar, user_id=user_id, surface="post_image",
+                ratio=DEFAULT_IMAGE_RATIO, focal_concept=brief.focal_concept, post_id=post_id)
         else:
             image_path = render_image_gated(brief.prompt, surface="post_image",
                                             ratio=DEFAULT_IMAGE_RATIO,

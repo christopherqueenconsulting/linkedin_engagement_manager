@@ -61,8 +61,13 @@ Respond with ONLY a JSON object:
 {"focal_concept": "<the one idea the image depicts, under 20 words>",
  "prompt": "<one richly descriptive render-ready paragraph: scene, subject, setting, lighting, color>"}"""
 
-# A refusal or meta-answer leaking into a render prompt produces surreal garbage.
-_BANNED_FRAGMENTS = ("i'm sorry", "i cannot", "as an ai", "i can't", "language model")
+# A refusal or meta-answer leaking into a render prompt produces surreal garbage. Anchored to
+# refusal PHRASING on purpose: a bare "language model" entry here rejected every legitimate brief
+# an AI-focused author writes ("a dashboard showing large language model routing costs"), so their
+# briefs fell back to the deterministic template every time — silently, since the fallback is a
+# working code path. Match how a refusal STARTS, never a topic word.
+_BANNED_FRAGMENTS = ("i'm sorry", "i am sorry", "i cannot", "i can't", "i am unable",
+                     "as an ai", "cannot fulfill", "cannot generate", "unable to generate")
 
 _MIN_PROMPT_CHARS = 60
 _MAX_PROMPT_CHARS = 2400
