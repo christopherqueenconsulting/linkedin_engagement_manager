@@ -69,6 +69,17 @@ Respond with ONLY a JSON object:
 _BANNED_FRAGMENTS = ("i'm sorry", "i am sorry", "i cannot", "i can't", "i am unable",
                      "as an ai", "cannot fulfill", "cannot generate", "unable to generate")
 
+# Added only when the author's own likeness is NOT being rendered. Without it the brief asks for
+# "a confident business professional", the renderer supplies an anonymous model, and the result is
+# indistinguishable from the stock photography this engine exists to replace — on a PERSONAL-brand
+# newsletter a stranger's face is worse than no face. With an avatar, a person IS the point.
+_NO_ANONYMOUS_PERSON = (
+    "The author's likeness is NOT available for this image, so do NOT make an anonymous person the "
+    "focal subject — a generic model standing in an office is exactly the stock-photo look to "
+    "avoid. Build the image around a tangible object, a specific environment, or a close-up of "
+    "hands mid-action instead. People may appear incidentally, out of focus or from behind, but "
+    "never as an identifiable face carrying the frame.\n")
+
 _MIN_PROMPT_CHARS = 60
 _MAX_PROMPT_CHARS = 2400
 
@@ -127,6 +138,7 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
     user_prompt = (
         f"{context}{_STYLE_PRESETS[preset]}\n\n"
         f"Compose for a {ratio} aspect ratio.\n"
+        + ("" if avatar else _NO_ANONYMOUS_PERSON)
         + (f"Additional direction: {extra_direction}\n" if extra_direction else "")
         + f"\nHere is the content the image must represent:\n<content>{content}</content>")
 
