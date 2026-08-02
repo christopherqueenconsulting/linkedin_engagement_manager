@@ -138,6 +138,29 @@ class TestConvergeStack:
         assert state.read_text(encoding="utf-8") == "1"
         assert "No such container" not in result.stdout + result.stderr
 
+    def test_retries_once_on_a_name_collision(self) -> None:
+        """An orphaned `<hex>_<name>` container makes the next converge fail with
+        'is already in use', not 'No such container'. Retrying only on the latter is why the
+        v0.118.0 converge gave up after one attempt and left the worker tier in Created."""
+        body = DEPLOY_SH.read_text(encoding="utf-8")
+        retry_test = body.split("if [[ ${attempts} -lt ${max_attempts} ]]", 1)[1].split("then", 1)[0]
+        assert "is already in use" in retry_test
+        assert "no such container" in retry_test.lower()
+
+    def test_orphan_sweep_survives_a_failing_docker(self, tmp_path: Path) -> None:
+        """The sweep is a diagnostic, so it must degrade to 'sweep nothing' rather than abort the
+        deploy. Under `set -e` an unguarded `x="$(docker ...)"` assignment exits the shell the
+        moment docker errors — which took the whole converge down with it, `up` never running.
+
+        `_run` puts tmp_path first on PATH, so this docker stub shadows the real binary."""
+        docker_stub = tmp_path / "docker"
+        docker_stub.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        docker_stub.chmod(0o755)
+        state = tmp_path / "state"
+        result = _run(tmp_path, {"DEPLOY_FAKE_STATE": str(state)}, "converge_stack")
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert state.read_text(encoding="utf-8") == "1"  # the `up` still ran exactly once
+
 
 class TestVerifyStackRunning:
     def test_passes_when_all_services_running(self, tmp_path: Path) -> None:
