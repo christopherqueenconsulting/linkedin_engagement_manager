@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.123.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.123.0...v0.123.1) (2026-08-02)
+
+
+### Bug Fixes
+
+* **images:** refusal filter rejected every AI-topic brief; gate avatar renders too ([#937](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/937)) ([9cee71d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9cee71d86f2b5bf1a5c0f0a1ceae97e63cd1bcca))
+
 ## [0.123.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.122.0...v0.123.0) (2026-08-02)
 
 
