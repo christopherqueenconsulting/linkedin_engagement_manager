@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
@@ -27,6 +27,10 @@ export default function NewsletterQueue(
   // new content) — the normal seed effect only fires when the selection is GONE.
   const [reseedId, setReseedId] = useState<number | null>(null)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  // Set while an AI cover is being generated — the queue is polled until that edition has one.
+  const [coverWaitId, setCoverWaitId] = useState<number | null>(null)
+  const [coverTries, setCoverTries] = useState(0)
+  const coverFileRef = useRef<HTMLInputElement>(null)
 
   const { data, isLoading } = useQuery({
     queryKey: ['newsletter-queue', sessionToken],
@@ -118,6 +122,97 @@ export default function NewsletterQueue(
     },
   })
 
+  type CoverDetail = Pick<NewsletterEdition, 'cover_image_url' | 'cover_image_source' | 'cover_image_status'>
+  const applyCover = (d: CoverDetail) =>
+    setDe({
+      cover_image_url: d.cover_image_url ?? null,
+      cover_image_source: d.cover_image_source ?? null,
+      cover_image_status: d.cover_image_status ?? null,
+    })
+  const coverError = (e: unknown, fallback: string) => {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    setMsg({ ok: false, text: typeof detail === 'string' ? detail : fallback })
+    setTimeout(() => setMsg(null), 6000)
+  }
+
+  const uploadCoverMutation = useMutation({
+    mutationFn: (file: File) => {
+      const form = new FormData()
+      form.append('session_token', sessionToken!)
+      form.append('edition_id', String(draftEdit!.id))
+      form.append('file', file)
+      return api.post('/user/newsletter-draft/cover', form)
+    },
+    onSuccess: (res) => {
+      applyCover(res.data.detail as CoverDetail)
+      qc.invalidateQueries({ queryKey: ['newsletter-queue'] })
+      setMsg({ ok: true, text: 'Cover uploaded.' })
+      setTimeout(() => setMsg(null), 3000)
+    },
+    onError: (e) => coverError(e, 'Could not upload that image — try another file.'),
+  })
+
+  const generateCoverMutation = useMutation({
+    mutationFn: () =>
+      api.post('/user/newsletter-draft/cover/generate', {
+        session_token: sessionToken,
+        edition_id: draftEdit!.id,
+      }),
+    onSuccess: () => {
+      setCoverWaitId(draftEdit!.id)
+      setMsg({ ok: true, text: 'Generating a cover… this can take a minute.' })
+    },
+    onError: (e) => coverError(e, 'Could not start cover generation — try again.'),
+  })
+
+  const coverDecisionMutation = useMutation({
+    mutationFn: (action: 'approve' | 'remove') =>
+      api.post('/user/newsletter-draft/cover/decision', {
+        session_token: sessionToken,
+        edition_id: draftEdit!.id,
+        action,
+      }),
+    onSuccess: (res, action) => {
+      applyCover(res.data.detail as CoverDetail)
+      qc.invalidateQueries({ queryKey: ['newsletter-queue'] })
+      setMsg({ ok: true, text: action === 'remove' ? 'Cover removed.' : 'Cover approved.' })
+      setTimeout(() => setMsg(null), 3000)
+    },
+    onError: (e) => coverError(e, 'Could not update the cover — try again.'),
+  })
+
+  // Cover generation is an async task, so poll the queue until the edition carries a cover. The
+  // poll is BOUNDED: a generation that failed (or was rejected by the cover gate) never lands a
+  // cover, and an unbounded poll would leave the whole panel disabled forever.
+  const COVER_POLL_LIMIT = 12
+  useEffect(() => {
+    if (coverWaitId == null) return
+    const fresh = editions.find((e) => e.id === coverWaitId)
+    if (fresh?.cover_image_url) {
+      if (draftEdit?.id === coverWaitId) applyCover(fresh)
+      setCoverWaitId(null)
+      setCoverTries(0)
+      setMsg({ ok: true, text: 'Cover ready — review it below and approve to publish it.' })
+      setTimeout(() => setMsg(null), 5000)
+      return
+    }
+    if (coverTries >= COVER_POLL_LIMIT) {
+      setCoverWaitId(null)
+      setCoverTries(0)
+      setMsg({ ok: false, text: 'No cover came back — try generating again or upload your own.' })
+      setTimeout(() => setMsg(null), 8000)
+      return
+    }
+    const t = setTimeout(() => {
+      setCoverTries((n) => n + 1)
+      qc.invalidateQueries({ queryKey: ['newsletter-queue'] })
+    }, 10000)
+    return () => clearTimeout(t)
+  }, [data, coverWaitId, coverTries])
+
+  const coverBusy =
+    uploadCoverMutation.isPending || generateCoverMutation.isPending ||
+    coverDecisionMutation.isPending || coverWaitId != null
   const regenerating = regenerateMutation.isPending || reseedId != null
   const busy = draftMutation.isPending || regenerating
 
@@ -231,6 +326,69 @@ export default function NewsletterQueue(
                 }
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
               />
+            </div>
+
+            {/* Cover image (issue #893): upload your own, or generate one. A generated cover is
+                NOT published until it's approved here — it's a public brand asset. */}
+            <div className="border-t border-gray-100 pt-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="block text-sm font-medium text-gray-700">Cover image</label>
+                {draftEdit.cover_image_url && (
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                      draftEdit.cover_image_status === 'approved'
+                        ? 'bg-green-100 text-green-700'
+                        : 'bg-yellow-100 text-yellow-700'
+                    }`}
+                  >
+                    {draftEdit.cover_image_status === 'approved' ? 'PUBLISHES WITH THIS EDITION' : 'NEEDS YOUR APPROVAL'}
+                  </span>
+                )}
+              </div>
+              {draftEdit.cover_image_url ? (
+                <img src={draftEdit.cover_image_url} alt="Newsletter cover"
+                  className="w-full rounded-lg border border-gray-200 object-cover" />
+              ) : (
+                <p className="text-xs text-gray-400">
+                  No cover yet. Editions publish fine without one — a cover just makes the article
+                  stand out in the feed and in subscriber email.
+                </p>
+              )}
+              <input ref={coverFileRef} type="file" accept="image/png,image/jpeg,image/webp"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  if (file) uploadCoverMutation.mutate(file)
+                  e.target.value = ''  // let the same file be re-picked after a rejection
+                }} />
+              <div className="grid grid-cols-2 gap-2">
+                <button type="button" onClick={() => coverFileRef.current?.click()} disabled={busy || coverBusy}
+                  className="bg-gray-100 text-gray-700 py-2 rounded-lg text-sm font-semibold hover:bg-gray-200 disabled:opacity-50 transition-colors">
+                  {uploadCoverMutation.isPending ? 'Uploading…' : 'Upload image'}
+                </button>
+                <button type="button" onClick={() => generateCoverMutation.mutate()} disabled={busy || coverBusy}
+                  className="bg-indigo-50 text-indigo-700 py-2 rounded-lg text-sm font-semibold hover:bg-indigo-100 disabled:opacity-50 transition-colors">
+                  {coverWaitId != null ? 'Generating…' : 'Generate with AI'}
+                </button>
+              </div>
+              {draftEdit.cover_image_url && (
+                <div className="grid grid-cols-2 gap-2">
+                  {draftEdit.cover_image_status !== 'approved' && (
+                    <button type="button" onClick={() => coverDecisionMutation.mutate('approve')}
+                      disabled={busy || coverBusy}
+                      className="bg-green-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-green-700 disabled:opacity-50 transition-colors">
+                      Approve cover
+                    </button>
+                  )}
+                  <button type="button" onClick={() => coverDecisionMutation.mutate('remove')}
+                    disabled={busy || coverBusy}
+                    className={`text-gray-600 py-2 rounded-lg text-sm font-semibold bg-gray-100 hover:bg-gray-200 disabled:opacity-50 transition-colors ${
+                      draftEdit.cover_image_status === 'approved' ? 'col-span-2' : ''
+                    }`}>
+                    Remove cover
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Re-generate: the prominent action. Optional guidance steers the rewrite; empty guidance

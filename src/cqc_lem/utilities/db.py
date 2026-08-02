@@ -7237,11 +7237,13 @@ _NEWSLETTER_DEFAULTS: dict = {
     "enabled": False, "title": None, "topic": None, "cadence": "weekly",
     "align_with_blog": True, "newsletter_url": None, "last_published_at": None,
     "publish_day": 1, "publish_hour": 9, "generate_lead_days": 3, "max_queued_drafts": 1,
-    "invite_connections_enabled": False, "max_invites_per_run": 50,
+    "invite_connections_enabled": False, "max_invites_per_run": 50, "cover_image_auto": False,
 }
 _NEWSLETTER_COLS = ("enabled", "title", "topic", "cadence", "align_with_blog", "newsletter_url",
                     "publish_day", "publish_hour", "generate_lead_days", "max_queued_drafts",
-                    "invite_connections_enabled", "max_invites_per_run")
+                    "invite_connections_enabled", "max_invites_per_run", "cover_image_auto")
+_NEWSLETTER_BOOL_COLS = ("enabled", "align_with_blog", "invite_connections_enabled",
+                         "cover_image_auto")
 
 
 def get_newsletter_settings(user_id: int) -> dict:
@@ -7252,14 +7254,13 @@ def get_newsletter_settings(user_id: int) -> dict:
         cursor.execute(
             "SELECT enabled, title, topic, cadence, align_with_blog, newsletter_url, last_published_at, "
             "publish_day, publish_hour, generate_lead_days, max_queued_drafts, "
-            "invite_connections_enabled, max_invites_per_run "
+            "invite_connections_enabled, max_invites_per_run, cover_image_auto "
             "FROM newsletter_settings WHERE user_id = %s", (user_id,))
         row = cursor.fetchone()
         if row is None:
             return dict(_NEWSLETTER_DEFAULTS)
-        row["enabled"] = bool(row.get("enabled"))
-        row["align_with_blog"] = bool(row.get("align_with_blog"))
-        row["invite_connections_enabled"] = bool(row.get("invite_connections_enabled"))
+        for col in _NEWSLETTER_BOOL_COLS:
+            row[col] = bool(row.get(col))
         row["publish_day"] = int(row.get("publish_day") if row.get("publish_day") is not None else 1)
         row["publish_hour"] = int(row.get("publish_hour") if row.get("publish_hour") is not None else 9)
         row["generate_lead_days"] = int(
@@ -7279,11 +7280,11 @@ def get_newsletter_settings(user_id: int) -> dict:
 
 def update_newsletter_settings(user_id: int, settings: dict) -> bool:
     """Upsert the user's newsletter config (title/topic/cadence/enabled/align_with_blog,
-    plus the opt-in invite flow: invite_connections_enabled/max_invites_per_run)."""
+    plus the opt-in invite flow: invite_connections_enabled/max_invites_per_run, and the opt-in
+    AI cover generation: cover_image_auto)."""
     merged = {**_NEWSLETTER_DEFAULTS, **{k: v for k, v in settings.items() if k in _NEWSLETTER_COLS}}
     values = [user_id] + [
-        (1 if merged[c] else 0) if c in ("enabled", "align_with_blog", "invite_connections_enabled")
-        else merged[c]
+        (1 if merged[c] else 0) if c in _NEWSLETTER_BOOL_COLS else merged[c]
         for c in _NEWSLETTER_COLS]
     placeholders = ", ".join(["%s"] * (len(_NEWSLETTER_COLS) + 1))
     updates = ", ".join(f"{c}=VALUES({c})" for c in _NEWSLETTER_COLS)
@@ -7625,7 +7626,8 @@ def get_pending_newsletter_editions(user_id: int) -> list:
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute(
-            "SELECT id, title, subtitle, subject, `format`, hook_style, body, status, scheduled_for "
+            "SELECT id, title, subtitle, subject, `format`, hook_style, body, status, scheduled_for, "
+            "cover_image_path, cover_image_source, cover_image_status "
             "FROM newsletter_editions "
             "WHERE user_id = %s AND status IN ('draft', 'approved') "
             "ORDER BY scheduled_for ASC", (user_id,))
@@ -7682,6 +7684,70 @@ def update_newsletter_edition(edition_id: int, user_id: int, title: str = None,
         return cursor.rowcount >= 0
     except mysql.connector.Error as err:
         myprint(f"Could not update newsletter edition {edition_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def set_edition_cover_image(edition_id: int, user_id: int, cover_image_path: str,
+                            source: str, status: str) -> bool:
+    """Attach a cover image to an edition (issue #893), scoped to its owner.
+
+    `source` is 'upload' or 'ai'; `status` is 'approved' or 'pending_review'. The two are set
+    together on purpose — a generated cover that arrived without its pending status would be
+    indistinguishable from artwork the author chose, and the publish flow only reads `status`.
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE newsletter_editions SET cover_image_path=%s, cover_image_source=%s, "
+            "cover_image_status=%s WHERE id=%s AND user_id=%s",
+            (cover_image_path, source, status, edition_id, user_id))
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not set cover image on edition {edition_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def set_edition_cover_status(edition_id: int, user_id: int, status: str) -> bool:
+    """Move an edition's cover between 'pending_review' and 'approved' — the human half of the
+    cover gate. Only an edition that HAS a cover can change its status."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE newsletter_editions SET cover_image_status=%s "
+            "WHERE id=%s AND user_id=%s AND cover_image_path IS NOT NULL",
+            (status, edition_id, user_id))
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not set cover status on edition {edition_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def clear_edition_cover_image(edition_id: int, user_id: int) -> bool:
+    """Drop an edition's cover entirely. `update_newsletter_edition` is COALESCE-based and so can
+    never null a column — removing a cover needs its own statement."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE newsletter_editions SET cover_image_path=NULL, cover_image_source=NULL, "
+            "cover_image_status=NULL WHERE id=%s AND user_id=%s", (edition_id, user_id))
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not clear cover image on edition {edition_id} | Error: {err}")
         return False
     finally:
         cursor.close()
@@ -7754,7 +7820,8 @@ def get_newsletter_edition(edition_id: int) -> "dict | None":
     try:
         cursor.execute(
             "SELECT id, user_id, title, subtitle, subject, `format`, hook_style, opening_line, "
-            "body, status, scheduled_for, published_url "
+            "body, status, scheduled_for, published_url, "
+            "cover_image_path, cover_image_source, cover_image_status "
             "FROM newsletter_editions WHERE id = %s", (edition_id,))
         return cursor.fetchone()
     except mysql.connector.Error as err:

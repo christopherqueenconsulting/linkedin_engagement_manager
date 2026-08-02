@@ -426,3 +426,83 @@ class TestEditions:
             from cqc_lem.utilities.db import mark_edition_failed
             assert mark_edition_failed(3) is True
         assert "status='failed'" in cur.execute.call_args[0][0]
+
+
+class TestNewsletterCoverSettings:
+    """Issue #893: the cover opt-in rides the same settings row."""
+
+    def test_default_is_off(self):
+        conn, _ = _mock_conn(fetch_row=None)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_newsletter_settings
+            assert get_newsletter_settings(1)["cover_image_auto"] is False
+
+    def test_coerces_the_stored_flag_to_a_bool(self):
+        conn, _ = _mock_conn(fetch_row={"enabled": 1, "align_with_blog": 1,
+                                        "invite_connections_enabled": 0, "cover_image_auto": 1})
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_newsletter_settings
+            assert get_newsletter_settings(1)["cover_image_auto"] is True
+
+    def test_upsert_writes_the_flag_as_an_int(self):
+        conn, cur = _mock_conn()
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_newsletter_settings, _NEWSLETTER_COLS
+            update_newsletter_settings(1, {"cover_image_auto": True})
+        sql, values = cur.execute.call_args[0]
+        assert "cover_image_auto" in sql
+        assert values[1 + _NEWSLETTER_COLS.index("cover_image_auto")] == 1
+
+
+class TestEditionCoverImage:
+    def test_set_writes_path_source_and_status_together(self):
+        conn, cur = _mock_conn()
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import set_edition_cover_image
+            assert set_edition_cover_image(9, 3, "images/newsletter_covers/3/a.png",
+                                           "ai", "pending_review") is True
+        sql, values = cur.execute.call_args[0]
+        assert "cover_image_path" in sql and "cover_image_source" in sql and "cover_image_status" in sql
+        assert "user_id=%s" in sql, "a cover write must be scoped to its owner"
+        assert values == ("images/newsletter_covers/3/a.png", "ai", "pending_review", 9, 3)
+
+    def test_set_status_only_touches_an_edition_that_has_a_cover(self):
+        conn, cur = _mock_conn()
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import set_edition_cover_status
+            assert set_edition_cover_status(9, 3, "approved") is True
+        sql, values = cur.execute.call_args[0]
+        assert "cover_image_path IS NOT NULL" in sql
+        assert values == ("approved", 9, 3)
+
+    def test_clear_nulls_every_cover_column(self):
+        conn, cur = _mock_conn()
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import clear_edition_cover_image
+            assert clear_edition_cover_image(9, 3) is True
+        sql, values = cur.execute.call_args[0]
+        assert sql.count("NULL") == 3
+        assert values == (9, 3)
+
+    def test_db_error_is_false_not_an_exception(self):
+        import mysql.connector
+        conn, cur = _mock_conn()
+        cur.execute.side_effect = mysql.connector.Error("boom")
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import (clear_edition_cover_image, set_edition_cover_image,
+                                              set_edition_cover_status)
+            assert set_edition_cover_image(9, 3, "p", "ai", "pending_review") is False
+            assert set_edition_cover_status(9, 3, "approved") is False
+            assert clear_edition_cover_image(9, 3) is False
+
+    def test_reads_select_the_cover_columns(self):
+        conn, cur = _mock_conn(fetch_row={"id": 9}, fetch_all=[{"id": 9}])
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import (get_newsletter_edition,
+                                              get_pending_newsletter_editions)
+            get_newsletter_edition(9)
+            single_sql = cur.execute.call_args[0][0]
+            get_pending_newsletter_editions(3)
+            queue_sql = cur.execute.call_args[0][0]
+        for sql in (single_sql, queue_sql):
+            assert "cover_image_path" in sql and "cover_image_status" in sql

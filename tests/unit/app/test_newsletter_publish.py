@@ -526,3 +526,127 @@ class TestPublishScheduledEditions:
             result = auto_publish_scheduled_editions()
         assert task.apply_async.call_count == 2
         assert "2 newsletter edition" in result
+
+
+class TestApprovedCoverPath:
+    """Issue #893 — the ONE place that decides a cover may reach LinkedIn."""
+
+    def test_pending_review_cover_is_never_published(self):
+        from cqc_lem.app.run_automation import _approved_cover_path
+        edition = {"user_id": 1, "cover_image_path": "images/newsletter_covers/1/a.png",
+                   "cover_image_status": "pending_review"}
+        with patch("cqc_lem.utilities.newsletter_cover.cover_abs_path",
+                   return_value="/assets/a.png") as resolve:
+            assert _approved_cover_path(edition) is None
+        resolve.assert_not_called()
+
+    def test_approved_cover_resolves_to_a_path(self):
+        from cqc_lem.app.run_automation import _approved_cover_path
+        edition = {"user_id": 1, "cover_image_path": "images/newsletter_covers/1/a.png",
+                   "cover_image_status": "approved"}
+        with patch("cqc_lem.utilities.newsletter_cover.cover_abs_path",
+                   return_value="/assets/a.png"):
+            assert _approved_cover_path(edition) == "/assets/a.png"
+
+    def test_no_cover_at_all_is_none(self):
+        from cqc_lem.app.run_automation import _approved_cover_path
+        assert _approved_cover_path({"user_id": 1}) is None
+
+    def test_approved_cover_whose_file_vanished_warns_and_publishes_without_it(self):
+        from cqc_lem.app.run_automation import _approved_cover_path
+        edition = {"user_id": 1, "cover_image_path": "images/newsletter_covers/1/gone.png",
+                   "cover_image_status": "approved"}
+        with patch("cqc_lem.utilities.newsletter_cover.cover_abs_path", return_value=None), \
+             patch(f"{_RA}.log_warning") as warn:
+            assert _approved_cover_path(edition) is None
+        warn.assert_called_once()
+
+    def test_publish_threads_the_approved_cover_to_the_editor(self):
+        from cqc_lem.app.run_automation import auto_publish_edition
+        edition = {"id": 9, "user_id": 1, "status": "approved", "title": "T", "subtitle": "S",
+                   "body": "B", "cover_image_path": "images/newsletter_covers/1/a.png",
+                   "cover_image_status": "approved"}
+        with patch(f"{_RA}.get_newsletter_edition", return_value=edition), \
+             patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch("cqc_lem.utilities.newsletter_cover.cover_abs_path", return_value="/assets/a.png"), \
+             patch(f"{_RA}._fill_and_publish_article", return_value=("https://x/pulse/t", None)) as fill, \
+             patch(f"{_RA}.mark_edition_published"), \
+             patch(f"{_RA}.quit_gracefully"):
+            auto_publish_edition.run(edition_id=9)
+        assert fill.call_args.kwargs.get("cover_image_path") == "/assets/a.png"
+
+    def test_publish_sends_no_cover_when_one_is_still_pending(self):
+        from cqc_lem.app.run_automation import auto_publish_edition
+        edition = {"id": 9, "user_id": 1, "status": "approved", "title": "T", "subtitle": "S",
+                   "body": "B", "cover_image_path": "images/newsletter_covers/1/a.png",
+                   "cover_image_status": "pending_review"}
+        with patch(f"{_RA}.get_newsletter_edition", return_value=edition), \
+             patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_RA}._fill_and_publish_article", return_value=("https://x/pulse/t", None)) as fill, \
+             patch(f"{_RA}.mark_edition_published"), \
+             patch(f"{_RA}.quit_gracefully"):
+            auto_publish_edition.run(edition_id=9)
+        assert fill.call_args.kwargs.get("cover_image_path") is None
+
+
+class TestGenerateNewsletterCoverTask:
+    def test_missing_edition_is_a_no_op(self):
+        from cqc_lem.app.run_scheduler import generate_newsletter_cover
+        with patch("cqc_lem.utilities.db.get_newsletter_edition", return_value=None), \
+             patch("cqc_lem.utilities.newsletter_cover.generate_cover_for_edition") as gen:
+            result = generate_newsletter_cover.run(edition_id=9)
+        assert "not found" in result
+        gen.assert_not_called()
+
+    def test_a_generated_cover_lands_pending_review(self):
+        from cqc_lem.app.run_scheduler import generate_newsletter_cover
+        edition = {"id": 9, "user_id": 3, "title": "T", "subtitle": "S", "body": "B"}
+        with patch("cqc_lem.utilities.db.get_newsletter_edition", return_value=edition), \
+             patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=MagicMock()), \
+             patch("cqc_lem.utilities.newsletter_cover.generate_cover_for_edition",
+                   return_value=("images/newsletter_covers/3/a.png", None)), \
+             patch("cqc_lem.utilities.db.set_edition_cover_image") as store:
+            result = generate_newsletter_cover.run(edition_id=9)
+        assert "Generated cover" in result
+        assert store.call_args[0] == (9, 3, "images/newsletter_covers/3/a.png", "ai",
+                                      "pending_review")
+
+    def test_a_failed_generation_writes_nothing(self):
+        from cqc_lem.app.run_scheduler import generate_newsletter_cover
+        edition = {"id": 9, "user_id": 3, "title": "T", "subtitle": "S", "body": "B"}
+        with patch("cqc_lem.utilities.db.get_newsletter_edition", return_value=edition), \
+             patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=MagicMock()), \
+             patch("cqc_lem.utilities.newsletter_cover.generate_cover_for_edition",
+                   return_value=(None, "Image generation failed")), \
+             patch("cqc_lem.utilities.db.set_edition_cover_image") as store:
+            result = generate_newsletter_cover.run(edition_id=9)
+        assert "No cover generated" in result
+        store.assert_not_called()
+
+    def test_a_profile_that_will_not_load_does_not_stop_the_cover(self):
+        from cqc_lem.app.run_scheduler import generate_newsletter_cover
+        edition = {"id": 9, "user_id": 3, "title": "T", "subtitle": "S", "body": "B"}
+        with patch("cqc_lem.utilities.db.get_newsletter_edition", return_value=edition), \
+             patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user",
+                   side_effect=RuntimeError("no session")), \
+             patch("cqc_lem.utilities.newsletter_cover.generate_cover_for_edition",
+                   return_value=("images/newsletter_covers/3/a.png", None)) as gen, \
+             patch("cqc_lem.utilities.db.set_edition_cover_image"):
+            generate_newsletter_cover.run(edition_id=9)
+        assert gen.call_args[1]["profile"] is None
+
+
+class TestCoverAutoQueue:
+    """The account-settings opt-in: a new draft only gets a cover when the author asked for it."""
+
+    def test_off_by_default_queues_nothing(self):
+        with patch("cqc_lem.app.run_scheduler.generate_newsletter_cover") as cover:
+            _run_generate(settings=_settings(max_queued_drafts=1), pending=0)
+        cover.apply_async.assert_not_called()
+
+    def test_on_queues_one_cover_per_new_draft(self):
+        with patch("cqc_lem.app.run_scheduler.generate_newsletter_cover") as cover:
+            _run_generate(settings=_settings(max_queued_drafts=2, cover_image_auto=True),
+                          pending=0, create_ret=77)
+        assert cover.apply_async.call_count == 2
+        assert cover.apply_async.call_args[1]["kwargs"] == {"edition_id": 77}

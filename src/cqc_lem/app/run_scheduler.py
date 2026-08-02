@@ -812,13 +812,20 @@ def _topup_newsletter_drafts_for_user(user_id: int, now: datetime,
         if not edition:
             break
         edition_subject = edition.get("subject") or (plan["subject"] if plan else None)
-        if not create_newsletter_edition(user_id, edition["title"], edition.get("subtitle"),
-                                          edition["body"], slot, subject=edition_subject,
-                                          edition_format=edition.get("format"),
-                                          hook_style=edition.get("hook_style"),
-                                          opening_line=edition.get("opening_line"),
-                                          blueprint=compact_blueprint(plan) if plan else None):
+        new_edition_id = create_newsletter_edition(
+            user_id, edition["title"], edition.get("subtitle"),
+            edition["body"], slot, subject=edition_subject,
+            edition_format=edition.get("format"),
+            hook_style=edition.get("hook_style"),
+            opening_line=edition.get("opening_line"),
+            blueprint=compact_blueprint(plan) if plan else None)
+        if not new_edition_id:
             break  # duplicate slot / db error → stop this user's run
+        # Opt-in only (issue #893): generation costs money per edition, so a cover is queued for a
+        # fresh draft only when the author turned it on for their newsletter. It still lands
+        # pending_review — this never publishes an unreviewed image.
+        if settings.get("cover_image_auto"):
+            generate_newsletter_cover.apply_async(kwargs={"edition_id": new_edition_id})
         if edition_subject:
             prior_subjects.append(edition_subject)  # subsequent iterations avoid it too
         if edition.get("opening_line"):
@@ -883,6 +890,45 @@ def generate_newsletter_drafts_for_user(user_id: int):
                     task_name="generate_newsletter_drafts_for_user")
         return "Generated 0 newsletter draft(s)"
     return f"Generated {generated} newsletter draft(s)"
+
+
+@shared_task.task
+def generate_newsletter_cover(edition_id: int):
+    """Generate ONE edition's cover image (issue #893). Costs money per edition, so it only ever
+    runs from an explicit opt-in: the author's per-edition "Generate cover" action, or their
+    newsletter-level `cover_image_auto` setting.
+
+    The result lands `pending_review` — never `approved`. A cover is a public brand asset, so the
+    author is the gate between a generated image and a published edition; `_approved_cover_path`
+    in the publish flow reads that status and nothing else."""
+    from cqc_lem.utilities.db import get_newsletter_edition, set_edition_cover_image
+    from cqc_lem.utilities.linkedin.helper import load_profile_for_user
+    from cqc_lem.utilities.newsletter_cover import (COVER_SOURCE_AI, COVER_STATUS_PENDING,
+                                                    generate_cover_for_edition)
+
+    edition = get_newsletter_edition(edition_id)
+    if not edition:
+        return f"Edition {edition_id} not found"
+    user_id = edition["user_id"]
+    try:
+        profile = load_profile_for_user(user_id)
+    except Exception as e:
+        # The profile only sharpens the prompt's brand context — losing it is not losing the cover.
+        log_debug("Could not load profile for newsletter cover", error=str(e), user_id=user_id,
+                  task_name="generate_newsletter_cover")
+        profile = None
+
+    path, reason = generate_cover_for_edition(user_id, edition_id, edition.get("title"),
+                                              edition.get("subtitle"), edition.get("body"),
+                                              profile=profile)
+    if not path:
+        log_warning("Newsletter cover generation produced nothing", user_id=user_id,
+                    task_name="generate_newsletter_cover", reason=reason)
+        return f"No cover generated for edition {edition_id}"
+    set_edition_cover_image(edition_id, user_id, path, COVER_SOURCE_AI, COVER_STATUS_PENDING)
+    log_info("Newsletter cover awaiting review", user_id=user_id,
+             task_name="generate_newsletter_cover")
+    return f"Generated cover for edition {edition_id}"
 
 
 @shared_task.task

@@ -5,6 +5,7 @@ that a step's fallback routes are tried in order, that disabled buttons are skip
 map reports a precise `failed_step`.
 """
 
+import os
 from unittest.mock import MagicMock
 
 import pytest
@@ -853,3 +854,162 @@ class TestProbeEvidenceHelpers:
         el = FakeElement(tag_name_exc=StaleElementReferenceException("stale"),
                          get_attr_exc={"aria-label": StaleElementReferenceException("stale")})
         assert llv.element_evidence(el) == {}
+
+
+class TestAttachArticleCover:
+    """The cover attach (issue #893) is best-effort: it must never take a publish down with it."""
+
+    @staticmethod
+    def _find_first(driver):
+        def fake_find_first(d, w, locators, *args, **kwargs):
+            for by, value in locators:
+                matches = driver.find_elements(by, value)
+                if matches:
+                    return matches[0]
+            return None
+        return fake_find_first
+
+    def test_writes_the_path_into_the_hidden_file_input(self, monkeypatch, tmp_path):
+        image = tmp_path / "cover.png"
+        image.write_bytes(b"png")
+        file_input = FakeElement(tag="input", attrs={"type": "file", "accept": "image/*"})
+        driver = FakeDriver({
+            (By.XPATH, "//input[@type='file' and contains(translate(@accept,"
+                       "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'image')]"):
+                [file_input],
+        })
+        monkeypatch.setattr(ae.time, "sleep", lambda s: None)
+        monkeypatch.setattr(ae, "find_first", self._find_first(driver))
+        assert ae.attach_article_cover(driver, MagicMock(), str(image)) is True
+        assert file_input.sent == [os.path.abspath(str(image))]
+
+    def test_clicks_the_trigger_when_no_input_is_rendered_yet(self, monkeypatch, tmp_path):
+        image = tmp_path / "cover.png"
+        image.write_bytes(b"png")
+        trigger = FakeElement(tag="button", text="Add a cover image")
+        file_input = FakeElement(tag="input", attrs={"type": "file"})
+        trigger_locator = (By.XPATH, "//button[contains(translate(normalize-space(),"
+                                     "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),"
+                                     "'cover image')]")
+        dom = {trigger_locator: [trigger]}
+        driver = FakeDriver(dom)
+        monkeypatch.setattr(ae.time, "sleep", lambda s: None)
+
+        def fake_find_first(d, w, locators, *args, **kwargs):
+            for by, value in locators:
+                matches = driver.find_elements(by, value)
+                if matches:
+                    return matches[0]
+            return None
+
+        # The input only appears once the trigger has been clicked.
+        original_click = trigger.click
+
+        def click_then_render():
+            original_click()
+            dom[(By.CSS_SELECTOR, "input[type='file']")] = [file_input]
+
+        trigger.click = click_then_render
+        monkeypatch.setattr(ae, "find_first", fake_find_first)
+        assert ae.attach_article_cover(driver, MagicMock(), str(image)) is True
+        assert trigger.clicked == 1
+        assert file_input.sent == [os.path.abspath(str(image))]
+
+    def test_missing_file_on_disk_is_false_not_an_exception(self, tmp_path):
+        assert ae.attach_article_cover(FakeDriver(), MagicMock(),
+                                       str(tmp_path / "gone.png")) is False
+
+    def test_no_upload_control_is_false_not_an_exception(self, monkeypatch, tmp_path):
+        image = tmp_path / "cover.png"
+        image.write_bytes(b"png")
+        monkeypatch.setattr(ae.time, "sleep", lambda s: None)
+        monkeypatch.setattr(ae, "find_first", lambda *a, **k: None)
+        assert ae.attach_article_cover(FakeDriver(), MagicMock(), str(image)) is False
+
+    def test_a_webdriver_error_is_swallowed(self, monkeypatch, tmp_path):
+        image = tmp_path / "cover.png"
+        image.write_bytes(b"png")
+        file_input = FakeElement(tag="input", attrs={"type": "file", "accept": "image/*"},
+                                 send_keys_exc=WebDriverException("boom"))
+        driver = FakeDriver({(By.CSS_SELECTOR, "input[type='file']"): [file_input]})
+        monkeypatch.setattr(ae.time, "sleep", lambda s: None)
+        monkeypatch.setattr(ae, "find_first", self._find_first(driver))
+        assert ae.attach_article_cover(driver, MagicMock(), str(image)) is False
+
+    def test_confirms_a_crop_dialog_when_one_is_up(self, monkeypatch, tmp_path):
+        image = tmp_path / "cover.png"
+        image.write_bytes(b"png")
+        file_input = FakeElement(tag="input", attrs={"type": "file", "accept": "image/*"})
+        apply_btn = FakeElement(tag="button", text="Apply")
+        driver = FakeDriver({
+            (By.CSS_SELECTOR, "input[type='file']"): [file_input],
+            (By.XPATH, "//button[normalize-space()='Apply']"): [apply_btn],
+        })
+        monkeypatch.setattr(ae.time, "sleep", lambda s: None)
+        monkeypatch.setattr(ae, "find_first", self._find_first(driver))
+        assert ae.attach_article_cover(driver, MagicMock(), str(image)) is True
+        assert apply_btn.clicked == 1
+
+
+class TestFillArticleEditorCover:
+    def _dom(self, extra=None):
+        title = FakeElement(tag="textarea", attrs={"placeholder": "Title"})
+        body = FakeElement(tag="div", attrs={"role": "textbox"})
+        nxt = FakeElement(tag="button")
+        publish = FakeElement(tag="button")
+        dom = {
+            (By.CSS_SELECTOR, "textarea[placeholder='Title']"): [title],
+            (By.CSS_SELECTOR, "div[role='textbox']"): [body],
+            (By.XPATH, "//button[normalize-space()='Next']"): [nxt],
+            (By.XPATH, "//button[normalize-space()='Publish']"): [publish],
+        }
+        dom.update(extra or {})
+        return dom, title, body, nxt, publish
+
+    def _wire(self, monkeypatch, driver):
+        monkeypatch.setattr(ae.time, "sleep", lambda s: None)
+
+        def fake_find_first(d, w, locators, *args, **kwargs):
+            for by, value in locators:
+                matches = driver.find_elements(by, value)
+                if matches:
+                    return matches[0]
+            return None
+
+        monkeypatch.setattr(ae, "find_first", fake_find_first)
+
+    def test_no_cover_path_never_touches_the_upload_control(self, monkeypatch):
+        file_input = FakeElement(tag="input", attrs={"type": "file", "accept": "image/*"})
+        dom, *_ = self._dom({(By.CSS_SELECTOR, "input[type='file']"): [file_input]})
+        driver = FakeDriver(dom)
+        self._wire(monkeypatch, driver)
+        url, failed = ae.fill_article_editor(driver, MagicMock(), "T", "B")
+        assert url == driver.current_url and failed is None
+        assert file_input.sent == []
+
+    def test_cover_is_attached_before_next(self, monkeypatch, tmp_path):
+        image = tmp_path / "cover.png"
+        image.write_bytes(b"png")
+        file_input = FakeElement(tag="input", attrs={"type": "file", "accept": "image/*"})
+        dom, _title, _body, nxt, publish = self._dom(
+            {(By.CSS_SELECTOR, "input[type='file']"): [file_input]})
+        driver = FakeDriver(dom)
+        self._wire(monkeypatch, driver)
+        url, failed = ae.fill_article_editor(driver, MagicMock(), "T", "B",
+                                             cover_image_path=str(image))
+        assert url == driver.current_url and failed is None
+        assert file_input.sent == [os.path.abspath(str(image))]
+        assert nxt.clicked == 1 and publish.clicked == 1
+
+    def test_a_cover_that_cannot_attach_still_publishes(self, monkeypatch, tmp_path):
+        # No file input anywhere: the cover is lost, the edition is not.
+        image = tmp_path / "cover.png"
+        image.write_bytes(b"png")
+        dom, _title, _body, nxt, publish = self._dom()
+        driver = FakeDriver(dom)
+        self._wire(monkeypatch, driver)
+        url, failed = ae.fill_article_editor(driver, MagicMock(), "T", "B",
+                                             cover_image_path=str(image))
+        assert url == driver.current_url
+        assert failed is None, "an optional cover must never become a failed_step"
+        assert nxt.clicked == 1 and publish.clicked == 1
