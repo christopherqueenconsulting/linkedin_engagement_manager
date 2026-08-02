@@ -1215,9 +1215,20 @@ def health_check_deep():
 
     Never raises and never 503s on a partial: an external monitor should read `status`, and a
     scrape that can't tell must report `unknown` rather than a confident wrong answer.
+
+    A worker being PRESENT is not the same as a worker WORKING. `maint begin` cancels every queue
+    consumer, so a stuck maintenance mode leaves the whole tier registered, answering, and
+    consuming nothing — observed live during the v0.120.0 deploy as `healthy` with empty lane
+    lists. Registration was never the question a monitor is asking; consumption is. So `healthy`
+    requires at least one worker actually subscribed to at least one queue.
+
+    `maintenance` is reported alongside so a degraded reading is legible rather than mysterious:
+    during a deploy it is the expected cause, and outside one it is the thing to go clear.
     """
     lanes: dict = {}
     status = "healthy"
+    consuming = 0
+    maintenance = None
     try:
         from cqc_lem.utilities.maintenance import _inspect
         # active_queues() reaches every worker over the broker's control channel, so a lane whose
@@ -1225,12 +1236,25 @@ def health_check_deep():
         replies = _inspect().active_queues() or {}
         for worker, queues in replies.items():
             lanes[worker] = sorted(q.get("name", "?") for q in (queues or []))
-        if not lanes:
-            status = "degraded"        # broker reachable, nobody consuming
+        consuming = sum(1 for names in lanes.values() if names)
+        if consuming == 0:
+            # Covers BOTH "no workers answered" and "workers answered but consume nothing".
+            # They are the same outage from a monitor's point of view: no task will run.
+            status = "degraded"
     except Exception as e:
         log_warning("Deep health check could not reach the Celery control channel", exc=e)
         status = "unknown"             # unmeasured is never "healthy"
-    return {"status": status, "workers": len(lanes), "lanes": lanes}
+
+    # Best-effort and deliberately outside the block above: Redis being unreadable must not
+    # downgrade a control-channel answer we already trust. None = "could not tell", never False.
+    try:
+        from cqc_lem.utilities.maintenance import is_maintenance_mode
+        maintenance = bool(is_maintenance_mode())
+    except Exception:
+        maintenance = None
+
+    return {"status": status, "workers": len(lanes), "consuming": consuming,
+            "maintenance": maintenance, "lanes": lanes}
 
 
 @router.get("/app-info")

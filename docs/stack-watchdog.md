@@ -84,14 +84,37 @@ broker's control channel (`_inspect().active_queues()`), so a lane whose contain
 simply is not in the reply.
 
 ```json
-{"status": "healthy", "workers": 5, "lanes": {"celery@selenium": ["se_engage"]}}
+{"status": "healthy", "workers": 5, "consuming": 5, "maintenance": false,
+ "lanes": {"celery@selenium": ["se_engage"]}}
 ```
+
+| Field | Meaning |
+|---|---|
+| `status` | `healthy` / `degraded` / `unknown` — the only field a monitor should assert on |
+| `workers` | workers that answered the control channel — **presence, not usefulness** |
+| `consuming` | workers subscribed to ≥1 queue. **This is the one that decides `status`.** |
+| `maintenance` | `true`/`false`, or `null` when Redis couldn't be read. Explains a `degraded`. |
 
 | `status` | Meaning |
 |---|---|
-| `healthy` | at least one worker is consuming |
-| `degraded` | broker reachable, **nobody consuming** — the exact v0.118.0 shape |
+| `healthy` | at least one worker is **consuming a queue** |
+| `degraded` | broker reachable, **nothing consuming** — either no workers (the v0.118.0 shape) or workers registered but idle |
 | `unknown` | control channel unreachable. **Unmeasured is never `healthy`.** |
+
+### Why `consuming`, not `workers`
+
+A worker being *present* is not the same as a worker *working*. `maint begin` cancels every queue
+consumer, so a stuck maintenance mode leaves the whole tier registered, answering, and doing
+nothing. That state was observed live during the v0.120.0 deploy and the endpoint called it
+`healthy` — workers: 5, every lane list empty.
+
+Registration was never the question a monitor is asking. No consumer means no task will run, which
+is the same outage as no worker at all — so it reports `degraded`, and `maintenance` says whether
+that is the expected cause.
+
+**One live consumer is enough.** A deploy recreates lanes one at a time, and failing the whole
+check on a single idle lane would flap the monitor through every rollout — which is how an alert
+gets muted, and a muted alert is worse than no alert.
 
 It never raises and never 503s on a partial: a monitor should read `status`, and a scrape that
 cannot tell must say so rather than give a confident wrong answer.
@@ -106,6 +129,15 @@ Point an external monitor (healthchecks.io, UptimeRobot, Better Stack — any of
 ```
 https://lem.christopherqueenconsulting.com/health/deep
 ```
+
+Assert on the literal string `"status":"healthy"` in the body. On UptimeRobot that is monitor type
+**HTTP(s) — Keyword**, Keyword Type **"does not exist"**, keyword `"status":"healthy"` — one rule
+covering `degraded`, `unknown` and any non-200.
+
+> ⚠️ **That literal is a monitor contract.** Renaming the field or the value silently disarms
+> every configured monitor, and a monitor that can no longer match looks exactly like a monitor
+> that is passing. `test_healthy_keyword_is_stable_for_body_assertions` pins it; if you ever need
+> to change it, re-configure the monitors in the same change.
 
 Alert when the response is non-200 **or** the body's `status` is not `healthy`. Most monitors
 support a keyword/JSON assertion — use it, because a `degraded` body still returns **200** by

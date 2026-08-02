@@ -32,6 +32,71 @@ class TestHealthDeep:
         assert out["workers"] == 2
         assert out["lanes"]["celery@selenium"] == ["se_engage"]
 
+    def test_registered_but_consuming_nothing_is_degraded(self):
+        """The gap this closes, observed live during the v0.120.0 deploy: `maint begin` cancels
+        every queue consumer, so the whole tier stays registered and answering while consuming
+        NOTHING — and the endpoint called that `healthy`.
+
+        Registration was never the question a monitor is asking. No consumer means no task will
+        run, which is the same outage as no worker at all."""
+        insp = MagicMock()
+        insp.active_queues.return_value = {
+            "celery@worker": [],
+            "celery@selenium": [],
+        }
+        with patch("cqc_lem.utilities.maintenance._inspect", return_value=insp):
+            out = _call()
+        assert out["status"] == "degraded"
+        assert out["workers"] == 2       # they ARE there...
+        assert out["consuming"] == 0     # ...and doing nothing
+
+    def test_one_live_consumer_is_enough_to_be_healthy(self):
+        """A single idle lane must not fail the whole check — a deploy recreates lanes one at a
+        time, and flapping the monitor through every rollout is how an alert gets muted."""
+        insp = MagicMock()
+        insp.active_queues.return_value = {
+            "celery@worker": [{"name": "celery"}],
+            "celery@selenium": [],
+        }
+        with patch("cqc_lem.utilities.maintenance._inspect", return_value=insp):
+            out = _call()
+        assert out["status"] == "healthy"
+        assert out["consuming"] == 1
+
+    def test_maintenance_is_reported_so_degraded_is_legible(self):
+        """During a deploy, maintenance mode IS the expected cause of a degraded reading; outside
+        one it is the thing to go clear. Either way the reader should not have to guess."""
+        insp = MagicMock()
+        insp.active_queues.return_value = {"celery@worker": []}
+        with patch("cqc_lem.utilities.maintenance._inspect", return_value=insp), \
+             patch("cqc_lem.utilities.maintenance.is_maintenance_mode", return_value=True):
+            out = _call()
+        assert out["status"] == "degraded"
+        assert out["maintenance"] is True
+
+    def test_unreadable_maintenance_flag_never_downgrades_a_good_answer(self):
+        """Redis being unreadable must not turn a trusted control-channel reading into a worse
+        one. None means 'could not tell', never False."""
+        insp = MagicMock()
+        insp.active_queues.return_value = {"celery@worker": [{"name": "celery"}]}
+        with patch("cqc_lem.utilities.maintenance._inspect", return_value=insp), \
+             patch("cqc_lem.utilities.maintenance.is_maintenance_mode",
+                   side_effect=RuntimeError("redis down")):
+            out = _call()
+        assert out["status"] == "healthy"
+        assert out["maintenance"] is None
+
+    def test_healthy_keyword_is_stable_for_body_assertions(self):
+        """The UptimeRobot monitor keys on the literal `"status":"healthy"`. Any change that
+        renames the field or the value silently disarms it — a monitor that can no longer match
+        looks exactly like a monitor that is passing."""
+        import json
+        insp = MagicMock()
+        insp.active_queues.return_value = {"celery@worker": [{"name": "celery"}]}
+        with patch("cqc_lem.utilities.maintenance._inspect", return_value=insp):
+            body = json.dumps(_call(), separators=(",", ":"))
+        assert '"status":"healthy"' in body
+
     def test_no_consumers_is_degraded_not_healthy(self):
         """The exact v0.118.0 shape: broker up, every worker container never started. An empty
         reply must not read as healthy — that is the silence the outage hid behind."""
