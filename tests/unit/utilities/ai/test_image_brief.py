@@ -142,3 +142,23 @@ class TestReasoningTokenBudget:
             build_image_brief("content", surface="post_image")
         reason = warn.call_args[1].get("reason", "")
         assert "empty response" in reason and "length" in reason
+
+
+@pytest.mark.unit
+class TestAnonymousPersonSteer:
+    """A stranger's face on a PERSONAL-brand newsletter is the stock-photo look the engine
+    exists to replace; with the author's own likeness, a person IS the point."""
+
+    def test_no_avatar_steers_away_from_an_anonymous_face(self):
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_resp(_GOOD)) as llm:
+            build_image_brief("content", surface="newsletter", avatar=None)
+        user_msg = llm.call_args[1]["messages"][1]["content"]
+        assert "do NOT make an anonymous person the focal subject" in user_msg
+
+    def test_with_an_avatar_the_person_is_still_the_point(self):
+        avatar = {"gender_presentation": "man", "age_band": "40s", "trigger_word": "TOK"}
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_resp(_GOOD)) as llm:
+            build_image_brief("content", surface="newsletter", avatar=avatar)
+        user_msg = llm.call_args[1]["messages"][1]["content"]
+        assert "anonymous person" not in user_msg
+        assert "it IS the author" in user_msg
