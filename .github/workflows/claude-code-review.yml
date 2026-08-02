@@ -37,50 +37,56 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install anthropic SDK
-        run: pip install anthropic==0.34.2
+      # OpenRouter, not the Anthropic SDK: OPENROUTER_API_KEY is the only LLM credential this repo
+      # exposes to Actions, and it fronts the same models. OpenRouter is OpenAI-compatible, so the
+      # `openai` client is the correct one here — this is deliberately NOT an Anthropic call site.
+      - name: Install OpenAI SDK
+        run: pip install openai==2.15.0
 
       - name: Run Claude code review
         id: review
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          REVIEW_MODEL: ${{ vars.REVIEW_MODEL || 'anthropic/claude-opus-5' }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_DIFF: ${{ steps.diff.outputs.diff }}
         run: |
           python3 - <<'PYEOF'
-          import os, sys, anthropic
+          import os, sys
+          from openai import OpenAI
 
-          api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+          api_key = os.environ.get("OPENROUTER_API_KEY", "")
           if not api_key:
-              print("ANTHROPIC_API_KEY not set — skipping Claude review")
+              print("OPENROUTER_API_KEY not set — skipping review")
               with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-                  f.write("review=Claude review skipped: ANTHROPIC_API_KEY not configured as a GitHub secret.\n")
+                  f.write("review=Review skipped: OPENROUTER_API_KEY not configured as a GitHub secret.\n")
               sys.exit(0)
 
-          client = anthropic.Anthropic(api_key=api_key)
+          client = OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
 
           system_prompt = """You are a senior code reviewer for the LinkedIn Engagement Manager (LEM) project.
 
-Stack: Python 3.12+, FastAPI, Celery/Redis, MySQL 8, Selenium 4, LiteLLM, React 18 + Vite + TailwindCSS v4.
+          Stack: Python 3.12+, FastAPI, Celery/Redis, MySQL 8, Selenium 4, LiteLLM, React 18 + Vite + TailwindCSS v4.
 
-Project conventions (block merge if violated):
-- No print() — use myprint() from cqc_lem.utilities.logger
-- Type hints on every function signature
-- Enums for status fields (PostStatus, PostType, LogActionType) from db.py
-- No raw SQL outside utilities/db.py
-- All LLM calls via cqc_lem.utilities.ai.client using lem-simple/medium/complex/image/router aliases
-- Selenium always via get_docker_driver() in selenium_util.py
-- No hardcoded secrets — .env + load_dotenv() only
-- New logic needs unit tests in tests/unit/; new API endpoints need integration tests in tests/integration/
-- No pass-body test functions
+          Project conventions (block merge if violated):
+          - No print() — use the structured logger from cqc_lem.utilities.logger
+            (log_debug / log_info / log_warning / log_error / log_critical). myprint() is a legacy shim.
+          - Type hints on every function signature
+          - Enums for status fields (PostStatus, PostType, LogActionType) from db.py
+          - No raw SQL outside utilities/db.py
+          - All LLM calls via cqc_lem.utilities.ai.client using lem-simple/medium/complex/image/router aliases
+          - Selenium always via get_docker_driver() in selenium_util.py
+          - No hardcoded secrets — .env + load_dotenv() only
+          - New logic needs unit tests in tests/unit/; new API endpoints need integration tests in tests/integration/
+          - No pass-body test functions
 
-Format your review as:
-## Summary
-## Blocking Issues (must fix before merge)
-## Requested Changes (should fix)
-## Suggestions (optional)
-## Verdict: Approved / Approved with Changes / Changes Required"""
+          Format your review as:
+          ## Summary
+          ## Blocking Issues (must fix before merge)
+          ## Requested Changes (should fix)
+          ## Suggestions (optional)
+          ## Verdict: Approved / Approved with Changes / Changes Required"""
 
           pr_title = os.environ.get("PR_TITLE", "")
           pr_body = os.environ.get("PR_BODY", "")
@@ -88,24 +94,34 @@ Format your review as:
 
           user_prompt = f"""Review this PR:
 
-**Title:** {pr_title}
+          **Title:** {pr_title}
 
-**Description:**
-{pr_body[:2000]}
+          **Description:**
+          {pr_body[:2000]}
 
-**Diff (truncated to 28k chars):**
-```diff
-{diff}
-```"""
+          **Diff (truncated to 28k chars):**
+          ```diff
+          {diff}
+          ```"""
 
-          message = client.messages.create(
-              model="claude-sonnet-4-6",
-              max_tokens=2048,
-              messages=[{"role": "user", "content": user_prompt}],
-              system=system_prompt,
-          )
+          try:
+              completion = client.chat.completions.create(
+                  model=os.environ.get("REVIEW_MODEL") or "anthropic/claude-opus-5",
+                  max_tokens=16000,
+                  messages=[{"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}],
+              )
+          except Exception as e:
+              # A review is advisory. An OpenRouter outage, a retired model slug or a spend cap
+              # must not fail the PR — post nothing and say why in the log.
+              print(f"Review call failed: {e}")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("review=Review skipped: the model call failed. See the workflow log.\n")
+              sys.exit(0)
 
-          review = message.content[0].text
+          review = (completion.choices[0].message.content or "").strip() if completion.choices else ""
+          if not review:
+              review = "Review skipped: the model returned no reviewable text."
           print(review)
 
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
@@ -116,10 +132,20 @@ Format your review as:
 
       - name: Post review comment
         uses: actions/github-script@v7
+        env:
+          # Through env, NEVER interpolated into the script body. `const review = ${{ ... }}` splices
+          # model output into JS SOURCE: one backtick or `${` in the review is a syntax error (which
+          # is exactly how this step failed), and anything worse is arbitrary code execution in a
+          # job holding a pull-requests:write token.
+          REVIEW: ${{ steps.review.outputs.review }}
         with:
           script: |
-            const review = `${{ steps.review.outputs.review }}`;
-            if (!review || review.includes('skipped')) {
+            const review = (process.env.REVIEW || '').trim();
+            // startsWith, not includes: the review BODY legitimately discusses skipped tests, and
+            // `includes('skipped')` silently swallowed those reviews. Only our own bail-out
+            // sentinels begin with this.
+            if (!review || review.startsWith('Review skipped:')
+                || review.startsWith('Claude review skipped:')) {
               console.log('Skipping comment post:', review);
               return;
             }
