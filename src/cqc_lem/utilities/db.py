@@ -300,7 +300,7 @@ class LeadSignalStatus(StrEnum):
 class CostCategory(StrEnum):
     """Kind of spend a `cost_ledger` row records (issue #490, docs/cost-performance-margin-plan.md §A.1)."""
     LLM = 'llm'              # inference through LiteLLM (rolled up daily per user x feature x tier)
-    MEDIA = 'media'          # video renders (Runway) and generated images (DALL-E)
+    MEDIA = 'media'          # video renders (Runway) and generated images (gpt-image / FLUX)
     PROXY = 'proxy'          # per-user residential / amortized regional egress proxy
     INFRA = 'infra'          # VPS + containers, amortized across active users
     EMAIL = 'email'          # transactional sends

@@ -53,6 +53,21 @@ DEFAULT_VIDEO_RATIO = get_constant_from_env('DEFAULT_VIDEO_RATIO', default_value
 DEFAULT_IMAGE_MODEL = get_constant_from_env('DEFAULT_IMAGE_MODEL', default_value='black-forest-labs/flux-dev')
 DEFAULT_IMAGE_RATIO = get_constant_from_env('DEFAULT_IMAGE_RATIO', default_value='1:1')
 
+# --- Image rendering backend (issue: newsletter cover quality) ---
+# auto = gpt-image (lem-image via LiteLLM) first, FLUX via Replicate on failure.
+# 'flux' forces the old path; 'gpt-image' disables the FLUX fallback.
+IMAGE_BACKEND = get_constant_from_env('IMAGE_BACKEND', default_value='auto')
+# gpt-image quality tier for hero renders (low|medium|high|auto).
+IMAGE_QUALITY = get_constant_from_env('IMAGE_QUALITY', default_value='medium')
+# Vision quality gate: total render attempts per image (1 = no regenerate). Mirrors the
+# COMMENT_GATE pattern — bounded, and the gate itself fails OPEN on vision outages.
+IMAGE_GATE_MAX_ATTEMPTS = int(get_constant_from_env('IMAGE_GATE_MAX_ATTEMPTS', default_value='2'))
+# Surfaces where a gate rejection actually triggers a regenerate (elsewhere it only logs).
+IMAGE_QUALITY_GATE_SURFACES = tuple(
+    s.strip() for s in
+    get_constant_from_env('IMAGE_QUALITY_GATE_SURFACES', default_value='newsletter,post_image').split(',')
+    if s.strip())
+
 # Video quality tiers. STANDARD is free (included in every plan); PREMIUM tiers cost
 # video credits (deducted on a successful premium render, refunded on failure).
 # Premium uses Veo (realism + native audio); with an active avatar it runs Veo

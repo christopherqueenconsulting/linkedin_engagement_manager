@@ -614,7 +614,21 @@ def track_llm_call(
 # LLM spend is accumulated in Redis and flushed once a day (one row per user x feature x tier x day)
 # so a high-volume table stays small.
 
-# Public list price for one DALL-E 3 1024x1024 "hd" image; override with IMAGE_COST_PER_IMAGE.
+# Per-model list prices for one generated image. gpt-image entries are keyed model:quality
+# (1024x1024 square rates — the non-square rates are lower, so square is the safe over-estimate).
+# IMAGE_COST_PER_IMAGE overrides EVERYTHING when set — kept as the ops kill/repricing switch.
+_IMAGE_COST_BY_MODEL = {
+    "black-forest-labs/flux-dev": 0.025,
+    "black-forest-labs/flux-1.1-pro": 0.04,
+    "gpt-image-2:low": 0.006,
+    "gpt-image-2:medium": 0.053,
+    "gpt-image-2:high": 0.211,
+    "gpt-image-1:low": 0.011,
+    "gpt-image-1:medium": 0.042,
+    "gpt-image-1:high": 0.167,
+    "dall-e-3": 0.08,
+}
+# Fallback when the model is unknown; historic DALL-E 3 hd list price.
 _DEFAULT_IMAGE_COST_USD = 0.08
 
 _LLM_ROLLUP_PREFIX = "lem:cost:llm:"
@@ -623,11 +637,27 @@ _LLM_ROLLUP_QTY_SUFFIX = ":qty"
 _LLM_ROLLUP_TTL_SECONDS = 14 * 24 * 60 * 60
 
 
-def image_cost_usd(count: int = 1) -> float:
-    """USD for `count` generated images at the configured per-image rate (IMAGE_COST_PER_IMAGE)."""
-    try:
-        rate = float(os.getenv("IMAGE_COST_PER_IMAGE") or _DEFAULT_IMAGE_COST_USD)
-    except (TypeError, ValueError):
+def image_cost_usd(count: int = 1, model: Optional[str] = None,
+                   quality: Optional[str] = None) -> float:
+    """USD for `count` generated images.
+
+    Rate resolution: IMAGE_COST_PER_IMAGE env (global override) > `model:quality` >
+    `model` > default. Unknown models bill at the conservative default rather than $0 —
+    an unpriced render must not silently vanish from the ledger.
+    """
+    override = os.getenv("IMAGE_COST_PER_IMAGE")
+    if override:
+        try:
+            return float(override) * max(0, int(count or 0))
+        except (TypeError, ValueError):
+            pass
+    rate = None
+    if model:
+        if quality:
+            rate = _IMAGE_COST_BY_MODEL.get(f"{model}:{quality}")
+        if rate is None:
+            rate = _IMAGE_COST_BY_MODEL.get(model)
+    if rate is None:
         rate = _DEFAULT_IMAGE_COST_USD
     return rate * max(0, int(count or 0))
 

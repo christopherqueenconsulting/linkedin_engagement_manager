@@ -652,14 +652,20 @@ def generate_thumbnail(flow: TutorialFlow, out_dir: str) -> Optional[str]:
     if not TUTORIAL_THUMBNAIL_ENABLED:
         return None
     try:
-        from cqc_lem.utilities.ai.ai_helper import generate_dall_e_image_from_prompt
-        from cqc_lem.utilities.utils import save_video_url_to_dir
-        urls = generate_dall_e_image_from_prompt(
+        import shutil
+
+        from cqc_lem.utilities.ai.image_gen import render_image_from_prompt
+        # 16:9 to match the YouTube player; quality low — a thumbnail draft tier is plenty.
+        path = render_image_from_prompt(
             f"Clean, flat product-tutorial thumbnail illustrating: {flow.title}. "
-            "No text, no logos, calm blue palette.")
-        if not urls:
+            "No text, no logos, calm blue palette.",
+            ratio="16:9", quality="low")
+        if not path:
             return None
-        return save_video_url_to_dir(urls[0], out_dir)
+        os.makedirs(out_dir, exist_ok=True)
+        dest = os.path.join(out_dir, os.path.basename(path))
+        shutil.copyfile(path, dest)
+        return dest
     except Exception as e:
         log_warning("Tutorial thumbnail generation failed", exc=e, task_name=TASK_NAME)
         return None

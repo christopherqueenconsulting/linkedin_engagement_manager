@@ -113,27 +113,6 @@ class TestSummarizeRecentActivity:
 
 
 @pytest.mark.unit
-class TestGetDallEImagePromptFromAi:
-    def test_returns_prompt_string(self, mock_openai_client):
-        with patch("cqc_lem.utilities.ai.ai_helper.client", mock_openai_client):
-            from cqc_lem.utilities.ai.ai_helper import get_dall_e_image_prompt_from_ai
-
-            result = get_dall_e_image_prompt_from_ai("AI and the future of work")
-
-            assert isinstance(result, str)
-            assert mock_openai_client.chat.completions.create.called
-
-    def test_uses_simple_tier_model(self, mock_openai_client):
-        with patch("cqc_lem.utilities.ai.ai_helper.client", mock_openai_client):
-            from cqc_lem.utilities.ai.ai_helper import get_dall_e_image_prompt_from_ai
-
-            get_dall_e_image_prompt_from_ai("content")
-
-            call_kwargs = mock_openai_client.chat.completions.create.call_args[1]
-            assert call_kwargs.get("model") == "lem-simple"
-
-
-@pytest.mark.unit
 class TestGetFluxImagePromptFromAi:
     def test_returns_prompt_string(self, mock_openai_client):
         with patch("cqc_lem.utilities.ai.ai_helper.client", mock_openai_client):
@@ -176,7 +155,6 @@ class TestModelTierAssignments:
 
     @pytest.mark.parametrize("func_name,expected_model", [
         ("get_ai_message_refinement", "lem-simple"),
-        ("get_dall_e_image_prompt_from_ai", "lem-simple"),
         ("get_flux_image_prompt_from_ai", "lem-simple"),
     ])
     def test_simple_tier_functions(self, func_name, expected_model, mock_openai_client, sample_linkedin_profile):

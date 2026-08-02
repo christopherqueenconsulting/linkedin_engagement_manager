@@ -445,18 +445,22 @@ class TestRender:
     def test_thumbnail_is_off_by_default_and_never_raises(self, tmp_path, monkeypatch):
         assert vt.generate_thumbnail(_flow(), str(tmp_path)) is None
         monkeypatch.setattr(vt, "TUTORIAL_THUMBNAIL_ENABLED", True)
-        with patch("cqc_lem.utilities.ai.ai_helper.generate_dall_e_image_from_prompt",
+        with patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt",
                    side_effect=RuntimeError("no image")):
             assert vt.generate_thumbnail(_flow(), str(tmp_path)) is None
 
     def test_thumbnail_is_saved_when_enabled(self, tmp_path, monkeypatch):
         monkeypatch.setattr(vt, "TUTORIAL_THUMBNAIL_ENABLED", True)
-        with patch("cqc_lem.utilities.ai.ai_helper.generate_dall_e_image_from_prompt",
-                   return_value=["https://img.test/a.png"]), \
-             patch("cqc_lem.utilities.utils.save_video_url_to_dir",
-                   return_value=str(tmp_path / "a.png")) as save:
-            assert vt.generate_thumbnail(_flow(), str(tmp_path)) == str(tmp_path / "a.png")
-        save.assert_called_once()
+        rendered = tmp_path / "src" / "a.png"
+        rendered.parent.mkdir()
+        rendered.write_bytes(b"png")
+        out_dir = tmp_path / "out"
+        with patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt",
+                   return_value=str(rendered)) as render:
+            assert vt.generate_thumbnail(_flow(), str(out_dir)) == str(out_dir / "a.png")
+        # 16:9 at draft quality — a YouTube thumbnail, not a square hd render.
+        assert render.call_args[1] == {"ratio": "16:9", "quality": "low"}
+        assert (out_dir / "a.png").read_bytes() == b"png"
 
 
 class TestYouTubePublish:

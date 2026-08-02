@@ -2673,124 +2673,6 @@ def get_website_content_post_from_ai(content: str, url: str, linked_user_profile
     return content
 
 
-def get_dall_e_image_prompt_from_ai(post_content: str):
-    """
-       Generate a Dalle-3 image prompt from the provided post content
-       """
-
-    prompt = f"""Please generate a DALL-E-3 image prompt based on the following:
-    
-    Post: <content>{post_content}</content>
-    
-    """
-
-    content = [{"type": "text", "text": prompt}]
-
-    # System prompt to be included in every request
-    system_prompt = {
-        "role": "system",
-        "content": f"""Act as an expert image generator and social media content strategist. 
-        Your task is to analyze the provided LinkedIn post text and craft a detailed prompt for DALL-E 3 
-        to create an image that visually encapsulates the post’s theme, message, and tone.
-
-         ### Desired Image Characteristics:
-        - **Clean and Aesthetic**: The image should not feel overcrowded but should clearly depict the content of the post.
-        - **Professional and Polished**: The image should look modern and inspiring, suitable for LinkedIn.
-        - **Balanced**: Avoid excessive elements; instead, highlight key themes in a visually appealing way.
-        - **Focused**: The image should have its focal point specifically described
-        
-        ### Step-by-Step Instructions:
-        1. **Analyze the Post Content:**
-           - Identify the main topic, message, or story conveyed by the LinkedIn post.
-           - Determine the tone (e.g., professional, motivational, celebratory, reflective) and emotional undertone.
-           - Extract key visual elements or themes mentioned or implied in the text (e.g., "growth," "collaboration," "achievement," "innovation").
-        
-        2. **Specify Visual Representation:**
-           - Translate the key message into a visual scene or concept. Describe the primary subject of the image (e.g., "a team brainstorming in a futuristic office" or "a rising sun symbolizing new beginnings").
-           - Ensure the image aligns with LinkedIn's professional and motivational tone while reflecting the mood of the post.
-        
-        3. **Choose Art Style and Composition:**
-           - Select an art style that matches the post’s tone: photorealistic, professional illustration, minimalistic, vibrant, or corporate-inspired.
-           - Define the composition and perspective, such as close-up, wide-angle, or eye-level.
-        
-        4. **Detail the Setting, Colors, and Mood:**
-           - Specify the setting (e.g., urban office, natural landscape, futuristic environment).
-           - Suggest colors and lighting that enhance the mood (e.g., "warm golden light for optimism" or "sleek blue tones for professionalism").
-        
-        5. **Generate a Complete DALL-E Prompt:**
-           - Combine all the above elements into a concise, richly detailed instruction for DALL-E. Ensure clarity, specificity, and imaginative detail.
-           - Review the Desired Image Characteristics and make sure your prompt incorporates each aspect but does not directly state it in your generated response.
-        
-        ### Output Format:
-        - **DALL-E Prompt:** A fully detailed and descriptive image-generation prompt.
-        
-        
-        ---
-        
-        ### Your Final Steps: 
-        - Take a deep breath and work on this problem step-by-step.
-        - Do not surround your response in quotes or added any additional system text. 
-        - Do not share your thoughts nor show your work. 
-        - Only respond with one final response without the prefix "DALL-E Prompt:".
-            
-        """
-    }
-
-    # User prompt to be sent with each API call
-    user_message = {
-        "role": "user",
-        "content": content
-    }
-
-    # Call the API with the system and user prompt only (no memory of past prompts)
-    response = _call_llm(
-        model="lem-simple",  # Specify the model you want to use
-        messages=[system_prompt, user_message],  # System prompt + current user prompt
-        temperature=round(random.uniform(0.4, 0.6), 2),
-        # Ensure logical and structured prompts but allow some creativity for DALL-E descriptions. Slightly tighter control avoids over-creativity that might make outputs unfocused.
-
-        # Focuses on high-probability tokens while leaving room for variation in descriptions.
-        top_p=round(random.uniform(0.85, 0.95), 2),
-        # Ensures the generation focuses on high-probability tokens while leaving room for variation in descriptions.
-        frequency_penalty=round(random.uniform(0.5, 0.7), 2),
-        # Ensures new elements are explored in prompts without becoming overly imaginative or irrelevant.
-        presence_penalty=round(random.uniform(0.4, 0.6), 2),
-
-        # max_tokens=150  # Set token limit as required
-        # response_format={"type": "json_object"},
-    )
-
-    # Extract and return the model's response
-    content = response.choices[0].message.content.strip()
-    return content
-
-
-def generate_dall_e_image_from_prompt(prompt: str, size: str = "1024x1024") -> list:
-    """
-    Generate an image from the provided prompt using the DALL-E-3 model.
-    """
-    # Call the DALL-E-3 model to generate an image based on the prompt
-    response = client.images.generate(
-        model="dall-e-3",
-        prompt=prompt,
-        size=size,
-        quality="hd",  # Standard or hd
-        n=1,  # Only 1 allowed for Dalle-3
-        # style="natural", #Style can be vivid or natural
-        response_format='url'
-    )
-
-    generated = len(response.data or [])
-    if generated:
-        from cqc_lem.utilities.observability import track_media_cost, image_cost_usd
-        track_media_cost("image", "openai", image_cost_usd(generated), qty=generated,
-                         model="dall-e-3", meta={"size": size})
-
-    # Always the image list: the old empty-data branch indexed data[0] and raised IndexError,
-    # and returning a URL string there made the return type depend on the failure mode.
-    return response.data or []
-
-
 def _profile_visual_context(profile: "LinkedInProfile | None",
                             subject_directive: str = "") -> str:
     """Short brand/context line for image prompts, built from a user's profile.
@@ -2926,54 +2808,33 @@ def get_flux_image_via_replicate(prompt: str, ref: str = DEFAULT_IMAGE_MODEL, *,
             "num_inference_steps": 28,
         }
 
-    output = replicate.run(ref, input=input_params)
+    from cqc_lem.utilities.ai.image_gen import run_replicate_bounded
+    output = run_replicate_bounded(ref, input_params)
 
-    print("Flux Image via Replicate:")
     # flux-dev returns a list; flux-1.1-pro returns a single output object.
     url = str(output[0]) if isinstance(output, (list, tuple)) else str(output)
-    print(url)
+    log_debug("Flux image rendered via Replicate", api_provider="replicate", ai_model=ref)
 
     # Get the folder name of the parent of the url image
     url_image_folder = os.path.basename(os.path.dirname(url))
 
-    # Save the file to assets/videos/replicate folder
     save_dir = os.path.join(assets_dir, "images", 'replicate', url_image_folder)
-
-    print(f"Save to Folder: {save_dir}")
-
     create_folder_if_not_exists(save_dir)
 
     # Save the generated image
-    video_file_path = save_video_url_to_dir(url, save_dir)
+    image_file_path = save_video_url_to_dir(url, save_dir)
 
-    return video_file_path
+    from cqc_lem.utilities.observability import track_media_cost, image_cost_usd
+    track_media_cost("image", "replicate", image_cost_usd(1, model=ref), qty=1, model=ref,
+                     meta={"aspect_ratio": aspect_ratio})
+
+    return image_file_path
 
 
 def generate_flux1_image_from_prompt(prompt: str, *, ratio: str = DEFAULT_IMAGE_RATIO,
                                      image_model: str = DEFAULT_IMAGE_MODEL):
-    """
-    video_file_path = get_flux_image_via_huggingface(prompt)
-
-    # Move the video file path to the assets/gradio dir
-    gradio_dir = os.path.join(assets_dir, "gradio")
-    print(f"Gradio Dir: {gradio_dir}")
-    create_folder_if_not_exists(gradio_dir)
-    video_file_name = os.path.basename(video_file_path)
-    # Get the parent folder name of the video file
-    video_parent_dir = os.path.basename(os.path.dirname(video_file_path))
-    print(f"Video Parent Folder: {video_parent_dir}")
-    # Create dest folder
-    file_dest_folder = os.path.join(gradio_dir, video_parent_dir)
-    create_folder_if_not_exists(file_dest_folder)
-    # Create final file destination
-    video_file_dest = os.path.join(file_dest_folder, video_file_name)
-    print(f"Video File Dest: {video_file_dest}")
-    # Move the video file to the gradio dir
-    shutil.move(video_file_path, video_file_dest)
-
-    return video_file_dest
-    """
-
+    """Explicit FLUX render — for callers that need a SPECIFIC Replicate model (the admin
+    variant tool, the avatar fallback). Everything else goes through image_gen.render_image_*."""
     return get_flux_image_via_replicate(prompt, ref=image_model, aspect_ratio=ratio)
 
 
@@ -2991,6 +2852,10 @@ def generate_post_image(prompt: str, user_id: int, *, ratio: str = DEFAULT_IMAGE
     ``depicts_person=False`` is the object/concept case — a slide about a dashboard is not a
     scene the author appears in, and prepending the trigger word there asked the LoRA to insert
     the user's face into a scene never written to contain a person.
+
+    Non-avatar renders route through ``image_gen.render_image_from_prompt`` (gpt-image hero,
+    FLUX fallback) — unless the caller explicitly pinned a Replicate model, which stays a FLUX
+    render so the admin variant tool keeps meaning what it says.
     """
     from cqc_lem.utilities.avatar.attributes import apply_subject_clause
     from cqc_lem.utilities.avatar.guardrails import resolve_avatar_for
@@ -3004,7 +2869,11 @@ def generate_post_image(prompt: str, user_id: int, *, ratio: str = DEFAULT_IMAGE
         if used_avatar:
             _record_avatar_media(path, post_id, user_id)
         return path
-    return generate_flux1_image_from_prompt(prompt, ratio=ratio, image_model=image_model)
+    if image_model != DEFAULT_IMAGE_MODEL:
+        return generate_flux1_image_from_prompt(prompt, ratio=ratio, image_model=image_model)
+    from cqc_lem.utilities.ai.image_gen import render_image_from_prompt
+    return render_image_from_prompt(prompt, ratio=ratio, user_id=user_id, post_id=post_id,
+                                    image_model=image_model)
 
 
 def _record_avatar_media(image_path: str, post_id: "int | None", user_id: "int | None") -> None:
