@@ -198,7 +198,8 @@ Grade it strictly. Respond with ONLY a JSON object:
 
 Mark it unacceptable when ANY of these hold:
 - garbled or misspelled text, distorted letters, or gibberish writing anywhere
-- deformed anatomy (hands, faces, limbs) or uncanny distorted objects
+- deformed anatomy or uncanny distorted objects — inspect HANDS closely: wrong finger
+  count, fused or bent-back fingers, mangled knuckles, or a hand merging into an object
 - the image does not plausibly relate to the stated subject (relevance 1-2)
 - watermarks, logos, or UI chrome
 - it looks like generic meaningless abstract filler rather than a composed scene
