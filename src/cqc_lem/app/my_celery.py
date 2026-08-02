@@ -211,9 +211,16 @@ app.conf.update(
             # Daily value-add commenting in enabled groups, at each user's staggered slot (#554)
             'schedule': crontab(minute=f'*/{STAGGER_TICK_MINUTES}')
         },
+        'group-post-drafts': {
+            'task': 'cqc_lem.app.run_scheduler.auto_group_post_drafts',
+            # Two days before the publish slot: write the week's group post so the user has a real
+            # review window to read and revise it in the SPA (issue #932).
+            'schedule': crontab(hour='15', minute='0', day_of_week='sunday')
+        },
         'group-posts': {
             'task': 'cqc_lem.app.run_scheduler.auto_group_posts',
-            'schedule': crontab(hour='15', minute='0', day_of_week='tuesday')  # Weekly value-add group post
+            # Weekly value-add group post — publishes the reviewed draft, generates nothing itself.
+            'schedule': crontab(hour='15', minute='0', day_of_week='tuesday')
         },
         'scrape-post-stats': {
             'task': 'cqc_lem.app.run_scheduler.auto_scrape_stats',

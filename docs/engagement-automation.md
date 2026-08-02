@@ -151,3 +151,39 @@ A paced DAILY drip, not the once-a-month blast it used to be.
   (`count_company_page_invites_sent_today` — one batched row carries a count).
 - Every run emits `company_page_invite_run` — including the ones that send nothing, since a
   series carrying only sends can't tell "paced to zero" from "silently broken".
+
+## Weekly group post — draft, preview, publish (issue #932)
+
+A group post used to be written and published inside ONE Selenium run, so the only thing the user
+ever saw about it was the per-group *Post* toggle: never the text, never a chance to revise it. It
+is now two beats with a review window between them.
+
+- **`auto_draft_group_post`** (beat `group-post-drafts`, Sundays 15:00) is the ONE place a group
+  post's text is written. It opens NO browser — voice comes from the cached profile
+  (`load_profile_for_user`) — so a draft costs one LLM call and no Chrome session slot. Which group
+  it writes for is still the least-recently-TRIED post-enabled one (`get_next_group_for_post`, #769
+  / #858), so the weekly slot keeps rotating.
+- **`auto_post_to_group`** (beat `group-posts`, Tuesdays 15:00) publishes that draft and generates
+  nothing. **A run with no READY draft publishes NOTHING** — falling back to a fresh generation
+  would ship exactly the un-previewed post the draft replaced.
+- **Silence ships it.** The resting state is `ready`, not a pending approval: the default cadence is
+  unchanged, and a user who never opens the SPA still gets their weekly group post. The preview is
+  there for the user who *does* want to look — they can rewrite the text or skip the week outright
+  (`GroupsCard`, `GET`/`PUT /user/group-post-draft`, both scoped to the caller's OWN open draft; the
+  request never names a draft id).
+- **One open draft per user.** The draft beat skips a user who still has one, because that draft may
+  already carry their edits — carrying it forward beats replacing it with a generation they never
+  asked for. A publish run that never reached LinkedIn (dead session) leaves the draft open, so the
+  text the user already approved is what ships next week.
+- **The draft dies with its group's turn.** It was written FOR that group, so an unpostable group
+  (#858) marks it `failed` as well as stamping `last_post_run_at`, and a group whose *Post* switch
+  was turned off between the two beats marks it `skipped` rather than publishing into a group the
+  user opted out of. Either way the next draft is written fresh for whichever group is next.
+- **Only a user may cancel a post they approved.** "No group takes posts" is what cancels a draft, so
+  `get_post_enabled_group_ids` answers `None` — never `[]` — when the read FAILS: a DB hiccup that
+  said "empty" would silently skip every user's reviewed draft for the week, edits and all. Unknown
+  leaves the draft open and it ships at the next slot.
+- **An unsaved rewrite is unsaved changes.** The editor registers with the settings page's save
+  registry (`useRegisterSaveSection('group-post', …)`), so *Save All* writes it and the
+  unsaved-changes guard fires on leaving. Without that the page would report a clean save having
+  written only the toggles, and the text the user thought they'd replaced is what would publish.

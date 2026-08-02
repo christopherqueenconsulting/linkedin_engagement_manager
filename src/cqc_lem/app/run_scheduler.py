@@ -1148,22 +1148,65 @@ def auto_group_engagement():
 
 
 @shared_task.task
-def auto_group_posts():
-    """Weekly: publish ONE original value-add post into ONE of the user's post-enabled groups —
-    never a copy or reshare of a scheduled feed post. Which group is the least-recently-posted one
-    (issue #769), so the weekly slot rotates instead of always landing in the same group."""
-    from cqc_lem.app.run_automation import auto_post_to_group
+def auto_group_post_drafts():
+    """Weekly, days AHEAD of the publish slot: write the coming week's group post into the review
+    queue so the user can read and revise it before it ships (issue #932). Which group it is written
+    for is the least-recently-tried post-enabled one (issue #769), so the weekly slot still rotates.
+    A user who still has an unpublished draft is skipped by the task itself — carrying their edits
+    forward beats replacing them with a generation they never asked for."""
+    from cqc_lem.app.run_automation import auto_draft_group_post
     from cqc_lem.utilities.db import get_next_group_for_post
+    users = get_active_user_ids()
+    n = 0
+    for uid in users:
+        # Drafting opens no browser, but a user with no LinkedIn session has nothing to publish
+        # into — writing them a post would only spend an LLM call on a draft that can't ship.
+        if not has_linkedin_session(uid):
+            continue
+        group = get_next_group_for_post(uid)
+        if group:
+            auto_draft_group_post.apply_async(kwargs={'user_id': uid, 'group_id': group['group_id'],
+                                                      'group_name': group.get('group_name')})
+            n += 1
+    return f"Group post drafts dispatched for {n}/{len(users)} user(s)"
+
+
+@shared_task.task
+def auto_group_posts():
+    """Weekly: publish the group post the user has had since the draft beat to preview and edit
+    (issue #932) into the group it was written for — never a copy or reshare of a scheduled feed
+    post. Nothing is generated here: a user with no reviewed draft simply doesn't post this week,
+    because an un-previewed group post is exactly what the draft replaced. A draft whose group has
+    since been switched off for posting is dropped rather than published into a group the user
+    opted out of."""
+    from cqc_lem.app.run_automation import auto_post_to_group
+    from cqc_lem.utilities.db import (get_open_group_post_draft, get_post_enabled_group_ids,
+                                      update_group_post_draft, GroupPostDraftStatus)
     users = get_active_user_ids()
     n = 0
     for uid in users:
         if not has_linkedin_session(uid):
             continue
-        group = get_next_group_for_post(uid)
-        if group:
-            auto_post_to_group.apply_async(kwargs={'user_id': uid, 'group_id': group['group_id'],
-                                                   'group_name': group.get('group_name')})
-            n += 1
+        draft = get_open_group_post_draft(uid)
+        if not draft:
+            continue
+        post_enabled = get_post_enabled_group_ids(uid)
+        if post_enabled is None:
+            # Could not read the switches (the read itself already logged the error). Cancelling a
+            # post the user reviewed and approved is not something a transient DB fault gets to do,
+            # so the draft is left open and publishes at the next weekly slot.
+            log_debug("Group post draft held — post switches unreadable this run", user_id=uid,
+                      task_name="auto_group_posts")
+            continue
+        if draft['group_id'] not in post_enabled:
+            update_group_post_draft(draft['id'], status=GroupPostDraftStatus.SKIPPED)
+            log_info("Group post draft dropped — its group no longer takes posts", user_id=uid,
+                     task_name="auto_group_posts")
+            continue
+        auto_post_to_group.apply_async(kwargs={'user_id': uid, 'group_id': draft['group_id'],
+                                               'group_name': draft.get('group_name'),
+                                               'draft_id': draft['id']})
+        n += 1
     return f"Group posts dispatched for {n}/{len(users)} user(s)"
 
 

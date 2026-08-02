@@ -122,8 +122,10 @@ newsletter editions AND group posts after humanization.
 
 A failing surface: post is held at PENDING behind the `ai_slop` quality gate with the exact
 constructions named; a feed comment is SKIPPED (shares the comment gate's retry budget); a DM /
-newsletter / group post ships with a logged reason because those have no review queue and
-dropping them breaks the sequence.
+newsletter / group post ships with a logged reason because dropping them breaks the sequence.
+(Since #932 a group post does land in a review queue — the weekly draft the user can rewrite or
+skip — but the lint still only logs there: the draft is generated days ahead and unattended, so a
+dropped one would silently cost the week's group slot.)
 
 ### WARN checks (advisory, never hold anything)
 

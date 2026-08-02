@@ -36,6 +36,8 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     get_newsletter_settings, mark_newsletter_published, record_newsletter_subscriber_stat, \
     get_newsletter_edition, mark_edition_published, mark_edition_failed, \
     upsert_user_group, get_enabled_group_ids, record_group_post, record_group_post_run, record_post_stats, \
+    create_group_post_draft, get_open_group_post_draft, get_group_post_draft, update_group_post_draft, \
+    GroupPostDraftStatus, \
     get_recent_posted_post_ids, get_uncaptured_posted_post_ids, \
     get_shipped_variant_keys, \
     get_lead_magnet_settings, has_received_lead_magnet, record_lead_magnet_sent, \
@@ -2893,12 +2895,57 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
         quit_gracefully(driver)
 
 
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']})
+def auto_draft_group_post(self, user_id: int, group_id: str, group_name: str = None):
+    """Write the coming week's group post AHEAD of the publish slot and park it where the user can
+    read and revise it (issue #932). This is the ONE place a group post's text is written — the
+    publish run consumes the draft and generates nothing — so no group post can ever ship without
+    having been previewable first.
+
+    Opens no browser: the voice comes from the CACHED profile, so a draft costs one LLM call and no
+    Chrome session slot."""
+    if get_open_group_post_draft(user_id):
+        log_debug("Group post draft already waiting for review", user_id=user_id,
+                  task_name="auto_draft_group_post")
+        return "A group post draft is already awaiting review"
+    my_profile = load_profile_for_user(user_id)  # cached DB read — no scrape/login
+    if my_profile is None:
+        # Nothing to write in the user's voice yet (the weekly group sync ran before their first
+        # profile scrape). Expected on a brand-new account, so DEBUG, not a warning.
+        log_debug("No cached profile to draft a group post from", user_id=user_id,
+                  task_name="auto_draft_group_post")
+        return "No cached profile to draft from"
+    with llm_attribution(user_id=user_id, feature=FEATURE_CONTENT):
+        text = _strip_non_bmp(generate_group_post(
+            my_profile, group_name=group_name, prefs=get_engagement_preferences(user_id),
+            profile_synthesis=get_or_create_profile_synthesis(user_id, my_profile)) or "")
+    if not text.strip():
+        return "No group post generated"
+    draft_id = create_group_post_draft(user_id, group_id, text, group_name=group_name)
+    if not draft_id:
+        return "Could not store the group post draft"
+    log_info("Group post drafted for review", user_id=user_id, task_name="auto_draft_group_post")
+    return f"Drafted group post {draft_id}"
+
+
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id', 'group_id']},
                   queue='se_content')
-def auto_post_to_group(self, user_id: int, group_id: str, group_name: str = None):
-    """Publish one short, value-add (non-promotional) post into a group via its share box. The text
-    is written FRESH for that group — a group post is never a copy or reshare of a scheduled feed
-    post. Best-effort — the group composer selectors are validated in the live pass."""
+def auto_post_to_group(self, user_id: int, group_id: str, group_name: str = None,
+                       draft_id: int = None):
+    """Publish the user's reviewed group-post draft into that group via its share box. The text is
+    never written here (issue #932) — it comes from the draft the user has had days to read and
+    edit, and a run with no usable draft publishes NOTHING rather than falling back to an
+    un-previewed generation. Best-effort — the group composer selectors are validated in the live
+    pass."""
+    draft = get_group_post_draft(draft_id) if draft_id else None
+    if (draft is None or draft.get("user_id") != user_id
+            or str(draft.get("status")) != str(GroupPostDraftStatus.READY)):
+        log_info("No reviewed group post draft to publish", user_id=user_id,
+                 task_name="auto_post_to_group")
+        return "No group post draft to publish"
+    text = _strip_non_bmp(draft.get("content") or "")
+    if not text.strip():
+        return "No group post draft to publish"
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Group Post")
     except Exception as e:
@@ -2907,12 +2954,6 @@ def auto_post_to_group(self, user_id: int, group_id: str, group_name: str = None
     try:
         driver.get(f"https://www.linkedin.com/groups/{group_id}/")
         time.sleep(random.uniform(4, 7))
-        with llm_attribution(user_id=user_id, feature=FEATURE_CONTENT):
-            text = _strip_non_bmp(generate_group_post(
-                my_profile, group_name=group_name, prefs=get_engagement_preferences(user_id),
-                profile_synthesis=get_or_create_profile_synthesis(user_id, my_profile)) or "")
-        if not text.strip():
-            return "No group post generated"
 
         def _unpostable(reason: str) -> str:
             # The group loaded but its composer did not: members cannot post here (admin-only /
@@ -2921,6 +2962,9 @@ def auto_post_to_group(self, user_id: int, group_id: str, group_name: str = None
             # every other post-enabled group (issue #858). `last_posted_at` is untouched, so it
             # stays the truthful record of what actually shipped.
             record_group_post_run(user_id, group_id)
+            # The draft was written FOR this group, so it dies with the group's turn — the next
+            # draft is written fresh for whichever group the rotation moves to.
+            update_group_post_draft(draft["id"], status=GroupPostDraftStatus.FAILED)
             log_info(f"Group is not postable, rotating past it: {reason}", user_id=user_id,
                      task_name="auto_post_to_group")
             return reason
@@ -2947,6 +2991,7 @@ def auto_post_to_group(self, user_id: int, group_id: str, group_name: str = None
         # Only a post that actually shipped advances the rotation — a failed run leaves this group
         # next in line rather than skipping its turn.
         record_group_post(user_id, group_id)
+        update_group_post_draft(draft["id"], status=GroupPostDraftStatus.PUBLISHED)
         return "Posted to group"
     except Exception as e:
         log_error("Group post error", exc=e, user_id=user_id, task_name="auto_post_to_group")

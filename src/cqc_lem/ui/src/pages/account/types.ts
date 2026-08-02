@@ -230,6 +230,16 @@ export type UserGroup = {
   is_next_post?: boolean
 }
 
+/** The group post waiting to be published, editable until it ships (issue #932). */
+export type GroupPostDraft = {
+  id: number
+  group_id: string
+  group_name: string | null
+  content: string
+  status: string
+  created_at?: string | null
+}
+
 export type LeadMagnet = {
   enabled: boolean
   keyword: string | null
