@@ -683,6 +683,24 @@ def probe_feed_reactions(driver, max_cards: int = 3, open_menu: bool = False,
         out["text_sel_source"] = "probe-carried"
     out["text_sel"] = prod_sel
 
+    # Call the SHIPPED card walk, not a copy of it. An inlined duplicate silently grounds whatever
+    # the probe's author last pasted — this probe reported cards_found: 0 against a build that had
+    # already fixed the walk, because the copy still carried the old aria-label-only JS.
+    try:
+        from cqc_lem.app.run_automation import _card_for_textbox as prod_card_for_textbox
+        out["card_walk_source"] = "image"
+    except Exception:
+        prod_card_for_textbox = None
+        out["card_walk_source"] = "probe-carried"
+
+    def _walk(box):
+        if prod_card_for_textbox is not None:
+            return prod_card_for_textbox(driver, box)
+        return driver.execute_script(
+            "let el=arguments[0],d=0;while(el&&d<15){"
+            "if(el.querySelector&&el.querySelector(\"button[aria-label='Comment']\"))return el;"
+            "el=el.parentElement;d++;}return null;", box)
+
     try:
         boxes = driver.find_elements(By.CSS_SELECTOR, prod_sel)
         out["textboxes_found"] = len(boxes)
@@ -691,10 +709,7 @@ def probe_feed_reactions(driver, max_cards: int = 3, open_menu: bool = False,
             if len(cards) >= max_cards:
                 break
             try:
-                card = driver.execute_script(
-                    "let el=arguments[0],d=0;while(el&&d<15){"
-                    "if(el.querySelector&&el.querySelector(\"button[aria-label='Comment']\"))return el;"
-                    "el=el.parentElement;d++;}return null;", box)
+                card = _walk(box)
             except Exception:
                 card = None
             if card is not None:

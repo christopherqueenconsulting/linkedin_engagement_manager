@@ -460,12 +460,70 @@ def check_commented(driver, wait, user_id: int = None, post_url: str = None):
 _FEED_POST_TEXT_SEL = "[data-testid='expandable-text-box'], .feed-shared-update-v2 .update-components-text"
 
 
+# XPath 1.0 has no lower-case(), so translate() is the case fold. Every case-insensitive comparison
+# against a LinkedIn label goes through it — sort controls, comment actions, reaction anchors —
+# because LinkedIn renders 'Most recent' / 'Recent' / 'Comment' / 'Like' with casing that varies by
+# surface, and a literal case-sensitive match against any other casing silently never fires.
+# Defined HERE, above the first locator chain that uses it: these are module-level constants
+# evaluated at import, so a chain declared before them raises NameError on import.
+_X_AZ_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_X_AZ_LOWER = "abcdefghijklmnopqrstuvwxyz"
+
+
+def _x_lower(expression: str) -> str:
+    """`expression` case-folded inside an XPath predicate."""
+    return f"translate({expression},'{_X_AZ_UPPER}','{_X_AZ_LOWER}')"
+
+
+_X_LOWER_TEXT = _x_lower("normalize-space()")
+_X_LOWER_ARIA = _x_lower("@aria-label")
+_X_LOWER_TESTID = _x_lower("@data-testid")
+
+
+# The comment ACTION button, resolved by several routes at once (issue #816 grounding run).
+#
+# Live on the current SDUI the button carries NO aria-label — only the visible text "Comment":
+#     {"tag": "button", "type": "button", "text": "Comment"}
+# so the long-standing `button[aria-label='Comment']` matched ZERO elements on a feed with 9 posts.
+# That single anchor was load-bearing in three places (the card walk, the URN-scan boundary and the
+# composer opener), which is why one label rotation took out commenting AND reactions at once.
+#
+# The text route matches the trimmed label EXACTLY. The feed also renders comment-COUNT affordances
+# (`{"tag":"div","role":"button","text":"7 comments"}`); a `contains` match would happily return one
+# of those, and clicking a count opens the thread rather than the composer.
+_COMMENT_ACTION_JS = r"""
+const isCommentAction = (b) => {
+  if (!b || !b.getAttribute) return false;
+  const aria = (b.getAttribute('aria-label') || '').trim().toLowerCase();
+  if (aria === 'comment' || aria.startsWith('comment on')) return true;
+  const testid = (b.getAttribute('data-testid') || '').toLowerCase();
+  const text = (b.textContent || '').trim().toLowerCase();
+  if (testid.includes('comment') && text === 'comment') return true;
+  return text === 'comment';
+};
+const commentButton = (root) => {
+  if (!root || !root.querySelectorAll) return null;
+  for (const b of root.querySelectorAll("button, [role='button']")) {
+    if (isCommentAction(b)) return b;
+  }
+  return null;
+};
+"""
+
+_CARD_FOR_TEXTBOX_JS = _COMMENT_ACTION_JS + r"""
+let el = arguments[0], d = 0;
+while (el && d < 15) { if (commentButton(el)) return el; el = el.parentElement; d++; }
+return null;
+"""
+
+
 def _card_for_textbox(driver, box):
-    """Nearest ancestor of a post's text box that contains its Comment button — i.e. the post card."""
-    return driver.execute_script(
-        "let el=arguments[0],d=0;while(el&&d<15){"
-        "if(el.querySelector&&el.querySelector(\"button[aria-label='Comment']\"))return el;"
-        "el=el.parentElement;d++;}return null;", box)
+    """Nearest ancestor of a post's text box that carries its comment action — i.e. the post card.
+
+    Multi-route by necessity: LinkedIn rotates which of aria-label / data-testid / visible text is
+    canonical and often keeps several alive at once, so keying on one is a single point of failure
+    that fails SILENTLY — a null card is indistinguishable from an empty feed."""
+    return driver.execute_script(_CARD_FOR_TEXTBOX_JS, box)
 
 
 def _post_author_from_card(card) -> str:
@@ -552,7 +610,13 @@ def _feed_content_fingerprints(author: str, content: str) -> "set[str]":
 # UP instead, reading each element's OWN attribute values, and stop at the first ancestor spanning
 # more than one post card so we can never pick up a SIBLING post's URN. Descendant attributes are
 # checked last (a reshare embeds the original post's URN, so containers outrank children).
-_URN_SCAN_JS = r"""
+_URN_SCAN_JS = _COMMENT_ACTION_JS + r"""
+const countCommentActions = (root) => {
+  if (!root || !root.querySelectorAll) return 0;
+  let n = 0;
+  for (const b of root.querySelectorAll("button, [role='button']")) { if (isCommentAction(b)) n++; }
+  return n;
+};
 const RE = /urn:li:(?:activity|ugcPost|share):\d+/i;
 const attrHit = (el) => {
   if (!el || !el.attributes) return null;
@@ -564,7 +628,11 @@ let hit = attrHit(el);
 if (hit) return hit;
 let p = el.parentElement, depth = 0;
 while (p && depth < 12) {
-  if (p.querySelectorAll && p.querySelectorAll("button[aria-label='Comment']").length > 1) break;
+  // Stop before an ancestor that spans TWO posts. Counting comment actions is the boundary test,
+  // so it must use the same multi-route resolver as the card walk — with the old aria-label-only
+  // count this hit 0 everywhere and the scan climbed straight past the card into the feed root,
+  // returning a neighbouring post's URN.
+  if (p.querySelectorAll && countCommentActions(p) > 1) break;
   hit = attrHit(p);
   if (hit) return hit;
   p = p.parentElement; depth++;
@@ -913,7 +981,7 @@ def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = No
         if not comment_text.strip():
             return False
         step = "open composer"
-        if click_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label='Comment']")],
+        if click_first(driver, wait, _COMMENT_ACTION_LOCATORS,
                        "Open comment composer", parent_element=card, required=False, user_id=user_id) is None:
             return False
         time.sleep(random.uniform(1.5, 3))
@@ -947,6 +1015,65 @@ def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = No
         return False
 
 
+# ── Comment + reaction locator chains (issue #816 live grounding, 2026-08-02) ──────────────────
+#
+# Every chain here is ORDERED most-stable-first and every entry is a DIFFERENT route to the same
+# control, because LinkedIn rotates which attribute is canonical and commonly keeps several alive
+# at once. A single locator does not fail loudly — it returns None, and a None card or a None
+# trigger is indistinguishable from "there was nothing to act on".
+#
+# Counts from the live run (9 posts on the home feed) are recorded per entry so the next drift is
+# diagnosable against a baseline instead of a docstring.
+#
+# XPath entries use `.//` so they stay scoped when passed `parent_element=card`; a leading `//`
+# would silently search the whole document and return a neighbouring post's control.
+_COMMENT_ACTION_LOCATORS = [
+    (By.CSS_SELECTOR, "button[aria-label='Comment']"),            # live count: 0 (was canonical)
+    (By.CSS_SELECTOR, "button[aria-label^='Comment on']"),
+    (By.CSS_SELECTOR, "[data-testid*='comment-button']"),
+    (By.XPATH, f".//button[{_X_LOWER_TEXT}='comment']"),          # live count: 1 per card TODAY
+    (By.XPATH, f".//*[@role='button'][{_X_LOWER_TEXT}='comment']"),
+]
+
+# The way IN to the reaction fly-out. The state button doubles as the default-Like toggle (its
+# text is literally "Like"), so one chain serves both roles.
+# Live: `button[aria-label^='Reaction button state']` matched 8 of 9 cards — still the best anchor.
+_REACTION_TRIGGER_LOCATORS = [
+    (By.CSS_SELECTOR, "button[aria-label^='Reaction button state']"),   # live count: 8
+    (By.XPATH, f".//button[contains({_X_LOWER_ARIA},'reaction button state')]"),
+    (By.XPATH, f".//button[contains({_X_LOWER_ARIA},'reaction')]"),
+    (By.CSS_SELECTOR, "button[aria-label='React Like']"),
+    (By.CSS_SELECTOR, "button[aria-label^='React']"),
+    (By.CSS_SELECTOR, "[data-testid*='reaction']"),
+    (By.XPATH, f".//button[{_X_LOWER_TEXT}='like']"),                   # exact: never "2 likes"
+]
+
+# The explicit fly-out opener. Live count: ZERO — hovering the trigger opens the fly-out directly
+# now. Kept as a trailing fallback (other surfaces and older renders still ship it), but its
+# absence is the documented normal path, so a miss here must never warn.
+_REACTION_OPENER_LOCATORS = [
+    (By.CSS_SELECTOR, "button[aria-label='Open reactions menu']"),      # live count: 0
+    (By.XPATH, f".//button[contains({_X_LOWER_ARIA},'reactions menu')]"),
+    (By.XPATH, ".//button[@aria-haspopup]"),
+]
+
+
+def _reaction_option_locators(reaction: str) -> list:
+    """Ordered routes to ONE reaction inside the open fly-out.
+
+    Document-scoped on purpose: the fly-out renders outside the card subtree (confirmed live — the
+    options were only reachable from `driver`, never from the card), so scoping these to the card
+    finds nothing even when the menu is wide open."""
+    low = (reaction or "like").strip().lower()
+    return [
+        (By.CSS_SELECTOR, f"button[aria-label='{reaction}']"),           # live: exact labels present
+        (By.XPATH, f"//button[{_X_LOWER_ARIA}='{low}']"),
+        (By.XPATH, f"//*[@role='button'][{_X_LOWER_ARIA}='{low}']"),
+        (By.XPATH, f"//*[self::button or @role='menuitem' or @role='menuitemradio' or "
+                   f"@role='option'][{_X_LOWER_TEXT}='{low}']"),
+    ]
+
+
 def react_to_post_inline(driver, wait, card, post_content: str = None, comment_text: str = None,
                          user_id: int = None) -> Optional[bool]:
     """Leave a single reaction on the card's post via the SDUI reaction fly-out.
@@ -955,53 +1082,53 @@ def react_to_post_inline(driver, wait, card, post_content: str = None, comment_t
     post already carried our reaction (a no-op, not a failure). None is falsy, so callers that only
     care whether a reaction landed keep working unchanged.
 
-    The 2026 SDUI reaction controls carry obfuscated hashed classes, so the stable anchors are
-    aria-labels (verified live): the per-card 'Open reactions menu' trigger, the 'Reaction button
-    state: ...' toggle, and the fly-out buttons whose aria-label is exactly the reaction name
-    (Like / Celebrate / Support / Love / Insightful). The reaction itself is picked by a fast AI
-    call scoped to the post + our comment, which self-falls-back to random. Returns True only if a
-    reaction registered (the toggle no longer reads 'no reaction')."""
+    Every locator is an ORDERED CHAIN (`_REACTION_TRIGGER_LOCATORS`, `_REACTION_OPENER_LOCATORS`,
+    `_reaction_option_locators`) rather than a single anchor: LinkedIn rotates which of
+    aria-label / data-testid / visible text is canonical and keeps several alive at once, so one
+    locator per control is a silent single point of failure. Grounded against a live session
+    2026-08-02 — the per-entry live counts are recorded beside each chain.
+
+    The 2026-08 shape: the 'Reaction button state: …' button IS the trigger and doubles as the
+    default-Like toggle (its text is literally "Like"), hovering it opens the fly-out directly, and
+    'Open reactions menu' no longer exists. The fly-out renders OUTSIDE the card subtree, so the
+    option lookup is document-scoped. The reaction itself is picked by a fast AI call scoped to the
+    post + our comment, which self-falls-back to random. Returns True only if a reaction registered
+    (the toggle no longer reads 'no reaction')."""
     try:
-        state = find_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label^='Reaction button state']")],
-                           "Reaction state", parent_element=card, required=False, visible_only=True, user_id=user_id)
+        state = find_first(driver, wait, _REACTION_TRIGGER_LOCATORS,
+                           "Reaction state", parent_element=card, required=False, visible_only=True,
+                           user_id=user_id)
         if state is not None and "no reaction" not in (state.get_attribute("aria-label") or "").lower():
             return None  # already reacted on this post — a no-op, not a failure
 
         reaction = choose_post_reaction(post_content, comment_text)
-        # The reaction fly-out is hover-revealed off the card's primary Like/React toggle. Hover it
-        # first (the menu opener is hidden until then), then click the opener.
-        # The toggle is only ONE of the two ways in: missing it still leaves the fly-out path below,
-        # so its absence alone is not a failure. And when the opener misses too, that miss already
-        # warns (`warn_on_miss=trigger is None`, issue #873) and the caller warns again — so warning
-        # here as well filed a THIRD PostHog defect for the same one condition (issue #877).
-        trigger = state or find_first(
-            driver, wait,
-            [(By.CSS_SELECTOR, "button[aria-label='React Like']"),
-             (By.CSS_SELECTOR, "button[aria-label^='React']"),
-             (By.CSS_SELECTOR, "button[aria-label='Like']")],
-            "React toggle", parent_element=card, required=False, visible_only=True,
-            warn_on_miss=False, user_id=user_id)
+        # One chain serves trigger AND toggle now, so there is no second lookup to fall back to.
+        trigger = state
         if trigger is not None:
             try:
                 ActionChains(driver).move_to_element(trigger).perform()
                 time.sleep(random.uniform(0.6, 1.2))
             except Exception:
                 pass
-        # The fly-out opener is optional: with a `trigger` in hand its absence just means we take the
-        # documented default-Like fallback below, which is working behaviour — warning about it every
-        # card escalated into a filed defect (issue #873). With no trigger there is no fallback, so
-        # the card's reaction controls really are unreadable and the miss is worth the signal — this
-        # is the ONE warning that stands for that condition (the React-toggle miss above is DEBUG).
-        opened = click_first(driver, wait, [(By.CSS_SELECTOR, "button[aria-label='Open reactions menu']")],
+        # The explicit opener is GONE as of 2026-08 (live count: 0) — hovering the trigger is what
+        # opens the fly-out. Kept as a trailing fallback for surfaces that still ship it, but its
+        # absence is now the NORMAL path, so it must never warn: warning on the documented happy
+        # path is exactly the expected-no-op the recurrence rule turns into a filed defect.
+        opened = click_first(driver, wait, _REACTION_OPENER_LOCATORS,
                              "Open reactions menu", parent_element=card, required=False,
-                             warn_on_miss=trigger is None, user_id=user_id)
+                             warn_on_miss=False, user_id=user_id)
         time.sleep(random.uniform(0.8, 1.6))
-        # The fly-out can render just outside the card subtree, so match the reaction button globally
-        # (only one menu is open at a time and click_first filters to visible elements).
-        if opened is None or click_first(driver, wait,
-                       [(By.CSS_SELECTOR, f"button[aria-label='{reaction}']"),
-                        (By.CSS_SELECTOR, "button[aria-label='Like']")],
-                       f"React {reaction}", required=False, user_id=user_id) is None:
+        # Document-scoped: the fly-out renders outside the card subtree (confirmed live — the
+        # options were reachable only from `driver`). Try the chosen reaction, then plain Like.
+        # No longer gated on `opened`: the hover alone can open the menu, so requiring the opener
+        # would skip a fly-out that is sitting right there.
+        picked = click_first(driver, wait, _reaction_option_locators(reaction),
+                             f"React {reaction}", required=False, warn_on_miss=False,
+                             user_id=user_id)
+        if picked is None and reaction.strip().lower() != "like":
+            picked = click_first(driver, wait, _reaction_option_locators("Like"),
+                                 "React Like", required=False, warn_on_miss=False, user_id=user_id)
+        if picked is None:
             # Fly-out didn't open or the specific reaction wasn't found — fall back to clicking the
             # primary toggle directly, which leaves a default Like. Better a Like than no reaction.
             if trigger is None:
@@ -1157,22 +1284,6 @@ def _roster_activity_url(profile_url: str) -> str:
         return base + "/"
     return f"{base}/recent-activity/all/"
 
-
-# XPath 1.0 has no lower-case(), so translate() is the case fold. Every comparison against a
-# LinkedIn sort label goes through it: LinkedIn renders 'Most recent' / 'Recent', and a literal
-# case-sensitive match against any other casing silently never fires.
-_X_AZ_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-_X_AZ_LOWER = "abcdefghijklmnopqrstuvwxyz"
-
-
-def _x_lower(expression: str) -> str:
-    """`expression` case-folded inside an XPath predicate."""
-    return f"translate({expression},'{_X_AZ_UPPER}','{_X_AZ_LOWER}')"
-
-
-_X_LOWER_TEXT = _x_lower("normalize-space()")
-_X_LOWER_ARIA = _x_lower("@aria-label")
-_X_LOWER_TESTID = _x_lower("@data-testid")
 
 # What the run's feed sort actually was. Only FEED_SORT_RECENT means the recency-dominant scoring
 # matrix (#622) ranked a recency-ordered feed; every other value means it ranked whatever LinkedIn's
