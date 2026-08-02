@@ -76,6 +76,7 @@ type AvatarPreferences = {
   avatar_use_post_image: boolean
   avatar_use_carousel: boolean
   avatar_use_video: boolean
+  avatar_use_newsletter: boolean
 }
 
 export default function Avatars() {
