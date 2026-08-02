@@ -716,6 +716,26 @@ class TestRendering:
         assert "❌ `ships` — production would ship this" in text
         assert "🔁 `redrafted` — first draft only" in text
 
+    def test_a_case_that_produced_nothing_is_not_reported_as_shipped_output(self):
+        """`no output` IS a contract failure — the call site got nothing — but production never
+        SHIPPED it, and since #910 turns an empty completion into no output this is the common
+        path. Rendering it under "production would ship this" is the misreading the two rates
+        exist to prevent."""
+        card = bm.merge_scorecard("lem-complex", "minimax-m3", "candidate", [bm.evaluate_case(
+            {"id": "complex-thought-leadership", "assertions": [{"type": "min_chars", "value": 700},
+                                                                {"type": "slop_lint"}]},
+            None) | {"error": "empty completion after 2 budget escalation(s) and 1 "
+                              "re-measurement(s)"}])
+        run = self._run()
+        run["scorecards"][1] = card | {"benchmark_run_id": run["run_id"], "usage": None}
+        text = bm.render_report(run)
+        assert "❌ `complex-thought-leadership` — no output; nothing was measured here" in text
+        assert "empty completion after 2 budget escalation(s)" in text
+        assert "production would ship this" not in text
+        # …and it still fails the gate: no output is never a pass.
+        assert card["contract_pass_rate"] == 0.0 and card["errors"] == [
+            "complex-thought-leadership"]
+
     def test_report_names_re_measured_and_budget_locked_cases(self):
         run = self._run()
         run["scorecards"][0]["remeasured_cases"] = ["complex-thought-leadership"]

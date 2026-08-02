@@ -658,7 +658,11 @@ def merge_scorecard(tier: str, model: str, role: str, case_results: list,
         "errors": errors,
         "failed_cases": [{"case_id": r["case_id"], "failures": r.get("failures") or [],
                           "contract_failures": r.get("contract_failures") or [],
-                          "repairable_failures": r.get("repairable_failures") or []}
+                          "repairable_failures": r.get("repairable_failures") or [],
+                          # Carried so the report can tell "nothing arrived" apart from "something
+                          # arrived that production would have shipped" — a no-output case is a
+                          # measurement that never happened, not a defect (#910).
+                          "error": r.get("error")}
                          for r in case_results if not r.get("passes")],
         "unscored_assertions": sum(int(r.get("unscored") or 0) for r in case_results),
         "judged": judged,
@@ -1108,7 +1112,14 @@ def render_report(run: dict) -> str:
         for entry in failed:
             contract = entry.get("contract_failures") or []
             repairable = entry.get("repairable_failures") or []
-            if contract:
+            if entry.get("error"):
+                # `no output` is a CONTRACT failure — the call site got nothing — but it is not
+                # something production would ship, and since #910 turns an empty completion into no
+                # output this is the common path. Labelling it "production would ship this" is the
+                # exact misreading the two rates exist to prevent.
+                lines.append(f"- ❌ `{entry['case_id']}` — no output; nothing was measured here")
+                lines.append(f"  - {entry['error']}")
+            elif contract:
                 lines.append(f"- ❌ `{entry['case_id']}` — production would ship this")
                 for failure in contract:
                     lines.append(f"  - {failure}")
@@ -1119,7 +1130,7 @@ def render_report(run: dict) -> str:
                              "regenerates against this and skips/holds what still fails")
                 for failure in repairable:
                     lines.append(f"  - {failure}")
-            else:  # a case with no classified failures (a provider error carries its own line)
+            else:  # a hand-built case whose failures carry no production class
                 lines.append(f"- ❌ `{entry['case_id']}`")
                 for failure in entry.get("failures") or []:
                     lines.append(f"  - {failure}")
@@ -1133,10 +1144,11 @@ def render_report(run: dict) -> str:
                          + ", ".join(f"`{c}`" for c in escalated))
         locked = card.get("budget_locked_cases") or []
         if locked:
-            lines.append(f"- 🔒 production budget — {len(locked)} case(s) mirror a production call "
-                         "site's own `max_tokens` and were NOT retried at a larger one; a model "
-                         "that cannot answer inside that budget is disqualified at that call site, "
-                         "not merely truncated: " + ", ".join(f"`{c}`" for c in locked))
+            lines.append(f"- 🔒 production budget — {len(locked)} case(s) spent a budget that "
+                         "MIRRORS a production call site's own `max_tokens` without answering, and "
+                         "were NOT retried at a larger one; a model that cannot answer inside that "
+                         "budget is disqualified at that call site, not merely truncated: "
+                         + ", ".join(f"`{c}`" for c in locked))
         remeasured = card.get("remeasured_cases") or []
         if remeasured:
             lines.append(f"- ⚖️ measurement variance — {len(remeasured)} case(s) came back EMPTY at "
