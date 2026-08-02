@@ -44,6 +44,20 @@ _REPLICATE_ATTEMPTS = 2
 
 _GENERATED_SUBDIR = os.path.join("images", "generated")
 
+# Appended to EVERY render prompt, whatever wrote it. The brief author is told to avoid marks,
+# but that only governs what it writes — gpt-image-2 inserts a LinkedIn logo into business scenes
+# entirely on its own, and the two covers it did that to both reached review carrying someone
+# else's trademark. Belongs here rather than in the brief so a hand-written or retried prompt
+# cannot lose it.
+_NO_MARKS_SUFFIX = (" Absolutely no text, letters, words, numbers, captions, watermarks, logos, "
+                    "brand marks, app icons, social-media icons, charts, or UI elements anywhere "
+                    "in the image.")
+
+
+def with_no_marks(prompt: str) -> str:
+    """The render prompt plus the no-marks constraint, added at most once."""
+    return prompt if _NO_MARKS_SUFFIX in prompt else f"{prompt}{_NO_MARKS_SUFFIX}"
+
 
 @dataclass
 class QualityVerdict:
@@ -148,6 +162,7 @@ def render_image_from_prompt(prompt: str, *, ratio: str = "1:1",
     Never renders a likeness — callers that may include the author go through
     ``generate_post_image`` so the avatar guardrails stay the single decision point.
     """
+    prompt = with_no_marks(prompt)
     backend = (IMAGE_BACKEND or "auto").strip().lower()
     if backend not in ("auto", "gpt-image", "flux"):
         log_warning(f"Unknown IMAGE_BACKEND '{backend}' — using auto")
@@ -232,9 +247,12 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
     path: Optional[str] = None
 
     for attempt in range(1, attempts + 1):
+        # The likeness path talks to Replicate directly, so it never passes through
+        # render_image_from_prompt where the constraint is otherwise added.
+        marked = with_no_marks(current_prompt)
         path, used_avatar = generate_image_with_avatar(
-            apply_subject_clause(current_prompt, avatar), avatar["model_ref"],
-            ratio=ratio, fallback_prompt=current_prompt)
+            apply_subject_clause(marked, avatar), avatar["model_ref"],
+            ratio=ratio, fallback_prompt=marked)
         if used_avatar and path:
             # Provenance for a synthetic likeness of a real person.
             _record_avatar_media(path, post_id, user_id)

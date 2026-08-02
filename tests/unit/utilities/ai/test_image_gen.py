@@ -159,3 +159,38 @@ class TestAvatarRenderIsGatedToo:
                                          surface="carousel")
         assert path == "/tmp/1.png"
         lora.assert_called_once()
+
+
+class TestNoBrandMarksConstraint:
+    """Regression: gpt-image-2 inserted a LinkedIn logo into business scenes on its own, and
+    both generated covers reached review carrying someone else's trademark."""
+
+    def test_every_render_prompt_carries_the_constraint(self):
+        with patch.object(image_gen, "_render_via_gpt_image", return_value="/tmp/g.png") as gpt:
+            image_gen.render_image_from_prompt("a founder at a desk", user_id=3)
+        sent = gpt.call_args[0][0]
+        assert "logos" in sent and "brand marks" in sent
+
+    def test_flux_fallback_keeps_the_constraint(self):
+        with patch.object(image_gen, "_render_via_gpt_image", side_effect=RuntimeError("down")), \
+             patch.object(image_gen, "_render_via_flux", return_value="/tmp/f.webp") as flux:
+            image_gen.render_image_from_prompt("a founder at a desk", user_id=3)
+        assert "brand marks" in flux.call_args[0][0]
+
+    def test_avatar_render_carries_it_too(self):
+        avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK",
+                  "gender_presentation": "man", "age_band": "40s"}
+        with patch("cqc_lem.utilities.avatar.replicate_avatar.generate_image_with_avatar",
+                   return_value=("/tmp/a.png", True)) as lora, \
+             patch("cqc_lem.utilities.ai.ai_helper._record_avatar_media"), \
+             patch.object(image_gen, "inspect_render_quality",
+                          return_value=QualityVerdict(acceptable=True)):
+            image_gen.render_avatar_image_gated("a founder at a desk", avatar=avatar, user_id=3,
+                                                surface="post_image")
+        assert "brand marks" in lora.call_args[0][0]
+        # The fallback prompt must carry it as well — that render is still published.
+        assert "brand marks" in lora.call_args[1]["fallback_prompt"]
+
+    def test_constraint_is_never_doubled(self):
+        once = image_gen.with_no_marks("scene")
+        assert image_gen.with_no_marks(once) == once
