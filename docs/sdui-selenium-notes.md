@@ -25,9 +25,13 @@ the real y=9 source AND a comment landing on the wrong post (issue #876).
 
 `_post_composer_for_card()` is the only thing that decides which box a post's comment is typed
 into. Order: a rendered box inside the card wins; otherwise `_single_post_scope()` widens to the
-widest ancestor that still holds exactly ONE comment action — the card is only the NEAREST ancestor
-carrying that action, and LinkedIn does not always mount the comment section inside it, which is
-why a card-scoped lookup missed on every post of every group run (issue #916). A box starting
+widest ancestor that still covers this post ALONE — the card is only the NEAREST ancestor carrying
+the comment action, and LinkedIn does not always mount the comment section inside it, which is
+why a card-scoped lookup missed on every post of every group run (issue #916). The widening bound
+counts per-post MARKERS (`_POST_MARKER_SELECTORS`: the post-text node the feed enumerates cards
+from, plus `Hide post by`), never comment ACTIONS — the composer being searched for brings its own
+submit button whose text is literally `Comment`, so an action count would see two the moment the
+comment section is a sibling and would never widen at all. A box starting
 ABOVE the card is rejected outright (the share box, or one left open on a post we already did), and
 a box labelled `creating comment` beats an unlabelled one (a reply box under someone's comment is a
 `role=textbox` too). No box of ours = skip the post; there is still no page-wide fallback.

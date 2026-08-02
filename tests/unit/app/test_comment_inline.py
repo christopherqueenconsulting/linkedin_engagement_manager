@@ -179,7 +179,7 @@ def _driver(scope=None):
     """A driver whose only scripted answer is the single-post scope widening; everything else
     (scrollIntoView, the submit button, the submitted check) succeeds."""
     d = MagicMock()
-    d.execute_script.side_effect = lambda script, *a: scope if "actionCount" in script else True
+    d.execute_script.side_effect = lambda script, *a: scope if "MARKERS" in script else True
     return d
 
 
@@ -226,11 +226,22 @@ class TestComposerIsScopedToItsOwnPost:
         assert ra._post_composer_for_card(_driver(scope=_holder(above, y=0)), card, user_id=1) is None
 
     def test_widening_stops_at_the_scope_that_still_holds_one_post(self):
-        # The guarantee lives in the JS: the walk up keeps an ancestor ONLY while exactly one
-        # comment action is inside it, so the scope can never span two posts.
+        # The guarantee lives in the JS: the walk up keeps an ancestor ONLY while every per-post
+        # marker count still equals the card's, so the scope can never span two posts.
         from cqc_lem.app import run_automation as ra
-        assert "actionCount(el) !== 1" in ra._SINGLE_POST_SCOPE_JS
+        assert "counts(el) !== base" in ra._SINGLE_POST_SCOPE_JS
         assert "break" in ra._SINGLE_POST_SCOPE_JS
+        assert ra._FEED_POST_TEXT_SEL in ra._POST_MARKER_SELECTORS  # the feed's own post marker
+
+    def test_the_widening_bound_is_not_a_comment_action_count(self):
+        """The composer we widen to FIND brings its own submit button, and its text is literally
+        "Comment" (`_SUBMIT_NEAR_COMPOSER_JS` clicks exactly that, skipping the disabled/hidden ones
+        it expects to exist). Counting comment actions therefore sees TWO on the first ancestor that
+        holds the card AND the sibling comment section — the walk would break before it ever widened,
+        in exactly the render this was written for, and the DEBUG downgrade would hide that forever."""
+        from cqc_lem.app import run_automation as ra
+        assert "isCommentAction" not in ra._SINGLE_POST_SCOPE_JS
+        assert "const base = counts(scope)" in ra._SINGLE_POST_SCOPE_JS  # baseline, never a hard 1
 
 
 class TestPostComposerResolution:
@@ -245,7 +256,7 @@ class TestPostComposerResolution:
         driver = _driver(scope=_holder(_box(10), mine))
         assert ra._post_composer_for_card(driver, _holder(mine, y=100), user_id=1) is mine
         # The card had one, so we never even asked for a wider scope.
-        assert not [c for c in driver.execute_script.call_args_list if "actionCount" in c.args[0]]
+        assert not [c for c in driver.execute_script.call_args_list if "MARKERS" in c.args[0]]
 
     def test_finds_the_composer_mounted_beside_the_card(self):
         from cqc_lem.app import run_automation as ra

@@ -518,19 +518,27 @@ return null;
 
 # The card above is the NEAREST ancestor carrying the comment action, which is not always the node
 # LinkedIn mounts the composer into — on the group feed the comment section renders as that node's
-# SIBLING. This walks back UP, keeping the widest ancestor that still holds exactly ONE comment
-# action: such a scope provably covers this post and no neighbour, so widening the composer lookup
-# can never reach the post next to it (the #876 failure). Issue #916.
-_SINGLE_POST_SCOPE_JS = _COMMENT_ACTION_JS + r"""
-const actionCount = (root) => {
-  let n = 0;
-  for (const b of root.querySelectorAll("button, [role='button']")) { if (isCommentAction(b)) n++; }
-  return n;
-};
+# SIBLING. This walks back UP, keeping the widest ancestor that still covers THIS post and no
+# neighbour, so widening the composer lookup can never reach the post next to it (the #876 failure).
+#
+# The bound is a count of per-post MARKERS, deliberately NOT of comment actions: the composer we are
+# widening to find brings its own submit button, whose text is literally "Comment"
+# (`_SUBMIT_NEAR_COMPOSER_JS` clicks exactly that, and expects to skip disabled/hidden ones), so
+# `isCommentAction` matches it too — the first ancestor holding both the card and the sibling comment
+# section would count TWO and the walk would stop before it ever widened, in precisely the render
+# this exists for. The markers are what the feed itself identifies a post by: the post-text node the
+# walk enumerates cards from, and the card's own "Hide post by" control (an image-only post has no
+# text node but still has that). Baselines come from the card, not a hardcoded 1, so a reshare that
+# renders two text nodes inside one card still widens. Issue #916.
+_POST_MARKER_SELECTORS = [_FEED_POST_TEXT_SEL, "button[aria-label^='Hide post by']"]
+
+_SINGLE_POST_SCOPE_JS = "const MARKERS = " + json.dumps(_POST_MARKER_SELECTORS) + r""";
+const counts = (root) => MARKERS.map((sel) => root.querySelectorAll(sel).length).join(",");
 let scope = arguments[0], el = scope, d = 0;
+const base = counts(scope);
 while (el && el.parentElement && d < 6) {
   el = el.parentElement;
-  if (actionCount(el) !== 1) break;
+  if (counts(el) !== base) break;
   scope = el;
   d++;
 }
@@ -1005,7 +1013,7 @@ def _is_post_comment_box(box: WebElement) -> bool:
 
 
 def _single_post_scope(driver: WebDriver, card: WebElement) -> WebElement | None:
-    """The widest ancestor of `card` still holding exactly ONE post's comment action."""
+    """The widest ancestor of `card` that still covers this post alone — no neighbouring post."""
     try:
         return driver.execute_script(_SINGLE_POST_SCOPE_JS, card)
     except Exception:
