@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.124.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.123.3...v0.124.0) (2026-08-02)
+
+
+### Features
+
+* **images:** encode the FLUX prompting research into the ONE brief engine ([#944](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/944)) ([02c15b3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/02c15b3cca8c3e96374783d53b7af76f9d2c6948))
+* **security:** mandatory strong-factor enrolment + extension-session narrowing — Phase 2c.1 (closes [#905](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/905)) ([#915](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/915)) ([1a2b53a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1a2b53ab07fe84fd5fe3e77c82dc97e0a8167909))
+
+
+### Bug Fixes
+
+* **images:** steer hands low-risk in the brief; gate inspects fingers closely ([#946](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/946)) ([0655291](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/065529178e7bfebe824348dc7a533ff061979ee3))
+
 ## [0.123.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.123.2...v0.123.3) (2026-08-02)
 
 
