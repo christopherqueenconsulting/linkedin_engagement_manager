@@ -230,8 +230,11 @@ every check is classed by what production does with its failure: `contract` (the
 it — the ABSOLUTE floor) vs `repairable` (a regeneration gate retries it — advisory, still
 champion-relative). A case whose `max_tokens` mirrors a call site (`budget_mirrors_production`) is
 never retried at a bigger budget; an EMPTY completion is re-measured at the same one, and a still-
-empty one is no output, never a 0-char answer. Only `recommend` becomes a swap; recommendations are
-RENDERED, never written (`.litellm/model_upgrades.yaml` is the retirement map). Full posture:
+empty one is no output, never a 0-char answer. Same principle at RUN scope (#923): a run where every
+case of every model errored — champion included — is a harness outage, not a scorecard of zeros, and
+is REFUSED (no report, no leaderboard rows, exit 1, the cause named once); a partial failure still
+publishes and carries an `Unmeasured cases` count in the report header. Only `recommend` becomes a
+swap; recommendations are RENDERED, never written (`.litellm/model_upgrades.yaml` is the retirement map). Full posture:
 `docs/model-benchmarks/README.md`.
 
 ### Content-quality telemetry (issue #630)

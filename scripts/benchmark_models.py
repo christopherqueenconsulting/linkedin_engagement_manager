@@ -31,6 +31,12 @@ RETIREMENT map and the reactive half of the model-health check auto-swaps whatev
 benchmark win must not walk itself into the live config. The report renders the exact mapping lines
 for a human (or a #717-style PR) to adopt.
 
+A run that measured NOTHING is not published (#923). A provider error is a legitimate case result,
+but when it is every case of every model — the champion included — the failure was the harness, not
+the roster, and a full report of 0% would land in the rolling leaderboard indistinguishable from a
+real bad run. That run is refused: no report, no leaderboard rows, non-zero exit, the underlying
+error named once. See `harness_outage`.
+
 Split like the other ops scripts: PURE logic (suite loading, assertion evaluation, scorecard merge,
 gate decision, report/leaderboard rendering) over a thin I/O layer (provider completions, PostHog
 emission/eval API/HogQL polling, file writes) that the tests mock.
@@ -1041,6 +1047,72 @@ def assert_benchmark_only(run: dict) -> None:
                                  f"({value!r}) — benchmark records are anonymous")
 
 
+# ─────────────────────── harness-outage guard (pure) ─────────────────────────────
+
+def _error_tally(cards: list) -> list:
+    """`(message, count)` for every case error in the run, commonest first — so a harness-wide
+    cause is namable ONCE instead of forty times under forty ❌ details."""
+    counts: dict = {}
+    for card in cards:
+        for row in (card.get("case_results") or card.get("failed_cases") or []):
+            message = str(row.get("error") or "").strip()
+            if message:
+                counts[message] = counts.get(message, 0) + 1
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
+def harness_outage(run: dict) -> Optional[dict]:
+    """Did this run measure ANYTHING? The outage record when it did not, else None (#923).
+
+    `ProviderClient.complete` turns every exception into a case result, which is right for a
+    provider 500 or a rate limit — and is also exactly what a broken venv, a revoked
+    `OLLAMA_CLOUD_API_KEY` or a DNS outage looks like. The run then completes "successfully": a full
+    scorecard of 0%, `reject` on every verdict, and one leaderboard row per model that is
+    indistinguishable from a real bad run forever after. The harness runs unattended, so that report
+    ships as a PR asserting every model LEM runs scores zero.
+
+    The tell is that it is EVERY case of EVERY model, the tier's own champion included: a roster of
+    candidates can genuinely be bad, but the incumbent production already runs scoring zero on every
+    single case means nothing reached a provider at all. #910 settled this for one case — a
+    completion that was never measured is `no output`, not a zero-length answer — and this is the
+    same principle at run scope.
+
+    A run with ANY measurement left in it (one model 500s, some cases time out) is an honest result
+    and returns None.
+
+    The champion is the TELL, not a precondition: a run that measured no champion at all (a tier
+    with no configured incumbent) still has nothing to publish, so it is refused on the same
+    condition and the detail simply omits the champion clause. Requiring a champion card here would
+    let exactly that run render its zeros."""
+    cards = [c for c in (run.get("scorecards") or []) if int(c.get("cases") or 0) > 0]
+    if not cards:
+        return None
+    total = sum(int(card.get("cases") or 0) for card in cards)
+    errored = sum(len(card.get("errors") or []) for card in cards)
+    if errored < total:
+        return None
+    tally = _error_tally(cards)
+    dominant = tally[0][0] if tally else "no per-case detail was recorded"
+    champions = sorted({str(card.get("model")) for card in cards
+                        if card.get("role") == "champion"})
+    detail = (
+        f"harness outage: all {total} case(s) across {len(cards)} model×tier scorecard(s) errored, "
+        "so this run measured nothing and is not a quality report"
+        + (" — the champion(s) " + ", ".join(f"`{m}`" for m in champions)
+           + " scored 0% too, which is the plumbing and not the roster" if champions else "")
+        + f". Underlying error: {dominant}"
+        + (f" (+{len(tally) - 1} other distinct error(s))" if len(tally) > 1 else ""))
+    return {"cases": total, "scorecards": len(cards), "champions": champions,
+            "error": dominant, "distinct_errors": len(tally), "detail": detail}
+
+
+def assert_measured(run: dict) -> None:
+    """Refuse to publish a run that measured nothing. Raises `ValueError`; see `harness_outage`."""
+    outage = harness_outage(run)
+    if outage:
+        raise ValueError(outage["detail"])
+
+
 # ─────────────────────────── report rendering (pure) ─────────────────────────────
 
 def _fmt_rate(value: Optional[float]) -> str:
@@ -1058,6 +1130,15 @@ def report_filename(run: dict) -> str:
 def render_report(run: dict) -> str:
     """The per-run scorecard committed to `docs/model-benchmarks/`."""
     assert_benchmark_only(run)
+    assert_measured(run)
+    cards = run.get("scorecards") or []
+    total_cases = sum(int(card.get("cases") or 0) for card in cards)
+    unmeasured = sum(len(card.get("errors") or []) for card in cards)
+    # Deduped: the weekly run scores the same model across every tier, and a candidate that answered
+    # nothing is silent on all of them — listing it once per tier reads as several dead models.
+    silent = sorted({str(card.get("model")) for card in cards
+                     if int(card.get("cases") or 0)
+                     and len(card.get("errors") or []) >= int(card.get("cases") or 0)})
     lines = [
         f"# Model-tier benchmark — {run.get('date')} (`{run.get('run_id')}`)",
         "",
@@ -1068,6 +1149,18 @@ def render_report(run: dict) -> str:
         f"- **Candidates:** {', '.join(run.get('candidates') or []) or 'none (baseline run)'}",
         f"- **Judge calls spent:** {run.get('judge_calls', 0)}"
         f" (cap {run.get('judge_call_cap', 0)})",
+    ]
+    if unmeasured:
+        # In the header, not only under the per-case ❌ details: a scorecard of zeros reads as a
+        # quality verdict, and how much of this run is a measurement at all is the first thing that
+        # decides whether the rest of it means anything (#923).
+        lines.append(
+            f"- **Unmeasured cases:** {unmeasured} of {total_cases} — the provider call errored, "
+            "so those cases produced no output and were never scored; that is not a zero-quality "
+            "result"
+            + (" — " + ", ".join(f"`{m}`" for m in silent)
+               + " answered nothing at all" if silent else ""))
+    lines += [
         "",
         ("Inputs are synthetic prompt templates from `tests/benchmarks/model_tiers/`; no customer " +
          "content, credentials or production logs appear in this report."),
@@ -1971,7 +2064,7 @@ def run_benchmark(suites: dict, models: list, champions: dict, *, run_id: str, t
 
     gates = gate_run(scorecards, suites)
     recommendations = swap_recommendations(gates)
-    return {
+    run = {
         "source": BENCHMARK_SOURCE,
         "run_id": run_id,
         "date": today,
@@ -1986,11 +2079,16 @@ def run_benchmark(suites: dict, models: list, champions: dict, *, run_id: str, t
         "gates": gates,
         "recommendations": recommendations,
     }
+    # Carried on the results JSON so the artifact `--render` reads later says why it was refused —
+    # the guard recomputes from the scorecards, so an older file without the key is still caught.
+    run["harness_outage"] = harness_outage(run)
+    return run
 
 
 def write_report(run: dict, out_dir: str) -> str:
     """Render + write the per-run report and update the rolling leaderboard. Returns the report
-    path. `render_report` runs the provenance guard first, so a tainted run never reaches disk."""
+    path. `render_report` runs the provenance and harness-outage guards first, so neither a tainted
+    run nor one that measured nothing (#923) ever reaches disk or the rolling leaderboard."""
     body = render_report(run)
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, report_filename(run))
