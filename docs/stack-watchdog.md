@@ -93,12 +93,12 @@ simply is not in the reply.
 | `status` | `healthy` / `degraded` / `unknown` — the only field a monitor should assert on |
 | `workers` | workers that answered the control channel — **presence, not usefulness** |
 | `consuming` | workers subscribed to ≥1 queue. **This is the one that decides `status`.** |
-| `maintenance` | `true`/`false`, or `null` when Redis couldn't be read. Explains a `degraded`. |
+| `maintenance` | `true`/`false`, or `null` when Redis couldn't be read. A declared window holds `status` at `healthy`. |
 
 | `status` | Meaning |
 |---|---|
-| `healthy` | at least one worker is **consuming a queue** |
-| `degraded` | broker reachable, **nothing consuming** — either no workers (the v0.118.0 shape) or workers registered but idle |
+| `healthy` | at least one worker is **consuming a queue** — or a maintenance window is **declared** |
+| `degraded` | broker reachable, **nothing consuming and no declared window** — either no workers (the v0.118.0 shape) or workers registered but idle |
 | `unknown` | control channel unreachable. **Unmeasured is never `healthy`.** |
 
 ### Why `consuming`, not `workers`
@@ -115,6 +115,22 @@ that is the expected cause.
 **One live consumer is enough.** A deploy recreates lanes one at a time, and failing the whole
 check on a single idle lane would flap the monitor through every rollout — which is how an alert
 gets muted, and a muted alert is worse than no alert.
+
+### A declared maintenance window is not an outage
+
+That tolerance does not cover the drain, though: `maint begin` cancels **every** lane's consumer at
+once, and `scripts/deploy.sh` runs it on every release — four windows a day. Reporting `degraded`
+there would fire the monitor on every *successful* deploy, which is the same muting problem from the
+other end. So while the maintenance flag is set, `status` stays `healthy`, with `consuming: 0` and
+`maintenance: true` still in the body for anyone reading it.
+
+The suppression is bounded by the flag's **own TTL** — `deploy.sh` sets 1800s (`MAINT_PAUSE_SECONDS`)
+and `maint end` deletes it — so the failure mode this endpoint exists for is still caught: a deploy
+that dies between `begin` and `end` leaves the consumers cancelled, the flag expires within the
+window, and the reading goes `degraded`. Unreadable Redis (`maintenance: null`) never suppresses —
+a window we cannot confirm is not a window. This mirrors layer 1's `WATCHDOG_GRACE_SECONDS`: both
+layers refuse to alert on a state a deploy is expected to pass through, and both bound how long
+they will stay quiet.
 
 It never raises and never 503s on a partial: a monitor should read `status`, and a scrape that
 cannot tell must say so rather than give a confident wrong answer.

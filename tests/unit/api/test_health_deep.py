@@ -18,6 +18,15 @@ def _call():
     return health_check_deep()
 
 
+@pytest.fixture(autouse=True)
+def _no_maintenance():
+    """Default every test to "not in a maintenance window" — and keep the suite hermetic: the real
+    `is_maintenance_mode()` reaches Redis, and a unit test must not depend on a broker being
+    absent (or, worse, present) in the environment it runs in."""
+    with patch("cqc_lem.utilities.maintenance.is_maintenance_mode", return_value=False):
+        yield
+
+
 class TestHealthDeep:
     def test_reports_each_worker_and_its_lanes(self):
         replies = {
@@ -63,16 +72,56 @@ class TestHealthDeep:
         assert out["status"] == "healthy"
         assert out["consuming"] == 1
 
-    def test_maintenance_is_reported_so_degraded_is_legible(self):
-        """During a deploy, maintenance mode IS the expected cause of a degraded reading; outside
-        one it is the thing to go clear. Either way the reader should not have to guess."""
+    def test_declared_maintenance_window_is_not_an_outage(self):
+        """`maint begin` cancels EVERY lane's consumer at once, and deploy.sh runs it on all four
+        release windows a day. Reporting that as `degraded` would fire the documented monitor on
+        every successful deploy — and an alert that cries wolf on every deploy gets muted.
+
+        The state is still fully visible in the body (`consuming: 0`, `maintenance: true`); only
+        the one field a monitor asserts on is held steady."""
         insp = MagicMock()
-        insp.active_queues.return_value = {"celery@worker": []}
+        insp.active_queues.return_value = {"celery@worker": [], "celery@selenium": []}
         with patch("cqc_lem.utilities.maintenance._inspect", return_value=insp), \
              patch("cqc_lem.utilities.maintenance.is_maintenance_mode", return_value=True):
             out = _call()
-        assert out["status"] == "degraded"
+        assert out["status"] == "healthy"
         assert out["maintenance"] is True
+        assert out["consuming"] == 0     # the reader still sees exactly what is going on
+
+    def test_maintenance_that_never_lifts_still_degrades(self):
+        """The suppression above is bounded by the flag's OWN TTL — deploy.sh sets 1800s and
+        `maint end` deletes it. A deploy that dies between begin and end leaves the consumers
+        cancelled while the flag expires, and THAT is the state worth waking someone for."""
+        insp = MagicMock()
+        insp.active_queues.return_value = {"celery@worker": [], "celery@selenium": []}
+        with patch("cqc_lem.utilities.maintenance._inspect", return_value=insp), \
+             patch("cqc_lem.utilities.maintenance.is_maintenance_mode", return_value=False):
+            out = _call()
+        assert out["status"] == "degraded"
+        assert out["workers"] == 2
+        assert out["consuming"] == 0
+
+    def test_maintenance_never_upgrades_an_unknown_reading(self):
+        """Suppression covers `degraded` only. An unreachable control channel means we did not
+        measure anything, and unmeasured is never `healthy` — maintenance flag or not."""
+        with patch("cqc_lem.utilities.maintenance._inspect", side_effect=RuntimeError("down")), \
+             patch("cqc_lem.utilities.maintenance.is_maintenance_mode", return_value=True), \
+             patch(f"{_MAIN}.log_warning"):
+            out = _call()
+        assert out["status"] == "unknown"
+        assert out["maintenance"] is True
+
+    def test_unreadable_maintenance_flag_never_suppresses_a_degraded_reading(self):
+        """`None` means "could not tell whether a window was declared", and a window we cannot
+        confirm must not silence a real zero-consumer outage."""
+        insp = MagicMock()
+        insp.active_queues.return_value = {"celery@worker": []}
+        with patch("cqc_lem.utilities.maintenance._inspect", return_value=insp), \
+             patch("cqc_lem.utilities.maintenance.is_maintenance_mode",
+                   side_effect=RuntimeError("redis down")):
+            out = _call()
+        assert out["status"] == "degraded"
+        assert out["maintenance"] is None
 
     def test_unreadable_maintenance_flag_never_downgrades_a_good_answer(self):
         """Redis being unreadable must not turn a trusted control-channel reading into a worse

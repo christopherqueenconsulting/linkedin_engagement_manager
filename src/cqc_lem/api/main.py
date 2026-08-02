@@ -1223,7 +1223,8 @@ def health_check_deep():
     requires at least one worker actually subscribed to at least one queue.
 
     `maintenance` is reported alongside so a degraded reading is legible rather than mysterious:
-    during a deploy it is the expected cause, and outside one it is the thing to go clear.
+    during a deploy it is the expected cause, and outside one it is the thing to go clear. A
+    DECLARED window is not an outage, so it does not degrade the status either — see below.
     """
     lanes: dict = {}
     status = "healthy"
@@ -1252,6 +1253,18 @@ def health_check_deep():
         maintenance = bool(is_maintenance_mode())
     except Exception:
         maintenance = None
+
+    # A DECLARED maintenance window is not an outage. `maint begin` cancels EVERY lane's consumer
+    # at once (not one at a time, so the "one live consumer" tolerance above does not cover it),
+    # and scripts/deploy.sh runs it on every release — four windows a day. Without this, the
+    # monitor documented in docs/stack-watchdog.md would fire on every successful deploy, and an
+    # alert that cries wolf on every deploy is one that gets muted. The suppression is bounded by
+    # the flag's own TTL (deploy sets 1800s; `maint end` deletes it), so a maintenance mode that
+    # never lifts still goes `degraded` once the flag expires — that IS the state worth waking
+    # someone for. Only `degraded` is suppressed: an unreadable control channel stays `unknown`,
+    # and unreadable Redis (None, never False) never suppresses anything.
+    if status == "degraded" and maintenance is True:
+        status = "healthy"
 
     return {"status": status, "workers": len(lanes), "consuming": consuming,
             "maintenance": maintenance, "lanes": lanes}
