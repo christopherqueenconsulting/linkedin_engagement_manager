@@ -904,12 +904,13 @@ def generate_newsletter_cover(edition_id: int):
     from cqc_lem.utilities.db import get_newsletter_edition, set_edition_cover_image
     from cqc_lem.utilities.linkedin.helper import load_profile_for_user
     from cqc_lem.utilities.newsletter_cover import (COVER_SOURCE_AI, COVER_STATUS_PENDING,
-                                                    generate_cover_for_edition)
+                                                    generate_cover_for_edition, remove_cover_file)
 
     edition = get_newsletter_edition(edition_id)
     if not edition:
         return f"Edition {edition_id} not found"
     user_id = edition["user_id"]
+    previous = edition.get("cover_image_path")
     try:
         profile = load_profile_for_user(user_id)
     except Exception as e:
@@ -925,7 +926,18 @@ def generate_newsletter_cover(edition_id: int):
         log_warning("Newsletter cover generation produced nothing", user_id=user_id,
                     task_name="generate_newsletter_cover", reason=reason)
         return f"No cover generated for edition {edition_id}"
-    set_edition_cover_image(edition_id, user_id, path, COVER_SOURCE_AI, COVER_STATUS_PENDING)
+    if not set_edition_cover_image(edition_id, user_id, path, COVER_SOURCE_AI,
+                                   COVER_STATUS_PENDING):
+        # The row is the source of truth: a render nothing points at is an orphan on the assets
+        # volume, so it goes out with the failed write.
+        remove_cover_file(path)
+        log_warning("Could not store the generated newsletter cover", user_id=user_id,
+                    task_name="generate_newsletter_cover")
+        return f"Cover not stored for edition {edition_id}"
+    # Re-generating replaces the row's path — the file it replaced would otherwise stay on disk
+    # forever, unreferenced and unreachable.
+    if previous and previous != path:
+        remove_cover_file(previous)
     log_info("Newsletter cover awaiting review", user_id=user_id,
              task_name="generate_newsletter_cover")
     return f"Generated cover for edition {edition_id}"

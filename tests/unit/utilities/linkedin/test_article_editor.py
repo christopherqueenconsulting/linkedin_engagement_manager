@@ -194,6 +194,30 @@ class TestResolveArticleEditorStep:
         assert ae.ROUTE_TITLE_PLACEHOLDER in result.tried
         assert result.element is None
 
+    def test_visible_only_false_keeps_a_hidden_element(self, monkeypatch):
+        # The cover's <input type=file> is hidden BY DESIGN — a visibility filter here would
+        # reject the only element Selenium can drive and every cover attach would miss.
+        hidden_input = FakeElement(tag="input", attrs={"type": "file", "accept": "image/*"},
+                                   displayed=False)
+        driver = FakeDriver({
+            (By.XPATH, "//input[@type='file' and contains(translate(@accept,"
+                       "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'image')]"):
+                [hidden_input],
+        })
+
+        def fake_find_first(d, w, locators, *args, **kwargs):
+            for by, value in locators:
+                matches = driver.find_elements(by, value)
+                if matches:
+                    return matches[0]
+            return None
+
+        monkeypatch.setattr(ae, "find_first", fake_find_first)
+        result = ae.resolve_article_editor_step(driver, MagicMock(), ae.STEP_COVER,
+                                                ae._COVER_INPUT_LOCATORS, visible_only=False)
+        assert result.ok
+        assert result.element is hidden_input
+
 
 class TestElementHelpers:
     def test_is_enabled_true_when_tag_name_raises(self):
@@ -913,6 +937,23 @@ class TestAttachArticleCover:
         monkeypatch.setattr(ae, "find_first", fake_find_first)
         assert ae.attach_article_cover(driver, MagicMock(), str(image)) is True
         assert trigger.clicked == 1
+        assert file_input.sent == [os.path.abspath(str(image))]
+
+    def test_attaches_to_an_input_that_is_hidden(self, monkeypatch, tmp_path):
+        # LinkedIn styles a button over the file input, so on the real page it is NOT displayed.
+        # If the resolver filtered on visibility the cover would never attach in production.
+        image = tmp_path / "cover.png"
+        image.write_bytes(b"png")
+        file_input = FakeElement(tag="input", attrs={"type": "file", "accept": "image/*"},
+                                 displayed=False)
+        driver = FakeDriver({
+            (By.XPATH, "//input[@type='file' and contains(translate(@accept,"
+                       "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'image')]"):
+                [file_input],
+        })
+        monkeypatch.setattr(ae.time, "sleep", lambda s: None)
+        monkeypatch.setattr(ae, "find_first", self._find_first(driver))
+        assert ae.attach_article_cover(driver, MagicMock(), str(image)) is True
         assert file_input.sent == [os.path.abspath(str(image))]
 
     def test_missing_file_on_disk_is_false_not_an_exception(self, tmp_path):

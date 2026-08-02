@@ -86,6 +86,12 @@ AI" button is the other entry point. Nothing generates a cover on a publish.
 drive), falling back to clicking an "Add a cover image" affordance first on variants that render
 the input lazily, then best-effort confirming a crop/preview dialog.
 
+That input is **hidden by design**, which is the one thing to keep in mind when touching the
+resolver: `resolve_article_editor_step` applies its `is_displayed()` filter only when
+`visible_only` is True. The cover routes pass `visible_only=False` — restore an unconditional
+visibility check there and every cover attach misses silently (a warning, never a failed publish),
+which looks exactly like "LinkedIn changed the DOM again".
+
 `STEP_COVER` is deliberately **not** in `EDITOR_SCREEN_STEPS` / `ALL_STEPS`: the cover is optional,
 so grading it would report `MISSING` on every cover-less publish. A cover that will not attach is a
 warning and never a `failed_step` — an edition without its cover is still a published edition.

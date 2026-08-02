@@ -29,6 +29,8 @@ export default function NewsletterQueue(
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   // Set while an AI cover is being generated — the queue is polled until that edition has one.
   const [coverWaitId, setCoverWaitId] = useState<number | null>(null)
+  // The cover URL that edition carried when generation started — the poll waits for a DIFFERENT one.
+  const [coverWaitFrom, setCoverWaitFrom] = useState<string | null>(null)
   const [coverTries, setCoverTries] = useState(0)
   const coverFileRef = useRef<HTMLInputElement>(null)
 
@@ -160,6 +162,10 @@ export default function NewsletterQueue(
       }),
     onSuccess: () => {
       setCoverWaitId(draftEdit!.id)
+      // What the edition showed BEFORE this run: re-generating over an existing cover is the
+      // normal case, so "has a cover" would be true on the very first poll and we would call the
+      // OLD image ready while the new one is still rendering.
+      setCoverWaitFrom(draftEdit!.cover_image_url ?? null)
       setMsg({ ok: true, text: 'Generating a cover… this can take a minute.' })
     },
     onError: (e) => coverError(e, 'Could not start cover generation — try again.'),
@@ -181,16 +187,18 @@ export default function NewsletterQueue(
     onError: (e) => coverError(e, 'Could not update the cover — try again.'),
   })
 
-  // Cover generation is an async task, so poll the queue until the edition carries a cover. The
-  // poll is BOUNDED: a generation that failed (or was rejected by the cover gate) never lands a
-  // cover, and an unbounded poll would leave the whole panel disabled forever.
+  // Cover generation is an async task, so poll the queue until the edition carries a NEW cover —
+  // one whose URL differs from whatever it had when generation started. The poll is BOUNDED: a
+  // generation that failed (or was rejected by the cover gate) never lands a cover, and an
+  // unbounded poll would leave the whole panel disabled forever.
   const COVER_POLL_LIMIT = 12
   useEffect(() => {
     if (coverWaitId == null) return
     const fresh = editions.find((e) => e.id === coverWaitId)
-    if (fresh?.cover_image_url) {
+    if (fresh?.cover_image_url && fresh.cover_image_url !== coverWaitFrom) {
       if (draftEdit?.id === coverWaitId) applyCover(fresh)
       setCoverWaitId(null)
+      setCoverWaitFrom(null)
       setCoverTries(0)
       setMsg({ ok: true, text: 'Cover ready — review it below and approve to publish it.' })
       setTimeout(() => setMsg(null), 5000)
@@ -198,6 +206,7 @@ export default function NewsletterQueue(
     }
     if (coverTries >= COVER_POLL_LIMIT) {
       setCoverWaitId(null)
+      setCoverWaitFrom(null)
       setCoverTries(0)
       setMsg({ ok: false, text: 'No cover came back — try generating again or upload your own.' })
       setTimeout(() => setMsg(null), 8000)
@@ -208,7 +217,7 @@ export default function NewsletterQueue(
       qc.invalidateQueries({ queryKey: ['newsletter-queue'] })
     }, 10000)
     return () => clearTimeout(t)
-  }, [data, coverWaitId, coverTries])
+  }, [data, coverWaitId, coverWaitFrom, coverTries])
 
   const coverBusy =
     uploadCoverMutation.isPending || generateCoverMutation.isPending ||

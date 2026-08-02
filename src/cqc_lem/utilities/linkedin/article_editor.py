@@ -276,7 +276,11 @@ def resolve_article_editor_step(
             user_id=user_id,
         )
         if element is not None:
-            if not _is_displayed_safe(element):
+            # The visibility filter is what `visible_only=False` turns OFF: the cover's
+            # <input type=file> is hidden BY DESIGN (LinkedIn styles a button over it), so
+            # requiring it to be displayed here would reject the only element that can be
+            # driven and every cover attach would silently miss.
+            if visible_only and not _is_displayed_safe(element):
                 log_debug(f"Article editor route found but not visible",
                           step=step, route=route_id, user_id=user_id, action_type="article_editor")
                 continue

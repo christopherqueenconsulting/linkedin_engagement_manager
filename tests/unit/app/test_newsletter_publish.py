@@ -623,6 +623,34 @@ class TestGenerateNewsletterCoverTask:
         assert "No cover generated" in result
         store.assert_not_called()
 
+    def test_regenerating_deletes_the_cover_it_replaced(self):
+        # The row only holds one path — the file it replaced is unreachable from then on, so
+        # leaving it behind grows the assets volume with every re-generation.
+        from cqc_lem.app.run_scheduler import generate_newsletter_cover
+        edition = {"id": 9, "user_id": 3, "title": "T", "subtitle": "S", "body": "B",
+                   "cover_image_path": "images/newsletter_covers/3/old.png"}
+        with patch("cqc_lem.utilities.db.get_newsletter_edition", return_value=edition), \
+             patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=MagicMock()), \
+             patch("cqc_lem.utilities.newsletter_cover.generate_cover_for_edition",
+                   return_value=("images/newsletter_covers/3/new.png", None)), \
+             patch("cqc_lem.utilities.db.set_edition_cover_image", return_value=True), \
+             patch("cqc_lem.utilities.newsletter_cover.remove_cover_file") as rm:
+            generate_newsletter_cover.run(edition_id=9)
+        assert rm.call_args_list[0][0][0] == "images/newsletter_covers/3/old.png"
+
+    def test_a_failed_row_write_leaves_no_orphan_render(self):
+        from cqc_lem.app.run_scheduler import generate_newsletter_cover
+        edition = {"id": 9, "user_id": 3, "title": "T", "subtitle": "S", "body": "B"}
+        with patch("cqc_lem.utilities.db.get_newsletter_edition", return_value=edition), \
+             patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=MagicMock()), \
+             patch("cqc_lem.utilities.newsletter_cover.generate_cover_for_edition",
+                   return_value=("images/newsletter_covers/3/a.png", None)), \
+             patch("cqc_lem.utilities.db.set_edition_cover_image", return_value=False), \
+             patch("cqc_lem.utilities.newsletter_cover.remove_cover_file") as rm:
+            result = generate_newsletter_cover.run(edition_id=9)
+        assert "not stored" in result
+        assert rm.call_args[0][0] == "images/newsletter_covers/3/a.png"
+
     def test_a_profile_that_will_not_load_does_not_stop_the_cover(self):
         from cqc_lem.app.run_scheduler import generate_newsletter_cover
         edition = {"id": 9, "user_id": 3, "title": "T", "subtitle": "S", "body": "B"}
