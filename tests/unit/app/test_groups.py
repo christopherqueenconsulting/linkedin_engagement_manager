@@ -114,6 +114,136 @@ class TestUserGroupsDB:
         assert logged.call_args.kwargs["user_id"] == 1
 
 
+class TestGroupPostDraftDB:
+    def _conn(self, fetch_one=None, lastrowid=7):
+        conn = MagicMock(); cur = MagicMock()
+        cur.fetchone.return_value = fetch_one
+        cur.fetchall.return_value = []
+        cur.lastrowid = lastrowid
+        conn.cursor.return_value = cur
+        return conn, cur
+
+    def test_create_returns_the_new_id(self):
+        conn, cur = self._conn()
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import create_group_post_draft
+            assert create_group_post_draft(1, "g1", "  An insight.  ", group_name="AI") == 7
+        assert cur.execute.call_args[0][1] == (1, "g1", "AI", "An insight.", "ready")
+
+    def test_create_refuses_empty_text(self):
+        conn, cur = self._conn()
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import create_group_post_draft
+            assert create_group_post_draft(1, "g1", "   ") is None
+        cur.execute.assert_not_called()
+
+    def test_open_draft_reads_only_the_ready_row(self):
+        conn, cur = self._conn(fetch_one={"id": 7, "user_id": 1, "group_id": "g1",
+                                          "group_name": "AI", "content": "x", "status": "ready",
+                                          "created_at": None, "updated_at": None,
+                                          "published_at": None})
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_open_group_post_draft
+            assert get_open_group_post_draft(1)["id"] == 7
+        assert cur.execute.call_args[0][1] == (1, "ready")
+
+    def test_open_draft_is_none_when_nothing_is_queued(self):
+        conn, _ = self._conn(fetch_one=None)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_open_group_post_draft
+            assert get_open_group_post_draft(1) is None
+
+    def test_publishing_stamps_the_ship_time_with_the_status(self):
+        conn, cur = self._conn()
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_group_post_draft, GroupPostDraftStatus
+            assert update_group_post_draft(7, status=GroupPostDraftStatus.PUBLISHED) is True
+        sql = cur.execute.call_args[0][0]
+        assert "status = %s" in sql and "published_at = NOW()" in sql
+        assert cur.execute.call_args[0][1] == ("published", 7)
+
+    def test_skipping_never_claims_a_ship_time(self):
+        conn, cur = self._conn()
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_group_post_draft, GroupPostDraftStatus
+            assert update_group_post_draft(7, status=GroupPostDraftStatus.SKIPPED) is True
+        assert "published_at" not in cur.execute.call_args[0][0]
+
+    def test_edit_writes_the_trimmed_text(self):
+        conn, cur = self._conn()
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_group_post_draft
+            assert update_group_post_draft(7, content="  my words  ") is True
+        assert cur.execute.call_args[0][1] == ("my words", 7)
+
+    def test_update_with_nothing_to_write_is_a_no_op(self):
+        conn, cur = self._conn()
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import update_group_post_draft
+            assert update_group_post_draft(7) is False
+        cur.execute.assert_not_called()
+
+    def test_post_enabled_ids_read_the_posting_flag_not_the_commenting_one(self):
+        conn, cur = self._conn()
+        cur.fetchall.return_value = [("g1",), ("g2",)]
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_post_enabled_group_ids
+            assert get_post_enabled_group_ids(1) == ["g1", "g2"]
+        assert "post_enabled=1" in cur.execute.call_args[0][0]
+
+
+class TestDraftGroupPost:
+    def test_writes_the_draft_for_that_group_without_a_browser(self):
+        """Issue #932: the text is written days ahead off the CACHED profile — no Chrome session."""
+        from cqc_lem.app.run_automation import auto_draft_group_post
+        with patch(f"{_RA}.get_open_group_post_draft", return_value=None), \
+             patch(f"{_RA}.load_profile_for_user", return_value=MagicMock()), \
+             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
+             patch(f"{_RA}.get_or_create_profile_synthesis", return_value="synth"), \
+             patch(f"{_RA}.generate_group_post", return_value="A useful insight.") as gen, \
+             patch(f"{_RA}.create_group_post_draft", return_value=11) as create, \
+             patch(f"{_RA}.get_current_profile") as gcp:
+            result = auto_draft_group_post.run(user_id=1, group_id="g1", group_name="AI Leaders")
+        assert result == "Drafted group post 11"
+        gcp.assert_not_called()
+        assert gen.call_args.kwargs["group_name"] == "AI Leaders"
+        create.assert_called_once_with(1, "g1", "A useful insight.", group_name="AI Leaders")
+
+    def test_an_unpublished_draft_is_never_replaced(self):
+        """The waiting draft may already carry the user's edits — a second generation would bin them."""
+        from cqc_lem.app.run_automation import auto_draft_group_post
+        with patch(f"{_RA}.get_open_group_post_draft", return_value={"id": 3}), \
+             patch(f"{_RA}.generate_group_post") as gen, \
+             patch(f"{_RA}.create_group_post_draft") as create:
+            result = auto_draft_group_post.run(user_id=1, group_id="g1")
+        assert "already awaiting review" in result
+        gen.assert_not_called()
+        create.assert_not_called()
+
+    def test_no_cached_profile_skips_quietly(self):
+        from cqc_lem.app.run_automation import auto_draft_group_post
+        with patch(f"{_RA}.get_open_group_post_draft", return_value=None), \
+             patch(f"{_RA}.load_profile_for_user", return_value=None), \
+             patch(f"{_RA}.generate_group_post") as gen, \
+             patch(f"{_RA}.log_warning") as warned:
+            result = auto_draft_group_post.run(user_id=1, group_id="g1")
+        assert result == "No cached profile to draft from"
+        gen.assert_not_called()
+        warned.assert_not_called()
+
+    def test_empty_generation_stores_nothing(self):
+        from cqc_lem.app.run_automation import auto_draft_group_post
+        with patch(f"{_RA}.get_open_group_post_draft", return_value=None), \
+             patch(f"{_RA}.load_profile_for_user", return_value=MagicMock()), \
+             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
+             patch(f"{_RA}.get_or_create_profile_synthesis", return_value="synth"), \
+             patch(f"{_RA}.generate_group_post", return_value="   "), \
+             patch(f"{_RA}.create_group_post_draft") as create:
+            result = auto_draft_group_post.run(user_id=1, group_id="g1")
+        assert result == "No group post generated"
+        create.assert_not_called()
+
+
 class TestSyncUserGroups:
     def test_upserts_enumerated(self):
         from cqc_lem.app.run_automation import auto_sync_user_groups
@@ -144,29 +274,67 @@ class TestCommentInGroups:
         gp.assert_not_called()
 
 
+_READY_DRAFT = {"id": 11, "user_id": 1, "group_id": "123", "group_name": "AI Leaders",
+                "content": "A useful insight.", "status": "ready"}
+
+
 class TestPostToGroup:
     def _driver_patches(self):
         return patch(f"{_RA}.get_current_profile",
                      return_value=(MagicMock(), MagicMock(), "e", MagicMock()))
 
-    def test_writes_for_that_group_and_stamps_rotation(self):
-        """The post is generated FRESH for the named group (never a copy of a feed post), and only
-        a post that actually shipped moves the rotation on."""
+    def test_publishes_the_reviewed_draft_and_stamps_rotation(self):
+        """Issue #932: the published text is the draft the user could read and revise — nothing is
+        generated here. Only a post that actually shipped moves the rotation on."""
         from cqc_lem.app.run_automation import auto_post_to_group
         with self._driver_patches(), \
-             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
-             patch(f"{_RA}.get_or_create_profile_synthesis", return_value="synth"), \
-             patch(f"{_RA}.generate_group_post", return_value="A useful insight.") as gen, \
+             patch(f"{_RA}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
+             patch(f"{_RA}.generate_group_post") as gen, \
              patch(f"{_RA}.click_first", return_value=MagicMock()), \
-             patch(f"{_RA}.find_first", return_value=MagicMock()), \
+             patch(f"{_RA}.find_first", return_value=MagicMock()) as box, \
              patch(f"{_RA}.record_group_post") as rec, \
+             patch(f"{_RA}.update_group_post_draft") as upd, \
              patch(f"{_RA}.record_group_post_run") as run, patch(f"{_RA}.quit_gracefully"):
-            result = auto_post_to_group.run(user_id=1, group_id="123", group_name="AI Leaders")
+            result = auto_post_to_group.run(user_id=1, group_id="123", group_name="AI Leaders",
+                                            draft_id=11)
         assert result == "Posted to group"
-        assert gen.call_args.kwargs["group_name"] == "AI Leaders"
+        gen.assert_not_called()
+        box.return_value.send_keys.assert_called_once_with("A useful insight.")
         rec.assert_called_once_with(1, "123")
+        assert str(upd.call_args.kwargs["status"]) == "published"
         # record_group_post stamps both columns itself — the success path never double-stamps.
         run.assert_not_called()
+
+    @pytest.mark.parametrize("draft", [
+        None,
+        {**_READY_DRAFT, "status": "skipped"},
+        {**_READY_DRAFT, "user_id": 2},
+    ])
+    def test_never_publishes_without_a_reviewed_draft(self, draft):
+        """A draft that was skipped, belongs to someone else, or is simply gone means NO post —
+        falling back to a fresh generation would ship the un-previewed post #932 removed."""
+        from cqc_lem.app.run_automation import auto_post_to_group
+        with patch(f"{_RA}.get_group_post_draft", return_value=draft), \
+             patch(f"{_RA}.get_current_profile") as gcp, \
+             patch(f"{_RA}.generate_group_post") as gen, \
+             patch(f"{_RA}.record_group_post") as rec, \
+             patch(f"{_RA}.record_group_post_run") as run:
+            result = auto_post_to_group.run(user_id=1, group_id="123", draft_id=11)
+        assert result == "No group post draft to publish"
+        gcp.assert_not_called()
+        gen.assert_not_called()
+        rec.assert_not_called()
+        run.assert_not_called()
+
+    def test_a_dispatch_carrying_no_draft_id_publishes_nothing(self):
+        """The pre-#932 call shape (no draft) must not resurrect the un-previewed publish path."""
+        from cqc_lem.app.run_automation import auto_post_to_group
+        with patch(f"{_RA}.get_group_post_draft") as get_draft, \
+             patch(f"{_RA}.get_current_profile") as gcp:
+            result = auto_post_to_group.run(user_id=1, group_id="123", group_name="AI Leaders")
+        assert result == "No group post draft to publish"
+        get_draft.assert_not_called()
+        gcp.assert_not_called()
 
     @pytest.mark.parametrize("miss,expected", [
         ("share_box", "Group share box not found"),
@@ -175,71 +343,103 @@ class TestPostToGroup:
     ])
     def test_unpostable_group_advances_the_rotation_without_claiming_a_post(self, miss, expected):
         """Issue #858: a group whose composer never renders (admin-only / announcement) is stamped
-        as TRIED so it moves to the back of the queue — but `last_posted_at` stays untouched."""
+        as TRIED so it moves to the back of the queue — but `last_posted_at` stays untouched. The
+        draft was written for THAT group, so it dies with the group's turn (#932)."""
         from cqc_lem.app.run_automation import auto_post_to_group
         clicks = {"share_box": [None], "editor": [MagicMock()],
                   "post_button": [MagicMock(), None]}[miss]
         with self._driver_patches(), \
-             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
-             patch(f"{_RA}.get_or_create_profile_synthesis", return_value="synth"), \
-             patch(f"{_RA}.generate_group_post", return_value="A useful insight."), \
+             patch(f"{_RA}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
              patch(f"{_RA}.click_first", side_effect=clicks), \
              patch(f"{_RA}.find_first", return_value=None if miss == "editor" else MagicMock()), \
              patch(f"{_RA}.record_group_post") as rec, \
+             patch(f"{_RA}.update_group_post_draft") as upd, \
              patch(f"{_RA}.record_group_post_run") as run, patch(f"{_RA}.quit_gracefully"):
-            result = auto_post_to_group.run(user_id=1, group_id="123", group_name="AI Leaders")
+            result = auto_post_to_group.run(user_id=1, group_id="123", group_name="AI Leaders",
+                                            draft_id=11)
         assert result == expected
         run.assert_called_once_with(1, "123")
         rec.assert_not_called()
+        assert str(upd.call_args.kwargs["status"]) == "failed"
 
     def test_failure_before_the_group_is_reached_does_not_advance_the_rotation(self):
-        """A dead session is transient and not the group's fault — it keeps its turn."""
+        """A dead session is transient and not the group's fault — it keeps its turn, and the draft
+        stays open so next week's run publishes the text the user already approved."""
         from cqc_lem.app.run_automation import auto_post_to_group
-        with patch(f"{_RA}.get_current_profile", side_effect=Exception("no session")), \
+        with patch(f"{_RA}.get_group_post_draft", return_value=dict(_READY_DRAFT)), \
+             patch(f"{_RA}.get_current_profile", side_effect=Exception("no session")), \
              patch(f"{_RA}.record_group_post") as rec, \
+             patch(f"{_RA}.update_group_post_draft") as upd, \
              patch(f"{_RA}.record_group_post_run") as run:
-            result = auto_post_to_group.run(user_id=1, group_id="123", group_name="AI Leaders")
+            result = auto_post_to_group.run(user_id=1, group_id="123", group_name="AI Leaders",
+                                            draft_id=11)
         assert "Failed" in result
         rec.assert_not_called()
         run.assert_not_called()
-
-    def test_empty_generation_does_not_advance_the_rotation(self):
-        """Nothing to say this week is a transient LLM outcome, not an unpostable group."""
-        from cqc_lem.app.run_automation import auto_post_to_group
-        with self._driver_patches(), \
-             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
-             patch(f"{_RA}.get_or_create_profile_synthesis", return_value="synth"), \
-             patch(f"{_RA}.generate_group_post", return_value="   "), \
-             patch(f"{_RA}.record_group_post") as rec, \
-             patch(f"{_RA}.record_group_post_run") as run, patch(f"{_RA}.quit_gracefully"):
-            result = auto_post_to_group.run(user_id=1, group_id="123", group_name="AI Leaders")
-        assert result == "No group post generated"
-        rec.assert_not_called()
-        run.assert_not_called()
+        upd.assert_not_called()
 
 
 class TestGroupDispatchers:
-    def test_group_posts_target_the_rotated_group(self):
-        from cqc_lem.app.run_scheduler import auto_group_posts
+    def test_drafts_target_the_rotated_group(self):
+        from cqc_lem.app.run_scheduler import auto_group_post_drafts
         with patch(f"{_RS}.get_active_user_ids", return_value=[1, 2]), \
              patch(f"{_RS}.has_linkedin_session", return_value=True), \
              patch(f"{_DB}.get_next_group_for_post",
                    side_effect=lambda u: {"group_id": "g9", "group_name": "Sales"} if u == 1 else None), \
+             patch("cqc_lem.app.run_automation.auto_draft_group_post") as t:
+            result = auto_group_post_drafts()
+        t.apply_async.assert_called_once_with(
+            kwargs={'user_id': 1, 'group_id': "g9", 'group_name': "Sales"})
+        assert "1/2" in result
+
+    def test_drafts_skip_users_without_a_session(self):
+        """Drafting opens no browser, but a user who cannot publish must not cost an LLM call."""
+        from cqc_lem.app.run_scheduler import auto_group_post_drafts
+        with patch(f"{_RS}.get_active_user_ids", return_value=[1]), \
+             patch(f"{_RS}.has_linkedin_session", return_value=False), \
+             patch(f"{_DB}.get_next_group_for_post") as nxt, \
+             patch("cqc_lem.app.run_automation.auto_draft_group_post") as t:
+            result = auto_group_post_drafts()
+        nxt.assert_not_called()
+        t.apply_async.assert_not_called()
+        assert "0/1" in result
+
+    def test_group_posts_publish_the_reviewed_draft(self):
+        from cqc_lem.app.run_scheduler import auto_group_posts
+        with patch(f"{_RS}.get_active_user_ids", return_value=[1, 2]), \
+             patch(f"{_RS}.has_linkedin_session", return_value=True), \
+             patch(f"{_DB}.get_open_group_post_draft",
+                   side_effect=lambda u: dict(_READY_DRAFT, group_id="g9", group_name="Sales") if u == 1 else None), \
+             patch(f"{_DB}.get_post_enabled_group_ids", return_value=["g9"]), \
              patch("cqc_lem.app.run_automation.auto_post_to_group") as t:
             result = auto_group_posts()
         t.apply_async.assert_called_once_with(
-            kwargs={'user_id': 1, 'group_id': "g9", 'group_name': "Sales"})
+            kwargs={'user_id': 1, 'group_id': "g9", 'group_name': "Sales", 'draft_id': 11})
         assert "1/2" in result
 
     def test_group_posts_skip_users_without_a_session(self):
         from cqc_lem.app.run_scheduler import auto_group_posts
         with patch(f"{_RS}.get_active_user_ids", return_value=[1]), \
              patch(f"{_RS}.has_linkedin_session", return_value=False), \
-             patch(f"{_DB}.get_next_group_for_post") as nxt, \
+             patch(f"{_DB}.get_open_group_post_draft") as draft, \
              patch("cqc_lem.app.run_automation.auto_post_to_group") as t:
             result = auto_group_posts()
-        nxt.assert_not_called()
+        draft.assert_not_called()
         t.apply_async.assert_not_called()
+        assert "0/1" in result
+
+    def test_a_draft_whose_group_was_switched_off_is_dropped_not_published(self):
+        """Turning Post off for a group between the draft and the slot means no post lands there."""
+        from cqc_lem.app.run_scheduler import auto_group_posts
+        with patch(f"{_RS}.get_active_user_ids", return_value=[1]), \
+             patch(f"{_RS}.has_linkedin_session", return_value=True), \
+             patch(f"{_DB}.get_open_group_post_draft", return_value=dict(_READY_DRAFT)), \
+             patch(f"{_DB}.get_post_enabled_group_ids", return_value=["other"]), \
+             patch(f"{_DB}.update_group_post_draft") as upd, \
+             patch("cqc_lem.app.run_automation.auto_post_to_group") as t:
+            result = auto_group_posts()
+        t.apply_async.assert_not_called()
+        assert str(upd.call_args.kwargs["status"]) == "skipped"
         assert "0/1" in result
 
 

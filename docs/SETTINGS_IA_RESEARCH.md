@@ -119,7 +119,8 @@ Read-only fields the GET adds for the UI: `reply_inbound_address`, `gmail_forwar
   comments on other members' posts, out of the daily comment cap) and *Post* (the weekly ORIGINAL
   group post — never a copy or reshare of a scheduled feed post, one group per week, rotating to
   whichever post-enabled group has gone longest without one). Both on by default; the card names the
-  group the next post lands in.
+  group the next post lands in, and (issue #932) shows that post's actual text a couple of days
+  early — editable in place, or skippable for the week.
 - **Billing** — plan/tier/trial, Stripe portal, video-credit and avatar-credit packs.
 
 ---

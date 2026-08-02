@@ -58,6 +58,9 @@ SELENIUM_LANES = {"se_engage", "se_prepost", "se_outreach", "se_content"}
 NON_SELENIUM_TASKS = [
     "post_to_linkedin",
     "auto_second_wave_comment",
+    # Writes the weekly group post off the CACHED profile (issue #932) — one LLM call, no browser,
+    # so it must never occupy a Selenium session slot the publish run needs.
+    "auto_draft_group_post",
 ]
 
 

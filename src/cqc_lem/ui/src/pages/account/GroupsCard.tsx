@@ -3,7 +3,8 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
 import Toggle from '../../components/Toggle'
-import type { UserGroup } from './types'
+import { maskProps } from '../../utils/analytics'
+import type { GroupPostDraft, UserGroup } from './types'
 import { useRegisterSaveSection, sectionSaveCallbacks } from './SettingsSaveContext'
 
 const groupLabel = (g: UserGroup) => g.group_name || `Group ${g.group_id}`
@@ -22,6 +23,8 @@ export default function GroupsCard() {
   const [savedSig, setSavedSig] = useState<string | null>(null)
   const [savedPostSig, setSavedPostSig] = useState('')
   const [groupsMsg, setGroupsMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [draftText, setDraftText] = useState<string | null>(null)
+  const [draftMsg, setDraftMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   const { data: groupsData, refetch: refetchGroups } = useQuery({
     queryKey: ['user-groups', sessionToken],
@@ -41,6 +44,40 @@ export default function GroupsCard() {
       setGroupsInit(true)
     }
   }, [groupsData, groupsInit])
+
+  // The post queued for the next weekly group slot. It is written days ahead precisely so it can be
+  // read and revised here before it ships (issue #932).
+  const { data: draft, refetch: refetchDraft } = useQuery({
+    queryKey: ['group-post-draft', sessionToken],
+    queryFn: () =>
+      api
+        .get(`/user/group-post-draft?session_token=${encodeURIComponent(sessionToken!)}`)
+        .then((r) => (r.data.detail as GroupPostDraft | null) ?? null),
+    enabled: !!sessionToken,
+    staleTime: 60 * 1000,
+  })
+  // Adopt the server's text only until the user starts typing — a background refetch must not
+  // discard an edit in progress.
+  useEffect(() => {
+    setDraftText((cur) => (cur === null ? draft?.content ?? null : cur))
+  }, [draft])
+
+  const draftMutation = useMutation({
+    mutationFn: (body: { content?: string; status?: string }) =>
+      api.put('/user/group-post-draft', { session_token: sessionToken, ...body }),
+    onSuccess: async (_res, body) => {
+      // Only a skip drops the local text — re-adopting the saved copy would clobber anything the
+      // user typed while the save was in flight.
+      if (body.status) setDraftText(null)
+      await refetchDraft()
+      setDraftMsg({ ok: true, text: body.status ? 'Skipped — no group post this week.' : 'Saved.' })
+      setTimeout(() => setDraftMsg(null), 3000)
+    },
+    onError: () => {
+      setDraftMsg({ ok: false, text: 'Could not save — try again.' })
+      setTimeout(() => setDraftMsg(null), 5000)
+    },
+  })
 
   const toggleGroup = (gid: string, field: 'enabled' | 'post_enabled') =>
     setGroups((gs) => gs.map((g) => (g.group_id === gid ? { ...g, [field]: !g[field] } : g)))
@@ -106,7 +143,54 @@ export default function GroupsCard() {
           (announcement or admin-only) uses up its turn and goes to the back of the queue, so it
           never holds up the others.
         </p>
+        <p>
+          That post is written a couple of days early and waits below, so you can read it — and
+          rewrite as much of it as you like — before it goes out.
+        </p>
       </div>
+
+      {draft && draftText !== null && (
+        <div className="border border-blue-200 bg-blue-50/40 rounded p-3 space-y-2">
+          <h3 className="text-sm font-semibold text-gray-700">
+            Next group post — {draft.group_name || `Group ${draft.group_id}`}
+          </h3>
+          <p className="text-xs text-gray-600">
+            This exact text is what LEM will publish at the next weekly group slot. Edit it, or skip
+            it and no group post goes out this week.
+          </p>
+          <textarea
+            aria-label="Group post text"
+            value={draftText}
+            onChange={(e) => setDraftText(e.target.value)}
+            rows={8}
+            {...maskProps('w-full border border-gray-300 rounded p-2 text-sm text-gray-800')}
+          />
+          <div className="flex items-center justify-between gap-3">
+            <span className={`text-xs ${draftText.length > 3000 ? 'text-red-600' : 'text-gray-500'}`}>
+              {draftText.length}/3000
+            </span>
+            <span className="flex items-center gap-2">
+              <button type="button"
+                onClick={() => draftMutation.mutate({ status: 'skipped' })}
+                disabled={draftMutation.isPending}
+                className="px-3 py-1.5 rounded-lg text-sm font-semibold border border-gray-300 text-gray-700 hover:bg-gray-100 disabled:opacity-50 transition-colors">
+                Skip this week
+              </button>
+              <button type="button"
+                onClick={() => draftMutation.mutate({ content: draftText })}
+                disabled={draftMutation.isPending || !draftText.trim() || draftText.length > 3000 ||
+                  draftText === draft.content}
+                className="px-3 py-1.5 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                {draftMutation.isPending ? 'Saving…' : 'Save post'}
+              </button>
+            </span>
+          </div>
+        </div>
+      )}
+      {/* Outside the panel: a skip removes the panel, and the confirmation has to outlive it. */}
+      {draftMsg && (
+        <p className={`text-sm font-medium ${draftMsg.ok ? 'text-green-600' : 'text-red-600'}`}>{draftMsg.text}</p>
+      )}
 
       <p className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded p-2">
         {postingGroups.length === 0

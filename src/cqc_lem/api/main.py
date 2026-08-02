@@ -69,6 +69,7 @@ from cqc_lem.utilities.db import (
     get_pending_newsletter_editions,
     get_latest_edition_scheduled_for, update_newsletter_edition, get_newsletter_edition,
     get_user_groups, set_groups_enabled, get_next_group_for_post,
+    get_open_group_post_draft, update_group_post_draft, GroupPostDraftStatus,
     get_post_engagement_rows, get_post_performance_rows, get_post_coverage_counts,
     get_content_mix_counts, get_comment_outcomes,
     get_follower_stats, get_daily_action_counts,
@@ -668,6 +669,7 @@ _LEN_TARGET_PROFILE_URL = 512  # engagement_targets.profile_url VARCHAR(512)
 _LEN_TARGET_NAME = 255         # engagement_targets.name VARCHAR(255)
 _LEN_STORY_TITLE = 255         # story_bank.title VARCHAR(255)
 _LEN_STORY_BODY = 5000         # story_bank.body (TEXT; app cap)
+_LEN_GROUP_POST = 3000    # LinkedIn caps a post at 3000 chars (group_post_drafts.content is TEXT)
 _LEN_NL_TITLE = 255       # newsletter_settings.title VARCHAR(255)
 _LEN_NL_TOPIC = 512       # newsletter_settings.topic VARCHAR(512)
 _LEN_DM_RECIPIENT_URL = 512   # scheduled_dms.recipient_profile_url VARCHAR(512)
@@ -4123,6 +4125,51 @@ def update_user_groups_endpoint(request: GroupTogglesRequest) -> ResponseModel:
     if not set_groups_enabled(user_id, request.groups):
         raise HTTPException(status_code=500, detail="Could not update group settings")
     return ResponseModel(status_code=200, detail="Group settings updated")
+
+
+class GroupPostDraftUpdateRequest(BaseModel):
+    session_token: str
+    # The user's revision of the drafted text. None = leave it as it is.
+    content: Optional[str] = Field(default=None, max_length=_LEN_GROUP_POST)
+    # Only 'skipped' is accepted — the draft's other states belong to the publish run, not the SPA.
+    status: Optional[str] = None
+
+
+@router.get("/user/group-post-draft")
+def get_group_post_draft_endpoint(session_token: str) -> ResponseModel:
+    """The group post waiting to be published, so the user can read it before it ships (issue #932).
+    `detail` is None when nothing is queued — the SPA hides the card rather than inventing one."""
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return ResponseModel(status_code=200, detail=get_open_group_post_draft(user_id))
+
+
+@router.put("/user/group-post-draft")
+def update_group_post_draft_endpoint(request: GroupPostDraftUpdateRequest) -> ResponseModel:
+    """Save the user's revision of the queued group post, or skip this week's post entirely.
+    Scoped to the caller's OWN open draft — the id is never taken from the request."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    draft = get_open_group_post_draft(user_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="No group post is queued")
+    status = None
+    if request.status is not None:
+        if request.status != str(GroupPostDraftStatus.SKIPPED):
+            raise HTTPException(status_code=422, detail="Unsupported group post draft status")
+        status = GroupPostDraftStatus.SKIPPED
+    content = request.content
+    if content is not None and not content.strip():
+        # An empty draft would publish nothing and read as a bug — skipping is the way to cancel.
+        raise HTTPException(status_code=422, detail="Group post text cannot be empty")
+    if content is None and status is None:
+        raise HTTPException(status_code=422, detail="Nothing to update")
+    if not update_group_post_draft(draft["id"], content=content, status=status):
+        raise HTTPException(status_code=500, detail="Could not update the group post")
+    return ResponseModel(status_code=200,
+                         detail="Group post skipped" if status else "Group post updated")
 
 
 @router.get("/user/post-stats")

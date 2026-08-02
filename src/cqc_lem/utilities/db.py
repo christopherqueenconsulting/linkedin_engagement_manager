@@ -247,6 +247,16 @@ class CatchupTouchStatus(StrEnum):
     CANCELED = 'canceled'    # operator canceled before send
 
 
+class GroupPostDraftStatus(StrEnum):
+    """Status of the weekly group post's draft (issue #932). The draft is written days before the
+    publish slot so the user can read and revise it — silence ships it, which is why the resting
+    state is READY rather than a pending-approval one."""
+    READY = 'ready'          # drafted (and editable) — publishes at the weekly slot unless skipped
+    SKIPPED = 'skipped'      # the user cancelled this week's post, or its group stopped taking posts
+    PUBLISHED = 'published'  # it shipped into the group
+    FAILED = 'failed'        # the run reached the group and the group would not take a member post
+
+
 class OutreachStage(StrEnum):
     """Stage of a comment-first outreach funnel target (issue #399)."""
     COMMENT = 'comment'      # leave a value-adding comment on the prospect's post
@@ -7055,6 +7065,121 @@ def set_groups_enabled(user_id: int, group_states: dict) -> bool:
         return True
     except mysql.connector.Error as err:
         myprint(f"Could not update group states for user {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_post_enabled_group_ids(user_id: int) -> list:
+    """The groups the user has opted into for POSTING. Separate from get_enabled_group_ids, which
+    reads the independent commenting flag."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT group_id FROM user_groups WHERE user_id=%s AND post_enabled=1", (user_id,))
+        return [r[0] for r in cursor.fetchall()]
+    except mysql.connector.Error as err:
+        myprint(f"Could not list post-enabled groups for user {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def _group_post_draft_row(row: dict) -> dict:
+    row = dict(row)
+    for col in ("created_at", "updated_at", "published_at"):
+        val = row.get(col)
+        row[col] = val.isoformat() if hasattr(val, "isoformat") else val
+    return row
+
+
+def create_group_post_draft(user_id: int, group_id: str, content: str,
+                            group_name: str = None) -> Optional[int]:
+    """Store the coming week's group post for review (issue #932). Returns the new draft id."""
+    if not group_id or not (content or "").strip():
+        return None
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO group_post_drafts (user_id, group_id, group_name, content, status) "
+            "VALUES (%s,%s,%s,%s,%s)",
+            (user_id, str(group_id), group_name, content.strip(), str(GroupPostDraftStatus.READY)))
+        connection.commit()
+        return cursor.lastrowid
+    except mysql.connector.Error as err:
+        log_error("Could not create group post draft", exc=err, user_id=user_id)
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_open_group_post_draft(user_id: int) -> Optional[dict]:
+    """The user's ONE open group-post draft — the row the SPA previews and the weekly publish run
+    consumes. None when nothing is waiting."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT id, user_id, group_id, group_name, content, status, created_at, updated_at, "
+            "published_at FROM group_post_drafts WHERE user_id=%s AND status=%s "
+            "ORDER BY id DESC LIMIT 1",
+            (user_id, str(GroupPostDraftStatus.READY)))
+        row = cursor.fetchone()
+        return _group_post_draft_row(row) if row else None
+    except mysql.connector.Error as err:
+        myprint(f"Could not read group post draft for user {user_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_group_post_draft(draft_id: int) -> Optional[dict]:
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT id, user_id, group_id, group_name, content, status, created_at, updated_at, "
+            "published_at FROM group_post_drafts WHERE id=%s",
+            (draft_id,))
+        row = cursor.fetchone()
+        return _group_post_draft_row(row) if row else None
+    except mysql.connector.Error as err:
+        myprint(f"Could not read group post draft {draft_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_group_post_draft(draft_id: int, content: str = None,
+                            status: "GroupPostDraftStatus" = None) -> bool:
+    """Save the user's revision and/or move the draft's status. `published_at` is stamped by the
+    status change itself, so the publish run can never claim a ship time without the status."""
+    fields, params = [], []
+    if content is not None:
+        fields.append("content = %s")
+        params.append(content.strip())
+    if status is not None:
+        fields.append("status = %s")
+        params.append(str(status))
+        if status == GroupPostDraftStatus.PUBLISHED:
+            fields.append("published_at = NOW()")
+    if not fields:
+        return False
+    params.append(draft_id)
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(f"UPDATE group_post_drafts SET {', '.join(fields)} WHERE id = %s", tuple(params))
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        log_error("Could not update group post draft", exc=err, task_name="update_group_post_draft")
         return False
     finally:
         cursor.close()
