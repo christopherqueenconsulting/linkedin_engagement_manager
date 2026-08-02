@@ -155,8 +155,17 @@ unknown address has no account. The write is best effort — an audit failure mu
 | `PIN_MAX_ATTEMPTS` | `5` | wrong guesses before the PIN locks |
 | `PIN_LOCKOUT_MINUTES` | `15` | how long the lock stands |
 
-## Still open after 2b
+## What 2c changed about this
 
-Phase **2c** — passkeys (`webauthn`) + TOTP (`pyotp`) + recovery codes (`argon2-cffi`) + a step-up
-gate on credential-touching endpoints, with the email PIN demoted to bootstrap-only. Its prerequisite
-is a valid TLS certificate on the public hostname (WebAuthn requires a secure context).
+Phase **2c** shipped: passkeys, TOTP, recovery codes and a step-up gate — see
+[`strong-authentication.md`](strong-authentication.md). Three things on this page moved:
+
+- The **email PIN is a bootstrap**, not a login, for an account that enrolled a strong factor.
+  `email_verified_at` still means the same thing (a PIN was consumed at that address) — it is
+  stamped before the second-factor branch.
+- **`/api/user/sessions/revoke` and `/api/user/email/change/init` are step-up gated.** Both are what
+  an attacker holding a stolen session does first. An account with no strong factor still passes,
+  so nothing changed for a user who has not enrolled.
+- **`/api/user/extension-token` now mints an `extension`-scoped session** and is itself step-up
+  gated. That scope is what later lets the extension POST a `li_at` without a WebAuthn ceremony it
+  could never run.

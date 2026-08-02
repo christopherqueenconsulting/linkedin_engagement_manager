@@ -3,8 +3,14 @@ import { useAuth } from '../contexts/AuthContext'
 import api from '../api/client'
 import { getAttribution } from '../utils/attribution'
 import { recordSignup } from '../utils/analytics'
+import { getPasskeyAssertion, isPasskeySupported } from '../utils/webauthn'
 
-type Step = 'email' | 'pin'
+type Step = 'email' | 'pin' | 'second-factor'
+
+// The factors the server will accept to finish a bootstrapped login. `passkey` is not in this list:
+// a passkey sign-in is standalone (it proves possession AND identity in one ceremony), so the SPA
+// sends the user down the passkey path instead of asking for an email code first.
+type SecondFactorMethod = 'totp' | 'recovery_code'
 
 export default function LoginModal() {
   const { closeLoginModal, login } = useAuth()
@@ -14,6 +20,24 @@ export default function LoginModal() {
   const [isNewUser, setIsNewUser] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Set when a PIN succeeded but the account has a strong factor enrolled (issue #745, 2c).
+  const [pendingToken, setPendingToken] = useState<string | null>(null)
+  const [methods, setMethods] = useState<string[]>([])
+  const [factorMethod, setFactorMethod] = useState<SecondFactorMethod>('totp')
+  const [factorCode, setFactorCode] = useState('')
+
+  function errorText(err: unknown, fallback: string): string {
+    const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
+    return typeof detail === 'string' ? detail : fallback
+  }
+
+  /** A login that came back needing a second factor, on either the PIN or the bypass path. */
+  function enterSecondFactor(detail: { pending_token: string; methods?: string[] }) {
+    setPendingToken(detail.pending_token)
+    setMethods(detail.methods ?? [])
+    setFactorMethod((detail.methods ?? []).includes('totp') ? 'totp' : 'recovery_code')
+    setStep('second-factor')
+  }
 
   async function handleEmailSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -26,6 +50,10 @@ export default function LoginModal() {
       })
       const detail = r.data.detail
 
+      if (detail.second_factor_required) {
+        enterSecondFactor(detail)
+        return
+      }
       if (detail.bypass) {
         // No email provider — session already created server-side, log in immediately
         if (detail.is_new_user) recordSignup({ method: 'email_pin', pin_bypassed: true })
@@ -36,8 +64,7 @@ export default function LoginModal() {
       setIsNewUser(detail.user_exists === false)
       setStep('pin')
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      setError(msg ?? 'Failed to send code. Please try again.')
+      setError(errorText(err, 'Failed to send code. Please try again.'))
     } finally {
       setLoading(false)
     }
@@ -49,15 +76,60 @@ export default function LoginModal() {
     setLoading(true)
     try {
       const r = await api.post('/auth/email/verify', { email, pin, attribution: getAttribution() })
-      const { session_token, email: verifiedEmail, is_new_user } = r.data.detail
+      const detail = r.data.detail
+      // The emailed code is a bootstrap once a strong factor exists — it proved the mailbox, and
+      // that is all it proves now.
+      if (detail.second_factor_required) {
+        enterSecondFactor(detail)
+        return
+      }
       // Only a brand-new account is a signup conversion — a returning user re-authenticating is a
       // login, the same line the API's own funnel event draws (issue #658).
-      if (is_new_user) recordSignup({ method: 'email_pin', pin_bypassed: false })
-      login(session_token, verifiedEmail)
+      if (detail.is_new_user) recordSignup({ method: 'email_pin', pin_bypassed: false })
+      login(detail.session_token, detail.email)
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      setError(msg ?? 'Invalid or expired code. Please try again.')
+      setError(errorText(err, 'Invalid or expired code. Please try again.'))
     } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleSecondFactorSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setError(null)
+    setLoading(true)
+    try {
+      const r = await api.post('/auth/second-factor/verify', {
+        pending_token: pendingToken,
+        method: factorMethod,
+        code: factorCode.trim(),
+      })
+      login(r.data.detail.session_token, r.data.detail.email)
+    } catch (err: unknown) {
+      setError(errorText(err, 'That code did not work.'))
+      setLoading(false)
+    }
+  }
+
+  /** Passkey sign-in: the only path here that a phishing proxy cannot relay, so it is offered
+   * first and needs no email at all. */
+  async function handlePasskey() {
+    setError(null)
+    setLoading(true)
+    try {
+      const begun = await api.post('/auth/passkey/login/begin', {})
+      const credential = await getPasskeyAssertion(begun.data.detail.options)
+      if (!credential) {
+        setLoading(false)
+        return
+      }
+      const r = await api.post('/auth/passkey/login/complete', {
+        handle: begun.data.detail.handle,
+        credential,
+      })
+      login(r.data.detail.session_token, r.data.detail.email)
+    } catch (err: unknown) {
+      setError(errorText(err, 'That passkey did not work — use your email instead.'))
       setLoading(false)
     }
   }
@@ -82,6 +154,19 @@ export default function LoginModal() {
             <p className="text-sm text-gray-500 mb-6">
               Enter your email and we'll send you a 6-digit code to continue.
             </p>
+            {isPasskeySupported() && (
+              <>
+                <button
+                  type="button"
+                  onClick={handlePasskey}
+                  disabled={loading}
+                  className="w-full border border-gray-300 text-gray-700 py-2.5 rounded-lg text-sm font-semibold hover:bg-gray-50 disabled:opacity-50 mb-4"
+                >
+                  Sign in with a passkey
+                </button>
+                <p className="text-[11px] uppercase tracking-wide text-gray-400 text-center mb-4">or</p>
+              </>
+            )}
             <form onSubmit={handleEmailSubmit} className="space-y-4">
               <input
                 type="email"
@@ -141,6 +226,64 @@ export default function LoginModal() {
               >
                 ← Use a different email
               </button>
+            </form>
+          </>
+        )}
+
+        {step === 'second-factor' && (
+          <>
+            <h2 className="text-xl font-bold text-gray-800 mb-1">One more step</h2>
+            <p className="text-sm text-gray-500 mb-6">
+              Your account has two-factor sign-in turned on, so an emailed code isn't enough on its
+              own.
+            </p>
+            {methods.includes('passkey') && isPasskeySupported() && (
+              <>
+                <button
+                  type="button"
+                  onClick={handlePasskey}
+                  disabled={loading}
+                  className="w-full bg-blue-600 text-white py-2.5 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 mb-4"
+                >
+                  Use your passkey
+                </button>
+                <p className="text-[11px] uppercase tracking-wide text-gray-400 text-center mb-4">or</p>
+              </>
+            )}
+            <form onSubmit={handleSecondFactorSubmit} className="space-y-4">
+              <input
+                type="text"
+                required
+                autoFocus
+                aria-label={factorMethod === 'totp' ? 'Authenticator code' : 'Recovery code'}
+                value={factorCode}
+                onChange={(e) => setFactorCode(e.target.value)}
+                placeholder={factorMethod === 'totp' ? '123456' : 'ABCD234XYZ'}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-center tracking-widest font-mono text-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              {error && <p className="text-xs text-red-600">{error}</p>}
+              <button
+                type="submit"
+                disabled={loading || !factorCode.trim()}
+                className="w-full bg-gray-800 text-white py-2.5 rounded-lg text-sm font-semibold hover:bg-gray-900 disabled:opacity-50"
+              >
+                {loading ? 'Verifying…' : 'Sign In'}
+              </button>
+              {methods.includes('recovery_code') && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFactorMethod(factorMethod === 'totp' ? 'recovery_code' : 'totp')
+                    setFactorCode('')
+                    setError(null)
+                  }}
+                  className="w-full text-xs text-gray-500 hover:text-gray-700"
+                >
+                  {factorMethod === 'totp'
+                    ? 'Lost your device? Use a recovery code'
+                    : '← Use your authenticator app'}
+                </button>
+              )}
             </form>
           </>
         )}

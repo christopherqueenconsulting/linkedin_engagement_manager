@@ -46,6 +46,9 @@ from cqc_lem.utilities.db import (
     create_session, get_session_user_id as _db_get_session_user_id, delete_session,
     get_session_id, list_user_sessions, revoke_session, revoke_other_sessions,
     record_auth_event, get_auth_audit_events, AuthAuditEvent,
+    add_passkey_factor, get_passkey_by_credential_id, get_user_passkey_credential_ids,
+    update_factor_counter, delete_auth_factor, count_recovery_codes,
+    create_auth_challenge, consume_auth_challenge, SESSION_SCOPE_EXTENSION,
     get_user_public_uid, mark_email_verified, change_user_email,
     add_user_by_email, get_user_email, get_user_analytics_profile, get_user_token_info,
     store_linkedin_li_at,
@@ -107,8 +110,22 @@ from cqc_lem.utilities.geocoding import geocode_city, GeocodeError
 from cqc_lem.utilities.linkedin.token_refresh import resolve_token_status
 from cqc_lem.utilities.env_constants import LI_CLIENT_ID, LI_CLIENT_SECRET, LI_REDIRECT_URL, LI_STATE_SALT, ADMIN_SECRET, API_ACCESS_TOKENS, \
     DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_VIDEO_RATIO, \
-    SESSION_ABSOLUTE_MAX_DAYS, SESSION_COOKIE_NAME, SESSION_COOKIE_SAMESITE, SESSION_COOKIE_SECURE
+    SESSION_ABSOLUTE_MAX_DAYS, SESSION_COOKIE_NAME, SESSION_COOKIE_SAMESITE, SESSION_COOKIE_SECURE, \
+    AUTH_CHALLENGE_TTL_SECONDS
 from cqc_lem.utilities.auth_rate_limit import check_auth_init, check_auth_verify, clear_auth_limits
+from cqc_lem.utilities.auth_factors import (
+    METHOD_PASSKEY, METHOD_RECOVERY, METHOD_TOTP,
+    available_methods, begin_totp_enrollment, confirm_totp_enrollment, factor_summary,
+    generate_recovery_codes, has_strong_factor, record_step_up, step_up_satisfied,
+    verify_recovery_code, verify_totp_code,
+)
+from cqc_lem.utilities.webauthn_util import (
+    WebAuthnUnavailable,
+    build_authentication_options, build_registration_options, credential_id_from_response,
+    relying_party as webauthn_relying_party,
+    verify_assertion as verify_passkey_assertion,
+    verify_registration as verify_passkey_registration,
+)
 import requests
 from cqc_lem.utilities.logger import myprint, log_debug, log_warning, log_info, log_error
 from cqc_lem.utilities.mime_type_helper import get_file_mime_type
@@ -547,6 +564,57 @@ class EmailChangeVerifyRequest(BaseModel):
     session_token: Optional[str] = None
     new_email: str
     pin: str
+
+
+# --- Strong authentication (issue #745, 2c) ------------------------------------------------
+
+class SessionOnlyRequest(BaseModel):
+    session_token: Optional[str] = None
+
+
+class PasskeyRegisterCompleteRequest(BaseModel):
+    session_token: Optional[str] = None
+    handle: str
+    credential: Dict[str, Any]
+    label: Optional[str] = None
+
+
+class PasskeyLoginBeginRequest(BaseModel):
+    """No email field on purpose: the ceremony is username-less, so this endpoint cannot become an
+    account-existence oracle. The assertion names the credential, and the credential names the
+    account."""
+    attribution: Optional[FunnelAttribution] = None
+
+
+class PasskeyLoginCompleteRequest(BaseModel):
+    handle: str
+    credential: Dict[str, Any]
+
+
+class TotpConfirmRequest(BaseModel):
+    session_token: Optional[str] = None
+    code: str
+
+
+class AuthFactorDeleteRequest(BaseModel):
+    session_token: Optional[str] = None
+    factor_id: int
+
+
+class SecondFactorVerifyRequest(BaseModel):
+    """Finish a login that a PIN only bootstrapped. `pending_token` is the handle issued by
+    /auth/email/verify; it is single-use and short-lived."""
+    pending_token: str
+    method: str
+    code: str
+
+
+class StepUpVerifyRequest(BaseModel):
+    session_token: Optional[str] = None
+    method: str
+    code: Optional[str] = None
+    handle: Optional[str] = None
+    credential: Optional[Dict[str, Any]] = None
 
 
 class CheckoutSessionRequest(BaseModel):
@@ -2150,6 +2218,25 @@ def auth_email_init(request: AuthInitRequest, http_request: Request = None,
             user_id = add_user_by_email(email)
             if not user_id:
                 raise HTTPException(status_code=500, detail="Could not create user record")
+        # The no-mail-provider bypass skips the PIN entirely, so it is the WEAKEST way in — an
+        # account that enrolled a strong factor still has to prove it, or this branch would be a
+        # hole straight through 2c on any deployment with mail unconfigured.
+        if has_strong_factor(user_id):
+            methods = available_methods(user_id)
+            pending_token = create_auth_challenge(CHALLENGE_SECOND_FACTOR, _challenge_expiry(),
+                                                  user_id=user_id)
+            if not pending_token:
+                raise HTTPException(status_code=500, detail="Could not continue sign-in")
+            record_auth_event(AuthAuditEvent.SECOND_FACTOR_REQUIRED, user_id=user_id, email=email,
+                              ip=ip, user_agent=user_agent,
+                              details={"methods": methods, "path": "pin_bypass"})
+            return ResponseModel(status_code=200, detail={
+                "bypass": True,
+                "second_factor_required": True,
+                "pending_token": pending_token,
+                "methods": methods,
+                "email": email,
+            })
         session_token = create_session(user_id, user_agent=user_agent, ip=ip)
         if not session_token:
             raise HTTPException(status_code=500, detail="Could not create session")
@@ -2225,6 +2312,26 @@ def auth_email_verify(request: AuthVerifyRequest, http_request: Request = None,
         if not user_id:
             raise HTTPException(status_code=500, detail="Could not create user record")
 
+    # The PIN is now a BOOTSTRAP, not a key (issue #745, 2c / design §4). The mailbox proved the
+    # address — which is why email_verified_at is stamped below either way — but for an account
+    # that has enrolled a strong factor it does NOT open a session on its own. Stamp first: a
+    # mailbox that received the PIN proved control whether or not a second factor follows.
+    mark_email_verified(user_id)
+    if has_strong_factor(user_id):
+        methods = available_methods(user_id)
+        pending_token = create_auth_challenge(CHALLENGE_SECOND_FACTOR, _challenge_expiry(),
+                                              user_id=user_id)
+        if not pending_token:
+            raise HTTPException(status_code=500, detail="Could not continue sign-in")
+        record_auth_event(AuthAuditEvent.SECOND_FACTOR_REQUIRED, user_id=user_id, email=email,
+                          ip=ip, user_agent=user_agent, details={"methods": methods})
+        return ResponseModel(status_code=200, detail={
+            "second_factor_required": True,
+            "pending_token": pending_token,
+            "methods": methods,
+            "email": email,
+        })
+
     session_token = create_session(user_id, user_agent=user_agent, ip=ip)
     if not session_token:
         raise HTTPException(status_code=500, detail="Could not create session")
@@ -2234,7 +2341,6 @@ def auth_email_verify(request: AuthVerifyRequest, http_request: Request = None,
         _track_signup_funnel(user_id, email, signup_attribution, pin_bypassed=False)
         _start_affiliate_membership(user_id, signup_attribution)
 
-    mark_email_verified(user_id)
     clear_auth_limits(email, ip)
     record_auth_event(AuthAuditEvent.LOGIN_SUCCESS, user_id=user_id, email=email, ip=ip,
                       user_agent=user_agent, details={"method": "email_pin"})
@@ -2353,6 +2459,9 @@ def revoke_user_session(request: RevokeSessionRequest, http_request: Request = N
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+    # Step-up gated (2c): signing every other device out is how an attacker with one stolen session
+    # locks the real owner out of their own account.
+    _require_step_up(user_id, request.session_token, "revoke_session")
 
     ip = _client_ip(http_request)
     user_agent = _user_agent(http_request)
@@ -2384,9 +2493,14 @@ def mint_extension_token(request: ExtensionTokenRequest, http_request: Request =
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+    # This is where the extension's step-up happens (2c) — ONCE, here in the SPA, where a passkey
+    # ceremony is possible. The minted token is `extension`-scoped, and that scope is what later
+    # lets it POST a cookie without a ceremony it could never run (design §6.5).
+    _require_step_up(user_id, request.session_token, "mint_extension_token")
 
     token = create_session(user_id, user_agent=_user_agent(http_request),
-                           ip=_client_ip(http_request), label="LinkedIn Connect extension")
+                           ip=_client_ip(http_request), label="LinkedIn Connect extension",
+                           scope=SESSION_SCOPE_EXTENSION)
     if not token:
         raise HTTPException(status_code=500, detail="Could not create session")
     return ResponseModel(status_code=200, detail={"session_token": token})
@@ -2400,6 +2514,12 @@ def user_email_change_init(request: EmailChangeInitRequest,
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    # Step-up gated on INIT, which is the real control: the confirmation PIN only ever goes to the
+    # new address, so a change that cannot be started cannot be finished. Gating /verify too would
+    # put the 5-minute freshness window around "go read your email", which is a lockout waiting to
+    # happen for no extra security.
+    _require_step_up(user_id, request.session_token, "email_change")
 
     new_email = request.new_email.strip().lower()
     if not new_email or "@" not in new_email:
@@ -2479,6 +2599,412 @@ def user_email_change_verify(request: EmailChangeVerifyRequest,
                                                       "sessions_revoked": revoked})
     log_info("User email changed", user_id=user_id)
     return ResponseModel(status_code=200, detail={"email": new_email, "sessions_revoked": revoked})
+
+
+# ---------------------------------------------------------------------------
+# Strong authentication — passkeys, TOTP, recovery codes, step-up (issue #745, 2c)
+#
+# The policy lives in utilities/auth_factors.py and the ceremonies in utilities/webauthn_util.py;
+# what is here is the HTTP seam, the audit rows, and the one decision those two cannot make — how
+# a refusal is shaped so the SPA can react to it.
+# ---------------------------------------------------------------------------
+
+CHALLENGE_REGISTER = "webauthn_register"
+CHALLENGE_LOGIN = "webauthn_login"
+CHALLENGE_STEP_UP = "webauthn_step_up"
+CHALLENGE_SECOND_FACTOR = "second_factor"
+
+
+def _challenge_expiry() -> datetime:
+    return datetime.now(timezone.utc) + timedelta(seconds=AUTH_CHALLENGE_TTL_SECONDS)
+
+
+def _step_up_error(user_id: int) -> HTTPException:
+    """A step-up refusal is **403, never 401**. The SPA's axios interceptor treats any 401 as a dead
+    session — it clears the cookie sentinel and redirects to the landing page — so answering "prove
+    it's you" with a 401 would log the user out instead of asking them anything."""
+    return HTTPException(status_code=403, detail={
+        "code": "step_up_required",
+        "message": "Confirm it's you to change this.",
+        "methods": available_methods(user_id),
+    })
+
+
+def _require_step_up(user_id: int, session_token: Optional[str], action: str,
+                     extension_scope_ok: bool = False) -> None:
+    """Gate a credential-touching write on a recently proved factor.
+
+    `extension_scope_ok` is opt-in per call site and only ONE passes it — the cookie endpoint the
+    browser extension actually calls. An extension token is otherwise an ordinary session, so a
+    blanket exemption would let a stolen one change the email address and revoke every device."""
+    if step_up_satisfied(user_id, current_session_token(session_token),
+                         extension_scope_ok=extension_scope_ok):
+        return
+    record_auth_event(AuthAuditEvent.STEP_UP_DENIED, user_id=user_id, success=False,
+                      details={"action": action})
+    raise _step_up_error(user_id)
+
+
+def _passkeys_or_503():
+    try:
+        return webauthn_relying_party()
+    except WebAuthnUnavailable as e:
+        # 503 and not 500: nothing is broken, this deployment simply has no secure public origin to
+        # bind a credential to. The SPA hides the passkey option rather than showing a dead button.
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.get("/user/auth-factors")
+def get_user_auth_factors(session_token: Optional[str] = None) -> ResponseModel:
+    """What the Security card renders: enrolled factors, recovery-code counts, whether this
+    deployment can do passkeys at all, and whether the email PIN has been demoted to a bootstrap."""
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    summary = factor_summary(user_id)
+    token = current_session_token(session_token)
+    return ResponseModel(status_code=200, detail={
+        "factors": [{
+            "id": f["id"],
+            "kind": f["kind"],
+            "label": f.get("label"),
+            "created_at": _utc_iso(f.get("created_at")),
+            "last_used_at": _utc_iso(f.get("last_used_at")),
+        } for f in summary.factors],
+        "recovery_codes_unused": summary.recovery_unused,
+        "recovery_codes_total": summary.recovery_total,
+        "passkeys_supported": summary.passkeys_supported,
+        "has_strong_factor": summary.has_strong_factor,
+        "pin_is_bootstrap_only": summary.pin_is_bootstrap_only,
+        "step_up_satisfied": step_up_satisfied(user_id, token),
+    })
+
+
+@router.post("/user/passkeys/register/begin")
+def passkey_register_begin(request: SessionOnlyRequest) -> ResponseModel:
+    """Options for `navigator.credentials.create`. Enrolment needs a session but NOT step-up:
+    adding a factor is how a user recovers after losing one, and gating it behind a factor they no
+    longer hold would be a lockout (design §6.8)."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    _passkeys_or_503()
+
+    email = get_user_email(user_id) or f"user-{user_id}"
+    options, challenge = build_registration_options(
+        user_id=user_id, user_name=email, user_display_name=email,
+        existing_credential_ids=get_user_passkey_credential_ids(user_id))
+    handle = create_auth_challenge(CHALLENGE_REGISTER, _challenge_expiry(),
+                                   user_id=user_id, challenge=challenge)
+    if not handle:
+        raise HTTPException(status_code=500, detail="Could not start passkey registration")
+    return ResponseModel(status_code=200, detail={"handle": handle, "options": options})
+
+
+@router.post("/user/passkeys/register/complete")
+def passkey_register_complete(request: PasskeyRegisterCompleteRequest,
+                              http_request: Request = None) -> ResponseModel:
+    """Verify and store a new passkey. The challenge is claimed exactly once, so a replayed
+    registration response finds nothing to verify against."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    _passkeys_or_503()
+
+    pending = consume_auth_challenge(request.handle, CHALLENGE_REGISTER)
+    if not pending or pending.get("user_id") != user_id:
+        raise HTTPException(status_code=400, detail="That registration expired — try again")
+
+    result = verify_passkey_registration(request.credential, pending["challenge"])
+    if not result:
+        raise HTTPException(status_code=400, detail="That passkey could not be verified")
+
+    factor_id = add_passkey_factor(user_id, result.credential_id, result.public_key,
+                                   sign_count=result.sign_count, label=request.label)
+    if not factor_id:
+        raise HTTPException(status_code=400, detail="That passkey is already registered")
+
+    # The ceremony IS a fresh proof of possession, so the session it ran on is now stepped up —
+    # otherwise a user who just touched their sensor would be asked to touch it again to save
+    # recovery codes.
+    record_step_up(current_session_token(request.session_token))
+    record_auth_event(AuthAuditEvent.FACTOR_ADDED, user_id=user_id, ip=_client_ip(http_request),
+                      user_agent=_user_agent(http_request), details={"kind": "passkey"})
+    log_info("Passkey enrolled", user_id=user_id)
+    return ResponseModel(status_code=200, detail={
+        "factor_id": factor_id,
+        # First strong factor: from here on an email PIN alone will not sign this account in, and
+        # the user needs to be told that BEFORE they close the page without saving recovery codes.
+        "recovery_codes_needed": count_recovery_codes(user_id)[0] == 0,
+    })
+
+
+@router.post("/user/totp/enroll/begin")
+def totp_enroll_begin(request: SessionOnlyRequest) -> ResponseModel:
+    """Mint an authenticator-app secret. Returned in the clear exactly once — the row stores it as
+    a `lemv1:` envelope bound to this user, so it can never be read back out."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    email = get_user_email(user_id) or f"user-{user_id}"
+    started = begin_totp_enrollment(user_id, email)
+    if not started:
+        raise HTTPException(status_code=500, detail="Could not start authenticator setup")
+    _factor_id, secret, uri = started
+    return ResponseModel(status_code=200, detail={"secret": secret, "otpauth_uri": uri})
+
+
+@router.post("/user/totp/enroll/confirm")
+def totp_enroll_confirm(request: TotpConfirmRequest, http_request: Request = None) -> ResponseModel:
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    if not confirm_totp_enrollment(user_id, request.code):
+        raise HTTPException(status_code=400, detail="That code did not match — check the time on "
+                                                    "your phone and try the next one")
+    record_step_up(current_session_token(request.session_token))
+    record_auth_event(AuthAuditEvent.FACTOR_ADDED, user_id=user_id, ip=_client_ip(http_request),
+                      user_agent=_user_agent(http_request), details={"kind": "totp"})
+    return ResponseModel(status_code=200, detail={
+        "recovery_codes_needed": count_recovery_codes(user_id)[0] == 0,
+    })
+
+
+@router.post("/user/auth-factors/delete")
+def delete_user_auth_factor(request: AuthFactorDeleteRequest,
+                            http_request: Request = None) -> ResponseModel:
+    """Remove a factor — step-up gated, because removing the thing that protects the account is
+    exactly what an attacker holding a stolen session would do first."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    _require_step_up(user_id, request.session_token, "delete_auth_factor")
+
+    if not delete_auth_factor(user_id, request.factor_id):
+        raise HTTPException(status_code=404, detail="Factor not found")
+    record_auth_event(AuthAuditEvent.FACTOR_REMOVED, user_id=user_id, ip=_client_ip(http_request),
+                      user_agent=_user_agent(http_request),
+                      details={"factor_id": request.factor_id})
+    return ResponseModel(status_code=200, detail={"removed": 1,
+                                                  "has_strong_factor": has_strong_factor(user_id)})
+
+
+@router.post("/user/recovery-codes/regenerate")
+def regenerate_recovery_codes(request: SessionOnlyRequest,
+                              http_request: Request = None) -> ResponseModel:
+    """A fresh sheet of single-use codes, shown ONCE. Step-up gated because a new sheet silently
+    invalidates the old one — an attacker could otherwise lock the real owner out of their own
+    recovery path without ever touching a factor."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    _require_step_up(user_id, request.session_token, "regenerate_recovery_codes")
+
+    codes = generate_recovery_codes(user_id)
+    if not codes:
+        raise HTTPException(status_code=500, detail="Could not generate recovery codes")
+    record_auth_event(AuthAuditEvent.RECOVERY_CODES_GENERATED, user_id=user_id,
+                      ip=_client_ip(http_request), user_agent=_user_agent(http_request),
+                      details={"count": len(codes)})
+    return ResponseModel(status_code=200, detail={"codes": codes})
+
+
+@router.post("/user/step-up/begin")
+def step_up_begin(request: SessionOnlyRequest) -> ResponseModel:
+    """Start a step-up passkey ceremony for the signed-in account. Scoped to the user's OWN
+    credentials — a step-up is "prove you are still you", not "log someone in"."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    _passkeys_or_503()
+
+    credential_ids = get_user_passkey_credential_ids(user_id)
+    if not credential_ids:
+        raise HTTPException(status_code=400, detail="No passkey is enrolled on this account")
+    options, challenge = build_authentication_options(credential_ids)
+    handle = create_auth_challenge(CHALLENGE_STEP_UP, _challenge_expiry(),
+                                   user_id=user_id, challenge=challenge)
+    if not handle:
+        raise HTTPException(status_code=500, detail="Could not start verification")
+    return ResponseModel(status_code=200, detail={"handle": handle, "options": options})
+
+
+@router.post("/user/step-up/verify")
+def step_up_verify(request: StepUpVerifyRequest, http_request: Request = None) -> ResponseModel:
+    """Prove a factor and stamp THIS session as freshly verified.
+
+    A recovery code is deliberately NOT accepted here (design §6.8): it gets you back INTO the
+    account and lets you enrol a factor, but it must not by itself unlock the LinkedIn credentials —
+    otherwise a stolen recovery sheet is a stolen LinkedIn session."""
+    user_id = get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    ip = _client_ip(http_request)
+    user_agent = _user_agent(http_request)
+    email = get_user_email(user_id) or ""
+    verdict = check_auth_verify(email, ip)
+    if not verdict.allowed:
+        raise HTTPException(status_code=429, detail="Too many attempts — try again later",
+                            headers={"Retry-After": str(verdict.retry_after_seconds)})
+
+    verified = False
+    if request.method == METHOD_PASSKEY:
+        _passkeys_or_503()
+        pending = consume_auth_challenge(request.handle or "", CHALLENGE_STEP_UP)
+        if pending and pending.get("user_id") == user_id:
+            verified = _verify_assertion_for_user(request.credential or {}, pending["challenge"],
+                                                  expected_user_id=user_id) is not None
+    elif request.method == METHOD_TOTP:
+        verified = verify_totp_code(user_id, request.code or "")
+
+    if not verified:
+        record_auth_event(AuthAuditEvent.SECOND_FACTOR_FAILED, user_id=user_id, ip=ip,
+                          user_agent=user_agent, success=False,
+                          details={"method": request.method, "stage": "step_up"})
+        raise HTTPException(status_code=400, detail="That did not verify — try again")
+
+    record_step_up(current_session_token(request.session_token))
+    record_auth_event(AuthAuditEvent.STEP_UP_VERIFIED, user_id=user_id, ip=ip,
+                      user_agent=user_agent, details={"method": request.method})
+    return ResponseModel(status_code=200, detail={"verified": True})
+
+
+def _verify_assertion_for_user(credential: dict, challenge: str,
+                               expected_user_id: Optional[int] = None) -> Optional[dict]:
+    """Verify a passkey assertion and return the stored factor row it proved, or None.
+
+    The credential id only SELECTS the row — nothing is trusted until the signature verifies
+    against the public key stored for it. `expected_user_id` is what keeps a step-up honest: an
+    assertion from a different account's passkey is a valid assertion, just not for this session."""
+    credential_id = credential_id_from_response(credential)
+    if not credential_id:
+        return None
+    stored = get_passkey_by_credential_id(credential_id)
+    if not stored:
+        return None
+    if expected_user_id is not None and stored["user_id"] != expected_user_id:
+        return None
+    new_count = verify_passkey_assertion(credential, challenge, stored["public_key"],
+                                         stored.get("sign_count") or 0)
+    if new_count is None:
+        return None
+    update_factor_counter(stored["id"], new_count)
+    return stored
+
+
+@router.post("/auth/passkey/login/begin")
+def passkey_login_begin(request: PasskeyLoginBeginRequest) -> ResponseModel:
+    """Username-less passkey sign-in. Public, and it takes no email: the browser offers whatever
+    discoverable passkey it holds for this origin, so nothing here can be probed for whether an
+    address has an account."""
+    _passkeys_or_503()
+    options, challenge = build_authentication_options()
+    handle = create_auth_challenge(CHALLENGE_LOGIN, _challenge_expiry(), challenge=challenge)
+    if not handle:
+        raise HTTPException(status_code=500, detail="Could not start passkey sign-in")
+    return ResponseModel(status_code=200, detail={"handle": handle, "options": options})
+
+
+@router.post("/auth/passkey/login/complete")
+def passkey_login_complete(request: PasskeyLoginCompleteRequest, http_request: Request = None,
+                           response: Response = None) -> ResponseModel:
+    """Finish a passkey sign-in. This is the ONE login path that is phishing-resistant end to end,
+    and the only one that mints a session already stepped up — the user proved a strong factor to
+    get here, so asking them to prove it again to paste a cookie would be theatre."""
+    _passkeys_or_503()
+    ip = _client_ip(http_request)
+    user_agent = _user_agent(http_request)
+
+    pending = consume_auth_challenge(request.handle, CHALLENGE_LOGIN)
+    if not pending:
+        raise HTTPException(status_code=400, detail="That sign-in expired — try again")
+
+    stored = _verify_assertion_for_user(request.credential, pending["challenge"])
+    if not stored:
+        record_auth_event(AuthAuditEvent.LOGIN_FAILED, ip=ip, user_agent=user_agent, success=False,
+                          details={"method": "passkey"})
+        raise HTTPException(status_code=401, detail="That passkey could not be verified")
+
+    user_id = stored["user_id"]
+    session_token = create_session(user_id, user_agent=user_agent, ip=ip, verified=True)
+    if not session_token:
+        raise HTTPException(status_code=500, detail="Could not create session")
+
+    clear_auth_limits(get_user_email(user_id) or "", ip)
+    record_auth_event(AuthAuditEvent.LOGIN_SUCCESS, user_id=user_id, ip=ip, user_agent=user_agent,
+                      details={"method": "passkey"})
+    if response is not None:
+        _set_session_cookie(response, session_token)
+    return ResponseModel(status_code=200, detail={
+        "session_token": session_token,
+        "email": get_user_email(user_id),
+        "is_new_user": False,
+    })
+
+
+@router.post("/auth/second-factor/verify")
+def auth_second_factor_verify(request: SecondFactorVerifyRequest, http_request: Request = None,
+                              response: Response = None) -> ResponseModel:
+    """Finish a login the email PIN only bootstrapped (design §4, C demoted to bootstrap-only).
+
+    A TOTP code mints a fully verified session. A RECOVERY code mints one that is signed in but NOT
+    stepped up: it is meant to get someone back in to enrol a new factor, not to hand a found sheet
+    of codes the LinkedIn credentials."""
+    ip = _client_ip(http_request)
+    user_agent = _user_agent(http_request)
+
+    pending = consume_auth_challenge(request.pending_token, CHALLENGE_SECOND_FACTOR)
+    if not pending or not pending.get("user_id"):
+        raise HTTPException(status_code=400, detail="That sign-in expired — start again")
+    user_id = pending["user_id"]
+    email = get_user_email(user_id) or ""
+
+    verdict = check_auth_verify(email, ip)
+    if not verdict.allowed:
+        record_auth_event(AuthAuditEvent.LOGIN_RATE_LIMITED, user_id=user_id, email=email, ip=ip,
+                          user_agent=user_agent, success=False, details={"scope": verdict.scope})
+        raise HTTPException(status_code=429, detail="Too many attempts — try again later",
+                            headers={"Retry-After": str(verdict.retry_after_seconds)})
+
+    # A recovery code signs you in; only a real factor makes the session step-up capable.
+    verified_session = request.method == METHOD_TOTP
+    if request.method == METHOD_TOTP:
+        ok = verify_totp_code(user_id, request.code)
+    elif request.method == METHOD_RECOVERY:
+        ok = verify_recovery_code(user_id, request.code)
+    else:
+        ok = False
+
+    if not ok:
+        record_auth_event(AuthAuditEvent.SECOND_FACTOR_FAILED, user_id=user_id, email=email, ip=ip,
+                          user_agent=user_agent, success=False, details={"method": request.method})
+        raise HTTPException(status_code=401, detail="That code did not work")
+
+    session_token = create_session(user_id, user_agent=user_agent, ip=ip, verified=verified_session)
+    if not session_token:
+        raise HTTPException(status_code=500, detail="Could not create session")
+
+    if request.method == METHOD_RECOVERY:
+        record_auth_event(AuthAuditEvent.RECOVERY_CODE_USED, user_id=user_id, email=email, ip=ip,
+                          user_agent=user_agent,
+                          details={"remaining": count_recovery_codes(user_id)[0]})
+    clear_auth_limits(email, ip)
+    record_auth_event(AuthAuditEvent.LOGIN_SUCCESS, user_id=user_id, email=email, ip=ip,
+                      user_agent=user_agent, details={"method": request.method})
+    if response is not None:
+        _set_session_cookie(response, session_token)
+    return ResponseModel(status_code=200, detail={
+        "session_token": session_token,
+        "email": email,
+        "is_new_user": False,
+        # A recovery-code login is signed in but not stepped up — the SPA nudges straight to
+        # enrolment rather than letting the user discover it at the first blocked write.
+        "enroll_factor_required": request.method == METHOD_RECOVERY,
+    })
 
 
 @app.get("/auth/linkedin/", response_model=None, include_in_schema=False)
@@ -3734,6 +4260,7 @@ def update_linkedin_password(request: LinkedInPasswordRequest) -> ResponseModel:
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+    _require_step_up(user_id, request.session_token, "store_linkedin_password")
     if not request.linkedin_password:
         raise HTTPException(status_code=400, detail="Password cannot be empty")
     saved = update_user_linkedin_password(user_id, request.linkedin_password)
@@ -3929,6 +4456,12 @@ def store_linkedin_cookie_endpoint(request: LinkedInCookieRequest) -> ResponseMo
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+    # The crown jewel (design §2, T1): storing a li_at IS handing over a LinkedIn session, so it is
+    # step-up gated like every other credential write. This is the ONE call site that accepts the
+    # extension scope — its token can never run a passkey ceremony, and its step-up already happened
+    # in the SPA when the token was minted (design §6.5).
+    _require_step_up(user_id, request.session_token, "store_linkedin_cookie",
+                     extension_scope_ok=True)
 
     # A cookie value cannot contain whitespace or ';'. Strip optional surrounding quotes.
     li_at = (request.li_at or "").strip().strip('"')

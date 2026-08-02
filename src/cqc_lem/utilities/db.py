@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import threading
@@ -3164,13 +3165,25 @@ def verify_pin_for_email(email: str, pin_hash: str) -> bool:
 # Session management
 # ---------------------------------------------------------------------------
 
+# What a session token is allowed to do (issue #745, 2c). A `full` session is the browser's; an
+# `extension` session belongs to the LinkedIn Connect extension, which can never run a passkey
+# ceremony — its step-up happened once, in the SPA, when the token was minted.
+SESSION_SCOPE_FULL = "full"
+SESSION_SCOPE_EXTENSION = "extension"
+
+
 def create_session(user_id: int, user_agent: Optional[str] = None,
-                   ip: Optional[str] = None, label: Optional[str] = None) -> Optional[str]:
+                   ip: Optional[str] = None, label: Optional[str] = None,
+                   scope: str = SESSION_SCOPE_FULL, verified: bool = False) -> Optional[str]:
     """Mint a session and return the token to the CALLER ONLY — the row stores its SHA-256.
 
     Since #745 (2b) `sessions.session_token` holds the hash, so a DB dump hands over no live
     session. The device facts (user agent, pseudonymised IP, label) are what make per-device
-    revocation possible on the account page."""
+    revocation possible on the account page.
+
+    `verified=True` stamps the session as having proven a strong factor AT MINT TIME (2c) — a
+    passkey login or PIN+TOTP. It is deliberately not the default: an email-PIN login and a
+    recovery-code login both mint a session that cannot yet touch LinkedIn credentials."""
     import secrets
     token = secrets.token_hex(32)
     now = datetime.now(timezone.utc)
@@ -3180,9 +3193,11 @@ def create_session(user_id: int, user_agent: Optional[str] = None,
     try:
         cursor.execute(
             "INSERT INTO sessions (session_token, user_id, expires_at, user_agent, ip_hash, "
-            "last_seen_at, label) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            "last_seen_at, label, scope, last_verified_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (hash_session_token(token), user_id, expires_at, (user_agent or None),
-             hash_client_ip(ip), now, (label or _device_label(user_agent))),
+             hash_client_ip(ip), now, (label or _device_label(user_agent)), scope,
+             now if verified else None),
         )
         cursor.execute(
             "UPDATE users SET last_login = %s WHERE id = %s",
@@ -3395,6 +3410,15 @@ class AuthAuditEvent(StrEnum):
     SESSIONS_REVOKED_ALL = "sessions_revoked_all"
     EMAIL_CHANGE_REQUESTED = "email_change_requested"
     EMAIL_CHANGED = "email_changed"
+    # Strong authentication (2c)
+    FACTOR_ADDED = "factor_added"
+    FACTOR_REMOVED = "factor_removed"
+    SECOND_FACTOR_REQUIRED = "second_factor_required"
+    SECOND_FACTOR_FAILED = "second_factor_failed"
+    RECOVERY_CODES_GENERATED = "recovery_codes_generated"
+    RECOVERY_CODE_USED = "recovery_code_used"
+    STEP_UP_VERIFIED = "step_up_verified"
+    STEP_UP_DENIED = "step_up_denied"
 
 
 def record_auth_event(event: AuthAuditEvent, user_id: Optional[int] = None,
@@ -3439,6 +3463,486 @@ def get_auth_audit_events(user_id: int, limit: int = 20) -> list[dict]:
     except mysql.connector.Error as err:
         myprint(f"Could not read auth audit for user_id {user_id} | Error: {err}")
         return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+# ---------------------------------------------------------------------------
+# Strong authentication factors, recovery codes and ceremony state (issue #745, 2c)
+#
+# Every SQL statement 2c needs lives here; the policy that reads it is
+# `utilities/auth_factors.py`, and the ceremony wrappers are `utilities/webauthn_util.py`.
+# ---------------------------------------------------------------------------
+
+AUTH_FACTOR_PASSKEY = "passkey"
+AUTH_FACTOR_TOTP = "totp"
+
+# `secret` is the TOTP seed at rest. The field name is the encryption AAD (see crypto.py) —
+# renaming it orphans every enrolled authenticator, exactly like the 2a columns.
+TOTP_SECRET_FIELD = "user_auth_factors.secret"
+
+
+def _credential_id_hash(credential_id: Optional[str]) -> Optional[str]:
+    """SHA-256 of a base64url credential id — what carries the UNIQUE index and every lookup.
+
+    A credential id is public (the browser hands it to any site that asks), so this is a length
+    normaliser, not a secret-protection measure: raw ids run past what MySQL will index."""
+    if not credential_id:
+        return None
+    return hashlib.sha256(credential_id.encode("utf-8")).hexdigest()
+
+
+def add_passkey_factor(user_id: int, credential_id: str, public_key: str, sign_count: int = 0,
+                       label: Optional[str] = None, transports: Optional[str] = None) -> Optional[int]:
+    """Store a verified passkey. Confirmed on insert — a registration response only reaches here
+    after `verify_registration_response` accepted it, so there is no unproven state to hold."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        now = datetime.now(timezone.utc)
+        cursor.execute(
+            """INSERT INTO user_auth_factors
+               (user_id, kind, label, credential_id, credential_id_hash, public_key, sign_count,
+                transports, confirmed_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (user_id, AUTH_FACTOR_PASSKEY, (label or "Passkey")[:120], credential_id,
+             _credential_id_hash(credential_id), public_key, int(sign_count),
+             (transports or None), now),
+        )
+        connection.commit()
+        return cursor.lastrowid
+    except mysql.connector.Error as err:
+        if err.errno == errorcode.ER_DUP_ENTRY:
+            log_warning("Passkey already registered", user_id=user_id)
+            return None
+        myprint(f"Could not store passkey for user_id {user_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_passkey_by_credential_id(credential_id: str) -> Optional[dict]:
+    """The stored passkey for a credential id, with the user it belongs to. This is how a
+    discoverable-credential login resolves WHO is signing in — the assertion names the credential,
+    not the account."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """SELECT id, user_id, credential_id, public_key, sign_count, label
+               FROM user_auth_factors
+               WHERE credential_id_hash = %s AND kind = %s AND confirmed_at IS NOT NULL""",
+            (_credential_id_hash(credential_id), AUTH_FACTOR_PASSKEY),
+        )
+        return cursor.fetchone()
+    except mysql.connector.Error as err:
+        myprint(f"Could not look up passkey | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_user_passkey_credential_ids(user_id: int) -> list[str]:
+    """Credential ids already enrolled — passed to the browser as `excludeCredentials` so the same
+    authenticator cannot be registered twice, and as `allowCredentials` for a non-discoverable one."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """SELECT credential_id FROM user_auth_factors
+               WHERE user_id = %s AND kind = %s AND confirmed_at IS NOT NULL""",
+            (user_id, AUTH_FACTOR_PASSKEY),
+        )
+        return [row["credential_id"] for row in cursor.fetchall() if row.get("credential_id")]
+    except mysql.connector.Error as err:
+        myprint(f"Could not list passkeys for user_id {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_factor_counter(factor_id: int, counter: int) -> bool:
+    """Persist a factor's monotonic counter after a successful verification.
+
+    ONE column for both kinds because both are the same idea: a passkey's WebAuthn signature count,
+    and an authenticator app's accepted TOTP time step. Each must strictly INCREASE, and that is
+    what makes a cloned authenticator (a counter that went backwards) and a re-typed TOTP code
+    (the same 30-second step twice) fail instead of pass."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE user_auth_factors SET sign_count = %s, last_used_at = %s WHERE id = %s",
+            (int(counter), datetime.now(timezone.utc), factor_id),
+        )
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not update counter for factor {factor_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def upsert_totp_factor(user_id: int, secret: str, label: Optional[str] = None) -> Optional[int]:
+    """Start (or restart) TOTP enrolment. The row lands UNCONFIRMED — `confirmed_at IS NULL` — so a
+    secret that was generated and never proven can never satisfy a login. Restarting replaces any
+    unconfirmed attempt rather than accumulating dead seeds."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "DELETE FROM user_auth_factors WHERE user_id = %s AND kind = %s AND confirmed_at IS NULL",
+            (user_id, AUTH_FACTOR_TOTP),
+        )
+        cursor.execute(
+            """INSERT INTO user_auth_factors (user_id, kind, label, secret)
+               VALUES (%s, %s, %s, %s)""",
+            (user_id, AUTH_FACTOR_TOTP, (label or "Authenticator app")[:120],
+             encrypt_secret(secret, user_id, TOTP_SECRET_FIELD)),
+        )
+        connection.commit()
+        return cursor.lastrowid
+    except mysql.connector.Error as err:
+        myprint(f"Could not start TOTP enrolment for user_id {user_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_totp_factor(user_id: int, confirmed_only: bool = True) -> Optional[dict]:
+    """The account's TOTP factor with its secret decrypted. Returns None when the envelope cannot
+    be opened — a caller that got the raw envelope back would compare a code against ciphertext and
+    reject every valid one silently."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        sql = """SELECT id, secret, label, confirmed_at, sign_count FROM user_auth_factors
+                 WHERE user_id = %s AND kind = %s"""
+        if confirmed_only:
+            sql += " AND confirmed_at IS NOT NULL"
+        sql += " ORDER BY id DESC LIMIT 1"
+        cursor.execute(sql, (user_id, AUTH_FACTOR_TOTP))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        row["secret"] = decrypt_secret(row.get("secret"), user_id, TOTP_SECRET_FIELD)
+        return row if row["secret"] else None
+    except mysql.connector.Error as err:
+        myprint(f"Could not read TOTP factor for user_id {user_id} | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def confirm_totp_factor(factor_id: int, user_id: int) -> bool:
+    """Mark a TOTP seed proven. Scoped by user_id so a guessed factor id cannot confirm someone
+    else's enrolment, and idempotent-safe: only an unconfirmed row is touched."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        now = datetime.now(timezone.utc)
+        cursor.execute(
+            """UPDATE user_auth_factors SET confirmed_at = %s, last_used_at = %s
+               WHERE id = %s AND user_id = %s AND confirmed_at IS NULL""",
+            (now, now, factor_id, user_id),
+        )
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not confirm TOTP factor {factor_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def touch_auth_factor(factor_id: int) -> bool:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("UPDATE user_auth_factors SET last_used_at = %s WHERE id = %s",
+                       (datetime.now(timezone.utc), factor_id))
+        connection.commit()
+        return cursor.rowcount >= 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not touch auth factor {factor_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def list_auth_factors(user_id: int, confirmed_only: bool = True) -> list[dict]:
+    """The account's strong factors for the Security card. Never returns a secret or a public key —
+    only what a person needs to recognise a factor before removing it."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        sql = """SELECT id, kind, label, created_at, last_used_at, confirmed_at
+                 FROM user_auth_factors WHERE user_id = %s"""
+        if confirmed_only:
+            sql += " AND confirmed_at IS NOT NULL"
+        sql += " ORDER BY id"
+        cursor.execute(sql, (user_id,))
+        return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        myprint(f"Could not list auth factors for user_id {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def count_auth_factors(user_id: int) -> int:
+    """How many CONFIRMED strong factors the account holds. The one question the login path and the
+    step-up gate both ask, so it is one indexed COUNT rather than a list the caller measures."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """SELECT COUNT(*) AS n FROM user_auth_factors
+               WHERE user_id = %s AND confirmed_at IS NOT NULL""",
+            (user_id,),
+        )
+        row = cursor.fetchone()
+        return int(row["n"]) if row else 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not count auth factors for user_id {user_id} | Error: {err}")
+        return 0
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def delete_auth_factor(user_id: int, factor_id: int) -> bool:
+    """Remove ONE factor. Scoped by user_id — a factor id from another account must never be
+    removable by guessing the number."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("DELETE FROM user_auth_factors WHERE id = %s AND user_id = %s",
+                       (factor_id, user_id))
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not delete auth factor {factor_id} for user_id {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def replace_recovery_codes(user_id: int, code_hashes: list[str]) -> bool:
+    """Install a fresh set of recovery codes, invalidating every previous one — including the ones
+    already spent, since a regenerate is the user saying "the old sheet is gone"."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("DELETE FROM user_recovery_codes WHERE user_id = %s", (user_id,))
+        if code_hashes:
+            cursor.executemany(
+                "INSERT INTO user_recovery_codes (user_id, code_hash) VALUES (%s, %s)",
+                [(user_id, h) for h in code_hashes],
+            )
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not store recovery codes for user_id {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_unused_recovery_codes(user_id: int) -> list[dict]:
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT id, code_hash FROM user_recovery_codes WHERE user_id = %s AND used_at IS NULL",
+            (user_id,),
+        )
+        return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        myprint(f"Could not read recovery codes for user_id {user_id} | Error: {err}")
+        return []
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def consume_recovery_code(user_id: int, code_id: int) -> bool:
+    """Spend one code. The `used_at IS NULL` predicate is the single-use guarantee: two requests
+    racing the same code produce one winner, because MySQL only lets one UPDATE match."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """UPDATE user_recovery_codes SET used_at = %s
+               WHERE id = %s AND user_id = %s AND used_at IS NULL""",
+            (datetime.now(timezone.utc), code_id, user_id),
+        )
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not consume recovery code {code_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def count_recovery_codes(user_id: int) -> tuple[int, int]:
+    """(unused, total) — what the account page shows so a user knows when to regenerate."""
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """SELECT COUNT(*) AS total, SUM(used_at IS NULL) AS unused
+               FROM user_recovery_codes WHERE user_id = %s""",
+            (user_id,),
+        )
+        row = cursor.fetchone() or {}
+        return int(row.get("unused") or 0), int(row.get("total") or 0)
+    except mysql.connector.Error as err:
+        myprint(f"Could not count recovery codes for user_id {user_id} | Error: {err}")
+        return 0, 0
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def create_auth_challenge(purpose: str, expires_at: datetime, user_id: Optional[int] = None,
+                          challenge: Optional[str] = None) -> Optional[str]:
+    """Open a ceremony and return the HANDLE to the caller only — the row stores its SHA-256, the
+    same posture as a session token. Expired rows are swept opportunistically here rather than by a
+    beat: the table is only ever written on this path, so this is where growth happens."""
+    import secrets as _secrets
+    handle = _secrets.token_urlsafe(24)
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("DELETE FROM auth_challenges WHERE expires_at < %s",
+                       (datetime.now(timezone.utc) - timedelta(hours=1),))
+        cursor.execute(
+            """INSERT INTO auth_challenges (handle_hash, user_id, purpose, challenge, expires_at)
+               VALUES (%s, %s, %s, %s, %s)""",
+            (hash_session_token(handle), user_id, purpose, challenge, expires_at),
+        )
+        connection.commit()
+        return handle
+    except mysql.connector.Error as err:
+        myprint(f"Could not create auth challenge ({purpose}) | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def consume_auth_challenge(handle: str, purpose: str) -> Optional[dict]:
+    """Claim a ceremony exactly once and return it, or None when it is unknown, expired, already
+    used, or for a different purpose.
+
+    The claim is an UPDATE with `consumed_at IS NULL` in the predicate, not a SELECT-then-UPDATE:
+    two replays of one assertion must not both find an unconsumed row."""
+    handle_hash = hash_session_token(handle)
+    if not handle_hash:
+        return None
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        now = datetime.now(timezone.utc)
+        cursor.execute(
+            """UPDATE auth_challenges SET consumed_at = %s
+               WHERE handle_hash = %s AND purpose = %s AND consumed_at IS NULL AND expires_at > %s""",
+            (now, handle_hash, purpose, now),
+        )
+        if cursor.rowcount != 1:
+            connection.commit()
+            return None
+        cursor.execute(
+            "SELECT id, user_id, purpose, challenge FROM auth_challenges WHERE handle_hash = %s",
+            (handle_hash,),
+        )
+        row = cursor.fetchone()
+        connection.commit()
+        return row
+    except mysql.connector.Error as err:
+        myprint(f"Could not consume auth challenge ({purpose}) | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def mark_session_verified(token: str) -> bool:
+    """Stamp `sessions.last_verified_at` — this session just proved a strong factor, which is what
+    the step-up gate reads. Live sessions only: a revoked row must not become verified."""
+    token_hash = hash_session_token(token)
+    if not token_hash:
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE sessions SET last_verified_at = %s WHERE session_token = %s "
+            "AND revoked_at IS NULL",
+            (datetime.now(timezone.utc), token_hash),
+        )
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not mark session verified | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_session_auth_state(token: str) -> Optional[dict]:
+    """(`last_verified_at`, `scope`) for a live session — everything the step-up gate needs in one
+    read. None when the token names no live session."""
+    token_hash = hash_session_token(token)
+    if not token_hash:
+        return None
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT user_id, last_verified_at, scope FROM sessions "
+            "WHERE session_token = %s AND revoked_at IS NULL AND expires_at > %s",
+            (token_hash, datetime.now(timezone.utc)),
+        )
+        return cursor.fetchone()
+    except mysql.connector.Error as err:
+        myprint(f"Could not read session auth state | Error: {err}")
+        return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def set_session_scope(token: str, scope: str) -> bool:
+    token_hash = hash_session_token(token)
+    if not token_hash:
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("UPDATE sessions SET scope = %s WHERE session_token = %s", (scope, token_hash))
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not set session scope | Error: {err}")
+        return False
     finally:
         cursor.close()
         connection.close()

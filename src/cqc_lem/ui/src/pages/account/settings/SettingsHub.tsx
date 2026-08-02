@@ -1,6 +1,7 @@
 import { useSearchParams } from 'react-router-dom'
 import SubscriptionCard from '../SubscriptionCard'
 import SecurityCard from '../SecurityCard'
+import AuthFactorsCard from '../AuthFactorsCard'
 import VideoCreditsCard from '../VideoCreditsCard'
 import AffiliateCard from '../AffiliateCard'
 import TimezoneCard from '../TimezoneCard'
@@ -45,7 +46,7 @@ function SectionBody({ section }: { section: SectionKey }) {
     case 'newsletter':
       return <NewsletterCard />
     case 'billing':
-      return <><SubscriptionCard /><VideoCreditsCard /><AffiliateCard /><SecurityCard /></>
+      return <><SubscriptionCard /><VideoCreditsCard /><AffiliateCard /><AuthFactorsCard /><SecurityCard /></>
   }
 }
 
