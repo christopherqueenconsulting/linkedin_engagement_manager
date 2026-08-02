@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.123.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.123.1...v0.123.2) (2026-08-02)
+
+
+### Bug Fixes
+
+* **images:** no brand marks in a render — gpt-image inserts logos on its own ([#939](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/939)) ([b3571b9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b3571b96bf60bc98dee480d499bf99281e7aee3e))
+
 ## [0.123.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.123.0...v0.123.1) (2026-08-02)
 
 
