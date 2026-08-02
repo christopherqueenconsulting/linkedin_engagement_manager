@@ -383,6 +383,114 @@ class TestCatalogSnapshot:
         assert "gpt-oss:20b" in snapshot  # a model config.yaml actually runs
 
 
+def _ollama_deployments(*models, group="lem-medium"):
+    return mhc.parse_deployments({"model_list": [
+        {"model_name": group, "litellm_params": {"model": f"openai/{m}",
+                                                 "api_base": "os.environ/OLLAMA_CLOUD_URL"}}
+        for m in models]})
+
+
+_OLD_BUILD = {"modified_at": "2026-04-24T00:00:00Z", "size": 140_000_000_000}
+_NEW_BUILD = {"modified_at": "2026-07-31T00:00:00Z", "size": 167_000_000_000}
+
+
+class TestPlanRepoints:
+    """Issue #925 — the catalog move a tag-NAME diff cannot see: the same id now serves a different
+    build, so a live tier changed model with no repo change and no benchmark."""
+
+    def test_a_configured_tag_whose_build_moved_is_reported(self):
+        out = mhc.plan_repoints(_ollama_deployments("deepseek-v4-flash"),
+                                {"deepseek-v4-flash": dict(_OLD_BUILD)},
+                                {"deepseek-v4-flash": dict(_NEW_BUILD)})
+        assert len(out) == 1
+        assert out[0]["tag"] == "deepseek-v4-flash"
+        assert out[0]["model"] == "openai/deepseek-v4-flash"
+        assert out[0]["groups"] == ["lem-medium"]
+        assert {c["field"] for c in out[0]["changes"]} == {"size", "modified_at"}
+
+    def test_a_timestamp_only_move_still_counts(self):
+        out = mhc.plan_repoints(_ollama_deployments("minimax-m3"),
+                                {"minimax-m3": {"modified_at": "2026-06-01T00:00:00Z", "size": 0}},
+                                {"minimax-m3": {"modified_at": "2026-08-01T00:00:00Z", "size": 0}})
+        assert [c["field"] for c in out[0]["changes"]] == ["modified_at"]
+
+    def test_an_unreferenced_tags_repoint_stays_silent(self):
+        """The catalog carries hundreds of tags LEM does not run — those moves are noise."""
+        assert mhc.plan_repoints(_ollama_deployments("gpt-oss:20b"),
+                                 {"deepseek-v4-flash": dict(_OLD_BUILD)},
+                                 {"deepseek-v4-flash": dict(_NEW_BUILD)}) == []
+
+    def test_an_unchanged_build_is_not_a_repoint(self):
+        assert mhc.plan_repoints(_ollama_deployments("deepseek-v4-flash"),
+                                 {"deepseek-v4-flash": dict(_OLD_BUILD)},
+                                 {"deepseek-v4-flash": dict(_OLD_BUILD)}) == []
+
+    def test_a_brand_new_or_vanished_tag_is_never_a_repoint(self):
+        """Those are the added/removed paths' job — reporting them twice files two issues."""
+        assert mhc.plan_repoints(_ollama_deployments("deepseek-v4-flash"), {},
+                                 {"deepseek-v4-flash": dict(_NEW_BUILD)}) == []
+        assert mhc.plan_repoints(_ollama_deployments("deepseek-v4-flash"),
+                                 {"deepseek-v4-flash": dict(_OLD_BUILD)}, {}) == []
+
+    def test_a_missing_baseline_field_is_not_a_build_swap(self):
+        """A snapshot written before a field was captured has NO baseline for it. Reading that as a
+        re-point would file an issue for every configured tag at once."""
+        assert mhc.plan_repoints(_ollama_deployments("deepseek-v4-flash"),
+                                 {"deepseek-v4-flash": {"size": 0, "modified_at": ""}},
+                                 {"deepseek-v4-flash": dict(_NEW_BUILD)}) == []
+
+    def test_a_non_ollama_deployment_is_never_checked(self):
+        deployments = mhc.parse_deployments({"model_list": [
+            {"model_name": "lem-medium", "litellm_params": {"model": "openai/deepseek-v4-flash",
+                                                            "api_key": "os.environ/OPENAI_API_KEY"}}]})
+        assert mhc.plan_repoints(deployments, {"deepseek-v4-flash": dict(_OLD_BUILD)},
+                                 {"deepseek-v4-flash": dict(_NEW_BUILD)}) == []
+
+    def test_every_tier_the_tag_serves_is_named_once(self):
+        deployments = (_ollama_deployments("deepseek-v4-flash", group="lem-medium")
+                       + _ollama_deployments("deepseek-v4-flash", group="lem-complex"))
+        out = mhc.plan_repoints(deployments, {"deepseek-v4-flash": dict(_OLD_BUILD)},
+                                {"deepseek-v4-flash": dict(_NEW_BUILD)})
+        assert len(out) == 1 and out[0]["groups"] == ["lem-complex", "lem-medium"]
+
+
+class TestRepointIssue:
+    def _repoint(self, new=None):
+        return mhc.plan_repoints(_ollama_deployments("deepseek-v4-flash"),
+                                 {"deepseek-v4-flash": dict(_OLD_BUILD)},
+                                 {"deepseek-v4-flash": {**_NEW_BUILD, **(new or {})}})[0]
+
+    def test_marker_carries_the_new_build_not_just_the_tag(self):
+        marker = mhc.repoint_marker(self._repoint())
+        assert marker == "deepseek-v4-flash @ 167000000000/2026-07-31T00:00:00Z"
+
+    def test_a_second_repoint_of_the_same_tag_is_not_deduped_away(self):
+        """The acceptance criterion the tag name alone would fail: once #925's issue is filed for
+        build A, a later move to build B must still reach a human."""
+        first = mhc.repoint_marker(self._repoint())
+        second = mhc.repoint_marker(self._repoint({"modified_at": "2026-09-02T00:00:00Z",
+                                                   "size": 171_000_000_000}))
+        open_issues = [{"number": 12, "title": mhc.REPOINT_TITLE_PREFIX + " deepseek-v4-flash",
+                        "body": f"markers: `{first}`", "comments": []}]
+        assert mhc.plan_issue(open_issues, [first],
+                              title_prefix=mhc.REPOINT_TITLE_PREFIX)["action"] == "none"
+        assert mhc.plan_issue(open_issues, [second],
+                              title_prefix=mhc.REPOINT_TITLE_PREFIX) == {
+            "action": "append", "markers": [second], "number": 12}
+
+    def test_title_and_body_name_the_live_deployment_and_the_move(self):
+        repoint = self._repoint()
+        assert mhc.build_repoint_issue_title([repoint]) == (
+            f"{mhc.REPOINT_TITLE_PREFIX} deepseek-v4-flash")
+        body = mhc.build_repoint_issue_body([repoint], "2026-08-02")
+        assert "`lem-medium`" in body  # the reader has to know a live tier moved
+        assert "model: openai/deepseek-v4-flash" in body
+        assert "`140GB` → `167GB`" in body
+        assert "2026-04-24T00:00:00Z" in body and "2026-07-31T00:00:00Z" in body
+        assert mhc.repoint_marker(repoint) in body  # dedup marker survives into the issue
+        assert "model_upgrades.yaml" in body  # never the retirement map, which auto-swaps
+
+
 class TestParseModelVersion:
     @pytest.mark.parametrize("name,family,version,size_tag", [
         ("minimax-m2.7", "minimax", (2, 7), ""),
@@ -622,10 +730,11 @@ def _boom(*a, **k):
     raise AssertionError("the catalog must not be re-scanned when a plan was supplied")
 
 
-def _plan_with_issues(upgrade_markers=(), eval_markers=()):
+def _plan_with_issues(upgrade_markers=(), eval_markers=(), repoint_markers=()):
     return {"issues": {
         "upgrade": {"markers": list(upgrade_markers), "title": "T-up", "body": "B-up"},
-        "evaluation": {"markers": list(eval_markers), "title": "T-ev", "body": "B-ev"}}}
+        "evaluation": {"markers": list(eval_markers), "title": "T-ev", "body": "B-ev"},
+        "repoint": {"markers": list(repoint_markers), "title": "T-rp", "body": "B-rp"}}}
 
 
 class TestFileIssues:
@@ -633,6 +742,20 @@ class TestFileIssues:
         gh = _FakeGitHub()
         assert mhc._file_issues(_plan_with_issues(["a -> b"], ["new-tag"]), gh) == 2
         assert [t for t, _ in gh.created] == ["T-up", "T-ev"]
+
+    def test_files_the_repoint_issue_on_its_own_title_prefix(self):
+        gh = _FakeGitHub()
+        assert mhc._file_issues(_plan_with_issues(repoint_markers=["t @ 1/x"]), gh) == 1
+        assert [t for t, _ in gh.created] == ["T-rp"]
+
+    def test_a_plan_saved_before_a_kind_existed_files_the_rest(self):
+        """--plan-file may carry a plan written by an older copy of this tool; a missing kind is
+        nothing to file, never a KeyError that drops the issues that WERE planned."""
+        plan = _plan_with_issues(["a -> b"])
+        del plan["issues"]["repoint"]
+        gh = _FakeGitHub()
+        assert mhc._file_issues(plan, gh) == 1
+        assert [t for t, _ in gh.created] == ["T-up"]
 
     def test_nothing_to_file(self):
         gh = _FakeGitHub()
@@ -747,7 +870,8 @@ class TestCatalogScanCLI:
     produces the alert + the map addition, and a new tag renders the evaluation issue — all with
     the network replaced by the committed fixtures."""
 
-    def _workspace(self, tmp_path, model="minimax-m2.5", drop=("minimax-m3", "glm-5.2")):
+    def _workspace(self, tmp_path, model="minimax-m2.5", drop=("minimax-m3", "glm-5.2"),
+                   stale=None):
         (tmp_path / "config.yaml").write_text(
             "model_list:\n"
             "  - model_name: lem-medium\n"
@@ -756,8 +880,11 @@ class TestCatalogScanCLI:
             "      api_base: os.environ/OLLAMA_CLOUD_URL\n")
         (tmp_path / "map.yaml").write_text('upgrades:\n  "kimi-k2:1t": "REMOVE"\n')
         catalog = mhc.parse_catalog(_tags())
-        (tmp_path / "snapshot.json").write_text(
-            mhc.render_snapshot({k: v for k, v in catalog.items() if k not in drop}, "2026-07-01"))
+        snapshot = {k: v for k, v in catalog.items() if k not in drop}
+        # `stale` backdates a tag's build IN THE SNAPSHOT, i.e. the catalog re-pointed it since.
+        for tag, patch in (stale or {}).items():
+            snapshot[tag] = {**snapshot[tag], **patch}
+        (tmp_path / "snapshot.json").write_text(mhc.render_snapshot(snapshot, "2026-07-01"))
         return [f"--config={tmp_path / 'config.yaml'}", f"--map={tmp_path / 'map.yaml'}",
                 f"--snapshot={tmp_path / 'snapshot.json'}", f"--catalog-fixture={FIXTURES}",
                 "--today=2026-07-20"]
@@ -802,6 +929,35 @@ class TestCatalogScanCLI:
         assert mhc.main(["--catalog-scan", *args]) == 0
         assert "nothing to do" in capsys.readouterr().out
 
+    def test_a_repointed_configured_tag_is_reported_and_filed(self, tmp_path, capsys, monkeypatch):
+        args = self._workspace(tmp_path, model="gpt-oss:20b", drop=(),
+                               stale={"gpt-oss:20b": {"size": 9_000_000_000,
+                                                      "modified_at": "2026-01-01T00:00:00Z"}})
+        code = mhc.main(["--catalog-scan", *args])
+        out = capsys.readouterr().out
+        assert code == 2  # an evaluation is planned, even though no tag NAME changed
+        assert "NEW TAG" not in out
+        assert "REPOINTED gpt-oss:20b [lem-medium]" in out
+        assert mhc.REPOINT_TITLE_PREFIX in out
+
+        mhc.main(["--catalog-json", *args])
+        plan_path = tmp_path / "plan.json"
+        plan_path.write_text(capsys.readouterr().out)
+        monkeypatch.setattr(mhc, "_catalog_scan", _boom)
+        gh = _FakeGitHub()
+        monkeypatch.setattr(mhc, "GitHubIssues", lambda repo: gh)
+        mhc.main(["--file-issues", f"--plan-file={plan_path}"])
+        assert any(t.startswith(mhc.REPOINT_TITLE_PREFIX) for t, _ in gh.created)
+
+    def test_an_unreferenced_tags_repoint_is_not_reported(self, tmp_path, capsys):
+        args = self._workspace(tmp_path, model="gpt-oss:20b", drop=(),
+                               stale={"glm-5.2": {"size": 9_000_000_000,
+                                                  "modified_at": "2026-01-01T00:00:00Z"}})
+        code = mhc.main(["--catalog-scan", *args])
+        out = capsys.readouterr().out
+        assert "REPOINTED" not in out and "nothing to do" in out
+        assert code == 2  # the snapshot still needs refreshing — but nobody is paged for it
+
     def test_a_missing_snapshot_is_seeded_not_reported_as_a_catalog_of_new_tags(self, tmp_path,
                                                                                 capsys):
         args = self._workspace(tmp_path, model="minimax-m3", drop=())
@@ -809,6 +965,7 @@ class TestCatalogScanCLI:
         code = mhc.main(["--catalog-scan", *args])
         out = capsys.readouterr().out
         assert "NEW TAG" not in out and "seeding it this run" in out
+        assert "REPOINTED" not in out  # no snapshot is no baseline, not a catalog of build swaps
         assert code == 2  # the snapshot itself still needs writing
 
     def test_file_issues_acts_on_a_saved_plan_without_rescanning(self, tmp_path, capsys,
@@ -861,5 +1018,6 @@ class TestCatalogScanCLI:
                          f"--catalog-fixture={FIXTURES}", "--today=2026-07-27"])
         out = capsys.readouterr().out
         assert "RETIRING" not in out and "NEW TAG" not in out and "UPGRADE" not in out
+        assert "REPOINTED" not in out  # every configured tag still points at the build we measured
         assert "nothing to do" in out
         assert code == 0

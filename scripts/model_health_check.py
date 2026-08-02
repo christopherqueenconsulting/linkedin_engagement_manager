@@ -15,6 +15,10 @@ docs.ollama.com/cloud.md and ollama.com/api/tags and reports what is about to ch
     replacement to model_upgrades.yaml (the reactive half then swaps it before the sunset bites);
   * new/removed catalog tags vs the committed snapshot (.litellm/ollama_catalog_snapshot.json) ->
     ONE `agent:ready` evaluation issue for the new ones, snapshot refreshed in the same PR;
+  * a CONFIGURED tag whose BUILD moved under an unchanged name (issue #925) -> ONE `agent:ready`
+    evaluation issue. An unversioned id like `deepseek-v4-flash` follows whatever the catalog's
+    moving tag points at, so the build serving a live tier can change with no repo change at all —
+    and a tag-NAME diff cannot see that;
   * a configured model trailing a newer version of its OWN family (minimax-m2.7 while minimax-m3
     ships) -> ONE consolidated `agent:ready` upgrade issue carrying each candidate's usage level,
     because a version bump that jumps usage tiers costs more quota and is an evaluation, never an
@@ -30,7 +34,8 @@ CLI:
   --report [--json]      Probe + report model health and planned actions. No writes.
   --plan-json            Emit ONLY the machine-readable plan (for the shell orchestrator).
   --apply OUT            Write the swapped config to OUT (reads --config). Prints applied swaps.
-  --catalog-scan         Advance-retirement / new-model / family-version scan. No writes (dry run).
+  --catalog-scan         Advance-retirement / new-model / re-pointed-tag / family-version scan.
+                         No writes (dry run).
   --catalog-json         Emit ONLY the machine-readable catalog plan (for the shell orchestrator).
   --catalog-apply        Write the planned map additions + snapshot refresh to --map / --snapshot.
   --file-issues          File (or append to) the GitHub issues the catalog scan planned.
@@ -73,6 +78,7 @@ DEFAULT_REPO = "christopherqueenconsulting/linkedin_engagement_manager"
 # agent:ready issue — see #598).
 UPGRADE_TITLE_PREFIX = "Ollama model family upgrades available:"
 EVAL_TITLE_PREFIX = "Evaluate new Ollama Cloud models:"
+REPOINT_TITLE_PREFIX = "Re-pointed Ollama tag serving a live tier:"
 ISSUE_LABELS = ("agent:ready", "priority:medium", "infrastructure")
 MAX_TITLE_CHARS = 120
 
@@ -438,8 +444,63 @@ def render_snapshot(models: dict, updated: str) -> str:
 
 
 def diff_catalog(snapshot: dict, current: dict) -> dict:
+    """Tag NAMES that appeared or disappeared. A tag whose BUILD moved under an unchanged name is
+    invisible here by construction — that is `plan_repoints`' job (issue #925)."""
     old, new = set(snapshot or {}), set(current or {})
     return {"added": sorted(new - old), "removed": sorted(old - new)}
+
+
+_BUILD_FIELDS = ("size", "modified_at")
+
+
+def build_fingerprint(info: dict) -> str:
+    """Identify the BUILD behind a tag. A moving tag keeps its name across a re-point and changes
+    these, so they are what a dedup marker has to carry — otherwise a SECOND re-point of the same
+    tag reads as already filed."""
+    info = info or {}
+    return f"{int(info.get('size') or 0)}/{str(info.get('modified_at') or '')}"
+
+
+def _build_changes(old: dict, new: dict) -> list[dict]:
+    """Which build fields moved. A field only counts when BOTH sides carry a value: a snapshot
+    written before that field was captured is a MISSING baseline, not a build swap, and treating it
+    as one would file an issue for every configured tag at once the day the shape changes."""
+    changes: list[dict] = []
+    for field in _BUILD_FIELDS:
+        before, after = (old or {}).get(field), (new or {}).get(field)
+        if not before or not after or before == after:
+            continue
+        changes.append({"field": field, "old": before, "new": after})
+    return changes
+
+
+def plan_repoints(deployments: list[dict], snapshot: dict, catalog: dict) -> list[dict]:
+    """Tags present in BOTH the snapshot and the live catalog whose build changed underneath.
+
+    Restricted to tags `.litellm/config.yaml` actually runs on Ollama Cloud: the catalog carries
+    hundreds of tags LEM never serves, and a re-point of one of those is noise. For the ones it does
+    serve this is the whole point — an unversioned id follows the vendor's moving tag, so a live
+    tier can adopt an unbenchmarked build with no repo change to review."""
+    groups: dict[str, list[str]] = {}
+    models: dict[str, str] = {}
+    for d in deployments:
+        if not d["is_ollama"]:
+            continue
+        groups.setdefault(d["bare"], []).append(d["group"])
+        models.setdefault(d["bare"], d["model"])
+    out: list[dict] = []
+    for bare in sorted(groups):
+        before, after = (snapshot or {}).get(bare), (catalog or {}).get(bare)
+        if not before or not after:
+            continue
+        changes = _build_changes(before, after)
+        if not changes:
+            continue
+        out.append({"tag": bare, "model": models[bare], "groups": sorted(set(groups[bare])),
+                    "changes": changes, "old": dict(before), "new": dict(after),
+                    "old_fingerprint": build_fingerprint(before),
+                    "new_fingerprint": build_fingerprint(after)})
+    return out
 
 
 # ───────────────── family-version scan — "are we a major behind?" (pure) ─────────
@@ -665,6 +726,62 @@ def build_eval_issue_body(new_tags: list[str], catalog: dict, today: str) -> str
               "",
               "Auto-filed by `scripts/model_health_check.py --file-issues` (issue #716). Dedup "
               "markers (do not remove): " + ", ".join(f"`{n}`" for n in new_tags)]
+    return "\n".join(lines)
+
+
+def repoint_marker(repoint: dict) -> str:
+    """`tag @ size/modified_at` — the fingerprint is IN the marker on purpose, so a second re-point
+    of the same tag is fresh rather than deduped away against the first one's issue."""
+    return f"{repoint.get('tag')} @ {repoint.get('new_fingerprint')}"
+
+
+def _fmt_build_value(field: str, value) -> str:
+    if field == "size":
+        try:
+            return f"{int(value) / 1e9:.0f}GB"
+        except (TypeError, ValueError):
+            return str(value)
+    return str(value)
+
+
+def build_repoint_issue_title(repoints: list[dict]) -> str:
+    return _titled(REPOINT_TITLE_PREFIX, [str(r.get("tag") or "") for r in repoints])
+
+
+def build_repoint_issue_body(repoints: list[dict], today: str) -> str:
+    lines = ["## Context",
+             f"The weekly model-health check ({today}) found tags whose BUILD changed while the tag "
+             "NAME stayed the same, and `.litellm/config.yaml` runs them. An unversioned Ollama id "
+             "follows whatever the catalog's moving tag points at, so a live tier just adopted a "
+             "different model with no repo change to review and no benchmark behind it — the one "
+             "outcome the evaluation harness exists to prevent (issue #925).",
+             "",
+             "## Re-pointed tags", ""]
+    for r in repoints:
+        tiers = ", ".join(f"`{g}`" for g in (r.get("groups") or [])) or "n/a"
+        lines.append(f"- **`{r.get('tag')}`** — serving {tiers} (config `model: {r.get('model')}`)")
+        for change in r.get("changes") or []:
+            field = str(change.get("field"))
+            lines.append(f"  - {field}: `{_fmt_build_value(field, change.get('old'))}` → "
+                         f"`{_fmt_build_value(field, change.get('new'))}`")
+    lines += ["",
+              "## Scope",
+              ("- Benchmark the build now behind the tag against the tier contract it serves "
+               "(`scripts/benchmark_models.py`), the way any candidate is measured."),
+              ("- If it holds up, say so on this issue and nothing changes. If it does not, pin the "
+               "tier to a versioned id in `.litellm/config.yaml` — that is a deliberate config "
+               "change, never a `.litellm/model_upgrades.yaml` entry (that map is retirement-only "
+               "and auto-swaps)."),
+              ("- The benchmark candidate is the VERSIONED build id, not this bare tag: measuring "
+               "the bare tag would run the same id as the champion and compare nothing."),
+              "",
+              "## Acceptance",
+              "- A decision per tag above (accept the new build, or pin, with the reason).",
+              ("- If a tier is pinned, `scripts/weekly_model_check.sh`'s tier smoke test still "
+               "passes and `poetry run pytest tests/unit -q` is green."),
+              "",
+              "Auto-filed by `scripts/model_health_check.py --file-issues` (issue #925). Dedup "
+              "markers (do not remove): " + ", ".join(f"`{repoint_marker(r)}`" for r in repoints)]
     return "\n".join(lines)
 
 
@@ -922,11 +1039,14 @@ def _catalog_scan(config_path: str, map_path: str, snapshot_path: str, *, today:
     # the entire catalog.
     seeded = not os.path.exists(snapshot_path)
     snapshot = {} if seeded else load_snapshot_text(_read_text(snapshot_path))
+    repoints: list[dict] = []
     if catalog is None:
         catalog_diff = {"added": [], "removed": []}
         family_upgrades: list[dict] = []
     else:
         catalog_diff = {"added": [], "removed": []} if seeded else diff_catalog(snapshot, catalog)
+        if not seeded:
+            repoints = plan_repoints(deployments, snapshot, catalog)
         family_upgrades = plan_family_upgrades(
             deployments, catalog, {r["model"] for r in retirements},
             usage_fn if usage_levels else None)
@@ -940,6 +1060,7 @@ def _catalog_scan(config_path: str, map_path: str, snapshot_path: str, *, today:
         "map_additions": additions,
         "catalog": {**catalog_diff, "total": len(catalog or {})},
         "upgrades": family_upgrades,
+        "repoints": repoints,
         "snapshot_changed": snapshot_changed,
         "repo_changes": bool(additions) or snapshot_changed,
     }
@@ -951,6 +1072,9 @@ def _catalog_scan(config_path: str, map_path: str, snapshot_path: str, *, today:
                        "title": build_eval_issue_title(catalog_diff["added"]) if catalog_diff["added"] else "",
                        "body": build_eval_issue_body(catalog_diff["added"], catalog or {}, today)
                        if catalog_diff["added"] else ""},
+        "repoint": {"markers": [repoint_marker(r) for r in repoints],
+                    "title": build_repoint_issue_title(repoints) if repoints else "",
+                    "body": build_repoint_issue_body(repoints, today) if repoints else ""},
     }
     plan["_catalog"] = catalog  # consumed by --catalog-apply; stripped from --catalog-json output
     return plan
@@ -977,12 +1101,16 @@ def _print_catalog_plan(plan: dict) -> None:
     for u in plan["upgrades"]:
         print(f"  UPGRADE ({u['urgency']}) {upgrade_marker(u)} — usage "
               f"{_usage_text(u['current_usage'])} -> {_usage_text(u['candidate_usage'])}")
-    for kind in ("upgrade", "evaluation"):
-        spec = plan["issues"][kind]
+    for r in plan.get("repoints") or []:
+        detail = ", ".join(f"{c['field']} {_fmt_build_value(c['field'], c['old'])} -> "
+                           f"{_fmt_build_value(c['field'], c['new'])}" for c in r["changes"])
+        print(f"  REPOINTED {r['tag']} [{', '.join(r['groups'])}] {detail}")
+    for kind in ("upgrade", "evaluation", "repoint"):
+        spec = _issue_spec(plan, kind)
         if spec["markers"]:
             print(f"\n--- {kind} issue ---\n{spec['title']}\n\n{spec['body']}\n")
     if not (plan["notices"] or plan["map_additions"] or plan["catalog"]["added"]
-            or plan["catalog"]["removed"] or plan["upgrades"]):
+            or plan["catalog"]["removed"] or plan["upgrades"] or plan.get("repoints")):
         print("  nothing to do")
 
 
@@ -1002,12 +1130,21 @@ def _catalog_apply(plan: dict, map_path: str, snapshot_path: str) -> None:
         print(f"snapshot refreshed ({plan['catalog']['total']} tags) -> {snapshot_path}")
 
 
+def _issue_spec(plan: dict, kind: str) -> dict:
+    """One issue spec off a plan, tolerating a plan saved by an older version of this tool (a
+    --plan-file written before a kind existed simply has nothing to file for it)."""
+    spec = ((plan or {}).get("issues") or {}).get(kind) or {}
+    return {"markers": list(spec.get("markers") or []), "title": spec.get("title") or "",
+            "body": spec.get("body") or ""}
+
+
 def _file_issues(plan: dict, github: GitHubIssues) -> int:
     """File/append the consolidated issues. Never raises: a GitHub failure leaves the work for next
     week rather than failing the weekly check."""
     filed = 0
-    for kind, prefix in (("upgrade", UPGRADE_TITLE_PREFIX), ("evaluation", EVAL_TITLE_PREFIX)):
-        spec = plan["issues"][kind]
+    for kind, prefix in (("upgrade", UPGRADE_TITLE_PREFIX), ("evaluation", EVAL_TITLE_PREFIX),
+                         ("repoint", REPOINT_TITLE_PREFIX)):
+        spec = _issue_spec(plan, kind)
         if not spec["markers"]:
             continue
         try:
@@ -1076,7 +1213,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             _file_issues(plan, GitHubIssues(args.repo))
         if plan["notices"]:
             return 3
-        if plan["repo_changes"] or plan["upgrades"] or plan["catalog"]["added"]:
+        if (plan["repo_changes"] or plan["upgrades"] or plan["catalog"]["added"]
+                or plan.get("repoints")):
             return 2
         return 0
 

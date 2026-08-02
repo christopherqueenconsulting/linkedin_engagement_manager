@@ -177,12 +177,14 @@ CAT="$("${PY[@]}" scripts/model_health_check.py --catalog-json --config "$BOX_CF
 if [ -z "$CAT" ]; then
   log "catalog scan produced no output — skipping (410 probe remains the backstop)"
 else
-  read -r NOTICE NEWTAG NUPG REPOCH <<<"$(printf '%s' "$CAT" | python3 -c "
+  read -r NOTICE NEWTAG NUPG NREPOINT REPOCH <<<"$(printf '%s' "$CAT" | python3 -c "
 import sys, json
 p = json.load(sys.stdin)
-print(len(p['notices']), len(p['catalog']['added']), len(p['upgrades']), int(bool(p['repo_changes'])))
-" 2>/dev/null || echo "0 0 0 0")"
-  log "catalog scan: retirement-notices=$NOTICE new-tags=$NEWTAG family-upgrades=$NUPG repo-changes=$REPOCH"
+print(len(p['notices']), len(p['catalog']['added']), len(p['upgrades']),
+      len(p.get('repoints') or []), int(bool(p['repo_changes'])))
+" 2>/dev/null || echo "0 0 0 0 0")"
+  log "catalog scan: retirement-notices=$NOTICE new-tags=$NEWTAG family-upgrades=$NUPG" \
+      "re-pointed-tags=$NREPOINT repo-changes=$REPOCH"
 
   if [ "${NOTICE:-0}" -gt 0 ]; then
     MSG=$(printf '%s' "$CAT" | python3 -c "
@@ -201,7 +203,7 @@ for n in json.load(sys.stdin)['notices']:
       mutate_catalog
   fi
 
-  if [ "${NEWTAG:-0}" -gt 0 ] || [ "${NUPG:-0}" -gt 0 ]; then
+  if [ "${NEWTAG:-0}" -gt 0 ] || [ "${NUPG:-0}" -gt 0 ] || [ "${NREPOINT:-0}" -gt 0 ]; then
     # File from the plan we ALREADY have, not a fresh scan. A second scan re-reads docs.ollama.com
     # and /api/tags, and a transient outage there would file nothing and say nothing — while the
     # snapshot PR opened just above makes those tags no longer "new", so the issue would be lost for
