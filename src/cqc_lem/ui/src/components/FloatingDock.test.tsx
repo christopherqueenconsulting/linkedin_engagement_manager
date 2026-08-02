@@ -92,6 +92,22 @@ describe('FloatingDock (issue #596)', () => {
     expect(pinned).toEqual([stack])
   })
 
+  // The dock is pinned to the BOTTOM, so an open panel grows upwards — off the top of a landscape
+  // phone, taking the "Send feedback" button with it. A width clamp does not cover that; the panel
+  // needs the same height cap the modals wear (issue #894).
+  it('caps the open feedback panel to the viewport and scrolls its own content', () => {
+    render(
+      <MemoryRouter>
+        <FloatingDock><FeedbackWidget /></FloatingDock>
+      </MemoryRouter>
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Feedback / Report a bug' }))
+    const panel = screen.getByRole('button', { name: 'Close feedback' }).parentElement as HTMLElement
+    expect(panel.contains(screen.getByRole('button', { name: 'Send feedback' }))).toBe(true)
+    expect(panel.className).toContain('max-h-viewport')
+    expect(panel.className).toContain('overflow-y-auto')
+  })
+
   it('keeps Save All reachable once the feedback panel is open', () => {
     const { container } = harness()
     fireEvent.click(screen.getByRole('button', { name: 'Feedback / Report a bug' }))
