@@ -490,6 +490,14 @@ class TestRepointIssue:
         assert mhc.repoint_marker(repoint) in body  # dedup marker survives into the issue
         assert "model_upgrades.yaml" in body  # never the retirement map, which auto-swaps
 
+    def test_body_pins_the_champion_side_not_only_the_candidate(self):
+        """The re-pointed tag IS the config champion, so it already resolves to the NEW build. A
+        default `benchmark_models.py` run would measure that build against itself and tie every
+        `beats champion` expectation — the issue has to say to pin the champion to the old build."""
+        body = mhc.build_repoint_issue_body([self._repoint()], "2026-08-02")
+        assert "--champions" in body
+        assert "against itself" in body
+
 
 class TestParseModelVersion:
     @pytest.mark.parametrize("name,family,version,size_tag", [

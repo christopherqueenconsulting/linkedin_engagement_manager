@@ -772,8 +772,13 @@ def build_repoint_issue_body(repoints: list[dict], today: str) -> str:
                "tier to a versioned id in `.litellm/config.yaml` — that is a deliberate config "
                "change, never a `.litellm/model_upgrades.yaml` entry (that map is retirement-only "
                "and auto-swaps)."),
-              ("- The benchmark candidate is the VERSIONED build id, not this bare tag: measuring "
-               "the bare tag would run the same id as the champion and compare nothing."),
+              ("- **Both sides have to be pinned, not just the candidate.** "
+               "`scripts/benchmark_models.py` reads the champion off `.litellm/config.yaml`, which "
+               "is this bare tag — and the tag now resolves to the NEW build, so a default run "
+               "measures the new build against itself and every `beats champion` expectation ties "
+               "for free. Run the new build as the candidate and pin the champion to the build "
+               "already measured (the `old` values above): "
+               "`--models <new-versioned-id> --champions <tier>=<previous-versioned-id>`."),
               "",
               "## Acceptance",
               "- A decision per tag above (accept the new build, or pin, with the reason).",
