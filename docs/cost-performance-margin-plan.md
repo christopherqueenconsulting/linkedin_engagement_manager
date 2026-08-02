@@ -50,7 +50,7 @@ Every recurring cost, how it is incurred, and how we capture it:
 | 1 | **LLM inference** (OpenAI / Claude / Ollama Cloud / OpenRouter via LiteLLM) | per call (tokens) | Variable | usage volume × tier | `track_llm_call` `cost_usd`, keyed by the **serving model** with the tier alias preserved as `model_tier`; plus `shadow_cost_usd` for subscription-priced models |
 | 2 | **Research** (Perplexity Sonar `lem-research`) | per edition/call | Variable | newsletters; comments OFF by default (`COMMENT_RESEARCH_ENABLED`) | Same `llm_call` path, `feature="research"` |
 | 3 | **Media — video** (RunwayML gen4/gen4.5/premium) | per render (sec × rate) | Variable, spiky | video posts | **New** `track_media_cost` using existing `estimate_video_cost` |
-| 4 | **Media — image** (DALL-E 3 `lem-image`) | per image | Variable | carousels/posts w/ imagery | `track_media_cost`, priced per image (add to cost table) |
+| 4 | **Media — image** (gpt-image via `lem-image`; FLUX via Replicate as fallback/avatar-LoRA) | per image | Variable | covers/posts/carousels w/ imagery | `track_media_cost` from BOTH render paths, priced per model:quality (`_IMAGE_COST_BY_MODEL`) |
 | 5 | **Media — stock** (Pexels) | per fetch (free tier / quota) | ~Fixed | quota | Counter event; $0 unless quota exceeded |
 | 6 | **Per-user residential proxy** | per user per month | Variable (linear in users on paid path) | active users w/ paid proxy | **New** monthly `cost_ledger` accrual per user with a proxy assigned |
 | 7 | **Regional egress proxy** | per region per month | Semi-fixed | regions, not users (`EGRESS_AT_SCALE.md`) | Monthly fixed accrual, amortized across active users in region |
