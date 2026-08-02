@@ -22,17 +22,20 @@ from cqc_lem.utilities.logger import log_debug, log_warning
 AVATAR_SURFACE_POST_IMAGE = "post_image"
 AVATAR_SURFACE_CAROUSEL = "carousel"
 AVATAR_SURFACE_VIDEO = "video"
+AVATAR_SURFACE_NEWSLETTER = "newsletter"
 
 AVATAR_SURFACES: tuple[str, ...] = (
     AVATAR_SURFACE_POST_IMAGE,
     AVATAR_SURFACE_CAROUSEL,
     AVATAR_SURFACE_VIDEO,
+    AVATAR_SURFACE_NEWSLETTER,
 )
 
 _PREF_BY_SURFACE: dict[str, str] = {
     AVATAR_SURFACE_POST_IMAGE: "avatar_use_post_image",
     AVATAR_SURFACE_CAROUSEL: "avatar_use_carousel",
     AVATAR_SURFACE_VIDEO: "avatar_use_video",
+    AVATAR_SURFACE_NEWSLETTER: "avatar_use_newsletter",
 }
 
 DEFAULT_AVATAR_PREFERENCES: dict[str, bool] = {
@@ -40,6 +43,7 @@ DEFAULT_AVATAR_PREFERENCES: dict[str, bool] = {
     "avatar_use_post_image": False,
     "avatar_use_carousel": False,
     "avatar_use_video": False,
+    "avatar_use_newsletter": False,
 }
 
 

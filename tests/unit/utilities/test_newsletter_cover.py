@@ -130,20 +130,102 @@ class TestSaveAndResolve:
         assert nc.cover_public_url(None) is None
 
 
+def _brief(prompt="a prompt", focal="a focal concept"):
+    from cqc_lem.utilities.ai.image_brief import ImageBrief
+    return ImageBrief(prompt=prompt, ratio=nc.COVER_IMAGE_RATIO, surface="newsletter",
+                      style_preset="newsletter", focal_concept=focal)
+
+
 class TestBuildCoverPrompt:
     def test_frames_the_edition_and_the_cover_ratio(self):
-        with patch("cqc_lem.utilities.ai.ai_helper.get_flux_image_prompt_from_ai",
-                   return_value="a prompt") as writer:
+        with patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
+                   return_value=_brief()) as writer:
             assert nc.build_cover_prompt("Title", "Subtitle", "Body text") == "a prompt"
         content, kwargs = writer.call_args[0][0], writer.call_args[1]
         assert "Title" in content and "Subtitle" in content and "Body text" in content
         assert kwargs["ratio"] == nc.COVER_IMAGE_RATIO
+        assert kwargs["surface"] == "newsletter"
 
     def test_truncates_a_long_body(self):
-        with patch("cqc_lem.utilities.ai.ai_helper.get_flux_image_prompt_from_ai",
-                   return_value="p") as writer:
+        with patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
+                   return_value=_brief()) as writer:
             nc.build_cover_prompt("T", None, "x" * 5000)
         assert len(writer.call_args[0][0]) < 2000
+
+
+class TestAvatarRelevanceClassifier:
+    def _classify(self, payload):
+        from types import SimpleNamespace
+        resp = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=payload))])
+        with patch("cqc_lem.utilities.ai.client.client") as mock_client:
+            mock_client.chat.completions.create.return_value = resp
+            return nc.classify_avatar_relevance("T", "S", "B")
+
+    def test_relevant_edition_says_yes(self):
+        assert self._classify('{"avatar_relevant": true}') is True
+
+    def test_irrelevant_edition_says_no(self):
+        assert self._classify('{"avatar_relevant": false}') is False
+
+    def test_unparseable_answer_fails_closed(self):
+        assert self._classify('maybe?') is False
+
+    def test_llm_outage_fails_closed(self):
+        with patch("cqc_lem.utilities.ai.client.client") as mock_client:
+            mock_client.chat.completions.create.side_effect = RuntimeError("down")
+            assert nc.classify_avatar_relevance("T", "S", "B") is False
+
+    def test_empty_edition_never_calls_the_llm(self):
+        with patch("cqc_lem.utilities.ai.client.client") as mock_client:
+            assert nc.classify_avatar_relevance(None, None, None) is False
+        mock_client.chat.completions.create.assert_not_called()
+
+
+_USABLE_AVATAR = {"status": "succeeded", "model_ref": "owner/lora:v1", "trigger_word": "TOK",
+                  "approval_status": "approved", "gender_presentation": "man", "age_band": "40s"}
+
+
+class TestResolveCoverAvatar:
+    def test_explicit_without_never_renders_the_avatar(self):
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for") as resolve:
+            assert nc._resolve_cover_avatar(3, False, "T", "S", "B") is None
+        resolve.assert_not_called()
+
+    def test_auto_needs_guardrails_AND_classifier(self):
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for",
+                   return_value=_USABLE_AVATAR) as resolve, \
+             patch.object(nc, "classify_avatar_relevance", return_value=True):
+            assert nc._resolve_cover_avatar(3, None, "T", "S", "B") == _USABLE_AVATAR
+        assert resolve.call_args[1]["surface"] == "newsletter"
+
+    def test_auto_with_irrelevant_edition_declines(self):
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for",
+                   return_value=_USABLE_AVATAR), \
+             patch.object(nc, "classify_avatar_relevance", return_value=False):
+            assert nc._resolve_cover_avatar(3, None, "T", "S", "B") is None
+
+    def test_auto_with_guardrail_decline_never_asks_the_classifier(self):
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=None), \
+             patch.object(nc, "classify_avatar_relevance") as classify:
+            assert nc._resolve_cover_avatar(3, None, "T", "S", "B") is None
+        classify.assert_not_called()
+
+    def test_explicit_with_skips_opt_in_but_not_disabled(self):
+        with patch("cqc_lem.utilities.db.get_avatar_preferences",
+                   return_value={"avatar_disabled": False}), \
+             patch("cqc_lem.utilities.db.get_active_avatar", return_value=_USABLE_AVATAR):
+            assert nc._resolve_cover_avatar(3, True, "T", "S", "B") == _USABLE_AVATAR
+        with patch("cqc_lem.utilities.db.get_avatar_preferences",
+                   return_value={"avatar_disabled": True}), \
+             patch("cqc_lem.utilities.db.get_active_avatar", return_value=_USABLE_AVATAR):
+            assert nc._resolve_cover_avatar(3, True, "T", "S", "B") is None
+
+    def test_explicit_with_still_requires_an_approved_avatar(self):
+        unapproved = dict(_USABLE_AVATAR, approval_status="pending")
+        with patch("cqc_lem.utilities.db.get_avatar_preferences",
+                   return_value={"avatar_disabled": False}), \
+             patch("cqc_lem.utilities.db.get_active_avatar", return_value=unapproved):
+            assert nc._resolve_cover_avatar(3, True, "T", "S", "B") is None
 
 
 class TestGenerateCoverForEdition:
@@ -157,38 +239,44 @@ class TestGenerateCoverForEdition:
         assets = tmp_path / "assets"
         assets.mkdir()
         with patch.object(nc, "assets_dir", str(assets)), \
-             patch("cqc_lem.utilities.ai.ai_helper.get_flux_image_prompt_from_ai", return_value="p"), \
-             patch("cqc_lem.utilities.ai.ai_helper.generate_post_image",
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief", return_value=_brief()), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
                    return_value=generated) as gen:
             rel, reason = nc.generate_cover_for_edition(3, 9, "T", "S", "B")
         assert reason is None
         assert rel.startswith("images/newsletter_covers/3/ed9_")
         with patch.object(nc, "assets_dir", str(assets)):
             assert nc.cover_abs_path(rel) is not None
-        # The cover is a brand asset, not a scene the author is in — the avatar path stays out.
-        assert gen.call_args[1]["depicts_person"] is False
+        # No avatar resolved -> the vision-gated base renderer, at the cover ratio, on the
+        # newsletter surface (so the gate is enforced, not advisory).
         assert gen.call_args[1]["ratio"] == nc.COVER_IMAGE_RATIO
+        assert gen.call_args[1]["surface"] == "newsletter"
+        assert gen.call_args[1]["focal_concept"] == "a focal concept"
         assert os.path.isfile(generated), "the source render must not be moved out from under callers"
 
     def test_prompt_failure_returns_a_reason_not_an_exception(self, tmp_path):
         with patch.object(nc, "assets_dir", str(tmp_path)), \
-             patch("cqc_lem.utilities.ai.ai_helper.get_flux_image_prompt_from_ai",
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
                    side_effect=RuntimeError("llm down")):
             rel, reason = nc.generate_cover_for_edition(3, 9, "T", "S", "B")
         assert rel is None and "prompt" in reason
 
     def test_generation_failure_returns_a_reason(self, tmp_path):
         with patch.object(nc, "assets_dir", str(tmp_path)), \
-             patch("cqc_lem.utilities.ai.ai_helper.get_flux_image_prompt_from_ai", return_value="p"), \
-             patch("cqc_lem.utilities.ai.ai_helper.generate_post_image",
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief", return_value=_brief()), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
                    side_effect=RuntimeError("replicate down")):
             rel, reason = nc.generate_cover_for_edition(3, 9, "T", "S", "B")
         assert rel is None and reason == "Image generation failed"
 
     def test_empty_generation_result_returns_a_reason(self, tmp_path):
         with patch.object(nc, "assets_dir", str(tmp_path)), \
-             patch("cqc_lem.utilities.ai.ai_helper.get_flux_image_prompt_from_ai", return_value="p"), \
-             patch("cqc_lem.utilities.ai.ai_helper.generate_post_image", return_value=None):
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief", return_value=_brief()), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value=None):
             rel, reason = nc.generate_cover_for_edition(3, 9, "T", "S", "B")
         assert rel is None and "nothing" in reason
 
@@ -198,8 +286,53 @@ class TestGenerateCoverForEdition:
         assets = tmp_path / "assets"
         assets.mkdir()
         with patch.object(nc, "assets_dir", str(assets)), \
-             patch("cqc_lem.utilities.ai.ai_helper.get_flux_image_prompt_from_ai", return_value="p"), \
-             patch("cqc_lem.utilities.ai.ai_helper.generate_post_image", return_value=generated):
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief", return_value=_brief()), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value=generated):
             rel, reason = nc.generate_cover_for_edition(3, 9, "T", "S", "B")
         assert rel is None and "too small" in reason
         assert not (assets / "images").exists()
+
+    def test_avatar_cover_renders_through_the_lora_with_provenance(self, tmp_path):
+        generated = self._generated(tmp_path)
+        assets = tmp_path / "assets"
+        assets.mkdir()
+        from cqc_lem.utilities.ai.image_gen import QualityVerdict
+        with patch.object(nc, "assets_dir", str(assets)), \
+             patch.object(nc, "_resolve_cover_avatar", return_value=_USABLE_AVATAR), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
+                   return_value=_brief()) as brief, \
+             patch("cqc_lem.utilities.avatar.replicate_avatar.generate_image_with_avatar",
+                   return_value=(generated, True)) as lora, \
+             patch("cqc_lem.utilities.ai.ai_helper._record_avatar_media") as record, \
+             patch("cqc_lem.utilities.ai.image_gen.inspect_render_quality",
+                   return_value=QualityVerdict(acceptable=True)):
+            rel, reason = nc.generate_cover_for_edition(3, 9, "T", "S", "B")
+        assert reason is None and rel is not None
+        # Avatar resolved BEFORE the brief so the subject clause leads the prompt (#744)...
+        assert brief.call_args[1]["avatar"] == _USABLE_AVATAR
+        # ...the LoRA prompt carries the trigger word + declared clause, at the cover ratio...
+        assert lora.call_args[0][0].startswith("TOK, a man in his 40s")
+        assert lora.call_args[1]["ratio"] == nc.COVER_IMAGE_RATIO
+        # ...and a rendered likeness is C2PA-signed.
+        record.assert_called_once_with(generated, None, 3)
+
+    def test_avatar_gate_rejection_re_renders_once(self, tmp_path):
+        generated = self._generated(tmp_path)
+        assets = tmp_path / "assets"
+        assets.mkdir()
+        from cqc_lem.utilities.ai.image_gen import QualityVerdict
+        verdicts = [QualityVerdict(acceptable=False, issues=["distorted face"]),
+                    QualityVerdict(acceptable=True)]
+        with patch.object(nc, "assets_dir", str(assets)), \
+             patch.object(nc, "_resolve_cover_avatar", return_value=_USABLE_AVATAR), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief", return_value=_brief()), \
+             patch("cqc_lem.utilities.avatar.replicate_avatar.generate_image_with_avatar",
+                   return_value=(generated, True)) as lora, \
+             patch("cqc_lem.utilities.ai.ai_helper._record_avatar_media"), \
+             patch("cqc_lem.utilities.ai.image_gen.inspect_render_quality",
+                   side_effect=verdicts):
+            rel, reason = nc.generate_cover_for_edition(3, 9, "T", "S", "B")
+        assert reason is None and rel is not None
+        assert lora.call_count == 2
+        assert "distorted face" in lora.call_args[0][0]

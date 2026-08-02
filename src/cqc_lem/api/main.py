@@ -497,6 +497,7 @@ class AvatarPreferencesRequest(BaseModel):
     avatar_use_post_image: Optional[bool] = None
     avatar_use_carousel: Optional[bool] = None
     avatar_use_video: Optional[bool] = None
+    avatar_use_newsletter: Optional[bool] = None
 
 
 class BulkUpdateRequest(BaseModel):
@@ -736,6 +737,10 @@ class NewsletterRegenerateRequest(BaseModel):
 class NewsletterCoverRequest(BaseModel):
     session_token: str
     edition_id: int
+    # Per-edition avatar override: None = Auto (guardrails opt-in + relevance classifier both
+    # required), True = With me (skips only the opt-in/classifier — never avatar_disabled or the
+    # approval gate), False = Without me.
+    use_avatar: Optional[bool] = None
 
 
 class NewsletterCoverDecisionRequest(NewsletterCoverRequest):
@@ -3637,7 +3642,8 @@ def generate_newsletter_cover_endpoint(request: NewsletterCoverRequest) -> Respo
     Celery task and the result lands 'pending_review' for the author to approve."""
     user_id, _edition = _owned_edition(request.session_token, request.edition_id)
     from cqc_lem.app.run_scheduler import generate_newsletter_cover
-    generate_newsletter_cover.apply_async(kwargs={"edition_id": request.edition_id})
+    generate_newsletter_cover.apply_async(kwargs={"edition_id": request.edition_id,
+                                                  "use_avatar": request.use_avatar})
     myprint(f"newsletter cover generation queued for edition {request.edition_id} (user {user_id})")
     return ResponseModel(status_code=200, detail="Cover generation started")
 
