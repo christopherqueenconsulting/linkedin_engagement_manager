@@ -3915,9 +3915,13 @@ def claim_auth_challenge_attempt(handle: str, purpose: str,
     try:
         now = datetime.now(timezone.utc)
         cursor.execute(
+            # consumed_at is assigned BEFORE attempts on purpose: MySQL evaluates SET expressions
+            # left to right against the values assigned so far, so `attempts` here is still the
+            # pre-increment count and `attempts + 1` is the attempt being claimed. Incrementing
+            # first would make this read the new value and burn the handle one attempt early.
             """UPDATE auth_challenges
-                  SET attempts = attempts + 1,
-                      consumed_at = IF(attempts + 1 >= %s, %s, NULL)
+                  SET consumed_at = IF(attempts + 1 >= %s, %s, NULL),
+                      attempts = attempts + 1
                 WHERE handle_hash = %s AND purpose = %s AND consumed_at IS NULL
                   AND expires_at > %s""",
             (int(max_attempts), now, handle_hash, purpose, now),
