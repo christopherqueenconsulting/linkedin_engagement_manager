@@ -174,11 +174,33 @@ model_list:
       request_timeout: 60
       rpm: 20
 
-  # ── IMAGE generation — no Ollama Cloud equivalent; use OpenAI DALL-E ─────────
+  # ── IMAGE generation — no Ollama Cloud equivalent; OpenAI GPT-Image ─────────
+  # gpt-image-2 is the hero renderer for every non-avatar image (covers, post images,
+  # thumbnails); avatar likeness stays on the Replicate FLUX LoRA path, and base FLUX is the
+  # code-side fallback when this whole group is down (utilities/ai/image_gen.py). gpt-image-2
+  # can require verified-org API access, so gpt-image-1 rides in the same group — latency
+  # routing plus num_retries lands calls there when -2 refuses. These models return b64_json
+  # only (no response_format='url'), which image_gen.py decodes and persists.
   - model_name: lem-image
     litellm_params:
-      model: openai/dall-e-3
+      model: openai/gpt-image-2
       api_key: os.environ/OPENAI_API_KEY
+      request_timeout: 180
+
+  - model_name: lem-image
+    litellm_params:
+      model: openai/gpt-image-1
+      api_key: os.environ/OPENAI_API_KEY
+      request_timeout: 180
+
+  # ── VISION: render quality gate (image_gen.inspect_render_quality). Cheap look at a
+  # generated image — relevance + artifact check before it reaches review. Ollama Cloud's
+  # roster has no vision model, so this is OpenAI-only; callers fail OPEN when it errors.
+  - model_name: lem-vision
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+      request_timeout: 60
 
   # ── TTS: tutorial voice-over (issue #505). tts-1 is the cheapest useful option
   # ($15 / 1M characters) and streams straight back as mp3 bytes.

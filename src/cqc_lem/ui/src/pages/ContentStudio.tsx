@@ -148,6 +148,7 @@ interface Post {
   post_id: number
   content: string
   video_url: string | null
+  image_url?: string | null
   scheduled_time: string
   post_type: string
   status: string
@@ -1224,6 +1225,7 @@ export default function ContentStudio() {
               headline="LinkedIn Member"
               postType={editingPost.post_type}
               videoUrl={editingPost.video_url}
+              mediaUrl={editingPost.image_url ?? undefined}
               slides={editingPost.carousel_slides}
             />
           </div>

@@ -678,7 +678,7 @@ class TestGetMainBlogUrlContent:
 
 class TestCreateVideoContent:
     @patch("cqc_lem.app.run_content_plan.create_runway_video", return_value="https://runway.video/abc.mp4")
-    @patch("cqc_lem.app.run_content_plan.generate_flux1_image_from_prompt", return_value="/tmp/image.png")
+    @patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt", return_value="/tmp/image.png")
     @patch("cqc_lem.app.run_content_plan.get_runway_ml_video_prompt_from_ai", return_value="a cinematic scene" * 30)
     @patch("cqc_lem.app.run_content_plan.get_flux_image_prompt_from_ai", return_value="An inspiring image")
     @patch("cqc_lem.utilities.db.get_active_avatar", return_value=None)

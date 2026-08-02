@@ -223,8 +223,12 @@ Ordered by risk-reduction per unit of work. Items 1–2 are the reported product
 - `utilities/avatar/guardrails.resolve_avatar_for()` is the ONE gate; `None` always means "use base
   Flux / Pexels". Precedence: `users.avatar_disabled` (the explicit "don't use my avatar" switch) →
   `posts.use_avatar` (the compose-time choice, three-valued, NULL = no choice) →
-  `users.avatar_use_post_image` / `_carousel` / `_video` (default **OFF**) → the approval gate. It
-  **fails closed**: any error resolving the policy declines the avatar.
+  `users.avatar_use_post_image` / `_carousel` / `_video` / `_newsletter` (default **OFF**) → the
+  approval gate. It **fails closed**: any error resolving the policy declines the avatar.
+  (`avatar_use_newsletter` landed with the image-generation overhaul: newsletter covers resolve it
+  AND a fail-closed relevance classifier on the Auto path — `newsletter_cover.py`; the review
+  queue's per-edition Auto / Include me / Never choice outranks only the opt-in+classifier, never
+  `avatar_disabled` or approval.)
 - `PostRequest.use_avatar` — accepted and dropped before — is persisted by `schedule_post` and
   `update_post`. It stays **three-valued**: omitted means "follow my opt-ins", so `ComposePost.tsx`
   sends it only once the author has actually moved the toggle, and shows the account opt-in for

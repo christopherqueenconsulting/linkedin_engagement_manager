@@ -43,6 +43,8 @@ export type EngPrefs = {
   posts_per_week: number
   // Which weekdays those slots may land on, Mon=0 … Sun=6 (issue #581). Default Mon-Fri.
   posting_days: number[]
+  // AI image on generated text posts (image-generation overhaul). Default on.
+  text_post_images?: boolean
   max_catchup_touches_per_day: number
   catchup_touch_mode: string
   catchup_event_types: string[]

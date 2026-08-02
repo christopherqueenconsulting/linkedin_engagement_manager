@@ -45,7 +45,7 @@ class TestOllamaVideoCapability:
         assert ".mp4" not in content.lower() or "cannot" in content.lower()
 
     def test_lem_image_generates_image_url_not_video(self):
-        """lem-image (DALL-E-3) returns an image URL — it does not generate video."""
+        """lem-image (gpt-image) returns image data — it does not generate video."""
         mock_response = MagicMock(
             data=[MagicMock(url="https://example.com/image.png")]
         )
@@ -79,7 +79,7 @@ class TestOllamaVideoCapability:
                     "alias": "lem-image",
                     "capability": "image",
                     "video_generation": False,
-                    "note": "Returns DALL-E-3 image URL; no video output.",
+                    "note": "Returns a gpt-image still image; no video output.",
                 },
             ],
             "recommendation": (

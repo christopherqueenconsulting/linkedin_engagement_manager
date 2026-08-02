@@ -292,13 +292,14 @@ def purge_post_assets(post_id, video_url=None):
                 except OSError as e:
                     myprint(f"purge_post_assets: could not remove {candidate}: {e}")
 
-    carousel_dir = os.path.join(assets_dir, "images", "carousel", str(post_id))
-    if os.path.isdir(carousel_dir) and _within_assets(carousel_dir):
-        try:
-            shutil.rmtree(carousel_dir)
-            removed.append(carousel_dir)
-        except OSError as e:
-            myprint(f"purge_post_assets: could not remove {carousel_dir}: {e}")
+    for media_dir in (os.path.join(assets_dir, "images", "carousel", str(post_id)),
+                      os.path.join(assets_dir, "images", "posts", str(post_id))):
+        if os.path.isdir(media_dir) and _within_assets(media_dir):
+            try:
+                shutil.rmtree(media_dir)
+                removed.append(media_dir)
+            except OSError as e:
+                myprint(f"purge_post_assets: could not remove {media_dir}: {e}")
 
     if removed:
         myprint(f"purge_post_assets: post_id={post_id} removed {len(removed)} asset path(s)")

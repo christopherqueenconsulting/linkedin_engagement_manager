@@ -44,7 +44,7 @@ class TestGetFluxImagePromptFromAi:
         with patch(f"{_AH}._call_llm") as llm:
             llm.return_value.choices[0].message.content = "a scene"
             get_flux_image_prompt_from_ai("post body", avatar=avatar)
-        return llm.call_args.kwargs["messages"][1]["content"][0]["text"]
+        return llm.call_args.kwargs["messages"][1]["content"]
 
     def test_declared_subject_reaches_the_prompt_author(self):
         assert "a man in his 40s" in self._prompt_text(_AVATAR)
@@ -78,16 +78,26 @@ class TestGeneratePostImage:
 
     def test_object_scenes_never_reach_the_lora(self):
         with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for") as resolve, \
-             patch(f"{_AH}.generate_flux1_image_from_prompt", return_value="/tmp/f.webp") as flux:
+             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt",
+                   return_value="/tmp/f.webp") as render:
             assert self._generate(depicts_person=False) == "/tmp/f.webp"
         resolve.assert_not_called()
-        flux.assert_called_once()
+        render.assert_called_once()
 
-    def test_guardrail_decline_uses_base_flux(self):
+    def test_guardrail_decline_uses_the_base_renderer(self):
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_from_prompt",
+                   return_value="/tmp/f.webp") as render:
+            assert self._generate(ratio="4:5") == "/tmp/f.webp"
+        assert render.call_args.kwargs["ratio"] == "4:5"
+
+    def test_pinned_replicate_model_stays_a_flux_render(self):
+        """The admin variant tool names a specific FLUX model — that must not silently
+        become a gpt-image render."""
         with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=None), \
              patch(f"{_AH}.generate_flux1_image_from_prompt", return_value="/tmp/f.webp") as flux:
-            assert self._generate(ratio="4:5") == "/tmp/f.webp"
-        assert flux.call_args.kwargs["ratio"] == "4:5"
+            assert self._generate(image_model="black-forest-labs/flux-1.1-pro") == "/tmp/f.webp"
+        assert flux.call_args.kwargs["image_model"] == "black-forest-labs/flux-1.1-pro"
 
     def test_provenance_recorded_only_when_the_avatar_actually_rendered(self):
         with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=_AVATAR), \

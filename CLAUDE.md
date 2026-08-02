@@ -85,13 +85,26 @@ response = client.chat.completions.create(model="lem-simple", messages=[...])
 | `lem-simple` | Short outputs ≤300 chars: refine, summarize briefly, comma list |
 | `lem-medium` | Balanced: comments, post refinement, blog summaries |
 | `lem-complex` | Long-form: thought leadership, personal story, industry news |
-| `lem-image` | Image generation (DALL-E 3) |
+| `lem-image` | Image generation (gpt-image-2, gpt-image-1 in-group fallback) |
+| `lem-vision` | Render quality gate — looks at a generated image (gpt-4o-mini) |
 | `lem-embedding` | Embeddings for feedback dedup/clustering (`client.embeddings.create`) |
 | `lem-router` | Auto-routes by prompt complexity via `LEMComplexityRouter` |
 
 **Cost-aware down-routing** (`utilities/routing_policy.py`, `utilities/cost_routing.py`): the router can additionally route a tier ONE step down for the treatment cohort of an active cost/quality experiment. `routing_policy.py` is the shared decision core — the app imports it, and docker-compose mounts that same file into the LiteLLM container — so it must stay **stdlib-only** (no `cqc_lem.*` imports). Off unless BOTH `COST_ROUTING_ENABLED` and `COST_AWARE_ROUTING_ENABLED` are set. Since #652 the treatment cohort comes from a PostHog experiment flag resolved app-side and handed to the router in the policy document's `arms` map (the hash stays as the fallback) — see `docs/experiments.md`. Also `docs/cost-performance-margin-plan.md` §D.1.1.
 
 See `ai_helper.py` for the per-function model assignment.
+
+**Image stack (ONE engine, two modules):** `utilities/ai/image_brief.py` authors every image
+prompt — a validated `lem-medium` JSON brief (render prompt + `focal_concept`) with per-surface
+presets (`newsletter`/`post_image`/`carousel`/`video`/`thumbnail`) and a deterministic fallback;
+never add a per-content-type prompt helper, add a preset. `utilities/ai/image_gen.py` renders it —
+gpt-image via `lem-image` first, FLUX/Replicate fallback (`IMAGE_BACKEND`), both cost-tracked via
+`track_media_cost` — and `render_image_gated` adds the `lem-vision` quality check with bounded
+regenerates (`IMAGE_GATE_MAX_ATTEMPTS`, fails OPEN, enforced on `IMAGE_QUALITY_GATE_SURFACES`).
+Avatar likeness NEVER renders in `image_gen` — `generate_post_image` (ai_helper) owns the LoRA
+path behind `avatar/guardrails.resolve_avatar_for`; newsletter covers add a fail-closed relevance
+classifier on the Auto path (`newsletter_cover.py`). NO text/logos in any render prompt — the
+hard constraint lives in the brief engine's system prompt.
 
 ## Selenium Pattern
 

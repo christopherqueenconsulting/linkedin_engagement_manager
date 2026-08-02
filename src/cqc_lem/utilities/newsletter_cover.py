@@ -171,46 +171,164 @@ def remove_cover_file(relative_path: Optional[str]) -> bool:
         return False
 
 
+def _edition_text(title: Optional[str], subtitle: Optional[str], body: Optional[str]) -> str:
+    return "\n\n".join(p for p in (title, subtitle, (body or "")[:1500]) if p)
+
+
 def build_cover_prompt(title: Optional[str], subtitle: Optional[str], body: Optional[str],
                        profile=None) -> str:
-    """The image prompt for an edition's cover, via the SHARED post-image prompt writer.
+    """The image prompt for an edition's cover, via the ONE brief engine.
 
-    Deliberately not a parallel per-content-type prompt helper: ``get_flux_image_prompt_from_ai``
-    already encodes the engagement best practices a cover needs — ONE focal subject, strong
-    foreground separation, and NO text/logos/charts (generators render those as garbled artifacts,
-    which is exactly what makes a cover look machine-made). It only needs the edition framed as the
-    content and the cover's aspect ratio.
+    Deliberately not a parallel per-content-type prompt helper: ``build_image_brief`` owns the
+    engagement fundamentals a cover needs — ONE focal subject drawn from the edition's actual
+    content, strong foreground separation, and NO text/logos/charts (generators render those as
+    garbled artifacts, which is exactly what makes a cover look machine-made). The ``newsletter``
+    preset adds the cover-specific art direction.
     """
-    from cqc_lem.utilities.ai.ai_helper import get_flux_image_prompt_from_ai
+    from cqc_lem.utilities.ai.image_brief import build_image_brief
 
-    parts = [p for p in (title, subtitle, (body or "")[:1500]) if p]
-    return get_flux_image_prompt_from_ai("\n\n".join(parts), profile=profile,
-                                         ratio=COVER_IMAGE_RATIO)
+    return build_image_brief(_edition_text(title, subtitle, body), surface="newsletter",
+                             ratio=COVER_IMAGE_RATIO, profile=profile).prompt
+
+
+def classify_avatar_relevance(title: Optional[str], subtitle: Optional[str],
+                              body: Optional[str]) -> bool:
+    """Is this edition a piece where the author's likeness belongs on the cover?
+
+    True only for first-person / personal-story / author-announcement editions — a market-analysis
+    edition with the author's face on it reads as vanity, not relevance. Fails CLOSED: any error
+    means "no avatar", matching the guardrails' posture.
+    """
+    import json as _json
+
+    from cqc_lem.utilities.ai.client import client
+
+    excerpt = _edition_text(title, subtitle, body)[:1200]
+    if not excerpt:
+        return False
+    try:
+        response = client.chat.completions.create(
+            model="lem-simple",
+            messages=[{"role": "user", "content": (
+                "Is this newsletter edition a first-person / personal-story / "
+                "author-announcement piece where the AUTHOR'S OWN likeness belongs on the cover "
+                "image? Answer with ONLY a JSON object {\"avatar_relevant\": true|false}.\n\n"
+                f"<edition>{excerpt}</edition>")}],
+            response_format={"type": "json_object"},
+            temperature=0,
+            max_tokens=30,
+        )
+        return bool(_json.loads(response.choices[0].message.content).get("avatar_relevant"))
+    except Exception as e:
+        log_debug("Avatar relevance classifier unavailable — defaulting to no avatar",
+                  error=str(e), action_type="newsletter_cover")
+        return False
+
+
+def _avatar_for_explicit_choice(user_id: int) -> Optional[dict]:
+    """The avatar for a per-edition 'With me' click. The explicit choice beats the per-surface
+    opt-in (same precedence a post's compose-time toggle has), but NEVER beats ``avatar_disabled``
+    or the preview/approval gate. Fails closed."""
+    try:
+        from cqc_lem.utilities.avatar.guardrails import avatar_is_usable
+        from cqc_lem.utilities.db import get_active_avatar, get_avatar_preferences
+
+        if get_avatar_preferences(user_id).get("avatar_disabled"):
+            return None
+        avatar = get_active_avatar(user_id)
+        return avatar if avatar_is_usable(avatar) else None
+    except Exception as e:
+        log_warning("Avatar check failed for explicit cover choice — rendering without", exc=e,
+                    user_id=user_id, action_type="newsletter_cover")
+        return None
+
+
+def _resolve_cover_avatar(user_id: int, use_avatar: Optional[bool], title: Optional[str],
+                          subtitle: Optional[str], body: Optional[str]) -> Optional[dict]:
+    """Which avatar (if any) this cover renders with.
+
+    ``use_avatar`` is the per-edition override: False never renders it, True skips only the
+    per-surface opt-in and the relevance classifier. ``None`` (Auto) needs BOTH the guardrails
+    (``avatar_use_newsletter`` opt-in + approval) AND the classifier to agree — the owner's ask
+    was "some newsletters, when it's relevant to the article", and this is that conjunction.
+    """
+    if use_avatar is False:
+        return None
+    if use_avatar is True:
+        return _avatar_for_explicit_choice(user_id)
+
+    from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_NEWSLETTER, resolve_avatar_for
+
+    avatar = resolve_avatar_for(user_id, surface=AVATAR_SURFACE_NEWSLETTER)
+    if not avatar:
+        return None
+    return avatar if classify_avatar_relevance(title, subtitle, body) else None
+
+
+def _render_avatar_cover(brief, avatar: dict, user_id: int) -> Optional[str]:
+    """LoRA render for a cover the author appears in, with ONE bounded vision re-render."""
+    from cqc_lem.utilities.ai.ai_helper import _record_avatar_media
+    from cqc_lem.utilities.ai.image_gen import inspect_render_quality
+    from cqc_lem.utilities.avatar.attributes import apply_subject_clause
+    from cqc_lem.utilities.avatar.replicate_avatar import generate_image_with_avatar
+    from cqc_lem.utilities.env_constants import IMAGE_GATE_MAX_ATTEMPTS
+
+    prompt = brief.prompt
+    path = None
+    for attempt in range(1, max(1, IMAGE_GATE_MAX_ATTEMPTS) + 1):
+        path, used_avatar = generate_image_with_avatar(
+            apply_subject_clause(prompt, avatar), avatar["model_ref"],
+            ratio=COVER_IMAGE_RATIO, fallback_prompt=prompt)
+        if used_avatar and path:
+            # C2PA provenance for a synthetic likeness; editions have no posts row to flag.
+            _record_avatar_media(path, None, user_id)
+        verdict = inspect_render_quality(path, brief.focal_concept)
+        if verdict.acceptable or not verdict.checked:
+            return path
+        log_info("Avatar cover failed the quality gate", user_id=user_id,
+                 action_type="newsletter_cover", attempt=attempt,
+                 issues="; ".join(verdict.issues))
+        fixes = "; ".join(verdict.issues) or "low relevance to the subject"
+        prompt = (f"{brief.prompt}\n\nThe previous render was rejected for: {fixes}. "
+                  f"Avoid those problems entirely in this render.")
+    return path
 
 
 def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[str],
                                subtitle: Optional[str], body: Optional[str],
-                               profile=None) -> "tuple[Optional[str], Optional[str]]":
+                               profile=None,
+                               use_avatar: Optional[bool] = None
+                               ) -> "tuple[Optional[str], Optional[str]]":
     """Generate a cover for one edition. Returns ``(relative_path, None)`` or ``(None, reason)``.
 
     Never raises: a failed cover must not take an edition's draft down with it. The generated file
     is COPIED into the user's cover dir so removal/ownership stay scoped to the edition, and it
     passes the same deterministic gate an upload does before it is ever stored on the row.
+    Whatever renders here still lands ``pending_review`` — the author stays the publish gate.
     """
-    from cqc_lem.utilities.ai.ai_helper import generate_post_image
+    from cqc_lem.utilities.ai.image_brief import build_image_brief
+    from cqc_lem.utilities.ai.image_gen import render_image_gated
+
+    avatar = _resolve_cover_avatar(user_id, use_avatar, title, subtitle, body)
 
     try:
-        prompt = build_cover_prompt(title, subtitle, body, profile=profile)
+        # The avatar is resolved BEFORE the brief is authored: its declared subject clause is what
+        # stops the prompt LLM inventing a different person for the LoRA to contradict (#744).
+        brief = build_image_brief(_edition_text(title, subtitle, body), surface="newsletter",
+                                  ratio=COVER_IMAGE_RATIO, profile=profile, avatar=avatar)
     except Exception as e:
         log_warning("Newsletter cover prompt failed", exc=e, user_id=user_id,
                     action_type="newsletter_cover")
         return None, "Could not write a cover prompt"
 
     try:
-        # depicts_person=False: a cover is a brand asset for the newsletter, not a scene the author
-        # appears in, so the avatar LoRA is deliberately out of this path.
-        generated_path = generate_post_image(prompt, user_id, ratio=COVER_IMAGE_RATIO,
-                                             depicts_person=False)
+        if avatar:
+            generated_path = _render_avatar_cover(brief, avatar, user_id)
+        else:
+            generated_path = render_image_gated(brief.prompt, surface="newsletter",
+                                                ratio=COVER_IMAGE_RATIO,
+                                                focal_concept=brief.focal_concept,
+                                                user_id=user_id)
     except Exception as e:
         log_warning("Newsletter cover generation failed", exc=e, user_id=user_id,
                     action_type="newsletter_cover")

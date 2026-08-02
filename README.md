@@ -111,7 +111,8 @@ aliases are defined in `.litellm/config.yaml`:
 | `lem-simple` | Short outputs ≤300 chars |
 | `lem-medium` | Balanced: comments, post refinement |
 | `lem-complex` | Long-form: thought leadership, personal story |
-| `lem-image` | Image generation (DALL-E 3) |
+| `lem-image` | Image generation (gpt-image-2, gpt-image-1 in-group fallback) |
+| `lem-vision` | Render quality gate — looks at a generated image (gpt-4o-mini) |
 | `lem-router` | Auto-routes by prompt complexity |
 
 ## Testing

@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 from cqc_lem import assets_dir
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.utilities.ai.ai_helper import get_blog_summary_post_from_ai, get_website_content_post_from_ai, \
-    get_flux_image_prompt_from_ai, generate_flux1_image_from_prompt, get_runway_ml_video_prompt_from_ai, \
+    get_flux_image_prompt_from_ai, get_runway_ml_video_prompt_from_ai, \
     create_runway_video, get_ai_linked_post_refinement, optimize_post_hook
 from cqc_lem.utilities.ai.ai_helper import get_thought_leadership_post_from_ai, \
     get_industry_news_post_from_ai, get_personal_story_post_from_ai, generate_engagement_prompt_post, \
@@ -373,8 +373,70 @@ def create_content(user_id: int, post_type: str, stage: str, post_id: int = None
                                        day_weekday=day_weekday)
         if content:
             content = content.strip()
+            # Single-image post: LinkedIn's highest-volume format. Best-effort — a text post
+            # publishes fine bare, so an image failure never costs the post.
+            _generate_text_post_image(user_id, content, post_id)
 
     return content, video_url
+
+
+def _generate_text_post_image(user_id: int, text_content: str, post_id: "int | None") -> "str | None":
+    """Generate + store the AI image a generated TEXT post publishes with.
+
+    Gated on the user's `text_post_images` preference. The avatar rides the EXISTING
+    `post_image` surface + the post's compose-time choice (guardrails decide); it is resolved
+    BEFORE the brief is authored so the declared subject clause leads the prompt (issue #744).
+    Never raises: `posts.image_url` simply stays NULL and the post ships bare.
+    """
+    if not post_id or not text_content:
+        return None
+    try:
+        from cqc_lem.utilities.ai.image_brief import build_image_brief
+        from cqc_lem.utilities.ai.image_gen import render_image_gated
+        from cqc_lem.utilities.avatar.guardrails import (AVATAR_SURFACE_POST_IMAGE,
+                                                         resolve_avatar_for)
+        from cqc_lem.utilities.db import get_engagement_preferences, update_db_post_image_url
+
+        if not get_engagement_preferences(user_id).get("text_post_images", True):
+            return None
+
+        profile = None
+        try:
+            profile = load_profile_for_user(user_id)
+        except Exception as e:
+            myprint(f"_generate_text_post_image: profile load skipped: {e}")
+
+        avatar = resolve_avatar_for(user_id, surface=AVATAR_SURFACE_POST_IMAGE, post_id=post_id)
+        brief = build_image_brief(text_content, surface="post_image", ratio=DEFAULT_IMAGE_RATIO,
+                                  profile=profile, avatar=avatar)
+        if avatar:
+            from cqc_lem.utilities.ai.ai_helper import generate_post_image
+            image_path = generate_post_image(brief.prompt, user_id, ratio=DEFAULT_IMAGE_RATIO,
+                                             surface=AVATAR_SURFACE_POST_IMAGE, post_id=post_id)
+        else:
+            image_path = render_image_gated(brief.prompt, surface="post_image",
+                                            ratio=DEFAULT_IMAGE_RATIO,
+                                            focal_concept=brief.focal_concept,
+                                            user_id=user_id, post_id=post_id)
+        if not image_path or not os.path.isfile(image_path):
+            return None
+
+        # Copy into a per-post dir under the shared assets volume (mirrors carousel slides) so
+        # publish can upload it and purge_post_assets can clean it deterministically.
+        import shutil
+        post_dir = os.path.join(assets_dir, "images", "posts", str(post_id))
+        create_folder_if_not_exists(post_dir)
+        dest = os.path.join(post_dir, os.path.basename(image_path))
+        shutil.copyfile(image_path, dest)
+        api_image_url = (f"{API_URL_FINAL}/api/assets?file_name=images/posts/{post_id}/"
+                         f"{os.path.basename(dest)}")
+        update_db_post_image_url(post_id, api_image_url)
+        myprint(f"_generate_text_post_image: post_id={post_id} -> {api_image_url}")
+        return api_image_url
+    except Exception as e:
+        myprint(f"_generate_text_post_image failed for post {post_id} "
+                f"({type(e).__name__}: {e}) — post ships without an image")
+        return None
 
 
 def _affiliate_promo_content(user_id: int, post_id: Optional[int],
@@ -754,7 +816,8 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
         avatar = resolve_avatar_for(user_id, surface=AVATAR_SURFACE_VIDEO, post_id=post_id)
         has_avatar = avatar is not None
         image_prompt = get_flux_image_prompt_from_ai(text_content, profile=profile,
-                                                    ratio=DEFAULT_IMAGE_RATIO, avatar=avatar)
+                                                    ratio=DEFAULT_IMAGE_RATIO, avatar=avatar,
+                                                    surface="video")
         # Audio-capable (premium/Veo) renders need the user's language in the prompt — Veo has no
         # language parameter and invents a voiceover otherwise (issue #548). Silent models skip
         # the lookup entirely.
@@ -782,7 +845,9 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
                 image_path = generate_post_image(image_prompt, user_id, ratio=DEFAULT_IMAGE_RATIO,
                                                  surface=AVATAR_SURFACE_VIDEO, post_id=post_id)
             else:
-                image_path = generate_flux1_image_from_prompt(image_prompt, ratio=DEFAULT_IMAGE_RATIO)
+                from cqc_lem.utilities.ai.image_gen import render_image_from_prompt
+                image_path = render_image_from_prompt(image_prompt, ratio=DEFAULT_IMAGE_RATIO,
+                                                      user_id=user_id, post_id=post_id)
             src = create_runway_video(image_path, motion, model=model, ratio=DEFAULT_VIDEO_RATIO,
                                       user_id=user_id, post_id=post_id)
         if not src:

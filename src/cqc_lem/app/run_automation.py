@@ -7222,7 +7222,21 @@ def post_to_linkedin(self, user_id: int, post_id: int):
             myprint(f"Adding to Post | Video URL: {video_url}")
         urn = share_on_linkedin(user_id, content, video_url)
     else:
-        urn = share_on_linkedin(user_id, content)
+        # Single-image text post: attach the generated image when one exists. A missing image —
+        # or even a failed lookup — never blocks the post: text publishes bare (the image is
+        # enhancement, not a required asset, unlike a video post's video).
+        try:
+            from cqc_lem.utilities.db import get_post_image_url
+            image_url = get_post_image_url(post_id)
+        except Exception as e:
+            log_warning("Could not read the post's image — publishing bare", exc=e,
+                        user_id=user_id, post_id=post_id, action_type="post")
+            image_url = None
+        if image_url:
+            myprint(f"Adding to Post | Image URL: {image_url}")
+            urn = share_on_linkedin(user_id, content, image_url)
+        else:
+            urn = share_on_linkedin(user_id, content)
 
     if urn:
         post_url = f"https://www.linkedin.com/feed/update/{urn}/"

@@ -375,7 +375,17 @@ class TestNewsletterCoverGenerate:
             resp = client.post("/api/user/newsletter-draft/cover/generate", json={
                 "session_token": _SESSION, "edition_id": 4})
         assert resp.status_code == 200
-        task.apply_async.assert_called_once_with(kwargs={"edition_id": 4})
+        # No explicit choice sent -> Auto (None) rides through to the task.
+        task.apply_async.assert_called_once_with(kwargs={"edition_id": 4, "use_avatar": None})
+
+    def test_per_edition_avatar_choice_rides_through(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.get_newsletter_edition", return_value=dict(_OWNED)), \
+             patch("cqc_lem.app.run_scheduler.generate_newsletter_cover") as task:
+            resp = client.post("/api/user/newsletter-draft/cover/generate", json={
+                "session_token": _SESSION, "edition_id": 4, "use_avatar": True})
+        assert resp.status_code == 200
+        task.apply_async.assert_called_once_with(kwargs={"edition_id": 4, "use_avatar": True})
 
     def test_404_when_not_owner_spends_nothing(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \

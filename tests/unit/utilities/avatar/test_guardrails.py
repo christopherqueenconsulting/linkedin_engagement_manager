@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from cqc_lem.utilities.avatar.guardrails import (AVATAR_SURFACE_CAROUSEL,
+                                                 AVATAR_SURFACE_NEWSLETTER,
                                                  AVATAR_SURFACE_POST_IMAGE, AVATAR_SURFACE_VIDEO,
                                                  avatar_allowed_for, avatar_is_usable,
                                                  resolve_avatar_for)
@@ -19,9 +20,11 @@ _APPROVED = {"id": 3, "status": "succeeded", "model_ref": "owner/lora:v1",
              "trigger_word": "TOK", "approval_status": "approved"}
 
 _ALL_ON = {"avatar_disabled": False, "avatar_use_post_image": True,
-           "avatar_use_carousel": True, "avatar_use_video": True}
+           "avatar_use_carousel": True, "avatar_use_video": True,
+           "avatar_use_newsletter": True}
 _ALL_OFF = {"avatar_disabled": False, "avatar_use_post_image": False,
-            "avatar_use_carousel": False, "avatar_use_video": False}
+            "avatar_use_carousel": False, "avatar_use_video": False,
+            "avatar_use_newsletter": False}
 
 
 def _resolve(surface=AVATAR_SURFACE_POST_IMAGE, *, prefs=None, post_choice=None,
@@ -74,6 +77,11 @@ class TestResolveAvatarFor:
         prefs = {**_ALL_OFF, "avatar_use_video": True}
         assert _resolve(AVATAR_SURFACE_VIDEO, prefs=prefs) == _APPROVED
         assert _resolve(AVATAR_SURFACE_POST_IMAGE, prefs=prefs) is None
+
+    def test_newsletter_surface_follows_its_own_opt_in(self):
+        assert _resolve(AVATAR_SURFACE_NEWSLETTER, prefs=_ALL_OFF) is None
+        prefs = {**_ALL_OFF, "avatar_use_newsletter": True}
+        assert _resolve(AVATAR_SURFACE_NEWSLETTER, prefs=prefs) == _APPROVED
 
     def test_post_level_opt_out_wins_over_an_enabled_surface(self):
         assert _resolve(prefs=_ALL_ON, post_choice=False, post_id=9) is None

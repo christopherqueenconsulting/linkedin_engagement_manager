@@ -154,11 +154,16 @@ export default function NewsletterQueue(
     onError: (e) => coverError(e, 'Could not upload that image — try another file.'),
   })
 
+  // Per-edition avatar choice for AI covers: Auto lets the guardrails + relevance classifier
+  // decide; 'with'/'without' override just this generation (never the master avatar switch).
+  const [coverAvatarChoice, setCoverAvatarChoice] = useState<'auto' | 'with' | 'without'>('auto')
+
   const generateCoverMutation = useMutation({
     mutationFn: () =>
       api.post('/user/newsletter-draft/cover/generate', {
         session_token: sessionToken,
         edition_id: draftEdit!.id,
+        use_avatar: coverAvatarChoice === 'auto' ? null : coverAvatarChoice === 'with',
       }),
     onSuccess: () => {
       setCoverWaitId(draftEdit!.id)
@@ -379,6 +384,19 @@ export default function NewsletterQueue(
                   className="bg-indigo-50 text-indigo-700 py-2 rounded-lg text-sm font-semibold hover:bg-indigo-100 disabled:opacity-50 transition-colors">
                   {coverWaitId != null ? 'Generating…' : 'Generate with AI'}
                 </button>
+              </div>
+              <div className="flex items-center gap-2">
+                <label htmlFor="cover-avatar-choice" className="text-xs text-gray-500">
+                  My avatar in AI covers
+                </label>
+                <select id="cover-avatar-choice" value={coverAvatarChoice}
+                  onChange={(e) => setCoverAvatarChoice(e.target.value as 'auto' | 'with' | 'without')}
+                  disabled={busy || coverBusy}
+                  className="text-xs border border-gray-200 rounded-md px-2 py-1 text-gray-700 bg-white">
+                  <option value="auto">Auto — when the edition is about me</option>
+                  <option value="with">Include me</option>
+                  <option value="without">Never in this cover</option>
+                </select>
               </div>
               {draftEdit.cover_image_url && (
                 <div className="grid grid-cols-2 gap-2">

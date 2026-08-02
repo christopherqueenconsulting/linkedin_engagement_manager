@@ -71,29 +71,58 @@ class TestTrackMediaCost:
             track_media_cost("image", "openai", 0.08)  # must not raise
 
 
-class TestDallEImageCost:
-    def test_generated_image_is_billed_per_image(self):
+class TestGptImageCost:
+    def test_generated_image_is_billed_per_model_and_quality(self, tmp_path):
+        import base64
         from types import SimpleNamespace
-        response = SimpleNamespace(data=[SimpleNamespace(url="https://img/1.png")])
-        with patch("cqc_lem.utilities.ai.client.client.images.generate", return_value=response), \
+        b64 = base64.b64encode(b"png-bytes").decode("ascii")
+        response = SimpleNamespace(data=[SimpleNamespace(b64_json=b64, url=None)],
+                                   model="gpt-image-2")
+        with patch("cqc_lem.utilities.ai.image_gen.client") as mock_client, \
+             patch("cqc_lem.utilities.ai.image_gen.assets_dir", str(tmp_path)), \
              patch(f"{_MOD}.track_media_cost") as track:
-            from cqc_lem.utilities.ai.ai_helper import generate_dall_e_image_from_prompt
-            assert generate_dall_e_image_from_prompt("a robot") == response.data
+            mock_client.images.generate.return_value = response
+            from cqc_lem.utilities.ai.image_gen import _render_via_gpt_image
+            path = _render_via_gpt_image("a robot", ratio="1:1", quality="medium",
+                                         user_id=3, post_id=9)
 
+        with open(path, "rb") as fh:
+            assert fh.read() == b"png-bytes"
         args, kwargs = track.call_args
-        assert args[0] == "image" and args[1] == "openai" and args[2] == pytest.approx(0.08)
-        assert kwargs["qty"] == 1 and kwargs["model"] == "dall-e-3"
+        assert args[0] == "image" and args[1] == "openai" and args[2] == pytest.approx(0.053)
+        assert kwargs["qty"] == 1 and kwargs["model"] == "gpt-image-2"
+        assert kwargs["user_id"] == 3 and kwargs["post_id"] == 9
 
-    @pytest.mark.parametrize("data", [[], None])
-    def test_no_image_returns_empty_list_and_bills_nothing(self, data):
+    def test_no_image_raises_and_bills_nothing(self):
         from types import SimpleNamespace
-        response = SimpleNamespace(data=data)
-        with patch("cqc_lem.utilities.ai.client.client.images.generate", return_value=response), \
+        response = SimpleNamespace(data=[], model="gpt-image-2")
+        with patch("cqc_lem.utilities.ai.image_gen.client") as mock_client, \
              patch(f"{_MOD}.track_media_cost") as track:
-            from cqc_lem.utilities.ai.ai_helper import generate_dall_e_image_from_prompt
-            assert generate_dall_e_image_from_prompt("a robot") == []
+            mock_client.images.generate.return_value = response
+            from cqc_lem.utilities.ai.image_gen import _render_via_gpt_image
+            with pytest.raises(RuntimeError):
+                _render_via_gpt_image("a robot", ratio="1:1", quality="medium",
+                                      user_id=None, post_id=None)
 
         track.assert_not_called()
+
+    def test_flux_render_is_billed(self, tmp_path):
+        with patch("cqc_lem.utilities.ai.image_gen.run_replicate_bounded",
+                   return_value=["https://replicate.dev/pb/abc/out.webp"]), \
+             patch("cqc_lem.utilities.ai.ai_helper.save_video_url_to_dir",
+                   return_value=str(tmp_path / "out.webp")), \
+             patch("cqc_lem.utilities.ai.ai_helper.create_folder_if_not_exists"), \
+             patch(f"{_MOD}.track_media_cost") as track:
+            from cqc_lem.utilities.ai.ai_helper import get_flux_image_via_replicate
+            path = get_flux_image_via_replicate("a robot",
+                                                ref="black-forest-labs/flux-dev",
+                                                aspect_ratio="1:1")
+
+        assert path == str(tmp_path / "out.webp")
+        args, kwargs = track.call_args
+        assert args[0] == "image" and args[1] == "replicate"
+        assert args[2] == pytest.approx(0.025)
+        assert kwargs["model"] == "black-forest-labs/flux-dev"
 
 
 class TestLlmRollupAccrual:

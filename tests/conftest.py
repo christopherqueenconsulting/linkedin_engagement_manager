@@ -16,21 +16,26 @@ from dotenv import load_dotenv
 # os.environ.setdefault() calls below won't override values already present here.
 load_dotenv()
 
+# MODULE level, not a fixture: a session fixture runs after COLLECTION, so a test module that
+# imports something with import-time credentials (utilities/ai/client.py builds the OpenAI client
+# at module scope) exploded during collection on any box without a .env — CI. Locally the .env
+# masked it, which is exactly the kind of pass-here/fail-there this block exists to prevent.
+os.environ.setdefault("OPENAI_API_KEY", "test-api-key-12345")
+os.environ.setdefault("LI_USER", "test_user@example.com")
+os.environ.setdefault("LI_PASSWORD", "test_password")
+os.environ.setdefault("DB_HOST", "localhost")
+os.environ.setdefault("DB_USER", "test_user")
+os.environ.setdefault("DB_PASSWORD", "test_password")
+os.environ.setdefault("DB_NAME", "test_db")
+os.environ.setdefault("CELERY_BROKER_URL", "redis://localhost:6379/0")
+os.environ.setdefault("CELERY_RESULT_BACKEND", "redis://localhost:6379/0")
+os.environ.setdefault("PEXELS_API_KEY", "test-pexels-api-key-12345")
+
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_environment():
-    """Set up test environment variables to prevent import-time failures."""
-    # Set required environment variables for test execution
-    os.environ.setdefault("OPENAI_API_KEY", "test-api-key-12345")
-    os.environ.setdefault("LI_USER", "test_user@example.com")
-    os.environ.setdefault("LI_PASSWORD", "test_password")
-    os.environ.setdefault("DB_HOST", "localhost")
-    os.environ.setdefault("DB_USER", "test_user")
-    os.environ.setdefault("DB_PASSWORD", "test_password")
-    os.environ.setdefault("DB_NAME", "test_db")
-    os.environ.setdefault("CELERY_BROKER_URL", "redis://localhost:6379/0")
-    os.environ.setdefault("CELERY_RESULT_BACKEND", "redis://localhost:6379/0")
-    os.environ.setdefault("PEXELS_API_KEY", "test-pexels-api-key-12345")
+    """Kept for anything that depends on this fixture by name — the values now land at import."""
+    yield
 
 
 @pytest.fixture(autouse=True)

@@ -117,6 +117,7 @@ class TestPartialUpdateKeepsTheRest:
         "max_catchup_touches_per_day": 4, "catchup_touch_mode": "auto_approve",
         "catchup_event_types": '["promotion"]', "catchup_message_source": "ai",
         "posts_per_week": 5, "posting_days": '[0, 2, 4, 6]',
+        "text_post_images": 0,
     }
     # Round-tripped through the upsert, every column persists back exactly as it was stored.
     _EXPECTED = dict(_STORED)

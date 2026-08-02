@@ -162,7 +162,8 @@ class TestGeneratedCoverGate:
             resp = client.post("/api/user/newsletter-draft/cover/generate", json={
                 "session_token": _SESSION, "edition_id": _EDITION})
         assert resp.status_code == 200
-        task.apply_async.assert_called_once_with(kwargs={"edition_id": _EDITION})
+        task.apply_async.assert_called_once_with(kwargs={"edition_id": _EDITION,
+                                                         "use_avatar": None})
 
         store.set_cover(_EDITION, _USER, f"images/newsletter_covers/{_USER}/gen.png",
                         "ai", "pending_review")

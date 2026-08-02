@@ -300,7 +300,7 @@ class LeadSignalStatus(StrEnum):
 class CostCategory(StrEnum):
     """Kind of spend a `cost_ledger` row records (issue #490, docs/cost-performance-margin-plan.md §A.1)."""
     LLM = 'llm'              # inference through LiteLLM (rolled up daily per user x feature x tier)
-    MEDIA = 'media'          # video renders (Runway) and generated images (DALL-E)
+    MEDIA = 'media'          # video renders (Runway) and generated images (gpt-image / FLUX)
     PROXY = 'proxy'          # per-user residential / amortized regional egress proxy
     INFRA = 'infra'          # VPS + containers, amortized across active users
     EMAIL = 'email'          # transactional sends
@@ -1182,8 +1182,8 @@ def get_posts(user_id: int, limit: int = 10, offset: int = 0,
         total = cursor.fetchone()['total']
 
         cursor.execute(
-            f"SELECT id, content, video_url, scheduled_time, post_type, status, carousel_slides, "
-            f"authenticity_score, gate_reason, rejection_reason, archetype "
+            f"SELECT id, content, video_url, image_url, scheduled_time, post_type, status, "
+            f"carousel_slides, authenticity_score, gate_reason, rejection_reason, archetype "
             f"FROM posts {where} ORDER BY {sort_col} {order}, id {order} LIMIT %s OFFSET %s",
             params + [limit, offset]
         )
@@ -1396,6 +1396,42 @@ def get_post_user_id(post_id: int):
         connection.close()
 
     return post['user_id'] if post else None
+
+
+def update_db_post_image_url(post_id: int, image_url: Optional[str]) -> bool:
+    connection = get_db_connection()
+    cursor = connection.cursor()
+
+    try:
+        cursor.execute(
+            "UPDATE posts SET image_url = %s WHERE id = %s",
+            (image_url, post_id)
+        )
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not update post image_url for post id: {post_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_post_image_url(post_id: int) -> Optional[str]:
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    try:
+        cursor.execute("SELECT image_url FROM posts WHERE id = %s", (post_id,))
+        post = cursor.fetchone()
+    except mysql.connector.Error as err:
+        myprint(f"Could not get post image_url for post id: {post_id} | Error: {err}")
+        post = None
+    finally:
+        cursor.close()
+        connection.close()
+
+    return post['image_url'] if post else None
 
 
 def get_post_video_url(post_id: int):
@@ -4720,13 +4756,17 @@ _ENGAGEMENT_DEFAULTS: dict = {
     "catchup_message_source": "linkedin",
     "posts_per_week": DEFAULT_POSTS_PER_WEEK,
     "posting_days": list(DEFAULT_POSTING_DAYS),
+    # AI image on generated TEXT posts (image-generation overhaul). ON by default — a bare text
+    # post is the lowest-reach format; the review queue is still the human gate on every image.
+    "text_post_images": True,
 }
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
                            "exclude_keywords", "include_authors", "exclude_authors", "post_types",
                            "focus_topics", "connection_target_authors", "catchup_event_types",
                            "posting_days")
 _ENGAGEMENT_BOOL_FIELDS = ("use_emojis", "use_hashtags", "reply_to_own_comments",
-                           "feed_fallback_when_empty", "link_in_first_comment")
+                           "feed_fallback_when_empty", "link_in_first_comment",
+                           "text_post_images")
 _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "use_hashtags",
                     "include_topics", "exclude_topics", "include_keywords", "exclude_keywords",
                     "include_authors", "exclude_authors", "post_types", "focus_topics",
@@ -4741,7 +4781,8 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "reply_check_mode", "reply_sweeps_per_day", "reply_max_post_age_days",
                     "feed_fallback_when_empty", "link_in_first_comment",
                     "max_catchup_touches_per_day", "catchup_touch_mode", "catchup_event_types",
-                    "catchup_message_source", "posts_per_week", "posting_days")
+                    "catchup_message_source", "posts_per_week", "posting_days",
+                    "text_post_images")
 
 VALID_VIDEO_QUALITIES = ("standard", "premium", "premium_top")
 VALID_REPLY_MODES = ("event", "scheduled", "off")
@@ -9679,7 +9720,8 @@ def get_avatar_preferences(user_id: int) -> dict:
     cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute(
-            """SELECT avatar_disabled, avatar_use_post_image, avatar_use_carousel, avatar_use_video
+            """SELECT avatar_disabled, avatar_use_post_image, avatar_use_carousel,
+                      avatar_use_video, avatar_use_newsletter
                FROM users WHERE id = %s""",
             (user_id,),
         )
