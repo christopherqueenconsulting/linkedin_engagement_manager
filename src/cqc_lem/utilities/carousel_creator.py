@@ -363,13 +363,19 @@ def _should_generate_with_replicate(post_id: Optional[int], slide_index: int,
 
 
 def _generate_avatar_slide_image(query: str, user_id: int, post_id: Optional[int] = None,
-                                 content_type: Optional[str] = None) -> Optional[str]:
+                                 content_type: Optional[str] = None,
+                                 title: Optional[str] = None,
+                                 content: Optional[str] = None) -> Optional[str]:
     from cqc_lem.utilities.logger import log_warning
     try:
         from cqc_lem.utilities.ai.ai_helper import generate_post_image
+        from cqc_lem.utilities.ai.image_brief import build_image_brief
         from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_CAROUSEL
-        prompt = f"{query}, professional, clean minimal background, high quality, editorial"
-        path = generate_post_image(prompt, user_id, surface=AVATAR_SURFACE_CAROUSEL,
+        # Brief off the slide's ACTUAL text — the old keyword-bag prompt ("query, professional,
+        # clean minimal background...") is exactly the generic filler this engine replaces.
+        slide_text = "\n".join(t for t in (title, content) if t) or query
+        brief = build_image_brief(slide_text, surface="carousel", ratio="1:1")
+        path = generate_post_image(brief.prompt, user_id, surface=AVATAR_SURFACE_CAROUSEL,
                                    post_id=post_id,
                                    depicts_person=_query_depicts_person(query, content_type))
         return path or None
@@ -404,7 +410,8 @@ def select_slide_image(
     query = derive_image_query(title, content, content_type)
 
     if _should_generate_with_replicate(post_id, slide_index, user_id, content_type):
-        generated = _generate_avatar_slide_image(query, user_id, post_id, content_type)
+        generated = _generate_avatar_slide_image(query, user_id, post_id, content_type,
+                                                 title=title, content=content)
         if generated:
             return generated
         # fall through to Pexels on generation failure

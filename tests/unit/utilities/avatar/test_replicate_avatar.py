@@ -173,7 +173,7 @@ class TestGeneratePostImage:
     def test_falls_back_when_no_active_avatar(self):
         with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for", return_value=None), \
              patch(
-                 "cqc_lem.utilities.ai.ai_helper.generate_flux1_image_from_prompt",
+                 "cqc_lem.utilities.ai.image_gen.render_image_from_prompt",
                  return_value="/flux/image.webp",
              ) as mock_flux:
             from cqc_lem.utilities.ai.ai_helper import generate_post_image
@@ -194,7 +194,7 @@ class TestGeneratePostImage:
         }
         with patch("cqc_lem.utilities.db.get_active_avatar", return_value=active_avatar), \
              patch(
-                 "cqc_lem.utilities.ai.ai_helper.generate_flux1_image_from_prompt",
+                 "cqc_lem.utilities.ai.image_gen.render_image_from_prompt",
                  return_value="/flux/image.webp",
              ) as mock_flux:
             from cqc_lem.utilities.ai.ai_helper import generate_post_image

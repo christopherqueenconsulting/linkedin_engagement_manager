@@ -2700,86 +2700,17 @@ def _profile_visual_context(profile: "LinkedInProfile | None",
 
 
 def get_flux_image_prompt_from_ai(post_content: str, *, profile: "LinkedInProfile | None" = None,
-                                  ratio: str = "1:1", avatar: "dict | None" = None) -> str:
-    """Generate a Flux.1 image prompt from the post content and optional profile.
+                                  ratio: str = "1:1", avatar: "dict | None" = None,
+                                  surface: str = "post_image") -> str:
+    """Compatibility wrapper over the ONE brief engine (utilities/ai/image_brief.py).
 
-    The prompt is engineered for a single attention-drawing focal subject and brand
-    alignment — the image must stop a prospect mid-scroll, not be abstract art.
+    Kept because ~4 call sites (and their tests) pass a plain prompt string around; new code
+    should call ``build_image_brief`` directly and keep the brief's ``focal_concept`` for the
+    vision gate.
     """
-    from cqc_lem.utilities.avatar.attributes import subject_directive
-
-    profile_context = _profile_visual_context(profile, subject_directive(avatar))
-
-    prompt = f"""{profile_context}Here is a LinkedIn post: <post_content>{post_content}</post_content>.
-
-    Pick ONE clear focal point that best represents this post and describe a single,
-    photorealistic, professional image built around it. Compose it for a {ratio}
-    aspect ratio. Keep it specific and grounded — not abstract or surreal.
-
-    Respond with a single detailed paragraph describing the scene, subject, setting,
-    lighting, and color — no preamble.
-    """
-
-    content = [{"type": "text", "text": prompt}]
-
-    # System prompt to be included in every request
-    system_prompt = {
-        "role": "system",
-        "content": """Act as a world-class commercial visual director creating
-        scroll-stopping LinkedIn imagery. Your image descriptions must read like a
-        brief for a professional photoshoot, optimized to draw the attention of
-        business prospects.
-
-        ### Required qualities
-        - **One clear focal subject** in the foreground — ideally a real person or a
-          tangible object central to the post's message. When a person is present,
-          they make confident eye contact with the camera.
-        - **Attention-drawing composition:** strong foreground/background separation,
-          shallow depth of field, and a bold, high-contrast color accent that makes
-          the subject pop in a busy feed.
-        - **Professional & on-brand:** modern, clean, and credible for the author's
-          stated industry. Photorealistic by default; tasteful editorial illustration
-          only when it clearly fits.
-        - **Good lighting:** natural or studio lighting that flatters the subject.
-
-        ### Hard constraints
-        - **NO text, letters, words, numbers, logos, watermarks, captions, charts, or
-          UI** anywhere in the image — generators render these as garbled artifacts.
-        - No collages, no split screens, no busy montages — one cohesive scene.
-        - Avoid surreal, steampunk, glitch, or abstract treatments.
-
-        ### Output
-        One richly descriptive paragraph, no prefixes, no explanation — just the prompt.
-        """
-    }
-
-    # User prompt to be sent with each API call
-    user_message = {
-        "role": "user",
-        "content": content
-    }
-
-    # Call the API with the system and user prompt only (no memory of past prompts)
-    response = _call_llm(
-        model="lem-simple",  # Specify the model you want to use
-        messages=[system_prompt, user_message],  # System prompt + current user prompt
-        temperature=round(random.uniform(0.7, 1), 2),
-        # Ensure logical and structured prompts but allow some creativity for Flux1 descriptions. Slightly tighter control avoids over-creativity that might make outputs unfocused.
-
-        # Focuses on high-probability tokens while leaving room for variation in descriptions.
-        top_p=round(random.uniform(0.85, 0.95), 2),
-        # Ensures the generation focuses on high-probability tokens while leaving room for variation in descriptions.
-        frequency_penalty=round(random.uniform(0.5, 0.7), 2),
-        # Ensures new elements are explored in prompts without becoming overly imaginative or irrelevant.
-        presence_penalty=round(random.uniform(0.4, 0.6), 2),
-
-        # max_tokens=150  # Set token limit as required
-        # response_format={"type": "json_object"},
-    )
-
-    # Extract and return the model's response
-    content = response.choices[0].message.content.strip()
-    return content
+    from cqc_lem.utilities.ai.image_brief import build_image_brief
+    return build_image_brief(post_content, surface=surface, ratio=ratio,
+                             profile=profile, avatar=avatar).prompt
 
 
 def get_flux_image_via_replicate(prompt: str, ref: str = DEFAULT_IMAGE_MODEL, *,

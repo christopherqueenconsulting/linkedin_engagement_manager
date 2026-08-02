@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 from cqc_lem import assets_dir
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.utilities.ai.ai_helper import get_blog_summary_post_from_ai, get_website_content_post_from_ai, \
-    get_flux_image_prompt_from_ai, generate_flux1_image_from_prompt, get_runway_ml_video_prompt_from_ai, \
+    get_flux_image_prompt_from_ai, get_runway_ml_video_prompt_from_ai, \
     create_runway_video, get_ai_linked_post_refinement, optimize_post_hook
 from cqc_lem.utilities.ai.ai_helper import get_thought_leadership_post_from_ai, \
     get_industry_news_post_from_ai, get_personal_story_post_from_ai, generate_engagement_prompt_post, \
@@ -754,7 +754,8 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
         avatar = resolve_avatar_for(user_id, surface=AVATAR_SURFACE_VIDEO, post_id=post_id)
         has_avatar = avatar is not None
         image_prompt = get_flux_image_prompt_from_ai(text_content, profile=profile,
-                                                    ratio=DEFAULT_IMAGE_RATIO, avatar=avatar)
+                                                    ratio=DEFAULT_IMAGE_RATIO, avatar=avatar,
+                                                    surface="video")
         # Audio-capable (premium/Veo) renders need the user's language in the prompt — Veo has no
         # language parameter and invents a voiceover otherwise (issue #548). Silent models skip
         # the lookup entirely.
@@ -782,7 +783,9 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
                 image_path = generate_post_image(image_prompt, user_id, ratio=DEFAULT_IMAGE_RATIO,
                                                  surface=AVATAR_SURFACE_VIDEO, post_id=post_id)
             else:
-                image_path = generate_flux1_image_from_prompt(image_prompt, ratio=DEFAULT_IMAGE_RATIO)
+                from cqc_lem.utilities.ai.image_gen import render_image_from_prompt
+                image_path = render_image_from_prompt(image_prompt, ratio=DEFAULT_IMAGE_RATIO,
+                                                      user_id=user_id, post_id=post_id)
             src = create_runway_video(image_path, motion, model=model, ratio=DEFAULT_VIDEO_RATIO,
                                       user_id=user_id, post_id=post_id)
         if not src:

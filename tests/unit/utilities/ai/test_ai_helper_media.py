@@ -13,7 +13,9 @@ def _system_text(create_mock):
 
 def _user_text(create_mock):
     msgs = create_mock.call_args[1]["messages"]
-    return msgs[1]["content"][0]["text"]
+    content = msgs[1]["content"]
+    # Brief-engine calls send a plain string; legacy multimodal calls send a content list.
+    return content if isinstance(content, str) else content[0]["text"]
 
 
 class TestProfileVisualContext:
@@ -37,7 +39,7 @@ class TestFluxImagePrompt:
             out = get_flux_image_prompt_from_ai("My post", profile=profile, ratio="1:1")
             assert isinstance(out, str)
             create = mock_openai_client.chat.completions.create
-            assert create.call_args[1]["model"] == "lem-simple"
+            assert create.call_args[1]["model"] == "lem-medium"
             assert "Software Engineer" in _user_text(create)
             sys = _system_text(create)
             assert "NO text" in sys  # the no-garbled-text constraint

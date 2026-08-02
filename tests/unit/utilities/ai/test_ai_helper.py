@@ -122,14 +122,14 @@ class TestGetFluxImagePromptFromAi:
 
             assert isinstance(result, str)
 
-    def test_uses_simple_tier_model(self, mock_openai_client):
+    def test_brief_is_authored_by_medium_tier(self, mock_openai_client):
         with patch("cqc_lem.utilities.ai.ai_helper.client", mock_openai_client):
             from cqc_lem.utilities.ai.ai_helper import get_flux_image_prompt_from_ai
 
             get_flux_image_prompt_from_ai("content")
 
             call_kwargs = mock_openai_client.chat.completions.create.call_args[1]
-            assert call_kwargs.get("model") == "lem-simple"
+            assert call_kwargs.get("model") == "lem-medium"
 
 
 @pytest.mark.unit
@@ -155,7 +155,7 @@ class TestModelTierAssignments:
 
     @pytest.mark.parametrize("func_name,expected_model", [
         ("get_ai_message_refinement", "lem-simple"),
-        ("get_flux_image_prompt_from_ai", "lem-simple"),
+        ("get_flux_image_prompt_from_ai", "lem-medium"),
     ])
     def test_simple_tier_functions(self, func_name, expected_model, mock_openai_client, sample_linkedin_profile):
         import cqc_lem.utilities.ai.ai_helper as module
