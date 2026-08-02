@@ -151,7 +151,7 @@ export default function LoginModal() {
     >
       {/* Height-capped and scrollable: a landscape phone is ~375px tall, and an uncapped panel put
           the code field and the submit button below the fold with no way to reach them (#894). */}
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6 sm:p-8 relative max-h-[90vh] overflow-y-auto">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6 sm:p-8 relative max-h-viewport overflow-y-auto">
         <button
           onClick={closeLoginModal}
           className="absolute top-4 right-4 text-gray-400 hover:text-gray-600 text-2xl leading-none"

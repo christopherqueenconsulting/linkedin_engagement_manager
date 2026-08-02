@@ -47,7 +47,7 @@ export default function PostHogSurveyModal() {
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-4">
-      <div className="relative w-full max-w-md max-h-[90vh] overflow-y-auto bg-white border border-gray-200 rounded-xl shadow-xl p-5">
+      <div className="relative w-full max-w-md max-h-viewport overflow-y-auto bg-white border border-gray-200 rounded-xl shadow-xl p-5">
         <button
           onClick={dismiss}
           className="absolute top-2 right-3 text-gray-400 hover:text-gray-600 text-xl leading-none"

@@ -134,7 +134,7 @@ describe('LoginModal on a short viewport (issue #894)', () => {
     const overlay = container.querySelector('.fixed.inset-0') as HTMLElement
     const panel = overlay.firstElementChild as HTMLElement
     expect(panel.contains(screen.getByPlaceholderText('your@email.com'))).toBe(true)
-    expect(panel.className).toContain('max-h-[90vh]')
+    expect(panel.className).toContain('max-h-viewport')
     expect(panel.className).toContain('overflow-y-auto')
   })
 })

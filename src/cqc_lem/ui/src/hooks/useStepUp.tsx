@@ -99,7 +99,7 @@ export function useStepUp() {
 
   const modal = methods === null ? null : (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6 max-h-[90vh] overflow-y-auto" role="dialog"
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6 max-h-viewport overflow-y-auto" role="dialog"
            aria-modal="true" aria-label="Confirm it's you">
         <h3 className="text-lg font-bold text-gray-800 mb-1">Confirm it's you</h3>
         <p className="text-sm text-gray-500 mb-4">

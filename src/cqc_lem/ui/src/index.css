@@ -21,3 +21,13 @@ body {
     display: none;
   }
 }
+
+/* The height cap every full-screen modal panel wears (issue #894). `vh` is the LARGE viewport —
+   it measures the screen as if the browser's address bar were retracted — so on the landscape
+   phone this cap exists for, 90vh is still taller than what the user can actually see and the
+   submit button stays below the fold. `dvh` tracks the visible viewport instead; the `vh` line
+   is the fallback for browsers that predate it (Safari < 15.4, Chrome < 108). */
+@utility max-h-viewport {
+  max-height: 90vh;
+  max-height: 90dvh;
+}
