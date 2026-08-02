@@ -28,7 +28,11 @@ function harness(ui: ReactNode) {
   return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>)
 }
 
-beforeEach(() => get.mockReset())
+// Braces matter: a value returned from beforeEach is a teardown callback to vitest, and
+// mockReset() returns the mock itself — so vitest would call get() after every test.
+beforeEach(() => {
+  get.mockReset()
+})
 afterEach(cleanup)
 
 describe('LinkedInSignInStatusCard (issue #933)', () => {
