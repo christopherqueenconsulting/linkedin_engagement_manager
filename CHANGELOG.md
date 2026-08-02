@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.123.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.122.0...v0.123.0) (2026-08-02)
+
+
+### Features
+
+* **engagement:** preview and edit the weekly group post before it publishes (closes [#932](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/932)) ([#935](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/935)) ([94ce9ce](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/94ce9cea3c128ece0a372c672bca2c66a65092d8))
+* **images:** overhaul image generation — gpt-image-2 engine, avatar-aware newsletter covers, image posts ([#936](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/936)) ([a67ee6d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a67ee6d076698962bbeb6b9d835b4b7c0c7b5d9e))
+
+
+### Bug Fixes
+
+* **engagement:** resolve a post's comment composer beside the card, not only inside it (closes [#916](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/916)) ([#929](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/929)) ([e889a96](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e889a9665e71f1dd823a39e82cd21f8b15392d93))
+* **errors:** a stored automation pause is INFO, not a warning that files a defect (closes [#917](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/917)) ([#931](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/931)) ([f28f8bd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f28f8bd1110a30aeaa81b06937388b85cc6c608d))
+
 ## [0.122.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.121.0...v0.122.0) (2026-08-02)
 
 
