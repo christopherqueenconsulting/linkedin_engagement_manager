@@ -28,7 +28,7 @@ Two scoring layers, in this order:
 1. **Deterministic** (free, in-repo, the source of truth) — length caps, comma-list shape, JSON
    validity, `slop_lint.lint_report`, `content_framework.comment_contract_report`, burstiness,
    lexical self-similarity, and `routing_policy.complexity_tier`. A case that fails here never
-   spends a judge call.
+   spends a judge call. Reported as **two** rates — see *What the deterministic rates mean* below.
 2. **LLM judge** (paid, capped) — PostHog Evaluations scoring the harness's own tagged
    `$ai_generation` events, filtered to a `benchmark_run_id` so it can never bill against
    production traffic. With no judge provider configured, the runner degrades to an in-runner
@@ -42,6 +42,49 @@ Two scoring layers, in this order:
 Suite inputs are **synthetic** prompt templates in `tests/benchmarks/model_tiers/`. No customer
 content, credentials or production logs appear in a report; the renderer refuses any run that is
 not tagged as benchmark output.
+
+### What the deterministic rates mean — the floor, recalibrated (#910)
+
+The first real run measured 40–80% deterministic pass rates for every model in the roster **including
+both reigning champions**, against a 90% absolute floor. A floor the incumbent itself fails is not a
+floor — it is a gate that can never open, so a genuinely better model would have landed as `reject`
+and nobody would have noticed.
+
+The failures were real model behaviour, not harness artifacts. What was wrong was treating them all
+as the same KIND of failure. **The suite scores a first draft; production ships an n-th**, because
+every surface with a deterministic quality check has a bounded regeneration behind it:
+
+| Production path | What it retries against | What happens if it still fails |
+|---|---|---|
+| `ai_helper.lint_repaired` (seed comments, thread replies, DMs) | `slop_lint` hard checks | ships with a structured warning |
+| `ai_helper._gated_comment` (#617 feed + second-wave comments) | comment quality contract, similarity, slop lint | the post is **skipped** — no comment is posted |
+| `run_content_plan._review_generated_post` + `evaluate_post_gates` | slop lint, similarity, fabricated specifics | the post is **held** at pending for review |
+
+So every assertion is now classified by what production does with its failure:
+
+- **contract** — what the call site actually consumes. Broken JSON, a preamble pasted into LinkedIn
+  copy, a classification returned as prose, a post over LinkedIn's own 3000-character limit, no
+  output at all. Nothing repairs these.
+- **repairable** — what a regeneration gate catches: `slop_lint`, `comment_contract`,
+  `max_similarity`, `min_burstiness` by default, plus anything a fixture marks
+  `"production": "repairable"`. Repairable-ness belongs to the CALL SITE, not to the check: on
+  long-form, the tier's craft length target is repairable and the 3000-char hard limit beside it is
+  not, so both live on the same case.
+
+| Rate | Column | Role in the gate |
+|---|---|---|
+| `contract_pass_rate` | **Contract** | The ABSOLUTE floor (`contract_pass_rate`, default 0.9) and a meets-or-beats against the champion. |
+| `deterministic_pass_rate` | **First draft** | **Advisory** — rendered with its target and the redraft count, but it never changes a verdict. Still a meets-or-beats against the champion, because needing more drafts than the incumbent is a real cost (tokens, latency, skipped comments) even when nothing broken ships. |
+
+Read the gap between the two columns as **redraft cost, not shipped defects**. A model that clears
+the contract floor only by burning three drafts a case is visible rather than flattered.
+
+The floor can still be missed — that is the point. Replaying the #842 roster's own measured failures
+through this calibration (`TestBm842Replay` in `tests/unit/test_benchmark_models.py`, one entry per
+❌ line of the committed report) puts `lem-medium`'s champion at 100% contract and `lem-complex`'s at
+70%: three of `qwen3.5:397b`'s long-form drafts blew LinkedIn's hard character limit, which is a real
+defect the old aggregate hid. When the incumbent misses its tier's floor, every verdict on that tier
+says so out loud rather than leaving a reader to infer it from two tables.
 
 ### Reasoning headroom — measuring a model, not the harness's budget (#842)
 
@@ -61,20 +104,44 @@ silently absorbed. Only the FINAL attempt is measured — a discarded one is har
 never pays, so its wall-clock is not charged to the model's p50/p90 — and a retried verdict counts
 its real completions against `BENCHMARK_MAX_JUDGE_CALLS`, so the run's cap still bounds spend.
 
-**Where the retry does NOT measure production.** Long-form generation sets no `max_tokens` at all
-(`ai_helper.py`), so on `lem-complex` a doubled budget is closer to the real call than the fixture's
-own cap was. The short tiers are the opposite: `lem-simple`'s `simple-relevance-yes-no` is
-`max_tokens: 3` precisely because `ai_helper.py`'s relevance check is, and there a model that cannot
-answer inside the budget is disqualified in production, not merely truncated. The retry currently
-applies to every case, so on those cases it measures a model LEM could not actually run at that call
-site. Calibrating that (per-case opt-out, or scoring the first attempt for production-mirror
-budgets) is tracked on #910 with the rest of the harness-calibration work.
+**Where the retry does NOT measure production (#910).** Long-form generation sets no `max_tokens` at
+all (`ai_helper.py`), so on `lem-complex` a doubled budget is closer to the real call than the
+fixture's own cap was. The short tiers are the opposite: `lem-simple`'s `simple-relevance-yes-no` is
+`max_tokens: 3` precisely because `ai_helper.py`'s relevance check is, and `simple-reaction-choice`
+(5), `simple-single-value-extract` (8) and `router-classify-short` (5) are the same shape. A model
+that cannot answer inside those budgets is **disqualified at that call site**, not merely truncated —
+scoring it at 6 or 12 tokens would credit it with something LEM could never run there.
+
+Those cases carry `"budget_mirrors_production": true` in the fixture and are **never** escalated. The
+report names any that ended empty under 🔒 *production budget*, so the exemption is visible rather
+than a silent zero. The flag is for call-site-sized budgets only — a test fails the build if it is
+ever set on a case whose `max_tokens` is above 10, since that would quietly re-disable the
+reasoning-headroom retry the #842 run needed.
+
+### Measurement variance — one run of one case is not a verdict (#910)
+
+`minimax-m3` returned an EMPTY completion on two `bm-20260802-20ae40` cases after exhausting the
+truncation retry; re-run at the same effective budget it answered and passed both. A reasoning
+model's single run is therefore not a stable measurement, and an empty-then-fine case must never read
+as a quality verdict.
+
+So a completion that is still empty after the budget escalations is **re-measured at that same
+budget** (`BENCHMARK_EMPTY_REPEATS`, default 1, `0` disables). The repeat re-asks; it never buys
+headroom, so it applies to production-budget cases too. Two things follow:
+
+- every case that needed a repeat is named in the report under ⚖️ *measurement variance*, with the
+  reminder that this model's rates are single-measurement;
+- a completion that is *still* empty is recorded as **no output**, not as a zero-length answer.
+  Grading `""` rendered as `min_chars: 0 chars < 700` — a quality verdict on a model that was never
+  measured. No output fails the gate's "provider answered every case" expectation instead, which is
+  what it actually was.
 
 ## The gate
 
 A candidate is emitted as a **swap recommendation** only when it clears the tier's absolute
-thresholds *and* meets-or-beats the champion on every graded expectation. Weaker outcomes are
-reported but go no further:
+thresholds — the **contract** floor and the judge floor, never the advisory first-draft one — *and*
+meets-or-beats the champion on every graded expectation (contract, first draft, judge). Weaker
+outcomes are reported but go no further:
 
 | Verdict | Meaning |
 |---|---|
@@ -145,17 +212,23 @@ No swap was recommended, so `.litellm/config.yaml` is unchanged and no restart w
 tiers were smoke-tested green against the live proxy anyway (`lem-simple`, `lem-medium`,
 `lem-complex`, `lem-router` — 1-token completions, HTTP 200 on each).
 
-Two caveats the run itself surfaced, both tracked on #910 rather than papered over here:
+Two caveats the run itself surfaced are what #910 then fixed — both decisions above stand under the
+new calibration, but the numbers in that run's report were measured under the old one:
 
-- **The absolute deterministic floor (90%) was met by nobody, champions included.** The relative
-  half of every verdict is sound, but a floor the incumbent fails cannot open for a challenger
-  either. The per-case failures are real model behaviour (long-form overruns `max_chars`,
-  contrastive frames, the #617 comment contract), not harness artifacts — the suites score a FIRST
-  draft where production ships an n-th.
-- **A reasoning model's single-run score is not stable.** `minimax-m3` returned an empty completion
-  on two cases after exhausting the shipped truncation retry; re-run at the same effective budget it
-  answered and passed both. That would have moved it at most to a tie on each tier, so the decision
-  above stands either way — but one run of one case is a data point, not a verdict.
+- **The absolute deterministic floor (90%) was met by nobody, champions included.** Recalibrated:
+  the absolute floor is now the **contract** rate and the first-draft rate is advisory — see *What
+  the deterministic rates mean* above. Replaying this roster's own measured failures through the new
+  calibration, `deepseek-v4-flash` on `lem-medium` clears every expectation and lands as a
+  `recommend` (it tied the champion deterministically and beat it 83% to 50% on judge, at the same
+  Medium usage level, which is exactly what the table above called "the model to re-measure first").
+  The gate is demonstrably openable; the replay is a committed test, not a claim.
+- **A reasoning model's single-run score is not stable.** Fixed: an empty completion is now
+  re-measured at the same budget and reported under ⚖️ *measurement variance*, and one that stays
+  empty is recorded as no output rather than as a zero-length answer.
+
+**These verdicts are not re-derived, they are replayed.** A live re-run spends metered Ollama Cloud
+quota, so the demonstration above re-scores the failures this report already recorded rather than
+inventing new measurements. The next real run is the one whose scorecard carries both columns.
 
 **Read this run's p50/p90 with one correction.** `bm-20260802-20ae40` was measured before the
 per-attempt timing rule above, so a retried case charged every discarded attempt to the model.
@@ -210,17 +283,21 @@ policy marks `hold` is named in the report and belongs to the owner, not to the 
 
 ## Leaderboard
 
+Rows measured before #910 carry `n/a` under **Contract**: those runs computed one deterministic rate,
+and printing it in both columns would invent a measurement nobody took. Their **First draft** number
+is the rate their report published.
+
 <!-- LEADERBOARD:BEGIN -->
-| Date | Run | Tier | Model | Role | Deterministic | Judge | p50 | Verdict |
-|---|---|---|---|---|---|---|---|---|
-| 2026-08-02 | `bm-20260802-20ae40` | lem-complex | `qwen3.5:397b` | champion | 50% | 100% | 26955 ms | baseline |
-| 2026-08-02 | `bm-20260802-20ae40` | lem-complex | `deepseek-v4-flash` | candidate | 70% | 57% | 3275 ms | reject |
-| 2026-08-02 | `bm-20260802-20ae40` | lem-complex | `gemma4:31b` | candidate | 80% | 57% | 2428 ms | reject |
-| 2026-08-02 | `bm-20260802-20ae40` | lem-complex | `minimax-m3` | candidate | 40% | 75% | 30564 ms | reject |
-| 2026-08-02 | `bm-20260802-20ae40` | lem-complex | `glm-5.2` | candidate | 70% | 86% | 14477 ms | reject |
-| 2026-08-02 | `bm-20260802-20ae40` | lem-medium | `gpt-oss:120b` | champion | 60% | 50% | 1635 ms | baseline |
-| 2026-08-02 | `bm-20260802-20ae40` | lem-medium | `deepseek-v4-flash` | candidate | 60% | 83% | 1310 ms | reject |
-| 2026-08-02 | `bm-20260802-20ae40` | lem-medium | `gemma4:31b` | candidate | 40% | 100% | 807 ms | reject |
-| 2026-08-02 | `bm-20260802-20ae40` | lem-medium | `minimax-m3` | candidate | 50% | 80% | 5405 ms | reject |
-| 2026-08-02 | `bm-20260802-20ae40` | lem-medium | `glm-5.2` | candidate | 40% | 75% | 6315 ms | reject |
+| Date | Run | Tier | Model | Role | Contract | First draft | Judge | p50 | Verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| 2026-08-02 | `bm-20260802-20ae40` | lem-complex | `qwen3.5:397b` | champion | n/a | 50% | 100% | 26955 ms | baseline |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-complex | `deepseek-v4-flash` | candidate | n/a | 70% | 57% | 3275 ms | reject |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-complex | `gemma4:31b` | candidate | n/a | 80% | 57% | 2428 ms | reject |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-complex | `minimax-m3` | candidate | n/a | 40% | 75% | 30564 ms | reject |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-complex | `glm-5.2` | candidate | n/a | 70% | 86% | 14477 ms | reject |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-medium | `gpt-oss:120b` | champion | n/a | 60% | 50% | 1635 ms | baseline |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-medium | `deepseek-v4-flash` | candidate | n/a | 60% | 83% | 1310 ms | reject |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-medium | `gemma4:31b` | candidate | n/a | 40% | 100% | 807 ms | reject |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-medium | `minimax-m3` | candidate | n/a | 50% | 80% | 5405 ms | reject |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-medium | `glm-5.2` | candidate | n/a | 40% | 75% | 6315 ms | reject |
 <!-- LEADERBOARD:END -->

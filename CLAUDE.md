@@ -225,8 +225,13 @@ property can't be decided locally). Three registered: `cost-routing-arm`, `comme
 `scripts/benchmark_models.py` measures candidates vs each tier's contract suite (NO user data),
 always beside the current champion. Deterministic is source of truth (in-repo linters, not a
 copy); LLM judge is PostHog Evaluations filtered on `benchmark_run_id` (production never carries
-it → customer never billed). Only `recommend` becomes a swap; recommendations are RENDERED, never
-written (`.litellm/model_upgrades.yaml` is the retirement map). Full posture:
+it → customer never billed). **The suite scores a FIRST draft, production ships an n-th** (#910), so
+every check is classed by what production does with its failure: `contract` (the call site consumes
+it — the ABSOLUTE floor) vs `repairable` (a regeneration gate retries it — advisory, still
+champion-relative). A case whose `max_tokens` mirrors a call site (`budget_mirrors_production`) is
+never retried at a bigger budget; an EMPTY completion is re-measured at the same one, and a still-
+empty one is no output, never a 0-char answer. Only `recommend` becomes a swap; recommendations are
+RENDERED, never written (`.litellm/model_upgrades.yaml` is the retirement map). Full posture:
 `docs/model-benchmarks/README.md`.
 
 ### Content-quality telemetry (issue #630)

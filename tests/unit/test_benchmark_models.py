@@ -40,9 +40,14 @@ def _suite(tier="lem-simple", cases=None, thresholds=None):
 
 
 def _card(tier="lem-simple", model="m", role="candidate", det=1.0, judged=5, judge_rate=1.0,
-          errors=None):
+          errors=None, contract=None):
+    """A scorecard. `contract` defaults to `det` so a test that only cares about one rate reads the
+    same either way; the two are set apart wherever the split (#910) is what's under test."""
+    contract = det if contract is None else contract
     return {"tier": tier, "model": model, "role": role, "cases": 10,
-            "deterministic_pass_rate": det, "deterministic_passed": 10, "errors": errors or [],
+            "deterministic_pass_rate": det, "deterministic_passed": int(round(det * 10)),
+            "contract_pass_rate": contract, "contract_passed": int(round(contract * 10)),
+            "repaired_cases": [], "errors": errors or [],
             "failed_cases": [], "unscored_assertions": 0, "judged": judged,
             "judge_passed": judged, "judge_timeouts": 0, "judge_pass_rate": judge_rate,
             "judge_notes": [], "latency_p50_ms": 100.0, "latency_p90_ms": 200.0,
@@ -121,10 +126,22 @@ class TestLoadSuite:
 
     def test_thresholds_are_clamped_and_defaulted(self):
         assert bm.normalize_thresholds(None)["deterministic_pass_rate"] == 0.9
+        assert bm.normalize_thresholds(None)["contract_pass_rate"] == 0.9
         assert bm.normalize_thresholds({"deterministic_pass_rate": 5})[
             "deterministic_pass_rate"] == 1.0
+        assert bm.normalize_thresholds({"contract_pass_rate": 5})["contract_pass_rate"] == 1.0
         assert bm.normalize_thresholds({"judge_pass_rate": "x"})["judge_pass_rate"] == 0.8
         assert bm.normalize_thresholds({"min_judged": "x"})["min_judged"] == 3
+
+    def test_rejects_an_unknown_production_class(self):
+        with pytest.raises(bm.SuiteError, match="production class"):
+            bm.load_suite({"tier": "lem-simple", "cases": [_case(assertions=[
+                {"type": "max_chars", "value": 10, "production": "sometimes"}])]})
+
+    def test_rejects_a_non_boolean_production_budget_flag(self):
+        with pytest.raises(bm.SuiteError, match="budget_mirrors_production"):
+            bm.load_suite({"tier": "lem-simple",
+                           "cases": [_case(budget_mirrors_production="yes")]})
 
 
 # ────────────────────────── deterministic assertions ─────────────────────────────
@@ -231,6 +248,75 @@ class TestAssertions:
         assert result["assertions"][1]["passes"] is True
 
 
+# ─────────── what production does with a failure — the #910 calibration ──────────
+
+class TestProductionClass:
+    def test_the_gates_production_regenerates_against_default_to_repairable(self):
+        for kind in ("slop_lint", "comment_contract", "max_similarity", "min_burstiness"):
+            assert bm.assertion_production_class({"type": kind}) == bm.PRODUCTION_REPAIRABLE
+
+    def test_everything_else_defaults_to_contract(self):
+        for kind in ("max_chars", "min_chars", "json_object", "no_preamble", "comma_list",
+                     "router_tier", "required_phrases", "max_lines"):
+            assert bm.assertion_production_class({"type": kind}) == bm.PRODUCTION_CONTRACT
+
+    def test_an_unclassified_type_is_contract_not_silently_uncounted(self):
+        assert bm.assertion_production_class({"type": "brand-new"}) == bm.PRODUCTION_CONTRACT
+        assert bm.assertion_production_class(None) == bm.PRODUCTION_CONTRACT
+
+    def test_a_fixture_may_override_per_assertion(self):
+        # Repairable-ness is a property of the CALL SITE, not of the check: a craft-target max_chars
+        # on long-form is redrafted, the same assertion carrying LinkedIn's hard limit is not.
+        assert bm.assertion_production_class(
+            {"type": "max_chars", "production": "repairable"}) == bm.PRODUCTION_REPAIRABLE
+        assert bm.assertion_production_class(
+            {"type": "slop_lint", "production": "contract"}) == bm.PRODUCTION_CONTRACT
+
+    def test_a_repairable_only_failure_still_passes_the_contract(self):
+        case = _case(assertions=[{"type": "max_chars", "value": 500},
+                                 {"type": "slop_lint", "content_type": "comment"}])
+        # The contrastive frame is exactly what `_gated_comment` retries against (#617/#625).
+        result = bm.evaluate_case(
+            case, "It isn't about the tooling; it's about the queue. We measured both for a month.")
+        assert result["passes"] is False          # the first draft did not clear every check
+        assert result["contract_passes"] is True  # but production regenerates rather than ships it
+        assert result["repairable_failures"] and not result["contract_failures"]
+
+    def test_a_contract_failure_fails_both(self):
+        case = _case(assertions=[{"type": "max_chars", "value": 5}])
+        result = bm.evaluate_case(case, "far too long to fit")
+        assert result["passes"] is False and result["contract_passes"] is False
+        assert result["contract_failures"] and not result["repairable_failures"]
+
+    def test_no_output_is_a_contract_failure_there_is_no_repair_for_nothing(self):
+        result = bm.evaluate_case(_case(), None)
+        assert result["contract_passes"] is False
+        assert result["contract_failures"] == ["no output from the model"]
+
+    def test_the_shipped_long_form_suites_hold_linkedins_hard_limit_as_a_contract_check(self):
+        """A craft cap under 3000 chars is a target production redrafts toward; 3000 is LinkedIn's
+        own limit and nothing repairs a post that exceeds it."""
+        suite = bm.load_suites(str(SUITE_DIR), ["lem-complex"])["lem-complex"]
+        for case in suite["cases"]:
+            caps = [a for a in case["assertions"] if a["type"] == "max_chars"]
+            repairable = [a for a in caps
+                          if bm.assertion_production_class(a) == bm.PRODUCTION_REPAIRABLE]
+            if not repairable:
+                continue
+            hard = [a for a in caps
+                    if bm.assertion_production_class(a) == bm.PRODUCTION_CONTRACT]
+            assert hard, f"{case['id']}: a repairable cap with no hard limit behind it"
+            assert max(a["value"] for a in hard) == 3000, case["id"]
+
+    def test_every_production_budget_case_is_a_short_one(self):
+        """The exemption exists for budgets that MIRROR a call site (`max_tokens` 3/5/8). Marking a
+        long-form case would quietly re-disable the reasoning-headroom retry the #842 run needed."""
+        for tier, suite in bm.load_suites(str(SUITE_DIR)).items():
+            for case in suite["cases"]:
+                if case.get("budget_mirrors_production"):
+                    assert case["params"]["max_tokens"] <= 10, f"{tier}/{case['id']}"
+
+
 # ───────────────────────────── scorecard merge ───────────────────────────────────
 
 class TestScorecard:
@@ -267,6 +353,29 @@ class TestScorecard:
         card = bm.merge_scorecard("lem-simple", "m", "candidate", results, {})
         assert card["judge_pass_rate"] is None
 
+    def test_both_rates_are_reported_and_the_redraft_cost_is_named(self):
+        results = [{"case_id": "a", "passes": True, "contract_passes": True, "unscored": 0},
+                   {"case_id": "b", "passes": False, "contract_passes": True, "unscored": 0,
+                    "failures": ["slop_lint: contrastive frame"],
+                    "repairable_failures": ["slop_lint: contrastive frame"],
+                    "contract_failures": []},
+                   {"case_id": "c", "passes": False, "contract_passes": False, "unscored": 0,
+                    "failures": ["max_chars: 3915 chars > 3000"], "repairable_failures": [],
+                    "contract_failures": ["max_chars: 3915 chars > 3000"]}]
+        card = bm.merge_scorecard("lem-complex", "m", "candidate", results)
+        assert card["deterministic_pass_rate"] == pytest.approx(1 / 3, abs=1e-4)
+        assert card["contract_pass_rate"] == pytest.approx(2 / 3, abs=1e-4)
+        assert card["repaired_cases"] == ["b"]
+        assert card["failed_cases"][0]["repairable_failures"] == ["slop_lint: contrastive frame"]
+
+    def test_cases_that_were_re_measured_or_budget_locked_are_named(self):
+        results = [{"case_id": "a", "passes": True, "contract_passes": True, "unscored": 0},
+                   {"case_id": "b", "passes": True, "contract_passes": True, "unscored": 0}]
+        timings = {"a": {"repeats": 1}, "b": {"budget_locked": True}}
+        card = bm.merge_scorecard("lem-simple", "m", "candidate", results, {}, timings)
+        assert card["remeasured_cases"] == ["a"]
+        assert card["budget_locked_cases"] == ["b"]
+
     def test_cases_that_needed_reasoning_headroom_are_named_not_silently_absorbed(self):
         results = [{"case_id": "a", "passes": True, "failures": [], "unscored": 0},
                    {"case_id": "b", "passes": True, "failures": [], "unscored": 0}]
@@ -287,15 +396,15 @@ class TestGate:
 
     def test_rejects_a_candidate_below_the_absolute_floor(self):
         gate = bm.gate_decision(_card(det=0.5), _card(role="champion", det=0.4),
-                                {"deterministic_pass_rate": 0.9})
+                                {"contract_pass_rate": 0.9})
         assert gate["verdict"] == bm.VERDICT_REJECT
-        assert "deterministic floor" in gate["blockers"]
+        assert "contract floor" in gate["blockers"]
 
     def test_rejects_a_candidate_that_loses_to_the_champion(self):
         gate = bm.gate_decision(_card(det=0.92), _card(role="champion", det=0.99),
-                                {"deterministic_pass_rate": 0.9})
+                                {"contract_pass_rate": 0.9})
         assert gate["verdict"] == bm.VERDICT_REJECT
-        assert "beats champion (deterministic)" in gate["blockers"]
+        assert "beats champion (first-draft)" in gate["blockers"]
 
     def test_a_tie_counts_as_meets_or_beats(self):
         gate = bm.gate_decision(_card(det=0.9), _card(role="champion", det=0.9),
@@ -345,10 +454,176 @@ class TestGate:
         gates = bm.gate_run(cards, {"lem-medium": _suite("lem-medium")})
         assert len(gates) == 1 and gates[0]["champion"] == "champ-m"
 
+    def test_the_first_draft_rate_is_advisory_not_a_floor(self):
+        """The #910 finding: every model measured, champions included, sat at 40–80% first-draft
+        against a 90% floor. A floor the incumbent fails is a gate that can never open."""
+        gate = bm.gate_decision(_card(det=0.4, contract=1.0),
+                                _card(role="champion", det=0.4, contract=1.0),
+                                {"contract_pass_rate": 0.9, "deterministic_pass_rate": 0.9})
+        assert gate["verdict"] == bm.VERDICT_RECOMMEND
+        advisory = gate["advisories"][0]
+        assert advisory["expectation"] == "first-draft yield" and advisory["passes"] is False
+        assert [e["expectation"] for e in gate["expectations"] if e["passes"] is False] == []
+
+    def test_a_candidate_that_ships_more_broken_output_is_rejected(self):
+        gate = bm.gate_decision(_card(det=1.0, contract=0.8), _card(role="champion", contract=1.0),
+                                {"contract_pass_rate": 0.9})
+        assert gate["verdict"] == bm.VERDICT_REJECT
+        assert "contract floor" in gate["blockers"]
+
+    def test_a_candidate_below_its_champions_contract_rate_is_rejected(self):
+        gate = bm.gate_decision(_card(contract=0.9), _card(role="champion", contract=1.0),
+                                {"contract_pass_rate": 0.9})
+        assert "beats champion (contract)" in gate["blockers"]
+
+    def test_a_champion_that_misses_the_floor_is_recorded_on_every_verdict(self):
+        gate = bm.gate_decision(_card(contract=1.0), _card(role="champion", contract=0.7),
+                                {"contract_pass_rate": 0.9})
+        assert gate["champion_clears_contract_floor"] is False
+        assert bm.gate_decision(_card(), _card(role="champion"),
+                                {})["champion_clears_contract_floor"] is True
+        assert bm.gate_decision(_card(), None, {})["champion_clears_contract_floor"] is None
+
     def test_mapping_lines_are_rendered_not_written(self):
         lines = bm.recommendation_mapping_lines(
             [{"tier": "lem-simple", "model": "new", "champion": "old"}])
         assert lines == ['  "old": "new"  # lem-simple: benchmark-recommended']
+
+
+# ─────────────── the #842 roster, replayed under the #910 calibration ────────────
+#
+# Acceptance for #910: "a re-run of the #842 roster under the new calibration produces a verdict
+# that could, in principle, be a `recommend` — i.e. the gate is demonstrably openable". A live
+# re-run needs a metered key, so the demonstration is a REPLAY: every failing case from the
+# committed report (`docs/model-benchmarks/2026-08-02-bm-20260802-20ae40.md`) is re-scored through
+# the real classifier and the real gate. Nothing here is invented — each entry is one ❌ line of
+# that report, with the fixture assertion it came from.
+
+# (case failures) per model, verbatim from the report's per-expectation detail. `max_chars-hard` is
+# a breach of LinkedIn's own 3000-char limit (contract); `max_chars-craft` is the tier's tighter
+# dwell target, which production redrafts toward.
+BM842 = {
+    ("lem-complex", "qwen3.5:397b", "champion"): {
+        "failures": [["max_chars-hard"], ["max_chars-hard", "slop_lint", "required_phrases"],
+                     ["max_chars-craft"], ["slop_lint"], ["max_chars-hard"]],
+        "judged": 5, "judge_rate": 1.0, "usage": {"level": 2, "label": "medium"}},
+    ("lem-complex", "deepseek-v4-flash", "candidate"): {
+        "failures": [["slop_lint"], ["required_phrases"], ["slop_lint"]],
+        "judged": 7, "judge_rate": 0.57, "usage": {"level": 2, "label": "medium"}},
+    ("lem-complex", "gemma4:31b", "candidate"): {
+        "failures": [["slop_lint"], ["slop_lint"]],
+        "judged": 7, "judge_rate": 0.57, "usage": {"level": 1, "label": "low"}},
+    ("lem-complex", "minimax-m3", "candidate"): {
+        "failures": [["min_chars"], ["slop_lint", "required_phrases"], ["slop_lint"],
+                     ["slop_lint"], ["required_phrases"], ["slop_lint"]],
+        "judged": 4, "judge_rate": 0.75, "usage": {"level": 3, "label": "high"}},
+    ("lem-complex", "glm-5.2", "candidate"): {
+        "failures": [["min_chars"], ["min_chars"], ["min_chars"]],
+        "judged": 7, "judge_rate": 0.86, "usage": {"level": 3, "label": "high"}},
+    ("lem-medium", "gpt-oss:120b", "champion"): {
+        "failures": [["comment_contract"]] * 4,
+        "judged": 6, "judge_rate": 0.5, "usage": {"level": 2, "label": "medium"}},
+    ("lem-medium", "deepseek-v4-flash", "candidate"): {
+        "failures": [["comment_contract"]] * 4,
+        "judged": 6, "judge_rate": 0.83, "usage": {"level": 2, "label": "medium"}},
+    ("lem-medium", "gemma4:31b", "candidate"): {
+        "failures": [["comment_contract"]] * 5 + [["required_phrases"]],
+        "judged": 4, "judge_rate": 1.0, "usage": {"level": 1, "label": "low"}},
+    ("lem-medium", "minimax-m3", "candidate"): {
+        "failures": [["comment_contract"]] * 5,
+        "judged": 5, "judge_rate": 0.8, "usage": {"level": 3, "label": "high"}},
+    ("lem-medium", "glm-5.2", "candidate"): {
+        "failures": [["comment_contract"]] * 5 + [["min_chars"]],
+        "judged": 4, "judge_rate": 0.75, "usage": {"level": 3, "label": "high"}},
+}
+
+# How each measured failure maps onto a fixture assertion, so the REAL classifier decides whether
+# production would have shipped it.
+BM842_SPECS = {
+    "max_chars-hard": {"type": "max_chars", "value": 3000, "production": "contract"},
+    "max_chars-craft": {"type": "max_chars", "value": 2400, "production": "repairable"},
+    "min_chars": {"type": "min_chars", "value": 700},
+    "slop_lint": {"type": "slop_lint"},
+    "comment_contract": {"type": "comment_contract"},
+    "required_phrases": {"type": "required_phrases"},
+}
+
+
+def _replay_cards(cases: int = 10) -> list:
+    cards = []
+    for (tier, model, role), measured in BM842.items():
+        results = []
+        for index in range(cases):
+            failed = measured["failures"][index] if index < len(measured["failures"]) else []
+            assertions = [{"type": BM842_SPECS[k]["type"],
+                           "production": bm.assertion_production_class(BM842_SPECS[k]),
+                           "passes": False, "detail": k} for k in failed]
+            contract = [f"{a['type']}: {a['detail']}" for a in assertions
+                        if a["production"] == bm.PRODUCTION_CONTRACT]
+            repairable = [f"{a['type']}: {a['detail']}" for a in assertions
+                          if a["production"] == bm.PRODUCTION_REPAIRABLE]
+            results.append({"case_id": f"{tier}-{index}", "passes": not failed,
+                            "contract_passes": not contract, "assertions": assertions,
+                            "failures": contract + repairable, "contract_failures": contract,
+                            "repairable_failures": repairable, "unscored": 0})
+        judged = measured["judged"]
+        judge = {r["case_id"]: {"passes": i < round(judged * measured["judge_rate"]),
+                                "status": "scored"}
+                 for i, r in enumerate(results[:judged])}
+        card = bm.merge_scorecard(tier, model, role, results, judge)
+        card["usage"] = measured["usage"]
+        card["benchmark_run_id"] = "bm-20260802-20ae40"
+        cards.append(card)
+    return cards
+
+
+class TestBm842Replay:
+    def _gates(self):
+        suites = bm.load_suites(str(SUITE_DIR), ["lem-complex", "lem-medium"])
+        return {(g["tier"], g["model"]): g for g in bm.gate_run(_replay_cards(), suites)}
+
+    def test_the_old_absolute_floor_could_not_have_opened_for_anyone(self):
+        """Why the calibration changed: not one model in that roster — champions included — was
+        within reach of the 90% floor on the first-draft rate."""
+        for card in _replay_cards():
+            assert card["deterministic_pass_rate"] < 0.9, card["model"]
+
+    def test_the_gate_is_openable_deepseek_now_earns_a_recommend_on_lem_medium(self):
+        gate = self._gates()[("lem-medium", "deepseek-v4-flash")]
+        assert gate["verdict"] == bm.VERDICT_RECOMMEND, gate["expectations"]
+        assert bm.swap_recommendations([gate])[0]["champion"] == "gpt-oss:120b"
+        # Flat on quota, so the standing #842 spend policy takes it without the owner.
+        assert gate["quota_policy"]["decision"] == bm.POLICY_ADOPT
+
+    def test_it_is_the_only_recommendation_the_rest_still_fail_on_real_quality(self):
+        gates = self._gates()
+        recommended = [k for k, g in gates.items() if g["verdict"] == bm.VERDICT_RECOMMEND]
+        assert recommended == [("lem-medium", "deepseek-v4-flash")]
+        # …and each rejection now names a quality reason, not the floor everybody failed.
+        assert "judge floor" in gates[("lem-complex", "gemma4:31b")]["blockers"]
+        assert "contract floor" in gates[("lem-complex", "glm-5.2")]["blockers"]
+        assert "beats champion (first-draft)" in gates[("lem-medium", "minimax-m3")]["blockers"]
+
+    def test_the_champions_contract_rates_are_measured_not_assumed(self):
+        cards = {(c["tier"], c["model"]): c for c in _replay_cards() if c["role"] == "champion"}
+        # Every lem-medium failure was the #617 comment contract, which production retries and then
+        # SKIPS the post over — nothing broken ships, so the incumbent clears its own floor.
+        assert cards[("lem-medium", "gpt-oss:120b")]["contract_pass_rate"] == 1.0
+        # lem-complex is the honest opposite: three drafts over LinkedIn's own 3000-char limit is a
+        # real defect, and the floor is supposed to show it.
+        assert cards[("lem-complex", "qwen3.5:397b")]["contract_pass_rate"] == 0.7
+
+    def test_the_report_says_when_the_incumbent_misses_its_own_floor(self):
+        gates = list(self._gates().values())
+        run = {"source": bm.BENCHMARK_SOURCE, "run_id": "bm-20260802-20ae40",
+               "date": "2026-08-02", "scoring_mode": bm.SCORING_FALLBACK,
+               "tiers": ["lem-complex", "lem-medium"], "candidates": ["deepseek-v4-flash"],
+               "scorecards": _replay_cards(), "gates": gates,
+               "recommendations": bm.swap_recommendations(gates)}
+        text = bm.render_report(run)
+        assert "misses this tier's own\ncontract floor" in text or \
+               "misses this tier's own contract floor" in text
+        assert "first-draft yield (advisory)" in text
 
 
 # ───────────────────────────── provenance guard ──────────────────────────────────
@@ -430,6 +705,25 @@ class TestRendering:
         text = bm.render_report(run)
         assert "reasoning headroom" in text and "`complex-personal-story`" in text
 
+    def test_report_separates_what_production_ships_from_what_it_redrafts(self):
+        run = self._run()
+        run["scorecards"][1]["failed_cases"] = [
+            {"case_id": "ships", "failures": ["max_chars: 3915 chars > 3000"],
+             "contract_failures": ["max_chars: 3915 chars > 3000"], "repairable_failures": []},
+            {"case_id": "redrafted", "failures": ["slop_lint: contrastive frame"],
+             "contract_failures": [], "repairable_failures": ["slop_lint: contrastive frame"]}]
+        text = bm.render_report(run)
+        assert "❌ `ships` — production would ship this" in text
+        assert "🔁 `redrafted` — first draft only" in text
+
+    def test_report_names_re_measured_and_budget_locked_cases(self):
+        run = self._run()
+        run["scorecards"][0]["remeasured_cases"] = ["complex-thought-leadership"]
+        run["scorecards"][0]["budget_locked_cases"] = ["simple-relevance-yes-no"]
+        text = bm.render_report(run)
+        assert "measurement variance" in text and "`complex-thought-leadership`" in text
+        assert "production budget" in text and "`simple-relevance-yes-no`" in text
+
     def test_report_says_so_when_nothing_is_recommended(self):
         run = self._run()
         run["recommendations"] = []
@@ -490,6 +784,20 @@ class TestRendering:
         # three runs × two scorecards on top of the committed history, and nothing else
         assert len(rows) == 2 + committed + 6
         assert bm.LEADERBOARD_HEADER not in rows[2:]
+
+    def test_pre_910_rows_survive_the_new_contract_column(self):
+        """Adding a column must not evict the history already committed: a legacy row is re-emitted
+        at the new width with `n/a` where nobody measured a contract rate."""
+        legacy = ("| 2026-08-02 | `bm-old` | lem-medium | `gpt-oss:120b` | champion | 60% | 50% | "
+                  "1635 ms | baseline |")
+        doc = f"{bm.LEADERBOARD_BEGIN}\n{bm.LEADERBOARD_HEADER}\n{bm.LEADERBOARD_DIVIDER}\n" \
+              f"{legacy}\n{bm.LEADERBOARD_END}\n"
+        merged = bm.update_leaderboard(doc, bm.leaderboard_rows(self._run()))
+        kept = [line for line in merged.splitlines() if "bm-old" in line]
+        assert len(kept) == 1
+        cells = [c.strip() for c in kept[0].strip().strip("|").split("|")]
+        assert len(cells) == len(bm.LEADERBOARD_COLUMNS)
+        assert cells[5] == "n/a" and cells[6] == "60%"  # contract unknown, first draft preserved
 
     def test_the_committed_leaderboard_has_the_markers(self):
         text = (_ROOT / "docs" / "model-benchmarks" / "README.md").read_text()
@@ -708,15 +1016,20 @@ class TestProviderClient:
                    for c in openai_client.chat.completions.create.call_args_list]
         assert budgets == [1400, 2800, 5600]
 
-    def test_the_retry_is_bounded_and_the_empty_answer_still_counts(self, monkeypatch):
+    def test_the_retry_is_bounded_and_an_answer_that_never_arrives_is_no_output(self, monkeypatch):
+        # Grading "" would render as `min_chars: 0 chars < 700` — a quality verdict on a model that
+        # was never measured. A completion that stayed empty through the escalations AND the
+        # re-measurement is NO OUTPUT, which the gate reads as "the provider didn't answer" (#910).
         monkeypatch.setenv("BENCHMARK_TRUNCATION_RETRIES", "1")
+        monkeypatch.setenv("BENCHMARK_EMPTY_REPEATS", "1")
         provider, openai_client = self._client()
         openai_client.chat.completions.create.return_value = self._reply("",
                                                                          finish_reason="length")
         result = provider.complete("m", [{"role": "user", "content": "hi"}], {"max_tokens": 100})
-        assert result["text"] == ""
-        assert result["budget_escalations"] == 1
-        assert openai_client.chat.completions.create.call_count == 2
+        assert result["text"] is None
+        assert "empty completion" in result["error"]
+        assert result["budget_escalations"] == 1 and result["repeats"] == 1
+        assert openai_client.chat.completions.create.call_count == 3
 
     def test_a_truncated_but_non_empty_answer_is_never_re_rolled(self, monkeypatch):
         # Retrying a model that DID answer would hand the verbose ones a second attempt the concise
@@ -729,10 +1042,54 @@ class TestProviderClient:
 
     def test_a_case_with_no_max_tokens_is_never_escalated(self, monkeypatch):
         monkeypatch.setenv("BENCHMARK_TRUNCATION_RETRIES", "2")
+        monkeypatch.setenv("BENCHMARK_EMPTY_REPEATS", "0")
         provider, openai_client = self._client(self._reply("", finish_reason="length"))
         result = provider.complete("m", [{"role": "user", "content": "hi"}], {"temperature": 0.8})
         assert result["budget_escalations"] == 0
         assert openai_client.chat.completions.create.call_count == 1
+
+    def test_a_production_budget_case_is_never_retried_at_a_larger_one(self, monkeypatch):
+        # `lem-simple`'s relevance check is `max_tokens: 3` because `ai_helper.py`'s is. A model
+        # that cannot answer inside that budget is DISQUALIFIED at that call site — scoring it at 6
+        # or 12 tokens credits it with something LEM could never run there (#910).
+        monkeypatch.setenv("BENCHMARK_TRUNCATION_RETRIES", "2")
+        monkeypatch.setenv("BENCHMARK_EMPTY_REPEATS", "0")
+        provider, openai_client = self._client(self._reply("", finish_reason="length"))
+        result = provider.complete("m", [{"role": "user", "content": "hi"}], {"max_tokens": 3},
+                                   allow_budget_escalation=False)
+        assert result["budget_escalations"] == 0 and result["budget_locked"] is True
+        assert openai_client.chat.completions.create.call_count == 1
+        assert openai_client.chat.completions.create.call_args.kwargs["max_tokens"] == 3
+
+    def test_an_empty_completion_is_re_measured_at_the_same_budget(self, monkeypatch):
+        # minimax-m3 returned empty twice in bm-20260802-20ae40 and answered both cases on a re-run
+        # at the same effective budget. The repeat re-ASKS, it does not buy headroom.
+        monkeypatch.setenv("BENCHMARK_TRUNCATION_RETRIES", "0")
+        monkeypatch.setenv("BENCHMARK_EMPTY_REPEATS", "1")
+        provider, openai_client = self._client()
+        openai_client.chat.completions.create.side_effect = [
+            self._reply("", finish_reason="length"), self._reply("the long-form draft")]
+        result = provider.complete("minimax-m3", [{"role": "user", "content": "hi"}],
+                                   {"max_tokens": 1400})
+        assert result["text"] == "the long-form draft"
+        assert result["repeats"] == 1 and result["budget_escalations"] == 0
+        budgets = [c.kwargs["max_tokens"]
+                   for c in openai_client.chat.completions.create.call_args_list]
+        assert budgets == [1400, 1400]
+
+    def test_a_production_budget_case_is_still_re_measured_when_it_comes_back_empty(self,
+                                                                                    monkeypatch):
+        monkeypatch.setenv("BENCHMARK_EMPTY_REPEATS", "1")
+        provider, openai_client = self._client()
+        openai_client.chat.completions.create.side_effect = [
+            self._reply("", finish_reason="length"), self._reply("yes")]
+        result = provider.complete("m", [{"role": "user", "content": "hi"}], {"max_tokens": 3},
+                                   allow_budget_escalation=False)
+        assert result["text"] == "yes" and result["repeats"] == 1
+        # Measured fine on the repeat, so it is NOT reported as a case the budget locked out.
+        assert result["budget_locked"] is False
+        assert [c.kwargs["max_tokens"]
+                for c in openai_client.chat.completions.create.call_args_list] == [3, 3]
 
     def test_a_discarded_attempt_is_not_charged_to_the_model_s_latency(self, monkeypatch):
         # p50/p90 go into the rolling leaderboard forever. Charging the thrown-away attempt to the
@@ -1179,6 +1536,32 @@ class TestRunBenchmark:
         assert card["errors"] == ["a", "b"]
         assert run["gates"][0]["verdict"] == bm.VERDICT_REJECT
         assert run["recommendations"] == []
+
+    def test_a_production_budget_case_reaches_the_provider_with_escalation_off(self):
+        suites = {"lem-simple": _suite("lem-simple", cases=[
+            _case("mirrors", assertions=[{"type": "max_chars", "value": 50}],
+                  params={"max_tokens": 3}, budget_mirrors_production=True),
+            _case("free", assertions=[{"type": "max_chars", "value": 50}],
+                  params={"max_tokens": 600})], thresholds={"min_judged": 1})}
+        provider = MagicMock()
+        provider.complete.return_value = {"text": "yes", "error": None, "latency_ms": 5.0,
+                                          "usage": {}, "repeats": 0, "budget_locked": False}
+        bm.run_benchmark(suites, [], {"lem-simple": "champ"}, run_id="bm-1", today="2026-07-27",
+                         provider=provider, judge_cap=0, judge_enabled=False)
+        # Suite order: the production-mirror case first, the free-budget one second.
+        assert [c.kwargs["allow_budget_escalation"]
+                for c in provider.complete.call_args_list] == [False, True]
+
+    def test_re_measurements_and_budget_locks_ride_onto_the_scorecard(self):
+        provider = MagicMock()
+        provider.complete.return_value = {"text": "short answer", "error": None, "latency_ms": 5.0,
+                                          "usage": {}, "repeats": 1, "budget_locked": True}
+        run = bm.run_benchmark(self._suites(), [], {"lem-simple": "champ"}, run_id="bm-1",
+                               today="2026-07-27", provider=provider, judge_cap=0,
+                               judge_enabled=False)
+        card = run["scorecards"][0]
+        assert card["remeasured_cases"] == ["a", "b"]
+        assert card["budget_locked_cases"] == ["a", "b"]
 
     def test_no_judge_mode_spends_nothing_and_reports_deterministic_only(self):
         provider = MagicMock()
