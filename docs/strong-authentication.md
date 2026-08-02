@@ -279,6 +279,16 @@ dangerous direction, since the person was told a later one — and the date **ar
 changes the message from "from `<date>`" to "from your next sign-in". Each is a different notice, so
 each is shown once more.
 
+**The other half of that sentence closed with issue #914.** Whatever a session scope binds, it binds
+only on the routes that resolve a SESSION — and until #914 a group of `/api` routes did not. They
+read the acting account out of an `email` / `user_id` / `post_id` **request parameter**, behind
+nothing but the shared bearer token the SPA ships in its build, so no session scope — extension,
+enrolment, or any future one — could constrain them. Every `/api` route now resolves its caller
+through `api/main.require_session_user_id()`, and a parameter is a target to authorise (403), never
+the actor. See [`identity-and-sessions.md`](identity-and-sessions.md) §"The parameter is a target,
+never the actor". Any statement about a session's blast radius may now be read as covering the whole
+API surface.
+
 ## Ceremony state
 
 `auth_challenges` holds what is in flight: the WebAuthn challenge an authenticator must sign, and
