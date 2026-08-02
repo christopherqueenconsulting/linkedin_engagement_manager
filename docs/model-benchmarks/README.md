@@ -136,6 +136,35 @@ headroom, so it applies to production-budget cases too. Two things follow:
   measured. No output fails the gate's "provider answered every case" expectation instead, which is
   what it actually was.
 
+### A harness outage is not a run of zeros (#923)
+
+The rule above at run scope. A provider error is a legitimate case result — a 500, a rate limit, a
+retired tag — and `ProviderClient.complete` turns any exception into one. That is also what a broken
+venv, a revoked `OLLAMA_CLOUD_API_KEY` or a DNS failure looks like, so a harness that could not call
+anything still *completed*: a full report, `reject` on every verdict, champions at `0% (0/10)`, and
+one leaderboard row per model that is indistinguishable from a real bad run forever after. It
+happened for real while working #921 — a worktree whose venv had no `openai` produced exactly that,
+off a run that never made an HTTP request, and it was caught by eye rather than by the harness. The
+harness runs unattended (`scripts/weekly_model_check.sh` opens the report as a PR), so an expired key
+would ship a PR asserting that every model LEM runs scores zero.
+
+The tell is **every case of every model, the tier's own champion included**. A roster of candidates
+can genuinely be bad; the incumbent that serves production scoring zero on every single case means
+nothing reached a provider at all. On that condition the run is **refused**, not published:
+
+- no per-run report is written and **no leaderboard rows** are appended — nothing measured, nothing
+  to record;
+- the script exits **1**, which the weekly cron already reads as a real failure (only `0` and `2`
+  open the PR), so the outage alerts instead of shipping;
+- the underlying error is named **once** (`refusing to render: harness outage: …`), taken from the
+  commonest case error, with a count of any others rather than a wall of repeats.
+
+The honest half is untouched: one model failing every case beside a champion that answered, or some
+cases timing out everywhere, is a real measurement and renders exactly as before. Those runs now
+carry the split in the report **header** — `**Unmeasured cases:** 3 of 60`, naming any model that
+answered nothing at all — rather than only under the per-case ❌ details, because how much of a run
+is a measurement at all decides whether the rest of it means anything.
+
 ## The gate
 
 A candidate is emitted as a **swap recommendation** only when it clears the tier's absolute

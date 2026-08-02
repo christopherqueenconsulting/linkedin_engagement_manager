@@ -668,6 +668,155 @@ class TestProvenance:
         assert not out.exists()
 
 
+# ───────────────────────── harness-outage guard (#923) ───────────────────────────
+
+def _measured_card(tier="lem-simple", model="m", role="candidate", cases=("a", "b"),
+                   errors=None, error="No module named 'openai'", run_id="bm-1"):
+    """A real scorecard built through the real merge, so the guard is exercised against the shape
+    `run_benchmark` actually produces. `errors` names the cases whose provider call failed."""
+    failed = set(cases) if errors is None else set(errors)
+    results = []
+    for case_id in cases:
+        case = {"id": case_id, "assertions": [{"type": "max_chars", "value": 100}]}
+        results.append(bm.evaluate_case(case, None) | {"error": error} if case_id in failed
+                       else bm.evaluate_case(case, "ok"))
+    card = bm.merge_scorecard(tier, model, role, results)
+    card["benchmark_run_id"] = run_id
+    return card
+
+
+def _outage_run(cards, **over):
+    run = {"source": bm.BENCHMARK_SOURCE, "run_id": "bm-1", "date": "2026-08-02",
+           "scoring_mode": bm.SCORING_DETERMINISTIC, "tiers": ["lem-simple"],
+           "candidates": ["cand"], "judge_calls": 0, "judge_call_cap": 0,
+           "scorecards": list(cards), "gates": [], "recommendations": []}
+    run.update(over)
+    return run
+
+
+class TestHarnessOutage:
+    """#923 — a harness-wide failure is an outage, not a scorecard of zeros.
+
+    `ProviderClient.complete` turns any exception into a case result, so a broken venv or a revoked
+    key produced a complete, plausible report: six rows, `reject` everywhere, champions at 0%, off a
+    run that never made an HTTP request. Nothing measured => nothing published."""
+
+    def test_every_case_of_every_model_erroring_is_an_outage(self):
+        run = _outage_run([_measured_card(model="champ", role="champion"),
+                           _measured_card(model="cand")])
+        outage = bm.harness_outage(run)
+        assert outage is not None
+        assert outage["cases"] == 4 and outage["scorecards"] == 2
+        assert outage["error"] == "No module named 'openai'"
+
+    def test_a_champion_at_zero_is_the_tell_and_is_named(self):
+        """A roster of candidates can be bad; the model production already runs cannot be."""
+        run = _outage_run([_measured_card(model="gpt-oss:120b", role="champion"),
+                           _measured_card(model="cand")])
+        outage = bm.harness_outage(run)
+        assert outage["champions"] == ["gpt-oss:120b"]
+        assert "plumbing and not the roster" in outage["detail"]
+
+    def test_the_underlying_error_is_named_once_not_per_case(self):
+        run = _outage_run([_measured_card(model="champ", role="champion", cases=tuple("abcde")),
+                           _measured_card(model="cand", cases=tuple("abcde"))])
+        detail = bm.harness_outage(run)["detail"]
+        assert detail.count("No module named 'openai'") == 1
+
+    def test_a_second_distinct_error_is_counted_not_listed(self):
+        run = _outage_run([_measured_card(model="champ", role="champion", cases=("a", "b", "c")),
+                           _measured_card(model="cand", cases=("a",), error="Connection error.")])
+        outage = bm.harness_outage(run)
+        assert outage["distinct_errors"] == 2
+        # The commonest message is the cause; the rest are a count, not a wall of text.
+        assert outage["error"] == "No module named 'openai'"
+        assert "+1 other distinct error(s)" in outage["detail"]
+
+    def test_one_model_failing_every_case_is_still_a_measurement(self):
+        """The honest half: a candidate that 500s on everything beside a champion that answered is
+        a real result and must render exactly as it does today."""
+        run = _outage_run([_measured_card(model="champ", role="champion", errors=()),
+                           _measured_card(model="cand", error="410 model retired")])
+        assert bm.harness_outage(run) is None
+        assert bm.render_report(run)
+        assert len(bm.leaderboard_rows(run)) == 2
+
+    def test_some_cases_failing_everywhere_is_still_a_measurement(self):
+        run = _outage_run([_measured_card(model="champ", role="champion", errors=("a",)),
+                           _measured_card(model="cand", errors=("a",))])
+        assert bm.harness_outage(run) is None
+
+    def test_a_run_with_no_scored_cases_is_not_flagged(self):
+        assert bm.harness_outage(_outage_run([])) is None
+        assert bm.harness_outage({}) is None
+
+    def test_a_dry_run_of_canned_outputs_is_never_an_outage(self):
+        run = bm.run_benchmark({"lem-simple": _suite("lem-simple", cases=[
+            _case("a", assertions=[{"type": "max_chars", "value": 5}],
+                  canned={"output": "far too long to fit", "judge_pass": False})],
+            thresholds={"min_judged": 1})}, ["cand"], {"lem-simple": "champ"},
+            run_id="bm-1", today="2026-08-02", dry_run=True, judge_cap=2)
+        assert run["harness_outage"] is None and bm.render_report(run)
+
+    def test_render_report_refuses_a_run_that_measured_nothing(self):
+        run = _outage_run([_measured_card(model="champ", role="champion"),
+                           _measured_card(model="cand")])
+        with pytest.raises(ValueError, match="harness outage"):
+            bm.render_report(run)
+
+    def test_write_report_writes_no_report_and_no_leaderboard_rows(self, tmp_path):
+        out = tmp_path / "docs"
+        out.mkdir()
+        readme = out / "README.md"
+        before = f"# Benchmarks\n\n{bm.LEADERBOARD_BEGIN}\n{bm.LEADERBOARD_END}\n"
+        readme.write_text(before)
+        run = _outage_run([_measured_card(model="champ", role="champion"),
+                           _measured_card(model="cand")])
+        with pytest.raises(ValueError, match="harness outage"):
+            bm.write_report(run, str(out))
+        assert readme.read_text() == before
+        assert list(out.iterdir()) == [readme]
+
+    def test_run_benchmark_records_the_outage_on_the_results_document(self):
+        provider = MagicMock()
+        provider.complete.return_value = {"text": None, "error": "No module named 'openai'",
+                                          "latency_ms": None, "usage": {}}
+        run = bm.run_benchmark({"lem-simple": _suite("lem-simple", cases=[_case("a"), _case("b")],
+                                                     thresholds={"min_judged": 1})},
+                               ["cand"], {"lem-simple": "champ"}, run_id="bm-1",
+                               today="2026-08-02", provider=provider, judge_cap=0,
+                               judge_enabled=False)
+        assert run["harness_outage"]["error"] == "No module named 'openai'"
+        assert run["harness_outage"]["champions"] == ["champ"]
+
+    def test_a_run_with_no_provider_configured_never_publishes(self):
+        """The #921 shape: nothing was configured, so nothing was called, so nothing measured."""
+        run = bm.run_benchmark({"lem-simple": _suite("lem-simple", cases=[_case("a")],
+                                                     thresholds={"min_judged": 1})},
+                               ["cand"], {"lem-simple": "champ"}, run_id="bm-1",
+                               today="2026-08-02", provider=None, judge_cap=0, judge_enabled=False)
+        assert "no provider client configured" in run["harness_outage"]["error"]
+        with pytest.raises(ValueError, match="harness outage"):
+            bm.render_report(run)
+
+
+class TestUnmeasuredHeader:
+    """The distinction belongs in the report HEADER, not only under the per-case ❌ details."""
+
+    def test_the_header_counts_unmeasured_cases_and_names_a_silent_model(self):
+        run = _outage_run([_measured_card(model="champ", role="champion", errors=()),
+                           _measured_card(model="cand")])
+        text = bm.render_report(run)
+        assert "**Unmeasured cases:** 2 of 4" in text
+        assert "`cand` answered nothing at all" in text
+        assert "not a zero-quality result" in text
+
+    def test_a_clean_run_carries_no_unmeasured_line(self):
+        run = _outage_run([_measured_card(model="champ", role="champion", errors=()),
+                           _measured_card(model="cand", errors=())])
+        assert "Unmeasured cases" not in bm.render_report(run)
+
+
 # ─────────────────────────── report + leaderboard ────────────────────────────────
 
 class TestRendering:
@@ -1820,6 +1969,19 @@ class TestCLI:
         out = tmp_path / "b"
         assert bm.main(["--render", str(results), "--out-dir", str(out)]) in (0, 2)
         assert (out / "2026-07-27-bm-r.md").exists()
+
+    def test_render_of_a_run_that_measured_nothing_exits_1_and_writes_nothing(self, tmp_path,
+                                                                             capsys):
+        """#923: the unattended path. A harness-wide failure must not become a PR asserting that
+        every model LEM runs scores zero — the cron reads any rc outside {0, 2} as a real failure."""
+        results = tmp_path / "outage.json"
+        results.write_text(json.dumps(_outage_run([
+            _measured_card(model="champ", role="champion"), _measured_card(model="cand")])))
+        out = tmp_path / "docs"
+        assert bm.main(["--render", str(results), "--out-dir", str(out)]) == 1
+        assert not out.exists()
+        err = capsys.readouterr().err
+        assert err.count("No module named 'openai'") == 1
 
     def test_render_refuses_a_tainted_results_file(self, tmp_path):
         results = tmp_path / "bad.json"
