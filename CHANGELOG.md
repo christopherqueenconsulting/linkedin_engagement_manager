@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.123.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.123.2...v0.123.3) (2026-08-02)
+
+
+### Bug Fixes
+
+* **images:** a stranger's face is the stock-photo look, not the fix for it ([#942](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/942)) ([54b750d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/54b750da06d1a1c0e444ca4e1d4396e74ff50544))
+
 ## [0.123.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.123.1...v0.123.2) (2026-08-02)
 
 
