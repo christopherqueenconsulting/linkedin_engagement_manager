@@ -106,7 +106,7 @@ class TestPostCommentInline:
         composer = MagicMock(); composer.text = ""       # cleared after real submit
         driver = MagicMock(); driver.execute_script.return_value = True  # submit button clicked
         with patch(f"{_RA}.click_first", return_value=MagicMock()), \
-             patch(f"{_RA}.find_first", return_value=composer):
+             patch(f"{_RA}._post_composer_for_card", return_value=composer):
             ok = ra.post_comment_inline(driver, MagicMock(), MagicMock(), "Great post, thanks", user_id=1)
         assert ok is True
 
@@ -120,7 +120,7 @@ class TestPostCommentInline:
     def test_false_when_no_composer(self):
         from cqc_lem.app import run_automation as ra
         with patch(f"{_RA}.click_first", return_value=MagicMock()), \
-             patch(f"{_RA}.find_first", return_value=None):
+             patch(f"{_RA}._post_composer_for_card", return_value=None):
             ok = ra.post_comment_inline(MagicMock(), MagicMock(), MagicMock(), "hello", user_id=1)
         assert ok is False
 
@@ -130,7 +130,7 @@ class TestPostCommentInline:
         composer = MagicMock(); composer.text = ""
         driver = MagicMock(); driver.execute_script.return_value = True
         with patch(f"{_RA}.click_first", return_value=MagicMock()), \
-             patch(f"{_RA}.find_first", return_value=composer):
+             patch(f"{_RA}._post_composer_for_card", return_value=composer):
             ok = ra.post_comment_inline(driver, MagicMock(), MagicMock(),
                                         "Shipped it 🚀 and the numbers held 📈", user_id=1)
         assert ok is True
@@ -145,7 +145,7 @@ class TestPostCommentInline:
         composer.click.side_effect = [_intercepted(), None]
         driver = MagicMock(); driver.execute_script.return_value = True
         with patch(f"{_RA}.click_first", return_value=MagicMock()), \
-             patch(f"{_RA}.find_first", return_value=composer), \
+             patch(f"{_RA}._post_composer_for_card", return_value=composer), \
              patch(f"{_RA}.log_warning") as lw:
             ok = ra.post_comment_inline(driver, MagicMock(), MagicMock(), "Great post", user_id=1)
         assert ok is True
@@ -153,74 +153,171 @@ class TestPostCommentInline:
         composer.send_keys.assert_called_once()
 
 
-def _wait():
-    """Minimal WebDriverWait stand-in so `find_first` can run for real: poll once, TimeoutException
-    on a falsy result (which is what a total selector miss looks like to it)."""
-    from selenium.common import TimeoutException
-    w = MagicMock()
-
-    def until(fn, label=None):
-        found = fn(None)
-        if not found:
-            raise TimeoutException(label)
-        return found
-
-    w.until.side_effect = until
-    return w
-
-
 def _textbox_source(*elements):
     """find_elements stand-in that answers the composer locators and nothing else."""
     return lambda by, value: list(elements) if "textbox" in value else []
 
 
-class TestComposerIsScopedToTheCard:
+def _box(y: int, aria: str = "", height: int = 40):
+    """A rendered role=textbox at page-y `y`."""
+    el = MagicMock()
+    el.rect = {"x": 0, "y": y, "width": 600, "height": height}
+    el.get_attribute.return_value = aria
+    el.text = ""
+    return el
+
+
+def _holder(*boxes, y: int = 100, height: int = 300):
+    """A rendered element whose role=textbox lookup answers with `boxes`."""
+    el = MagicMock()
+    el.rect = {"x": 0, "y": y, "width": 600, "height": height}
+    el.find_elements.side_effect = _textbox_source(*boxes)
+    return el
+
+
+def _driver(scope=None):
+    """A driver whose only scripted answer is the single-post scope widening; everything else
+    (scrollIntoView, the submit button, the submitted check) succeeds."""
+    d = MagicMock()
+    d.execute_script.side_effect = lambda script, *a: scope if "MARKERS" in script else True
+    return d
+
+
+class TestComposerIsScopedToItsOwnPost:
     """Issue #876. The feed walk comments on several posts WITHOUT reloading the page and LinkedIn
     leaves each composer mounted after it submits, so a document-wide role=textbox lookup returned
     the first one in DOM order — an earlier post's composer, by then scrolled off the top. That is
     the click Chrome reported intercepted at y=9, and centering it (#815) would not have fixed the
-    run: it would have typed this post's comment into the previous post."""
+    run: it would have typed this post's comment into the previous post.
+
+    #916 widens the search from the card to the scope that still holds exactly ONE post, which is
+    the invariant that actually matters — it must stay impossible to borrow a neighbour's box."""
 
     def test_types_into_this_cards_composer_not_an_earlier_posts(self):
         from cqc_lem.app import run_automation as ra
-        earlier = MagicMock()                 # first in document order, from the post we just did
-        mine = MagicMock(); mine.text = ""    # this card's own composer
-        driver = MagicMock()
-        driver.find_elements.side_effect = _textbox_source(earlier, mine)
-        driver.execute_script.return_value = True
-        card = MagicMock()
-        card.find_elements.side_effect = _textbox_source(mine)
+        earlier = _box(10)                          # from the post we just did, scrolled above
+        mine = _box(300, aria="Text editor for creating comment")
+        card = _holder(mine, y=100)
         with patch(f"{_RA}.click_first", return_value=MagicMock()):
-            ok = ra.post_comment_inline(driver, _wait(), card, "Great post, thanks", user_id=1)
+            ok = ra.post_comment_inline(_driver(scope=_holder(earlier, mine)), MagicMock(), card,
+                                        "Great post, thanks", user_id=1)
         assert ok is True
         mine.send_keys.assert_called_once()
         earlier.send_keys.assert_not_called()
-        earlier.click.assert_not_called()
 
     def test_card_without_a_composer_skips_instead_of_borrowing_one(self):
-        # No document-wide fallback on purpose — commenting on the wrong post is worse than not
+        # No page-wide fallback on purpose — commenting on the wrong post is worse than not
         # commenting, and the caller releases the claim so a later run retries this post.
         from cqc_lem.app import run_automation as ra
-        earlier = MagicMock()
-        driver = MagicMock()
-        driver.find_elements.side_effect = _textbox_source(earlier)
-        card = MagicMock(); card.find_elements.return_value = []
-        with patch(f"{_RA}.click_first", return_value=MagicMock()), \
-             patch("cqc_lem.utilities.selenium_util.time.sleep"), \
-             patch("cqc_lem.utilities.selenium_util.log_warning"):
-            ok = ra.post_comment_inline(driver, _wait(), card, "Great post, thanks", user_id=1)
+        earlier = _box(10)
+        card = _holder(y=100)                       # nothing inside, and no wider single-post scope
+        with patch(f"{_RA}.click_first", return_value=MagicMock()):
+            ok = ra.post_comment_inline(_driver(scope=None), MagicMock(), card,
+                                        "Great post, thanks", user_id=1)
         assert ok is False
         earlier.send_keys.assert_not_called()
 
-    def test_lookup_is_scoped_to_the_card(self):
+    def test_a_composer_above_the_card_is_rejected_outright(self):
+        # The widened scope can hold the share box or a composer left open on a post above this one.
+        # Both start above the card, and neither is ours.
+        from cqc_lem.app import run_automation as ra
+        above = _box(20)
+        card = _holder(y=400)
+        assert ra._post_composer_for_card(_driver(scope=_holder(above, y=0)), card, user_id=1) is None
+
+    def test_widening_stops_at_the_scope_that_still_holds_one_post(self):
+        # The guarantee lives in the JS: the walk up keeps an ancestor ONLY while every per-post
+        # marker count still equals the card's, so the scope can never span two posts.
+        from cqc_lem.app import run_automation as ra
+        assert "counts(el) !== base" in ra._SINGLE_POST_SCOPE_JS
+        assert "break" in ra._SINGLE_POST_SCOPE_JS
+        assert ra._FEED_POST_TEXT_SEL in ra._POST_MARKER_SELECTORS  # the feed's own post marker
+
+    def test_the_widening_bound_is_not_a_comment_action_count(self):
+        """The composer we widen to FIND brings its own submit button, and its text is literally
+        "Comment" (`_SUBMIT_NEAR_COMPOSER_JS` clicks exactly that, skipping the disabled/hidden ones
+        it expects to exist). Counting comment actions therefore sees TWO on the first ancestor that
+        holds the card AND the sibling comment section — the walk would break before it ever widened,
+        in exactly the render this was written for, and the DEBUG downgrade would hide that forever."""
+        from cqc_lem.app import run_automation as ra
+        assert "isCommentAction" not in ra._SINGLE_POST_SCOPE_JS
+        assert "const base = counts(scope)" in ra._SINGLE_POST_SCOPE_JS  # baseline, never a hard 1
+
+
+class TestPostComposerResolution:
+    """Issue #916. `_card_for_textbox` returns the NEAREST ancestor carrying the comment action, and
+    where LinkedIn renders the comment section beside that node instead of inside it the card-scoped
+    lookup missed on every post — 408 misses in 18h, every one on a group feed, each one a
+    `log_warning` that escalated to ERROR and filed a defect for a post we simply skip."""
+
+    def test_a_composer_nested_in_the_card_still_wins(self):
+        from cqc_lem.app import run_automation as ra
+        mine = _box(300)
+        driver = _driver(scope=_holder(_box(10), mine))
+        assert ra._post_composer_for_card(driver, _holder(mine, y=100), user_id=1) is mine
+        # The card had one, so we never even asked for a wider scope.
+        assert not [c for c in driver.execute_script.call_args_list if "MARKERS" in c.args[0]]
+
+    def test_finds_the_composer_mounted_beside_the_card(self):
+        from cqc_lem.app import run_automation as ra
+        outside = _box(420, aria="Text editor for creating comment")
+        card = _holder(y=100, height=300)
+        assert ra._post_composer_for_card(_driver(scope=_holder(outside, y=90)), card,
+                                          user_id=1) is outside
+
+    def test_prefers_the_posts_own_box_over_a_reply_box(self):
+        # A reply box under an existing comment is a role=textbox too; typing here would answer a
+        # stranger instead of the author, so the labelled box wins even when it is further away.
+        from cqc_lem.app import run_automation as ra
+        reply = _box(700)
+        mine = _box(420, aria="Text editor for creating comment")
+        card = _holder(y=100, height=300)
+        assert ra._post_composer_for_card(_driver(scope=_holder(mine, reply, y=90)), card,
+                                          user_id=1) is mine
+
+    def test_a_miss_is_debug_not_a_warning(self):
+        """The whole point of the issue: no composer means skip the post — an expected no-op the
+        caller already handles by releasing the claim. Warning it per card filed a defect."""
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.log_warning") as warn, patch(f"{_RA}.log_debug") as debug:
+            assert ra._post_composer_for_card(_driver(scope=None), _holder(y=100), user_id=1) is None
+        warn.assert_not_called()
+        assert debug.call_count == 1
+        assert debug.call_args.args[0] == "No comment composer opened on this post card"
+
+    def test_a_stale_card_gives_up_immediately(self):
+        from cqc_lem.app import run_automation as ra
+        card = MagicMock()
+        type(card).rect = property(lambda self: (_ for _ in ()).throw(Exception("stale")))
+        with patch(f"{_RA}.log_warning") as warn, patch(f"{_RA}.log_debug") as debug:
+            assert ra._post_composer_for_card(_driver(), card, user_id=1) is None
+        warn.assert_not_called()
+        assert debug.call_count == 1  # one message, not one per poll
+        assert debug.call_args.args[0].startswith("Post card is not rendered")
+
+    def test_a_slow_render_is_polled_for_not_waited_out(self):
+        """The old chain spent WAIT_DEFAULT_TIMEOUT x (MAX_WAIT_RETRY + 1) — ~35s — on every card
+        that never opened one. A composer that mounts late is still caught."""
+        from cqc_lem.app import run_automation as ra
+        late = _box(420, aria="Text editor for creating comment")
+        card = MagicMock()
+        card.rect = {"x": 0, "y": 100, "width": 600, "height": 300}
+        answers = [[], [], [late]]
+        card.find_elements.side_effect = lambda by, value: answers.pop(0) if answers else [late]
+        assert ra._post_composer_for_card(_driver(scope=None), card, user_id=1) is late
+        assert ra._COMPOSER_MOUNT_POLLS * ra._COMPOSER_MOUNT_POLL_SECONDS < 15  # WAIT_DEFAULT_TIMEOUT
+
+    def test_the_resolver_is_the_one_lookup_the_call_site_uses(self):
         from cqc_lem.app import run_automation as ra
         composer = MagicMock(); composer.text = ""
         card = MagicMock()
         driver = MagicMock(); driver.execute_script.return_value = True
         with patch(f"{_RA}.click_first", return_value=MagicMock()), \
-             patch(f"{_RA}.find_first", return_value=composer) as ff:
+             patch(f"{_RA}._post_composer_for_card", return_value=composer) as res, \
+             patch(f"{_RA}.find_first") as ff:
             ra.post_comment_inline(driver, MagicMock(), card, "Great post, thanks", user_id=1)
-        assert ff.call_args.kwargs["parent_element"] is card
+        assert res.call_args.args[1] is card
+        ff.assert_not_called()  # no second, unscoped composer lookup anywhere in the path
 
 
 class TestPostCommentInlineStepNaming:
@@ -231,7 +328,7 @@ class TestPostCommentInlineStepNaming:
         from cqc_lem.app import run_automation as ra
         driver = driver or MagicMock()
         with patch(f"{_RA}.click_first", return_value=MagicMock()), \
-             patch(f"{_RA}.find_first", return_value=composer), \
+             patch(f"{_RA}._post_composer_for_card", return_value=composer), \
              patch(f"{_RA}.log_warning") as lw:
             ok = ra.post_comment_inline(driver, MagicMock(), MagicMock(), "Great post", user_id=1)
         return ok, lw

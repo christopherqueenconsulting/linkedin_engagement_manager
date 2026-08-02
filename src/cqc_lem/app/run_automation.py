@@ -516,6 +516,35 @@ while (el && d < 15) { if (commentButton(el)) return el; el = el.parentElement; 
 return null;
 """
 
+# The card above is the NEAREST ancestor carrying the comment action, which is not always the node
+# LinkedIn mounts the composer into — on the group feed the comment section renders as that node's
+# SIBLING. This walks back UP, keeping the widest ancestor that still covers THIS post and no
+# neighbour, so widening the composer lookup can never reach the post next to it (the #876 failure).
+#
+# The bound is a count of per-post MARKERS, deliberately NOT of comment actions: the composer we are
+# widening to find brings its own submit button, whose text is literally "Comment"
+# (`_SUBMIT_NEAR_COMPOSER_JS` clicks exactly that, and expects to skip disabled/hidden ones), so
+# `isCommentAction` matches it too — the first ancestor holding both the card and the sibling comment
+# section would count TWO and the walk would stop before it ever widened, in precisely the render
+# this exists for. The markers are what the feed itself identifies a post by: the post-text node the
+# walk enumerates cards from, and the card's own "Hide post by" control (an image-only post has no
+# text node but still has that). Baselines come from the card, not a hardcoded 1, so a reshare that
+# renders two text nodes inside one card still widens. Issue #916.
+_POST_MARKER_SELECTORS = [_FEED_POST_TEXT_SEL, "button[aria-label^='Hide post by']"]
+
+_SINGLE_POST_SCOPE_JS = "const MARKERS = " + json.dumps(_POST_MARKER_SELECTORS) + r""";
+const counts = (root) => MARKERS.map((sel) => root.querySelectorAll(sel).length).join(",");
+let scope = arguments[0], el = scope, d = 0;
+const base = counts(scope);
+while (el && el.parentElement && d < 6) {
+  el = el.parentElement;
+  if (counts(el) !== base) break;
+  scope = el;
+  d++;
+}
+return scope;
+"""
+
 
 def _card_for_textbox(driver, box):
     """Nearest ancestor of a post's text box that carries its comment action — i.e. the post card.
@@ -965,6 +994,77 @@ def _focus_composer(driver, composer) -> None:
         composer.click()
 
 
+# How long a composer gets to mount after the Comment click. The old `find_first` chain spent
+# WAIT_DEFAULT_TIMEOUT x (MAX_WAIT_RETRY + 1) — ~35s — on every card that never opened one, and on
+# the group feed that was every card of every run. A composer that is going to mount does so in well
+# under a second; re-reading the DOM a few times covers a slow render without paying for a dead one.
+_COMPOSER_MOUNT_POLLS = 6
+_COMPOSER_MOUNT_POLL_SECONDS = 1.0
+
+
+def _is_post_comment_box(box: WebElement) -> bool:
+    """True for the box LinkedIn labels as the POST's own comment composer. A reply box under an
+    existing comment is a role=textbox too, and typing this post's comment into one answers a
+    stranger instead of the author."""
+    try:
+        return "creating comment" in (box.get_attribute("aria-label") or "").lower()
+    except Exception:
+        return False
+
+
+def _single_post_scope(driver: WebDriver, card: WebElement) -> WebElement | None:
+    """The widest ancestor of `card` that still covers this post alone — no neighbouring post."""
+    try:
+        return driver.execute_script(_SINGLE_POST_SCOPE_JS, card)
+    except Exception:
+        return None
+
+
+def _composer_in_post_scope(driver: WebDriver, card: WebElement, anchor: dict) -> WebElement | None:
+    """One resolution pass: this post's comment composer, or None."""
+    candidates = _visible_composers(card)
+    if not candidates:
+        # Not inside the card — widen to the scope that still maps to this post alone, and keep the
+        # reply resolver's hard above-filter: a box starting above the card is the share box or a
+        # composer left mounted on a post we already did, never this one's.
+        scope = _single_post_scope(driver, card)
+        candidates = [] if scope is None else [
+            (box, rect) for box, rect in _visible_composers(scope)
+            if rect["y"] >= anchor["y"] - _COMPOSER_ABOVE_SLACK_PX]
+    labelled = [c for c in candidates if _is_post_comment_box(c[0])]
+    bottom = anchor["y"] + anchor["height"]
+    best = min(labelled or candidates, key=lambda br: abs(br[1]["y"] - bottom), default=None)
+    return None if best is None else best[0]
+
+
+def _post_composer_for_card(driver: WebDriver, card: WebElement,
+                            user_id: int = None) -> WebElement | None:
+    """The comment composer belonging to THIS post card — never a page-wide first match.
+
+    A composer nested in the card is unambiguous and still wins (#876). What is new (issue #916) is
+    that a card WITHOUT one is not automatically a dead end: `_card_for_textbox` only walks up to the
+    nearest ancestor carrying the comment action, and where LinkedIn renders the comment section
+    beside that node rather than inside it, the card-scoped lookup missed on every post of every run
+    — 408 in 18h, every one on a group feed. Widening is bounded by `_single_post_scope`, so the
+    search area provably contains one post, which is the invariant #876 actually needs.
+
+    A miss is an expected no-op: the box never opened, so the caller skips the post and releases its
+    claim. It is logged DEBUG here, once, the way `_reply_composer_for_comment` logs its own — the
+    per-card `log_warning` it replaces escalated into a filed defect for a skip we already handle."""
+    for _ in range(_COMPOSER_MOUNT_POLLS):
+        anchor = _visible_rect(card)
+        if anchor is None:
+            log_debug("Post card is not rendered; no comment composer to resolve",
+                      action_type="comment", user_id=user_id)
+            return None
+        composer = _composer_in_post_scope(driver, card, anchor)
+        if composer is not None:
+            return composer
+        time.sleep(_COMPOSER_MOUNT_POLL_SECONDS)
+    log_debug("No comment composer opened on this post card", action_type="comment", user_id=user_id)
+    return None
+
+
 def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = None) -> bool:
     """Open the card's inline comment composer, type the comment, and submit via the composer's
     own Comment/Post button (the SDUI composer has no <form>). Returns True only if the comment
@@ -986,17 +1086,14 @@ def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = No
             return False
         time.sleep(random.uniform(1.5, 3))
         step = "find composer"
-        # Scoped to THIS card. The feed walk comments on several posts without reloading the page and
+        # Scoped to THIS post. The feed walk comments on several posts without reloading the page and
         # LinkedIn leaves each composer mounted after it submits, so a document-wide lookup returns
         # the FIRST visible role=textbox in DOM order — an earlier post's composer, scrolled off the
         # top, which is how the click landed under the sticky nav at y=9 (issue #876). Centering that
         # composer (#815) would not have fixed it, it would have typed the comment into the wrong
-        # post. No document-wide fallback on purpose: no composer on this card means skip the post.
-        composer = find_first(driver, wait,
-                              [(By.CSS_SELECTOR, "div[role='textbox'][aria-label*='creating comment']"),
-                               (By.CSS_SELECTOR, "div[role='textbox']")],
-                              "Comment composer", visible_only=True, required=False,
-                              parent_element=card, user_id=user_id)
+        # post. `_post_composer_for_card` owns both the resolution and the miss log; still no
+        # page-wide fallback — no composer for this post means skip the post.
+        composer = _post_composer_for_card(driver, card, user_id=user_id)
         if composer is None:
             return False
         step = "focus composer"
