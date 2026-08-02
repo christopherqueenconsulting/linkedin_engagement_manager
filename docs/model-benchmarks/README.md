@@ -9,7 +9,8 @@ this file (`<date>-<run_id>.md`).
 ## Why this exists
 
 `scripts/model_health_check.py` (#716) detects that a model is *about to change*: a published
-retirement, a new Ollama Cloud tag, a family we trail. It cannot say whether a candidate is any
+retirement, a new Ollama Cloud tag, a family we trail, or — since #925 — a tag we already run whose
+*build* moved underneath an unchanged name. It cannot say whether a candidate is any
 **good** — before this, a swap was decided on a spec sheet. The benchmark is the measurement half,
 and it always runs the current **champion** alongside the candidate, so a verdict is a comparison
 rather than an absolute claim about one model.
@@ -309,11 +310,14 @@ Four things this run is worth reading for beyond the two verdicts:
   one case, which is why that decline rests on "no `recommend`" rather than on the gap's size.
 - **Declining `:0731` is not the same as being safe from it.** `.litellm/config.yaml` runs the
   *unversioned* `deepseek-v4-flash` on two tiers, so those tiers follow whatever the catalog's
-  moving tag points at — and `scripts/model_health_check.py` diffs tag NAMES, so a re-point of that
-  name onto the 0731 build files no evaluation issue and swaps a live tier's model unbenchmarked.
-  The id was left unversioned anyway (it is the build measured at 90%, and a pin has upkeep of its
-  own on every path that keys the exact id string), but the detection gap is real and is tracked on
-  **#925**.
+  moving tag points at — and `scripts/model_health_check.py` diffed tag NAMES only, so a re-point of
+  that name onto the 0731 build filed no evaluation issue and swapped a live tier's model
+  unbenchmarked. The id was left unversioned anyway (it is the build measured at 90%, and a pin has
+  upkeep of its own on every path that keys the exact id string); **#925** closed the detection gap
+  instead — the weekly scan now also compares each CONFIGURED tag's `size`/`modified_at` against the
+  committed snapshot and files a re-point evaluation issue naming the tiers that moved. The dedup
+  marker carries the new build's fingerprint, so a *second* re-point is not deduped away as
+  already-filed. It stays a trigger, never an auto-pin.
 
 Both runs are `in-runner-judge` mode with **no judge evidence** — the runner had no LiteLLM proxy to
 reach, so the judge answered nothing and every judge expectation renders as unscored. Read the
