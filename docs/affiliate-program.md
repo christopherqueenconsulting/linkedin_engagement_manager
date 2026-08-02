@@ -142,8 +142,8 @@ back off the user when no reward moved), so the user is told their trial length 
 ### 3.1 Sizing the reward — what N and the cap were measured against
 
 The owner fixed the SHAPE (per-referral, capped) and asked for N and the ceiling to be proposed
-against LEM's real per-user cost and SaaS norms. This is that reasoning; the shipped defaults are
-**+14 / 90**, and both remain one env change.
+against LEM's real per-user cost and SaaS norms. This is that reasoning; the options below were put
+to them on PR #903 and **+14 / 90 was picked (2026-08-02)**. Both remain one env change.
 
 **What a trial day actually costs (measured, not assumed).** PostHog `llm_call`, the 10 days to
 2026-08-02 that carry per-user cost attribution: **mean ≈ $0.19, median ≈ $0.15, worst day $0.38 of

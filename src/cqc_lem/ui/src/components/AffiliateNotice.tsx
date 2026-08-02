@@ -26,7 +26,7 @@ export default function AffiliateNotice() {
       <p className="text-sm font-semibold text-blue-900">
         {data.bonus_days > 0
           ? `🎉 You're in the LEM affiliate program — and your trial is ${data.bonus_days} days longer`
-          : '🎉 You’re in the LEM affiliate program — earn extra trial time for anyone you refer'}
+          : `🎉 You're in the LEM affiliate program — earn extra trial time for anyone you refer`}
       </p>
       <p className="mt-1 text-sm text-blue-800">
         Every LEM account joins automatically. You get a referral link

@@ -242,6 +242,13 @@ def _post(client, path, **body):
     return r
 
 
+def _iso(dt):
+    """The endpoint's own serializer — asserting against it pins the SHAPE the SPA parses, which is
+    the thing that would silently differ if the two producers of `trial_ends_at` ever diverged."""
+    from cqc_lem.api.main import _utc_iso
+    return _utc_iso(dt)
+
+
 def test_user_is_enrolled_by_default_with_a_link_and_the_bonus(client, env, store):
     detail = _get(client)
     assert detail["enrolled"] is True and detail["status"] == "enrolled"
@@ -416,5 +423,33 @@ def test_opt_out_takes_nothing_away_but_still_reports_the_trial_length(client, e
     detail = _post(client, "/status", enrolled=False).json()["detail"]
     assert detail["enrolled"] is False
     assert detail["reward_days"] == 0                    # nothing was clawed back
-    assert detail["trial_ends_at"] is not None           # read back off the user, not off a grant
     assert store.trial_days() == 28                      # the earned referral days survive
+    # The exact date the user is holding, in the same explicit-UTC shape the reward branch emits —
+    # both producers go through `_utc_iso`, and the SPA renders whichever one answered.
+    assert detail["trial_ends_at"] == _iso(store.users[USER]["trial_ends_at"])
+
+
+def test_the_reward_date_wins_over_the_user_record_when_a_grant_actually_moved(client, env, store):
+    """`env` configures the 7-day join bonus, so opting out revokes — and the date the user is told
+    must be the one the revoke computed, not a re-read that could race it."""
+    _get(client)
+    assert store.trial_days() == 21
+
+    detail = _post(client, "/status", enrolled=False).json()["detail"]
+    assert detail["reward_days"] == 7
+    assert detail["trial_ends_at"] == _iso(store.users[USER]["trial_ends_at"])
+    assert store.trial_days() == 14
+
+
+def test_a_user_who_is_no_longer_on_a_trial_is_not_quoted_a_stale_trial_date(client,
+                                                                            env_no_join_bonus,
+                                                                            store):
+    """`users.trial_ends_at` outlives the trial. A paid account opting out must not be told "your
+    trial still ends <a date in the past>" — with no grant to report, the field stays null."""
+    _get(client)
+    store.users[USER]["subscription_status"] = "active"
+
+    detail = _post(client, "/status", enrolled=False).json()["detail"]
+    assert detail["enrolled"] is False
+    assert detail["reward_days"] == 0
+    assert detail["trial_ends_at"] is None

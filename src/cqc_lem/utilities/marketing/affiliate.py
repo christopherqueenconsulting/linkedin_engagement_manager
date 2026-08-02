@@ -303,6 +303,10 @@ def enroll_user(user_id: int, grant_bonus: bool = True) -> dict:
     paid a bonus: with no join bonus there is no grant to hang it on, and enrollment is exactly the
     thing the marketing funnel needs counted.
 
+    That is deliberately ONCE PER USER, not once per enrollment: a user who opts out and re-joins
+    does not emit it again from here (`set_status` emits its own `affiliate_enrolled` with
+    `source="opt_in"` for that flip). Read the funnel's count as distinct users enrolled.
+
     Returns the enrollment row, or `{}` when the program is off / the user is ineligible."""
     from cqc_lem.utilities.db import ensure_affiliate_enrollment, grant_affiliate_trial_days
     from cqc_lem.utilities.observability import AFFILIATE_ENROLLED, track_affiliate_event

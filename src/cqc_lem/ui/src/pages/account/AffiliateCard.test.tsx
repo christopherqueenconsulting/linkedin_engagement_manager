@@ -144,6 +144,35 @@ describe('AffiliateCard (issue #737)', () => {
     expect(screen.getAllByRole('switch')).toHaveLength(1)
   })
 
+  // The two opt-out confirmations, driven off the MUTATION result rather than the query cache.
+  // Which one is right depends on whether the flip actually clawed days back, and only the flip
+  // response knows that — the #750 cohort holds a +7 enrollment grant that IS revoked, while a
+  // user under the shipped per-referral policy loses nothing.
+  async function optOut(flip: Record<string, unknown>) {
+    get.mockResolvedValue(payload(BASE))
+    post.mockResolvedValue(
+      payload({ ...BASE, enrolled: false, status: 'opted_out', referral_url: '', ...flip })
+    )
+    const { container } = harness(<AffiliateCard />)
+    await waitFor(() => expect(screen.getAllByRole('switch')).toHaveLength(2))
+    fireEvent.click(screen.getAllByRole('switch')[0])
+    await waitFor(() => expect(screen.getByTestId('affiliate-trial-note')).toBeTruthy())
+    return container
+  }
+
+  it('tells a user whose join bonus WAS revoked that they return to the standard trial', async () => {
+    const container = await optOut({ reward_days: 7, trial_ends_at: '2026-08-16T00:00:00Z' })
+    expect(container.textContent).toContain('returns to the standard 14 days')
+    expect(container.textContent).not.toContain('you keep the trial days you earned')
+  })
+
+  it('tells a user who lost nothing that they keep the days they earned', async () => {
+    const container = await optOut({ reward_days: 0, trial_ends_at: '2026-08-30T00:00:00Z' })
+    expect(container.textContent).toContain('you keep the trial days you earned')
+    expect(container.textContent).not.toContain('returns to the standard')
+    expect(container.textContent).not.toContain('lose')
+  })
+
   it('never advertises a join bonus when the reward is per-referral only', async () => {
     get.mockResolvedValue(
       payload({ ...BASE, bonus_days: 0, enrolled: false, status: 'opted_out', referral_url: '' })

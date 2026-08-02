@@ -3520,7 +3520,7 @@ def set_affiliate_status_endpoint(request: AffiliateStatusRequest) -> ResponseMo
     The date is read back off the user when the flip moved no reward, which is the ORDINARY case now
     that the join bonus is 0: "opt-out is immediate and the user is notified of the resulting trial
     length" cannot depend on a grant having happened."""
-    from cqc_lem.utilities.db import get_user_subscription_info
+    from cqc_lem.utilities.db import TRIAL_EXTENDABLE_STATUSES, get_user_subscription_info
     from cqc_lem.utilities.marketing.affiliate import set_status
     user_id = get_session_user_id(request.session_token)
     if not user_id:
@@ -3529,7 +3529,11 @@ def set_affiliate_status_endpoint(request: AffiliateStatusRequest) -> ResponseMo
     reward = result.get("reward") or {}
     trial_ends_at = reward.get("trial_ends_at")
     if not trial_ends_at:
-        trial_ends_at = (get_user_subscription_info(user_id) or {}).get("trial_ends_at")
+        # Only for a user who still HAS a trial — `users.trial_ends_at` outlives the trial, so a paid
+        # or cancelled account would otherwise be told "your trial still ends <a date in the past>".
+        info = get_user_subscription_info(user_id) or {}
+        if str(info.get("subscription_status") or "") in TRIAL_EXTENDABLE_STATUSES:
+            trial_ends_at = info.get("trial_ends_at")
     log_info(f"Affiliate status set to {'enrolled' if request.enrolled else 'opted_out'}",
              user_id=user_id)
     return ResponseModel(status_code=200, detail=_affiliate_detail(

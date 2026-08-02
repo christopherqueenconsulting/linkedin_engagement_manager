@@ -10264,7 +10264,9 @@ EARLY_ADOPTER_COHORTS = ("P0", "P1")
 
 # Statuses an extension may act on. A paying ('active'/'past_due') or churned ('cancelled') user is
 # not on a trial, so extending one would either be a no-op or silently reopen a closed account.
-_EXTENDABLE_STATUSES = ("trial", "inactive")
+# The subscription statuses for which `users.trial_ends_at` is a live date rather than a leftover:
+# a paid or cancelled account carries an old value that must never be extended or quoted back.
+TRIAL_EXTENDABLE_STATUSES = ("trial", "inactive")
 
 
 def _as_naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
@@ -10378,7 +10380,7 @@ def extend_trial_for_user(user_id: int, feedback_id: Optional[int] = None) -> di
         if not user:
             connection.rollback()
             return _result(False, "user_not_found")
-        if user["subscription_status"] not in _EXTENDABLE_STATUSES:
+        if user["subscription_status"] not in TRIAL_EXTENDABLE_STATUSES:
             connection.rollback()
             return _result(False, "not_on_trial")
 
@@ -10456,7 +10458,10 @@ def _affiliate_row(row: Optional[dict]) -> Optional[dict]:
 
 
 def get_affiliate_enrollment(user_id: int) -> Optional[dict]:
-    """The user's affiliate row, or None when they have never been enrolled."""
+    """The user's affiliate row, or None when they have never been enrolled.
+
+    The row here carries columns only — no `created` key. That flag exists solely on what
+    `ensure_affiliate_enrollment` returns, because only the call that wrote the row can know it."""
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
@@ -10485,7 +10490,12 @@ def ensure_affiliate_enrollment(user_id: int, status: str = 'enrolled',
 
     The returned row carries `created` — whether THIS call is the one that enrolled them. Every
     Account page load calls this, so it is the only way the caller can emit an enrollment event once
-    instead of on every render."""
+    instead of on every render. It is a synthetic key, not a column: `get_affiliate_enrollment`
+    never sets it, and nothing that serializes the row to a client reads it (`affiliate_state`
+    builds its payload field by field).
+
+    On a DB error this returns None, so a caller can never read `created=False` from a write that
+    did not happen — the row will not exist either, and the next call re-inserts it."""
     code = str(referral_code or user_id)
     connection = get_db_connection()
     cursor = connection.cursor()
@@ -10781,7 +10791,7 @@ def grant_affiliate_trial_days(user_id: int, days: int, kind: str,
         if not user:
             connection.rollback()
             return _result(False, "user_not_found")
-        if user["subscription_status"] not in _EXTENDABLE_STATUSES:
+        if user["subscription_status"] not in TRIAL_EXTENDABLE_STATUSES:
             connection.rollback()
             return _result(False, "not_on_trial", 0, already)
 

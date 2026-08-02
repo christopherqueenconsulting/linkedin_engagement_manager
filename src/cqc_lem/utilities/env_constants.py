@@ -269,7 +269,8 @@ AFFILIATE_DEFAULT_ENROLLED = isTrue(get_constant_from_env('AFFILIATE_DEFAULT_ENR
 # refer anyone. Left as a knob rather than deleted — a launch push may want a join incentive — but a
 # non-zero value here is a giveaway to the whole user base, and it is revoked on opt-out, which is
 # the only thing that makes the "your trial returns to the standard N days" copy necessary.
-AFFILIATE_ENROLLMENT_BONUS_DAYS = int(get_constant_from_env('AFFILIATE_ENROLLMENT_BONUS_DAYS', default_value='0'))
+# max(0, …) so a negative typo reads as "off" rather than silently skipping the > 0 guard everywhere.
+AFFILIATE_ENROLLMENT_BONUS_DAYS = max(0, int(get_constant_from_env('AFFILIATE_ENROLLMENT_BONUS_DAYS', default_value='0')))
 # Trial days per referral that ACTIVATES (not per click, not per raw signup). Earned, so opting out
 # never claws these back.
 AFFILIATE_REFERRAL_BONUS_DAYS = int(get_constant_from_env('AFFILIATE_REFERRAL_BONUS_DAYS', default_value='14'))

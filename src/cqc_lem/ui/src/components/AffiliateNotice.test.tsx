@@ -93,8 +93,9 @@ describe('AffiliateNotice (issue #737)', () => {
 
   it('stays hidden once acknowledged, and acknowledges on Got it', async () => {
     get.mockResolvedValue(payload({ ...BASE, notice_seen_at: '2026-08-01T00:00:00Z' }))
-    const { container } = harness(<AffiliateNotice />)
-    await waitFor(() => expect(container.innerHTML).toBe(''))
+    harness(<AffiliateNotice />)
+    await waitFor(() => expect(get).toHaveBeenCalled())
+    expect(screen.queryByTestId('affiliate-notice')).toBeNull()
 
     cleanup()
     get.mockResolvedValue(payload(BASE))

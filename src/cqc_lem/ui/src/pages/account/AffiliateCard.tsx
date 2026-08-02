@@ -40,8 +40,12 @@ export default function AffiliateCard() {
     }
   }
 
-  const trialEnds = data.trial_ends_at
-    ? new Date(data.trial_ends_at).toLocaleDateString(undefined, {
+  // The confirmation line reads the MUTATION result, never the query cache: only the flip response
+  // knows whether days actually moved, and the invalidate that follows it replaces the cache with
+  // the GET shape (no reward_days, no trial_ends_at) a beat later.
+  const flip = setStatus.data
+  const trialEnds = flip?.trial_ends_at
+    ? new Date(flip.trial_ends_at).toLocaleDateString(undefined, {
         year: 'numeric',
         month: 'short',
         day: 'numeric',
@@ -190,12 +194,12 @@ export default function AffiliateCard() {
         </p>
       )}
 
-      {setStatus.isSuccess && trialEnds && (
+      {flip && trialEnds && (
         <p className="text-sm font-medium text-green-600" data-testid="affiliate-trial-note">
-          {data.enrolled
+          {flip.enrolled
             ? `Joined — your trial runs to ${trialEnds}.`
-            : (data.reward_days ?? 0) > 0
-              ? `You've left the program — your trial returns to the standard ${data.standard_trial_days} days, ending ${trialEnds}.`
+            : flip.reward_days > 0
+              ? `You've left the program — your trial returns to the standard ${flip.standard_trial_days} days, ending ${trialEnds}.`
               : `You've left the program — you keep the trial days you earned, so your trial still ends ${trialEnds}.`}
         </p>
       )}

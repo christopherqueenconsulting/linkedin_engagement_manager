@@ -6,7 +6,8 @@ The acceptance criteria this file owns:
   - self-referral and duplicate referrals are rejected.
   - the per-user reward cap holds.
 """
-from unittest.mock import patch
+from typing import Any, List, Optional, Tuple
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -305,7 +306,8 @@ def test_enroll_user_is_a_no_op_when_ineligible():
         assert affiliate.enroll_user(1) == {}
 
 
-def _enroll(bonus_days, created, grant=None):
+def _enroll(bonus_days: int, created: bool,
+            grant: Optional[dict] = None) -> Tuple[List[Any], MagicMock]:
     """Run `enroll_user` against a stubbed db and return the emitted affiliate events."""
     row = {"status": affiliate.STATUS_ENROLLED, "created": created}
     with patch(f"{_AFF}.AFFILIATE_PROGRAM_ENABLED", True), \
@@ -330,9 +332,14 @@ def test_joining_is_counted_even_when_no_join_bonus_is_configured():
 
 
 def test_a_repeat_page_load_does_not_re_emit_the_enrollment_event():
-    events, grant = _enroll(bonus_days=0, created=False)
+    # The first call is asserted here too so this can never pass vacuously: if the patch ever stops
+    # intercepting (e.g. the import moves to module scope), BOTH halves fail rather than this one
+    # going green on an empty list it was never going to see events in.
+    first, _ = _enroll(bonus_days=0, created=True)
+    repeat, grant = _enroll(bonus_days=0, created=False)
+    assert [c.args[0] for c in first] == ["affiliate_enrolled"]
     assert grant.call_count == 0
-    assert events == []
+    assert repeat == []
 
 
 def test_a_configured_join_bonus_is_still_granted_and_reported():
