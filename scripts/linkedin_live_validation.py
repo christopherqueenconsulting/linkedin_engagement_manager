@@ -582,6 +582,27 @@ def visible_button_labels(driver, limit: int = 40) -> list:
     return labels
 
 
+# Candidate routes to a feed post's card root / text node. LinkedIn commonly keeps SEVERAL of
+# these alive at once and rotates which is canonical, so the probe counts them all and the fix
+# builds an ordered chain from whatever currently resolves. Ordered most-stable-first by kind:
+# data-testid, then semantic/role, then the legacy hashed-class anchors that CLAUDE.md records as
+# largely gone (kept precisely so a run can prove whether they are).
+_CARD_ROOT_CANDIDATES = [
+    ("testid_expandable_text", "[data-testid='expandable-text-box']"),
+    ("testid_any_text_box", "[data-testid*='text-box']"),
+    ("testid_update", "[data-testid*='update']"),
+    ("legacy_update_v2_text", ".feed-shared-update-v2 .update-components-text"),
+    ("legacy_update_v2", ".feed-shared-update-v2"),
+    ("update_components_text", ".update-components-text"),
+    ("data_urn", "[data-urn]"),
+    ("data_id", "[data-id]"),
+    ("article", "article"),
+    ("comment_button", "button[aria-label='Comment']"),
+    ("reaction_state_button", "button[aria-label^='Reaction button state']"),
+    ("composer_textbox", "div[role='textbox']"),
+]
+
+
 def reaction_anchor_kind(evidence: dict) -> str:
     """Which of the three anchors `react_to_post_inline` needs this control could serve as.
 
@@ -638,12 +659,32 @@ def probe_feed_reactions(driver, max_cards: int = 3, open_menu: bool = False,
     except Exception:
         pass
 
-    # Mirror the production feed walk exactly: find each post's comment textbox, then climb to the
-    # nearest ancestor carrying a Comment button. Guessing a card selector (div[data-id], article)
-    # finds nothing on the current SDUI — and a probe that samples different cards than the code it
-    # is grounding is worse than no probe.
+    # Count EVERY candidate, not just the one production happens to use. LinkedIn rotates these
+    # anchors and often keeps several routes to the same control alive at once, so the useful
+    # output is a ranked menu of what currently resolves — that is what a fallback chain is built
+    # from. Reporting only the production selector's count answers "is it broken?" and nothing
+    # about what to replace it with.
+    for name, sel in _CARD_ROOT_CANDIDATES:
+        try:
+            out.setdefault("candidate_counts", {})[name] = len(
+                driver.find_elements(By.CSS_SELECTOR, sel))
+        except Exception as e:
+            out.setdefault("candidate_counts", {})[name] = f"<{type(e).__name__}>"
+
+    # Then walk the production path itself: post text node -> nearest ancestor carrying a Comment
+    # button. Uses the SHIPPED constant when the running image has it, so the probe can never drift
+    # from the code it is grounding (and says which it used).
     try:
-        boxes = driver.find_elements(By.CSS_SELECTOR, "div[role='textbox']")
+        from cqc_lem.app.run_automation import _FEED_POST_TEXT_SEL as prod_sel
+        out["text_sel_source"] = "image"
+    except Exception:
+        prod_sel = ("[data-testid='expandable-text-box'], "
+                    ".feed-shared-update-v2 .update-components-text")
+        out["text_sel_source"] = "probe-carried"
+    out["text_sel"] = prod_sel
+
+    try:
+        boxes = driver.find_elements(By.CSS_SELECTOR, prod_sel)
         out["textboxes_found"] = len(boxes)
         cards = []
         for box in boxes:
@@ -662,6 +703,33 @@ def probe_feed_reactions(driver, max_cards: int = 3, open_menu: bool = False,
         out["error"] = f"card enumeration failed: {type(e).__name__}: {e}"
         return out
     out["cards_found"] = len(cards)
+
+    # The card walk climbs to the nearest ancestor carrying a comment affordance, so when it fails
+    # the decisive evidence is what that affordance ACTUALLY looks like now. Capture every control
+    # that mentions "comment" on any of its three identity attributes, so the replacement chain is
+    # built from observed anchors rather than from another guess.
+    controls = []
+    try:
+        for button in driver.find_elements(By.CSS_SELECTOR, "button, [role='button']"):
+            if not _safe_displayed(button):
+                continue
+            ev = element_evidence(button)
+            try:
+                testid = button.get_attribute("data-testid")
+                if testid:
+                    ev["testid"] = str(testid)[:120]
+            except Exception:
+                pass
+            blob = " ".join(str(v) for v in ev.values()).lower()
+            if "comment" in blob:
+                if ev not in controls:
+                    controls.append(ev)
+            if len(controls) >= 8:
+                break
+    except Exception as e:
+        controls.append({"error": f"{type(e).__name__}: {e}"})
+    out["comment_controls"] = controls
+
     if not cards:
         # Nothing to sample: hand back the screen's own controls so the next run knows whether this
         # was an auth wall, an empty feed, or a card selector that has itself drifted.
