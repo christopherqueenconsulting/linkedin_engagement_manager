@@ -10,7 +10,8 @@ Workflow: `.github/workflows/codeql-pr-gate.yml`
 Helper:   `scripts/codeql_pr_gate.py`
 Config:   `.github/codeql/codeql-config.yml`
 
-1. After the existing CodeQL workflows upload SARIF, the gate queries
+1. After the existing CodeQL workflows upload SARIF **for the commit being gated** (see
+   *Analysis freshness* below), the gate queries
    `/repos/{owner}/{repo}/code-scanning/alerts` for both the PR head and the base ref.
 2. It computes the **new** alerts introduced by the PR (by rule, file, line, and message).
 3. It buckets them:
@@ -69,11 +70,45 @@ The job needs:
 
 The verification CodeQL step uses `upload: false`, so no SARIF write permission is required.
 
+## Analysis freshness — "an analysis exists" is not "an analysis for THIS commit" (issue #904)
+
+The gate and `CodeQL Advanced` both fire on `pull_request` with no `needs:` between them, so they
+race. On every push after a PR's first, an analysis for `refs/pull/<n>/merge` already exists — from
+the *previous* commit. The original wait polled only "does the ref have any analysis", so it
+returned instantly and the gate then diffed the previous commit's alerts. Both directions are
+wrong, and the second one is the dangerous one:
+
+- **False red** — it reported alerts the push had already fixed (observed on #899: five alerts, all
+  fixed, alert IDs byte-identical to the previous scan, one of them naming a variable binding that
+  had been deleted). A bare re-run then passed with no code change, which teaches people to re-run
+  on red instead of reading the report.
+- **False green** — a genuinely new alert on the current commit is missed whenever the previous
+  commit was clean. Nobody investigates a green gate, so this would never have been noticed.
+
+The fix: the gate is told the SHA its ref resolves to and waits for *that commit's* analysis.
+
+- The workflow passes `--head-sha`. For a PR this is `github.sha` — the ephemeral **merge** commit
+  (`Merge <head> into <base>`), which is what CodeQL records as `commit_sha`. It is **not**
+  `pull_request.head.sha` and not the PR's `merge_commit_sha`.
+- "Complete" means every **category** the previous commit on that ref produced (e.g.
+  `/language:python`, `/language:python/advanced`, `/language:javascript-typescript`) has landed for
+  our commit — a partial upload is still a stale diff for the categories not yet in. The required
+  set is read off the ref rather than hardcoded, so adding or removing a CodeQL workflow needs no
+  change here. On a PR's first push there is no previous commit, so any analysis for the commit
+  counts.
+- `--wait-timeout` defaults to 900s. Before this fix the wait never actually elapsed, so the old
+  300s default was never spent; it now has to outlast a real CodeQL run plus queue time.
+
+This is the same shape as the v0.115.0 release incident in `docs/release-fast-lane.md` ("Step 2
+waits on the *run*, not on 'a release PR exists' — those look equivalent and are not").
+
 ## Fail-open behavior
 
-If the GitHub API is unavailable, the head ref has no CodeQL analysis after the timeout, or the
-base ref cannot be fetched, the gate logs a warning and exits successfully. A CodeQL outage must
-not block every PR.
+If the GitHub API is unavailable, the head ref has no CodeQL analysis **for the gated commit** after
+the timeout, or the base ref cannot be fetched, the gate logs a loud `::warning` (job summary
+included) and exits successfully. A CodeQL outage must not block every PR. It deliberately does
+**not** fall back to comparing an older commit's alerts — that is the #904 bug, and it is worse than
+not comparing at all.
 
 ## Notes
 

@@ -8,7 +8,8 @@ quality alerts reach main.
 It runs in a GitHub Actions workflow
 (`.github/workflows/codeql-pr-gate.yml`) and:
 
-1. Waits for the existing CodeQL workflows to upload SARIF for the PR head.
+1. Waits for the existing CodeQL workflows to upload SARIF *for the commit being
+   gated* — not merely for the ref (see `wait_for_analysis`).
 2. Fetches open code-scanning alerts for the head and base refs.
 3. Computes newly introduced alerts by (rule, file, line, message).
 4. Buckets them:
@@ -29,6 +30,9 @@ CLI:
   --repo OWNER/REPO
   --head-ref REF         Git REF the code-scanning API resolves (e.g. refs/pull/<n>/merge).
                          NOT a commit SHA — the API returns zero analyses for a bare SHA.
+  --head-sha SHA         Commit SHA that --head-ref resolves to (for a PR that is the
+                         MERGE commit, i.e. GITHUB_SHA — not the PR head). Without it the
+                         wait degrades to "any analysis for the ref", which is the #904 bug.
   --base-ref REF         Git REF to diff against (e.g. refs/heads/main).
   --pr-number NUMBER     PR to post comments to (optional).
   --branch BRANCH        Branch to push fixes to (optional; no push if
@@ -87,6 +91,8 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--repo", required=True, help="Owner/repo slug.")
     parser.add_argument("--head-ref", required=True,
                         help="Git REF for code-scanning (refs/pull/<n>/merge), NOT a SHA.")
+    parser.add_argument("--head-sha", default="",
+                        help="Commit SHA --head-ref resolves to (GITHUB_SHA on a PR).")
     parser.add_argument("--base-ref", required=True,
                         help="Git REF to diff against (refs/heads/main), NOT a SHA.")
     parser.add_argument(
@@ -101,7 +107,10 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--wait-timeout",
         type=int,
-        default=300,
+        # Before #904 the wait returned instantly on any push after the first, so 300s was
+        # never actually spent. Now that it waits for THIS commit it has to outlast a real
+        # CodeQL run (~2-4 min) plus queue time, or the gate just fails open every time.
+        default=900,
         help="Seconds to wait for CodeQL.",
     )
     parser.add_argument(
@@ -203,11 +212,18 @@ class GitHubClient:
             log_error("GitHub API POST failed", url=url, exc=exc)
             return False
 
-    def analyses_exist(self, ref: str) -> bool:
+    def list_analyses(self, ref: str) -> list[dict]:
+        """Analyses uploaded for ``ref``, newest first (as the API returns them).
+
+        One page is enough: the commit we are gating is the newest one on the ref, so
+        its analyses sit at the top.
+        """
         data = self.get(
-            "/code-scanning/analyses", params={"ref": ref, "per_page": 1}
+            "/code-scanning/analyses", params={"ref": ref, "per_page": 100}
         )
-        return bool(data and isinstance(data, list) and len(data) > 0)
+        if not isinstance(data, list):
+            return []
+        return [entry for entry in data if isinstance(entry, dict)]
 
     def fetch_alerts(self, ref: str) -> list[Alert]:
         alerts: list[Alert] = []
@@ -263,25 +279,95 @@ def _alert_from_raw(raw: dict) -> Optional[Alert]:
     )
 
 
-def wait_for_analysis(
-    client: GitHubClient, ref: str, timeout: int, interval: int
-) -> bool:
-    """Poll until CodeQL has uploaded at least one analysis for ``ref``.
+def categories_for_commit(analyses: list[dict], commit_sha: str) -> set[str]:
+    return {
+        entry.get("category")
+        for entry in analyses
+        if entry.get("commit_sha") == commit_sha and entry.get("category")
+    }
 
-    Returns True if analyses are found, False on timeout. Failing this check
-    is not fatal; the caller falls back to comparing whatever is available.
+
+def previous_commit_categories(
+    analyses: list[dict], commit_sha: str
+) -> set[str]:
+    """Categories CodeQL produced for the newest commit on the ref that ISN'T ours.
+
+    This self-calibrates what "analysis complete" means for this repo: whatever set of
+    categories ran for commit N-1 on this ref is what commit N has to produce before the
+    alerts are comparable. Reading it off the ref (rather than hardcoding a list) means a
+    workflow added or removed later needs no change here — and on a PR's very first push
+    there is no previous commit, so the set is empty and any analysis will do.
+    """
+    previous_sha = ""
+    categories: set[str] = set()
+    for entry in analyses:
+        sha = entry.get("commit_sha") or ""
+        if not sha or sha == commit_sha:
+            continue
+        if not previous_sha:
+            previous_sha = sha
+        if sha == previous_sha and entry.get("category"):
+            categories.add(entry["category"])
+    return categories
+
+
+def wait_for_analysis(
+    client: GitHubClient,
+    ref: str,
+    timeout: int,
+    interval: int,
+    commit_sha: str = "",
+) -> bool:
+    """Poll until CodeQL has uploaded analysis for ``commit_sha`` on ``ref``.
+
+    "An analysis exists for the ref" is NOT "an analysis exists for this commit" (#904):
+    on every push after the first, the previous commit's analysis is already there, so the
+    old check returned instantly and the gate then diffed the PREVIOUS commit's alerts —
+    reporting alerts the push had already fixed, and (the dangerous direction) missing
+    genuinely new ones whenever the previous commit was clean.
+
+    The gate and `CodeQL Advanced` both fire on `pull_request` with no ordering between
+    them, so this really is a race and not a rare one.
+
+    Returns True once the commit's analysis is complete, False on timeout. Timing out is
+    not fatal — the caller fails open, loudly.
     """
     deadline = time.time() + timeout
-    while time.time() < deadline:
-        if client.analyses_exist(ref):
-            log_info("CodeQL analysis available", ref=ref)
-            return True
+    while True:
+        analyses = client.list_analyses(ref)
+        if not commit_sha:
+            # No SHA to pin to (workflow_call dispatch): the best we can do is the
+            # pre-#904 behaviour.
+            if analyses:
+                log_info("CodeQL analysis available", ref=ref)
+                return True
+        else:
+            required = previous_commit_categories(analyses, commit_sha)
+            available = categories_for_commit(analyses, commit_sha)
+            if available and required <= available:
+                log_info(
+                    "CodeQL analysis available for commit",
+                    ref=ref,
+                    commit_sha=commit_sha,
+                    categories=sorted(available),
+                )
+                return True
         remaining = int(deadline - time.time())
+        if remaining <= 0:
+            break
         log_info(
-            "Waiting for CodeQL analysis", ref=ref, remaining_seconds=remaining
+            "Waiting for CodeQL analysis",
+            ref=ref,
+            commit_sha=commit_sha or "any",
+            remaining_seconds=remaining,
         )
-        time.sleep(interval)
-    log_warning("Timed out waiting for CodeQL analysis", ref=ref, timeout=timeout)
+        time.sleep(min(interval, remaining))
+    log_warning(
+        "Timed out waiting for CodeQL analysis",
+        ref=ref,
+        commit_sha=commit_sha or "any",
+        timeout=timeout,
+    )
     return False
 
 
@@ -702,7 +788,11 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # Wait for CodeQL results from the existing workflows.
     head_ready = wait_for_analysis(
-        client, args.head_ref, args.wait_timeout, args.wait_interval
+        client,
+        args.head_ref,
+        args.wait_timeout,
+        args.wait_interval,
+        commit_sha=args.head_sha,
     )
     if not head_ready:
         # LOUD, not a quiet warning. This gate silently timed out on all 24 of its runs and reported
@@ -710,10 +800,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         # executed. Failing open is still right — a flaky analysis must not block a merge — but it
         # has to be visible in the job summary, not buried in a log line nobody reads.
         message = (
-            f"::warning title=CodeQL gate did not run::No CodeQL analysis for {args.head_ref} "
-            f"after {args.wait_timeout}s — alerts were NOT compared. Failing open. If this "
-            f"repeats, the ref is probably wrong (the code-scanning API needs a git ref such as "
-            f"refs/pull/<n>/merge, not a commit SHA)."
+            f"::warning title=CodeQL gate did not run::No CodeQL analysis for "
+            f"{args.head_ref} at commit {args.head_sha or '(any)'} after "
+            f"{args.wait_timeout}s — alerts were NOT compared. Failing open. If this "
+            f"repeats, either CodeQL is slower than the timeout, or the ref is wrong (the "
+            f"code-scanning API needs a git ref such as refs/pull/<n>/merge, not a commit "
+            f"SHA). Alerts from an EARLIER commit are deliberately not compared: they "
+            f"report fixed issues and hide new ones (#904)."
         )
         print(message, flush=True)
         summary = os.environ.get("GITHUB_STEP_SUMMARY")
