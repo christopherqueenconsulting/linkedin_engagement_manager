@@ -1,0 +1,15 @@
+[Unit]
+Description=Run the LEM stack watchdog every 5 minutes
+Documentation=file:///opt/lem/docs/stack-watchdog.md
+
+[Timer]
+# 2 min after boot: a reboot that leaves containers in Created is exactly the failure this catches,
+# and waiting a full interval to notice wastes the window.
+OnBootSec=2min
+OnUnitActiveSec=5min
+# Detection latency is 5 min; the GRACE window (default 600s) decides when that becomes an alert.
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
