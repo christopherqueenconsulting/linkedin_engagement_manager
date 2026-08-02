@@ -90,14 +90,27 @@ The fix: the gate is told the SHA its ref resolves to and waits for *that commit
 - The workflow passes `--head-sha`. For a PR this is `github.sha` — the ephemeral **merge** commit
   (`Merge <head> into <base>`), which is what CodeQL records as `commit_sha`. It is **not**
   `pull_request.head.sha` and not the PR's `merge_commit_sha`.
-- "Complete" means every **category** the previous commit on that ref produced (e.g.
-  `/language:python`, `/language:python/advanced`, `/language:javascript-typescript`) has landed for
-  our commit — a partial upload is still a stale diff for the categories not yet in. The required
-  set is read off the ref rather than hardcoded, so adding or removing a CodeQL workflow needs no
-  change here. On a PR's first push there is no previous commit, so any analysis for the commit
-  counts.
+- "Complete" means every **category** the repo produces (`/language:python`,
+  `/language:python/advanced`, `/language:javascript-typescript` — two workflows, three matrix legs)
+  has landed for our commit. **A partial upload is a partial diff, not a fresh one**: the categories
+  land seconds to a minute apart, and comparing a head with two of them against a base with three
+  hides every alert in the missing one — the same false green, one step further in. This is not
+  theoretical: on PR #913's own gate run the wait cleared at `07:10:36` with javascript and
+  python/advanced in, while `/language:python` did not upload until `07:10:54`.
+- The required set is **calibrated off the API, never hardcoded** (`expected_categories`): the
+  largest category set among the newest 3 commits on the ref that aren't ours. Largest rather than
+  newest, because one commit can legitimately be short a category (a matrix leg failed, or its run
+  was still uploading when the next push superseded it) and calibrating off that one would let every
+  later commit through partial. A PR's **first** push has no earlier commit on its own ref, so the
+  set comes from the **base ref**, which runs the same workflows and always has one. If neither has
+  an analysis (a repo CodeQL has never scanned), the gate accepts what landed rather than blocking.
+  Adding a CodeQL workflow needs no change here; *removing* one costs up to 3 commits of fail-open
+  timeouts while the removed category ages out of the lookback.
 - `--wait-timeout` defaults to 900s. Before this fix the wait never actually elapsed, so the old
   300s default was never spent; it now has to outlast a real CodeQL run plus queue time.
+- `workflow_call` has one identifier for both the ref and the SHA, so it passes **no** `--head-sha`
+  and keeps the pre-#904 wait. Passing a ref string as a SHA would match no `commit_sha` at all and
+  burn the whole timeout on every call.
 
 This is the same shape as the v0.115.0 release incident in `docs/release-fast-lane.md` ("Step 2
 waits on the *run*, not on 'a release PR exists' — those look equivalent and are not").

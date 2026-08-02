@@ -219,7 +219,15 @@ class GitHubClient:
         its analyses sit at the top.
         """
         data = self.get(
-            "/code-scanning/analyses", params={"ref": ref, "per_page": 100}
+            "/code-scanning/analyses",
+            # sort/direction are the API defaults, sent explicitly because the
+            # newest-first order is what "the previous commit" is read off.
+            params={
+                "ref": ref,
+                "per_page": 100,
+                "sort": "created",
+                "direction": "desc",
+            },
         )
         if not isinstance(data, list):
             return []
@@ -287,28 +295,35 @@ def categories_for_commit(analyses: list[dict], commit_sha: str) -> set[str]:
     }
 
 
-def previous_commit_categories(
-    analyses: list[dict], commit_sha: str
+def expected_categories(
+    analyses: list[dict], commit_sha: str, lookback: int = 3
 ) -> set[str]:
-    """Categories CodeQL produced for the newest commit on the ref that ISN'T ours.
+    """The category set commit ``commit_sha`` is expected to produce on this ref.
 
-    This self-calibrates what "analysis complete" means for this repo: whatever set of
-    categories ran for commit N-1 on this ref is what commit N has to produce before the
-    alerts are comparable. Reading it off the ref (rather than hardcoding a list) means a
-    workflow added or removed later needs no change here — and on a PR's very first push
-    there is no previous commit, so the set is empty and any analysis will do.
+    Self-calibrates what "analysis complete" means instead of hardcoding a list: take the
+    newest ``lookback`` commits on the ref that AREN'T ours and use the largest category
+    set any of them produced. Largest, not newest — a single commit can legitimately be
+    missing a category (a matrix leg failed, or its run was still uploading when the next
+    push superseded it), and calibrating off that one would make a partial upload look
+    complete for every commit after it.
+
+    An empty result means we have nothing to calibrate against (a PR's very first push has
+    no previous commit); the caller falls back to the base ref, which always does.
     """
-    previous_sha = ""
-    categories: set[str] = set()
+    by_commit: dict[str, set[str]] = {}
     for entry in analyses:
         sha = entry.get("commit_sha") or ""
-        if not sha or sha == commit_sha:
+        category = entry.get("category")
+        if not sha or sha == commit_sha or not category:
             continue
-        if not previous_sha:
-            previous_sha = sha
-        if sha == previous_sha and entry.get("category"):
-            categories.add(entry["category"])
-    return categories
+        if sha not in by_commit:
+            if len(by_commit) >= lookback:
+                continue
+            by_commit[sha] = set()
+        by_commit[sha].add(category)
+    if not by_commit:
+        return set()
+    return max(by_commit.values(), key=len)
 
 
 def wait_for_analysis(
@@ -317,6 +332,7 @@ def wait_for_analysis(
     timeout: int,
     interval: int,
     commit_sha: str = "",
+    base_ref: str = "",
 ) -> bool:
     """Poll until CodeQL has uploaded analysis for ``commit_sha`` on ``ref``.
 
@@ -329,10 +345,18 @@ def wait_for_analysis(
     The gate and `CodeQL Advanced` both fire on `pull_request` with no ordering between
     them, so this really is a race and not a rare one.
 
+    "Complete" is every category the ref is expected to produce, not the first one to
+    land: the categories upload seconds to a minute apart, and comparing head-with-two
+    against a base-with-three hides every alert in the missing one. Observed on this PR's
+    own gate run — it accepted at 07:10:36 with `/language:javascript-typescript` and
+    `/language:python/advanced` in, while `/language:python` did not land until 07:10:54.
+
     Returns True once the commit's analysis is complete, False on timeout. Timing out is
     not fatal — the caller fails open, loudly.
     """
     deadline = time.time() + timeout
+    base_required: Optional[set[str]] = None
+    missing: list[str] = []
     while True:
         analyses = client.list_analyses(ref)
         if not commit_sha:
@@ -342,7 +366,22 @@ def wait_for_analysis(
                 log_info("CodeQL analysis available", ref=ref)
                 return True
         else:
-            required = previous_commit_categories(analyses, commit_sha)
+            required = expected_categories(analyses, commit_sha)
+            if not required and base_ref:
+                # A PR's first push has no earlier commit on its own ref. The base ref
+                # always has one, and runs the same CodeQL workflows, so it is the right
+                # calibration source — without it the first category to land would count
+                # as a complete analysis.
+                if base_required is None:
+                    base_required = expected_categories(
+                        client.list_analyses(base_ref), commit_sha
+                    )
+                    log_info(
+                        "Calibrating expected CodeQL categories off the base ref",
+                        base_ref=base_ref,
+                        categories=sorted(base_required),
+                    )
+                required = base_required
             available = categories_for_commit(analyses, commit_sha)
             if available and required <= available:
                 log_info(
@@ -352,6 +391,7 @@ def wait_for_analysis(
                     categories=sorted(available),
                 )
                 return True
+            missing = sorted(required - available)
         remaining = int(deadline - time.time())
         if remaining <= 0:
             break
@@ -359,6 +399,7 @@ def wait_for_analysis(
             "Waiting for CodeQL analysis",
             ref=ref,
             commit_sha=commit_sha or "any",
+            missing_categories=missing,
             remaining_seconds=remaining,
         )
         time.sleep(min(interval, remaining))
@@ -366,6 +407,7 @@ def wait_for_analysis(
         "Timed out waiting for CodeQL analysis",
         ref=ref,
         commit_sha=commit_sha or "any",
+        missing_categories=missing,
         timeout=timeout,
     )
     return False
@@ -793,6 +835,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         args.wait_timeout,
         args.wait_interval,
         commit_sha=args.head_sha,
+        base_ref=args.base_ref,
     )
     if not head_ready:
         # LOUD, not a quiet warning. This gate silently timed out on all 24 of its runs and reported

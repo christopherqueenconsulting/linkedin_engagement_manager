@@ -42,34 +42,63 @@ def _analysis(commit_sha: str, category: str) -> dict:
 
 
 class _FakeClient:
-    """Returns a different /analyses page per poll, then repeats the last one."""
+    """Returns a different /analyses page per poll, then repeats the last one.
 
-    def __init__(self, pages: list[list[dict]]) -> None:
+    ``base_pages`` answers any ref other than ``ref`` (the base-ref calibration lookup).
+    """
+
+    def __init__(self, pages: list[list[dict]], base: list[dict] | None = None) -> None:
         self.pages = pages
+        self.base = base
         self.calls = 0
+        self.base_calls = 0
 
     def list_analyses(self, ref: str) -> list[dict]:
+        if self.base is not None and ref.startswith("refs/heads/"):
+            self.base_calls += 1
+            return self.base
         self.calls += 1
         return self.pages[min(self.calls - 1, len(self.pages) - 1)]
 
 
-class TestPreviousCommitCategories:
-    def test_reads_only_the_newest_other_commit(self):
+class TestExpectedCategories:
+    def test_reads_the_newest_other_commit(self):
         analyses = [
             _analysis(NEW_SHA, PY),
             _analysis(OLD_SHA, PY),
             _analysis(OLD_SHA, JS),
+        ]
+        assert gate.expected_categories(analyses, NEW_SHA, lookback=1) == {PY, JS}
+
+    def test_takes_the_largest_set_not_the_newest(self):
+        """A previous commit whose run only half-uploaded must not lower the bar."""
+        analyses = [
+            _analysis(NEW_SHA, PY),
+            _analysis(OLD_SHA, JS),  # newest other commit — partial
+            _analysis("evenolder", PY),
+            _analysis("evenolder", JS),
             _analysis("evenolder", PY_ADVANCED),
         ]
-        assert gate.previous_commit_categories(analyses, NEW_SHA) == {PY, JS}
+        assert gate.expected_categories(analyses, NEW_SHA) == {PY, JS, PY_ADVANCED}
+
+    def test_lookback_bounds_how_far_back_it_calibrates(self):
+        analyses = [
+            _analysis(OLD_SHA, JS),
+            _analysis("c2", JS),
+            _analysis("c3", JS),
+            _analysis("c4", PY),
+            _analysis("c4", JS),
+            _analysis("c4", PY_ADVANCED),
+        ]
+        assert gate.expected_categories(analyses, NEW_SHA, lookback=3) == {JS}
 
     def test_empty_on_a_prs_first_push(self):
         analyses = [_analysis(NEW_SHA, PY)]
-        assert gate.previous_commit_categories(analyses, NEW_SHA) == set()
+        assert gate.expected_categories(analyses, NEW_SHA) == set()
 
     def test_ignores_entries_without_a_commit_or_category(self):
         analyses = [{"category": PY}, {"commit_sha": OLD_SHA}, _analysis(OLD_SHA, JS)]
-        assert gate.previous_commit_categories(analyses, NEW_SHA) == {JS}
+        assert gate.expected_categories(analyses, NEW_SHA) == {JS}
 
 
 class TestWaitForAnalysis:
@@ -109,10 +138,49 @@ class TestWaitForAnalysis:
             client, "refs/pull/899/merge", timeout=0, interval=0, commit_sha=NEW_SHA
         ) is False
 
-    def test_first_push_accepts_the_only_analysis_there_is(self):
+    def test_first_push_with_no_base_ref_accepts_what_it_has(self):
         client = _FakeClient([[_analysis(NEW_SHA, PY)]])
         assert gate.wait_for_analysis(
             client, "refs/pull/899/merge", timeout=0, interval=0, commit_sha=NEW_SHA
+        ) is True
+
+    def test_first_push_calibrates_off_the_base_ref(self):
+        """The live hole this closes: on PR #913's own run the gate accepted at 07:10:36
+        with javascript + python/advanced in, while /language:python landed at
+        07:10:54 — head was compared two-deep against a three-category base."""
+        base = [_analysis(OLD_SHA, PY), _analysis(OLD_SHA, JS),
+                _analysis(OLD_SHA, PY_ADVANCED)]
+        client = _FakeClient(
+            [
+                [_analysis(NEW_SHA, JS), _analysis(NEW_SHA, PY_ADVANCED)],
+                [_analysis(NEW_SHA, JS), _analysis(NEW_SHA, PY_ADVANCED),
+                 _analysis(NEW_SHA, PY)],
+            ],
+            base=base,
+        )
+        assert gate.wait_for_analysis(
+            client, "refs/pull/913/merge", timeout=60, interval=0,
+            commit_sha=NEW_SHA, base_ref="refs/heads/main",
+        ) is True
+        assert client.calls == 2
+        # Calibration is a fixed property of the ref — fetched once, not once per poll.
+        assert client.base_calls == 1
+
+    def test_first_push_partial_upload_times_out_against_the_base_ref(self):
+        base = [_analysis(OLD_SHA, PY), _analysis(OLD_SHA, JS),
+                _analysis(OLD_SHA, PY_ADVANCED)]
+        client = _FakeClient([[_analysis(NEW_SHA, JS)]], base=base)
+        assert gate.wait_for_analysis(
+            client, "refs/pull/913/merge", timeout=0, interval=0,
+            commit_sha=NEW_SHA, base_ref="refs/heads/main",
+        ) is False
+
+    def test_unanalyzed_base_ref_does_not_block_the_gate(self):
+        """No calibration source anywhere → fall back to accepting what landed."""
+        client = _FakeClient([[_analysis(NEW_SHA, PY)]], base=[])
+        assert gate.wait_for_analysis(
+            client, "refs/pull/913/merge", timeout=0, interval=0,
+            commit_sha=NEW_SHA, base_ref="refs/heads/main",
         ) is True
 
     def test_without_a_commit_sha_any_analysis_counts(self):

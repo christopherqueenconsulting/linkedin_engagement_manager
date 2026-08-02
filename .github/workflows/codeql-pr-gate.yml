@@ -70,7 +70,11 @@ jobs:
             echo "base_ref=${{ inputs.base-ref }}" >> "$GITHUB_OUTPUT"
             echo "analysis_ref=${{ inputs.head-ref }}" >> "$GITHUB_OUTPUT"
             echo "analysis_base=${{ inputs.base-ref }}" >> "$GITHUB_OUTPUT"
-            echo "analysis_sha=${{ inputs.head-ref }}" >> "$GITHUB_OUTPUT"
+            # Deliberately EMPTY. `head-ref` is the caller's single identifier and it is
+            # already used as `analysis_ref`; reusing it as the commit SHA would compare a
+            # ref string against `commit_sha` and never match, so the gate would burn the
+            # full timeout and fail open on every call. Empty keeps the pre-#904 wait.
+            echo "analysis_sha=" >> "$GITHUB_OUTPUT"
             echo "pr_number=${{ inputs.pr-number || '0' }}" >> "$GITHUB_OUTPUT"
             echo "branch=" >> "$GITHUB_OUTPUT"
           fi
