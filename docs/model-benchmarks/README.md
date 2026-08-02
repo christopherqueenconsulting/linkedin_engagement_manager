@@ -251,10 +251,10 @@ every month.
 
 | Tag | What was measured | Decision |
 |---|---|---|
-| `deepseek-v4-flash:0731` | Medium (2), same level as the build already deployed. Run against all three content tiers beside both the tier champion **and** the incumbent `deepseek-v4-flash` build (`bm-20260802-b84f19`): contract **80% vs 90%** on `lem-complex`, **80% vs 90%** on `lem-medium`, **40% vs 50%** on `lem-simple` | **Decline.** No `recommend` on any tier, and it is *below the build LEM already ships* on the contract rate everywhere. There is no quota argument to offset that — both builds are Medium. |
+| `deepseek-v4-flash:0731` | Medium (2), same level as the build already deployed. Run against all three content tiers beside both the tier champion **and** the incumbent `deepseek-v4-flash` build (`bm-20260802-b84f19`): contract **80% vs 90%** on `lem-complex`, **80% vs 90%** on `lem-medium`, **40% vs 50%** on `lem-simple` | **Decline.** No `recommend` on any tier: it did not beat the build LEM already ships on the contract rate anywhere, and there is no quota argument to offset that — both builds are Medium. Note the margins are one case wide, i.e. inside this suite's run-to-run spread (third bullet below), so this reads as *"did not carry the burden"*, not *"is the worse build"*. Either way it is a decline — adoption requires beating the incumbent, and a tie inside noise is not that. |
 | `kimi-k3` | Never benchmarked: the Ollama Cloud API answers **HTTP 402** — *"this model uses extra usage only (not included plan usage) and your extra usage balance is empty"* | **Decline.** Not a quality question. It is outside plan usage entirely, so its page publishes a per-token price ($3.00 / $15.00 per 1M, $0.30 cached) instead of a usage-level pip — the harness reads that as `unknown`, which the standing spend policy already holds. |
 
-Three things this run is worth reading for beyond the two verdicts:
+Four things this run is worth reading for beyond the two verdicts:
 
 - **`:0731` is a different build, not a re-tag.** The catalog carries it at 167GB against the
   unversioned tag's 140GB, and ollama.com dates them 2026-07-31 and three months apart, so the
@@ -270,15 +270,26 @@ Three things this run is worth reading for beyond the two verdicts:
   fixtures ninety minutes apart moved `deepseek-v4-flash:0731` on `lem-medium` from 100% to 80%
   contract, `qwen3.5:397b` on `lem-complex` from 90% to 70%, and `gpt-oss:20b` on `lem-simple` from
   40% to 50% (`bm-20260802-5fff18` and `bm-20260802-b84f19`, both committed beside this file). Ten
-  cases per tier means one case is ten points, so a single-digit gap between two models is noise.
-  This is what the ⚖️ *measurement variance* note says per case, stated at the level of a whole
-  scorecard: **a one-run margin under ~20 points is not a reason to swap anything.**
+  cases per tier means one case is ten points, so a one- or two-case gap between two models is
+  noise. This is what the ⚖️ *measurement variance* note says per case, stated at the level of a
+  whole scorecard: **a one-run margin under ~20 points is not a reason to swap anything.** It is
+  also not a reason to swap the other way: every margin in the `:0731` decision above is exactly
+  one case, which is why that decline rests on "no `recommend`" rather than on the gap's size.
+- **Declining `:0731` is not the same as being safe from it.** `.litellm/config.yaml` runs the
+  *unversioned* `deepseek-v4-flash` on two tiers, so those tiers follow whatever the catalog's
+  moving tag points at — and `scripts/model_health_check.py` diffs tag NAMES, so a re-point of that
+  name onto the 0731 build files no evaluation issue and swaps a live tier's model unbenchmarked.
+  The id was left unversioned anyway (it is the build measured at 90%, and a pin has upkeep of its
+  own on every path that keys the exact id string), but the detection gap is real and is tracked on
+  **#925**.
 
 Both runs are `in-runner-judge` mode with **no judge evidence** — the runner had no LiteLLM proxy to
-reach, so every case is `judge:timeout` and the judge expectations render as unscored. It changes
-nothing here: each of the six verdicts already fails a *deterministic* graded expectation, and the
-judge can only ever add a reason to reject. A run that intends to *promote* something still needs
-one.
+reach, so the judge answered nothing and every judge expectation renders as unscored. Read the
+scorecards' `Timeouts` column with that in mind: it counts only the cases that were *eligible* for
+the judge (a case that already failed deterministically is never judged), so it tracks the
+first-draft pass count, not the case count. None of that changes a verdict here — all nine gate
+verdicts across the two runs already fail a *deterministic* graded expectation, and the judge can
+only ever add a reason to reject. A run that intends to *promote* something still needs one.
 
 ## Running it
 
