@@ -122,7 +122,10 @@ export default function FeedbackWidget() {
   return (
     // Positioned by FloatingDock (issue #596); `relative` keeps the close button anchored to the
     // panel now that the panel is no longer the fixed element.
-    <div className="relative w-[22rem] max-w-[calc(100vw-2rem)] bg-white border border-gray-200 rounded-xl shadow-xl p-4">
+    // The width clamp is not the whole story on a phone: this form is ~350px tall and the dock
+    // grows it UPWARDS off the top of a landscape screen (worse with the keyboard open, which
+    // autoFocus guarantees), so it needs the same height cap the modals wear (issue #894).
+    <div className="relative w-[22rem] max-w-[calc(100vw-2rem)] max-h-viewport overflow-y-auto bg-white border border-gray-200 rounded-xl shadow-xl p-4">
       <button
         onClick={close}
         className="absolute top-2 right-3 text-gray-400 hover:text-gray-600 text-xl leading-none"

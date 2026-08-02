@@ -124,3 +124,17 @@ describe('LoginModal — strong authentication (issue #745, phase 2c)', () => {
     expect(post.mock.calls[0][1]).toEqual({})
   })
 })
+
+describe('LoginModal on a short viewport (issue #894)', () => {
+  // A phone in landscape is ~375px tall. Uncapped, the panel ran off the bottom of the screen and
+  // the Continue button went with it — nothing to scroll, because the panel itself was the overflow.
+  it('caps the panel to the viewport and scrolls its own content', () => {
+    post.mockResolvedValue({ data: { detail: { bypass: false, user_exists: true } } })
+    const { container } = render(<LoginModal />)
+    const overlay = container.querySelector('.fixed.inset-0') as HTMLElement
+    const panel = overlay.firstElementChild as HTMLElement
+    expect(panel.contains(screen.getByPlaceholderText('your@email.com'))).toBe(true)
+    expect(panel.className).toContain('max-h-viewport')
+    expect(panel.className).toContain('overflow-y-auto')
+  })
+})

@@ -11,3 +11,29 @@ body {
 #root {
   min-height: 100vh;
 }
+
+/* A scroll container whose scrollbar would cost more room than it earns — the 56px nav bar on a
+   phone (issue #894). Scrolling still works by touch, wheel and keyboard; only the gutter is gone. */
+@utility scrollbar-none {
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* The height cap every full-screen modal panel wears (issue #894). `vh` is the LARGE viewport —
+   it measures the screen as if the browser's address bar were retracted — so on the landscape
+   phone this cap exists for, 90vh is still taller than what the user can actually see and the
+   submit button stays below the fold. `dvh` tracks the visible viewport instead; the `vh` line
+   is the fallback for browsers that predate it (Safari < 15.4, Chrome < 108).
+   The fallback has to sit outside the @supports block: as two plain declarations of the same
+   property the minifier drops the first one, and the shipped CSS then caps nothing at all on a
+   browser without `dvh`. */
+@utility max-h-viewport {
+  max-height: 90vh;
+
+  @supports (height: 1dvh) {
+    max-height: 90dvh;
+  }
+}

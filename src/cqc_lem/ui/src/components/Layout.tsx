@@ -36,17 +36,22 @@ export default function Layout() {
   return (
     <div className="min-h-screen flex flex-col bg-gray-100">
       <nav className="bg-white border-b border-gray-200 sticky top-0 z-10">
-        <div className="max-w-5xl mx-auto px-4 flex items-center gap-6 h-14">
-          <span className="font-bold text-blue-600 text-lg">LEM</span>
+        <div className="max-w-5xl mx-auto px-4 flex items-center gap-3 sm:gap-6 h-14">
+          <span className="font-bold text-blue-600 text-lg shrink-0">LEM</span>
+          {/* On a phone the links no longer push the account controls off the right edge: this row
+              is the only thing allowed to shrink, and it scrolls sideways instead (issue #894). */}
           {user && (
-            <>
+            <div
+              data-testid="nav-links"
+              className="flex items-center gap-4 sm:gap-6 min-w-0 overflow-x-auto scrollbar-none"
+            >
               {navLinks.map(({ to, label, end }) => (
                 <NavLink
                   key={to}
                   to={to}
                   end={end}
                   className={({ isActive }) =>
-                    `text-sm font-medium transition-colors ${
+                    `text-sm font-medium transition-colors whitespace-nowrap ${
                       isActive
                         ? 'text-blue-600 border-b-2 border-blue-600 pb-0.5'
                         : 'text-gray-600 hover:text-gray-900'
@@ -61,7 +66,7 @@ export default function Layout() {
                   key={to}
                   to={to}
                   className={({ isActive }) =>
-                    `text-sm font-medium transition-colors ${
+                    `text-sm font-medium transition-colors whitespace-nowrap ${
                       isActive
                         ? 'text-purple-600 border-b-2 border-purple-600 pb-0.5'
                         : 'text-gray-600 hover:text-gray-900'
@@ -71,9 +76,9 @@ export default function Layout() {
                   {label}
                 </NavLink>
               ))}
-            </>
+            </div>
           )}
-          <div className="ml-auto flex items-center gap-3">
+          <div className="ml-auto flex items-center gap-3 shrink-0">
             {user ? (
               <>
                 <span className="text-xs text-gray-500 hidden sm:inline">

@@ -89,6 +89,30 @@ describe('AdminFeedbackPage (issue #793)', () => {
     )
   })
 
+  // The card rounds its corners with `overflow-hidden`, so an eight-column table that overflows it
+  // was CLIPPED on a phone — the Actions column simply did not exist (issue #894).
+  it('puts the table in a scrollable region so the card cannot clip its columns', async () => {
+    get.mockResolvedValue(listPayload([
+      {
+        id: 1,
+        email: 'user@x.com',
+        is_admin_reporter: false,
+        source: 'widget',
+        type_hint: 'bug',
+        body: 'Something is broken',
+        status: 'new',
+        github_issue_number: null,
+        created_at: '2026-07-29T12:00:00Z',
+      },
+    ]))
+    harness(<AdminFeedbackPage />)
+    await waitFor(() => expect(screen.getByText('user@x.com')).toBeTruthy())
+    const wrap = screen.getByTestId('feedback-table')
+    expect(wrap.className).toContain('overflow-x-auto')
+    expect(wrap.querySelector('table')).toBeTruthy()
+    expect(parseInt((wrap.firstElementChild as HTMLElement).style.minWidth, 10)).toBeGreaterThan(430)
+  })
+
   it('surfaces a failed review instead of swallowing it', async () => {
     get.mockResolvedValue(listPayload([
       {
