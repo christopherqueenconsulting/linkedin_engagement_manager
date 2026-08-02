@@ -6,7 +6,7 @@ tests pin the three transitions the Account page renders.
 """
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 pytestmark = pytest.mark.unit
 
@@ -134,7 +134,23 @@ class TestApprovalChallenge:
 
         status_marks["pending"].assert_called_once_with(42)
         status_marks["timed_out"].assert_not_called()
+        # Twice for the ONE sign-in: when the approval cleared, then at the cookie persist. The
+        # store carries the approval across the second write (test_login_status.py).
+        assert status_marks["signed_in"].call_args_list == [call(42), call(42)]
+
+    def test_a_landed_approval_is_recorded_even_if_the_login_dies_after_it(
+            self, status_marks, monkeypatch):
+        """The user tapped Yes; the login then fell over before it could persist cookies. Leaving
+        the record PENDING would keep the Account page asking for an approval already given."""
+        monkeypatch.setenv("LINKEDIN_APPROVAL_WAIT_SECONDS", "60")
+        with patch(f"{_MODULE}._persist_session_cookies"):
+            self._run_challenge([
+                "https://www.linkedin.com/checkpoint/challenge",
+                "https://www.linkedin.com/feed/",
+            ])
+
         status_marks["signed_in"].assert_called_once_with(42)
+        status_marks["timed_out"].assert_not_called()
 
 
 class TestUserIdLookup:

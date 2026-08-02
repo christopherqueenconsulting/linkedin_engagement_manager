@@ -457,6 +457,15 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
             except Exception as e:
                 log_warning("Failed to send login-approval email", exc=e, action_type="login")
 
+        def _approved() -> bool:
+            # Close the pending record HERE, not only at the cookie persist further down: the
+            # approval has landed, and a login that dies in between (feed never loads, a 429 on the
+            # way in) would otherwise leave the Account page still asking a user who already tapped
+            # 'Yes' to go and tap it — the exact blind spot #933 is about.
+            if uid:
+                mark_signed_in(uid)
+            return True
+
         def _gave_up() -> bool:
             # The pending record self-expires, but only after the SPA has spent minutes telling the
             # user we are still waiting. Close it out explicitly so the Account page says what
@@ -473,13 +482,13 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
             current = driver.current_url
             if _is_logged_in(current):
                 myprint("Device-approval confirmed — login proceeding")
-                return True
+                return _approved()
             if not _is_challenge_url(current):
                 # Left the checkpoint; give the post-approval redirect a moment to settle
                 time.sleep(3)
                 if _is_logged_in(driver.current_url):
                     myprint("Device-approval confirmed — login proceeding")
-                    return True
+                    return _approved()
         return _gave_up()
 
     def _handle_challenge(label: str) -> None:

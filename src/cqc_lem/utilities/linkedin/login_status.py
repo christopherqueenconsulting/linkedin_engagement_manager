@@ -60,6 +60,20 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _is_recent(iso: Optional[str], seconds: int) -> bool:
+    """Whether a timestamp we wrote is younger than `seconds`. A record that can't be parsed is
+    treated as old, so a stale approval is never re-claimed as this sign-in's."""
+    if not iso:
+        return False
+    try:
+        ts = datetime.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - ts).total_seconds() <= seconds
+
+
 def _read(user_id: int) -> Optional[dict]:
     client = shared_redis_client()
     if client is None:
@@ -114,20 +128,29 @@ def mark_approval_timed_out(user_id: int) -> None:
 
 
 def mark_signed_in(user_id: int) -> None:
-    """A sign-in completed. Recorded at the ONE place both success paths meet (the cookie
-    persist), so a session resumed from cookies and a fresh credential login report alike.
+    """A sign-in completed. Recorded at the cookie persist, where both of `login_to_linkedin`'s
+    success paths meet, and again the moment a device approval clears — a login that dies between
+    the two must not leave the SPA telling a user who already tapped Yes to go and tap it.
 
     `approval_cleared_at` is set only when this sign-in followed a pending approval — that is the
     exact fact the reporter could not see: the tap they already made was received.
     """
     existing = _read(user_id) or {}
     was_pending = existing.get("state") == str(LinkedInLoginState.APPROVAL_PENDING)
+    # The cookie persist writes again for the SAME sign-in the approval just cleared, so carry the
+    # approval across rather than erasing it. Bounded by the pending window — no single login
+    # attempt outlives it — so a routine sign-in weeks later never re-claims an old approval.
+    same_attempt = (existing.get("state") == str(LinkedInLoginState.SIGNED_IN)
+                    and _is_recent(existing.get("approval_cleared_at"), _pending_ttl_seconds()))
     now = _now()
     _write(user_id, {
         "state": str(LinkedInLoginState.SIGNED_IN),
         "signed_in_at": now,
-        "approval_requested_at": existing.get("approval_requested_at") if was_pending else None,
-        "approval_cleared_at": now if was_pending else None,
+        "approval_requested_at": (existing.get("approval_requested_at")
+                                  if was_pending or same_attempt else None),
+        "approval_cleared_at": (now if was_pending
+                                else existing.get("approval_cleared_at") if same_attempt
+                                else None),
     }, ttl=_ttl_seconds())
 
 

@@ -79,6 +79,45 @@ class TestLifecycle:
         assert done["approval_cleared_at"]
         assert done["approval_requested_at"] == pending["approval_requested_at"]
 
+    def test_the_cookie_persist_does_not_erase_the_approval_it_follows(self, fake_redis):
+        """One login records the sign-in twice — when the approval clears and again when the
+        cookies persist. The second write must not wipe the fact the user's tap landed."""
+        from cqc_lem.utilities.linkedin.login_status import (
+            get_login_status, mark_approval_pending, mark_signed_in)
+
+        mark_approval_pending(7)
+        mark_signed_in(7)
+        cleared = get_login_status(7)["approval_cleared_at"]
+        mark_signed_in(7)
+
+        status = get_login_status(7)
+        assert status["approval_cleared_at"] == cleared
+        assert status["approval_requested_at"]
+
+    def test_a_later_sign_in_does_not_re_claim_an_old_approval(self, fake_redis):
+        """Only the approval THIS login cleared counts — a routine sign-in weeks later must not
+        keep telling the user their device approval came through."""
+        from cqc_lem.utilities.linkedin.login_status import (
+            _key, get_login_status, mark_signed_in)
+
+        fake_redis.store[_key(7)] = json.dumps({
+            "state": "signed_in",
+            "signed_in_at": "2026-07-01T00:00:00+00:00",
+            "approval_requested_at": "2026-07-01T00:00:00+00:00",
+            "approval_cleared_at": "2026-07-01T00:00:00+00:00",
+        })
+
+        mark_signed_in(7)
+        status = get_login_status(7)
+        assert status["approval_cleared_at"] is None
+        assert status["approval_requested_at"] is None
+
+    def test_unparseable_timestamp_is_treated_as_old(self, fake_redis):
+        from cqc_lem.utilities.linkedin.login_status import _is_recent
+
+        assert _is_recent("not-a-time", 900) is False
+        assert _is_recent(None, 900) is False
+
     def test_sign_in_without_a_challenge_claims_no_approval(self, fake_redis):
         from cqc_lem.utilities.linkedin.login_status import get_login_status, mark_signed_in
 

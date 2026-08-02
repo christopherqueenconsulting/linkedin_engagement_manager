@@ -76,6 +76,9 @@ class TestLinkedInSignInStatusEndpoint:
                                                              mark_signed_in)
 
         mark_approval_pending(_UID)
+        # One login records the sign-in twice — when the approval clears, then at the cookie
+        # persist. The user's tap must still be visible after the second write.
+        mark_signed_in(_UID)
         mark_signed_in(_UID)
         detail = _get(client).json()["detail"]
         assert detail["state"] == "signed_in"
