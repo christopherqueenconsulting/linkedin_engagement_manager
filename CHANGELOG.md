@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.122.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.121.0...v0.122.0) (2026-08-02)
+
+
+### Features
+
+* **models:** the catalog scan sees a build swapped under an unchanged tag (closes [#925](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/925)) ([#927](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/927)) ([9a096d0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9a096d030109e4fa8354f1fb0acb7e3704dc8608))
+
+
+### Bug Fixes
+
+* **benchmarks:** a harness-wide outage is refused, not published as 0% (closes [#923](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/923)) ([#926](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/926)) ([d281e93](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d281e9316685926bc094bf27b6c9ce230e87393f))
+* **benchmarks:** recalibrate the deterministic floor so the gate can open (closes [#910](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/910)) ([#922](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/922)) ([7ce3adc](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7ce3adccd4d587baf814acab9cced21a0c8ca046))
+* **ci:** CodeQL PR gate waits for THIS commit's analysis, not any analysis (closes [#904](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/904)) ([#913](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/913)) ([08501f3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/08501f37a3118cec1e3d383f4d391ab332937ab1))
+* **ui:** mobile responsiveness — tables scroll, nav shrinks, modals fit (closes [#894](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/894)) ([#911](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/911)) ([b8d27da](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b8d27dae2e945f9e5a679e5d1e250f803b018589))
+
+
+### Documentation
+
+* **models:** the [#842](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/842) benchmark run — keep qwen3.5:397b and gpt-oss:120b (closes [#842](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/842)) ([#919](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/919)) ([6bf3fae](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6bf3fae37863741d94c28a93885e4d6429add192))
+* **models:** the [#921](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/921) tag scan — decline deepseek-v4-flash:0731 and kimi-k3 (closes [#921](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/921)) ([#924](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/924)) ([7c14f08](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7c14f08d79da9c75454f5980631fd4e2edf54483))
+
 ## [0.121.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.120.0...v0.121.0) (2026-08-02)
 
 
