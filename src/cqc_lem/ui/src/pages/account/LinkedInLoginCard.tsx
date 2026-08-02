@@ -4,11 +4,13 @@ import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
 import { useAccountReadiness } from '../../hooks/useAccountReadiness'
 import LinkedInSessionCard from '../../components/LinkedInSessionCard'
+import { useStepUp } from '../../hooks/useStepUp'
 
 const LI_AUTH_URL = '/api/auth/linkedin/'
 
 export default function LinkedInLoginCard() {
   const { user, sessionToken } = useAuth()
+  const { guard, stepUpModal } = useStepUp()
   const email = user?.email ?? ''
   const { data: readiness } = useAccountReadiness()
   const sessionOk = readiness?.items.find((i) => i.key === 'linkedin_session')?.ok ?? false
@@ -69,14 +71,18 @@ export default function LinkedInLoginCard() {
   // inside the warning window (issue #600, owner decision 2A).
   const showHealthyCountdown = !showLinkedInSection && isLinkedInConnected && !!tokenStatusData
 
-  // LinkedIn password save
+  // LinkedIn password save — step-up gated since 2c: a stored LinkedIn password is the worst
+  // single item in the database (design §1), so writing one has to cost a proven factor.
   const liPasswordMutation = useMutation({
     mutationFn: () =>
-      api.put('/user/linkedin-password', {
-        session_token: sessionToken,
-        linkedin_password: liPassword,
-      }),
-    onSuccess: () => {
+      guard(() =>
+        api.put('/user/linkedin-password', {
+          session_token: sessionToken,
+          linkedin_password: liPassword,
+        }),
+      ),
+    onSuccess: (result) => {
+      if (result === null) return
       setLiPassword('')
       setLiPasswordMsg({ ok: true, text: 'LinkedIn password saved.' })
       setTimeout(() => setLiPasswordMsg(null), 4000)
@@ -89,6 +95,7 @@ export default function LinkedInLoginCard() {
 
   return (
     <>
+      {stepUpModal}
       {/* LinkedIn connection — hidden when connected and token healthy */}
       {showLinkedInSection && (
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-4">

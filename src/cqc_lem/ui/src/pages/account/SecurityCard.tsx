@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
 import SettingsCard from '../../components/SettingsCard'
+import { useStepUp } from '../../hooks/useStepUp'
 
 type SessionRow = {
   id: number
@@ -37,6 +38,14 @@ const EVENT_LABELS: Record<string, string> = {
   sessions_revoked_all: 'All other devices signed out',
   email_change_requested: 'Email change requested',
   email_changed: 'Email changed',
+  factor_added: 'Two-factor method added',
+  factor_removed: 'Two-factor method removed',
+  second_factor_required: 'Second factor requested',
+  second_factor_failed: 'Failed second factor',
+  recovery_codes_generated: 'Recovery codes generated',
+  recovery_code_used: 'Recovery code used',
+  step_up_verified: 'Identity confirmed',
+  step_up_denied: 'Change blocked — identity not confirmed',
 }
 
 function when(value: string | null): string {
@@ -56,6 +65,9 @@ function when(value: string | null): string {
 export default function SecurityCard() {
   const { sessionToken } = useAuth()
   const queryClient = useQueryClient()
+  // Revoking a device and moving the email address are both step-up gated since 2c — `guard`
+  // re-runs the call once a factor has been proved, so neither mutation has to know that.
+  const { guard, stepUpModal } = useStepUp()
   const [newEmail, setNewEmail] = useState('')
   const [pin, setPin] = useState('')
   const [pinSent, setPinSent] = useState(false)
@@ -78,8 +90,9 @@ export default function SecurityCard() {
 
   const revoke = useMutation({
     mutationFn: (body: { session_id?: number; all_others?: boolean }) =>
-      api.post('/user/sessions/revoke', { session_token: sessionToken, ...body }),
-    onSuccess: () => {
+      guard(() => api.post('/user/sessions/revoke', { session_token: sessionToken, ...body })),
+    onSuccess: (result) => {
+      if (result === null) return
       queryClient.invalidateQueries({ queryKey: ['user-security'] })
       flash(true, 'Signed out.')
     },
@@ -88,8 +101,14 @@ export default function SecurityCard() {
 
   const changeInit = useMutation({
     mutationFn: () =>
-      api.post('/user/email/change/init', { session_token: sessionToken, new_email: newEmail.trim() }),
-    onSuccess: () => {
+      guard(() =>
+        api.post('/user/email/change/init', {
+          session_token: sessionToken,
+          new_email: newEmail.trim(),
+        }),
+      ),
+    onSuccess: (result) => {
+      if (result === null) return
       setPinSent(true)
       flash(true, `We sent a confirmation code to ${newEmail.trim()}.`)
     },
@@ -123,6 +142,7 @@ export default function SecurityCard() {
       title="Security"
       subtitle="Where you're signed in, what's happened on your account, and the email address it answers to."
     >
+      {stepUpModal}
       <div>
         <h4 className="text-sm font-semibold text-gray-800 mb-2">Signed-in devices</h4>
         {sessions.length === 0 ? (

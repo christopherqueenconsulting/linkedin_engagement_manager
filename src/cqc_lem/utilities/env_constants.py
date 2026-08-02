@@ -216,6 +216,34 @@ AUTH_IP_MAX_PER_HOUR      = int(get_constant_from_env('AUTH_IP_MAX_PER_HOUR', de
 PIN_MAX_ATTEMPTS          = int(get_constant_from_env('PIN_MAX_ATTEMPTS', default_value='5'))
 PIN_LOCKOUT_MINUTES       = int(get_constant_from_env('PIN_LOCKOUT_MINUTES', default_value='15'))
 
+# Strong authentication (issue #745, phase 2c). WebAuthn is origin-bound: the RP id must be the
+# registrable domain the SPA is served from and the origin must match exactly, or the browser
+# refuses the ceremony. Both are DERIVED from PUBLIC_BASE_URL so a deploy cannot end up with a
+# passkey bound to a hostname the app no longer answers on; override only for a split-host setup.
+# WEBAUTHN_EXTRA_ORIGINS is a comma list for the local dev origin (http://localhost:5173).
+WEBAUTHN_RP_ID            = get_constant_from_env('WEBAUTHN_RP_ID', default_value='')
+WEBAUTHN_RP_NAME          = get_constant_from_env('WEBAUTHN_RP_NAME',
+                                                  default_value='LinkedIn Engagement Manager')
+WEBAUTHN_EXTRA_ORIGINS    = get_constant_from_env('WEBAUTHN_EXTRA_ORIGINS', default_value='')
+# How long a proven factor keeps a session "fresh" for a credential-touching write (design §6.5).
+STEP_UP_MAX_AGE_MINUTES   = int(get_constant_from_env('STEP_UP_MAX_AGE_MINUTES', default_value='5'))
+# How long a ceremony in flight stays valid — a WebAuthn challenge or a pending second-factor login.
+AUTH_CHALLENGE_TTL_SECONDS = int(get_constant_from_env('AUTH_CHALLENGE_TTL_SECONDS',
+                                                       default_value='300'))
+RECOVERY_CODE_COUNT       = int(get_constant_from_env('RECOVERY_CODE_COUNT', default_value='10'))
+# Wrong codes a pending second-factor login survives before the handle is burned. This is the
+# DURABLE guessing bound (auth_challenges.attempts) — the Redis limiter in front of it fails open.
+SECOND_FACTOR_MAX_ATTEMPTS = int(get_constant_from_env('SECOND_FACTOR_MAX_ATTEMPTS',
+                                                       default_value='5'))
+# ...and the window those attempts are counted over, PER ACCOUNT rather than per pending login.
+# Starting the sign-in again issues a new handle, so a per-handle counter alone would let the same
+# 6-digit space be walked five guesses at a time forever; this is what makes the budget cumulative.
+SECOND_FACTOR_ATTEMPT_WINDOW_MINUTES = int(
+    get_constant_from_env('SECOND_FACTOR_ATTEMPT_WINDOW_MINUTES', default_value='15'))
+# Kill switch for the whole 2c surface. OFF returns the account to its 2b behaviour (email PIN is
+# sufficient, no step-up gate) WITHOUT touching a single enrolled factor, so a rollback is a flag.
+STRONG_AUTH_ENABLED       = isTrue(get_constant_from_env('STRONG_AUTH_ENABLED', default_value='True'))
+
 STRIPE_API_KEY            = get_constant_from_env('STRIPE_API_KEY')
 STRIPE_WEBHOOK_SECRET     = get_constant_from_env('STRIPE_WEBHOOK_SECRET')
 STRIPE_PRICE_ID_STARTER       = get_constant_from_env('STRIPE_PRICE_ID_STARTER')

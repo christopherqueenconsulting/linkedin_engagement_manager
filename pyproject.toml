@@ -47,6 +47,13 @@ capsolver = "^1.0"
 c2pa-python = ">=0.36,<1.0"
 cryptography = ">=42.0"
 
+# --- Strong authentication (issue #745, phase 2c) ---
+# All permissive and self-hosted, per docs/AUTH_SECURITY_DESIGN.md §6: webauthn (duo-labs
+# py_webauthn) is BSD-3-Clause, pyotp and argon2-cffi are MIT. No service, no third party.
+webauthn = "^3.0"
+pyotp = "^2.9"
+argon2-cffi = "^25.1"
+
 # --- Content processing ---
 markdownify = ">=0.13.1,<1.3.0"
 tldextract = "^5.1.2"

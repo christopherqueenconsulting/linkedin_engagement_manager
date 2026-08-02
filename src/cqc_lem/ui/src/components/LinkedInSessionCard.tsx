@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '../api/client'
 import { useAuth } from '../contexts/AuthContext'
+import { useStepUp } from '../hooks/useStepUp'
 
 // Connect LinkedIn by reusing the user's existing session cookie (li_at) so automation
 // resumes a trusted session instead of a password login (which trips LinkedIn's
@@ -16,6 +17,10 @@ export default function LinkedInSessionCard({
 }: { connected?: boolean; migrationNeeded?: boolean }) {
   const { sessionToken } = useAuth()
   const queryClient = useQueryClient()
+  // Storing a li_at IS handing over a LinkedIn session, so both writes below are step-up gated
+  // since 2c. Minting the extension token is gated for the same reason: that token is what later
+  // lets the extension post a cookie without a ceremony it could never run.
+  const { guard, stepUpModal } = useStepUp()
   const [liAt, setLiAt] = useState('')
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [showSteps, setShowSteps] = useState(false)
@@ -28,7 +33,10 @@ export default function LinkedInSessionCard({
   const copyToken = async () => {
     if (!sessionToken) return
     try {
-      const r = await api.post('/user/extension-token', { session_token: sessionToken })
+      const r = await guard(() =>
+        api.post('/user/extension-token', { session_token: sessionToken }),
+      )
+      if (r === null) return
       await navigator.clipboard.writeText(r.data.detail.session_token as string)
       setTokenCopied(true)
       setTimeout(() => setTokenCopied(false), 2500)
@@ -40,14 +48,17 @@ export default function LinkedInSessionCard({
 
   const mutation = useMutation({
     mutationFn: () =>
-      api.post('/user/linkedin-cookie', {
-        session_token: sessionToken,
-        li_at: liAt.trim(),
-        // Only ever true from the migration prompt — a user without a stored password has
-        // nothing to drop, and one who keeps the box unchecked keeps their fallback login.
-        drop_password: !!migrationNeeded && dropPassword,
-      }),
-    onSuccess: () => {
+      guard(() =>
+        api.post('/user/linkedin-cookie', {
+          session_token: sessionToken,
+          li_at: liAt.trim(),
+          // Only ever true from the migration prompt — a user without a stored password has
+          // nothing to drop, and one who keeps the box unchecked keeps their fallback login.
+          drop_password: !!migrationNeeded && dropPassword,
+        }),
+      ),
+    onSuccess: (result) => {
+      if (result === null) return
       setLiAt('')
       setMsg({
         ok: true,
@@ -66,6 +77,7 @@ export default function LinkedInSessionCard({
 
   return (
     <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-4">
+      {stepUpModal}
       <div>
         <h2 className="text-base font-semibold text-gray-700">
           LinkedIn Session <span className="text-red-500">*</span>
