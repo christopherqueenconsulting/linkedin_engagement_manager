@@ -169,14 +169,9 @@ the on-time/resource curve that sizes it. See `docs/SELENIUM_GRID.md` and `docs/
 ## Testing Standards
 
 - All new/modified code: ≥80% patch coverage enforced by Codecov.
-- **Unit tests** (`tests/unit/`): mock all external I/O.
-  - Mock OpenAI: `mock_openai_client` fixture (patches `cqc_lem.utilities.ai.client.OpenAI`)
-  - Mock DB: `mock_database_connection` fixture (patches `mysql.connector.connect`)
-  - Mock Selenium: `mock_selenium_driver` fixture
-- **Integration tests** (`tests/integration/`): use real MySQL + Redis service containers.
-- **E2E tests** (`tests/e2e/`): use real `selenium/standalone-chrome` container.
-- Run unit tests: `poetry run pytest tests/unit -v --tb=short`
-- Run with coverage: `poetry run pytest --cov=src/cqc_lem --cov-report=xml`
+- Three lanes: **unit** (`tests/unit/`, mock ALL I/O — fixtures `mock_openai_client` / `mock_database_connection` / `mock_selenium_driver`, plus hermetic autouse guards), **integration** (real MySQL + Redis containers), **e2e** (`selenium/standalone-chrome`).
+- Run: `poetry run pytest tests/unit -v --tb=short`; coverage: `poetry run pytest --cov=src/cqc_lem --cov-report=xml`.
+- Markers, fixtures, and lane selection: the **test-lanes** skill and `tests/README.md`.
 
 ## Observability
 
@@ -327,8 +322,7 @@ local dev → PR to main → CI gates pass → release-please tags vX.Y.Z
 - `linkedin-preview` service (external) was removed — preview is now the native `LinkedInPostPreview.tsx` component.
 - **LinkedIn SDUI:** the old `urn:`, `feed-shared-*`, and `comments-comment-*` DOM anchors are gone — prefer `data-testid` / `aria-label` selectors. The comment composer has NO `<form>`; the global nav is sticky and steals clicks from an unfocused composer; every composer lookup is scoped to its OWN post (`_post_composer_for_card` / `_reply_composer_for_comment`) with no page-wide fallback, and a miss is a DEBUG no-op, never a warning. Full posture: `docs/sdui-selenium-notes.md`.
 - **Emoji in Selenium:** ChromeDriver `send_keys` throws on non-BMP emoji — strip them before typing with `_strip_non_bmp()`.
-- **ENUM columns:** `logs.action_type` (and other status columns) are MySQL ENUMs. Adding a new value requires a migration — e.g. V37 added `'followup'` to `logs.action_type`. Migrations live in `compose/local/database/migrations/`. New migrations use **TIMESTAMP** versions (`V<YYYYMMDDHHMMSS>__name.sql`, `date -u +%Y%m%d%H%M%S`) so two branches can never collide — e.g. `V20260726170427__add_comment_outcomes.sql` (issue #628) and
-`V20260726230423__add_content_quality_scores.sql` (issue #630).
+- **ENUM columns:** `logs.action_type` (and other status columns) are MySQL ENUMs — adding a value requires a migration. New migrations use **TIMESTAMP** versions so two branches can never collide; naming + rules: the **db-migration** skill and `compose/local/database/migrations/README.md`.
 - **Unified content core:** newsletters, posts, AND comments draw framework (blueprints/variety), research, and alignment from `utilities/ai/content_framework.py` / `content_research.py` / `content_alignment.py`. Do NOT add parallel per-content-type prompt helpers — extend the shared menus/engine. Comments carry their own **quality contract + similarity gate** (issue #617) that SKIPS the post (`generate_ai_response` returns `None`) after `COMMENT_GATE_MAX_ATTEMPTS` failed regenerations. The **story bank** (issue #620) is the FACT half; the **deck reference gate** (#728) is the save-worthiness half; the **deterministic slop lint** (issue #625, `slop_lint.py`) BLOCKS on five HARD checks and only advises on four WARN checks. Full posture: `docs/content-core.md`.
 - **Content mix (70/20/10) governor:** every planned post carries a mix class in `posts.content_mix` — `value` (70%) / `authority` (20%) / `promo` (10%, forced `case_snapshot` blueprint). **Promo CTAs are always an ARTIFACT** (lead magnet / newsletter) — a meeting ask is banned in the prompts and repaired deterministically; any that survives HOLDS the post at PENDING via the `meeting_cta` quality gate. Full posture: `docs/content-core.md`.
 - **Stale lazy chunks after a deploy (issue #743):** zero-downtime covers the server; a browser tab open across a release is the other half — a code-split chunk fetched after the release ships 404s on a hash the new image no longer has, and it reads as "the feature is broken," not "reload me." Three layers cover it: asset **retention** (both colors serve a live-bundle miss out of a shared archive volume), a **one-shot reload** on import failure (loop-guarded, skipped when offline), and proactive **new-version awareness** that polls `/api/app-info` and prompts rather than reloading. Full posture: `docs/spa-deploy-freshness.md`.
