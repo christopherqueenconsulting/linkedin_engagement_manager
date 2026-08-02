@@ -18,11 +18,24 @@ The comment overflow "…" menu is hover-hidden, not click-revealed.
 `_focus_composer()` centers the composer first. A top-of-viewport composer has its click stolen
 by the nav's `<svg>`: `ElementClickInterceptedException ... at point (x, 9)` (issue #815).
 
-## Every composer lookup is scoped to its OWN card
+## Every composer lookup is scoped to its OWN post
 
-`parent_element=card` — a document-wide `div[role='textbox']` returns an EARLIER post's
-still-mounted composer, which is the real y=9 source AND a comment landing on the wrong post.
-There is no fallback: no composer on this card = skip it (issue #876).
+A document-wide `div[role='textbox']` returns an EARLIER post's still-mounted composer, which is
+the real y=9 source AND a comment landing on the wrong post (issue #876).
+
+`_post_composer_for_card()` is the only thing that decides which box a post's comment is typed
+into. Order: a rendered box inside the card wins; otherwise `_single_post_scope()` widens to the
+widest ancestor that still holds exactly ONE comment action — the card is only the NEAREST ancestor
+carrying that action, and LinkedIn does not always mount the comment section inside it, which is
+why a card-scoped lookup missed on every post of every group run (issue #916). A box starting
+ABOVE the card is rejected outright (the share box, or one left open on a post we already did), and
+a box labelled `creating comment` beats an unlabelled one (a reply box under someone's comment is a
+`role=textbox` too). No box of ours = skip the post; there is still no page-wide fallback.
+
+A miss is an expected no-op and is logged DEBUG *inside* the resolver, like the reply one — the
+per-card `log_warning` it replaced escalated to ERROR and filed a defect for a post we skip by
+design. It polls `_COMPOSER_MOUNT_POLLS` times rather than burning
+`WAIT_DEFAULT_TIMEOUT x (MAX_WAIT_RETRY + 1)` (~35s) on a card that never opened one.
 
 ## A reply composer is resolved ONE way, for both reply paths
 
