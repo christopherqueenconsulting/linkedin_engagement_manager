@@ -72,6 +72,14 @@ _BANNED_FRAGMENTS = ("i'm sorry", "i am sorry", "i cannot", "i can't", "i am una
 _MIN_PROMPT_CHARS = 60
 _MAX_PROMPT_CHARS = 2400
 
+# Generous on purpose. lem-medium is served by a REASONING model (deepseek-v4-flash), whose
+# thinking tokens are billed against the same budget before a single character of JSON is
+# emitted. At 600 the whole budget went to reasoning and the response came back EMPTY with
+# finish_reason='length' — so the brief failed validation, retried, failed again, and every
+# image silently rendered from the bland deterministic template. A real brief costs ~870
+# completion tokens including reasoning; this leaves headroom for a longer one.
+_BRIEF_MAX_TOKENS = 2500
+
 
 @dataclass
 class ImageBrief:
@@ -122,6 +130,7 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
         + (f"Additional direction: {extra_direction}\n" if extra_direction else "")
         + f"\nHere is the content the image must represent:\n<content>{content}</content>")
 
+    reason = "unknown"
     for attempt in (1, 2):
         try:
             response = _call_llm(
@@ -129,21 +138,33 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                 messages=[{"role": "system", "content": _SYSTEM_PROMPT},
                           {"role": "user", "content": user_prompt}],
                 temperature=0.6,
-                max_tokens=600,
+                max_tokens=_BRIEF_MAX_TOKENS,
                 response_format={"type": "json_object"},
             )
-            parsed = json.loads(response.choices[0].message.content)
+            choice = response.choices[0]
+            raw = choice.message.content or ""
+            if not raw.strip():
+                # The shape an exhausted token budget takes: finish_reason='length', no content.
+                reason = f"empty response (finish_reason={getattr(choice, 'finish_reason', None)})"
+                log_debug("Image brief came back empty", surface=surface, attempt=attempt,
+                          ai_model="lem-medium", reason=reason)
+                continue
+            parsed = json.loads(raw)
             if _valid(parsed):
                 return ImageBrief(prompt=str(parsed["prompt"]).strip(), ratio=ratio,
                                   surface=surface, style_preset=preset,
                                   focal_concept=str(parsed["focal_concept"]).strip())
+            reason = "failed validation (length bounds or refusal phrasing)"
             log_debug("Image brief failed validation — retrying", surface=surface,
                       attempt=attempt, ai_model="lem-medium")
         except Exception as e:
             # One condition, ONE warning: the fallback below carries it — per-attempt noise
             # would double-file the same fault with the escalation cron.
+            reason = f"{type(e).__name__}: {e}"[:120]
             log_debug("Image brief attempt failed", error=str(e), ai_model="lem-medium",
                       attempt=attempt)
+    # Carry WHY on the warning: this fell back on every generation for weeks and the message
+    # alone gave no way to tell an outage from an empty response from a validation reject.
     log_warning("Image brief fell back to the deterministic template", surface=surface,
-                action_type="image_brief")
+                action_type="image_brief", reason=reason)
     return _fallback_brief(content, surface=surface, ratio=ratio, context=context)
