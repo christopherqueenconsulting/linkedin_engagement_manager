@@ -527,6 +527,21 @@ class TestSurfacesDoNotDrift:
         called = {_scope_path(m) for m in re.findall(r"/api/[A-Za-z0-9\-_/]+", popup)}
         assert called == set(_EXTENSION_SESSION_SURFACE)
 
+    def test_the_extension_surface_is_one_path_and_one_METHOD(self):
+        """A surface entry is a PATH, and a path is method-blind. Adding `GET /user/linkedin-cookie`
+        later would hand every extension token — including a stolen one — a READ of the LinkedIn
+        cookie it never had, with nothing in the source saying so and no other test noticing. This
+        is what says so: the entry the extension POSTs to must stay POST-only, or the surface has to
+        be widened deliberately."""
+        from cqc_lem.api.main import _EXTENSION_SESSION_SURFACE, _scope_path, app, router
+
+        served: dict = {}
+        for r in list(router.routes) + list(app.routes):
+            key = _scope_path(getattr(r, "path", None))
+            if key in _EXTENSION_SESSION_SURFACE:
+                served.setdefault(key, set()).update(getattr(r, "methods", None) or set())
+        assert served == {"/user/linkedin-cookie": {"POST"}}
+
 
 class _Allowed:
     allowed = True

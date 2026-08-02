@@ -57,6 +57,30 @@ describe('StrongFactorPrompt', () => {
     expect(screen.queryByTestId('strong-factor-prompt')).toBeNull()
   })
 
+  it('a dismissal does not swallow a deadline the operator MOVED', () => {
+    // Bringing the date forward is the dangerous direction: a "Not now" from weeks ago must not be
+    // what stops someone hearing that the cutover is now sooner than they were told.
+    harness()
+    fireEvent.click(screen.getByRole('button', { name: 'Not now' }))
+    cleanup()
+    auth.strongFactorDeadline = '2098-06-01T00:00:00Z'
+    harness()
+    expect(screen.getByTestId('strong-factor-prompt').textContent).toContain(
+      new Date(auth.strongFactorDeadline!).toLocaleDateString(),
+    )
+  })
+
+  it('a dismissal does not swallow the deadline actually arriving', () => {
+    // "From <date>" and "from your next sign-in" are different notices, and the second one is the
+    // urgent one. Dismissing the first must not be what hides it.
+    harness()
+    fireEvent.click(screen.getByRole('button', { name: 'Not now' }))
+    cleanup()
+    auth.strongFactorDeadline = '2020-01-01T00:00:00Z'
+    harness()
+    expect(screen.getByTestId('strong-factor-prompt').textContent).toContain('From your next sign-in')
+  })
+
   it('a user who ENROLS never sees it again, dismissal or not', () => {
     // The server stops sending strong_factor_prompt the moment a factor exists, which is why the
     // dismissal is only ever browser state — it can hide the nudge, never the deadline.

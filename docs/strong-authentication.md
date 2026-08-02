@@ -204,12 +204,16 @@ does not recognise — a typo, a hand-edited row, a scope some later phase adds 
 up — is **refused**, not waved through. Deriving "unrestricted" from "has no surface entry" would
 have made the table itself the opt-in thing this whole design exists to remove.
 
-**Two drift guards, because both surfaces are path literals.** `tests/unit/api/test_session_scopes.py`
+**Three drift guards, because both surfaces are path literals.** `tests/unit/api/test_session_scopes.py`
 asserts every surface entry is a route the router actually serves — rename a route and the `enroll`
 surface silently becomes a lockout, since the gate's own fetch would 403 — and asserts the extension
 surface EQUALS the set of `/api` paths `browser_extension/popup.js` fetches, in both directions: a
 path the extension calls but the surface omits breaks the reconnect click, and a surface entry the
-extension never calls is blast radius handed to a stolen token for nothing.
+extension never calls is blast radius handed to a stolen token for nothing. The third covers the
+axis a path literal cannot express: **a surface entry is method-blind**, so adding
+`GET /user/linkedin-cookie` later would hand every extension token — including a stolen one — a READ
+of the LinkedIn cookie, with nothing in the source saying so. The guard pins that entry to `POST`
+alone, so widening it has to be a deliberate edit to a test that explains why.
 
 **The hold is decided in one place on the minting side too.** `_mint_login_session` is what every
 PIN login path calls; the strong-factor login paths (`/auth/passkey/login/complete`,
@@ -267,6 +271,13 @@ Two operator notes:
 Nobody meets the deadline cold: `StrongFactorPrompt` appears as soon as a date is scheduled, says
 when, and links to the Security card. It is dismissible in the browser only — enrolling is what ends
 it for good, because the server stops sending `strong_factor_prompt` the moment a factor exists.
+
+**A dismissal is stored against the NOTICE it dismissed, not as a permanent "seen it"**, or the
+claim above would not survive its first `Not now`. Two things are new information and neither may be
+swallowed by a click from weeks ago: the operator **moving** the date — bringing it forward is the
+dangerous direction, since the person was told a later one — and the date **arriving**, which
+changes the message from "from `<date>`" to "from your next sign-in". Each is a different notice, so
+each is shown once more.
 
 ## Ceremony state
 

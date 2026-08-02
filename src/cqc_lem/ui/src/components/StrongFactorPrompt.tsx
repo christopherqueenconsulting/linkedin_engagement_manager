@@ -20,16 +20,23 @@ function deadlineLabel(iso: string | null): string | null {
  * It is dismissible, and dismissal is deliberately BROWSER state — enrolling is what ends the
  * prompt for good (the server stops sending `strong_factor_prompt` the moment a factor exists), so
  * a dismissal that outlived the deadline could not hide the gate that follows it.
+ *
+ * A dismissal is stored against the NOTICE it dismissed, not as a permanent "seen it". "Nobody
+ * meets the deadline cold" is only true if a `Not now` from weeks ago cannot swallow new
+ * information — and there are two kinds: an operator moving the date (bringing it FORWARD is the
+ * dangerous direction) and the date actually arriving, which changes what this says from "from
+ * <date>" to "your next sign-in". Either one is a different notice, so either one is shown again.
  */
 export default function StrongFactorPrompt() {
   const { strongFactorPrompt, strongFactorDeadline, enrollmentRequired } = useAuth()
-  const [dismissed, setDismissed] = useState(() => localStorage.getItem(DISMISS_KEY) === '1')
-
-  // The gate supersedes the nudge: once the session is held there is nothing left to warn about.
-  if (!strongFactorPrompt || enrollmentRequired || dismissed) return null
+  const [dismissedNotice, setDismissedNotice] = useState(() => localStorage.getItem(DISMISS_KEY))
 
   const when = deadlineLabel(strongFactorDeadline)
   const overdue = !!strongFactorDeadline && new Date(strongFactorDeadline) <= new Date()
+  const notice = `${strongFactorDeadline ?? 'none'}|${overdue ? 'due' : 'upcoming'}`
+
+  // The gate supersedes the nudge: once the session is held there is nothing left to warn about.
+  if (!strongFactorPrompt || enrollmentRequired || dismissedNotice === notice) return null
 
   return (
     <div
@@ -53,8 +60,8 @@ export default function StrongFactorPrompt() {
         <button
           type="button"
           onClick={() => {
-            localStorage.setItem(DISMISS_KEY, '1')
-            setDismissed(true)
+            localStorage.setItem(DISMISS_KEY, notice)
+            setDismissedNotice(notice)
           }}
           className="text-xs font-semibold text-amber-900 hover:underline whitespace-nowrap"
         >
