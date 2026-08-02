@@ -3831,10 +3831,16 @@ def count_recovery_codes(user_id: int) -> tuple[int, int]:
 
 
 def create_auth_challenge(purpose: str, expires_at: datetime, user_id: Optional[int] = None,
-                          challenge: Optional[str] = None) -> Optional[str]:
+                          challenge: Optional[str] = None,
+                          initial_attempts: int = 0) -> Optional[str]:
     """Open a ceremony and return the HANDLE to the caller only — the row stores its SHA-256, the
     same posture as a session token. Expired rows are swept opportunistically here rather than by a
-    beat: the table is only ever written on this path, so this is where growth happens."""
+    beat: the table is only ever written on this path, so this is where growth happens.
+
+    `initial_attempts` carries a guessing budget already spent into the new row. Without it the
+    per-handle counter is no bound at all on a second-factor login: a fresh handle costs one more
+    round of the stage before it, so the same 6-digit code space could be walked five guesses at a
+    time forever (see `count_challenge_attempts`)."""
     import secrets as _secrets
     handle = _secrets.token_urlsafe(24)
     connection = get_db_connection()
@@ -3843,9 +3849,11 @@ def create_auth_challenge(purpose: str, expires_at: datetime, user_id: Optional[
         cursor.execute("DELETE FROM auth_challenges WHERE expires_at < %s",
                        (datetime.now(timezone.utc) - timedelta(hours=1),))
         cursor.execute(
-            """INSERT INTO auth_challenges (handle_hash, user_id, purpose, challenge, expires_at)
-               VALUES (%s, %s, %s, %s, %s)""",
-            (hash_session_token(handle), user_id, purpose, challenge, expires_at),
+            """INSERT INTO auth_challenges (handle_hash, user_id, purpose, challenge, expires_at,
+                                            attempts)
+               VALUES (%s, %s, %s, %s, %s, %s)""",
+            (hash_session_token(handle), user_id, purpose, challenge, expires_at,
+             max(0, int(initial_attempts))),
         )
         connection.commit()
         return handle
@@ -3940,6 +3948,55 @@ def claim_auth_challenge_attempt(handle: str, purpose: str,
     except mysql.connector.Error as err:
         myprint(f"Could not claim auth challenge attempt ({purpose}) | Error: {err}")
         return None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def count_challenge_attempts(user_id: int, purpose: str, since: datetime) -> int:
+    """How many guesses this account has already spent on `purpose` since `since`.
+
+    The per-handle counter in `claim_auth_challenge_attempt` bounds ONE pending login; this bounds
+    the ACCOUNT. They are not the same bound, and only this one is real: re-running the stage that
+    issues the handle mints a fresh counter, so an attacker who can reach that stage (an unbounded
+    PIN bypass, or a compromised mailbox — threat T2, the one 2c exists to defeat) otherwise gets
+    five guesses per round with nothing accumulating."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """SELECT COALESCE(SUM(attempts), 0) FROM auth_challenges
+                WHERE user_id = %s AND purpose = %s AND created_at >= %s""",
+            (user_id, purpose, since),
+        )
+        row = cursor.fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+    except mysql.connector.Error as err:
+        myprint(f"Could not count auth challenge attempts ({purpose}) | Error: {err}")
+        # Fail CLOSED: an unreadable counter must not read as an empty one, or the bound it exists
+        # to enforce disappears exactly when the database is unhappy.
+        return -1
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def clear_challenge_attempts(user_id: int, purpose: str) -> bool:
+    """Zero this account's spent guesses — called only after a factor actually verified. A correct
+    code is proof, and the same proof is what clears the Redis buckets on every other login path;
+    without it a user who fat-fingered a code stays part-throttled into their next sign-in."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE auth_challenges SET attempts = 0 WHERE user_id = %s AND purpose = %s",
+            (user_id, purpose),
+        )
+        connection.commit()
+        return True
+    except mysql.connector.Error as err:
+        myprint(f"Could not clear auth challenge attempts ({purpose}) | Error: {err}")
+        return False
     finally:
         cursor.close()
         connection.close()

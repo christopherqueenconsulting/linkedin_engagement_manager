@@ -235,6 +235,11 @@ RECOVERY_CODE_COUNT       = int(get_constant_from_env('RECOVERY_CODE_COUNT', def
 # DURABLE guessing bound (auth_challenges.attempts) — the Redis limiter in front of it fails open.
 SECOND_FACTOR_MAX_ATTEMPTS = int(get_constant_from_env('SECOND_FACTOR_MAX_ATTEMPTS',
                                                        default_value='5'))
+# ...and the window those attempts are counted over, PER ACCOUNT rather than per pending login.
+# Starting the sign-in again issues a new handle, so a per-handle counter alone would let the same
+# 6-digit space be walked five guesses at a time forever; this is what makes the budget cumulative.
+SECOND_FACTOR_ATTEMPT_WINDOW_MINUTES = int(
+    get_constant_from_env('SECOND_FACTOR_ATTEMPT_WINDOW_MINUTES', default_value='15'))
 # Kill switch for the whole 2c surface. OFF returns the account to its 2b behaviour (email PIN is
 # sufficient, no step-up gate) WITHOUT touching a single enrolled factor, so a rollback is a flag.
 STRONG_AUTH_ENABLED       = isTrue(get_constant_from_env('STRONG_AUTH_ENABLED', default_value='True'))

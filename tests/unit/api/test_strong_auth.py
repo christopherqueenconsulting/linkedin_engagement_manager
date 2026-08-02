@@ -44,6 +44,8 @@ def _quiet():
     with patch(f"{_M}.record_auth_event", return_value=True), \
          patch(f"{_M}.mark_email_verified", return_value=True), \
          patch(f"{_M}.finish_auth_challenge", return_value=True), \
+         patch(f"{_M}.count_challenge_attempts", return_value=0), \
+         patch(f"{_M}.clear_challenge_attempts", return_value=True), \
          patch(f"{_M}.clear_auth_limits"):
         yield
 
@@ -847,7 +849,11 @@ class TestTwoStageLoginSeams:
         cleared.assert_called_once()
         assert cleared.call_args.args[0] == _EMAIL
 
-    def test_the_bypass_path_clears_it_too(self, client):
+    def test_the_bypass_path_does_not_clear_it(self, client):
+        """The mirror image, and the reason the two branches differ: nothing is proved on the
+        bypass — no PIN is ever typed — so there are no legitimate typo counters to forgive, and
+        clearing them would let an unauthenticated caller reset every limiter in front of the
+        second factor once per request."""
         with patch(f"{_M}.check_auth_init", return_value=_Allowed()), \
              patch(f"{_M}.get_user_id", return_value=_UID), \
              patch(f"{_M}.send_pin_email", return_value=(True, True)), \
@@ -857,7 +863,90 @@ class TestTwoStageLoginSeams:
              patch(f"{_M}.clear_auth_limits") as cleared:
             resp = client.post("/api/auth/email/init", json={"email": _EMAIL})
         assert resp.json()["detail"]["second_factor_required"] is True
-        cleared.assert_called_once()
+        cleared.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# The second factor's guessing budget survives starting over (adversarial review, PR #906)
+# ---------------------------------------------------------------------------
+
+class TestSecondFactorBudget:
+    """`auth_challenges.attempts` bounds ONE pending login. Re-running the stage in front of it
+    mints a new handle and a new counter for free, and both ways in are inside the threat model —
+    the no-mail-provider bypass proves nothing, and a compromised mailbox (T2) mints PINs at will.
+    So the budget has to be counted per ACCOUNT and carried into the new handle."""
+
+    def _pin_login(self, client, spent: int):
+        with patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_M}.get_pin_lockout", return_value=None), \
+             patch(f"{_M}.hash_pin", return_value="h"), \
+             patch(f"{_M}.verify_pin_for_email", return_value=True), \
+             patch(f"{_M}.get_user_id", return_value=_UID), \
+             patch(f"{_M}.has_strong_factor", return_value=True), \
+             patch(f"{_M}.available_methods", return_value=["totp"]), \
+             patch(f"{_M}.create_auth_challenge", return_value="pending-handle") as challenge, \
+             patch(f"{_M}.count_challenge_attempts", return_value=spent):
+            resp = client.post("/api/auth/email/verify", json={"email": _EMAIL, "pin": "123456"})
+        return resp, challenge
+
+    def test_a_new_handle_inherits_what_the_account_already_spent(self, client):
+        resp, challenge = self._pin_login(client, spent=3)
+        assert resp.json()["detail"]["second_factor_required"] is True
+        assert challenge.call_args.kwargs["initial_attempts"] == 3
+
+    def test_a_spent_budget_refuses_to_issue_another_handle(self, client):
+        """Five guesses per round with unlimited rounds walks a 6-digit space. The 429 is what
+        makes the round cost something."""
+        resp, challenge = self._pin_login(client, spent=5)
+        assert resp.status_code == 429
+        challenge.assert_not_called()
+
+    def test_an_unreadable_budget_fails_closed(self, client):
+        """count_challenge_attempts returns -1 when the DB will not answer. A bound that reads as
+        empty exactly when the database is unhappy is not a bound."""
+        resp, challenge = self._pin_login(client, spent=-1)
+        assert resp.status_code == 429
+        challenge.assert_not_called()
+
+    def test_the_bypass_path_is_bounded_by_the_same_budget(self, client):
+        """The branch that needs no proof at all is the one that most needs it."""
+        with patch(f"{_M}.check_auth_init", return_value=_Allowed()), \
+             patch(f"{_M}.get_user_id", return_value=_UID), \
+             patch(f"{_M}.send_pin_email", return_value=(True, True)), \
+             patch(f"{_M}.has_strong_factor", return_value=True), \
+             patch(f"{_M}.available_methods", return_value=["totp"]), \
+             patch(f"{_M}.count_challenge_attempts", return_value=5), \
+             patch(f"{_M}.create_auth_challenge") as challenge:
+            resp = client.post("/api/auth/email/init", json={"email": _EMAIL})
+        assert resp.status_code == 429
+        challenge.assert_not_called()
+
+    def test_a_correct_code_clears_the_account_budget(self, client):
+        """A correct code is the proof that clears it — otherwise one earlier typo follows the user
+        into their next sign-in."""
+        with patch(f"{_M}.claim_auth_challenge_attempt",
+                   return_value={"user_id": _UID, "challenge": None, "attempts": 3}), \
+             patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_M}.verify_totp_code", return_value=True), \
+             patch(f"{_M}.create_session", return_value=_TOKEN), \
+             patch(f"{_M}.clear_challenge_attempts") as cleared:
+            resp = client.post("/api/auth/second-factor/verify",
+                               json={"pending_token": "p", "method": "totp", "code": "123456"})
+        assert resp.status_code == 200
+        cleared.assert_called_once_with(_UID, "second_factor")
+
+    def test_a_wrong_code_does_not_clear_it(self, client):
+        with patch(f"{_M}.claim_auth_challenge_attempt",
+                   return_value={"user_id": _UID, "challenge": None, "attempts": 2}), \
+             patch(f"{_M}.check_auth_verify", return_value=_Allowed()), \
+             patch(f"{_M}.get_user_email", return_value=_EMAIL), \
+             patch(f"{_M}.verify_totp_code", return_value=False), \
+             patch(f"{_M}.clear_challenge_attempts") as cleared:
+            resp = client.post("/api/auth/second-factor/verify",
+                               json={"pending_token": "p", "method": "totp", "code": "000000"})
+        assert resp.status_code == 401
+        cleared.assert_not_called()
 
     def test_the_public_passkey_begin_is_rate_limited(self, client):
         """Unauthenticated, and it writes a challenge row per call."""

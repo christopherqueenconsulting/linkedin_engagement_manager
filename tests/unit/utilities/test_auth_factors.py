@@ -56,8 +56,19 @@ class TestFactorState:
             assert af.available_methods(_UID) == [af.METHOD_TOTP]
 
     def test_passkeys_disappear_when_the_deployment_cannot_serve_them(self):
+        """...but the recovery codes do NOT. A deployment that loses its secure public origin
+        drops `passkey` from the list, and an account whose only factor is a passkey would then be
+        offered nothing at all — a demoted PIN with no way to finish it is a total lockout, which
+        is the exact thing the sheet of codes exists to prevent."""
         with patch(f"{_M}.list_auth_factors", return_value=[{"kind": "passkey"}]), \
              patch("cqc_lem.utilities.webauthn_util.passkeys_available", return_value=False), \
+             patch(f"{_M}.count_recovery_codes", return_value=(10, 10)):
+            assert af.available_methods(_UID) == [af.METHOD_RECOVERY]
+
+    def test_an_account_with_no_factor_is_offered_nothing_even_holding_codes(self):
+        """The other direction: recovery codes are not a factor, so they never appear on their own
+        — an account with none of the real ones never reaches the second stage at all."""
+        with patch(f"{_M}.list_auth_factors", return_value=[]), \
              patch(f"{_M}.count_recovery_codes", return_value=(10, 10)):
             assert af.available_methods(_UID) == []
 

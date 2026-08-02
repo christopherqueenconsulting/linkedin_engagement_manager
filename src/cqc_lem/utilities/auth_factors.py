@@ -86,7 +86,13 @@ def available_methods(user_id: int) -> list[str]:
 
     Passkey first: it is the only phishing-resistant one, and the only one where the user does
     nothing but touch a sensor. Recovery codes last, and only when unused ones exist — offering a
-    method that will certainly fail is worse than not offering it."""
+    method that will certainly fail is worse than not offering it.
+
+    Recovery codes are keyed on the account HOLDING a factor, not on this list already having
+    something in it. The difference is the one case they exist for: a deployment that loses its
+    secure public origin drops `passkey` from the list, and an account whose only factor is a
+    passkey would otherwise be offered nothing at all — a demoted PIN and no way to finish it is a
+    total lockout, which is precisely what the sheet of codes is supposed to prevent."""
     if not strong_auth_enabled():
         return []
     methods: list[str] = []
@@ -97,7 +103,7 @@ def available_methods(user_id: int) -> list[str]:
             methods.append(METHOD_PASSKEY)
     if AUTH_FACTOR_TOTP in kinds:
         methods.append(METHOD_TOTP)
-    if methods and count_recovery_codes(user_id)[0] > 0:
+    if kinds and count_recovery_codes(user_id)[0] > 0:
         methods.append(METHOD_RECOVERY)
     return methods
 

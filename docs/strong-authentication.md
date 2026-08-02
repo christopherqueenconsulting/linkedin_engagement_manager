@@ -193,11 +193,24 @@ Consuming on first touch would read as safer and is not: one mistyped digit woul
 only way back is the whole email round trip, on the single path that has no way around it. Set
 `SECOND_FACTOR_MAX_ATTEMPTS=1` to get that behaviour back.
 
+**The budget is per ACCOUNT, not per handle** (`SECOND_FACTOR_ATTEMPT_WINDOW_MINUTES`, default 15).
+A per-handle counter bounds one pending login and nothing else, because the stage in front of it
+hands out a new handle — and a new counter — for free, and both ways to reach that stage are inside
+the threat model: the no-mail-provider bypass needs no proof at all, and a compromised mailbox (T2)
+can mint PINs all day. Five guesses per round with unlimited rounds walks a 6-digit space. So
+`_begin_second_factor` sums the account's attempts over the window, refuses with **429** once the
+budget is gone, and seeds the new handle with what was already spent; a correct code clears the
+count outright (`clear_challenge_attempts`), so a user who mistyped once is not carrying it into
+their next sign-in. An unreadable count fails **closed** — a database that will not answer is not
+an empty budget.
+
 The shape of the refusal is load-bearing for the SPA: **401 means the code was wrong and the pending
 sign-in is still alive** (stay on the field), **400 means the handle is gone** — expired or out of
 attempts — so `LoginModal` sends the user back to the email step instead of retyping into a login
 that no longer exists. `clear_auth_limits` runs when the PIN validates, so the first stage's failed
-attempts can never throttle the second.
+attempts can never throttle the second — and it deliberately does **not** run on the
+no-mail-provider bypass, where nothing was proved and the only counters it could clear are an
+attacker's own.
 
 ## Schema
 
@@ -207,8 +220,8 @@ attempts can never throttle the second.
   index because a raw credential id is up to 1023 bytes and a truncated-prefix unique key would
   reject a legitimate authenticator.
 - `user_recovery_codes` — argon2id hashes; used rows are kept so the page can say "3 of 10 left".
-- `auth_challenges` — ceremonies in flight. `attempts` is the durable guessing bound on a pending
-  second-factor login.
+- `auth_challenges` — ceremonies in flight. `attempts` is the durable guessing bound, carried across
+  handles so it bounds the account and not just one pending login.
 - `sessions.last_verified_at`, `sessions.scope` (`full` / `extension` / `recovery`).
 
 ## Environment
@@ -222,6 +235,7 @@ attempts can never throttle the second.
 | `AUTH_CHALLENGE_TTL_SECONDS` | `300` | how long a ceremony may sit half-finished |
 | `RECOVERY_CODE_COUNT` | `10` | size of the sheet |
 | `SECOND_FACTOR_MAX_ATTEMPTS` | `5` | `1` = the handle dies on one wrong code |
+| `SECOND_FACTOR_ATTEMPT_WINDOW_MINUTES` | `15` | how long a spent guessing budget is remembered |
 | `STRONG_AUTH_ENABLED` | `true` | `false` rolls 2c back without deleting a factor |
 
 ## When a user loses everything

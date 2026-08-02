@@ -244,6 +244,43 @@ class TestChallenges:
         handle = db.create_auth_challenge("second_factor", expires, user_id=user_id)
         assert db.claim_auth_challenge_attempt(handle, "second_factor", 5) is None
 
+    def test_the_guessing_budget_is_counted_per_account_not_per_handle(self, user_id):
+        """A per-handle counter bounds one pending login and nothing else: starting the sign-in
+        again issues a fresh handle with a fresh counter. Summing the account's attempts over a
+        window is what turns five guesses per round into five guesses, full stop."""
+        expires = datetime.now(timezone.utc) + timedelta(minutes=5)
+        window_start = datetime.now(timezone.utc) - timedelta(minutes=15)
+
+        first = db.create_auth_challenge("second_factor", expires, user_id=user_id)
+        db.claim_auth_challenge_attempt(first, "second_factor", 5)
+        db.claim_auth_challenge_attempt(first, "second_factor", 5)
+        assert db.count_challenge_attempts(user_id, "second_factor", window_start) == 2
+
+        # Starting over carries the spend in, so the new handle has three guesses left, not five.
+        second = db.create_auth_challenge("second_factor", expires, user_id=user_id,
+                                          initial_attempts=2)
+        assert db.claim_auth_challenge_attempt(second, "second_factor", 5)["attempts"] == 3
+        assert db.count_challenge_attempts(user_id, "second_factor", window_start) == 5
+
+    def test_a_purpose_and_an_owner_are_both_scoped(self, user_id):
+        expires = datetime.now(timezone.utc) + timedelta(minutes=5)
+        window_start = datetime.now(timezone.utc) - timedelta(minutes=15)
+        other = db.create_auth_challenge("webauthn_step_up", expires, user_id=user_id,
+                                         initial_attempts=4)
+        assert other
+        assert db.count_challenge_attempts(user_id, "second_factor", window_start) == 0
+        assert db.count_challenge_attempts(user_id + 9999, "webauthn_step_up", window_start) == 0
+
+    def test_a_correct_code_clears_the_account_budget(self, user_id):
+        expires = datetime.now(timezone.utc) + timedelta(minutes=5)
+        window_start = datetime.now(timezone.utc) - timedelta(minutes=15)
+        handle = db.create_auth_challenge("second_factor", expires, user_id=user_id,
+                                          initial_attempts=3)
+        db.claim_auth_challenge_attempt(handle, "second_factor", 5)
+        assert db.count_challenge_attempts(user_id, "second_factor", window_start) == 4
+        assert db.clear_challenge_attempts(user_id, "second_factor") is True
+        assert db.count_challenge_attempts(user_id, "second_factor", window_start) == 0
+
 
 class TestStepUpState:
     def test_a_fresh_session_is_not_verified_until_a_factor_says_so(self, user_id):

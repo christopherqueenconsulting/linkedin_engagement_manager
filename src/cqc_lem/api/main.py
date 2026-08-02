@@ -49,6 +49,7 @@ from cqc_lem.utilities.db import (
     add_passkey_factor, get_passkey_by_credential_id, get_user_passkey_credential_ids,
     update_factor_counter, delete_auth_factor, count_recovery_codes,
     create_auth_challenge, consume_auth_challenge, claim_auth_challenge_attempt,
+    count_challenge_attempts, clear_challenge_attempts,
     finish_auth_challenge, SESSION_SCOPE_EXTENSION, SESSION_SCOPE_FULL, SESSION_SCOPE_RECOVERY,
     get_user_public_uid, mark_email_verified, change_user_email,
     add_user_by_email, get_user_email, get_user_analytics_profile, get_user_token_info,
@@ -112,7 +113,8 @@ from cqc_lem.utilities.linkedin.token_refresh import resolve_token_status
 from cqc_lem.utilities.env_constants import LI_CLIENT_ID, LI_CLIENT_SECRET, LI_REDIRECT_URL, LI_STATE_SALT, ADMIN_SECRET, API_ACCESS_TOKENS, \
     DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_VIDEO_RATIO, \
     SESSION_ABSOLUTE_MAX_DAYS, SESSION_COOKIE_NAME, SESSION_COOKIE_SAMESITE, SESSION_COOKIE_SECURE, \
-    AUTH_CHALLENGE_TTL_SECONDS, SECOND_FACTOR_MAX_ATTEMPTS
+    AUTH_CHALLENGE_TTL_SECONDS, SECOND_FACTOR_MAX_ATTEMPTS, \
+    SECOND_FACTOR_ATTEMPT_WINDOW_MINUTES
 from cqc_lem.utilities.auth_rate_limit import check_auth_init, check_auth_verify, clear_auth_limits
 from cqc_lem.utilities.auth_factors import (
     METHOD_PASSKEY, METHOD_RECOVERY, METHOD_TOTP,
@@ -2225,24 +2227,13 @@ def auth_email_init(request: AuthInitRequest, http_request: Request = None,
         # account that enrolled a strong factor still has to prove it, or this branch would be a
         # hole straight through 2c on any deployment with mail unconfigured.
         if has_strong_factor(user_id):
-            methods = available_methods(user_id)
-            pending_token = create_auth_challenge(CHALLENGE_SECOND_FACTOR, _challenge_expiry(),
-                                                  user_id=user_id)
-            if not pending_token:
-                raise HTTPException(status_code=500, detail="Could not continue sign-in")
-            # Clear here, not only on the fully-minted session below: the second-factor stage
-            # shares these buckets, so leaving the first stage's counters up would let a user's own
-            # earlier typos throttle the factor they are about to prove correctly.
-            clear_auth_limits(email, ip)
-            record_auth_event(AuthAuditEvent.SECOND_FACTOR_REQUIRED, user_id=user_id, email=email,
-                              ip=ip, user_agent=user_agent,
-                              details={"methods": methods, "path": "pin_bypass"})
+            # NOT clear_auth_limits here, unlike the PIN path below: nothing was proved on this
+            # branch — it is the bypass, no PIN is ever typed — so there are no legitimate typo
+            # counters to forgive, and clearing them would hand an unauthenticated caller a way to
+            # reset every limiter in front of the second factor once per request.
             return ResponseModel(status_code=200, detail={
                 "bypass": True,
-                "second_factor_required": True,
-                "pending_token": pending_token,
-                "methods": methods,
-                "email": email,
+                **_begin_second_factor(user_id, email, ip, user_agent, "pin_bypass"),
             })
         session_token = create_session(user_id, user_agent=user_agent, ip=ip)
         if not session_token:
@@ -2325,23 +2316,14 @@ def auth_email_verify(request: AuthVerifyRequest, http_request: Request = None,
     # mailbox that received the PIN proved control whether or not a second factor follows.
     mark_email_verified(user_id)
     if has_strong_factor(user_id):
-        methods = available_methods(user_id)
-        pending_token = create_auth_challenge(CHALLENGE_SECOND_FACTOR, _challenge_expiry(),
-                                              user_id=user_id)
-        if not pending_token:
-            raise HTTPException(status_code=500, detail="Could not continue sign-in")
+        detail = _begin_second_factor(user_id, email, ip, user_agent, "pin")
         # The PIN itself SUCCEEDED — drop its counters before handing over to the second-factor
         # stage, which is limited out of the same buckets. Without this a user who mistyped the PIN
-        # a few times arrives at the passkey/TOTP prompt already throttled.
+        # a few times arrives at the passkey/TOTP prompt already throttled. Safe to clear here and
+        # not on the bypass branch precisely because a proof preceded it — and the second factor's
+        # own budget (above) is deliberately NOT one of the counters this resets.
         clear_auth_limits(email, ip)
-        record_auth_event(AuthAuditEvent.SECOND_FACTOR_REQUIRED, user_id=user_id, email=email,
-                          ip=ip, user_agent=user_agent, details={"methods": methods})
-        return ResponseModel(status_code=200, detail={
-            "second_factor_required": True,
-            "pending_token": pending_token,
-            "methods": methods,
-            "email": email,
-        })
+        return ResponseModel(status_code=200, detail=detail)
 
     session_token = create_session(user_id, user_agent=user_agent, ip=ip)
     if not session_token:
@@ -2631,6 +2613,48 @@ CHALLENGE_SECOND_FACTOR = "second_factor"
 
 def _challenge_expiry() -> datetime:
     return datetime.now(timezone.utc) + timedelta(seconds=AUTH_CHALLENGE_TTL_SECONDS)
+
+
+def _begin_second_factor(user_id: int, email: str, ip: Optional[str], user_agent: Optional[str],
+                         path: str) -> Dict[str, Any]:
+    """Hand a bootstrapped login over to its second stage, with a guessing budget that SURVIVES
+    starting over.
+
+    `auth_challenges.attempts` bounds one pending login; on its own that is not a bound on the
+    account, because the stage in front of it hands out a fresh handle — and with it a fresh
+    counter — for free. Both ways in are reachable by the attacker 2c is built against: the
+    no-mail-provider bypass needs nothing at all, and a compromised mailbox (T2) can mint PINs all
+    day. Five guesses per round, unlimited rounds, walks a 6-digit code space.
+
+    So the budget is counted per ACCOUNT over `SECOND_FACTOR_ATTEMPT_WINDOW_MINUTES` and carried
+    into the new handle. A wrong-code spree costs the attacker the window; a user who mistyped
+    their code waits it out, and a correct code clears the count outright."""
+    window_start = datetime.now(timezone.utc) - timedelta(
+        minutes=SECOND_FACTOR_ATTEMPT_WINDOW_MINUTES)
+    spent = count_challenge_attempts(user_id, CHALLENGE_SECOND_FACTOR, window_start)
+    if spent < 0 or spent >= SECOND_FACTOR_MAX_ATTEMPTS:
+        # spent < 0 is the DB refusing to answer — count_challenge_attempts fails closed, and so
+        # does this: an unreadable budget is not an empty one.
+        record_auth_event(AuthAuditEvent.LOGIN_RATE_LIMITED, user_id=user_id, email=email, ip=ip,
+                          user_agent=user_agent, success=False,
+                          details={"scope": "second_factor_attempts", "path": path})
+        raise HTTPException(
+            status_code=429, detail="Too many incorrect codes — try again shortly",
+            headers={"Retry-After": str(SECOND_FACTOR_ATTEMPT_WINDOW_MINUTES * 60)})
+
+    methods = available_methods(user_id)
+    pending_token = create_auth_challenge(CHALLENGE_SECOND_FACTOR, _challenge_expiry(),
+                                          user_id=user_id, initial_attempts=spent)
+    if not pending_token:
+        raise HTTPException(status_code=500, detail="Could not continue sign-in")
+    record_auth_event(AuthAuditEvent.SECOND_FACTOR_REQUIRED, user_id=user_id, email=email, ip=ip,
+                      user_agent=user_agent, details={"methods": methods, "path": path})
+    return {
+        "second_factor_required": True,
+        "pending_token": pending_token,
+        "methods": methods,
+        "email": email,
+    }
 
 
 def _step_up_error(user_id: int) -> HTTPException:
@@ -3096,8 +3120,11 @@ def auth_second_factor_verify(request: SecondFactorVerifyRequest, http_request: 
                                 detail="Too many incorrect codes — start the sign-in again")
         raise HTTPException(status_code=401, detail="That code did not work")
 
-    # Spend the handle: correct code, so this pending login is over either way.
+    # Spend the handle: correct code, so this pending login is over either way. The account's
+    # carried-over guessing budget goes with it — a correct code is the proof that clears it, the
+    # same way it clears the Redis buckets below.
     finish_auth_challenge(request.pending_token)
+    clear_challenge_attempts(user_id, CHALLENGE_SECOND_FACTOR)
     session_token = create_session(user_id, user_agent=user_agent, ip=ip, verified=verified_session,
                                    # A recovery-code session is marked so it may enrol a
                                    # replacement factor without proving one it no longer has.

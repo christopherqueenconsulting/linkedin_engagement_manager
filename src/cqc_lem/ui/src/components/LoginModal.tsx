@@ -279,7 +279,10 @@ export default function LoginModal() {
               >
                 {loading ? 'Verifying…' : 'Sign In'}
               </button>
-              {methods.includes('recovery_code') && (
+              {/* Only a toggle when there is something to toggle BETWEEN: an account whose only
+                  factor is a passkey is offered recovery codes and nothing else, and switching it
+                  to an authenticator it never enrolled is a dead end. */}
+              {methods.includes('recovery_code') && methods.includes('totp') && (
                 <button
                   type="button"
                   onClick={() => {
