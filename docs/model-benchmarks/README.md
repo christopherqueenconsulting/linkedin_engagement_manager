@@ -242,6 +242,55 @@ reactive half of the model-health check auto-swaps whatever lands in it, so adop
 winner is a deliberate edit to `.litellm/config.yaml` (or a #717-style PR). The report renders the
 exact mapping lines for a human to take.
 
+### What the 2026-08-02 tag scan settled (#921) — both declined
+
+The catalog scan found two new Ollama Cloud tags. Both are **declined**; neither reaches
+`.litellm/config.yaml`. Recorded here because the issue's own rule is that a decline has to be
+readable by the next scan's reader — otherwise the same tag gets re-evaluated from its spec sheet
+every month.
+
+| Tag | What was measured | Decision |
+|---|---|---|
+| `deepseek-v4-flash:0731` | Medium (2), same level as the build already deployed. Run against all three content tiers beside both the tier champion **and** the incumbent `deepseek-v4-flash` build (`bm-20260802-b84f19`): contract **80% vs 90%** on `lem-complex`, **80% vs 90%** on `lem-medium`, **40% vs 50%** on `lem-simple` | **Decline.** No `recommend` on any tier: it did not beat the build LEM already ships on the contract rate anywhere, and there is no quota argument to offset that — both builds are Medium. Note the margins are one case wide, i.e. inside this suite's run-to-run spread (third bullet below), so this reads as *"did not carry the burden"*, not *"is the worse build"*. Either way it is a decline — adoption requires beating the incumbent, and a tie inside noise is not that. |
+| `kimi-k3` | Never benchmarked: the Ollama Cloud API answers **HTTP 402** — *"this model uses extra usage only (not included plan usage) and your extra usage balance is empty"* | **Decline.** Not a quality question. It is outside plan usage entirely, so its page publishes a per-token price ($3.00 / $15.00 per 1M, $0.30 cached) instead of a usage-level pip — the harness reads that as `unknown`, which the standing spend policy already holds. |
+
+Four things this run is worth reading for beyond the two verdicts:
+
+- **`:0731` is a different build, not a re-tag.** The catalog carries it at 167GB against the
+  unversioned tag's 140GB, and ollama.com dates them 2026-07-31 and three months apart, so the
+  `bm-20260802-20ae40` measurement of `deepseek-v4-flash` was not a measurement of this one. That is
+  why the incumbent build was re-run here rather than quoted: a build-vs-build comparison is the
+  actual decision, and the two builds have to share a calibration and a run to be comparable at all.
+- **`lem-simple` is the wrong shape for this model, not merely a weak fit.** `deepseek-v4-flash` is a
+  reasoning model and bills its chain-of-thought against `max_tokens`, so on the three
+  `budget_mirrors_production` cases (`max_tokens` 3 / 5 / 8, mirroring `ai_helper.py`'s own call
+  sites) it returns nothing at all. Both builds are also **+1 usage level** against `gpt-oss:20b`
+  there. Neither build belongs on that tier at any quality.
+- **The suites' run-to-run spread is wider than this decision's margins.** Two runs of the same
+  fixtures ninety minutes apart moved `deepseek-v4-flash:0731` on `lem-medium` from 100% to 80%
+  contract, `qwen3.5:397b` on `lem-complex` from 90% to 70%, and `gpt-oss:20b` on `lem-simple` from
+  40% to 50% (`bm-20260802-5fff18` and `bm-20260802-b84f19`, both committed beside this file). Ten
+  cases per tier means one case is ten points, so a one- or two-case gap between two models is
+  noise. This is what the ⚖️ *measurement variance* note says per case, stated at the level of a
+  whole scorecard: **a one-run margin under ~20 points is not a reason to swap anything.** It is
+  also not a reason to swap the other way: every margin in the `:0731` decision above is exactly
+  one case, which is why that decline rests on "no `recommend`" rather than on the gap's size.
+- **Declining `:0731` is not the same as being safe from it.** `.litellm/config.yaml` runs the
+  *unversioned* `deepseek-v4-flash` on two tiers, so those tiers follow whatever the catalog's
+  moving tag points at — and `scripts/model_health_check.py` diffs tag NAMES, so a re-point of that
+  name onto the 0731 build files no evaluation issue and swaps a live tier's model unbenchmarked.
+  The id was left unversioned anyway (it is the build measured at 90%, and a pin has upkeep of its
+  own on every path that keys the exact id string), but the detection gap is real and is tracked on
+  **#925**.
+
+Both runs are `in-runner-judge` mode with **no judge evidence** — the runner had no LiteLLM proxy to
+reach, so the judge answered nothing and every judge expectation renders as unscored. Read the
+scorecards' `Timeouts` column with that in mind: it counts only the cases that were *eligible* for
+the judge (a case that already failed deterministically is never judged), so it tracks the
+first-draft pass count, not the case count. None of that changes a verdict here — all nine gate
+verdicts across the two runs already fail a *deterministic* graded expectation, and the judge can
+only ever add a reason to reject. A run that intends to *promote* something still needs one.
+
 ## Running it
 
 ```bash
@@ -290,6 +339,21 @@ is the rate their report published.
 <!-- LEADERBOARD:BEGIN -->
 | Date | Run | Tier | Model | Role | Contract | First draft | Judge | p50 | Verdict |
 |---|---|---|---|---|---|---|---|---|---|
+| 2026-08-02 | `bm-20260802-b84f19` | lem-complex | `qwen3.5:397b` | champion | 70% | 50% | n/a | 30346 ms | baseline |
+| 2026-08-02 | `bm-20260802-b84f19` | lem-complex | `deepseek-v4-flash:0731` | candidate | 80% | 80% | n/a | 5634 ms | reject |
+| 2026-08-02 | `bm-20260802-b84f19` | lem-complex | `deepseek-v4-flash` | candidate | 90% | 60% | n/a | 3016 ms | reject |
+| 2026-08-02 | `bm-20260802-b84f19` | lem-medium | `gpt-oss:120b` | champion | 90% | 60% | n/a | 2429 ms | baseline |
+| 2026-08-02 | `bm-20260802-b84f19` | lem-medium | `deepseek-v4-flash:0731` | candidate | 80% | 40% | n/a | 1820 ms | reject |
+| 2026-08-02 | `bm-20260802-b84f19` | lem-medium | `deepseek-v4-flash` | candidate | 90% | 40% | n/a | 1438 ms | reject |
+| 2026-08-02 | `bm-20260802-b84f19` | lem-simple | `gpt-oss:20b` | champion | 50% | 50% | n/a | 1432 ms | baseline |
+| 2026-08-02 | `bm-20260802-b84f19` | lem-simple | `deepseek-v4-flash:0731` | candidate | 40% | 40% | n/a | 996 ms | reject |
+| 2026-08-02 | `bm-20260802-b84f19` | lem-simple | `deepseek-v4-flash` | candidate | 50% | 50% | n/a | 1036 ms | reject |
+| 2026-08-02 | `bm-20260802-5fff18` | lem-complex | `qwen3.5:397b` | champion | 90% | 60% | n/a | 28535 ms | baseline |
+| 2026-08-02 | `bm-20260802-5fff18` | lem-complex | `deepseek-v4-flash:0731` | candidate | 60% | 30% | n/a | 5212 ms | reject |
+| 2026-08-02 | `bm-20260802-5fff18` | lem-medium | `gpt-oss:120b` | champion | 90% | 70% | n/a | 1952 ms | baseline |
+| 2026-08-02 | `bm-20260802-5fff18` | lem-medium | `deepseek-v4-flash:0731` | candidate | 100% | 60% | n/a | 1636 ms | reject |
+| 2026-08-02 | `bm-20260802-5fff18` | lem-simple | `gpt-oss:20b` | champion | 40% | 40% | n/a | 1403 ms | baseline |
+| 2026-08-02 | `bm-20260802-5fff18` | lem-simple | `deepseek-v4-flash:0731` | candidate | 40% | 40% | n/a | 1214 ms | reject |
 | 2026-08-02 | `bm-20260802-20ae40` | lem-complex | `qwen3.5:397b` | champion | n/a | 50% | 100% | 26955 ms | baseline |
 | 2026-08-02 | `bm-20260802-20ae40` | lem-complex | `deepseek-v4-flash` | candidate | n/a | 70% | 57% | 3275 ms | reject |
 | 2026-08-02 | `bm-20260802-20ae40` | lem-complex | `gemma4:31b` | candidate | n/a | 80% | 57% | 2428 ms | reject |
