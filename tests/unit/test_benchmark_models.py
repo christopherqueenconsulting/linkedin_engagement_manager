@@ -267,6 +267,14 @@ class TestScorecard:
         card = bm.merge_scorecard("lem-simple", "m", "candidate", results, {})
         assert card["judge_pass_rate"] is None
 
+    def test_cases_that_needed_reasoning_headroom_are_named_not_silently_absorbed(self):
+        results = [{"case_id": "a", "passes": True, "failures": [], "unscored": 0},
+                   {"case_id": "b", "passes": True, "failures": [], "unscored": 0}]
+        timings = {"a": {"latency_ms": 1, "budget_escalations": 2},
+                   "b": {"latency_ms": 1, "budget_escalations": 0}}
+        card = bm.merge_scorecard("lem-complex", "minimax-m3", "candidate", results, {}, timings)
+        assert card["budget_escalated_cases"] == ["a"]
+
 
 # ─────────────────────────── champion/challenger gate ────────────────────────────
 
@@ -416,6 +424,12 @@ class TestRendering:
         assert '"old": "new"' in text
         assert "➖" in text  # an unscored expectation is shown, not hidden
 
+    def test_report_names_the_cases_that_needed_reasoning_headroom(self):
+        run = self._run()
+        run["scorecards"][0]["budget_escalated_cases"] = ["complex-personal-story"]
+        text = bm.render_report(run)
+        assert "reasoning headroom" in text and "`complex-personal-story`" in text
+
     def test_report_says_so_when_nothing_is_recommended(self):
         run = self._run()
         run["recommendations"] = []
@@ -456,17 +470,25 @@ class TestRendering:
     def test_repeated_renders_never_grow_the_table_with_its_own_header(self):
         """The header and divider are pipe-delimited rows of the right width. Reading them back as
         DATA appended two junk rows per run and evicted real history at the row cap."""
+        def table_rows(doc: str) -> list:
+            inner = doc.split(bm.LEADERBOARD_BEGIN)[1].split(bm.LEADERBOARD_END)[0]
+            return [line for line in inner.splitlines() if line.strip().startswith("|")]
+
         text = (_ROOT / "docs" / "model-benchmarks" / "README.md").read_text()
+        # Measured against whatever history the committed table holds TODAY — a real run's rows
+        # land in it, so a fixed expected count would fail on the next benchmark instead of on a
+        # regression.
+        committed = len(table_rows(text)) - 2
         for run_id in ("bm-1", "bm-2", "bm-3"):
             run = self._run()
             run["run_id"] = run_id
             for card in run["scorecards"]:
                 card["benchmark_run_id"] = run_id
             text = bm.update_leaderboard(text, bm.leaderboard_rows(run))
-        inner = text.split(bm.LEADERBOARD_BEGIN)[1].split(bm.LEADERBOARD_END)[0]
-        rows = [line for line in inner.splitlines() if line.strip().startswith("|")]
+        rows = table_rows(text)
         assert rows[0] == bm.LEADERBOARD_HEADER and rows[1] == bm.LEADERBOARD_DIVIDER
-        assert len(rows) == 2 + 6  # three runs × two scorecards, and nothing else
+        # three runs × two scorecards on top of the committed history, and nothing else
+        assert len(rows) == 2 + committed + 6
         assert bm.LEADERBOARD_HEADER not in rows[2:]
 
     def test_the_committed_leaderboard_has_the_markers(self):
@@ -515,6 +537,43 @@ class TestJudge:
             verdict = bm.parse_judge_verdict(reply)
             assert verdict["passes"] is None
             assert verdict["status"] == bm.JUDGE_TIMEOUT
+
+    def _judge_client(self, replies):
+        client = MagicMock()
+        client.chat.completions.create.side_effect = [
+            MagicMock(choices=[MagicMock(message=MagicMock(content=content),
+                                         finish_reason=finish)])
+            for content, finish in replies]
+        module = MagicMock()
+        module.client = client
+        return client, patch.dict(sys.modules, {"cqc_lem.utilities.ai.client": module})
+
+    def test_a_reasoning_judge_that_truncates_is_retried_before_it_is_written_off(self,
+                                                                                  monkeypatch):
+        # `lem-medium` is served by gpt-oss:120b, whose reasoning is billed against max_tokens — at
+        # the old 200-token budget EVERY verdict came back empty and the whole run read as unscored.
+        monkeypatch.setenv("BENCHMARK_TRUNCATION_RETRIES", "2")
+        monkeypatch.setenv("BENCHMARK_JUDGE_MAX_TOKENS", "900")
+        client, patched = self._judge_client([("", "length"),
+                                              ('{"pass": true, "reasoning": "ok"}', "stop")])
+        with patched:
+            verdict = bm.fallback_judge(_suite(), _case(), "out")
+        assert verdict["passes"] is True and verdict["status"] == "scored"
+        assert [c.kwargs["max_tokens"]
+                for c in client.chat.completions.create.call_args_list] == [900, 1800]
+        # A retry is a real billed call — the run's cap has to see both of them.
+        assert verdict["judge_calls"] == 2
+
+    def test_a_judge_that_never_stops_reasoning_is_unscored_but_still_reachable(self, monkeypatch):
+        # JUDGE_UNAVAILABLE would stop the runner asking for the REST of the run; one over-thought
+        # answer is not a dead judge.
+        monkeypatch.setenv("BENCHMARK_TRUNCATION_RETRIES", "1")
+        client, patched = self._judge_client([("", "length"), ("", "length")])
+        with patched:
+            verdict = bm.fallback_judge(_suite(), _case(), "out")
+        assert verdict["passes"] is None and verdict["status"] == bm.JUDGE_TIMEOUT
+        assert client.chat.completions.create.call_count == 2
+        assert verdict["judge_calls"] == 2
 
     def test_fallback_judge_returns_unscored_when_the_client_fails(self):
         with patch.dict(sys.modules, {}):
@@ -620,6 +679,73 @@ class TestProviderClient:
         result = provider.complete("m", [{"role": "user", "content": "hi"}])
         assert result["text"] is None
         assert "410" in result["error"]
+
+    @staticmethod
+    def _reply(content, finish_reason="stop"):
+        response = MagicMock()
+        response.choices = [MagicMock(message=MagicMock(content=content),
+                                      finish_reason=finish_reason)]
+        response.usage = MagicMock(prompt_tokens=1, completion_tokens=1, total_tokens=2)
+        return response
+
+    def test_a_reasoning_model_that_spends_its_budget_thinking_is_retried_at_double(self,
+                                                                                   monkeypatch):
+        # minimax-m3 / glm-5.2 bill chain-of-thought against max_tokens: at the fixture's budget the
+        # reply comes back EMPTY, which would score as "produced nothing" and reject the candidate
+        # for a harness artifact rather than for its quality.
+        monkeypatch.setenv("BENCHMARK_TRUNCATION_RETRIES", "2")
+        provider, openai_client = self._client()
+        openai_client.chat.completions.create.side_effect = [
+            self._reply("", finish_reason="length"),
+            self._reply("", finish_reason="length"),
+            self._reply("the long-form draft"),
+        ]
+        result = provider.complete("minimax-m3", [{"role": "user", "content": "hi"}],
+                                   {"max_tokens": 1400})
+        assert result["text"] == "the long-form draft"
+        assert result["budget_escalations"] == 2
+        budgets = [c.kwargs["max_tokens"]
+                   for c in openai_client.chat.completions.create.call_args_list]
+        assert budgets == [1400, 2800, 5600]
+
+    def test_the_retry_is_bounded_and_the_empty_answer_still_counts(self, monkeypatch):
+        monkeypatch.setenv("BENCHMARK_TRUNCATION_RETRIES", "1")
+        provider, openai_client = self._client()
+        openai_client.chat.completions.create.return_value = self._reply("",
+                                                                         finish_reason="length")
+        result = provider.complete("m", [{"role": "user", "content": "hi"}], {"max_tokens": 100})
+        assert result["text"] == ""
+        assert result["budget_escalations"] == 1
+        assert openai_client.chat.completions.create.call_count == 2
+
+    def test_a_truncated_but_non_empty_answer_is_never_re_rolled(self, monkeypatch):
+        # Retrying a model that DID answer would hand the verbose ones a second attempt the concise
+        # ones never got — the comparison has to stay one call per case wherever an answer exists.
+        monkeypatch.setenv("BENCHMARK_TRUNCATION_RETRIES", "2")
+        provider, openai_client = self._client(self._reply("half a dr", finish_reason="length"))
+        result = provider.complete("m", [{"role": "user", "content": "hi"}], {"max_tokens": 100})
+        assert result["text"] == "half a dr" and result["budget_escalations"] == 0
+        assert openai_client.chat.completions.create.call_count == 1
+
+    def test_a_case_with_no_max_tokens_is_never_escalated(self, monkeypatch):
+        monkeypatch.setenv("BENCHMARK_TRUNCATION_RETRIES", "2")
+        provider, openai_client = self._client(self._reply("", finish_reason="length"))
+        result = provider.complete("m", [{"role": "user", "content": "hi"}], {"temperature": 0.8})
+        assert result["budget_escalations"] == 0
+        assert openai_client.chat.completions.create.call_count == 1
+
+    def test_a_discarded_attempt_is_not_charged_to_the_model_s_latency(self, monkeypatch):
+        # p50/p90 go into the rolling leaderboard forever. Charging the thrown-away attempt to the
+        # model would inflate exactly the reasoning models this retry exists to measure fairly.
+        monkeypatch.setenv("BENCHMARK_TRUNCATION_RETRIES", "1")
+        provider, openai_client = self._client()
+        openai_client.chat.completions.create.side_effect = [
+            self._reply("", finish_reason="length"), self._reply("the draft")]
+        # attempt-1 start, attempt-2 start, end-of-attempt-2
+        monkeypatch.setattr(bm.time, "time", MagicMock(side_effect=[100.0, 140.0, 140.25]))
+        result = provider.complete("m", [{"role": "user", "content": "hi"}], {"max_tokens": 100})
+        assert result["budget_escalations"] == 1
+        assert result["latency_ms"] == pytest.approx(250.0)
 
 
 class TestPostHogClient:
@@ -1174,6 +1300,26 @@ class TestRunBenchmark:
                                    evals=evals, judge_cap=1)
         assert fj.call_count == 0  # the single PostHog trigger already spent the cap
         assert run["judge_calls"] == 1
+
+    def test_a_truncation_retried_verdict_spends_the_cap_it_actually_cost(self):
+        # `BENCHMARK_MAX_JUDGE_CALLS` is a spend ceiling. A verdict that took three completions to
+        # arrive must count three, or a retrying judge overruns the cap by the retry factor with
+        # the report still printing "N of 200".
+        suites = {"lem-simple": _suite("lem-simple", cases=[
+            _case(cid, assertions=[{"type": "max_chars", "value": 50}]) for cid in ("a", "b", "c")],
+            thresholds={"min_judged": 1})}
+        provider = MagicMock()
+        provider.complete.return_value = {"text": "short", "error": None,
+                                          "latency_ms": 5.0, "usage": {}}
+        with patch.object(bm, "emit_metric"), \
+                patch.object(bm, "fallback_judge",
+                             return_value={"passes": True, "status": "scored",
+                                           "reasoning": "", "judge_calls": 3}) as fj:
+            run = bm.run_benchmark(suites, [], {"lem-simple": "champ"}, run_id="bm-1",
+                                   today="2026-07-27", provider=provider, evals=None,
+                                   judge_cap=4)
+        assert fj.call_count == 2  # the second verdict reached the cap; the third case is unscored
+        assert run["judge_calls"] == 6
 
     def test_an_unreachable_in_runner_judge_is_asked_once_not_once_per_case(self):
         suites = {"lem-simple": _suite("lem-simple", cases=[

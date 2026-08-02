@@ -43,6 +43,33 @@ Suite inputs are **synthetic** prompt templates in `tests/benchmarks/model_tiers
 content, credentials or production logs appear in a report; the renderer refuses any run that is
 not tagged as benchmark output.
 
+### Reasoning headroom — measuring a model, not the harness's budget (#842)
+
+Every case fixture carries a `max_tokens`, and a **reasoning** model bills its chain-of-thought
+against it: the answer is whatever is left. At the fixtures' budgets `minimax-m3` and `glm-5.2`
+returned an EMPTY string with `finish_reason='length'`, which the deterministic layer scores as *the
+model produced nothing* — a `reject` earned by the harness, not by the model. The in-runner judge had
+the same failure at its old 200-token budget: every verdict came back empty and read as
+`judge:timeout`, so a run could never produce the judge RATE the standing spend policy needs.
+
+So a completion that spent its whole budget **before emitting anything** is retried at double
+(`BENCHMARK_TRUNCATION_RETRIES`, default 2 — 1400 → 2800 → 5600), champion and candidate alike. A
+truncated-but-**non-empty** answer is never re-rolled: that is the model's real output at that
+budget, and re-rolling it would hand the verbose models a second attempt the concise ones never got.
+Cases that needed the headroom are named in the report under 🧠 *reasoning headroom* rather than
+silently absorbed. Only the FINAL attempt is measured — a discarded one is harness waste production
+never pays, so its wall-clock is not charged to the model's p50/p90 — and a retried verdict counts
+its real completions against `BENCHMARK_MAX_JUDGE_CALLS`, so the run's cap still bounds spend.
+
+**Where the retry does NOT measure production.** Long-form generation sets no `max_tokens` at all
+(`ai_helper.py`), so on `lem-complex` a doubled budget is closer to the real call than the fixture's
+own cap was. The short tiers are the opposite: `lem-simple`'s `simple-relevance-yes-no` is
+`max_tokens: 3` precisely because `ai_helper.py`'s relevance check is, and there a model that cannot
+answer inside the budget is disqualified in production, not merely truncated. The retry currently
+applies to every case, so on those cases it measures a model LEM could not actually run at that call
+site. Calibrating that (per-case opt-out, or scoring the first attempt for production-mirror
+budgets) is tracked on #910 with the rest of the harness-calibration work.
+
 ## The gate
 
 A candidate is emitted as a **swap recommendation** only when it clears the tier's absolute
@@ -102,6 +129,41 @@ still recommended; it means the swap goes to the owner rather than into a config
 holds too, for the same reason it never renders as `flat`: a level nobody read cannot be checked
 against a rule written about increases.
 
+### What the 2026-08-02 run settled (#842)
+
+The first real run of this harness — `bm-20260802-20ae40`, four candidates against both live
+champions, report beside this file — answered the two questions #717 left open. Both answers are
+**keep**, and both are recorded here so the next roster refresh starts from a measurement rather
+than from the spec sheets again:
+
+| Question | Measurement | Decision |
+|---|---|---|
+| `minimax-m3` / `glm-5.2` as `lem-complex`'s quality option | Both **High (3)** vs champion `qwen3.5:397b` **Medium (2)** — `+1` usage level. `glm-5.2` 70% deterministic / 86% judge, `minimax-m3` 40% / 75%, champion 50% / **100%** | **Keep `qwen3.5:397b`.** Neither beat the champion on judge rate, and the standing spend policy buys a usage-level increase only on a *strict* judge-rate win. |
+| Demote `gpt-oss:120b` on `lem-medium` now that `deepseek-v4-flash` + `gemma4:31b` cover the tier | `deepseek-v4-flash` **ties** it deterministically (60% vs 60%) and beats it on judge (83% vs 50%) at the same Medium (2) level; `gemma4:31b` is worse deterministically (40%) though cheaper (Low (1)) | **Keep `gpt-oss:120b` as champion.** Nothing scored a `recommend`, and #717's own rule is that no `recommend`-less candidate gets promoted. `deepseek-v4-flash` is the model to re-measure first next time. |
+
+No swap was recommended, so `.litellm/config.yaml` is unchanged and no restart was owed. All four
+tiers were smoke-tested green against the live proxy anyway (`lem-simple`, `lem-medium`,
+`lem-complex`, `lem-router` — 1-token completions, HTTP 200 on each).
+
+Two caveats the run itself surfaced, both tracked on #910 rather than papered over here:
+
+- **The absolute deterministic floor (90%) was met by nobody, champions included.** The relative
+  half of every verdict is sound, but a floor the incumbent fails cannot open for a challenger
+  either. The per-case failures are real model behaviour (long-form overruns `max_chars`,
+  contrastive frames, the #617 comment contract), not harness artifacts — the suites score a FIRST
+  draft where production ships an n-th.
+- **A reasoning model's single-run score is not stable.** `minimax-m3` returned an empty completion
+  on two cases after exhausting the shipped truncation retry; re-run at the same effective budget it
+  answered and passed both. That would have moved it at most to a tie on each tier, so the decision
+  above stands either way — but one run of one case is a data point, not a verdict.
+
+**Read this run's p50/p90 with one correction.** `bm-20260802-20ae40` was measured before the
+per-attempt timing rule above, so a retried case charged every discarded attempt to the model.
+`minimax-m3` (9 of 10 `lem-complex` cases retried) and `glm-5.2` (5 of 10) are inflated in that
+run's leaderboard rows by roughly the retry factor; the deterministic and judge columns, which is
+what the verdicts turn on, are unaffected. Later runs report the answering attempt only, so do not
+compare them against these two rows as if they were the same measurement.
+
 A recommendation is **not** a change. `.litellm/model_upgrades.yaml` is the RETIREMENT map and the
 reactive half of the model-health check auto-swaps whatever lands in it, so adopting a benchmark
 winner is a deliberate edit to `.litellm/config.yaml` (or a #717-style PR). The report renders the
@@ -151,4 +213,14 @@ policy marks `hold` is named in the report and belongs to the owner, not to the 
 <!-- LEADERBOARD:BEGIN -->
 | Date | Run | Tier | Model | Role | Deterministic | Judge | p50 | Verdict |
 |---|---|---|---|---|---|---|---|---|
+| 2026-08-02 | `bm-20260802-20ae40` | lem-complex | `qwen3.5:397b` | champion | 50% | 100% | 26955 ms | baseline |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-complex | `deepseek-v4-flash` | candidate | 70% | 57% | 3275 ms | reject |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-complex | `gemma4:31b` | candidate | 80% | 57% | 2428 ms | reject |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-complex | `minimax-m3` | candidate | 40% | 75% | 30564 ms | reject |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-complex | `glm-5.2` | candidate | 70% | 86% | 14477 ms | reject |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-medium | `gpt-oss:120b` | champion | 60% | 50% | 1635 ms | baseline |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-medium | `deepseek-v4-flash` | candidate | 60% | 83% | 1310 ms | reject |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-medium | `gemma4:31b` | candidate | 40% | 100% | 807 ms | reject |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-medium | `minimax-m3` | candidate | 50% | 80% | 5405 ms | reject |
+| 2026-08-02 | `bm-20260802-20ae40` | lem-medium | `glm-5.2` | candidate | 40% | 75% | 6315 ms | reject |
 <!-- LEADERBOARD:END -->
