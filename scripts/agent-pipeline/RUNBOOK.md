@@ -12,11 +12,8 @@ Repo: `christopherqueenconsulting/linkedin_engagement_manager`. Owner/escalation
 - **Obey `CLAUDE.md`** in the repo root — it overrides your defaults (logging via `cqc_lem.utilities.logger`,
   type hints, enums for status, no raw SQL outside `utilities/db.py`, LLM calls via the client aliases,
   Selenium via `get_docker_driver()`, no hardcoded secrets).
-- **DB migrations use TIMESTAMP versions.** A new migration file MUST be named `V<YYYYMMDDHHMMSS>__short_name.sql`
-  where the version is the UTC timestamp at authoring time — get it with `date -u +%Y%m%d%H%M%S`. NEVER use a bare
-  integer version (V57, V59, …) for a new migration, and NEVER rename an already-merged migration (Flyway tracks
-  applied ones by version+checksum — renaming breaks validation). Timestamps sort after all legacy integer
-  migrations, so two PRs can never collide.
+- **DB migrations:** follow the repo's **db-migration** skill (`.claude/skills/db-migration/SKILL.md`) —
+  timestamp versions (`V$(date -u +%Y%m%d%H%M%S)__name.sql`), never bare integers, never rename a merged one.
 - **Stay scoped to the single issue.** Do not refactor unrelated code or touch other issues' files.
 - **Never close an issue that still has work left.** `Closes #N` in a PR body auto-closes #N the moment
   the PR merges — so before you write it, re-read the issue and confirm your PR satisfies **every**
@@ -24,8 +21,9 @@ Repo: `christopherqueenconsulting/linkedin_engagement_manager`. Owner/escalation
   a "lands in a follow-up PR"), you MUST either file the follow-up issue and link it, or drop the
   closing keyword. See **Phased work** below. This is not a formality: #548 shipped its Phase 1 and
   its PR closed the issue, so Phase 2 was never filed and the remaining work silently vanished.
-- **Tests are mandatory:** new logic → `tests/unit/`; new API endpoints → `tests/integration/`. Target ≥80% patch coverage.
-- Run `poetry run pytest tests/unit -q` locally before pushing when the environment allows; **CI is the source of truth**.
+- **Tests are mandatory:** new logic → `tests/unit/`; new API endpoints → `tests/integration/`. Target ≥80% patch
+  coverage. Lane/marker/fixture selection: the **test-lanes** skill. Run `poetry run pytest tests/unit -q` locally
+  before pushing when the environment allows; **CI is the source of truth**.
 - **Never** edit files under `/opt/lem` (that is live prod), never run `docker`, never deploy, never touch secrets/`.env`.
 - Commit trailer: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
 - You are in a dedicated worktree already on the correct branch. Do not `git checkout main` or switch branches.
@@ -271,9 +269,8 @@ Rebase it cleanly onto current `main`:
 2. Resolve **every** conflict, preserving BOTH this PR's intent AND what landed on `main`. If `main` added
    overlapping code (e.g. another PR already added authenticity/attribution logic to the same file),
    **integrate** with it — do not clobber what's on main, and don't duplicate it.
-3. **Migrations:** new migrations must be TIMESTAMP versions `V<YYYYMMDDHHMMSS>__name.sql` (`date -u +%Y%m%d%H%M%S`).
-   If a rebase surfaces a duplicate/again-conflicting version, rename the migration THIS PR adds (never a
-   migration already on `main`) to a fresh timestamp. Never reuse an integer version.
+3. **Migrations:** timestamp versions per the **db-migration** skill. If a rebase surfaces a duplicate version,
+   rename the migration THIS PR adds (never one already on `main`) to a fresh timestamp.
 4. Run `poetry run pytest tests/unit -q` on the touched areas if feasible.
 5. `git push --force-with-lease` (re-triggers CI + a fresh Copilot review). STOP.
 6. If the conflicts are too complex to resolve safely, escalate:
@@ -290,30 +287,17 @@ CREATING side-instruction issues you may suggest a tier in a comment, but leave 
 
 ## Release fast lane (`release:now`) — YOUR call to make
 
-Releases batch 4× daily, so a merged PR waits a median of ~168 minutes (p90 ~5.5h) before it reaches
-users. For a docs tweak that is correct. For a bug someone is hitting right now it is not.
-
-**You may add `release:now` to your own PR, without asking, when the change is:**
-- **high priority** — the issue has `priority:high`, or is `bug` + `feedback-loop` (a real user
-  reported it); **or**
-- **high visibility** — a user notices on their next visit: broken/incorrect UI, a failing core loop
-  (posting, commenting, DMs), broken auth, a data-integrity bug, or a fix for something currently
-  erroring in production.
-
-**Do NOT add it for:** docs/comments/tests/refactors with no behaviour change; dependency bumps;
-`priority:low`/`cleanup`/`chore`; anything behind a disabled flag; a change you could NOT verify; or
-when you have already fast-laned another PR in this session — batch the rest.
-
-**Always allowed:** a revert, or a fix for something actively broken in production.
+Releases batch 4× daily (median ~168 min wait). You may self-apply `release:now` per the policy in the
+**ship-issue** skill and `docs/release-fast-lane.md` — high priority or user-visible breakage yes; docs/tests/
+refactors/dep bumps/flag-disabled/unverified work no; one fast-laned PR per session; reverts and prod fixes
+always allowed.
 
 ```bash
 gh pr edit <PR> --repo "$SLUG" --add-label 'release:now'
 ```
 
-Apply it BEFORE the PR merges — the label is read at merge time. Say why in one line in the PR body
-("Labelled `release:now`: user-visible commenting failure, priority:high") so the call is auditable.
-It skips the WAIT, never a check: the release PR still runs full CI and the merge queue. Full
-policy: `docs/release-fast-lane.md`.
+Apply it BEFORE the PR merges (the label is read at merge time) and say why in one line in the PR body so
+the call is auditable. It skips the WAIT, never a check.
 
 Keep each tick focused and finite. Prefer correctness and convention-compliance over speed — a clean PR that
 passes CI and review the first time is the goal.
