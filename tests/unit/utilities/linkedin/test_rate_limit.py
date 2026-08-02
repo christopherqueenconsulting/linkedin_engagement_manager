@@ -240,6 +240,33 @@ class TestAutomationPause:
             from cqc_lem.utilities.linkedin.rate_limit import pause_automation
             assert pause_automation(60) is False
 
+    def test_pause_logs_info_not_warning(self, fake_redis):
+        """A stored pause is a state transition, not a degraded path (issue #917). Warning here made
+        the once-per-release deploy pause escalate to ERROR and file a grouped $exception."""
+        from cqc_lem.utilities.linkedin.rate_limit import pause_automation
+        with patch(f"{_MOD}.log_info") as info, patch(f"{_MOD}.log_warning") as warn:
+            assert pause_automation(1800, reason="deploy") is True
+        warn.assert_not_called()
+        info.assert_called_once()
+        assert "Automation PAUSED for 1800s (reason: deploy)" in info.call_args.args[0]
+
+    def test_pause_logs_the_reason_it_actually_stored(self, fake_redis):
+        """An empty reason falls back to 'manual' — the log must not claim a blank one."""
+        from cqc_lem.utilities.linkedin.rate_limit import pause_automation
+        with patch(f"{_MOD}.log_info") as info:
+            pause_automation(60, reason="")
+        fake_redis.set.assert_called_once_with("linkedin:automation_paused", "manual", ex=60)
+        assert "reason: manual" in info.call_args.args[0]
+
+    def test_pause_redis_error_still_warns(self, fake_redis):
+        """The kill-switch failing to store IS a degraded path — that one keeps its warning."""
+        fake_redis.set.side_effect = RuntimeError("redis down")
+        from cqc_lem.utilities.linkedin.rate_limit import pause_automation
+        with patch(f"{_MOD}.log_warning") as warn, patch(f"{_MOD}.log_info") as info:
+            assert pause_automation(60) is False
+        info.assert_not_called()
+        warn.assert_called_once()
+
     def test_resume_deletes_key(self, fake_redis):
         from cqc_lem.utilities.linkedin.rate_limit import resume_automation
         assert resume_automation() is True
