@@ -77,3 +77,32 @@ class TestBuildImageBrief:
             build_image_brief("content", surface="newsletter", avatar=avatar)
         user_msg = llm.call_args[1]["messages"][1]["content"]
         assert "it IS the author" in user_msg
+
+
+@pytest.mark.unit
+class TestRefusalFilterIsAnchoredToRefusals:
+    """Regression: a bare "language model" ban rejected every legitimate brief an AI-focused
+    author writes, so their briefs silently fell back to the deterministic template."""
+
+    @pytest.mark.parametrize("prompt_text", [
+        ("A photorealistic scene of an engineer studying a wall display of large language model "
+         "routing costs, shallow depth of field, dramatic rim light, modern office at dusk."),
+        ("A close-up of a founder at a whiteboard mapping an AI language model pipeline, warm "
+         "window light, one bold orange accent, editorial photograph."),
+    ])
+    def test_legitimate_ai_subject_matter_is_accepted(self, prompt_text):
+        payload = {"focal_concept": "LLM routing cost risk", "prompt": prompt_text}
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm", return_value=_resp(payload)):
+            brief = build_image_brief("post about LLM cost routing", surface="post_image")
+        assert brief.prompt == prompt_text, "an AI-topic brief must not fall back"
+
+    @pytest.mark.parametrize("refusal", [
+        "I'm sorry, I cannot create that image for you because it violates the guidelines here.",
+        "As an AI language model, I am unable to generate the requested description at all.",
+        "I can't fulfill this request, but here is a generic description of an office scene.",
+    ])
+    def test_actual_refusals_are_still_rejected(self, refusal):
+        with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
+                   return_value=_resp({"focal_concept": "n/a", "prompt": refusal * 2})):
+            brief = build_image_brief("some content", surface="post_image")
+        assert refusal not in brief.prompt

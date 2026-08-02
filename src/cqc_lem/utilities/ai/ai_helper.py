@@ -2756,8 +2756,11 @@ def get_flux_image_via_replicate(prompt: str, ref: str = DEFAULT_IMAGE_MODEL, *,
     image_file_path = save_video_url_to_dir(url, save_dir)
 
     from cqc_lem.utilities.observability import track_media_cost, image_cost_usd
-    track_media_cost("image", "replicate", image_cost_usd(1, model=ref), qty=1, model=ref,
-                     meta={"aspect_ratio": aspect_ratio})
+    # Price on the FULL ref, but record the model without its ":<64-char digest>" version — an
+    # avatar LoRA ref is ~100 chars and cost_ledger.model_tier is VARCHAR(64), so the untrimmed
+    # value failed every avatar render's ledger write ("Data too long for column 'model_tier'").
+    track_media_cost("image", "replicate", image_cost_usd(1, model=ref), qty=1,
+                     model=ref.split(":", 1)[0], meta={"aspect_ratio": aspect_ratio})
 
     return image_file_path
 

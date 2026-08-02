@@ -210,6 +210,50 @@ def inspect_render_quality(image_path: str, focal_concept: str) -> QualityVerdic
         return QualityVerdict(acceptable=True, checked=False)
 
 
+def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[int],
+                              surface: str, ratio: str = "1:1",
+                              focal_concept: Optional[str] = None,
+                              post_id: Optional[int] = None) -> Optional[str]:
+    """LoRA render of an image the author appears in, behind the SAME bounded vision gate the
+    base renderer gets.
+
+    Likeness never renders through the gpt-image path (``generate_post_image`` owns the avatar
+    guardrails), so without this the avatar branch was the one path with no quality check at all —
+    which is how a post about LLM routing costs came back as a plain headshot against a brick wall.
+    Returns the best candidate's path, or None if nothing rendered.
+    """
+    from cqc_lem.utilities.ai.ai_helper import _record_avatar_media
+    from cqc_lem.utilities.avatar.attributes import apply_subject_clause
+    from cqc_lem.utilities.avatar.replicate_avatar import generate_image_with_avatar
+
+    enforced = surface in IMAGE_QUALITY_GATE_SURFACES
+    attempts = max(1, IMAGE_GATE_MAX_ATTEMPTS) if enforced else 1
+    current_prompt = prompt
+    path: Optional[str] = None
+
+    for attempt in range(1, attempts + 1):
+        path, used_avatar = generate_image_with_avatar(
+            apply_subject_clause(current_prompt, avatar), avatar["model_ref"],
+            ratio=ratio, fallback_prompt=current_prompt)
+        if used_avatar and path:
+            # Provenance for a synthetic likeness of a real person.
+            _record_avatar_media(path, post_id, user_id)
+        if not path:
+            return None
+        verdict = inspect_render_quality(path, focal_concept or prompt[:200])
+        if verdict.acceptable or not verdict.checked:
+            return path
+        log_info("Avatar image failed the quality gate", user_id=user_id, post_id=post_id,
+                 action_type="image_gate", surface=surface, attempt=attempt,
+                 issues="; ".join(verdict.issues))
+        if not enforced or attempt == attempts:
+            break
+        fixes = "; ".join(verdict.issues) or "low relevance to the subject"
+        current_prompt = (f"{prompt}\n\nThe previous render was rejected for: {fixes}. "
+                          f"Avoid those problems entirely in this render.")
+    return path
+
+
 def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
                        focal_concept: Optional[str] = None,
                        quality: Optional[str] = None,

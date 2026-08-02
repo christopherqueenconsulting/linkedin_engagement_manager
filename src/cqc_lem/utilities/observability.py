@@ -707,8 +707,11 @@ def track_media_cost(kind: str, provider: str, usd: float, user_id: Optional[int
             **(meta or {}),
         },
     )
+    # cost_ledger.model_tier is VARCHAR(64); an over-long identifier used to abort the whole
+    # ledger write, so the spend vanished rather than being recorded under a truncated name.
     _write_cost_ledger(feature=feature, category="media", usd=usd, user_id=user_id,
-                       provider=provider, model_tier=model, qty=qty, post_id=post_id,
+                       provider=provider, model_tier=(model or None) and model[:64],
+                       qty=qty, post_id=post_id,
                        task_name=_current_task_context()[0])
 
 

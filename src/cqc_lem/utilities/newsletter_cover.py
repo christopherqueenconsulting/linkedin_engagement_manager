@@ -265,35 +265,6 @@ def _resolve_cover_avatar(user_id: int, use_avatar: Optional[bool], title: Optio
     return avatar if classify_avatar_relevance(title, subtitle, body) else None
 
 
-def _render_avatar_cover(brief, avatar: dict, user_id: int) -> Optional[str]:
-    """LoRA render for a cover the author appears in, with ONE bounded vision re-render."""
-    from cqc_lem.utilities.ai.ai_helper import _record_avatar_media
-    from cqc_lem.utilities.ai.image_gen import inspect_render_quality
-    from cqc_lem.utilities.avatar.attributes import apply_subject_clause
-    from cqc_lem.utilities.avatar.replicate_avatar import generate_image_with_avatar
-    from cqc_lem.utilities.env_constants import IMAGE_GATE_MAX_ATTEMPTS
-
-    prompt = brief.prompt
-    path = None
-    for attempt in range(1, max(1, IMAGE_GATE_MAX_ATTEMPTS) + 1):
-        path, used_avatar = generate_image_with_avatar(
-            apply_subject_clause(prompt, avatar), avatar["model_ref"],
-            ratio=COVER_IMAGE_RATIO, fallback_prompt=prompt)
-        if used_avatar and path:
-            # C2PA provenance for a synthetic likeness; editions have no posts row to flag.
-            _record_avatar_media(path, None, user_id)
-        verdict = inspect_render_quality(path, brief.focal_concept)
-        if verdict.acceptable or not verdict.checked:
-            return path
-        log_info("Avatar cover failed the quality gate", user_id=user_id,
-                 action_type="newsletter_cover", attempt=attempt,
-                 issues="; ".join(verdict.issues))
-        fixes = "; ".join(verdict.issues) or "low relevance to the subject"
-        prompt = (f"{brief.prompt}\n\nThe previous render was rejected for: {fixes}. "
-                  f"Avoid those problems entirely in this render.")
-    return path
-
-
 def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[str],
                                subtitle: Optional[str], body: Optional[str],
                                profile=None,
@@ -307,7 +278,7 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
     Whatever renders here still lands ``pending_review`` — the author stays the publish gate.
     """
     from cqc_lem.utilities.ai.image_brief import build_image_brief
-    from cqc_lem.utilities.ai.image_gen import render_image_gated
+    from cqc_lem.utilities.ai.image_gen import render_avatar_image_gated, render_image_gated
 
     avatar = _resolve_cover_avatar(user_id, use_avatar, title, subtitle, body)
 
@@ -323,7 +294,9 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
 
     try:
         if avatar:
-            generated_path = _render_avatar_cover(brief, avatar, user_id)
+            generated_path = render_avatar_image_gated(
+                brief.prompt, avatar=avatar, user_id=user_id, surface="newsletter",
+                ratio=COVER_IMAGE_RATIO, focal_concept=brief.focal_concept)
         else:
             generated_path = render_image_gated(brief.prompt, surface="newsletter",
                                                 ratio=COVER_IMAGE_RATIO,
