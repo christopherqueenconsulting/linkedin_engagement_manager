@@ -1398,6 +1398,37 @@ def get_post_user_id(post_id: int):
     return post['user_id'] if post else None
 
 
+def user_owns_posts(user_id: int, post_ids: list[int]) -> bool:
+    """True only when EVERY id exists AND belongs to `user_id` (issue #914).
+
+    The post-mutating endpoints take a list of ids and used to act on it unchecked, so this is the
+    authorisation read that stands between one account and another's drafts. It fails CLOSED: an
+    empty list, a missing row and a database error all answer False, because "we could not prove
+    ownership" must never be spelled the same way as "they own it"."""
+    if not user_id or not post_ids:
+        return False
+
+    unique_ids = list({int(pid) for pid in post_ids})
+    connection = get_db_connection()
+    cursor = connection.cursor()
+
+    try:
+        placeholders = ', '.join(['%s'] * len(unique_ids))
+        cursor.execute(
+            f"SELECT COUNT(DISTINCT id) FROM posts WHERE user_id = %s AND id IN ({placeholders})",
+            [user_id, *unique_ids],
+        )
+        row = cursor.fetchone()
+        return bool(row) and row[0] == len(unique_ids)
+    except mysql.connector.Error as err:
+        from cqc_lem.utilities.logger import log_error
+        log_error("Could not verify post ownership", exc=err, user_id=user_id)
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def update_db_post_image_url(post_id: int, image_url: Optional[str]) -> bool:
     connection = get_db_connection()
     cursor = connection.cursor()

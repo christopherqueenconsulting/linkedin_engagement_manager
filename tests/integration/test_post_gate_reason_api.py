@@ -3,6 +3,8 @@ gate verdict the review UI renders, and /user/post/rescore re-runs the gates on 
 (promoting a fixed draft PENDING -> APPROVED) while refusing posts that aren't the caller's."""
 
 import json
+from contextlib import contextmanager
+
 import pytest
 from unittest.mock import patch
 
@@ -15,10 +17,20 @@ _FINDING = {"gate": "authenticity", "label": "Authenticity", "score": 41, "thres
             "details": ["no concrete detail"]}
 
 
+_SESSION_TOKEN = "gate-reason-session"
+
+
 def _client():
     from fastapi.testclient import TestClient
     from cqc_lem.api.main import app
     return TestClient(app)
+
+
+@contextmanager
+def _signed_in(user_id: int = 1):
+    """The posts list resolves its caller from the session since issue #914."""
+    with patch(f"{_API}.get_session_user_id", return_value=user_id):
+        yield
 
 
 class TestPostsListCarriesTheVerdict:
@@ -30,22 +42,22 @@ class TestPostsListCarriesTheVerdict:
         }
 
     def test_gate_reason_and_score_are_returned(self):
-        with patch(f"{_API}.get_post_by_email",
-                   return_value=([self._post_row(json.dumps([_FINDING]))], 1)):
-            r = _client().get("/api/posts/?email=test@example.com")
+        with _signed_in(), patch(f"{_API}.get_posts",
+                                 return_value=([self._post_row(json.dumps([_FINDING]))], 1)):
+            r = _client().get(f"/api/posts/?session_token={_SESSION_TOKEN}")
         assert r.status_code == 200
         post = r.json()["detail"]["posts"][0]
         assert post["authenticity_score"] == 41
         assert post["gate_reason"] == [_FINDING]
 
     def test_a_post_with_no_verdict_returns_an_empty_list(self):
-        with patch(f"{_API}.get_post_by_email", return_value=([self._post_row(None)], 1)):
-            r = _client().get("/api/posts/?email=test@example.com")
+        with _signed_in(), patch(f"{_API}.get_posts", return_value=([self._post_row(None)], 1)):
+            r = _client().get(f"/api/posts/?session_token={_SESSION_TOKEN}")
         assert r.json()["detail"]["posts"][0]["gate_reason"] == []
 
     def test_a_malformed_verdict_does_not_break_the_queue(self):
-        with patch(f"{_API}.get_post_by_email", return_value=([self._post_row("{oops")], 1)):
-            r = _client().get("/api/posts/?email=test@example.com")
+        with _signed_in(), patch(f"{_API}.get_posts", return_value=([self._post_row("{oops")], 1)):
+            r = _client().get(f"/api/posts/?session_token={_SESSION_TOKEN}")
         assert r.status_code == 200
         assert r.json()["detail"]["posts"][0]["gate_reason"] == []
 

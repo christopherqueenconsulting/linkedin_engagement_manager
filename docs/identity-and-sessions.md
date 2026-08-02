@@ -60,6 +60,48 @@ caller's own session as the one to keep and revoke it.
 real token, so a valid login is never turned into a lockout. Set `SESSION_COOKIE_SECURE=false` for a
 plain-http local origin.
 
+## The parameter is a target, never the actor (issue #914)
+
+`get_session_user_id` only means something on the routes that call it, and until #914 a set of them
+did not. `PUT /user/`, `GET|DELETE /posts/`, `POST /posts/bulk_update/`, `POST /update_post/`,
+`GET /post_url/`, `GET /dashboard/stats/`, `GET /dashboard/planned-tasks/`, `GET /activity/`,
+`GET /user_id/`, `POST /schedule_post/`, `POST /create_weekly_content/`,
+`POST /invite_to_li_company_page/`, `POST /automate_reply_commenting` and
+`POST /aws_test_get_my_profile/` read the acting account out of an `email` / `user_id` / `post_id`
+**request parameter**. The only thing in front of them was the shared bearer token
+(`API_ACCESS_TOKENS`), which the SPA ships in its build (`VITE_API_TOKEN`) — so it is held by
+everyone who has ever loaded the page. `PUT /user/` was the worst of them: it MOVED the account
+email given only the current one, which is the whole account for one query parameter.
+
+Every one of them now resolves the caller through **`require_session_user_id()`** — the 401 wrapper
+around the same resolver — and treats what the request named as a target to authorise:
+
+| Helper | Rule |
+|---|---|
+| `require_session_user_id(token)` | the acting user, or **401**. Nothing below runs without it. |
+| `_reject_foreign_email(user_id, email)` | an `email` parameter must be the caller's own → **403** |
+| `_reject_foreign_user_id(user_id, target)` | same, by id |
+| `_require_own_posts(user_id, post_ids)` | **403** unless `db.user_owns_posts` proves EVERY id |
+
+Three deliberate choices in there:
+
+- **The parameter is checked, not ignored.** Answering a mismatch with the caller's own data would
+  be a silent substitution, and a legacy client naming its own address keeps working either way.
+- **`user_owns_posts` fails closed.** An empty list, a missing row and a database error all answer
+  False — "we could not prove ownership" must never be spelled the same way as "they own it". A
+  batch is rejected whole: a list is only as scoped as its worst entry.
+- **403, not 404-per-id.** Which post ids exist is the enumeration these endpoints used to hand out.
+
+`new_email` is gone from `PUT /user/` rather than gated: the address moves through
+`POST /user/email/change/init|verify`, which PINs the NEW address, is step-up gated, and revokes
+every other session.
+
+`POST /generate-carousel` was importing `db.get_session_user_id` directly, so it never saw the
+cookie sentinel (and no session scope reached it). It goes through the module resolver like
+everything else now — **there is one resolver, and a route that imports around it is a bug.**
+`tests/unit/api/test_param_auth_scoping.py` is the standing proof: one 401 case and one 403 case per
+converted route, each asserting the db call behind it was never reached.
+
 ## CSRF
 
 Cookie auth means a state-changing request can now be authenticated by something the browser

@@ -216,10 +216,10 @@ export default function ComposePost({ onNavigateTab }: { onNavigateTab?: (tab: s
     setResult(null)
     try {
       const payload: Record<string, unknown> = {
+        session_token: sessionToken,
         content,
         post_type: postType.toLowerCase(),
         scheduled_datetime: scheduledUtc,
-        email,
         status,
       }
       // Only send a compose-time choice when there IS one: the field is three-valued and an

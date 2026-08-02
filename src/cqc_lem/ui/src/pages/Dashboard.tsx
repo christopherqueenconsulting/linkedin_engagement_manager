@@ -277,8 +277,7 @@ function StatCard({ label, value, color }: { label: string; value: number; color
 }
 
 export default function Dashboard() {
-  const { user, sessionToken } = useAuth()
-  const email = user?.email ?? ''
+  const { sessionToken } = useAuth()
   const userTimezone = useUserTimezone()
 
   // Personalized best-times-to-post recommendations (read-only)
@@ -315,26 +314,30 @@ export default function Dashboard() {
   })
 
   const { data: statsData } = useQuery<{ detail: DashboardStats }>({
-    queryKey: ['dashboard-stats', email],
-    queryFn: () => api.get(`/dashboard/stats/?email=${encodeURIComponent(email)}`).then((r) => r.data),
-    enabled: !!email,
+    queryKey: ['dashboard-stats', sessionToken],
+    queryFn: () =>
+      api.get(`/dashboard/stats/?session_token=${encodeURIComponent(sessionToken!)}`).then((r) => r.data),
+    enabled: !!sessionToken,
     refetchInterval: 30_000,
   })
 
   // Upcoming (future-dated, non-terminal) work across posts, scheduled DMs, and newsletter
   // editions — the backend already filters terminal states, sorts soonest-first, and caps.
   const { data: plannedData } = useQuery<{ detail: { tasks: PlannedTask[] } }>({
-    queryKey: ['planned-tasks', email],
+    queryKey: ['planned-tasks', sessionToken],
     queryFn: () =>
-      api.get(`/dashboard/planned-tasks/?email=${encodeURIComponent(email)}&limit=10`).then((r) => r.data),
-    enabled: !!email,
+      api
+        .get(`/dashboard/planned-tasks/?session_token=${encodeURIComponent(sessionToken!)}&limit=10`)
+        .then((r) => r.data),
+    enabled: !!sessionToken,
     refetchInterval: 30_000,
   })
 
   const { data: activityData } = useQuery<{ detail: ActivityEntry[] }>({
-    queryKey: ['activity', email],
-    queryFn: () => api.get(`/activity/?email=${encodeURIComponent(email)}&limit=15`).then((r) => r.data),
-    enabled: !!email,
+    queryKey: ['activity', sessionToken],
+    queryFn: () =>
+      api.get(`/activity/?session_token=${encodeURIComponent(sessionToken!)}&limit=15`).then((r) => r.data),
+    enabled: !!sessionToken,
     refetchInterval: 30_000,
   })
 

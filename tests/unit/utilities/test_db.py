@@ -45,6 +45,67 @@ class TestPostUrlFromLogForUser:
 
 
 @pytest.mark.unit
+class TestUserOwnsPosts:
+    """Issue #914: the authorisation read standing between one account and another's drafts."""
+
+    def test_true_when_every_id_belongs_to_the_user(self, mock_database_connection):
+        from cqc_lem.utilities.db import user_owns_posts
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].fetchone.return_value = (3,)
+            assert user_owns_posts(7, [1, 2, 3]) is True
+
+    def test_false_when_one_id_is_missing_or_foreign(self, mock_database_connection):
+        from cqc_lem.utilities.db import user_owns_posts
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].fetchone.return_value = (2,)
+            assert user_owns_posts(7, [1, 2, 4242]) is False
+
+    def test_duplicate_ids_do_not_inflate_the_expected_count(self, mock_database_connection):
+        """COUNT(DISTINCT id) is compared against the DISTINCT input, or [5, 5] would never match."""
+        from cqc_lem.utilities.db import user_owns_posts
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].fetchone.return_value = (1,)
+            assert user_owns_posts(7, [5, 5]) is True
+
+    def test_query_is_scoped_by_user_id(self, mock_database_connection):
+        from cqc_lem.utilities.db import user_owns_posts
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].fetchone.return_value = (1,)
+            user_owns_posts(7, [5])
+        sql, params = mock_database_connection["cursor"].execute.call_args[0]
+        assert "user_id = %s" in sql
+        assert params[0] == 7
+
+    def test_empty_inputs_are_false(self, mock_database_connection):
+        from cqc_lem.utilities.db import user_owns_posts
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            assert user_owns_posts(7, []) is False
+            assert user_owns_posts(None, [1]) is False
+        mock_database_connection["cursor"].execute.assert_not_called()
+
+    def test_fails_closed_on_a_db_error(self, mock_database_connection):
+        """"Could not prove ownership" must never be spelled the same way as "they own it"."""
+        from cqc_lem.utilities.db import user_owns_posts
+        import mysql.connector
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("boom")
+            assert user_owns_posts(7, [1]) is False
+
+    def test_false_when_the_row_is_missing(self, mock_database_connection):
+        from cqc_lem.utilities.db import user_owns_posts
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].fetchone.return_value = None
+            assert user_owns_posts(7, [1]) is False
+
+
+@pytest.mark.unit
 class TestPostMessageFromLogForUser:
     def test_returns_message_when_log_row_exists(self, mock_database_connection):
         from cqc_lem.utilities.db import get_post_message_from_log_for_user

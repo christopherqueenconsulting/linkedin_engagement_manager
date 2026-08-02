@@ -262,7 +262,7 @@ export default function ContentStudio() {
     queryKey,
     queryFn: () => {
       const params = new URLSearchParams({
-        email,
+        session_token: sessionToken!,
         page: String(page),
         page_size: String(pageSize),
         sort_order: sortOrder,
@@ -275,7 +275,7 @@ export default function ContentStudio() {
       if (searchQuery) params.set('search', searchQuery)
       return api.get(`/posts/?${params.toString()}`).then((r) => r.data)
     },
-    enabled: !!email,
+    enabled: !!sessionToken,
   })
 
   const posts = data?.detail?.posts ?? []
@@ -304,11 +304,11 @@ export default function ContentStudio() {
   const updateMutation = useMutation({
     mutationFn: (post: Post) =>
       api.post(`/update_post/?post_id=${post.post_id}`, {
+        session_token: sessionToken,
         content: post.content,
         video_url: post.video_url,
         post_type: post.post_type,
         scheduled_datetime: post.scheduled_time,
-        email,
         status: post.status,
       }),
     onSuccess: (_res, post) => {
@@ -326,11 +326,11 @@ export default function ContentStudio() {
     mutationFn: async (post: Post) => {
       if (!sessionToken) throw new Error('No active session')
       await api.post(`/update_post/?post_id=${post.post_id}`, {
+        session_token: sessionToken,
         content: post.content,
         video_url: post.video_url,
         post_type: post.post_type,
         scheduled_datetime: post.scheduled_time,
-        email,
         status: post.status,
       })
       const r = await api.post('/user/post/rescore', {
@@ -351,7 +351,7 @@ export default function ContentStudio() {
 
   const bulkUpdateMutation = useMutation({
     mutationFn: (body: { post_ids: number[]; status?: string; scheduled_datetime?: string }) =>
-      api.post('/posts/bulk_update/', body),
+      api.post('/posts/bulk_update/', { ...body, session_token: sessionToken }),
     onSuccess: (_res, body) => {
       // One event per post, not one per click — an approval rate broken down by archetype needs
       // the same unit whether the user approved from the editor or from the bulk bar.
@@ -365,7 +365,8 @@ export default function ContentStudio() {
   })
 
   const bulkDeleteMutation = useMutation({
-    mutationFn: (post_ids: number[]) => api.delete('/posts/', { data: { post_ids } }),
+    mutationFn: (post_ids: number[]) =>
+      api.delete('/posts/', { data: { post_ids, session_token: sessionToken } }),
     onSuccess: (_res, post_ids) => {
       // The delete endpoint is a soft delete (status=rejected) — the same decision, another door.
       for (const id of post_ids) capturePostDecision(id, 'rejected', { source: 'bulk_delete' })
@@ -397,7 +398,11 @@ export default function ContentStudio() {
   // Quick per-post delete (reuses the same soft-delete endpoint as the bulk flow, one id).
   const deleteMutation = useMutation({
     mutationFn: (post_id: number) => api.delete('/posts/', {
-      data: { post_ids: [post_id], rejection_reason: deleteRejectionReason.trim() || undefined },
+      data: {
+        session_token: sessionToken,
+        post_ids: [post_id],
+        rejection_reason: deleteRejectionReason.trim() || undefined,
+      },
     }),
     onSuccess: (_res, post_id) => {
       capturePostDecision(post_id, 'rejected', {
@@ -453,10 +458,9 @@ export default function ContentStudio() {
   }, [finishedAt, email, qc])
 
   const weeklyMutation = useMutation({
+    // The account is the session's, so there is no id to look up first (issue #914).
     mutationFn: () =>
-      api.get(`/user_id/?email=${encodeURIComponent(email)}`).then((r) =>
-        api.post(`/create_weekly_content/?user_id=${r.data.detail}`)
-      ),
+      api.post(`/create_weekly_content/?session_token=${encodeURIComponent(sessionToken!)}`),
     onSuccess: () => {
       capture(EVENTS.contentPlanGenerated, { source: 'content_studio' })
       qc.invalidateQueries({ queryKey: ['content-generation-status', sessionToken] })
@@ -477,10 +481,12 @@ export default function ContentStudio() {
       : 'Generating content…'
 
   const { data: postUrlData, isLoading: postUrlLoading } = useQuery<{ detail: { post_url: string | null } }>({
-    queryKey: ['post_url', editingPost?.post_id, email],
+    queryKey: ['post_url', editingPost?.post_id, sessionToken],
     queryFn: () =>
-      api.get(`/post_url/?post_id=${editingPost!.post_id}&email=${encodeURIComponent(email)}`).then((r) => r.data),
-    enabled: !!editingPost && editingPost.status === 'posted' && !!email,
+      api
+        .get(`/post_url/?post_id=${editingPost!.post_id}&session_token=${encodeURIComponent(sessionToken!)}`)
+        .then((r) => r.data),
+    enabled: !!editingPost && editingPost.status === 'posted' && !!sessionToken,
   })
 
   // Selection helpers

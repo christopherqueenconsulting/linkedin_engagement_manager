@@ -29,3 +29,21 @@ def _account_without_a_strong_factor():
          patch("cqc_lem.api.main.enrollment_required", return_value=False), \
          patch("cqc_lem.api.main.enrollment_hold_active", return_value=False):
         yield
+
+
+# Issue #914: the routes that used to read the acting user out of an `email` / `user_id` request
+# parameter now resolve it from the session, so a module exercising one of them needs a signed-in
+# caller. Opt in with the fixture — it is deliberately NOT autouse, because "no session" is the
+# state half of `test_param_auth_scoping.py` is asserting on.
+SESSION_USER_ID = 42
+SESSION_EMAIL = "user@example.com"
+SESSION_TOKEN = "session-token-abc"
+
+
+@pytest.fixture
+def signed_in():
+    """Any token resolves to SESSION_USER_ID, who owns every post named."""
+    with patch("cqc_lem.api.main.get_session_user_id", return_value=SESSION_USER_ID), \
+         patch("cqc_lem.api.main.get_user_email", return_value=SESSION_EMAIL), \
+         patch("cqc_lem.api.main.user_owns_posts", return_value=True):
+        yield SESSION_USER_ID

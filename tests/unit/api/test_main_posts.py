@@ -12,6 +12,8 @@ pytestmark = pytest.mark.unit
 
 _DB = "cqc_lem.api.main"
 
+from tests.unit.api.conftest import SESSION_TOKEN, SESSION_USER_ID  # noqa: E402
+
 _SAMPLE_POST = {
     "id": 1,
     "content": "Test LinkedIn post content",
@@ -23,6 +25,7 @@ _SAMPLE_POST = {
 }
 
 _POST_BODY = {
+    "session_token": SESSION_TOKEN,
     "content": "Test content",
     "video_url": None,
     "scheduled_datetime": "2024-06-01T10:00:00",
@@ -58,9 +61,9 @@ def client():
 
 class TestGetPostsForEmail:
 
-    def test_returns_200_with_posts(self, client):
-        with patch(f"{_DB}.get_post_by_email", return_value=([_SAMPLE_POST], 1)):
-            resp = client.get("/api/posts/", params={"email": "test@example.com"})
+    def test_returns_200_with_posts(self, client, signed_in):
+        with patch(f"{_DB}.get_posts", return_value=([_SAMPLE_POST], 1)):
+            resp = client.get("/api/posts/", params={"session_token": SESSION_TOKEN})
         assert resp.status_code == 200
         body = resp.json()
         assert body["detail"]["total"] == 1
@@ -69,20 +72,24 @@ class TestGetPostsForEmail:
         assert len(body["detail"]["posts"]) == 1
         assert body["detail"]["posts"][0]["post_id"] == 1
 
-    def test_missing_email_returns_400(self, client):
-        resp = client.get("/api/posts/", params={"email": ""})
-        assert resp.status_code == 400
+    def test_no_session_returns_401(self, client):
+        with patch(f"{_DB}.get_session_user_id", return_value=None):
+            resp = client.get("/api/posts/")
+        assert resp.status_code == 401
 
-    def test_no_email_param_returns_422(self, client):
-        """FastAPI rejects the request when required query param is missing."""
-        resp = client.get("/api/posts/")
-        assert resp.status_code == 422
+    def test_another_accounts_email_returns_403(self, client, signed_in):
+        """A valid bearer token plus somebody else's address reads nothing (issue #914)."""
+        with patch(f"{_DB}.get_posts") as mock_get:
+            resp = client.get("/api/posts/", params={"session_token": SESSION_TOKEN,
+                                                     "email": "victim@example.com"})
+        assert resp.status_code == 403
+        mock_get.assert_not_called()
 
-    def test_pagination_params_forwarded(self, client):
-        with patch(f"{_DB}.get_post_by_email", return_value=([], 0)) as mock_get:
+    def test_pagination_params_forwarded(self, client, signed_in):
+        with patch(f"{_DB}.get_posts", return_value=([], 0)) as mock_get:
             resp = client.get(
                 "/api/posts/",
-                params={"email": "test@example.com", "page": 2, "page_size": 5},
+                params={"session_token": SESSION_TOKEN, "page": 2, "page_size": 5},
             )
         assert resp.status_code == 200
         body = resp.json()
@@ -90,7 +97,7 @@ class TestGetPostsForEmail:
         assert body["detail"]["page_size"] == 5
         # offset for page 2 with page_size 5 is 5
         mock_get.assert_called_once_with(
-            "test@example.com",
+            SESSION_USER_ID,
             limit=5,
             offset=5,
             sort_order="asc",
@@ -102,15 +109,15 @@ class TestGetPostsForEmail:
             end_date=None,
         )
 
-    def test_sort_order_desc(self, client):
-        with patch(f"{_DB}.get_post_by_email", return_value=([], 0)) as mock_get:
+    def test_sort_order_desc(self, client, signed_in):
+        with patch(f"{_DB}.get_posts", return_value=([], 0)) as mock_get:
             resp = client.get(
                 "/api/posts/",
-                params={"email": "test@example.com", "sort_order": "desc"},
+                params={"session_token": SESSION_TOKEN, "sort_order": "desc"},
             )
         assert resp.status_code == 200
         mock_get.assert_called_once_with(
-            "test@example.com",
+            SESSION_USER_ID,
             limit=10,
             offset=0,
             sort_order="desc",
@@ -122,15 +129,15 @@ class TestGetPostsForEmail:
             end_date=None,
         )
 
-    def test_status_filter_forwarded(self, client):
-        with patch(f"{_DB}.get_post_by_email", return_value=([_SAMPLE_POST], 1)) as mock_get:
+    def test_status_filter_forwarded(self, client, signed_in):
+        with patch(f"{_DB}.get_posts", return_value=([_SAMPLE_POST], 1)) as mock_get:
             resp = client.get(
                 "/api/posts/",
-                params={"email": "test@example.com", "status_filter": "pending"},
+                params={"session_token": SESSION_TOKEN, "status_filter": "pending"},
             )
         assert resp.status_code == 200
         mock_get.assert_called_once_with(
-            "test@example.com",
+            SESSION_USER_ID,
             limit=10,
             offset=0,
             sort_order="asc",
@@ -142,12 +149,12 @@ class TestGetPostsForEmail:
             end_date=None,
         )
 
-    def test_post_type_and_search_and_sort_by_forwarded(self, client):
-        with patch(f"{_DB}.get_post_by_email", return_value=([], 0)) as mock_get:
+    def test_post_type_and_search_and_sort_by_forwarded(self, client, signed_in):
+        with patch(f"{_DB}.get_posts", return_value=([], 0)) as mock_get:
             resp = client.get(
                 "/api/posts/",
                 params={
-                    "email": "test@example.com",
+                    "session_token": SESSION_TOKEN,
                     "post_type_filter": "carousel",
                     "search": "ai AND marketing",
                     "sort_by": "status",
@@ -155,7 +162,7 @@ class TestGetPostsForEmail:
             )
         assert resp.status_code == 200
         mock_get.assert_called_once_with(
-            "test@example.com",
+            SESSION_USER_ID,
             limit=10,
             offset=0,
             sort_order="asc",
@@ -167,42 +174,42 @@ class TestGetPostsForEmail:
             end_date=None,
         )
 
-    def test_invalid_post_type_filter_422(self, client):
+    def test_invalid_post_type_filter_422(self, client, signed_in):
         resp = client.get(
             "/api/posts/",
-            params={"email": "test@example.com", "post_type_filter": "gif"},
+            params={"session_token": SESSION_TOKEN, "post_type_filter": "gif"},
         )
         assert resp.status_code == 422
 
-    def test_invalid_sort_by_422(self, client):
+    def test_invalid_sort_by_422(self, client, signed_in):
         resp = client.get(
             "/api/posts/",
-            params={"email": "test@example.com", "sort_by": "content"},
+            params={"session_token": SESSION_TOKEN, "sort_by": "content"},
         )
         assert resp.status_code == 422
 
-    def test_carousel_slides_json_string_parsed(self, client):
+    def test_carousel_slides_json_string_parsed(self, client, signed_in):
         """carousel_slides stored as a JSON string should be decoded to a list."""
         post_with_slides = dict(_SAMPLE_POST, carousel_slides='["slide1.png", "slide2.png"]')
-        with patch(f"{_DB}.get_post_by_email", return_value=([post_with_slides], 1)):
-            resp = client.get("/api/posts/", params={"email": "test@example.com"})
+        with patch(f"{_DB}.get_posts", return_value=([post_with_slides], 1)):
+            resp = client.get("/api/posts/", params={"session_token": SESSION_TOKEN})
         assert resp.status_code == 200
         slides = resp.json()["detail"]["posts"][0]["carousel_slides"]
         assert slides == ["slide1.png", "slide2.png"]
 
-    def test_empty_posts_list_returns_200(self, client):
-        with patch(f"{_DB}.get_post_by_email", return_value=([], 0)):
-            resp = client.get("/api/posts/", params={"email": "test@example.com"})
+    def test_empty_posts_list_returns_200(self, client, signed_in):
+        with patch(f"{_DB}.get_posts", return_value=([], 0)):
+            resp = client.get("/api/posts/", params={"session_token": SESSION_TOKEN})
         assert resp.status_code == 200
         assert resp.json()["detail"]["total"] == 0
         assert resp.json()["detail"]["posts"] == []
 
-    def test_date_range_params_forwarded(self, client):
-        with patch(f"{_DB}.get_post_by_email", return_value=([], 0)) as mock_get:
+    def test_date_range_params_forwarded(self, client, signed_in):
+        with patch(f"{_DB}.get_posts", return_value=([], 0)) as mock_get:
             resp = client.get(
                 "/api/posts/",
                 params={
-                    "email": "test@example.com",
+                    "session_token": SESSION_TOKEN,
                     "start_date": "2026-07-01T00:00:00Z",
                     "end_date": "2026-07-31T23:59:59Z",
                 },
@@ -213,10 +220,10 @@ class TestGetPostsForEmail:
         assert kwargs["start_date"] is not None
         assert kwargs["end_date"] is not None
 
-    def test_malformed_start_date_returns_422(self, client):
+    def test_malformed_start_date_returns_422(self, client, signed_in):
         resp = client.get(
             "/api/posts/",
-            params={"email": "test@example.com", "start_date": "not-a-date"},
+            params={"session_token": SESSION_TOKEN, "start_date": "not-a-date"},
         )
         assert resp.status_code == 422
 
@@ -227,44 +234,44 @@ class TestGetPostsForEmail:
 
 class TestBulkUpdatePostsEndpoint:
 
-    def test_returns_200_on_success(self, client):
+    def test_returns_200_on_success(self, client, signed_in):
         with patch(f"{_DB}.bulk_update_posts", return_value=True):
             resp = client.post(
                 "/api/posts/bulk_update/",
-                json={"post_ids": [1, 2], "status": "approved"},
+                json={"session_token": SESSION_TOKEN, "post_ids": [1, 2], "status": "approved"},
             )
         assert resp.status_code == 200
         assert "updated" in resp.json()["detail"].lower()
 
-    def test_empty_post_ids_returns_400(self, client):
+    def test_empty_post_ids_returns_400(self, client, signed_in):
         resp = client.post(
             "/api/posts/bulk_update/",
-            json={"post_ids": []},
+            json={"session_token": SESSION_TOKEN, "post_ids": []},
         )
         assert resp.status_code == 400
 
-    def test_bulk_update_failure_returns_405(self, client):
+    def test_bulk_update_failure_returns_405(self, client, signed_in):
         with patch(f"{_DB}.bulk_update_posts", return_value=False):
             resp = client.post(
                 "/api/posts/bulk_update/",
-                json={"post_ids": [1, 2], "status": "approved"},
+                json={"session_token": SESSION_TOKEN, "post_ids": [1, 2], "status": "approved"},
             )
         assert resp.status_code == 405
 
-    def test_status_only_update(self, client):
+    def test_status_only_update(self, client, signed_in):
         with patch(f"{_DB}.bulk_update_posts", return_value=True) as mock_update:
             resp = client.post(
                 "/api/posts/bulk_update/",
-                json={"post_ids": [3], "status": "pending"},
+                json={"session_token": SESSION_TOKEN, "post_ids": [3], "status": "pending"},
             )
         assert resp.status_code == 200
         mock_update.assert_called_once()
 
-    def test_scheduled_datetime_update(self, client):
+    def test_scheduled_datetime_update(self, client, signed_in):
         with patch(f"{_DB}.bulk_update_posts", return_value=True) as mock_update:
             resp = client.post(
                 "/api/posts/bulk_update/",
-                json={"post_ids": [4, 5], "scheduled_datetime": "2024-07-01T09:00:00"},
+                json={"session_token": SESSION_TOKEN, "post_ids": [4, 5], "scheduled_datetime": "2024-07-01T09:00:00"},
             )
         assert resp.status_code == 200
         mock_update.assert_called_once()
@@ -276,66 +283,66 @@ class TestBulkUpdatePostsEndpoint:
 
 class TestDeletePostsEndpoint:
 
-    def test_returns_200_on_success(self, client):
+    def test_returns_200_on_success(self, client, signed_in):
         with patch(f"{_DB}.soft_delete_posts", return_value=True):
             resp = client.request(
                 "DELETE",
                 "/api/posts/",
-                json={"post_ids": [1, 2]},
+                json={"session_token": SESSION_TOKEN, "post_ids": [1, 2]},
             )
         assert resp.status_code == 200
         assert "deleted" in resp.json()["detail"].lower()
 
-    def test_empty_post_ids_returns_400(self, client):
+    def test_empty_post_ids_returns_400(self, client, signed_in):
         resp = client.request(
             "DELETE",
             "/api/posts/",
-            json={"post_ids": []},
+            json={"session_token": SESSION_TOKEN, "post_ids": []},
         )
         assert resp.status_code == 400
 
-    def test_soft_delete_failure_returns_405(self, client):
+    def test_soft_delete_failure_returns_405(self, client, signed_in):
         with patch(f"{_DB}.soft_delete_posts", return_value=False):
             resp = client.request(
                 "DELETE",
                 "/api/posts/",
-                json={"post_ids": [1, 2]},
+                json={"session_token": SESSION_TOKEN, "post_ids": [1, 2]},
             )
         assert resp.status_code == 405
 
-    def test_calls_soft_delete_with_correct_ids(self, client):
+    def test_calls_soft_delete_with_correct_ids(self, client, signed_in):
         with patch(f"{_DB}.soft_delete_posts", return_value=True) as mock_delete:
             client.request(
                 "DELETE",
                 "/api/posts/",
-                json={"post_ids": [7, 8, 9]},
+                json={"session_token": SESSION_TOKEN, "post_ids": [7, 8, 9]},
             )
         mock_delete.assert_called_once_with([7, 8, 9], rejection_reason=None)
 
-    def test_passes_rejection_reason_to_soft_delete(self, client):
+    def test_passes_rejection_reason_to_soft_delete(self, client, signed_in):
         with patch(f"{_DB}.soft_delete_posts", return_value=True) as mock_delete:
             resp = client.request(
                 "DELETE",
                 "/api/posts/",
-                json={"post_ids": [7], "rejection_reason": "Too salesy"},
+                json={"session_token": SESSION_TOKEN, "post_ids": [7], "rejection_reason": "Too salesy"},
             )
         assert resp.status_code == 200
         mock_delete.assert_called_once_with([7], rejection_reason="Too salesy")
 
-    def test_blank_rejection_reason_becomes_none(self, client):
+    def test_blank_rejection_reason_becomes_none(self, client, signed_in):
         with patch(f"{_DB}.soft_delete_posts", return_value=True) as mock_delete:
             client.request(
                 "DELETE",
                 "/api/posts/",
-                json={"post_ids": [7], "rejection_reason": "   "},
+                json={"session_token": SESSION_TOKEN, "post_ids": [7], "rejection_reason": "   "},
             )
         mock_delete.assert_called_once_with([7], rejection_reason=None)
 
-    def test_rejection_reason_too_long_returns_422(self, client):
+    def test_rejection_reason_too_long_returns_422(self, client, signed_in):
         resp = client.request(
             "DELETE",
             "/api/posts/",
-            json={"post_ids": [7], "rejection_reason": "x" * 1001},
+            json={"session_token": SESSION_TOKEN, "post_ids": [7], "rejection_reason": "x" * 1001},
         )
         assert resp.status_code == 422
 
@@ -346,7 +353,7 @@ class TestDeletePostsEndpoint:
 
 class TestUpdatePost:
 
-    def test_returns_200_on_success(self, client):
+    def test_returns_200_on_success(self, client, signed_in):
         with patch(f"{_DB}.update_db_post", return_value=True):
             resp = client.post(
                 "/api/update_post/",
@@ -356,7 +363,7 @@ class TestUpdatePost:
         assert resp.status_code == 200
         assert "updated" in resp.json()["detail"].lower()
 
-    def test_update_failure_returns_405(self, client):
+    def test_update_failure_returns_405(self, client, signed_in):
         with patch(f"{_DB}.update_db_post", return_value=False):
             resp = client.post(
                 "/api/update_post/",
@@ -365,13 +372,13 @@ class TestUpdatePost:
             )
         assert resp.status_code == 405
 
-    def test_missing_post_id_returns_422(self, client):
+    def test_missing_post_id_returns_422(self, client, signed_in):
         """FastAPI rejects the request when post_id query param is missing."""
         with patch(f"{_DB}.update_db_post", return_value=True):
             resp = client.post("/api/update_post/", json=_POST_BODY)
         assert resp.status_code == 422
 
-    def test_calls_update_db_post_with_correct_args(self, client):
+    def test_calls_update_db_post_with_correct_args(self, client, signed_in):
         with patch(f"{_DB}.update_db_post", return_value=True) as mock_update:
             client.post(
                 "/api/update_post/",
@@ -384,7 +391,7 @@ class TestUpdatePost:
         assert call_args.args[0] == "Test content"   # content
         assert call_args.args[4] == 99               # post_id
 
-    def test_with_video_url(self, client):
+    def test_with_video_url(self, client, signed_in):
         body = dict(_POST_BODY, video_url="https://example.com/video.mp4")
         with patch(f"{_DB}.update_db_post", return_value=True) as mock_update:
             resp = client.post(
@@ -396,7 +403,7 @@ class TestUpdatePost:
         call_args = mock_update.call_args
         assert call_args.args[1] == "https://example.com/video.mp4"
 
-    def test_rejection_reason_persisted_on_update(self, client):
+    def test_rejection_reason_persisted_on_update(self, client, signed_in):
         body = dict(_POST_BODY, status="rejected", rejection_reason="Not relevant")
         with patch(f"{_DB}.update_db_post", return_value=True), \
              patch(f"{_DB}.update_db_post_rejection_reason", return_value=True) as mock_reason:
@@ -408,7 +415,7 @@ class TestUpdatePost:
         assert resp.status_code == 200
         mock_reason.assert_called_once_with(10, "Not relevant")
 
-    def test_blank_rejection_reason_not_persisted(self, client):
+    def test_blank_rejection_reason_not_persisted(self, client, signed_in):
         body = dict(_POST_BODY, status="rejected", rejection_reason="   ")
         with patch(f"{_DB}.update_db_post", return_value=True), \
              patch(f"{_DB}.update_db_post_rejection_reason") as mock_reason:
