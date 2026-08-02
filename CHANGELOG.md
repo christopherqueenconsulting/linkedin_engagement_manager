@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.121.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.120.0...v0.121.0) (2026-08-02)
+
+
+### Features
+
+* **marketing:** affiliate reward pays per activated referral, not for joining (closes [#737](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/737)) ([#903](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/903)) ([9c1d714](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9c1d71439610266c37a657c8832674b32db68074))
+* **newsletter:** cover image upload + opt-in AI generation (closes [#893](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/893)) ([#909](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/909)) ([8812917](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/88129176246b531670b5a089783ae362d05e071f))
+* **security:** passkeys + TOTP + recovery codes + step-up gate — Phase 2c (closes [#897](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/897)) ([#906](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/906)) ([04a65cd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/04a65cda49de0796bba73a1e44e0a2a67608b2b4))
+
+
+### Bug Fixes
+
+* **ops:** /health/deep must require a CONSUMING worker, not just a registered one ([#907](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/907)) ([a65a4c2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a65a4c2424914db894f5b1292db1928a284c3741))
+
 ## [0.120.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.119.0...v0.120.0) (2026-08-02)
 
 
