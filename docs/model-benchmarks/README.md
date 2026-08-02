@@ -57,8 +57,18 @@ So a completion that spent its whole budget **before emitting anything** is retr
 truncated-but-**non-empty** answer is never re-rolled: that is the model's real output at that
 budget, and re-rolling it would hand the verbose models a second attempt the concise ones never got.
 Cases that needed the headroom are named in the report under 🧠 *reasoning headroom* rather than
-silently absorbed. Production long-form calls set no `max_tokens` at all, so the retry measures the
-model the way LEM actually uses it.
+silently absorbed. Only the FINAL attempt is measured — a discarded one is harness waste production
+never pays, so its wall-clock is not charged to the model's p50/p90 — and a retried verdict counts
+its real completions against `BENCHMARK_MAX_JUDGE_CALLS`, so the run's cap still bounds spend.
+
+**Where the retry does NOT measure production.** Long-form generation sets no `max_tokens` at all
+(`ai_helper.py`), so on `lem-complex` a doubled budget is closer to the real call than the fixture's
+own cap was. The short tiers are the opposite: `lem-simple`'s `simple-relevance-yes-no` is
+`max_tokens: 3` precisely because `ai_helper.py`'s relevance check is, and there a model that cannot
+answer inside the budget is disqualified in production, not merely truncated. The retry currently
+applies to every case, so on those cases it measures a model LEM could not actually run at that call
+site. Calibrating that (per-case opt-out, or scoring the first attempt for production-mirror
+budgets) is tracked on #910 with the rest of the harness-calibration work.
 
 ## The gate
 
@@ -146,6 +156,13 @@ Two caveats the run itself surfaced, both tracked on #910 rather than papered ov
   on two cases after exhausting the shipped truncation retry; re-run at the same effective budget it
   answered and passed both. That would have moved it at most to a tie on each tier, so the decision
   above stands either way — but one run of one case is a data point, not a verdict.
+
+**Read this run's p50/p90 with one correction.** `bm-20260802-20ae40` was measured before the
+per-attempt timing rule above, so a retried case charged every discarded attempt to the model.
+`minimax-m3` (9 of 10 `lem-complex` cases retried) and `glm-5.2` (5 of 10) are inflated in that
+run's leaderboard rows by roughly the retry factor; the deterministic and judge columns, which is
+what the verdicts turn on, are unaffected. Later runs report the answering attempt only, so do not
+compare them against these two rows as if they were the same measurement.
 
 A recommendation is **not** a change. `.litellm/model_upgrades.yaml` is the RETIREMENT map and the
 reactive half of the model-health check auto-swaps whatever lands in it, so adopting a benchmark

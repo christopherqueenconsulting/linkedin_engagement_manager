@@ -1340,12 +1340,16 @@ class ProviderClient:
         return self._client
 
     def complete(self, model: str, messages: list, params: Optional[dict] = None) -> dict:
-        started = time.time()
         call_params = dict(params or {})
         budget = call_params.get("max_tokens")
         escalations = 0
         allowed = truncation_retries() if isinstance(budget, int) and budget > 0 else 0
         while True:
+            # Timed PER ATTEMPT, not across the retries. A discarded attempt is harness waste that
+            # production never pays (long-form calls set no `max_tokens` at all), so charging its
+            # wall-clock to the model would inflate p50/p90 for exactly the reasoning models this
+            # retry exists to measure — and those numbers go into the rolling leaderboard forever.
+            started = time.time()
             try:
                 response = self._openai().chat.completions.create(
                     model=model, messages=messages, **call_params)
@@ -1480,24 +1484,30 @@ def emit_metric(run_id: str, tier: str, case_id: str, model: str, verdict: dict)
 
 def fallback_judge(suite: dict, case: dict, output: str) -> dict:
     """The degraded judge: `lem-medium` through LEM's own client. Used when PostHog has no judge
-    provider configured (Ollama Cloud is not one) or the evaluation API is unreachable."""
+    provider configured (Ollama Cloud is not one) or the evaluation API is unreachable.
+
+    Reports `judge_calls` — the number of completions this verdict actually cost. A truncation retry
+    is a real billed call, so the run's cap has to count it; counting one verdict as one call would
+    let `BENCHMARK_MAX_JUDGE_CALLS` be overrun by the retry factor without ever saying so."""
+    calls = 0
     try:
         from cqc_lem.utilities.ai.client import client
         budget = judge_max_tokens()
         for attempt in range(truncation_retries() + 1):
+            calls += 1
             response = client.chat.completions.create(
                 model="lem-medium", messages=judge_messages(suite, case, output),
                 temperature=0, max_tokens=budget * (2 ** attempt))
             choice = response.choices[0]
             text = str(choice.message.content or "").strip()
             if text or getattr(choice, "finish_reason", None) != "length":
-                return parse_judge_verdict(text)
+                return dict(parse_judge_verdict(text), judge_calls=calls)
         # Unscored, but NOT `judge:unavailable` — that flag stops the runner asking for the rest of
         # the run, and a judge that reasoned past its budget on ONE answer is still reachable.
-        return {"passes": None, "status": JUDGE_TIMEOUT,
+        return {"passes": None, "status": JUDGE_TIMEOUT, "judge_calls": calls,
                 "reasoning": "judge reasoned past its token budget before reaching a verdict"}
     except Exception as exc:  # noqa: BLE001 - an unavailable judge is unscored, never a pass
-        return {"passes": None, "status": JUDGE_UNAVAILABLE,
+        return {"passes": None, "status": JUDGE_UNAVAILABLE, "judge_calls": max(calls, 1),
                 "reasoning": f"fallback judge unavailable: {str(exc)[:120]}"}
 
 
@@ -1633,6 +1643,12 @@ def run_benchmark(suites: dict, models: list, champions: dict, *, run_id: str, t
                 print(f"  judge cap reached — {skipped} case(s) unscored for {model}/{tier}",
                       file=sys.stderr)
             for case_id in planned:
+                # `planned` was sized one call per case, but a truncation-retried verdict costs
+                # more than one — so the cap is re-checked here rather than only between models.
+                if judge_spent >= judge_budget:
+                    print(f"  judge cap reached mid-suite — {model}/{tier} stopped at "
+                          f"{judge_spent} call(s)", file=sys.stderr)
+                    break
                 case = _case_by_id(suite, case_id)
                 if dry_run:
                     canned = _canned(case)
@@ -1669,7 +1685,7 @@ def run_benchmark(suites: dict, models: list, champions: dict, *, run_id: str, t
                               "the remaining cases are reported unscored", file=sys.stderr)
                     else:
                         emit_metric(run_id, tier, case_id, model, verdict)
-                judge_spent += 1
+                judge_spent += int((judge_results.get(case_id) or {}).get("judge_calls") or 1)
 
         card = merge_scorecard(tier, model, role, case_results, judge_results, timings)
         card["benchmark_run_id"] = run_id
@@ -1699,7 +1715,7 @@ def run_benchmark(suites: dict, models: list, champions: dict, *, run_id: str, t
                     break
                 replacement = fallback_judge(suite, _case_by_id(suite, case_id),
                                              outputs.get(case_id) or "")
-                judge_spent += 1
+                judge_spent += int(replacement.get("judge_calls") or 1)
                 if replacement.get("status") == JUDGE_UNAVAILABLE:
                     fallback_down = True
                 if replacement.get("passes") is None:

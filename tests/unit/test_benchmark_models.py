@@ -561,6 +561,8 @@ class TestJudge:
         assert verdict["passes"] is True and verdict["status"] == "scored"
         assert [c.kwargs["max_tokens"]
                 for c in client.chat.completions.create.call_args_list] == [900, 1800]
+        # A retry is a real billed call — the run's cap has to see both of them.
+        assert verdict["judge_calls"] == 2
 
     def test_a_judge_that_never_stops_reasoning_is_unscored_but_still_reachable(self, monkeypatch):
         # JUDGE_UNAVAILABLE would stop the runner asking for the REST of the run; one over-thought
@@ -571,6 +573,7 @@ class TestJudge:
             verdict = bm.fallback_judge(_suite(), _case(), "out")
         assert verdict["passes"] is None and verdict["status"] == bm.JUDGE_TIMEOUT
         assert client.chat.completions.create.call_count == 2
+        assert verdict["judge_calls"] == 2
 
     def test_fallback_judge_returns_unscored_when_the_client_fails(self):
         with patch.dict(sys.modules, {}):
@@ -730,6 +733,19 @@ class TestProviderClient:
         result = provider.complete("m", [{"role": "user", "content": "hi"}], {"temperature": 0.8})
         assert result["budget_escalations"] == 0
         assert openai_client.chat.completions.create.call_count == 1
+
+    def test_a_discarded_attempt_is_not_charged_to_the_model_s_latency(self, monkeypatch):
+        # p50/p90 go into the rolling leaderboard forever. Charging the thrown-away attempt to the
+        # model would inflate exactly the reasoning models this retry exists to measure fairly.
+        monkeypatch.setenv("BENCHMARK_TRUNCATION_RETRIES", "1")
+        provider, openai_client = self._client()
+        openai_client.chat.completions.create.side_effect = [
+            self._reply("", finish_reason="length"), self._reply("the draft")]
+        # attempt-1 start, attempt-2 start, end-of-attempt-2
+        monkeypatch.setattr(bm.time, "time", MagicMock(side_effect=[100.0, 140.0, 140.25]))
+        result = provider.complete("m", [{"role": "user", "content": "hi"}], {"max_tokens": 100})
+        assert result["budget_escalations"] == 1
+        assert result["latency_ms"] == pytest.approx(250.0)
 
 
 class TestPostHogClient:
@@ -1284,6 +1300,26 @@ class TestRunBenchmark:
                                    evals=evals, judge_cap=1)
         assert fj.call_count == 0  # the single PostHog trigger already spent the cap
         assert run["judge_calls"] == 1
+
+    def test_a_truncation_retried_verdict_spends_the_cap_it_actually_cost(self):
+        # `BENCHMARK_MAX_JUDGE_CALLS` is a spend ceiling. A verdict that took three completions to
+        # arrive must count three, or a retrying judge overruns the cap by the retry factor with
+        # the report still printing "N of 200".
+        suites = {"lem-simple": _suite("lem-simple", cases=[
+            _case(cid, assertions=[{"type": "max_chars", "value": 50}]) for cid in ("a", "b", "c")],
+            thresholds={"min_judged": 1})}
+        provider = MagicMock()
+        provider.complete.return_value = {"text": "short", "error": None,
+                                          "latency_ms": 5.0, "usage": {}}
+        with patch.object(bm, "emit_metric"), \
+                patch.object(bm, "fallback_judge",
+                             return_value={"passes": True, "status": "scored",
+                                           "reasoning": "", "judge_calls": 3}) as fj:
+            run = bm.run_benchmark(suites, [], {"lem-simple": "champ"}, run_id="bm-1",
+                                   today="2026-07-27", provider=provider, evals=None,
+                                   judge_cap=4)
+        assert fj.call_count == 2  # the second verdict reached the cap; the third case is unscored
+        assert run["judge_calls"] == 6
 
     def test_an_unreachable_in_runner_judge_is_asked_once_not_once_per_case(self):
         suites = {"lem-simple": _suite("lem-simple", cases=[
