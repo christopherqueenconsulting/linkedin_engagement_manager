@@ -1901,9 +1901,10 @@ def _page_owner_name(driver) -> str:
 
 
 # ─────────────────────────────── profile header scrape (#1013) ───────────────────────────────
-# The degree badge, page-natively. `_PROFILE_DEGREE_LOCATORS` is class-based (`span.dist-value` /
-# `span.distance-badge`) and was confirmed dead on 2026-08-03, so the cross-check has to come from
-# the page's own words: the top card still writes the degree as TEXT.
+# The degree badge, page-natively. The class half of `_PROFILE_DEGREE_LOCATORS` (`span.dist-value` /
+# `span.distance-badge`) was confirmed dead on 2026-08-03 and the chain now leads with the badge's
+# TEXT (#1021) — but the cross-check must stay independent of whatever the chain currently does, so
+# it keeps coming from the page's own words rather than from a locator.
 _DEGREE_TEXT_RE = re.compile(r"\b(1st|2nd|3rd)\b", re.IGNORECASE)
 
 # Candidate re-grounding anchors: leaf nodes under <main> whose whole text IS a degree badge.
@@ -1966,9 +1967,9 @@ def probe_profile_scrape(driver, profile_url: str, sleep=time.sleep) -> dict:
     degree-badge locator chain against a real profile, and cross-check both against what the page
     itself says. Read-only — it navigates and reads.
 
-    `degree_anchors` is the point: `span.dist-value` / `span.distance-badge` are class anchors and
-    CLAUDE.md says class anchors are gone, so this hands back the leaf nodes that DO carry the
-    badge today, which is what the replacement chain gets written from."""
+    `degree_anchors` is the point: class anchors are gone from the SDUI profile, so this hands back
+    the leaf nodes that DO carry the badge today. #1021's chain was written from that reading, and
+    the next rotation gets re-grounded from it the same way."""
     from cqc_lem.app.run_automation import _PROFILE_DEGREE_LOCATORS
     from cqc_lem.utilities.linkedin.scrapper import ProfileUnavailableError, parse_profile_header
     from bs4 import BeautifulSoup

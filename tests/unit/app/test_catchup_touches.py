@@ -11,6 +11,9 @@ from cqc_lem.utilities.linkedin.message_thread import ThreadState
 pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"
+# The zero-walk grading moved to its own module (#1021) so scrapper/company_page_inviter can
+# share it; the logger it calls lives there now.
+_ZW = "cqc_lem.utilities.linkedin.zero_walk"
 _RS = "cqc_lem.app.run_scheduler"
 
 
@@ -1219,7 +1222,7 @@ class TestZeroWalkTripwire:
         driver = MagicMock()
         driver.find_elements.return_value = [MagicMock()] * 10
         with patch(f"{_RA}.find_all_first", return_value=[]), \
-             patch(f"{_RA}.log_warning") as warn:
+             patch(f"{_ZW}.log_warning") as warn:
             assert _scrape_catchup_moments(driver, max_moments=10, user_id=1) == []
         warn.assert_called_once()
         assert "selector drift" in warn.call_args[0][0]
@@ -1230,7 +1233,7 @@ class TestZeroWalkTripwire:
         driver = MagicMock()
         driver.find_elements.return_value = []
         with patch(f"{_RA}.find_all_first", return_value=[]), \
-             patch(f"{_RA}.log_warning") as warn, patch(f"{_RA}.log_debug") as debug:
+             patch(f"{_ZW}.log_warning") as warn, patch(f"{_ZW}.log_debug") as debug:
             assert _scrape_catchup_moments(driver, max_moments=10, user_id=1) == []
         warn.assert_not_called()
         debug.assert_called_once()
@@ -1242,7 +1245,7 @@ class TestZeroWalkTripwire:
         driver = MagicMock()
         driver.find_elements.side_effect = WebDriverException("session gone")
         with patch(f"{_RA}.find_all_first", return_value=[]), \
-             patch(f"{_RA}.log_warning") as warn:
+             patch(f"{_ZW}.log_warning") as warn:
             assert _scrape_catchup_moments(driver, max_moments=10, user_id=1) == []
         warn.assert_not_called()
 

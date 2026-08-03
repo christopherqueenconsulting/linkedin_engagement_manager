@@ -1,0 +1,372 @@
+"""Production zero-walk tripwires for the last three SDUI surfaces (issue #1021, follow-up of #1013).
+
+#1013 gave profile-viewers and the catch-up/feed walks a cross-check; three lanes were left where a
+zero result is indistinguishable from a healthy quiet day:
+
+* the profile **degree badge** — read through `span.dist-value` / `span.distance-badge`, both class
+  anchors and both confirmed dead on 2026-08-03, which fails OPEN into inviting people we are
+  already connected to and (through `LinkedInProfile.is_1st_connection`) reads EVERY profile viewer
+  as a non-connection;
+* the **company-page invite modal** — zero ticked boxes reported as `no_candidates`;
+* **own post stats** — every signal scored 0, which is also what a quiet post looks like.
+
+The contract these tests hold is the escalation contract: drift warns, an empty surface and an
+unreadable cross-check stay DEBUG (a repeated warning re-emits at ERROR and files a defect, so a
+quiet day must never warn).
+"""
+
+from datetime import datetime, timedelta
+from unittest.mock import MagicMock, patch
+
+import pytest
+from bs4 import BeautifulSoup
+from selenium.webdriver.common.by import By
+
+_RA = "cqc_lem.app.run_automation"
+_CPI = "cqc_lem.utilities.linkedin.company_page_inviter"
+_SCR = "cqc_lem.utilities.linkedin.scrapper"
+_ZW = "cqc_lem.utilities.linkedin.zero_walk"
+
+# The SDUI profile top card as it renders today: hashed classes, no `dist-value`, and the degree
+# written as its own leaf node. Both halves of the old chain match NOTHING in here on purpose —
+# that is exactly the page the shipped locators went blind on.
+TOP_CARD_HTML = """
+<html><head><title>Jane Doe | LinkedIn</title></head><body>
+<main>
+  <div class="ph5 pb5">
+    <h1 class="AbCdEf">Jane Doe</h1>
+    <div class="text-body-medium">Fractional CTO at Acme</div>
+    <span class="XyZ123">Los Angeles, California</span>
+    <span class="GhIjKl">{degree}</span>
+    <a href="/in/jane-doe/recent-activity/all/">Show all activity</a>
+  </div>
+</main></body></html>
+"""
+
+
+class _Element:
+    """The two things the degree read asks of a Selenium element."""
+
+    def __init__(self, node):
+        self._node = node
+
+    @property
+    def text(self):
+        return " ".join(self._node.itertext()).strip()
+
+
+class _DomDriver:
+    """A driver backed by a real parsed document, so the shipped XPath is what gets exercised.
+
+    CSS selectors resolve to nothing (`cssselect` is not a test dependency) — which is the point:
+    the class-anchor tail of the chain must not be what makes the read work.
+    """
+
+    def __init__(self, html: str):
+        import lxml.html
+        self.tree = lxml.html.fromstring(html)
+
+    def find_elements(self, by, selector):
+        if by != By.XPATH:
+            return []
+        return [_Element(node) for node in self.tree.xpath(selector)]
+
+    def find_element(self, by, selector):
+        if by == By.TAG_NAME:
+            nodes = self.tree.xpath(f"//{selector}")
+            if not nodes:
+                raise RuntimeError("no such element")
+            return _Element(nodes[0])
+        raise RuntimeError("no such element")
+
+
+class TestDegreeBadgeIsReadFromWhatThePageWrites:
+    def test_the_chain_leads_with_text_anchors_not_class_anchors(self):
+        from cqc_lem.app import run_automation as ra
+        leading = ra._PROFILE_DEGREE_LOCATORS[0][1]
+        assert "class" not in leading
+        assert "1st" in leading and "2nd" in leading
+
+    def test_a_first_degree_top_card_reads_as_first_degree(self):
+        from cqc_lem.app import run_automation as ra
+        driver = _DomDriver(TOP_CARD_HTML.format(degree="1st"))
+        assert ra._profile_is_first_degree(driver) is True
+
+    @pytest.mark.parametrize("degree", ["2nd", "3rd+", "· 2nd", "3rd degree connection"])
+    def test_a_non_first_degree_top_card_does_not_block_the_invite(self, degree):
+        from cqc_lem.app import run_automation as ra
+        driver = _DomDriver(TOP_CARD_HTML.format(degree=degree))
+        with patch(f"{_ZW}.log_warning") as warn:
+            assert ra._profile_is_first_degree(driver) is False
+        warn.assert_not_called()  # the chain SAW a badge — nothing to cross-check
+
+    def test_first_degree_written_out_in_full_still_reads(self):
+        from cqc_lem.app import run_automation as ra
+        driver = _DomDriver(TOP_CARD_HTML.format(degree="1st degree connection"))
+        assert ra._profile_is_first_degree(driver) is True
+
+    def test_a_headline_containing_a_degree_token_is_not_a_badge(self):
+        """`\\b1st\\b` over the page text would fire here forever — the badge is a WHOLE line."""
+        from cqc_lem.app import run_automation as ra
+        html = TOP_CARD_HTML.format(degree="Winner, 1st place in the 2026 Acme awards")
+        driver = _DomDriver(html)
+        with patch(f"{_ZW}.log_warning") as warn, patch(f"{_ZW}.log_debug") as debug:
+            assert ra._profile_is_first_degree(driver) is False
+        warn.assert_not_called()
+        debug.assert_called_once()
+
+
+class TestDegreeBadgeZeroWalk:
+    def _blind(self, page_text):
+        """A driver whose locator chain matches nothing, rendering `page_text` under <main>."""
+        driver = MagicMock()
+        driver.find_elements.return_value = []
+        main = MagicMock()
+        main.text = page_text
+        driver.find_element.return_value = main
+        return driver
+
+    def test_a_badge_the_chain_cannot_see_warns_as_drift(self):
+        from cqc_lem.app import run_automation as ra
+        driver = self._blind("Jane Doe\n2nd\nFractional CTO at Acme")
+        with patch(f"{_ZW}.log_warning") as warn:
+            assert ra._profile_is_first_degree(driver) is False
+        warn.assert_called_once()
+        assert "selector drift" in warn.call_args[0][0]
+
+    def test_a_profile_with_no_badge_at_all_stays_a_debug_no_op(self):
+        """Your own profile carries no degree badge, and every invite run opens a profile."""
+        from cqc_lem.app import run_automation as ra
+        driver = self._blind("Jane Doe\nFractional CTO at Acme")
+        with patch(f"{_ZW}.log_warning") as warn, patch(f"{_ZW}.log_debug") as debug:
+            assert ra._profile_is_first_degree(driver) is False
+        warn.assert_not_called()
+        debug.assert_called_once()
+
+    def test_an_unreadable_page_grounds_nothing(self):
+        from cqc_lem.app import run_automation as ra
+        driver = MagicMock()
+        driver.find_elements.return_value = []
+        driver.find_element.side_effect = Exception("no main")
+        with patch(f"{_ZW}.log_warning") as warn, patch(f"{_ZW}.log_debug") as debug:
+            assert ra._profile_is_first_degree(driver) is False
+        warn.assert_not_called()
+        assert "unknown" in debug.call_args[0][0]
+
+    def test_an_unreadable_chain_never_reaches_the_cross_check(self):
+        from cqc_lem.app import run_automation as ra
+        driver = MagicMock()
+        driver.find_elements.side_effect = Exception("stale element")
+        with patch(f"{_RA}.log_warning") as warn, patch(f"{_ZW}.log_warning") as drift:
+            assert ra._profile_is_first_degree(driver) is False
+        warn.assert_called_once()
+        drift.assert_not_called()
+
+
+class TestProfileHeaderDegree:
+    """`parse_profile_header` feeds `LinkedInProfile.connection`, which is what routes every profile
+    viewer down the 1st-vs-other branch — the same dead class anchor, one layer up."""
+
+    def _parse(self, html):
+        from cqc_lem.utilities.linkedin.scrapper import parse_profile_header
+        return parse_profile_header(BeautifulSoup(html, "html.parser"),
+                                    "https://www.linkedin.com/in/jane-doe")
+
+    def test_a_first_degree_card_yields_a_first_degree_profile(self):
+        from cqc_lem.utilities.linkedin.profile import LinkedInProfile
+        parsed = self._parse(TOP_CARD_HTML.format(degree="1st"))
+        assert parsed["connection"] == "1st"
+        assert LinkedInProfile(**parsed).is_1st_connection is True
+
+    def test_a_second_degree_card_is_not_a_connection(self):
+        from cqc_lem.utilities.linkedin.profile import LinkedInProfile
+        parsed = self._parse(TOP_CARD_HTML.format(degree="2nd"))
+        assert parsed["connection"] == "2nd"
+        assert LinkedInProfile(**parsed).is_1st_connection is False
+
+    def test_the_legacy_class_anchor_still_wins_where_it_exists(self):
+        html = ('<html><head><title>Jane Doe | LinkedIn</title></head><body><main>'
+                '<h1>Jane Doe</h1><span class="dist-value">1st</span>'
+                '<span>2nd</span></main></body></html>')
+        assert self._parse(html)["connection"] == "1st"
+
+    def test_a_card_with_no_badge_reports_no_connection(self):
+        parsed = self._parse('<html><head><title>Jane Doe | LinkedIn</title></head>'
+                             '<body><main><h1>Jane Doe</h1></main></body></html>')
+        assert "connection" not in parsed
+
+
+class TestProfileNameZeroWalk:
+    def _parse(self, html):
+        from cqc_lem.utilities.linkedin.scrapper import parse_profile_header
+        return parse_profile_header(BeautifulSoup(html, "html.parser"),
+                                    "https://www.linkedin.com/in/jane-doe")
+
+    def test_a_rendered_profile_with_no_name_is_drift(self):
+        from cqc_lem.utilities.linkedin.scrapper import ProfileUnavailableError
+        html = ('<html><head><title>LinkedIn</title></head><body><main>'
+                '<a href="/in/jane-doe/">Jane</a><a href="/in/bob/">Bob</a>'
+                '</main></body></html>')
+        with patch(f"{_ZW}.log_warning") as warn, pytest.raises(ProfileUnavailableError) as err:
+            self._parse(html)
+        warn.assert_called_once()
+        assert "drift" in str(err.value)
+
+    def test_a_shell_that_never_rendered_is_not_a_defect(self):
+        from cqc_lem.utilities.linkedin.scrapper import ProfileUnavailableError
+        html = '<html><head><title>LinkedIn</title></head><body><main></main></body></html>'
+        with patch(f"{_ZW}.log_warning") as warn, patch(f"{_ZW}.log_debug") as debug, \
+             pytest.raises(ProfileUnavailableError) as err:
+            self._parse(html)
+        warn.assert_not_called()
+        debug.assert_called_once()
+        assert "empty" in str(err.value)
+
+
+class TestProfileViewerBranch:
+    """Both sides of the 1st-vs-other branch the dead badge silently collapsed into one."""
+
+    def _engage(self, connection, activities=()):
+        from cqc_lem.app import run_automation as ra
+        profile_data = {"full_name": "Jane Doe", "connection": connection,
+                        "profile_url": "https://www.linkedin.com/in/jane-doe",
+                        "recent_activities": list(activities)}
+        my_profile = MagicMock()
+        my_profile.full_name = "Chris Queen"
+        my_profile.email = "chris@example.com"
+        with patch(f"{_RA}.has_engaged_url_with_x_days", return_value=False), \
+             patch(f"{_RA}.get_current_profile",
+                   return_value=(MagicMock(), MagicMock(), "chris@example.com", my_profile)), \
+             patch(f"{_RA}.get_linkedin_profile_from_url", return_value=profile_data), \
+             patch(f"{_RA}.get_or_create_profile_synthesis", return_value="voice"), \
+             patch(f"{_RA}.generate_and_post_comment", return_value=True) as commented, \
+             patch(f"{_RA}.summarize_recent_activity", return_value="they shipped a thing"), \
+             patch(f"{_RA}.get_ai_message_refinement", return_value="Hi Jane"), \
+             patch(f"{_RA}.get_user_id", return_value=1), \
+             patch(f"{_RA}.invite_to_connect") as invite, \
+             patch(f"{_RA}.insert_new_log"), patch(f"{_RA}.quit_gracefully"):
+            ra.engage_with_profile_viewer.run(user_id=1,
+                                              viewer_url="https://www.linkedin.com/in/jane-doe",
+                                              viewer_name="Jane Doe")
+        return commented, invite
+
+    def test_a_first_degree_viewer_gets_a_comment_never_an_invite(self):
+        activity = {"text": "shipped", "link": "https://www.linkedin.com/feed/update/urn:li:activity:1/",
+                    "posted": (datetime.now() - timedelta(days=2)).isoformat()}
+        commented, invite = self._engage("1st", [activity])
+        commented.assert_called_once()
+        invite.apply_async.assert_not_called()
+
+    def test_a_second_degree_viewer_gets_an_invite_never_a_comment(self):
+        commented, invite = self._engage("2nd")
+        invite.apply_async.assert_called_once()
+        commented.assert_not_called()
+
+    def test_a_missing_badge_still_routes_to_the_invite_branch(self):
+        """Fail-open is the OLD behaviour and stays — the tripwire is what makes it visible."""
+        commented, invite = self._engage(None)
+        invite.apply_async.assert_called_once()
+        commented.assert_not_called()
+
+
+class TestCompanyInviteZeroWalk:
+    def _run(self, cross_check_rows):
+        from cqc_lem.utilities.linkedin import company_page_inviter as cpi
+        driver, wait = MagicMock(), MagicMock()
+        driver.current_url = "https://www.linkedin.com/feed/"
+        driver.find_elements.return_value = [MagicMock()] * cross_check_rows
+        plan = {"allowance": 4, "cap": 5, "sent_today": 0, "status": "sent"}
+        with patch(f"{_CPI}.get_user_password_pair_by_id", return_value=("a@b.c", "pw")), \
+             patch(f"{_CPI}.get_company_linked_in_url_for_user",
+                   return_value="https://www.linkedin.com/company/acme"), \
+             patch(f"{_CPI}.login_to_linkedin"), \
+             patch(f"{_CPI}.get_available_credits", return_value=(200, 250)), \
+             patch(f"{_CPI}.select_connection_checkboxes", return_value=0), \
+             patch(f"{_CPI}.insert_new_log") as log, \
+             patch(f"{_CPI}.record_action") as rec, \
+             patch(f"{_CPI}.time.sleep"):
+            report = cpi.automate_invitations(driver, wait, 1, plan=plan)
+        return report, log, rec
+
+    def test_zero_invitees_on_a_modal_that_renders_rows_is_drift(self):
+        from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_STATUS_DRIFT
+        with patch(f"{_ZW}.log_warning") as warn:
+            report, log, rec = self._run(cross_check_rows=12)
+        assert report["status"] == INVITE_STATUS_DRIFT
+        assert report["invites_sent"] == 0
+        warn.assert_called_once()
+        # A drifted read still sends nothing and logs no send.
+        log.assert_not_called()
+        rec.assert_not_called()
+
+    def test_zero_invitees_on_an_empty_modal_stays_no_candidates(self):
+        from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_STATUS_NO_CANDIDATES
+        with patch(f"{_ZW}.log_warning") as warn, patch(f"{_ZW}.log_debug") as debug:
+            report, _, _ = self._run(cross_check_rows=0)
+        assert report["status"] == INVITE_STATUS_NO_CANDIDATES
+        warn.assert_not_called()
+        debug.assert_called_once()
+
+    def test_the_cross_check_uses_neither_xpath_the_walk_drives(self):
+        from cqc_lem.utilities.linkedin import company_page_inviter as cpi
+        selector = cpi._INVITEE_ROW_CROSSCHECK_SEL
+        assert "scaffold-finite-scroll__content" not in selector
+        assert "checkbox" not in selector
+
+
+class TestPostStatsZeroWalk:
+    def _run(self, counts, page_text):
+        from cqc_lem.app import run_automation as ra
+        driver = MagicMock()
+        main = MagicMock()
+        main.text = page_text
+        driver.find_element.return_value = main
+        with patch(f"{_RA}.time.sleep"), \
+             patch(f"{_RA}.get_recent_posted_post_ids", return_value=[9]), \
+             patch(f"{_RA}.get_uncaptured_posted_post_ids", return_value=[]), \
+             patch(f"{_RA}.get_current_profile",
+                   return_value=(driver, MagicMock(), "e", MagicMock())), \
+             patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://x/urn"), \
+             patch(f"{_RA}._post_social_counts", return_value=dict(counts)), \
+             patch(f"{_RA}._post_analytics_counts", return_value={}), \
+             patch(f"{_RA}.get_shipped_variant_keys", return_value={}), \
+             patch(f"{_RA}.track_post_outcome"), \
+             patch(f"{_RA}.record_post_stats") as rec, patch(f"{_RA}.quit_gracefully"):
+            result = ra.auto_scrape_post_stats.run(user_id=1)
+        return result, rec
+
+    ZERO = {"reactions": 0, "comments": 0, "reposts": 0, "impressions": 0, "saves": 0}
+
+    def test_a_page_showing_numbers_the_parser_missed_is_left_uncaptured(self):
+        with patch(f"{_ZW}.log_warning") as warn:
+            result, rec = self._run(self.ZERO, "Impressions\n412\nReactions\n11\nComments\n4")
+        warn.assert_called_once()
+        rec.assert_not_called()  # a written zero is permanent for a backfilled post (#809)
+        assert "0 post" in result
+
+    def test_a_genuinely_quiet_post_is_still_recorded(self):
+        with patch(f"{_ZW}.log_warning") as warn:
+            _, rec = self._run(self.ZERO, "Impressions\n0\nReactions\n0\nBe the first to comment")
+        warn.assert_not_called()
+        rec.assert_called_once()
+
+    def test_a_post_with_any_signal_never_reaches_the_tripwire(self):
+        counts = dict(self.ZERO, reactions=3)
+        with patch(f"{_ZW}.log_warning") as warn, patch(f"{_ZW}.log_debug") as debug:
+            _, rec = self._run(counts, "Reactions\n3")
+        warn.assert_not_called()
+        debug.assert_not_called()
+        rec.assert_called_once()
+
+    def test_a_label_with_no_number_beside_it_is_not_a_finding(self):
+        """Button rows ("Like / Comment / Repost") and a label whose value moved away from it both
+        read as `empty` — the fail-safe direction for a tripwire that files defects."""
+        from cqc_lem.app import run_automation as ra
+        assert ra._rendered_count_signals("Like\nComment\nRepost\nSend") == 0
+        assert ra._rendered_count_signals("Impressions\n\nsome prose\n412") == 0
+
+    def test_the_cross_check_reads_labels_the_parser_does_not_map(self):
+        """A cross-check limited to the parser's own vocabulary could never see a label rename."""
+        from cqc_lem.app import run_automation as ra
+        assert ra._rendered_count_signals("Members reached\n1,204") == 1
+        assert ra._rendered_count_signals("Views\n88") == 1
