@@ -9,6 +9,8 @@ from topic + profile exactly as before — source material must never block an e
 The blog URL is the primary source; the sitemap is the fallback for users who set one but no blog.
 """
 
+import random
+
 from bs4 import BeautifulSoup
 
 from cqc_lem.utilities.logger import log_debug, log_warning
@@ -23,7 +25,7 @@ _SITEMAP_ATTEMPTS = 3
 _ACTION = "newsletter_blog_align"
 
 
-def _plain_text(raw) -> str:
+def _plain_text(raw: object) -> str:
     """HTML / bytes / a list of paragraphs -> readable prose.
 
     WordPress hands back rendered HTML and the scrape fallback hands back whole pages, so without
@@ -39,29 +41,38 @@ def _plain_text(raw) -> str:
     return "\n".join(line.strip() for line in text.splitlines() if line.strip()).strip()
 
 
-def _from_blog(blog_url: str, user_id: int) -> str:
-    """One recent article from the user's blog as plain text ('' when nothing is readable)."""
+def _from_blog(blog_url: str, user_id: int) -> "tuple[str, bool]":
+    """(one recent article as plain text, whether the failure was already reported).
+
+    The flag is what keeps ONE unreadable source to ONE warning: a fetch that failed has already
+    warned where it was detected, so the caller must not restate it.
+    """
     from cqc_lem.app.run_content_plan import get_main_blog_url_content
     try:
         _post_url, post_content = get_main_blog_url_content(blog_url)
     except Exception as e:
         log_warning("Blog fetch failed for newsletter alignment", exc=e, user_id=user_id,
                     action_type=_ACTION)
-        return ""
-    return _plain_text(post_content)[:BLOG_SOURCE_MAX_CHARS]
+        return "", True
+    return _plain_text(post_content)[:BLOG_SOURCE_MAX_CHARS], False
 
 
-def _from_sitemap(sitemap_url: str, user_id: int) -> str:
-    """The first readable content page from the user's sitemap ('' when nothing is readable)."""
+def _from_sitemap(sitemap_url: str, user_id: int) -> "tuple[str, bool]":
+    """(a readable content page as plain text, whether the failure was already reported).
+
+    The page is drawn at RANDOM from the relevant URLs rather than fixed at the first one. This
+    resolves per edition, so a deterministic pick would hand every edition queued in one run the
+    same page — exactly what the blog path already avoids by choosing its article at random.
+    """
     from cqc_lem.app.run_content_plan import (extract_page_content, fetch_sitemap_urls,
                                               filter_relevant_urls)
     try:
-        urls = filter_relevant_urls(fetch_sitemap_urls(sitemap_url) or [])
+        urls = list(filter_relevant_urls(fetch_sitemap_urls(sitemap_url) or []))
     except Exception as e:
         log_warning("Sitemap fetch failed for newsletter alignment", exc=e, user_id=user_id,
                     action_type=_ACTION)
-        return ""
-    for url in urls[:_SITEMAP_ATTEMPTS]:
+        return "", True
+    for url in random.sample(urls, min(_SITEMAP_ATTEMPTS, len(urls))):
         try:
             title, paragraphs = extract_page_content(url)
         except Exception:
@@ -71,8 +82,9 @@ def _from_sitemap(sitemap_url: str, user_id: int) -> str:
             continue
         text = _plain_text(paragraphs)
         if text:
-            return _plain_text(f"{title}\n\n{text}" if title else text)[:BLOG_SOURCE_MAX_CHARS]
-    return ""
+            carried = _plain_text(f"{title}\n\n{text}" if title else text)
+            return carried[:BLOG_SOURCE_MAX_CHARS], False
+    return "", False
 
 
 def resolve_blog_source(user_id: int, settings: dict = None) -> "str | None":
@@ -84,12 +96,23 @@ def resolve_blog_source(user_id: int, settings: dict = None) -> "str | None":
     """
     if not (settings or {}).get("align_with_blog"):
         return None
+    try:
+        return _resolve(user_id)
+    except Exception as e:
+        # Best-effort means best-effort: two of the three call sites resolve OUTSIDE their own try,
+        # so a DB blip reading the configured URLs would otherwise take the whole edition down.
+        log_warning("Blog alignment could not be resolved", exc=e, user_id=user_id,
+                    action_type=_ACTION)
+        return None
 
+
+def _resolve(user_id: int) -> "str | None":
     from cqc_lem.utilities.db import get_user_blog_url, get_user_sitemap_url
 
+    reported = False
     blog_url = get_user_blog_url(user_id)
     if blog_url:
-        text = _from_blog(blog_url, user_id)
+        text, reported = _from_blog(blog_url, user_id)
         if text:
             log_debug("Resolved blog source material for newsletter edition", user_id=user_id,
                       action_type=_ACTION)
@@ -97,7 +120,8 @@ def resolve_blog_source(user_id: int, settings: dict = None) -> "str | None":
 
     sitemap_url = get_user_sitemap_url(user_id)
     if sitemap_url:
-        text = _from_sitemap(sitemap_url, user_id)
+        text, sitemap_reported = _from_sitemap(sitemap_url, user_id)
+        reported = reported or sitemap_reported
         if text:
             log_debug("Resolved sitemap source material for newsletter edition", user_id=user_id,
                       action_type=_ACTION)
@@ -107,7 +131,8 @@ def resolve_blog_source(user_id: int, settings: dict = None) -> "str | None":
         # Expected no-op: the toggle defaults ON, so most users have it set with no blog configured.
         log_debug("Blog alignment on but no blog or sitemap URL is set", user_id=user_id,
                   action_type=_ACTION)
-        return None
-    log_warning("Blog alignment on but no source material could be read", user_id=user_id,
-                action_type=_ACTION)
+    elif not reported:
+        # The one failure nothing has warned about yet: a source that fetched fine and read empty.
+        log_warning("Blog alignment on but the configured source returned no readable text",
+                    user_id=user_id, action_type=_ACTION)
     return None

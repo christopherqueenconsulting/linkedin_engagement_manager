@@ -1,5 +1,7 @@
 """Unit tests for blog-align source resolution (issue #967)."""
 
+import random
+
 import pytest
 from unittest.mock import patch
 
@@ -94,13 +96,33 @@ class TestResolveBlogSource:
              patch(f"{_RCP}.extract_page_content", side_effect=_extract):
             assert resolve_blog_source(1, _ON) == "B\nReadable."
 
-    def test_sitemap_fetch_failure_returns_none(self):
+    def test_sitemap_varies_the_page_across_editions(self):
+        """Resolution is PER edition; a fixed 'first URL' would give every edition the same page."""
+        urls = [f"https://x.com/{n}" for n in "abcde"]
+        with patch(f"{_DB}.get_user_blog_url", return_value=None), \
+             patch(f"{_DB}.get_user_sitemap_url", return_value="https://x.com/sitemap.xml"), \
+             patch(f"{_RCP}.fetch_sitemap_urls", return_value=urls), \
+             patch(f"{_RCP}.filter_relevant_urls", side_effect=lambda u, **kw: u), \
+             patch(f"{_RCP}.extract_page_content", side_effect=lambda u: (None, [f"body {u[-1]}"])):
+            random.seed(967)
+            seen = {resolve_blog_source(1, _ON) for _ in range(12)}
+        assert len(seen) > 1
+
+    def test_sitemap_fetch_failure_warns_once(self):
+        """One condition, ONE warning — the detect site owns it, the caller must not restate it."""
         with patch(f"{_DB}.get_user_blog_url", return_value=None), \
              patch(f"{_DB}.get_user_sitemap_url", return_value="https://x.com/sitemap.xml"), \
              patch(f"{_RCP}.fetch_sitemap_urls", side_effect=RuntimeError("boom")), \
              patch("cqc_lem.utilities.blog_source.log_warning") as warn:
             assert resolve_blog_source(1, _ON) is None
-        assert warn.call_count == 2  # the fetch failure + "nothing readable"
+        warn.assert_called_once()
+
+    def test_db_failure_is_never_fatal_to_the_edition(self):
+        """The contract is 'never raises' — regenerate resolves OUTSIDE its own try/except."""
+        with patch(f"{_DB}.get_user_blog_url", side_effect=RuntimeError("pool exhausted")), \
+             patch("cqc_lem.utilities.blog_source.log_warning") as warn:
+            assert resolve_blog_source(1, _ON) is None
+        warn.assert_called_once()
 
     def test_nothing_configured_is_an_expected_no_op(self):
         """The toggle defaults ON, so a user with no blog set must not file a defect."""
