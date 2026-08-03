@@ -341,14 +341,14 @@ class TestEmptyFunnelScanIsNotAWarning:
 
     def test_a_quiet_roster_author_is_skipped_without_filing_a_target(self):
         """The skip itself must still hold: no post means nothing to comment on, so no draft."""
-        _out, insert = _scan_funnel(roster=[_roster()], activity=[])
+        out, insert = _scan_funnel(roster=[_roster()], activity=[])
         insert.assert_not_called()
+        assert "No outreach funnel prospects" in out
 
     def test_an_unreadable_roster_author_still_warns(self):
         """Silencing the quiet author must not silence the profile that could not be read at all."""
         with patch(f"{_RA}.log_warning") as warn:
-            _out, _insert = _scan_funnel(roster=[_roster()],
-                                         activity_exc=RuntimeError("profile gone"))
+            _scan_funnel(roster=[_roster()], activity_exc=RuntimeError("profile gone"))
         assert any("Could not read a roster author's recent activity" in str(call.args[0])
                    for call in warn.call_args_list)
 
