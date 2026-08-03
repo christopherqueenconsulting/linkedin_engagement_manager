@@ -2,7 +2,7 @@ import { createContext, useContext, useMemo, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import api from '../../../api/client'
 import { useAuth } from '../../../contexts/AuthContext'
-import type { LeadMagnet, NewsletterSettings } from '../types'
+import type { EngagementTarget, LeadMagnet, NewsletterSettings } from '../types'
 import { evaluateConflicts, sectionAlertCounts, type Finding } from './conflicts'
 import { useEngagementPrefs } from './EngagementPrefsContext'
 import { useUserPrefs } from './UserPrefsContext'
@@ -51,6 +51,17 @@ export function ConflictsProvider({ children }: { children: ReactNode }) {
     staleTime: 60 * 1000,
   })
 
+  // Same query key as EngagementRosterCard's, so react-query serves both from one fetch.
+  const { data: roster } = useQuery({
+    queryKey: ['engagement-targets', sessionToken],
+    queryFn: () =>
+      api
+        .get(`/user/engagement-targets?session_token=${encodeURIComponent(sessionToken!)}`)
+        .then((r) => r.data.detail as { targets: EngagementTarget[] }),
+    enabled: !!sessionToken,
+    staleTime: 60 * 1000,
+  })
+
   const { data: credits } = useQuery({
     queryKey: ['video-credits', sessionToken],
     queryFn: () =>
@@ -81,8 +92,9 @@ export function ConflictsProvider({ children }: { children: ReactNode }) {
       timezone: tz?.timezone ?? null,
       browserTimezone: browserTimezone(),
       catchupAllowed,
+      roster: roster?.targets ?? null,
     })
-  }, [eng, prefs, newsletter, leadMagnet, credits, tz, catchupAllowed])
+  }, [eng, prefs, newsletter, leadMagnet, credits, tz, catchupAllowed, roster])
 
   const value = useMemo<ConflictsCtx>(
     () => ({

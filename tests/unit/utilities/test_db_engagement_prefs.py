@@ -118,6 +118,7 @@ class TestPartialUpdateKeepsTheRest:
         "catchup_event_types": '["promotion"]', "catchup_message_source": "ai",
         "posts_per_week": 5, "posting_days": '[0, 2, 4, 6]',
         "text_post_images": 0,
+        "roster_auto_follow": 1, "max_follows_per_day": 4,
     }
     # Round-tripped through the upsert, every column persists back exactly as it was stored.
     _EXPECTED = dict(_STORED)
@@ -453,3 +454,62 @@ class TestCountActions:
             assert count_comments_today(1) == 3
         sql = cursor.execute.call_args[0][0]
         assert "CURDATE()" in sql
+
+
+# --- opt-in roster auto-follow (issue #962) ------------------------------------------------------
+
+class TestRosterAutoFollowPrefs:
+    def test_defaults_are_off_and_conservative(self):
+        from cqc_lem.utilities.db import ROSTER_FOLLOWS_PER_DAY_DEFAULT
+        conn, _ = _mock_conn(fetch_row=None)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_engagement_preferences
+            prefs = get_engagement_preferences(1)
+        assert prefs["roster_auto_follow"] is False
+        assert prefs["max_follows_per_day"] == ROSTER_FOLLOWS_PER_DAY_DEFAULT
+
+    def _row(self, **kw):
+        from cqc_lem.utilities.db import _ENGAGEMENT_COLS
+        row = {c: None for c in _ENGAGEMENT_COLS}
+        row.update({"comment_length": "medium", "posting_days": "[0,1,2,3,4]",
+                    "catchup_message_source": "linkedin"})
+        row.update(kw)
+        return row
+
+    def test_a_null_cap_reads_as_the_default_not_zero(self):
+        # A NULL cap on every pre-migration row must not read as "the user switched it off".
+        from cqc_lem.utilities.db import ROSTER_FOLLOWS_PER_DAY_DEFAULT
+        conn, _ = _mock_conn(fetch_row=self._row(max_follows_per_day=None))
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_engagement_preferences
+            assert get_engagement_preferences(1)["max_follows_per_day"] == \
+                ROSTER_FOLLOWS_PER_DAY_DEFAULT
+
+    def test_an_explicit_zero_cap_is_preserved(self):
+        conn, _ = _mock_conn(fetch_row=self._row(max_follows_per_day=0))
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_engagement_preferences
+            assert get_engagement_preferences(1)["max_follows_per_day"] == 0
+
+    def _saved(self, prefs):
+        from cqc_lem.utilities.db import _ENGAGEMENT_COLS, update_engagement_preferences
+        conn, cursor = _mock_conn(fetch_row=self._row(), rowcount=1)
+        with patch(f"{_DB}.get_db_connection", return_value=conn), \
+             patch(f"{_DB}.max_catchup_touches_allowed", return_value=10):
+            update_engagement_preferences(1, prefs)
+        return dict(zip(list(_ENGAGEMENT_COLS), cursor.execute.call_args[0][1][1:]))
+
+    def test_an_out_of_range_cap_clamps_instead_of_rolling_back_the_row(self):
+        from cqc_lem.utilities.db import ROSTER_FOLLOWS_PER_DAY_MAX
+        assert self._saved({"max_follows_per_day": 500})["max_follows_per_day"] == \
+            ROSTER_FOLLOWS_PER_DAY_MAX
+        assert self._saved({"max_follows_per_day": -4})["max_follows_per_day"] == 0
+
+    def test_a_garbage_cap_falls_back_to_the_default(self):
+        from cqc_lem.utilities.db import ROSTER_FOLLOWS_PER_DAY_DEFAULT
+        assert self._saved({"max_follows_per_day": "lots"})["max_follows_per_day"] == \
+            ROSTER_FOLLOWS_PER_DAY_DEFAULT
+
+    def test_the_toggle_round_trips_as_a_boolean_column(self):
+        assert self._saved({"roster_auto_follow": True})["roster_auto_follow"] == 1
+        assert self._saved({"roster_auto_follow": False})["roster_auto_follow"] == 0

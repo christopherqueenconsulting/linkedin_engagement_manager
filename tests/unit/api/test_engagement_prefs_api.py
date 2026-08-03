@@ -349,3 +349,39 @@ class TestConnectionTargetingPrefs:
         assert resp.status_code == 200
         assert upd.call_args[0][1]["connection_targeting_mode"] == "suggest"
         assert upd.call_args[0][1]["min_connection_icp_score"] == 100
+
+
+class TestRosterAutoFollow:
+    """Opt-in roster auto-follow (issue #962)."""
+
+    def test_the_toggle_defaults_off_and_an_omitted_cap_is_left_alone(self, client):
+        # The toggle defaults OFF (a client that never learned the field cannot switch an outbound
+        # lane on), but the CAP is not written at all when omitted — writing the code default would
+        # overwrite a deliberate 0 and restart the lane at 3/day.
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/engagement-preferences",
+                              json={"session_token": _SESSION})
+        assert resp.status_code == 200
+        assert upd.call_args[0][1]["roster_auto_follow"] is False
+        assert "max_follows_per_day" not in upd.call_args[0][1]
+
+    def test_the_toggle_round_trips(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/engagement-preferences",
+                              json={"session_token": _SESSION, "roster_auto_follow": True})
+        assert resp.status_code == 200
+        assert upd.call_args[0][1]["roster_auto_follow"] is True
+
+    def test_the_cap_clamps_instead_of_422ing_the_whole_save(self, client):
+        # The SPA writes every engagement field in one request, so one bad number must never take
+        # the other 40 settings down with it (the V52 lesson).
+        from cqc_lem.utilities.db import ROSTER_FOLLOWS_PER_DAY_MAX
+        for given, expected in ((0, 0), (3, 3), (-5, 0), (999, ROSTER_FOLLOWS_PER_DAY_MAX)):
+            with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+                 patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+                resp = client.put("/api/user/engagement-preferences",
+                                  json={"session_token": _SESSION, "max_follows_per_day": given})
+            assert resp.status_code == 200
+            assert upd.call_args[0][1]["max_follows_per_day"] == expected

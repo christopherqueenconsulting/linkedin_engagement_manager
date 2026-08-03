@@ -46,7 +46,7 @@ import argparse
 import json
 import sys
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -878,6 +878,65 @@ def probe_article_editor(driver, editor_url: str = "https://www.linkedin.com/art
     return verdict
 
 
+def roster_follow_verdict(reading: dict) -> str:
+    """What one activity-page reading proves about the #962 follow lane.
+
+    'unknown' is the finding that matters: production treats it as "do nothing", so a run that keeps
+    reporting unknown on accounts you know you do not follow means the owner-named control has
+    rotated and the lane has gone quiet — not that the roster is fully followed."""
+    reading = dict(reading or {})
+    state = reading.get("state")
+    if state == "following":
+        return "already following — production would record this WITHOUT a click"
+    if state == "not_following":
+        label = (reading.get("control") or {}).get("aria_label") or (reading.get("control") or {}).get("text")
+        return f"Follow control resolved ({label or '?'}) — a click would be attempted"
+    if not reading.get("owner_name"):
+        return ("page owner's name unreadable from the <title>, so there is nothing to anchor the "
+                "label match on — production returns unknown and clicks nothing")
+    if not reading.get("posts_on_page"):
+        return ("no posts rendered — the page may not have loaded — production returns unknown "
+                "and clicks nothing")
+    return ("no control naming the page owner resolved — production returns unknown and clicks "
+            "nothing")
+
+
+def probe_roster_follow(driver, profile_url: str,
+                        sleep: Callable[[float], None] = time.sleep) -> dict:
+    """#962: open a roster target's recent-activity page and report whether the top-card follow
+    control resolves, and which state it reads.
+
+    STRICTLY read-only — it resolves the control and describes it. Nothing is clicked, so no account
+    is followed by running this. That is the point: the clicker must not ship before a live run has
+    shown that this resolver finds the right button on the real page."""
+    from cqc_lem.app.run_automation import (_FEED_POST_TEXT_SEL, _activity_page_owner_name,
+                                            _resolve_follow_control, _roster_activity_url)
+
+    url = _roster_activity_url(profile_url)
+    driver.get(url)
+    sleep(5)
+    state, control = _resolve_follow_control(driver, profile_url)
+    try:
+        posts = len([b for b in driver.find_elements(By.CSS_SELECTOR, _FEED_POST_TEXT_SEL)
+                     if b.is_displayed()])
+    except Exception:
+        posts = 0
+    reading = {"profile_url": profile_url,
+               "activity_url": url,
+               "url": getattr(driver, "current_url", url),
+               "state": str(state),
+               # The name the label match anchored on — the resolver only accepts controls that
+               # carry it, so a wrong or empty name here explains an unknown above.
+               "owner_name": _activity_page_owner_name(driver),
+               "control": element_evidence(control) if control is not None else None,
+               "posts_on_page": posts,
+               # The live labels the next locator pass would be written from — a bare "not found"
+               # is not re-groundable.
+               "visible_controls": visible_button_labels(driver)}
+    reading["verdict"] = roster_follow_verdict(reading)
+    return reading
+
+
 def probe_message_thread(driver, profile_url: str, person_name: str = "", self_name: str = "",
                          sleep=time.sleep) -> dict:
     """#731: walk the message-thread resolution ladder against a REAL profile and report which route
@@ -948,6 +1007,10 @@ def main(argv: Optional[list] = None) -> int:
                         help="open LinkedIn's article editor and report each publish step's selector "
                              "state (#771/#804); pass a custom URL or use the default. Read-only: "
                              "nothing is typed and no control is clicked, so publish reads UNKNOWN")
+    parser.add_argument("--roster-follow", metavar="PROFILE_URL",
+                        help="a roster target's profile URL — reports whether the top-card "
+                             "Follow/Following control resolves on their activity page (#962). "
+                             "Read-only: nothing is clicked, nobody is followed.")
     parser.add_argument("--feed-sort", action="store_true",
                         help="report whether the home feed's 'Sort by -> Recent' control resolves "
                              "and whether the flip sticks (#817)")
@@ -965,9 +1028,10 @@ def main(argv: Optional[list] = None) -> int:
     args = parser.parse_args(argv)
 
     if not (args.post_url or args.probe_composer or args.comment_outcome_url or args.dm_thread_url
-            or args.article_editor_url or args.feed_sort or args.reaction_probe):
+            or args.article_editor_url or args.feed_sort or args.reaction_probe
+            or args.roster_follow):
         parser.error("nothing to probe — pass --post-url, --comment-outcome-url, --dm-thread-url, "
-                     "--article-editor-url, --feed-sort, --reaction-probe and/or "
+                     "--article-editor-url, --feed-sort, --reaction-probe, --roster-follow and/or "
                      "--probe-composer")
 
     from cqc_lem.app.run_automation import get_current_profile
@@ -996,6 +1060,8 @@ def main(argv: Optional[list] = None) -> int:
                 self_name=resolve_self_name(args.user_id, profile))
         if args.feed_sort:
             report["feed_sort"] = probe_feed_sort(driver)
+        if args.roster_follow:
+            report["roster_follow"] = probe_roster_follow(driver, args.roster_follow)
         if args.probe_composer:
             report["composer"] = probe_composer(driver)
         if args.article_editor_url:

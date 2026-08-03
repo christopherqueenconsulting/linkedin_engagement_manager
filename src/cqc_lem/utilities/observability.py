@@ -1177,6 +1177,11 @@ def track_feed_scan(user_id: Optional[int], funnel: Optional[dict] = None, **ext
             "commented": int(funnel.get("commented") or 0),
             "roster_commented": int(funnel.get("roster_commented") or 0),
             "feed_commented": int(funnel.get("feed_commented") or 0),
+            # Roster targets that rendered posts but no comment affordance, and targets followed on
+            # this scan (issue #962). Both are roster-only; a rising blocked count with a flat
+            # followed count is a roster the user has to fix by connecting, not a broken selector.
+            "roster_comment_blocked": int(funnel.get("roster_comment_blocked") or 0),
+            "roster_followed": int(funnel.get("roster_followed") or 0),
             "off_topic_skipped": int(funnel.get("off_topic_skipped") or 0),
             "fallback_used": bool(funnel.get("fallback_used")),
             **extra,

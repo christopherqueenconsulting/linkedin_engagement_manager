@@ -1,6 +1,13 @@
-import type { EngPrefs, LeadMagnet, NewsletterSettings, UserPrefs } from '../types'
+import type { EngagementTarget, EngPrefs, LeadMagnet, NewsletterSettings, UserPrefs } from '../types'
+import { ROSTER_BLOCKED_BADGE_STREAK } from '../types'
 import { FIELD_LIMITS } from '../fieldLimits'
 import type { SectionKey } from './sections'
+
+// When a blocked roster stops being a per-row badge and becomes an account-level problem (issue
+// #962). A share, not a count, because "3 blocked" means something very different on a roster of 5
+// than on one of 60 — and a floor, because one blocked account out of two is not a broken roster.
+const ROSTER_BLOCKED_ALERT_SHARE = 0.4
+const ROSTER_BLOCKED_ALERT_MIN_TARGETS = 5
 
 // The conflict matrix from docs/SETTINGS_IA_RESEARCH.md §4, as ONE pure function so every rule is
 // unit-testable without rendering a thing. Three tiers (§6):
@@ -34,6 +41,8 @@ export type ConflictContext = {
   browserTimezone: string | null
   /** Highest catch-up cap this plan allows (10/day is premium-only). */
   catchupAllowed: number
+  /** The engagement roster, for the "most of it can't be commented on" check (issue #962). */
+  roster?: EngagementTarget[] | null
 }
 
 const notEmpty = (v: string[] | null | undefined) => !!v && v.length > 0
@@ -332,6 +341,19 @@ export function evaluateConflicts(ctx: ConflictContext): Finding[] {
     out.push({
       id: 'C29', severity: 'inform', section: 'volume', anchor: 'max_company_page_invites_per_day',
       message: `Invites per day (${eng.max_invites_per_day ?? 0}) is the harder ceiling, so company-page invites will stop at that number.`,
+    })
+  }
+  // C30 — a roster where most accounts restrict commenting is a roster doing nothing (issue #962).
+  // The per-row badge already names each one; this is the account-level readiness signal, because a
+  // user scrolling a 60-row list will not add up the badges themselves.
+  const active = (ctx.roster ?? []).filter((t) => t.active && t.profile_url.trim())
+  const blocked = active.filter(
+    (t) => (t.comment_blocked_streak ?? 0) >= ROSTER_BLOCKED_BADGE_STREAK)
+  if (active.length >= ROSTER_BLOCKED_ALERT_MIN_TARGETS
+      && blocked.length / active.length >= ROSTER_BLOCKED_ALERT_SHARE) {
+    out.push({
+      id: 'C30', severity: 'warn', section: 'targeting', anchor: 'engagement_roster',
+      message: `${blocked.length} of your ${active.length} active roster accounts only accept comments from connections or followers, so LEM is skipping them. Follow or connect with them, or swap them for accounts you can reach.`,
     })
   }
   return out

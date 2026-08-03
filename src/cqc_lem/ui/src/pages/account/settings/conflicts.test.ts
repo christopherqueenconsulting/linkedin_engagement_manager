@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { EngPrefs, NewsletterSettings, UserPrefs } from '../types'
+import type { EngagementTarget, EngPrefs, NewsletterSettings, UserPrefs } from '../types'
 import {
   blockingIssues, evaluateConflicts, hasBlockingFindings, overlappingExclusions,
   sectionAlertCounts, type ConflictContext,
@@ -265,6 +265,45 @@ describe('blocking validation', () => {
 
   it('passes a clean object', () => {
     expect(blockingIssues(eng())).toEqual([])
+  })
+})
+
+describe('C30 — a roster that mostly blocks commenting (issue #962)', () => {
+  const target = (over: Partial<EngagementTarget> = {}): EngagementTarget => ({
+    profile_url: `https://www.linkedin.com/in/a${Math.random()}`, name: null, category: 'peer',
+    max_comments_per_week: 2, active: true, source: 'user', ...over,
+  })
+  const roster = (blocked: number, total: number) => [
+    ...Array.from({ length: blocked }, () => target({ comment_blocked_streak: 2 })),
+    ...Array.from({ length: total - blocked }, () => target()),
+  ]
+
+  it('warns once most of the active roster is unreachable', () => {
+    const f = find(ctx({ roster: roster(4, 8) }), 'C30')
+    expect(f?.severity).toBe('warn')
+    expect(f?.section).toBe('targeting')
+    expect(f?.message).toContain('4 of your 8')
+  })
+
+  it('stays quiet on a healthy roster', () => {
+    expect(ids(ctx({ roster: roster(1, 8) }))).not.toContain('C30')
+  })
+
+  it('does not fire on a tiny roster, where one blocked account is not a pattern', () => {
+    expect(ids(ctx({ roster: roster(2, 3) }))).not.toContain('C30')
+  })
+
+  it('counts only active rows — a paused account is not a blocked one', () => {
+    const rows = [
+      ...Array.from({ length: 4 }, () => target({ comment_blocked_streak: 2, active: false })),
+      ...Array.from({ length: 5 }, () => target()),
+    ]
+    expect(ids(ctx({ roster: rows }))).not.toContain('C30')
+  })
+
+  it('is absent, not thrown, when the roster has not loaded', () => {
+    expect(ids(ctx({ roster: null }))).not.toContain('C30')
+    expect(ids(ctx())).not.toContain('C30')
   })
 })
 
