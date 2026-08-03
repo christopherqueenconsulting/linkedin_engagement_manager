@@ -433,6 +433,107 @@ def _scope_refusal(scope: str) -> HTTPException:
     })
 
 
+# ---------------------------------------------------------------------------
+# CSRF — the custom-header layer (issue #957)
+#
+# `X-LEM-Client` IS NOT A SECRET. Its value is a constant in a public bundle and it is meant to be:
+# the mechanism is that a cross-origin HTML form cannot set a request header AT ALL, whatever the
+# value would have been, and setting one from `fetch()` triggers a preflight that has nothing to
+# succeed against (no CORS middleware is installed). So presence is the entire check — comparing the
+# value would buy nothing and would invite the next reader to treat it as a token, rotate it, and
+# put it in `.env`.
+#
+# It replaces a layer the SPA lost. Until #950 the bundle shipped a bearer token, which was worthless
+# as ACCESS control (every visitor held it) but real as a CSRF layer for exactly this reason. Four
+# mutating routes take query parameters and no body — `/create_weekly_content/`,
+# `/invite_to_li_company_page/`, `/aws_test_get_my_profile/`, `/automate_reply_commenting` — so the
+# "a JSON body needs a preflight" layer never covered them, and `SameSite=Lax` was left holding them
+# alone. `Lax` holds; one layer is still one layer, and a new query-parameter route inherits it.
+#
+# Query parameters are not the only shape that layer misses, which is why this gate is scoped to
+# EVERY state-changing cookie-authenticated request and not to those four. A cross-origin caller can
+# also produce `multipart/form-data` with no preflight, and `/user/newsletter-draft/cover` and
+# `/avatar/training` (the latter spends an avatar credit) take exactly that. Narrowing this back to a
+# route list would uncover them.
+#
+# Two deliberate narrowings:
+#
+#   * **State-changing methods only.** CSRF is a forged WRITE — with no CORS the attacker cannot read
+#     a response, so a forged GET buys nothing. Requiring it on reads would also break the browser's
+#     own credentialed GETs that carry no headers at all: a plain `<a href>` download or an <img> src.
+#   * **A bearer-authenticated caller is exempt.** Scripts, Postman and the admin tooling are not
+#     browsers and have no ambient credential to forge with. It also makes the rollout breakage-free:
+#     an SPA bundle cached from before #950 still sends a bearer and no header. This exemption is for
+#     NON-BROWSER callers and outlives the stale-bundle rollout it also happens to cover; it is not a
+#     temporary shim to remove once the caches turn over.
+#
+# Enforced in the ONE resolver, on the cookie branch, for the same reason the scope narrowing is
+# (#905): the credential this defends against is the one the BROWSER attaches by itself, so the check
+# belongs where that credential is read, not at ~150 call sites where it would be forgotten once.
+#
+# The layer depends on the SPA being same-origin with the API, and it is by construction, not by
+# deployment: the axios client's `baseURL` is the RELATIVE `/api`, so every request it makes is same
+# origin whatever the host — dev server, docker-compose, the prod nginx edge — and a custom header
+# on a same-origin request is never preflighted. `ui/src/api/client.test.ts`'s "the baseURL is
+# relative" pins that, and `test_no_cors_middleware_is_installed` pins the other
+# half: CORS with credentials would let a real cross-origin caller ask permission for this header and
+# reinstate the hole the layer closes.
+# ---------------------------------------------------------------------------
+
+CLIENT_HEADER_NAME = "X-LEM-Client"
+
+_CSRF_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _bearer_authenticated(request: Optional[Request]) -> bool:
+    """Did this caller present a configured non-browser bearer token?
+
+    False when no tokens are configured at all: nothing is a valid bearer then, so nothing is
+    exempt — a deployment that runs the gate open must not also opt out of the CSRF layer."""
+    if request is None or not _API_ACCESS_TOKEN_SET:
+        return False
+    return _bearer_token(request.headers.get("Authorization")) in _API_ACCESS_TOKEN_SET
+
+
+def _csrf_refusal() -> HTTPException:
+    """403, never 401 — same reason as `_scope_refusal`: the SPA's axios interceptor reads any 401
+    as a dead session and signs the user out, so a stale bundle would log people out rather than
+    tell them to reload."""
+    return HTTPException(status_code=403, detail={
+        "code": "client_header_required",
+        "message": f"This request must be sent by the LEM app ({CLIENT_HEADER_NAME} header missing).",
+    })
+
+
+def _require_client_header() -> None:
+    """Refuse a state-changing request that authenticated on the session COOKIE and did not come
+    from the SPA. Read-only requests and non-browser bearer callers pass straight through."""
+    request = _request_object.get()
+    if request is None:
+        # `session_cookie_middleware` sets this ContextVar and the cookie one in the SAME block, so a
+        # live HTTP request can never carry the cookie without the request (pinned by
+        # `test_the_request_and_cookie_contextvars_are_set_together`). Reaching here therefore means a
+        # caller that resolved a session outside HTTP — a Celery beat, a direct call, a test — and
+        # there is no cross-site forgery without a cross-site request. DEBUG rather than a warning
+        # precisely because that is the EXPECTED shape for every non-HTTP caller.
+        log_debug("Client-header check skipped — no HTTP request in scope",
+                  path=_scope_path(_request_path.get()))
+        return
+    if request.method.upper() not in _CSRF_UNSAFE_METHODS:
+        return
+    if request.headers.get(CLIENT_HEADER_NAME):
+        return
+    if _bearer_authenticated(request):
+        return
+    # A warning, and the recurrence escalation (utilities/CLAUDE.md) is wanted here: a cookie-
+    # authenticated write that no LEM client sent is either a forged cross-site request or a bundle
+    # stale enough to be broken, and both are worth a look. The message is a stable template so the
+    # grouping key holds; the path rides as context.
+    log_warning("Refused a cookie-authenticated write with no client header",
+                path=_scope_path(_request_path.get()), method=request.method.upper())
+    raise _csrf_refusal()
+
+
 def _explicit_token(session_token: Optional[str]) -> Optional[str]:
     """The caller-supplied token, or None when they presented the cookie sentinel instead."""
     if not session_token or session_token == COOKIE_SESSION_SENTINEL:
@@ -465,7 +566,12 @@ def get_session_user_id(session_token: Optional[str] = None) -> Optional[int]:
 
     A session that resolves but is SCOPED away from this path raises 403 rather than falling
     through (2c.1): falling through would let a request that carried both a restricted token and a
-    full cookie be served on the cookie, which is the narrowing quietly not happening."""
+    full cookie be served on the cookie, which is the narrowing quietly not happening.
+
+    A session that resolves off the COOKIE on a state-changing request must also carry the SPA's
+    client header (#957) — the cookie is the one credential a browser attaches by itself, so it is
+    the only one a cross-site form can forge with. An explicit token is not: the attacker would have
+    to know it, and it is httpOnly."""
     explicit = _explicit_token(session_token)
     if explicit:
         resolved = _db_resolve_session(explicit)
@@ -475,6 +581,9 @@ def get_session_user_id(session_token: Optional[str] = None) -> Optional[int]:
     if cookie_token and cookie_token != explicit:
         resolved = _db_resolve_session(cookie_token)
         if resolved:
+            # Before the scope check, and before anything that writes: a forged request should reach
+            # no audit row, no enrolment promotion and no handler.
+            _require_client_header()
             return _scope_checked(resolved, cookie_token)
     return None
 

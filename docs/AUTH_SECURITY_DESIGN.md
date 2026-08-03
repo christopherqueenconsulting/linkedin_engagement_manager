@@ -206,6 +206,10 @@ remaining password-only accounts, so nobody's automation stops without warning.
    change for the PIN table (and give PINs an argon2id hash + attempt counter while we're there).
 2. **Move the session token out of `localStorage`** into an `httpOnly; Secure; SameSite=Lax` cookie
    with a double-submit CSRF token, so XSS (T4) can no longer exfiltrate it.
+   *Shipped as a non-secret custom header instead (`X-LEM-Client`, issue #957).* A double-submit
+   token needs a JS-readable cookie to echo, which is machinery whose only guarantee is the one a
+   custom header already gives: a cross-origin form cannot set a header at all. See
+   `docs/identity-and-sessions.md` § CSRF.
 3. **Per-device sessions**: `sessions` gains `user_agent`, `ip_hash`, `last_seen_at`, `revoked_at`,
    `label`. The Account page lists active devices with a per-row revoke and a "sign out everywhere".
 4. **Rotate the token** on every privilege change (login, factor enrollment, email change, recovery).
