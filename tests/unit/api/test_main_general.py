@@ -10,6 +10,8 @@ pytestmark = pytest.mark.unit
 
 _MAIN = "cqc_lem.api.main"
 
+from tests.unit.api.conftest import SESSION_TOKEN, SESSION_USER_ID  # noqa: E402
+
 
 @pytest.fixture(autouse=True)
 def _auth_hardening_side_effects():
@@ -53,30 +55,20 @@ def client():
 class TestDashboardStats:
     BASE = "/api/dashboard/stats/"
 
-    def test_missing_email_param_returns_422(self, client):
-        resp = client.get(self.BASE)
-        assert resp.status_code == 422
-
-    def test_empty_email_returns_400(self, client):
-        with patch(f"{_MAIN}.get_user_id", return_value=None):
-            resp = client.get(self.BASE, params={"email": ""})
-        assert resp.status_code == 400
-
-    def test_unknown_user_returns_403(self, client):
-        with patch(f"{_MAIN}.get_user_id", return_value=None):
-            resp = client.get(self.BASE, params={"email": "ghost@example.com"})
-        assert resp.status_code == 403
+    def test_no_session_returns_401(self, client):
+        with patch(f"{_MAIN}.get_session_user_id", return_value=None):
+            resp = client.get(self.BASE)
+        assert resp.status_code == 401
 
     _ZEROS = {"scheduled_this_week": 0, "pending_review": 0, "posted_total": 0}
 
-    def test_known_user_with_no_posts_returns_zeros(self, client):
-        with patch(f"{_MAIN}.get_user_id", return_value=1), \
-             patch(f"{_MAIN}.get_dashboard_counts", return_value=dict(self._ZEROS)):
-            resp = client.get(self.BASE, params={"email": "user@example.com"})
+    def test_known_user_with_no_posts_returns_zeros(self, client, signed_in):
+        with patch(f"{_MAIN}.get_dashboard_counts", return_value=dict(self._ZEROS)):
+            resp = client.get(self.BASE, params={"session_token": SESSION_TOKEN})
         assert resp.status_code == 200
         assert resp.json()["detail"] == self._ZEROS
 
-    def test_start_of_month_does_not_crash(self, client):
+    def test_start_of_month_does_not_crash(self, client, signed_in):
         # Regression: week_start was computed with replace(day=day-weekday()), which
         # goes out of range in the first days of a month (Wed the 1st → day=-1 → 500).
         class _FixedDatetime(datetime):
@@ -84,23 +76,21 @@ class TestDashboardStats:
             def now(cls, tz=None):
                 return datetime(2026, 7, 1, tzinfo=tz)  # Wednesday the 1st
 
-        with patch(f"{_MAIN}.get_user_id", return_value=1), \
-             patch(f"{_MAIN}.get_dashboard_counts", return_value=dict(self._ZEROS)), \
+        with patch(f"{_MAIN}.get_dashboard_counts", return_value=dict(self._ZEROS)), \
              patch(f"{_MAIN}.datetime", _FixedDatetime):
-            resp = client.get(self.BASE, params={"email": "user@example.com"})
+            resp = client.get(self.BASE, params={"session_token": SESSION_TOKEN})
         assert resp.status_code == 200
 
-    def test_returns_counts_from_db_helper_over_all_posts(self, client):
+    def test_returns_counts_from_db_helper_over_all_posts(self, client, signed_in):
         # The endpoint now delegates to the SQL-aggregate helper (counts over ALL posts, not the
         # 10-oldest get_posts() slice that made these stale). It passes a tz-aware Monday week_start.
         counts = {"scheduled_this_week": 4, "pending_review": 1, "posted_total": 37}
-        with patch(f"{_MAIN}.get_user_id", return_value=1), \
-             patch(f"{_MAIN}.get_dashboard_counts", return_value=counts) as gdc:
-            resp = client.get(self.BASE, params={"email": "user@example.com"})
+        with patch(f"{_MAIN}.get_dashboard_counts", return_value=counts) as gdc:
+            resp = client.get(self.BASE, params={"session_token": SESSION_TOKEN})
         assert resp.status_code == 200
         assert resp.json()["detail"] == counts
         user_id_arg, week_start_arg = gdc.call_args[0][0], gdc.call_args[0][1]
-        assert user_id_arg == 1
+        assert user_id_arg == SESSION_USER_ID
         assert week_start_arg.weekday() == 0 and week_start_arg.hour == 0  # Monday 00:00
 
 
@@ -111,16 +101,12 @@ class TestDashboardStats:
 class TestGetActivity:
     BASE = "/api/activity/"
 
-    def test_missing_email_returns_422(self, client):
-        resp = client.get(self.BASE)
-        assert resp.status_code == 422
+    def test_no_session_returns_401(self, client):
+        with patch(f"{_MAIN}.get_session_user_id", return_value=None):
+            resp = client.get(self.BASE)
+        assert resp.status_code == 401
 
-    def test_unknown_user_returns_403(self, client):
-        with patch(f"{_MAIN}.get_user_id", return_value=None):
-            resp = client.get(self.BASE, params={"email": "nobody@example.com"})
-        assert resp.status_code == 403
-
-    def test_valid_user_returns_200_with_list(self, client):
+    def test_valid_user_returns_200_with_list(self, client, signed_in):
         log_row = {
             "id": 1,
             "action_type": "POST",
@@ -130,9 +116,8 @@ class TestGetActivity:
             "message": "Posted OK",
             "created_at": datetime(2024, 1, 15, 12, 0, 0),
         }
-        with patch(f"{_MAIN}.get_user_id", return_value=5), \
-             patch(f"{_MAIN}.get_recent_logs", return_value=[log_row]):
-            resp = client.get(self.BASE, params={"email": "user@example.com"})
+        with patch(f"{_MAIN}.get_recent_logs", return_value=[log_row]):
+            resp = client.get(self.BASE, params={"session_token": SESSION_TOKEN})
         assert resp.status_code == 200
         detail = resp.json()["detail"]
         assert isinstance(detail, list)
@@ -140,25 +125,23 @@ class TestGetActivity:
         assert detail[0]["id"] == 1
         assert detail[0]["action_type"] == "POST"
 
-    def test_empty_log_list_returns_empty_array(self, client):
-        with patch(f"{_MAIN}.get_user_id", return_value=5), \
-             patch(f"{_MAIN}.get_recent_logs", return_value=[]):
-            resp = client.get(self.BASE, params={"email": "user@example.com"})
+    def test_empty_log_list_returns_empty_array(self, client, signed_in):
+        with patch(f"{_MAIN}.get_recent_logs", return_value=[]):
+            resp = client.get(self.BASE, params={"session_token": SESSION_TOKEN})
         assert resp.status_code == 200
         assert resp.json()["detail"] == []
 
-    def test_created_at_serialized_as_explicit_utc(self, client):
+    def test_created_at_serialized_as_explicit_utc(self, client, signed_in):
         log_row = {
             "id": 1, "action_type": "post", "result": "success", "post_id": 10,
             "post_url": "https://linkedin.com/p/123", "message": "ok",
             "created_at": datetime(2024, 1, 15, 12, 0, 0),  # naive == UTC
         }
-        with patch(f"{_MAIN}.get_user_id", return_value=5), \
-             patch(f"{_MAIN}.get_recent_logs", return_value=[log_row]):
-            resp = client.get(self.BASE, params={"email": "user@example.com"})
+        with patch(f"{_MAIN}.get_recent_logs", return_value=[log_row]):
+            resp = client.get(self.BASE, params={"session_token": SESSION_TOKEN})
         assert resp.json()["detail"][0]["created_at"] == "2024-01-15T12:00:00Z"
 
-    def test_synthetic_feedpost_url_blanked(self, client):
+    def test_synthetic_feedpost_url_blanked(self, client, signed_in):
         rows = [
             {"id": 1, "action_type": "comment", "result": "success", "post_id": None,
              "post_url": "feedpost://abc123", "message": "nice", "created_at": datetime(2024, 1, 1)},
@@ -166,9 +149,8 @@ class TestGetActivity:
              "post_url": "https://www.linkedin.com/feed/update/x", "message": "up",
              "created_at": datetime(2024, 1, 2)},
         ]
-        with patch(f"{_MAIN}.get_user_id", return_value=5), \
-             patch(f"{_MAIN}.get_recent_logs", return_value=rows):
-            detail = client.get(self.BASE, params={"email": "user@example.com"}).json()["detail"]
+        with patch(f"{_MAIN}.get_recent_logs", return_value=rows):
+            detail = client.get(self.BASE, params={"session_token": SESSION_TOKEN}).json()["detail"]
         assert detail[0]["post_url"] is None                                      # feedpost:// hidden
         assert detail[1]["post_url"] == "https://www.linkedin.com/feed/update/x"  # real permalink kept
 
@@ -180,35 +162,40 @@ class TestGetActivity:
 class TestUpdateUser:
     BASE = "/api/user/"
 
-    def test_empty_email_returns_400(self, client):
-        with patch(f"{_MAIN}.get_user_id", return_value=None):
-            resp = client.put(self.BASE, json={"email": ""})
-        assert resp.status_code == 400
+    def test_no_session_returns_401(self, client):
+        with patch(f"{_MAIN}.get_session_user_id", return_value=None):
+            resp = client.put(self.BASE, json={"blog_url": "https://blog.example.com"})
+        assert resp.status_code == 401
 
-    def test_unknown_user_returns_403(self, client):
-        with patch(f"{_MAIN}.get_user_id", return_value=None):
-            resp = client.put(self.BASE, json={"email": "unknown@example.com"})
-        assert resp.status_code == 403
-
-    def test_no_update_fields_returns_unchanged(self, client):
-        # email present but no new_email/blog_url/sitemap_url
-        with patch(f"{_MAIN}.get_user_id", return_value=3):
-            resp = client.put(self.BASE, json={"email": "user@example.com"})
+    def test_no_update_fields_returns_unchanged(self, client, signed_in):
+        with patch(f"{_MAIN}.update_user") as upd:
+            resp = client.put(self.BASE, json={"session_token": SESSION_TOKEN})
         assert resp.status_code == 200
         assert "unchanged" in resp.json()["detail"]
+        upd.assert_not_called()
 
-    def test_valid_update_returns_200(self, client):
-        with patch(f"{_MAIN}.get_user_id", return_value=3), \
-             patch(f"{_MAIN}.update_user", return_value=True):
-            resp = client.put(self.BASE, json={"email": "user@example.com", "blog_url": "https://blog.example.com"})
+    def test_valid_update_returns_200(self, client, signed_in):
+        with patch(f"{_MAIN}.update_user", return_value=True) as upd:
+            resp = client.put(self.BASE, json={"session_token": SESSION_TOKEN,
+                                               "blog_url": "https://blog.example.com"})
         assert resp.status_code == 200
         assert "updated" in resp.json()["detail"]
+        assert upd.call_args[0][0] == SESSION_USER_ID
 
-    def test_update_user_returns_false_gives_404(self, client):
-        with patch(f"{_MAIN}.get_user_id", return_value=3), \
-             patch(f"{_MAIN}.update_user", return_value=False):
-            resp = client.put(self.BASE, json={"email": "user@example.com", "blog_url": "https://blog.example.com"})
+    def test_update_user_returns_false_gives_404(self, client, signed_in):
+        with patch(f"{_MAIN}.update_user", return_value=False):
+            resp = client.put(self.BASE, json={"session_token": SESSION_TOKEN,
+                                               "blog_url": "https://blog.example.com"})
         assert resp.status_code == 404
+
+    def test_new_email_is_no_longer_an_account_takeover_lever(self, client, signed_in):
+        """`new_email` no longer moves the address — and says so rather than answering 200."""
+        with patch(f"{_MAIN}.update_user", return_value=True) as upd:
+            resp = client.put(self.BASE, json={"session_token": SESSION_TOKEN,
+                                               "new_email": "attacker@evil.example",
+                                               "blog_url": "https://blog.example.com"})
+        assert resp.status_code == 400
+        upd.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -218,25 +205,20 @@ class TestUpdateUser:
 class TestGetUserIdEndpoint:
     BASE = "/api/user_id/"
 
-    def test_missing_email_returns_422(self, client):
-        resp = client.get(self.BASE)
-        assert resp.status_code == 422
+    def test_no_session_returns_401(self, client):
+        with patch(f"{_MAIN}.get_session_user_id", return_value=None):
+            resp = client.get(self.BASE)
+        assert resp.status_code == 401
 
-    def test_empty_email_returns_400(self, client):
-        with patch(f"{_MAIN}.get_user_id", return_value=None):
-            resp = client.get(self.BASE, params={"email": ""})
-        assert resp.status_code == 400
-
-    def test_unknown_user_returns_403(self, client):
-        with patch(f"{_MAIN}.get_user_id", return_value=None):
-            resp = client.get(self.BASE, params={"email": "ghost@example.com"})
-        assert resp.status_code == 403
-
-    def test_valid_email_returns_user_id(self, client):
-        with patch(f"{_MAIN}.get_user_id", return_value=42):
-            resp = client.get(self.BASE, params={"email": "user@example.com"})
+    def test_returns_the_callers_own_user_id(self, client, signed_in):
+        resp = client.get(self.BASE, params={"session_token": SESSION_TOKEN})
         assert resp.status_code == 200
-        assert resp.json()["detail"] == 42
+        assert resp.json()["detail"] == SESSION_USER_ID
+
+    def test_another_address_is_not_an_id_oracle(self, client, signed_in):
+        resp = client.get(self.BASE, params={"session_token": SESSION_TOKEN,
+                                             "email": "victim@example.com"})
+        assert resp.status_code == 403
 
 
 # ---------------------------------------------------------------------------

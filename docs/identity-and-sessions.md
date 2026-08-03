@@ -60,6 +60,82 @@ caller's own session as the one to keep and revoke it.
 real token, so a valid login is never turned into a lockout. Set `SESSION_COOKIE_SECURE=false` for a
 plain-http local origin.
 
+## The parameter is a target, never the actor (issue #914)
+
+`get_session_user_id` only means something on the routes that call it, and until #914 a set of them
+did not. `PUT /user/`, `GET|DELETE /posts/`, `POST /posts/bulk_update/`, `POST /update_post/`,
+`GET /post_url/`, `GET /dashboard/stats/`, `GET /dashboard/planned-tasks/`, `GET /activity/`,
+`GET /user_id/`, `POST /schedule_post/`, `POST /create_weekly_content/`,
+`POST /invite_to_li_company_page/`, `POST /automate_reply_commenting` and
+`POST /aws_test_get_my_profile/` read the acting account out of an `email` / `user_id` / `post_id`
+**request parameter**. The only thing in front of them was the shared bearer token
+(`API_ACCESS_TOKENS`), which the SPA ships in its build (`VITE_API_TOKEN`) — so it is held by
+everyone who has ever loaded the page. `PUT /user/` was the worst of them: it MOVED the account
+email given only the current one, which is the whole account for one query parameter.
+
+Every one of them now resolves the caller through **`require_session_user_id()`** — the 401 wrapper
+around the same resolver — and treats what the request named as a target to authorise:
+
+| Helper | Rule |
+|---|---|
+| `require_session_user_id(token)` | the acting user, or **401**. Nothing below runs without it. |
+| `_reject_foreign_email(user_id, email)` | an `email` parameter must be the caller's own → **403** |
+| `_reject_foreign_user_id(user_id, target)` | same, by id |
+| `_require_own_posts(user_id, post_ids)` | **403** unless `db.user_owns_posts` proves EVERY id |
+
+Three deliberate choices in there:
+
+- **The parameter is checked, not ignored.** Answering a mismatch with the caller's own data would
+  be a silent substitution, and a legacy client naming its own address keeps working either way.
+- **`user_owns_posts` fails closed.** An empty list and a missing row both answer False — "we could
+  not prove ownership" must never be spelled the same way as "they own it". A batch is rejected
+  whole: a list is only as scoped as its worst entry.
+- **403, not 404-per-id.** Which post ids exist is the enumeration these endpoints used to hand out.
+- **An outage is not a permission error.** A database fault raises `db.OwnershipUnprovable` and
+  `_require_own_posts` answers **503**. The action is refused either way — that is the fail-closed
+  half and it does not move — but "you may not touch these posts" and "we could not find out" are
+  different facts. Collapsing them tells a user they lack permission to their own drafts, sends
+  on-call hunting an authorisation bug, and files a security-shaped defect through `_deny`'s
+  recurrence escalation every time the database blips.
+
+A denied TARGET is logged (`log_warning`, so the recurrence escalation files it) AND audited
+(`auth_audit_log`, `AuthAuditEvent.FOREIGN_TARGET_DENIED`) because a caller who resolved a session
+and then named another account is a broken client or somebody working this hole. The log line is
+greppable; the audit row is queryable per account, which is the shape of the question you actually
+ask ("has THIS user been naming other people's accounts?"). Only the KIND of identifier and the path
+go into it — never the caller-supplied value, which is somebody else's address. A **401 is neither**,
+and deliberately: sessions expire in the ordinary course of things and the SPA polls, so warning on
+one would file a defect for working behaviour (`utilities/CLAUDE.md`).
+
+The post-mutating writes carry the same rule twice. `bulk_update_posts`, `soft_delete_posts`,
+`update_db_post` and `update_db_post_rejection_reason` take an optional `user_id=` that scopes their
+`WHERE` clause, and the API passes it. The check in front is the gate; the scope is what closes the
+window between the check and the write, and what makes a future caller that forgets the check
+harmless rather than cross-account — which is only true if EVERY write on the table carries it.
+
+`get_post_by_email` is gone rather than deprecated. It turned an ADDRESS into somebody's posts,
+which is the exact shape `GET /posts/` used to authenticate on; its one caller resolves the session
+now and calls `get_posts(user_id, …)`, so leaving the wrapper behind would keep an address-keyed
+reader one import away from the next endpoint.
+
+**The cache in the browser is the other half.** Since 2b the SPA's `sessionToken` is the same
+non-secret `'cookie'` sentinel for every account, so a React Query key carrying it carries no
+identity at all — sign out, sign in as somebody else in the same tab, and the previous account's
+dashboard renders out of the cache. User-scoped keys carry the user id, and `logout()` calls
+`queryClient.clear()`, which is the structural half.
+
+`new_email` no longer moves the account from `PUT /user/`: the address moves through
+`POST /user/email/change/init|verify`, which PINs the NEW address, is step-up gated, and revokes
+every other session. The field stays **declared** on the request model and answers **400** with a
+pointer — dropping it would let Pydantic discard it and answer 200, and a silent success on an
+email change is how somebody believes their address moved when it did not.
+
+`POST /generate-carousel` was importing `db.get_session_user_id` directly, so it never saw the
+cookie sentinel (and no session scope reached it). It goes through the module resolver like
+everything else now — **there is one resolver, and a route that imports around it is a bug.**
+`tests/unit/api/test_param_auth_scoping.py` is the standing proof: one 401 case and one 403 case per
+converted route, each asserting the db call behind it was never reached.
+
 ## CSRF
 
 Cookie auth means a state-changing request can now be authenticated by something the browser
@@ -69,14 +145,24 @@ forged write:
 - **`SameSite=Lax`** — the cookie is not attached to a cross-site POST at all. It rides only on
   top-level GET navigations, which is exactly what the LinkedIn OAuth return trip needs and nothing
   more. (`strict` would break that return trip; that is why it is `lax` and not tighter.)
-- Every mutating endpoint is `POST`/`PUT` with a JSON body — a form POST from another origin cannot
-  set `Content-Type: application/json` without a preflight, and no CORS middleware is installed, so
-  the preflight has nothing to succeed against.
+- Almost every mutating endpoint is `POST`/`PUT` with a JSON body — a form POST from another origin
+  cannot set `Content-Type: application/json` without a preflight, and no CORS middleware is
+  installed, so the preflight has nothing to succeed against.
 - In deployments with `API_ACCESS_TOKENS` set, `/api/*` also needs the bearer token, which lives in
   the SPA bundle and not in the browser's ambient credentials.
 
-If a future change adds CORS with credentials, or a form-encoded mutating endpoint, this section is
-the thing that has to be revisited first.
+**"Almost" is exact, and #914 is why.** Four mutating routes take query parameters and no body —
+`POST /create_weekly_content/`, `POST /invite_to_li_company_page/`, `POST /aws_test_get_my_profile/`
+and `POST /automate_reply_commenting`. Before #914 they authenticated on a `user_id`/`post_id`
+parameter, so the cookie was irrelevant to them; now they resolve the session like everything else,
+which is what puts them under this heading at all. A cross-site form POST reaches them without a
+preflight, so for those four the JSON-body layer is not there and `SameSite=Lax` plus the bearer
+token are the whole defence. Both hold, and each of the four only ever queues work for the CALLER's
+own account, so the worst a forged one buys is a job the user could have started themselves — but
+the layer count is two, not three, and a new query-parameter mutating route inherits that.
+
+If a future change adds CORS with credentials, or another form-encoded/query-only mutating endpoint,
+this section is the thing that has to be revisited first.
 
 ## Per-device sessions
 

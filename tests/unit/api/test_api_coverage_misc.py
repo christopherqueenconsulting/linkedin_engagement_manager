@@ -36,106 +36,148 @@ def client():
 _TOK = "session-token"
 _UID = 7
 
+from tests.unit.api.conftest import (  # noqa: E402
+    SESSION_EMAIL, SESSION_TOKEN, SESSION_USER_ID,
+)
+
 
 class TestAutomationTriggerEndpoints:
-    def test_automate_reply_commenting_schedules_task(self, client):
-        with patch(f"{_M}.get_post_user_id", return_value=_UID), \
-             patch(f"{_M}.automate_reply_commenting") as task:
-            resp = client.post("/api/automate_reply_commenting?post_id=9")
+    """Issue #914: every one of these used to take the acting account from a request parameter."""
+
+    def test_automate_reply_commenting_schedules_task(self, client, signed_in):
+        with patch(f"{_M}.automate_reply_commenting") as task:
+            resp = client.post(f"/api/automate_reply_commenting?post_id=9&session_token={SESSION_TOKEN}")
         assert resp.status_code == 200
         kwargs = task.apply_async.call_args[1]["kwargs"]
-        assert kwargs["user_id"] == _UID and kwargs["post_id"] == 9
+        assert kwargs["user_id"] == SESSION_USER_ID and kwargs["post_id"] == 9
 
-    def test_automate_reply_commenting_403_when_no_user(self, client):
-        with patch(f"{_M}.get_post_user_id", return_value=None):
-            resp = client.post("/api/automate_reply_commenting?post_id=9")
-        assert resp.status_code == 403
-
-    def test_automate_reply_commenting_404_on_schedule_failure(self, client):
-        with patch(f"{_M}.get_post_user_id", return_value=_UID), \
+    def test_automate_reply_commenting_401_without_a_session(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=None), \
              patch(f"{_M}.automate_reply_commenting") as task:
-            task.apply_async.side_effect = RuntimeError("broker down")
             resp = client.post("/api/automate_reply_commenting?post_id=9")
+        assert resp.status_code == 401
+        task.apply_async.assert_not_called()
+
+    def test_automate_reply_commenting_403_on_someone_elses_post(self, client, signed_in):
+        with patch(f"{_M}.user_owns_posts", return_value=False), \
+             patch(f"{_M}.automate_reply_commenting") as task:
+            resp = client.post(f"/api/automate_reply_commenting?post_id=9&session_token={SESSION_TOKEN}")
+        assert resp.status_code == 403
+        task.apply_async.assert_not_called()
+
+    def test_automate_reply_commenting_404_on_schedule_failure(self, client, signed_in):
+        with patch(f"{_M}.automate_reply_commenting") as task:
+            task.apply_async.side_effect = RuntimeError("broker down")
+            resp = client.post(f"/api/automate_reply_commenting?post_id=9&session_token={SESSION_TOKEN}")
         assert resp.status_code == 404
 
-    def test_schedule_post_success(self, client):
-        with patch(f"{_M}.get_user_id", return_value=_UID), \
-             patch(f"{_M}.insert_post", return_value=True) as ins:
+    def test_schedule_post_success(self, client, signed_in):
+        with patch(f"{_M}.insert_post", return_value=True) as ins:
             resp = client.post("/api/schedule_post/", json={
+                "session_token": SESSION_TOKEN,
                 "content": "hello", "scheduled_datetime": "2026-07-10T15:00:00",
-                "email": "a@x.com", "post_type": "text"})
+                "post_type": "text"})
         assert resp.status_code == 200
         assert ins.call_args[1].get("video_quality") == "standard"
+        # The row is written against the SESSION's address, never the body's.
+        assert ins.call_args[0][0] == SESSION_EMAIL
 
-    def test_schedule_post_403_unknown_user(self, client):
-        with patch(f"{_M}.get_user_id", return_value=None):
+    def test_schedule_post_401_without_a_session(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=None), \
+             patch(f"{_M}.insert_post") as ins:
             resp = client.post("/api/schedule_post/", json={
                 "content": "hello", "scheduled_datetime": "2026-07-10T15:00:00",
                 "email": "a@x.com"})
+        assert resp.status_code == 401
+        ins.assert_not_called()
+
+    def test_schedule_post_403_writing_into_another_account(self, client, signed_in):
+        with patch(f"{_M}.insert_post") as ins:
+            resp = client.post("/api/schedule_post/", json={
+                "session_token": SESSION_TOKEN,
+                "content": "hello", "scheduled_datetime": "2026-07-10T15:00:00",
+                "email": "victim@example.com"})
         assert resp.status_code == 403
+        ins.assert_not_called()
 
-    def test_schedule_post_404_on_insert_failure(self, client):
-        with patch(f"{_M}.get_user_id", return_value=_UID), \
-             patch(f"{_M}.insert_post", return_value=False):
+    def test_schedule_post_404_on_insert_failure(self, client, signed_in):
+        with patch(f"{_M}.insert_post", return_value=False):
             resp = client.post("/api/schedule_post/", json={
-                "content": "hello", "scheduled_datetime": "2026-07-10T15:00:00",
-                "email": "a@x.com"})
+                "session_token": SESSION_TOKEN,
+                "content": "hello", "scheduled_datetime": "2026-07-10T15:00:00"})
         assert resp.status_code == 404
 
-    def test_schedule_post_forwards_approved_status(self, client):
+    def test_schedule_post_forwards_approved_status(self, client, signed_in):
         from cqc_lem.utilities.db import PostStatus
-        with patch(f"{_M}.get_user_id", return_value=_UID), \
-             patch(f"{_M}.insert_post", return_value=True) as ins:
+        with patch(f"{_M}.insert_post", return_value=True) as ins:
             resp = client.post("/api/schedule_post/", json={
+                "session_token": SESSION_TOKEN,
                 "content": "hello", "scheduled_datetime": "2026-07-10T15:00:00",
-                "email": "a@x.com", "post_type": "text", "status": "approved"})
+                "post_type": "text", "status": "approved"})
         assert resp.status_code == 200
         assert ins.call_args[1].get("status") == PostStatus.APPROVED
 
-    def test_schedule_post_defaults_to_pending_status(self, client):
+    def test_schedule_post_defaults_to_pending_status(self, client, signed_in):
         from cqc_lem.utilities.db import PostStatus
-        with patch(f"{_M}.get_user_id", return_value=_UID), \
-             patch(f"{_M}.insert_post", return_value=True) as ins:
+        with patch(f"{_M}.insert_post", return_value=True) as ins:
             resp = client.post("/api/schedule_post/", json={
+                "session_token": SESSION_TOKEN,
                 "content": "hello", "scheduled_datetime": "2026-07-10T15:00:00",
-                "email": "a@x.com", "post_type": "text"})
+                "post_type": "text"})
         assert resp.status_code == 200
         assert ins.call_args[1].get("status") == PostStatus.PENDING
 
-    def test_create_weekly_content_chains_plan_then_create(self, client):
+    def test_create_weekly_content_chains_plan_then_create(self, client, signed_in):
         chain_obj = MagicMock()
-        with patch(f"{_M}.celery_chain", return_value=chain_obj) as chain, \
+        with patch(f"{_M}.celery_chain", return_value=chain_obj), \
              patch(f"{_M}.plan_content_for_user") as plan, \
              patch(f"{_M}.auto_create_weekly_content") as weekly:
-            resp = client.post("/api/create_weekly_content/?user_id=7")
+            resp = client.post(f"/api/create_weekly_content/?session_token={SESSION_TOKEN}")
         assert resp.status_code == 200
-        plan.si.assert_called_once_with(user_id=7)
-        weekly.si.assert_called_once_with(user_id=7)
+        plan.si.assert_called_once_with(user_id=SESSION_USER_ID)
+        weekly.si.assert_called_once_with(user_id=SESSION_USER_ID)
         chain_obj.apply_async.assert_called_once()
 
-    def test_create_weekly_content_400_without_user(self, client):
-        resp = client.post("/api/create_weekly_content/?user_id=0")
-        assert resp.status_code == 400
+    def test_create_weekly_content_401_without_a_session(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=None), \
+             patch(f"{_M}.celery_chain") as chain:
+            resp = client.post("/api/create_weekly_content/")
+        assert resp.status_code == 401
+        chain.assert_not_called()
 
-    def test_invite_to_company_page(self, client):
+    def test_invite_to_company_page(self, client, signed_in):
         with patch(f"{_M}.automate_invites_to_company_page_for_user") as task:
-            resp = client.post("/api/invite_to_li_company_page/?user_id=7")
+            resp = client.post(f"/api/invite_to_li_company_page/?session_token={SESSION_TOKEN}")
         assert resp.status_code == 200
-        assert task.apply_async.call_args[1]["kwargs"] == {"user_id": 7}
+        assert task.apply_async.call_args[1]["kwargs"] == {"user_id": SESSION_USER_ID}
 
-    def test_invite_400_without_user(self, client):
-        resp = client.post("/api/invite_to_li_company_page/?user_id=0")
-        assert resp.status_code == 400
+    def test_invite_401_without_a_session(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=None), \
+             patch(f"{_M}.automate_invites_to_company_page_for_user") as task:
+            resp = client.post("/api/invite_to_li_company_page/")
+        assert resp.status_code == 401
+        task.apply_async.assert_not_called()
 
-    def test_aws_test_get_my_profile(self, client):
+    def test_invite_403_for_another_account(self, client, signed_in):
+        """Invites burn a finite monthly credit pool — spending someone else's is the whole point."""
+        with patch(f"{_M}.automate_invites_to_company_page_for_user") as task:
+            resp = client.post(f"/api/invite_to_li_company_page/?session_token={SESSION_TOKEN}"
+                               f"&user_id={SESSION_USER_ID + 1}")
+        assert resp.status_code == 403
+        task.apply_async.assert_not_called()
+
+    def test_aws_test_get_my_profile(self, client, signed_in):
         with patch(f"{_M}.test_get_my_profile") as task:
-            resp = client.post("/api/aws_test_get_my_profile/?user_id=7")
+            resp = client.post(f"/api/aws_test_get_my_profile/?session_token={SESSION_TOKEN}")
         assert resp.status_code == 200
-        assert task.apply_async.call_args[1]["kwargs"] == {"user_id": 7}
+        assert task.apply_async.call_args[1]["kwargs"] == {"user_id": SESSION_USER_ID}
 
-    def test_aws_test_400_without_user(self, client):
-        resp = client.post("/api/aws_test_get_my_profile/?user_id=0")
-        assert resp.status_code == 400
+    def test_aws_test_401_without_a_session(self, client):
+        with patch(f"{_M}.get_session_user_id", return_value=None), \
+             patch(f"{_M}.test_get_my_profile") as task:
+            resp = client.post("/api/aws_test_get_my_profile/")
+        assert resp.status_code == 401
+        task.apply_async.assert_not_called()
 
 
 class TestAuthLogoutAndTokenStatus:
@@ -1005,10 +1047,12 @@ class TestCarouselTemplatesAndPreview:
         assert templates and {"key", "label", "description"} <= set(templates[0])
 
     def test_generate_carousel_403_bad_session(self, client):
-        with patch("cqc_lem.utilities.db.get_session_user_id", return_value=None):
+        with patch(f"{_M}.get_session_user_id", return_value=None):
             resp = client.post("/api/generate-carousel", json={
                 "session_token": "bad", "stage": "awareness"})
-        assert resp.status_code == 403
+        # 401 since #914 — the route resolves through the ONE resolver like every other handler,
+        # so a dead session reads the same here as it does everywhere else.
+        assert resp.status_code == 401
 
     def test_generate_carousel_success(self, client, tmp_path):
         carousel_dict = {"cover": {"title": "Cover"},
@@ -1016,7 +1060,7 @@ class TestCarouselTemplatesAndPreview:
                          "call_to_action": {"title": "Follow me"}}
         img = tmp_path / "slide_1.png"
         img.write_bytes(b"png")
-        with patch("cqc_lem.utilities.db.get_session_user_id", return_value=_UID), \
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch("cqc_lem.utilities.ai.ai_helper.generate_carousel_content",
                    return_value=("caption text", carousel_dict)), \
              patch("cqc_lem.utilities.carousel_creator.create_carousel_slide_images",
@@ -1030,7 +1074,7 @@ class TestCarouselTemplatesAndPreview:
         assert detail["slide_urls"][0].endswith("slide_1.png")
 
     def test_generate_carousel_500_on_generation_error(self, client):
-        with patch("cqc_lem.utilities.db.get_session_user_id", return_value=_UID), \
+        with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch("cqc_lem.utilities.ai.ai_helper.generate_carousel_content",
                    side_effect=RuntimeError("model error")):
             resp = client.post("/api/generate-carousel", json={

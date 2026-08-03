@@ -14,15 +14,17 @@ pytestmark = pytest.mark.unit
 
 _MAIN = "cqc_lem.api.main"
 
+from tests.unit.api.conftest import SESSION_TOKEN  # noqa: E402
+
 _NAIVE = "2026-07-28T09:00:00"
 _AWARE = "2026-07-28T13:00:00Z"
 
 _POST_BODY = {
+    "session_token": SESSION_TOKEN,
     "content": "Test content",
     "video_url": None,
     "post_type": "text",
     "status": "pending",
-    "email": "test@example.com",
 }
 
 
@@ -75,17 +77,15 @@ class TestWarnIfNaiveSchedule:
 
 
 class TestSchedulePostEndpoint:
-    def test_warns_on_a_naive_scheduled_datetime(self, client):
-        with patch(f"{_MAIN}.get_user_id", return_value=7), \
-             patch(f"{_MAIN}.insert_post", return_value=True), \
+    def test_warns_on_a_naive_scheduled_datetime(self, client, signed_in):
+        with patch(f"{_MAIN}.insert_post", return_value=True), \
              patch(f"{_MAIN}.log_warning") as warn:
             resp = client.post("/api/schedule_post/", json={**_POST_BODY, "scheduled_datetime": _NAIVE})
         assert resp.status_code == 200
         assert _warned(warn)
 
-    def test_quiet_on_an_explicit_utc_scheduled_datetime(self, client):
-        with patch(f"{_MAIN}.get_user_id", return_value=7), \
-             patch(f"{_MAIN}.insert_post", return_value=True), \
+    def test_quiet_on_an_explicit_utc_scheduled_datetime(self, client, signed_in):
+        with patch(f"{_MAIN}.insert_post", return_value=True), \
              patch(f"{_MAIN}.log_warning") as warn:
             resp = client.post("/api/schedule_post/", json={**_POST_BODY, "scheduled_datetime": _AWARE})
         assert resp.status_code == 200
@@ -93,7 +93,7 @@ class TestSchedulePostEndpoint:
 
 
 class TestUpdatePostEndpoint:
-    def test_warns_on_a_naive_scheduled_datetime(self, client):
+    def test_warns_on_a_naive_scheduled_datetime(self, client, signed_in):
         with patch(f"{_MAIN}.update_db_post", return_value=True), \
              patch(f"{_MAIN}.log_warning") as warn:
             resp = client.post("/api/update_post/?post_id=33",
@@ -101,7 +101,7 @@ class TestUpdatePostEndpoint:
         assert resp.status_code == 200
         assert _warned(warn)
 
-    def test_quiet_on_an_explicit_utc_scheduled_datetime(self, client):
+    def test_quiet_on_an_explicit_utc_scheduled_datetime(self, client, signed_in):
         with patch(f"{_MAIN}.update_db_post", return_value=True), \
              patch(f"{_MAIN}.log_warning") as warn:
             resp = client.post("/api/update_post/?post_id=33",
@@ -111,18 +111,18 @@ class TestUpdatePostEndpoint:
 
 
 class TestBulkUpdateEndpoint:
-    def test_warns_on_a_naive_scheduled_datetime(self, client):
+    def test_warns_on_a_naive_scheduled_datetime(self, client, signed_in):
         with patch(f"{_MAIN}.bulk_update_posts", return_value=True), \
              patch(f"{_MAIN}.log_warning") as warn:
             resp = client.post("/api/posts/bulk_update/",
-                               json={"post_ids": [33], "scheduled_datetime": _NAIVE})
+                               json={"session_token": SESSION_TOKEN, "post_ids": [33], "scheduled_datetime": _NAIVE})
         assert resp.status_code == 200
         assert _warned(warn)
 
-    def test_quiet_when_no_scheduled_datetime_is_sent(self, client):
+    def test_quiet_when_no_scheduled_datetime_is_sent(self, client, signed_in):
         with patch(f"{_MAIN}.bulk_update_posts", return_value=True), \
              patch(f"{_MAIN}.log_warning") as warn:
             resp = client.post("/api/posts/bulk_update/",
-                               json={"post_ids": [33], "status": "approved"})
+                               json={"session_token": SESSION_TOKEN, "post_ids": [33], "status": "approved"})
         assert resp.status_code == 200
         assert not _warned(warn)

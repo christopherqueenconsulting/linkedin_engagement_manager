@@ -55,7 +55,11 @@ export default function ContentProfileCard() {
 
   const saveMutation = useMutation({
     mutationFn: () =>
-      api.put('/user/', { email, blog_url: blogUrl || null, sitemap_url: sitemapUrl || null }),
+      api.put('/user/', {
+        session_token: sessionToken,
+        blog_url: blogUrl || null,
+        sitemap_url: sitemapUrl || null,
+      }),
     onSuccess: () => {
       localStorage.setItem('lem_blog_url', blogUrl)
       localStorage.setItem('lem_sitemap_url', sitemapUrl)

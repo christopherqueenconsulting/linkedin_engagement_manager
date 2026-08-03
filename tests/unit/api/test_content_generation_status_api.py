@@ -6,6 +6,8 @@ from unittest.mock import patch
 
 pytestmark = pytest.mark.unit
 
+from tests.unit.api.conftest import SESSION_TOKEN, SESSION_USER_ID  # noqa: E402
+
 
 @pytest.fixture(scope="module")
 def client():
@@ -74,26 +76,40 @@ class TestContentGenerationStatusEndpoint:
 
 
 class TestCreateWeeklyContentMarksQueued:
-    def test_marks_queued_before_dispatch(self, client):
+    def test_marks_queued_before_dispatch(self, client, signed_in):
         with patch("cqc_lem.api.main.mark_queued") as queued, \
              patch("cqc_lem.api.main.celery_chain") as chain:
-            resp = client.post("/api/create_weekly_content/", params={"user_id": _USER})
+            resp = client.post("/api/create_weekly_content/",
+                               params={"session_token": SESSION_TOKEN})
         assert resp.status_code == 200
-        queued.assert_called_once_with(_USER)
+        queued.assert_called_once_with(SESSION_USER_ID)
         chain.return_value.apply_async.assert_called_once()
 
-    def test_missing_user_id_does_not_mark_queued(self, client):
-        with patch("cqc_lem.api.main.mark_queued") as queued:
-            resp = client.post("/api/create_weekly_content/", params={"user_id": 0})
-        assert resp.status_code == 400
+    def test_no_session_does_not_mark_queued(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=None), \
+             patch("cqc_lem.api.main.mark_queued") as queued:
+            resp = client.post("/api/create_weekly_content/")
+        assert resp.status_code == 401
         queued.assert_not_called()
 
-    def test_dispatch_failure_clears_the_queued_record(self, client):
+    def test_another_accounts_user_id_does_not_spend_their_budget(self, client, signed_in):
+        """The generation run costs LLM money and fills a calendar — it runs for the CALLER only."""
+        with patch("cqc_lem.api.main.mark_queued") as queued, \
+             patch("cqc_lem.api.main.celery_chain") as chain:
+            resp = client.post("/api/create_weekly_content/",
+                               params={"session_token": SESSION_TOKEN,
+                                       "user_id": SESSION_USER_ID + 1})
+        assert resp.status_code == 403
+        queued.assert_not_called()
+        chain.assert_not_called()
+
+    def test_dispatch_failure_clears_the_queued_record(self, client, signed_in):
         """A broker outage must not strand the SPA polling a run that will never start."""
         with patch("cqc_lem.api.main.mark_queued"), \
              patch("cqc_lem.api.main.clear_generation_status") as cleared, \
              patch("cqc_lem.api.main.celery_chain") as chain:
             chain.return_value.apply_async.side_effect = OSError("broker unreachable")
-            resp = client.post("/api/create_weekly_content/", params={"user_id": _USER})
+            resp = client.post("/api/create_weekly_content/",
+                               params={"session_token": SESSION_TOKEN})
         assert resp.status_code == 500
-        cleared.assert_called_once_with(_USER)
+        cleared.assert_called_once_with(SESSION_USER_ID)

@@ -8,7 +8,7 @@ from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum, StrEnum
 from typing import Dict, List, Union
-from typing import Optional, Any
+from typing import Optional, Any, NoReturn, Annotated
 from urllib.parse import urlparse
 
 from cqc_lem import assets_dir
@@ -23,7 +23,8 @@ from cqc_lem.app.run_automation import (
 from celery import chain as celery_chain
 from cqc_lem.app.run_content_plan import auto_create_weekly_content, plan_content_for_user
 from cqc_lem.utilities.db import (
-    insert_post, get_post_by_email, get_user_id, update_db_post, get_post_user_id,
+    insert_post, get_posts, get_user_id, update_db_post, get_post_user_id, user_owns_posts,
+    OwnershipUnprovable,
     add_user_with_access_token, update_user, PostType, PostStatus, get_dashboard_counts,
     get_planned_tasks,
     get_recent_logs, bulk_update_posts, soft_delete_posts,
@@ -554,6 +555,91 @@ def _safe_auth_event(event: "AuthAuditEvent", **kwargs) -> None:
         log_warning(f"Could not record auth event: {e}")
 
 
+def require_session_user_id(session_token: Optional[str] = None) -> int:
+    """The acting user, or 401 — the ONE way an `/api` handler learns who is calling (issue #914).
+
+    Until this landed, a set of routes read the acting user out of an `email` / `user_id` REQUEST
+    PARAMETER, behind nothing but the shared bearer token the SPA ships in its build. That token is
+    known to anyone who loads the page, so those routes were "name an account, act on it". A
+    parameter now only ever names a TARGET, and a target has to be authorised against this."""
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        # DEBUG, not WARNING: sessions expire in the ordinary course of things and the SPA polls,
+        # so warning here would escalate working behaviour into a filed defect
+        # (utilities/CLAUDE.md). A denied TARGET below is the opposite — see _deny().
+        log_debug("Rejected an /api call with no resolvable session")
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return user_id
+
+
+def _deny(reason: str, user_id: int, **context: Any) -> NoReturn:
+    """403 on an authorised-caller-wrong-target, logged AND audited as the anomaly it is.
+
+    A caller who resolves a session and then names ANOTHER account is either a broken client or
+    somebody working the hole #914 closed, and neither is an expected no-op — so this warns, and
+    the recurrence escalation (utilities/CLAUDE.md) turning a repeat into a filed defect is the
+    behaviour we want. The message stays a stable template so the dedup key groups.
+
+    It also writes an `auth_audit_log` row, for the same reason `_scope_checked` does: a log line is
+    greppable, an audit row is queryable per account, and "who has been naming other people's
+    accounts" is a question you ask about ONE user after the fact. Only the KIND of identifier and
+    the path go in — never the caller-supplied value, which is somebody else's address."""
+    log_warning(f"Rejected a foreign target on /api: {reason}", user_id=user_id, **context)
+    http_request = _request_object.get()
+    _safe_auth_event(AuthAuditEvent.FOREIGN_TARGET_DENIED, user_id=user_id, success=False,
+                     ip=_client_ip(http_request), user_agent=_user_agent(http_request),
+                     details={"target": reason, "path": _scope_path(_request_path.get())})
+    raise HTTPException(status_code=403, detail="Forbidden")
+
+
+def _reject_foreign_email(user_id: int, email: Optional[str]) -> None:
+    """A caller may name their OWN address as the target and nobody else's.
+
+    The parameter is redundant now — the session already decided whose data this is — but the SPA
+    and the legacy clients still send it, and answering a mismatch with the CALLER's data would be a
+    silent substitution. 403 says what happened."""
+    named = (email or "").strip().lower()
+    if not named:
+        return
+    if named != (get_user_email(user_id) or "").strip().lower():
+        # The address itself is never logged — it is the caller-supplied half and the audit log is
+        # not the place to accumulate other people's addresses.
+        _deny("email", user_id)
+
+
+def _reject_foreign_user_id(user_id: int, target_user_id: Optional[int]) -> None:
+    """Same rule as `_reject_foreign_email`, for the routes that name the target by id."""
+    if target_user_id is None:
+        return
+    try:
+        named = int(target_user_id)
+    except (TypeError, ValueError):
+        # A non-numeric target is unauthorisable, so it fails closed rather than 500ing. FastAPI
+        # coerces today's query parameters; the helper must hold on its own for a body model.
+        _deny("user_id (unparseable)", user_id)
+    if named != user_id:
+        _deny("user_id", user_id)
+
+
+def _require_own_posts(user_id: int, post_ids: List[int]) -> None:
+    """403 unless every named post belongs to the caller.
+
+    Deliberately NOT a 404 per id: telling an attacker which ids exist is the enumeration this
+    endpoint used to hand out for free.
+
+    A database fault answers 503, not 403. The action is refused either way — that is the
+    fail-closed half — but "you may not touch these posts" and "we could not find out" are different
+    facts and a security-shaped 403 for an infrastructure outage sends the user and on-call in the
+    wrong direction, on top of filing a defect through `_deny`'s recurrence escalation."""
+    try:
+        owns = user_owns_posts(user_id, post_ids)
+    except OwnershipUnprovable:
+        # `db.user_owns_posts` already logged the fault with the exception attached.
+        raise HTTPException(status_code=503, detail="Could not verify post ownership — try again")
+    if not owns:
+        _deny("post_ids", user_id)
+
+
 def _client_ip(request: Optional[Request]) -> Optional[str]:
     """The caller's address behind the Cloudflare tunnel + nginx edge.
 
@@ -676,7 +762,17 @@ def _public_post_url(value) -> Optional[str]:
     return None
 
 
+# A `session_token` on a request model is a LIVE credential for a non-browser caller (the SPA sends
+# the non-secret sentinel, but a script or the extension sends the real thing). `repr=False` keeps
+# it out of every f-string one of these models ever lands in: `/update_post/` carried
+# `myprint(f"Received Post Request: {post}")` and gained a token field in the same change (#914), so
+# the leak was one line away from live. Deleting that line fixed the instance; this makes the class
+# of line harmless, which is the only version that survives the next handler author.
+SessionTokenField = Annotated[Optional[str], Field(default=None, repr=False)]
+
+
 class PostRequest(BaseModel):
+    session_token: SessionTokenField = None
     content: str
     video_url: Optional[str] = None
     post_type: Optional[PostType] = PostType.TEXT
@@ -734,18 +830,28 @@ class AvatarPreferencesRequest(BaseModel):
 
 
 class BulkUpdateRequest(BaseModel):
+    session_token: SessionTokenField = None
     post_ids: List[int]
     status: Optional[PostStatus] = None
     scheduled_datetime: Optional[datetime] = None
 
 
 class BulkDeleteRequest(BaseModel):
+    session_token: SessionTokenField = None
     post_ids: List[int]
     rejection_reason: Optional[str] = Field(default=None, max_length=1000)
 
 
 class UserSettingsRequest(BaseModel):
-    email: str
+    session_token: SessionTokenField = None
+    # The caller's OWN address, and only ever as a target to check (issue #914).
+    email: Optional[str] = None
+    # `new_email` no longer moves the account: that is POST /user/email/change/init|verify — PIN to
+    # the NEW address, step-up gated, every other session revoked. This endpoint used to do it on
+    # the strength of knowing the CURRENT address, which is the whole account for one parameter.
+    # It stays DECLARED so a client still sending it gets told (400). Dropping the field would let
+    # Pydantic discard it and answer 200, and a silent success on an email change is how somebody
+    # believes their address moved when it did not.
     new_email: Optional[str] = None
     blog_url: Optional[str] = None
     sitemap_url: Optional[str] = None
@@ -779,28 +885,28 @@ class AuthVerifyRequest(BaseModel):
 
 
 class LogoutRequest(BaseModel):
-    session_token: Optional[str] = None
+    session_token: SessionTokenField = None
 
 
 class RevokeSessionRequest(BaseModel):
     """Per-device revocation (issue #745, 2b). `session_id` revokes one device; `all_others`
     revokes every device except the one making the call."""
-    session_token: Optional[str] = None
+    session_token: SessionTokenField = None
     session_id: Optional[int] = None
     all_others: bool = False
 
 
 class ExtensionTokenRequest(BaseModel):
-    session_token: Optional[str] = None
+    session_token: SessionTokenField = None
 
 
 class EmailChangeInitRequest(BaseModel):
-    session_token: Optional[str] = None
+    session_token: SessionTokenField = None
     new_email: str
 
 
 class EmailChangeVerifyRequest(BaseModel):
-    session_token: Optional[str] = None
+    session_token: SessionTokenField = None
     new_email: str
     pin: str
 
@@ -808,11 +914,11 @@ class EmailChangeVerifyRequest(BaseModel):
 # --- Strong authentication (issue #745, 2c) ------------------------------------------------
 
 class SessionOnlyRequest(BaseModel):
-    session_token: Optional[str] = None
+    session_token: SessionTokenField = None
 
 
 class PasskeyRegisterCompleteRequest(BaseModel):
-    session_token: Optional[str] = None
+    session_token: SessionTokenField = None
     handle: str
     credential: Dict[str, Any]
     label: Optional[str] = None
@@ -833,12 +939,12 @@ class PasskeyLoginCompleteRequest(BaseModel):
 
 
 class TotpConfirmRequest(BaseModel):
-    session_token: Optional[str] = None
+    session_token: SessionTokenField = None
     code: str
 
 
 class AuthFactorDeleteRequest(BaseModel):
-    session_token: Optional[str] = None
+    session_token: SessionTokenField = None
     factor_id: int
 
 
@@ -851,7 +957,7 @@ class SecondFactorVerifyRequest(BaseModel):
 
 
 class StepUpVerifyRequest(BaseModel):
-    session_token: Optional[str] = None
+    session_token: SessionTokenField = None
     method: str
     code: Optional[str] = None
     handle: Optional[str] = None
@@ -1444,7 +1550,7 @@ class FeedbackRequest(BaseModel):
     """In-app feedback / bug report (issue #496). session_token is optional: the widget is offered
     to logged-out visitors too, and those land with a NULL user_id."""
     body: str = Field(min_length=1, max_length=_LEN_FEEDBACK_BODY)
-    session_token: Optional[str] = None
+    session_token: SessionTokenField = None
     source: str = str(FeedbackSource.WIDGET)
     type_hint: Optional[str] = Field(default=None, max_length=_LEN_FEEDBACK_TYPE_HINT)
     context: Optional[Dict[str, Any]] = None
@@ -1821,15 +1927,12 @@ def ack_shipped_notice_endpoint(request: ShippedNoticeAckRequest) -> ResponseMod
 
 @router.get("/dashboard/stats/", responses={
     200: {"description": "Dashboard stats returned"},
-    **{k: v for k, v in error_responses.items() if k in [400, 403]}
+    **{k: v for k, v in error_responses.items() if k in [401, 403]}
 })
-def get_dashboard_stats(email: str) -> ResponseModel:
-    if not email:
-        raise HTTPException(status_code=400, detail="Email is required")
-
-    user_id = get_user_id(email)
-    if not user_id:
-        raise HTTPException(status_code=403, detail="User not found")
+def get_dashboard_stats(session_token: Optional[str] = None,
+                        email: Optional[str] = None) -> ResponseModel:
+    user_id = require_session_user_id(session_token)
+    _reject_foreign_email(user_id, email)
 
     now = datetime.now(timezone.utc)
     week_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -1846,15 +1949,13 @@ def get_dashboard_stats(email: str) -> ResponseModel:
 
 @router.get("/dashboard/planned-tasks/", responses={
     200: {"description": "Planned tasks returned"},
-    **{k: v for k, v in error_responses.items() if k in [400, 403]}
+    **{k: v for k, v in error_responses.items() if k in [401, 403]}
 })
-def get_planned_tasks_endpoint(email: str, limit: int = Query(default=10, ge=1, le=50)) -> ResponseModel:
-    if not email:
-        raise HTTPException(status_code=400, detail="Email is required")
-
-    user_id = get_user_id(email)
-    if not user_id:
-        raise HTTPException(status_code=403, detail="User not found")
+def get_planned_tasks_endpoint(session_token: Optional[str] = None,
+                               email: Optional[str] = None,
+                               limit: int = Query(default=10, ge=1, le=50)) -> ResponseModel:
+    user_id = require_session_user_id(session_token)
+    _reject_foreign_email(user_id, email)
 
     tasks = [
         {
@@ -1871,15 +1972,12 @@ def get_planned_tasks_endpoint(email: str, limit: int = Query(default=10, ge=1, 
 
 @router.get("/activity/", responses={
     200: {"description": "Recent activity log returned"},
-    **{k: v for k, v in error_responses.items() if k in [400, 403]}
+    **{k: v for k, v in error_responses.items() if k in [401, 403]}
 })
-def get_activity(email: str, limit: int = 20) -> ResponseModel:
-    if not email:
-        raise HTTPException(status_code=400, detail="Email is required")
-
-    user_id = get_user_id(email)
-    if not user_id:
-        raise HTTPException(status_code=403, detail="User not found")
+def get_activity(session_token: Optional[str] = None, email: Optional[str] = None,
+                 limit: int = 20) -> ResponseModel:
+    user_id = require_session_user_id(session_token)
+    _reject_foreign_email(user_id, email)
 
     logs = get_recent_logs(user_id, limit=limit)
     serialized = [
@@ -2113,20 +2211,26 @@ async def linkedin_comment_notification_inbound(request: Request) -> ResponseMod
 
 @router.put("/user/", responses={
     200: {"description": "User settings updated"},
-    **{k: v for k, v in error_responses.items() if k in [400, 403, 404]}
+    **{k: v for k, v in error_responses.items() if k in [400, 401, 403, 404]}
 })
 def update_user_endpoint(settings: UserSettingsRequest) -> ResponseModel:
-    if not settings.email:
-        raise HTTPException(status_code=400, detail="Email is required")
+    user_id = require_session_user_id(settings.session_token)
+    _reject_foreign_email(user_id, settings.email)
 
-    user_id = get_user_id(settings.email)
-    if not user_id:
-        raise HTTPException(status_code=403, detail="User not found")
+    if settings.new_email:
+        # Never silently: a client that still expects this endpoint to move the address has to hear
+        # that it did not, or the account keeps answering to the old one while the user believes
+        # otherwise (issue #914).
+        raise HTTPException(
+            status_code=400,
+            detail="Changing the account email moved to POST /user/email/change/init "
+                   "and POST /user/email/change/verify",
+        )
 
-    if not any([settings.new_email, settings.blog_url, settings.sitemap_url]):
+    if not any([settings.blog_url, settings.sitemap_url]):
         return ResponseModel(status_code=200, detail="User settings unchanged")
 
-    updated = update_user(user_id, email=settings.new_email, blog_url=settings.blog_url, sitemap_url=settings.sitemap_url)
+    updated = update_user(user_id, blog_url=settings.blog_url, sitemap_url=settings.sitemap_url)
     if not updated:
         raise HTTPException(status_code=404, detail="Update failed")
     return ResponseModel(status_code=200, detail="User updated successfully")
@@ -2134,17 +2238,19 @@ def update_user_endpoint(settings: UserSettingsRequest) -> ResponseModel:
 
 @router.post("/automate_reply_commenting", responses={
     200: {"description": "Post reply automation scheduled successfully"},
-    **{k: v for k, v in error_responses.items() if k in [403, 404]}
+    **{k: v for k, v in error_responses.items() if k in [401, 403, 404]}
 })
-def automate_reply_commenting_for_post_id(post_id: int, loop_for_duration: int = 60 * 60,
+def automate_reply_commenting_for_post_id(post_id: int, session_token: Optional[str] = None,
+                                          loop_for_duration: int = 60 * 60,
                                           future_forward: FutureForwardValues = Query(
                                               default=0,
                                               description="Forward index (0-5) to use for future calls",
                                               examples=[0, 1, 2, 3, 4, 5]
-                                          )):
-    user_id = get_post_user_id(post_id)
-    if not user_id:
-        raise HTTPException(status_code=403, detail="User Id for Post not found")
+                                          )) -> ResponseModel:
+    # The post used to name the account this ran as, so any bearer holder could point a Selenium
+    # session at somebody else's post (issue #914). It names a target now.
+    user_id = require_session_user_id(session_token)
+    _require_own_posts(user_id, [post_id])
 
     try:
         base_kwargs = {
@@ -2161,18 +2267,28 @@ def automate_reply_commenting_for_post_id(post_id: int, loop_for_duration: int =
 
 @router.post("/schedule_post/", responses={
     200: {"description": "Post scheduled successfully"},
-    **{k: v for k, v in error_responses.items() if k in [403, 404]}
+    500: {"description": "Session resolved to an account with no address"},
+    **{k: v for k, v in error_responses.items() if k in [401, 403, 404]}
 })
 def schedule_post(post: PostRequest) -> ResponseModel:
-    user_id = get_user_id(post.email)
-    if not user_id:
-        raise HTTPException(status_code=403, detail="User not found")
+    user_id = require_session_user_id(post.session_token)
+    _reject_foreign_email(user_id, post.email)
+    # The row is written against the SESSION's address, never the body's — a target that passed the
+    # check is by definition the same string, and reading it back from the account is what keeps
+    # that true if the check ever moves (issue #914).
+    email = get_user_email(user_id)
+    if not email:
+        # 500, not 403. The session RESOLVED, so this caller is who they say they are; an account
+        # with a live session and no address is our inconsistency, and calling it "Forbidden" tells
+        # the user they lack permission to their own account while hiding a data fault.
+        log_error("Session resolved to a user with no email address", user_id=user_id)
+        raise HTTPException(status_code=500, detail="Could not read the account address")
 
     _warn_if_naive_schedule(post.scheduled_datetime, "/schedule_post/", user_id=user_id)
 
     # SPA-created posts carry an explicit status: "Approve & Schedule" → approved,
     # "Save Draft" → pending. Auto-generated content sets its own status elsewhere.
-    if insert_post(post.email, post.content, post.scheduled_datetime, post.post_type,
+    if insert_post(email, post.content, post.scheduled_datetime, post.post_type,
                    video_url=post.video_url, carousel_slides=post.carousel_slides,
                    video_quality=post.video_quality or "standard",
                    status=post.status or PostStatus.PENDING,
@@ -2185,28 +2301,34 @@ def schedule_post(post: PostRequest) -> ResponseModel:
 @router.post("/create_weekly_content/", responses={
     200: {"description": "Weekly content created successfully"},
     500: {"description": "Could not queue content generation"},
-    **{k: v for k, v in error_responses.items() if k in [400]}
+    **{k: v for k, v in error_responses.items() if k in [401, 403]}
 })
-def create_weekly_content(user_id: int) -> ResponseModel:
-    if not user_id:
-        raise HTTPException(status_code=400, detail="User ID is required")
+def create_weekly_content(session_token: Optional[str] = None,
+                          user_id: Optional[int] = None) -> ResponseModel:
+    # `user_id` used to BE the authorisation — a bearer holder could spend another account's LLM
+    # budget and fill their calendar with drafts (issue #914). It is a target now, and the work runs
+    # as `caller_id`. Two names for one account is how this endpoint got here, so the parameter is
+    # NOT reassigned: below this line `user_id` is only ever the thing that was authorised, and
+    # `caller_id` is the only thing that reaches a task.
+    caller_id = require_session_user_id(session_token)
+    _reject_foreign_user_id(caller_id, user_id)
 
     # Generation runs for minutes in the background, so publish a 'queued' progress record now —
     # the SPA polls /content_generation_status/ and would otherwise show nothing (issue #545).
-    mark_queued(user_id)
+    mark_queued(caller_id)
 
     # Chain: plan posts for the rest of the month first, then fill content for this week.
     # This ensures the user always has PLANNING rows before content generation runs.
     try:
         celery_chain(
-            plan_content_for_user.si(user_id=user_id),
-            auto_create_weekly_content.si(user_id=user_id),
+            plan_content_for_user.si(user_id=caller_id),
+            auto_create_weekly_content.si(user_id=caller_id),
         ).apply_async()
     except Exception as e:
         # Nothing will ever run, so drop the 'queued' record rather than leaving the SPA polling
         # a run that never starts (it would otherwise sit there until the TTL expires).
-        clear_generation_status(user_id)
-        log_error("Could not dispatch weekly content generation", exc=e, user_id=user_id)
+        clear_generation_status(caller_id)
+        log_error("Could not dispatch weekly content generation", exc=e, user_id=caller_id)
         raise HTTPException(status_code=500, detail="Could not queue content generation")
 
     return ResponseModel(status_code=200, detail="Weekly content created successfully")
@@ -2228,14 +2350,15 @@ def get_content_generation_status_endpoint(session_token: str) -> ResponseModel:
 
 @router.post("/invite_to_li_company_page/", responses={
     200: {"description": "Invite Users to LinkedIn Company Page"},
-    **{k: v for k, v in error_responses.items() if k in [400]}
+    **{k: v for k, v in error_responses.items() if k in [401, 403]}
 })
-def invite_to_li_company_page(user_id: int) -> ResponseModel:
-    if not user_id:
-        raise HTTPException(status_code=400, detail="User ID is required")
+def invite_to_li_company_page(session_token: Optional[str] = None,
+                              user_id: Optional[int] = None) -> ResponseModel:
+    caller_id = require_session_user_id(session_token)
+    _reject_foreign_user_id(caller_id, user_id)
 
     automate_invites_to_company_page_for_user.apply_async(
-        kwargs={'user_id': user_id}, retry=True,
+        kwargs={'user_id': caller_id}, retry=True,
         retry_policy={'max_retries': 3, 'interval_start': 60, 'interval_step': 30}
     )
     return ResponseModel(status_code=200, detail="Process to invite to LinkedIn Company Page Started")
@@ -2243,38 +2366,38 @@ def invite_to_li_company_page(user_id: int) -> ResponseModel:
 
 @router.post("/aws_test_get_my_profile/", responses={
     200: {"description": "Test Get My Profile on AWS"},
-    **{k: v for k, v in error_responses.items() if k in [400]}
+    **{k: v for k, v in error_responses.items() if k in [401, 403]}
 })
-def aws_test_get_my_profile(user_id: int) -> ResponseModel:
-    if not user_id:
-        raise HTTPException(status_code=400, detail="User ID is required")
+def aws_test_get_my_profile(session_token: Optional[str] = None,
+                            user_id: Optional[int] = None) -> ResponseModel:
+    caller_id = require_session_user_id(session_token)
+    _reject_foreign_user_id(caller_id, user_id)
 
-    test_get_my_profile.apply_async(kwargs={'user_id': user_id}, retry=True,
+    test_get_my_profile.apply_async(kwargs={'user_id': caller_id}, retry=True,
                                     retry_policy={'max_retries': 1})
     return ResponseModel(status_code=200, detail="Test Get My Profile on AWS Message Sent to Celery Queue")
 
 
 @router.get('/user_id/', responses={
     200: {"description": "User ID retrieved successfully"},
-    **{k: v for k, v in error_responses.items() if k in [400, 403]}
+    **{k: v for k, v in error_responses.items() if k in [401, 403]}
 })
-def get_user_id_from_email(email: str) -> ResponseModel:
-    if not email:
-        raise HTTPException(status_code=400, detail="Email is required")
-
-    user_id = get_user_id(email)
-    if not user_id:
-        raise HTTPException(status_code=403, detail="User not found")
-
+def get_user_id_from_email(session_token: Optional[str] = None,
+                           email: Optional[str] = None) -> ResponseModel:
+    """The CALLER's own user id. It was an email→id oracle for any bearer holder (issue #914) —
+    which is how an attacker turned a known address into the id the automation routes wanted."""
+    user_id = require_session_user_id(session_token)
+    _reject_foreign_email(user_id, email)
     return ResponseModel(status_code=200, detail=user_id)
 
 
 @router.get("/posts/", responses={
     200: {"description": "Posts retrieved successfully"},
-    **{k: v for k, v in error_responses.items() if k in [400, 404]}
+    **{k: v for k, v in error_responses.items() if k in [401, 403]}
 })
 def get_posts_for_email(
-    email: str,
+    session_token: Optional[str] = None,
+    email: Optional[str] = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=200),
     sort_order: str = Query(default='asc', pattern='^(asc|desc)$'),
@@ -2285,12 +2408,12 @@ def get_posts_for_email(
     start_date: Optional[datetime] = Query(default=None),
     end_date: Optional[datetime] = Query(default=None),
 ) -> ResponseModel:
-    if not email:
-        raise HTTPException(status_code=400, detail="Email is required")
+    user_id = require_session_user_id(session_token)
+    _reject_foreign_email(user_id, email)
 
     offset = (page - 1) * page_size
-    posts, total = get_post_by_email(
-        email, limit=page_size, offset=offset,
+    posts, total = get_posts(
+        user_id, limit=page_size, offset=offset,
         sort_order=sort_order, status_filter=status_filter,
         post_type_filter=post_type_filter, search=search, sort_by=sort_by,
         start_date=start_date, end_date=end_date,
@@ -2327,15 +2450,20 @@ def get_posts_for_email(
 
 @router.post("/posts/bulk_update/", responses={
     200: {"description": "Posts updated successfully"},
-    **{k: v for k, v in error_responses.items() if k in [400, 405]}
+    **{k: v for k, v in error_responses.items() if k in [400, 401, 403, 405]}
 })
 def bulk_update_posts_endpoint(request: BulkUpdateRequest) -> ResponseModel:
+    user_id = require_session_user_id(request.session_token)
     if not request.post_ids:
         raise HTTPException(status_code=400, detail="post_ids is required")
+    _require_own_posts(user_id, request.post_ids)
 
-    _warn_if_naive_schedule(request.scheduled_datetime, "/posts/bulk_update/")
+    _warn_if_naive_schedule(request.scheduled_datetime, "/posts/bulk_update/", user_id=user_id)
 
-    if bulk_update_posts(request.post_ids, status=request.status, scheduled_time=request.scheduled_datetime):
+    # `user_id=` scopes the WHERE clause as well as the check in front of it — the check is the
+    # gate, the scope is what makes forgetting it harmless (issue #914).
+    if bulk_update_posts(request.post_ids, status=request.status,
+                         scheduled_time=request.scheduled_datetime, user_id=user_id):
         return ResponseModel(status_code=200, detail="Posts updated successfully")
     else:
         raise HTTPException(status_code=405, detail="Posts could not be updated")
@@ -2343,14 +2471,16 @@ def bulk_update_posts_endpoint(request: BulkUpdateRequest) -> ResponseModel:
 
 @router.delete("/posts/", responses={
     200: {"description": "Posts deleted (soft) successfully"},
-    **{k: v for k, v in error_responses.items() if k in [400, 405]}
+    **{k: v for k, v in error_responses.items() if k in [400, 401, 403, 405]}
 })
 def delete_posts_endpoint(request: BulkDeleteRequest) -> ResponseModel:
+    user_id = require_session_user_id(request.session_token)
     if not request.post_ids:
         raise HTTPException(status_code=400, detail="post_ids is required")
+    _require_own_posts(user_id, request.post_ids)
 
     reason = (request.rejection_reason or "").strip() or None
-    if soft_delete_posts(request.post_ids, rejection_reason=reason):
+    if soft_delete_posts(request.post_ids, rejection_reason=reason, user_id=user_id):
         return ResponseModel(status_code=200, detail="Posts deleted successfully")
     else:
         raise HTTPException(status_code=405, detail="Posts could not be deleted")
@@ -2358,30 +2488,35 @@ def delete_posts_endpoint(request: BulkDeleteRequest) -> ResponseModel:
 
 @router.get("/post_url/", responses={
     200: {"description": "LinkedIn post URL returned"},
-    **{k: v for k, v in error_responses.items() if k in [400, 403]}
+    **{k: v for k, v in error_responses.items() if k in [401, 403]}
 })
-def get_post_url(post_id: int, email: str) -> ResponseModel:
-    if not email:
-        raise HTTPException(status_code=400, detail="Email is required")
-    user_id = get_user_id(email)
-    if not user_id:
-        raise HTTPException(status_code=403, detail="User not found")
+def get_post_url(post_id: int, session_token: Optional[str] = None,
+                 email: Optional[str] = None) -> ResponseModel:
+    user_id = require_session_user_id(session_token)
+    _reject_foreign_email(user_id, email)
+    # The lookup is already scoped to the user, so a foreign post_id reads as "no URL" rather than
+    # another account's permalink.
     post_url = get_post_url_from_log_for_user(user_id, post_id)
     return ResponseModel(status_code=200, detail={"post_url": post_url})
 
 
 @router.post("/update_post/", responses={
     200: {"description": "Post updated successfully"},
-    **{k: v for k, v in error_responses.items() if k in [405]}
+    **{k: v for k, v in error_responses.items() if k in [401, 403, 405]}
 })
 def update_post(post_id: int, post: PostRequest) -> ResponseModel:
-    myprint(f"Received Post Request: {post}")
-    _warn_if_naive_schedule(post.scheduled_datetime, "/update_post/", post_id=post_id)
+    user_id = require_session_user_id(post.session_token)
+    _reject_foreign_email(user_id, post.email)
+    _require_own_posts(user_id, [post_id])
 
-    if update_db_post(post.content, post.video_url, post.scheduled_datetime, post.post_type, post_id, post.status):
+    _warn_if_naive_schedule(post.scheduled_datetime, "/update_post/", post_id=post_id,
+                            user_id=user_id)
+
+    if update_db_post(post.content, post.video_url, post.scheduled_datetime, post.post_type, post_id,
+                      post.status, user_id=user_id):
         reason = (post.rejection_reason or "").strip() or None
         if reason:
-            update_db_post_rejection_reason(post_id, reason)
+            update_db_post_rejection_reason(post_id, reason, user_id=user_id)
         # Only on an explicit value: omitting the field means "leave my choice alone", not
         # "clear it" (issue #744 — use_avatar is three-valued).
         if post.use_avatar is not None:
@@ -3500,7 +3635,11 @@ def auth_second_factor_verify(request: SecondFactorVerifyRequest, http_request: 
 
 @app.get("/auth/linkedin/", response_model=None, include_in_schema=False)
 @router.get("/auth/linkedin/", response_model=None, include_in_schema=False)
-def linkedin_auth_init(email: str = None, session_token: str = None) -> RedirectResponse:
+def linkedin_auth_init(session_token: str = None) -> RedirectResponse:
+    """The `email` parameter is gone (issue #914). It was already dead — the user comes from the
+    `session_token` carried in the OAuth `state` — but it left the last handler in this file whose
+    signature named an account it did not use, and it put the address in a URL (browser history,
+    `Referer`) for nothing. An unused actor parameter is the next author's invitation to use it."""
     client = AuthClient(LI_CLIENT_ID, LI_CLIENT_SECRET, LI_REDIRECT_URL)
     # Embed the session_token in state so the callback can find the right user,
     # even when the LinkedIn account email differs from the login email.
@@ -6582,7 +6721,6 @@ def generate_carousel_preview(request: GenerateCarouselPreviewRequest) -> Respon
     The caller can pass these as carousel_slides when scheduling the post.
     """
     import time as _time
-    from cqc_lem.utilities.db import get_session_user_id
     from cqc_lem.utilities.env_constants import API_URL_FINAL
     from cqc_lem.utilities.carousel_creator import (
         create_carousel_slide_images, CAROUSEL_TEMPLATES, DEFAULT_TEMPLATE,
@@ -6591,9 +6729,9 @@ def generate_carousel_preview(request: GenerateCarouselPreviewRequest) -> Respon
     )
     from cqc_lem.utilities.ai.ai_helper import generate_carousel_content
 
-    user_id = get_session_user_id(request.session_token)
-    if not user_id:
-        raise HTTPException(status_code=403, detail="Invalid session token")
+    # The module-level resolver, not db's: this route was importing the raw one, so the cookie
+    # sentinel the SPA sends never resolved and no session scope reached it (issue #914).
+    user_id = require_session_user_id(request.session_token)
     stage = request.stage or "awareness"
     stage_lower = stage.lower()
 

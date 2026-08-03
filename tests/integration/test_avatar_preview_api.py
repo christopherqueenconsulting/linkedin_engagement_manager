@@ -1,4 +1,5 @@
 """Integration tests for the avatar preview / approval / guardrail endpoints (issue #744)."""
+from contextlib import ExitStack, contextmanager
 from unittest.mock import patch
 
 import pytest
@@ -19,10 +20,23 @@ _APPROVABLE = {
 }
 
 
+_SESSION_TOKEN = SESSION
+
+
 def _client():
     from fastapi.testclient import TestClient
     from cqc_lem.api.main import app
     return TestClient(app)
+
+
+@contextmanager
+def _signed_in():
+    """Compose and edit resolve their caller from the session since issue #914."""
+    with ExitStack() as stack:
+        stack.enter_context(patch(f"{_M}.get_session_user_id", return_value=USER_ID))
+        stack.enter_context(patch(f"{_M}.get_user_email", return_value="a@b.c"))
+        stack.enter_context(patch(f"{_M}.user_owns_posts", return_value=True))
+        yield
 
 
 @pytest.mark.integration
@@ -233,35 +247,37 @@ class TestGuardrailPreferencesEndpoints:
 class TestComposeHonoursUseAvatar:
     def test_use_avatar_reaches_the_post_row(self):
         """PostRequest.use_avatar was accepted by the API and dropped (issue #744 §2.4)."""
-        with patch(f"{_M}.get_user_id", return_value=USER_ID), \
-             patch(f"{_M}.insert_post", return_value=True) as insert:
+        with _signed_in(), patch(f"{_M}.insert_post", return_value=True) as insert:
             r = _client().post("/api/schedule_post/", json={
-                "content": "body", "post_type": "text", "email": "a@b.c",
+                "session_token": _SESSION_TOKEN,
+                "content": "body", "post_type": "text",
                 "scheduled_datetime": "2026-08-01T09:00:00", "use_avatar": False})
         assert r.status_code == 200
         assert insert.call_args.kwargs["use_avatar"] is False
 
     def test_omitting_it_leaves_the_choice_to_the_user_preferences(self):
-        with patch(f"{_M}.get_user_id", return_value=USER_ID), \
-             patch(f"{_M}.insert_post", return_value=True) as insert:
+        with _signed_in(), patch(f"{_M}.insert_post", return_value=True) as insert:
             _client().post("/api/schedule_post/", json={
-                "content": "body", "post_type": "text", "email": "a@b.c",
+                "session_token": _SESSION_TOKEN,
+                "content": "body", "post_type": "text",
                 "scheduled_datetime": "2026-08-01T09:00:00"})
         assert insert.call_args.kwargs["use_avatar"] is None
 
     def test_editing_a_post_persists_an_explicit_choice(self):
-        with patch(f"{_M}.update_db_post", return_value=True), \
+        with _signed_in(), patch(f"{_M}.update_db_post", return_value=True), \
              patch(f"{_M}.update_post_use_avatar") as upd:
             r = _client().post("/api/update_post/?post_id=5", json={
+                "session_token": _SESSION_TOKEN,
                 "content": "body", "post_type": "text",
                 "scheduled_datetime": "2026-08-01T09:00:00", "use_avatar": True})
         assert r.status_code == 200
         upd.assert_called_once_with(5, True)
 
     def test_editing_without_the_field_leaves_the_stored_choice_alone(self):
-        with patch(f"{_M}.update_db_post", return_value=True), \
+        with _signed_in(), patch(f"{_M}.update_db_post", return_value=True), \
              patch(f"{_M}.update_post_use_avatar") as upd:
             _client().post("/api/update_post/?post_id=5", json={
+                "session_token": _SESSION_TOKEN,
                 "content": "body", "post_type": "text",
                 "scheduled_datetime": "2026-08-01T09:00:00"})
         upd.assert_not_called()

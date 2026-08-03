@@ -174,13 +174,16 @@ token used to be an ordinary full session that merely *also* satisfied the gate 
 endpoint — it could read every post, DM template and setting the SPA can. It now reaches exactly one
 path, `/api/user/linkedin-cookie`, and anything else is a **403** `session_scope_forbidden`.
 
-**Honest limit, and it is not small:** the narrowing binds every route that authenticates from the
-SESSION, which is all of them bar one group. A set of `/api` endpoints predating 2a still identify
-the user from an `email` / `user_id` **request parameter** (`PUT /user/`, `GET /posts/`,
-`GET /dashboard/stats/`, …) behind nothing but the shared bearer token the SPA ships in its build.
-Those never call the resolver, so no session scope — extension, enrolment, or any future one —
-constrains them. That is tracked as **#914** and is the ceiling on what this section can claim
-until it lands.
+**That had an honest limit, and issue #914 closed it.** The narrowing binds every route that
+authenticates from the SESSION — and until #914 a group of `/api` endpoints predating 2a did not.
+They read the acting user out of an `email` / `user_id` / `post_id` **request parameter**
+(`PUT /user/`, `GET /posts/`, `GET /dashboard/stats/`, …) behind nothing but the shared bearer
+token the SPA ships in its build, so no session scope — extension, enrolment, or any future one —
+constrained them. Every `/api` route now resolves its caller through
+`api/main.require_session_user_id()`, and what the request names is a target to authorise (**403**),
+never the actor; see [`identity-and-sessions.md`](identity-and-sessions.md) §"The parameter is a
+target, never the actor". Any statement about a session's blast radius may now be read as covering
+the whole API surface.
 
 The narrowing is enforced in `api/main.get_session_user_id` — the ONE resolver every handler already
 calls — and not at ~150 call sites, because a narrowing that has to be remembered per endpoint is a

@@ -910,7 +910,8 @@ def insert_planned_post(user_id: int, scheduled_time: datetime, post_type: PostT
 
 
 def update_db_post(content: str, video_url: str, scheduled_time: datetime, post_type: PostType, post_id: int,
-                   post_status: PostStatus) -> bool:
+                   post_status: PostStatus, user_id: Optional[int] = None) -> bool:
+    """`user_id` scopes the write to one account's row — same reason as `bulk_update_posts`."""
     connection = get_db_connection()
     cursor = connection.cursor()
 
@@ -920,9 +921,16 @@ def update_db_post(content: str, video_url: str, scheduled_time: datetime, post_
 
         scheduled_time = to_naive_utc(scheduled_time)
 
+        params: list = [content, video_url, scheduled_time, post_type.value, post_status.value, post_id]
+        owner_clause = ""
+        if user_id is not None:
+            owner_clause = " AND user_id = %s"
+            params.append(user_id)
+
         cursor.execute(
-            "UPDATE posts SET content = %s, video_url = %s, scheduled_time =%s, post_type = %s, status = %s WHERE id = %s",
-            (content, video_url, scheduled_time, post_type.value, post_status.value, post_id)
+            "UPDATE posts SET content = %s, video_url = %s, scheduled_time =%s, post_type = %s, "
+            f"status = %s WHERE id = %s{owner_clause}",
+            params
         )
 
         connection.commit()
@@ -1344,22 +1352,10 @@ def get_posted_posts(user_id: int):
     return posts
 
 
-def get_post_by_email(email: str, limit: int = 10, offset: int = 0,
-                      sort_order: str = 'asc', status_filter: Optional[str] = None,
-                      post_type_filter: Optional[str] = None, search: Optional[str] = None,
-                      sort_by: str = 'scheduled_time',
-                      start_date: Optional[datetime] = None,
-                      end_date: Optional[datetime] = None) -> tuple[list, int]:
-    user_id = get_user_id(email)
-
-    if not user_id:
-        myprint(f"User with email {email} not found.")
-        return [], 0
-
-    return get_posts(user_id, limit=limit, offset=offset, sort_order=sort_order,
-                     status_filter=status_filter, post_type_filter=post_type_filter,
-                     search=search, sort_by=sort_by,
-                     start_date=start_date, end_date=end_date)
+# `get_post_by_email` lived here until issue #914. It turned an ADDRESS into somebody's posts, which
+# is exactly the shape `GET /posts/` used to authenticate on; its one caller now resolves the caller
+# from the session and calls `get_posts(user_id, …)` directly. Leaving the wrapper behind would keep
+# an address-keyed reader one import away from the next endpoint — deleted rather than deprecated.
 
 
 def get_post_content(post_id: int):
@@ -1396,6 +1392,48 @@ def get_post_user_id(post_id: int):
         connection.close()
 
     return post['user_id'] if post else None
+
+
+class OwnershipUnprovable(Exception):
+    """The ownership query did not run, so nothing was proved either way (issue #914).
+
+    Distinct from `user_owns_posts` answering False, which means the query DID run and disproved
+    ownership. Both refuse the action — that is the fail-closed half and it is not negotiable — but
+    they are not the same fact and must not be reported as the same one: "Forbidden" tells a user
+    they lack permission to their own drafts, and sends on-call hunting an authorisation bug while
+    the database is the thing that is down."""
+
+
+def user_owns_posts(user_id: int, post_ids: list[int]) -> bool:
+    """True only when EVERY id exists AND belongs to `user_id` (issue #914).
+
+    The post-mutating endpoints take a list of ids and used to act on it unchecked, so this is the
+    authorisation read that stands between one account and another's drafts. It fails CLOSED: an
+    empty list and a missing row both answer False, because "we could not prove ownership" must
+    never be spelled the same way as "they own it". A database error raises `OwnershipUnprovable`
+    rather than answering False — still a refusal at the call site, but a truthful one."""
+    if not user_id or not post_ids:
+        return False
+
+    unique_ids = list({int(pid) for pid in post_ids})
+    connection = get_db_connection()
+    cursor = connection.cursor()
+
+    try:
+        placeholders = ', '.join(['%s'] * len(unique_ids))
+        cursor.execute(
+            f"SELECT COUNT(DISTINCT id) FROM posts WHERE user_id = %s AND id IN ({placeholders})",
+            [user_id, *unique_ids],
+        )
+        row = cursor.fetchone()
+        return bool(row) and row[0] == len(unique_ids)
+    except mysql.connector.Error as err:
+        from cqc_lem.utilities.logger import log_error
+        log_error("Could not verify post ownership", exc=err, user_id=user_id)
+        raise OwnershipUnprovable(str(err)) from err
+    finally:
+        cursor.close()
+        connection.close()
 
 
 def update_db_post_image_url(post_id: int, image_url: Optional[str]) -> bool:
@@ -1562,7 +1600,13 @@ _ALLOWED_POST_CLAUSES = frozenset({"status = %s", "scheduled_time = %s", "reject
 
 def bulk_update_posts(post_ids: list[int], status: Optional[PostStatus] = None,
                       scheduled_time: Optional[datetime] = None,
-                      rejection_reason: Optional[str] = None) -> bool:
+                      rejection_reason: Optional[str] = None,
+                      user_id: Optional[int] = None) -> bool:
+    """`user_id` scopes the WHERE clause to one account's rows (issue #914).
+
+    The API checks ownership before it calls this, so the scope is redundant today — that is the
+    point. It closes the window between the check and the write, and it means a future caller that
+    forgets the check cannot reach across accounts anyway."""
     if not post_ids:
         return False
 
@@ -1594,8 +1638,13 @@ def bulk_update_posts(post_ids: list[int], status: Optional[PostStatus] = None,
         placeholders = ', '.join(['%s'] * len(post_ids))
         params.extend(post_ids)
 
+        owner_clause = ""
+        if user_id is not None:
+            owner_clause = " AND user_id = %s"
+            params.append(user_id)
+
         cursor.execute(
-            f"UPDATE posts SET {', '.join(sets)} WHERE id IN ({placeholders})",
+            f"UPDATE posts SET {', '.join(sets)} WHERE id IN ({placeholders}){owner_clause}",
             params
         )
         connection.commit()
@@ -1611,21 +1660,32 @@ def bulk_update_posts(post_ids: list[int], status: Optional[PostStatus] = None,
     return success
 
 
-def soft_delete_posts(post_ids: list[int], rejection_reason: Optional[str] = None) -> bool:
-    return bulk_update_posts(post_ids, status=PostStatus.REJECTED, rejection_reason=rejection_reason)
+def soft_delete_posts(post_ids: list[int], rejection_reason: Optional[str] = None,
+                      user_id: Optional[int] = None) -> bool:
+    return bulk_update_posts(post_ids, status=PostStatus.REJECTED, rejection_reason=rejection_reason,
+                             user_id=user_id)
 
 
-def update_db_post_rejection_reason(post_id: int, rejection_reason: Optional[str]) -> bool:
+def update_db_post_rejection_reason(post_id: int, rejection_reason: Optional[str],
+                                    user_id: Optional[int] = None) -> bool:
     """Persist WHY a post was rejected (issue #713) so a later regeneration can avoid the same issue.
 
-    Empty or whitespace-only input is stored as NULL so the UI doesn't render a blank reason."""
+    Empty or whitespace-only input is stored as NULL so the UI doesn't render a blank reason.
+    `user_id` scopes the write to one account's row for the same reason as `bulk_update_posts`
+    (issue #914) — every sibling write on this table carries it."""
     from cqc_lem.utilities.logger import log_error
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
+        params: list = [(rejection_reason or "").strip() or None, post_id]
+        owner_clause = ""
+        if user_id is not None:
+            owner_clause = " AND user_id = %s"
+            params.append(user_id)
+
         cursor.execute(
-            "UPDATE posts SET rejection_reason = %s WHERE id = %s",
-            ((rejection_reason or "").strip() or None, post_id)
+            f"UPDATE posts SET rejection_reason = %s WHERE id = %s{owner_clause}",
+            params
         )
         connection.commit()
         success = cursor.rowcount == 1
@@ -3492,6 +3552,12 @@ class AuthAuditEvent(StrEnum):
     # token this is the clearest signal available that someone else is holding it — the extension
     # itself only ever calls one path, so it can never produce this row by accident.
     SESSION_SCOPE_DENIED = "session_scope_denied"
+    # A signed-in caller named ANOTHER account as the target of an /api call (#914). The SPA cannot
+    # produce this — it sends the caller's own address or nothing at all — so a row here is a broken
+    # client or somebody working the hole that issue closed, and it is the highest-signal thing this
+    # boundary emits. `details` carries the KIND of identifier and the path, never the value: the
+    # caller-supplied half is somebody else's address and the audit log is not where it accumulates.
+    FOREIGN_TARGET_DENIED = "foreign_target_denied"
 
 
 def record_auth_event(event: AuthAuditEvent, user_id: Optional[int] = None,

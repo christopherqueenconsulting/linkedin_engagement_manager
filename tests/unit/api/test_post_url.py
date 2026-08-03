@@ -7,6 +7,8 @@ pytestmark = pytest.mark.unit
 
 _DB = "cqc_lem.api.main"
 
+from tests.unit.api.conftest import SESSION_TOKEN, SESSION_USER_ID  # noqa: E402
+
 
 @pytest.fixture(scope="module")
 def client():
@@ -30,50 +32,42 @@ def client():
 
 
 _URL = "/api/post_url/"
-_USER_ID = 60
 _POST_ID = 42
-_EMAIL = "test@example.com"
 _LI_URL = "https://www.linkedin.com/feed/update/urn:li:ugcPost:123/"
 
 
 class TestGetPostUrl:
-    def test_missing_email_returns_422(self, client):
-        """FastAPI rejects the request before the function body when email is absent."""
-        resp = client.get(_URL, params={"post_id": _POST_ID})
-        assert resp.status_code == 422
+    def test_no_session_returns_401(self, client):
+        with patch(f"{_DB}.get_session_user_id", return_value=None):
+            resp = client.get(_URL, params={"post_id": _POST_ID})
+        assert resp.status_code == 401
 
-    def test_empty_email_string_returns_400(self, client):
-        """Empty email passes FastAPI validation but is caught by application guard."""
-        resp = client.get(_URL, params={"post_id": _POST_ID, "email": ""})
-        assert resp.status_code == 400
-
-    def test_missing_post_id_returns_422(self, client):
-        resp = client.get(_URL, params={"email": _EMAIL})
-        assert resp.status_code == 422
-
-    def test_unknown_user_returns_403(self, client):
-        with patch(f"{_DB}.get_user_id", return_value=None):
-            resp = client.get(_URL, params={"post_id": _POST_ID, "email": _EMAIL})
+    def test_another_accounts_email_returns_403(self, client, signed_in):
+        with patch(f"{_DB}.get_post_url_from_log_for_user") as mock_url:
+            resp = client.get(_URL, params={"post_id": _POST_ID,
+                                            "session_token": SESSION_TOKEN,
+                                            "email": "victim@example.com"})
         assert resp.status_code == 403
+        mock_url.assert_not_called()
 
-    def test_returns_linkedin_url_when_found(self, client):
-        with patch(f"{_DB}.get_user_id", return_value=_USER_ID), \
-             patch(f"{_DB}.get_post_url_from_log_for_user", return_value=_LI_URL):
-            resp = client.get(_URL, params={"post_id": _POST_ID, "email": _EMAIL})
+    def test_missing_post_id_returns_422(self, client, signed_in):
+        resp = client.get(_URL, params={"session_token": SESSION_TOKEN})
+        assert resp.status_code == 422
+
+    def test_returns_linkedin_url_when_found(self, client, signed_in):
+        with patch(f"{_DB}.get_post_url_from_log_for_user", return_value=_LI_URL):
+            resp = client.get(_URL, params={"post_id": _POST_ID, "session_token": SESSION_TOKEN})
         assert resp.status_code == 200
         assert resp.json()["detail"]["post_url"] == _LI_URL
 
-    def test_returns_null_when_no_log_url_exists(self, client):
-        with patch(f"{_DB}.get_user_id", return_value=_USER_ID), \
-             patch(f"{_DB}.get_post_url_from_log_for_user", return_value=None):
-            resp = client.get(_URL, params={"post_id": _POST_ID, "email": _EMAIL})
+    def test_returns_null_when_no_log_url_exists(self, client, signed_in):
+        with patch(f"{_DB}.get_post_url_from_log_for_user", return_value=None):
+            resp = client.get(_URL, params={"post_id": _POST_ID, "session_token": SESSION_TOKEN})
         assert resp.status_code == 200
         assert resp.json()["detail"]["post_url"] is None
 
-    def test_calls_correct_user_and_post_id(self, client):
-        """Verifies get_post_url_from_log_for_user is called with resolved user_id, not email."""
-        with patch(f"{_DB}.get_user_id", return_value=_USER_ID) as mock_uid, \
-             patch(f"{_DB}.get_post_url_from_log_for_user", return_value=None) as mock_url:
-            client.get(_URL, params={"post_id": _POST_ID, "email": _EMAIL})
-        mock_uid.assert_called_once_with(_EMAIL)
-        mock_url.assert_called_once_with(_USER_ID, _POST_ID)
+    def test_lookup_is_scoped_to_the_session_user(self, client, signed_in):
+        """A foreign post_id reads as "no URL" — the query never leaves the caller's own logs."""
+        with patch(f"{_DB}.get_post_url_from_log_for_user", return_value=None) as mock_url:
+            client.get(_URL, params={"post_id": _POST_ID, "session_token": SESSION_TOKEN})
+        mock_url.assert_called_once_with(SESSION_USER_ID, _POST_ID)
