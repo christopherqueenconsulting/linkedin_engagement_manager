@@ -107,9 +107,9 @@ def build_body(row: dict, user_id=None) -> str:
         "## Scope",
         "",
         f"- Code: `{row.get('code') or 'see the probe report'}`",
-        f"- Re-ground the locator chain from the evidence below — `data-testid` / `aria-label` / "
-        f"href / TEXT only, never class names, and scoped to the owning card or dialog "
-        f"(`docs/sdui-selenium-notes.md`).",
+        "- Re-ground the locator chain from the evidence below — `data-testid` / `aria-label` / "
+        "href / TEXT only, never class names, and scoped to the owning card or dialog "
+        "(`docs/sdui-selenium-notes.md`).",
         "- Success is the OUTCOME being present, never a click having landed.",
         "- Never click a control whose label names a different entity than the target.",
         "",
