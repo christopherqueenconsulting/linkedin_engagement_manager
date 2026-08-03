@@ -6611,8 +6611,12 @@ def _funnel_prospects_from_roster(driver, user_id: int, roster: list, my_name: s
             continue
         post = next((p for p in activity if (p or {}).get("link")), None)
         if not post:
-            log_warning(f"Roster author {author_url} has no recent post to comment on — skipping",
-                        user_id=user_id, action_type="outreach_funnel")
+            # A roster author who simply hasn't posted lately is the common case, not a degraded
+            # one — most people post weekly at best against a daily beat. Warning on it escalates
+            # to ERROR after three repeats and files a defect for working behaviour (issue #987,
+            # sibling of #985/#995). The real failures around it keep their warnings.
+            log_debug(f"Roster author {author_url} has no recent post to comment on — skipping",
+                      user_id=user_id, action_type="outreach_funnel")
             continue
         author_name = clean_person_name(target.get("name") or "") or _author_display_name(author_url)
         post_text = str(post.get("text") or "")
