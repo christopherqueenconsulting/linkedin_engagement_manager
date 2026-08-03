@@ -22,8 +22,10 @@ Answers, against a REAL logged-in session, the two questions
 **Read-only.** It navigates and reads: it publishes nothing, comments on nothing, sends no
 invites or DMs and changes no settings. ``--probe-composer`` additionally OPENS the post
 composer to capture the "add a document" affordance's anchors and closes it with Escape without
-attaching or posting anything; ``--comment-outcome-url`` and ``--feed-sort`` flip a sort control,
-exactly as the production readers they are grounding do.
+attaching or posting anything; ``--permalink-comment`` does the same for a POST's comment composer
+(#966) — it clicks Comment so the box mounts, describes it, and Escapes, typing and submitting
+nothing; ``--comment-outcome-url`` and ``--feed-sort`` flip a sort control, exactly as the
+production readers they are grounding do.
 
 Run it from inside a Selenium worker so the login/cookie/proxy stack is the production one
 (``scripts/`` is not baked into the image, so pipe the file in on stdin, the same way
@@ -171,6 +173,9 @@ SURFACES = (
     {"key": "message_thread", "surface": "Message-thread resolution ladder",
      "code": "message_thread.open_message_thread", "flag": "--dm-thread-url",
      "arg": "<profile-url>", "sweep": False},
+    {"key": "permalink_comment", "surface": "Post permalink card → Comment → composer",
+     "code": "run_automation._permalink_post_card / _post_composer_for_card",
+     "flag": "--permalink-comment", "arg": "<post-url>", "sweep": False},
 )
 
 # The sweep runs these in ONE Chrome session, cheapest/safest first so a session that dies part-way
@@ -1189,6 +1194,100 @@ def article_editor_state(verdict: Optional[dict]) -> str:
     return STATE_DRIFT
 
 
+def permalink_comment_verdict(reading: dict) -> str:
+    """What one permalink reading proves about the #966 comment path.
+
+    The failure this exists to catch is SILENT: the pre-SDUI composer XPaths could only time out, so
+    profile-viewer and outreach-funnel comments died with a log line saying they "might not have
+    worked". Anything short of a resolved composer here means production posts nothing."""
+    reading = dict(reading or {})
+    if not reading.get("cards_found"):
+        return ("no card carrying a comment action rendered — production logs a FAILURE and posts "
+                "nothing (comments may be restricted on this post, or the card walk has drifted)")
+    if not reading.get("card_matched_urn") and reading.get("permalink_urn"):
+        if reading.get("top_card_urn"):
+            return ("the top card belongs to a DIFFERENT post than the permalink — production "
+                    "refuses to comment rather than comment on a recommendation")
+        return ("no card claimed the permalink's URN and the top card's URN is unreadable — "
+                "production falls back to the top card")
+    if not reading.get("comment_action"):
+        return "no Comment action on the resolved card — production cannot open a composer"
+    if not reading.get("composer"):
+        return ("Comment action clicked but no composer resolved for this card — production skips "
+                "the post; this is the #966 failure mode returning")
+    return "composer resolved on the permalink card — production would type and submit here"
+
+
+def probe_permalink_comment(driver, post_url: str,
+                            sleep: Callable[[float], None] = time.sleep) -> dict:
+    """#966: open a post PERMALINK and report whether the comment path's card → comment action →
+    composer chain resolves there — the surface `comment_on_post` runs on (profile-viewer engagement
+    and the outreach funnel's COMMENT stage).
+
+    Read-only in the sense `--probe-composer` already is: it clicks the post's own Comment button to
+    make the composer mount, describes it, then presses Escape. Nothing is typed and nothing is
+    submitted, so no comment is left. It never touches the reaction controls — `--reaction-probe`
+    covers those."""
+    from cqc_lem.app.run_automation import (_FEED_POST_TEXT_SEL, _COMMENT_ACTION_LOCATORS, _URN_RE,
+                                            _card_for_textbox, _feed_post_urn_from_card,
+                                            _permalink_post_card, _post_composer_for_card)
+    from cqc_lem.utilities.selenium_util import click_first, find_first
+    from selenium.webdriver import ActionChains
+    from selenium.webdriver.support.ui import WebDriverWait
+
+    wait = WebDriverWait(driver, 10)
+    driver.get(post_url)
+    sleep(5)
+
+    cards = []
+    for box in driver.find_elements(By.CSS_SELECTOR, _FEED_POST_TEXT_SEL):
+        try:
+            card = _card_for_textbox(driver, box)
+        except Exception:
+            continue
+        if card is not None:
+            cards.append(card)
+
+    m = _URN_RE.search(post_url or "")
+    wanted = m.group(0).lower() if m else None
+    chosen = _permalink_post_card(driver, post_url)
+    reading = {"post_url": post_url,
+               "url": getattr(driver, "current_url", post_url),
+               "permalink_urn": wanted,
+               # More than one is EXPECTED on a permalink page — LinkedIn stacks recommendations
+               # under the post. This count is what makes the URN match worth having.
+               "cards_found": len(cards),
+               "top_card_urn": _feed_post_urn_from_card(cards[0], driver=driver) if cards else None,
+               "card_resolved": chosen is not None,
+               "card_matched_urn": bool(chosen is not None and wanted
+                                        and _feed_post_urn_from_card(chosen, driver=driver) == wanted),
+               "comment_action": None,
+               "composer": None,
+               # The live labels a re-grounding pass would be written from — a bare "not found" is
+               # not re-groundable.
+               "visible_controls": visible_button_labels(driver)}
+
+    if chosen is not None:
+        action = find_first(driver, wait, _COMMENT_ACTION_LOCATORS, "Comment action",
+                            parent_element=chosen, required=False, visible_only=True, max_try=1)
+        reading["comment_action"] = element_evidence(action) if action is not None else None
+        if action is not None:
+            click_first(driver, wait, _COMMENT_ACTION_LOCATORS, "Open comment composer",
+                        parent_element=chosen, required=False, max_try=1)
+            sleep(2)
+            composer = _post_composer_for_card(driver, chosen)
+            reading["composer"] = element_evidence(composer) if composer is not None else None
+            try:
+                ActionChains(driver).send_keys(Keys.ESCAPE).perform()
+            except Exception:
+                # Closing is courtesy only — nothing was typed, the driver is quit in main(), and a
+                # failed Escape must not mask the evidence this probe exists to report.
+                pass
+
+    reading["verdict"] = permalink_comment_verdict(reading)
+    return reading
+
+
 def roster_follow_verdict(reading: dict) -> str:
     """What one activity-page reading proves about the #962 follow lane.
 
@@ -2183,6 +2282,10 @@ def build_parser() -> "argparse.ArgumentParser":
     parser.add_argument("--sent-invite-days", type=int, default=None,
                         help="threshold to grade --sent-invites against (defaults to "
                              "STALE_INVITE_AGE_DAYS)")
+    parser.add_argument("--permalink-comment", metavar="POST_URL",
+                        help="a post permalink — reports whether the comment path's card -> Comment "
+                             "action -> composer chain resolves there (#966). Opens the composer and "
+                             "Escapes it; nothing is typed and no comment is left.")
     parser.add_argument("--feed-sort", action="store_true",
                         help="report whether the home feed's 'Sort by -> Recent' control resolves "
                              "and whether the flip sticks (#817)")
@@ -2249,12 +2352,14 @@ def main(argv: Optional[list] = None) -> int:
             or args.article_editor_url or args.feed_sort or args.reaction_probe
             or args.roster_follow or args.appreciation_sources or args.sent_invites
             or args.profile_views or args.connect_dialog or args.profile_scrape
-            or args.catchup_cards or args.group_composer or args.company_invite or args.sweep):
+            or args.catchup_cards or args.group_composer or args.company_invite
+            or args.permalink_comment or args.sweep):
         parser.error("nothing to probe — pass --sweep, --surfaces, --post-url, "
                      "--comment-outcome-url, --dm-thread-url, --article-editor-url, --feed-sort, "
                      "--profile-views, --profile-scrape, --connect-dialog, --catchup-cards, "
                      "--group-composer, --company-invite, --reaction-probe, --roster-follow, "
-                     "--appreciation-sources, --sent-invites and/or --probe-composer")
+                     "--appreciation-sources, --sent-invites, --permalink-comment and/or "
+                     "--probe-composer")
 
     from cqc_lem.app.run_automation import get_current_profile
     from cqc_lem.utilities.selenium_util import quit_gracefully
@@ -2305,6 +2410,8 @@ def main(argv: Optional[list] = None) -> int:
             report["group_composer"] = probe_group_composer(driver, args.group_composer)
         if args.company_invite:
             report["company_invite"] = probe_company_invite(driver, args.user_id, args.company_url)
+        if args.permalink_comment:
+            report["permalink_comment"] = probe_permalink_comment(driver, args.permalink_comment)
         if args.probe_composer:
             report["composer"] = probe_composer(driver)
         if args.article_editor_url:
