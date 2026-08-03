@@ -6385,9 +6385,12 @@ def scan_connection_candidates(self, user_id: int, max_new: int = None):
 
     budget = _connect_target_budget(user_id, prefs, max_new)
     if budget <= 0:
-        log_warning("Connection targeting filed nothing: no invite budget left (daily cap already "
-                    "spent or fully queued)", user_id=user_id,
-                    task_name="scan_connection_candidates", action_type="connection_targeting")
+        # Filing nothing is this scan's resting state, not a degraded path: the cap doing its job,
+        # a quiet audience, and a fully-deduped candidate set are all working behaviour. Warning on
+        # any of them files a defect for a healthy daily beat (issue #985).
+        log_debug("Connection targeting filed nothing: no invite budget left (daily cap already "
+                  "spent or fully queued)", user_id=user_id,
+                  task_name="scan_connection_candidates", action_type="connection_targeting")
         return f"No invite budget left for user {user_id}"
 
     now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -6414,10 +6417,10 @@ def scan_connection_candidates(self, user_id: int, max_new: int = None):
                 quit_gracefully(driver)
 
     if not signals:
-        log_warning("Connection targeting filed nothing: nobody has engaged with this user's "
-                    "content in the lookback window and no adjacent authors are configured",
-                    user_id=user_id, task_name="scan_connection_candidates",
-                    action_type="connection_targeting")
+        log_debug("Connection targeting filed nothing: nobody has engaged with this user's "
+                  "content in the lookback window and no adjacent authors are configured",
+                  user_id=user_id, task_name="scan_connection_candidates",
+                  action_type="connection_targeting")
         return f"No connection candidates found for user {user_id}"
 
     terms = target_terms_from_prefs(prefs)
@@ -6428,9 +6431,9 @@ def scan_connection_candidates(self, user_id: int, max_new: int = None):
                                  exclude_keys=get_requested_person_keys(user_id),
                                  limit=budget)
     if not candidates:
-        log_warning("Connection targeting filed nothing: every candidate was already requested, "
-                    "already a 1st-degree connection, or below the ICP floor", user_id=user_id,
-                    task_name="scan_connection_candidates", action_type="connection_targeting")
+        log_debug("Connection targeting filed nothing: every candidate was already requested, "
+                  "already a 1st-degree connection, or below the ICP floor", user_id=user_id,
+                  task_name="scan_connection_candidates", action_type="connection_targeting")
         return f"No new connection candidates for user {user_id} (all deduped or below ICP floor)"
 
     status = _target_status_for_mode(mode, prefs)

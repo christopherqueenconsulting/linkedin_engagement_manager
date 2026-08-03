@@ -74,6 +74,23 @@ class TestScanGating:
         assert "deduped" in out
 
 
+class TestEmptyScanIsNotAWarning:
+    """Filing nothing is the scan's resting state, so none of its three empty outcomes may warn —
+    a daily beat that warns escalates to ERROR and files a defect for working behaviour (#985)."""
+
+    @pytest.mark.parametrize("kwargs, marker", [
+        ({"sent_today": 10}, "no invite budget left"),
+        ({"engagers": []}, "nobody has engaged"),
+        ({"requested": {"in:jane-doe"}}, "every candidate was already requested"),
+    ])
+    def test_empty_outcome_logs_debug_not_warning(self, kwargs, marker):
+        with patch(f"{_RA}.log_warning") as warn, patch(f"{_RA}.log_debug") as debug:
+            _out, insert = _scan(**kwargs)
+        insert.assert_not_called()
+        warn.assert_not_called()
+        assert any(marker in str(call.args[0]) for call in debug.call_args_list)
+
+
 class TestScanFiling:
     def test_files_a_pending_draft_in_suggest_mode(self):
         from cqc_lem.utilities.db import ConnectionRequestStatus
