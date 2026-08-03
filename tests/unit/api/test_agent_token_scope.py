@@ -65,6 +65,25 @@ class TestAgentSurface:
         key = main_mod._scope_path("/api" + path)
         assert main_mod._scope_allows(main_mod.SESSION_SCOPE_AGENT, key) is False
 
+    @pytest.mark.parametrize("path", [
+        "/lead_signals/admin",      # extends /lead_signals
+        "/leads/export",            # extends /leads
+        "/lead_magnets",            # extends /lead — no separator at all
+        "/dms/all",                 # extends /dms
+        "/connection_requests/bulk-approve",
+        "/user/engagement-preferences/reset",
+        "/dashboard/stats/internal",
+    ])
+    def test_a_granted_path_never_opens_the_paths_beneath_or_beside_it(self, main_mod, path):
+        """Matching is exact set membership, never a prefix.
+
+        The surface is a list of path literals, so the failure mode is a route that merely STARTS
+        with a granted one inheriting the grant — `/lead` opening `/lead_magnets`, `/lead_signals`
+        opening `/lead_signals/admin`. The trailing-slash bug this suite already covers proves this
+        class of mistake is real rather than theoretical."""
+        key = main_mod._scope_path("/api" + path)
+        assert main_mod._scope_allows(main_mod.SESSION_SCOPE_AGENT, key) is False, key
+
     def test_the_scope_is_not_unrestricted(self, main_mod):
         assert main_mod.SESSION_SCOPE_AGENT not in main_mod._UNRESTRICTED_SCOPES
 
