@@ -117,8 +117,9 @@ measured: "we have no baseline" must not read as "no change".
 OFF by default and a **regression signal ONLY**, per the #416 humanization policy: nothing here is
 an evasion target, and no score ever rewrites, holds, or steers text.
 
-- `AI_DETECTOR_ENABLED` + `AI_DETECTOR_URL` (both required) — `AI_DETECTOR_API_KEY`,
-  `AI_DETECTOR_PROVIDER`, `AI_DETECTOR_TIMEOUT` (10s).
+- `detector_enabled()` is `AI_DETECTOR_ENABLED` **plus a non-empty `AI_DETECTOR_API_KEY`** — a
+  missing key is a silent no-op, never a warning loop. `AI_DETECTOR_URL` is required too, but it is
+  checked at call time (no URL → `None`). Also `AI_DETECTOR_PROVIDER`, `AI_DETECTOR_TIMEOUT` (10s).
 - Sampled at `AI_DETECTOR_SAMPLE_RATE` (0.1) via `stable_fraction` — a **stable** hash draw, so a
   retried nightly run picks the SAME items and never re-bills for a second reading of the same
   piece.
