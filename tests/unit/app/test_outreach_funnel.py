@@ -1,7 +1,7 @@
 """Unit tests for the comment-first outreach funnel (issue #399): stage firing, processor, dispatch."""
 
 import pytest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -173,6 +173,75 @@ class TestProcessOutreachFunnel:
             out = process_outreach_funnel.run(user_id=1)
         ust.assert_called_once_with(7, OutreachStatus.FAILED)
         assert "error" in out
+
+
+def _engager_prospect():
+    from cqc_lem.utilities.db import OutreachStage
+    return {"profile_url": "https://www.linkedin.com/in/jane-doe", "name": "Jane Doe",
+            "stage": OutreachStage.CONNECT, "context_url": None}
+
+
+def _scan_funnel(open_targets=0, roster=None, roster_prospects=None, engager_prospects=None,
+                 profile_exc=None):
+    """Run scan_outreach_funnel_targets with every I/O boundary mocked; returns (result, insert)."""
+    from cqc_lem.app import run_automation as ra
+    prefs = {"connection_targeting_mode": "suggest", "connection_request_mode": "review"}
+    with patch(f"{_RA}.get_engagement_preferences", return_value=prefs), \
+         patch(f"{_RA}.count_open_outreach_targets", return_value=open_targets), \
+         patch(f"{_RA}.get_engagement_targets",
+               return_value=[{"profile_url": "https://x/in/roster"}] if roster is None else roster), \
+         patch(f"{_RA}.get_or_create_profile_synthesis", return_value=None), \
+         patch(f"{_RA}._funnel_prospects_from_roster", return_value=list(roster_prospects or [])), \
+         patch(f"{_RA}._funnel_prospects_from_engagers",
+               return_value=list(engager_prospects or [])), \
+         patch(f"{_RA}.get_requested_person_keys", return_value=set()), \
+         patch(f"{_RA}.get_outreach_target_by_url", return_value=None), \
+         patch(f"{_RA}._draft_funnel_comment", return_value="draft"), \
+         patch(f"{_RA}._draft_funnel_stage", return_value="draft"), \
+         patch(f"{_RA}.insert_outreach_target", return_value=11) as insert, \
+         patch(f"{_RA}.get_current_profile") as profile, \
+         patch(f"{_RA}.quit_gracefully"):
+        if profile_exc is not None:
+            profile.side_effect = profile_exc
+        else:
+            profile.return_value = (MagicMock(), MagicMock(), "me@x.com",
+                                    MagicMock(full_name="Me Myself"))
+        return ra.scan_outreach_funnel_targets.run(user_id=1), insert
+
+
+class TestEmptyFunnelScanIsNotAWarning:
+    """Filing nothing is this scan's resting state, so none of its three empty outcomes may warn —
+    a daily beat that warns escalates to ERROR and files a defect for working behaviour (#995)."""
+
+    @pytest.mark.parametrize("kwargs, marker", [
+        ({"open_targets": 25}, "are already waiting for approval"),
+        ({"roster": [], "engager_prospects": [_engager_prospect()]},
+         "No active engagement-roster targets"),
+        ({}, "the engagement roster produced no"),
+    ])
+    def test_empty_outcome_logs_debug_not_warning(self, kwargs, marker):
+        with patch(f"{_RA}.log_warning") as warn, patch(f"{_RA}.log_debug") as debug:
+            _out, _insert = _scan_funnel(**kwargs)
+        warn.assert_not_called()
+        assert any(marker in str(call.args[0]) for call in debug.call_args_list)
+
+    def test_backlog_full_files_nothing(self):
+        out, insert = _scan_funnel(open_targets=25, engager_prospects=[_engager_prospect()])
+        insert.assert_not_called()
+        assert "backlog full" in out
+
+    def test_no_prospects_files_nothing(self):
+        out, insert = _scan_funnel()
+        insert.assert_not_called()
+        assert "No outreach funnel prospects" in out
+
+    def test_roster_sourcing_failure_still_warns(self):
+        """The degraded path is a real failure — it must keep its warning."""
+        with patch(f"{_RA}.log_warning") as warn:
+            _out, _insert = _scan_funnel(engager_prospects=[_engager_prospect()],
+                                         profile_exc=RuntimeError("no session"))
+        assert any("Roster sourcing for the outreach funnel failed" in str(call.args[0])
+                   for call in warn.call_args_list)
 
 
 class TestDispatcher:

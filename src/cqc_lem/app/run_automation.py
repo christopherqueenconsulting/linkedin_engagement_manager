@@ -6684,9 +6684,12 @@ def scan_outreach_funnel_targets(self, user_id: int, max_new: int = None):
     ceiling = _MAX_NEW_FUNNEL_TARGETS_PER_SCAN if max_new is None else int(max_new)
     budget = max(0, min(ceiling, _MAX_OPEN_FUNNEL_TARGETS - open_targets))
     if budget <= 0:
-        log_warning(f"Outreach funnel sourcing filed nothing: {open_targets} target(s) are already "
-                    f"waiting for approval", user_id=user_id,
-                    task_name="scan_outreach_funnel_targets", action_type="outreach_funnel")
+        # Filing nothing is this scan's resting state, not a degraded path: the backlog gate doing
+        # its job, an unconfigured roster, and a quiet audience are all working behaviour. Warning
+        # on any of them files a defect for a healthy daily beat (issue #995, sibling of #985).
+        log_debug(f"Outreach funnel sourcing filed nothing: {open_targets} target(s) are already "
+                  f"waiting for approval", user_id=user_id,
+                  task_name="scan_outreach_funnel_targets", action_type="outreach_funnel")
         return f"Outreach funnel backlog full for user {user_id}"
 
     now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -6711,16 +6714,16 @@ def scan_outreach_funnel_targets(self, user_id: int, max_new: int = None):
             if driver is not None:
                 quit_gracefully(driver)
     else:
-        log_warning("No active engagement-roster targets — the funnel can only source from post "
-                    "engagers until a roster is configured", user_id=user_id,
-                    task_name="scan_outreach_funnel_targets", action_type="outreach_funnel")
+        log_debug("No active engagement-roster targets — the funnel can only source from post "
+                  "engagers until a roster is configured", user_id=user_id,
+                  task_name="scan_outreach_funnel_targets", action_type="outreach_funnel")
     prospects.extend(_funnel_prospects_from_engagers(user_id))
 
     if not prospects:
-        log_warning("Outreach funnel sourcing filed nothing: the engagement roster produced no "
-                    "posts and nobody has engaged with this user's content in the lookback window",
-                    user_id=user_id, task_name="scan_outreach_funnel_targets",
-                    action_type="outreach_funnel")
+        log_debug("Outreach funnel sourcing filed nothing: the engagement roster produced no "
+                  "posts and nobody has engaged with this user's content in the lookback window",
+                  user_id=user_id, task_name="scan_outreach_funnel_targets",
+                  action_type="outreach_funnel")
         return f"No outreach funnel prospects for user {user_id}"
 
     # A target already in connection_requests is being worked by the #398/#486 path — two outbound
