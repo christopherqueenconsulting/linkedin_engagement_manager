@@ -471,38 +471,6 @@ class TestGetPostedPosts:
 
 
 # ---------------------------------------------------------------------------
-# get_post_by_email
-# ---------------------------------------------------------------------------
-
-class TestGetPostByEmail:
-    def test_returns_empty_when_user_not_found(self, mock_database_connection):
-        from cqc_lem.utilities.db import get_post_by_email
-
-        with patch("cqc_lem.utilities.db.get_user_id", return_value=None):
-            posts, total = get_post_by_email("nobody@example.com")
-
-            assert posts == []
-            assert total == 0
-
-    def test_delegates_to_get_posts_when_user_found(self, mock_database_connection):
-        from cqc_lem.utilities.db import get_post_by_email
-
-        with patch("cqc_lem.utilities.db.get_user_id", return_value=42), \
-             patch("cqc_lem.utilities.db.get_posts", return_value=(["post1"], 1)) as mock_get_posts:
-            posts, total = get_post_by_email(
-                "user@example.com", limit=5, offset=10, sort_order="desc", status_filter="pending"
-            )
-
-            assert posts == ["post1"]
-            assert total == 1
-            mock_get_posts.assert_called_once_with(
-                42, limit=5, offset=10, sort_order="desc", status_filter="pending",
-                post_type_filter=None, search=None, sort_by="scheduled_time",
-                start_date=None, end_date=None
-            )
-
-
-# ---------------------------------------------------------------------------
 # update_db_post_carousel_slides
 # ---------------------------------------------------------------------------
 

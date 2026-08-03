@@ -87,20 +87,42 @@ Three deliberate choices in there:
 
 - **The parameter is checked, not ignored.** Answering a mismatch with the caller's own data would
   be a silent substitution, and a legacy client naming its own address keeps working either way.
-- **`user_owns_posts` fails closed.** An empty list, a missing row and a database error all answer
-  False — "we could not prove ownership" must never be spelled the same way as "they own it". A
-  batch is rejected whole: a list is only as scoped as its worst entry.
+- **`user_owns_posts` fails closed.** An empty list and a missing row both answer False — "we could
+  not prove ownership" must never be spelled the same way as "they own it". A batch is rejected
+  whole: a list is only as scoped as its worst entry.
 - **403, not 404-per-id.** Which post ids exist is the enumeration these endpoints used to hand out.
+- **An outage is not a permission error.** A database fault raises `db.OwnershipUnprovable` and
+  `_require_own_posts` answers **503**. The action is refused either way — that is the fail-closed
+  half and it does not move — but "you may not touch these posts" and "we could not find out" are
+  different facts. Collapsing them tells a user they lack permission to their own drafts, sends
+  on-call hunting an authorisation bug, and files a security-shaped defect through `_deny`'s
+  recurrence escalation every time the database blips.
 
-A denied TARGET is logged (`log_warning`, so the recurrence escalation files it) because a caller
-who resolved a session and then named another account is a broken client or somebody working this
-hole. A **401 is not**, and deliberately: sessions expire in the ordinary course of things and the
-SPA polls, so warning on one would file a defect for working behaviour (`utilities/CLAUDE.md`).
+A denied TARGET is logged (`log_warning`, so the recurrence escalation files it) AND audited
+(`auth_audit_log`, `AuthAuditEvent.FOREIGN_TARGET_DENIED`) because a caller who resolved a session
+and then named another account is a broken client or somebody working this hole. The log line is
+greppable; the audit row is queryable per account, which is the shape of the question you actually
+ask ("has THIS user been naming other people's accounts?"). Only the KIND of identifier and the path
+go into it — never the caller-supplied value, which is somebody else's address. A **401 is neither**,
+and deliberately: sessions expire in the ordinary course of things and the SPA polls, so warning on
+one would file a defect for working behaviour (`utilities/CLAUDE.md`).
 
-The post-mutating writes carry the same rule twice. `bulk_update_posts`, `soft_delete_posts` and
-`update_db_post` take an optional `user_id=` that scopes their `WHERE` clause, and the API passes
-it. The check in front is the gate; the scope is what closes the window between the check and the
-write, and what makes a future caller that forgets the check harmless rather than cross-account.
+The post-mutating writes carry the same rule twice. `bulk_update_posts`, `soft_delete_posts`,
+`update_db_post` and `update_db_post_rejection_reason` take an optional `user_id=` that scopes their
+`WHERE` clause, and the API passes it. The check in front is the gate; the scope is what closes the
+window between the check and the write, and what makes a future caller that forgets the check
+harmless rather than cross-account — which is only true if EVERY write on the table carries it.
+
+`get_post_by_email` is gone rather than deprecated. It turned an ADDRESS into somebody's posts,
+which is the exact shape `GET /posts/` used to authenticate on; its one caller resolves the session
+now and calls `get_posts(user_id, …)`, so leaving the wrapper behind would keep an address-keyed
+reader one import away from the next endpoint.
+
+**The cache in the browser is the other half.** Since 2b the SPA's `sessionToken` is the same
+non-secret `'cookie'` sentinel for every account, so a React Query key carrying it carries no
+identity at all — sign out, sign in as somebody else in the same tab, and the previous account's
+dashboard renders out of the cache. User-scoped keys carry the user id, and `logout()` calls
+`queryClient.clear()`, which is the structural half.
 
 `new_email` no longer moves the account from `PUT /user/`: the address moves through
 `POST /user/email/change/init|verify`, which PINs the NEW address, is step-up gated, and revokes

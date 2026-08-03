@@ -415,7 +415,8 @@ class TestUpdatePost:
                 json=body,
             )
         assert resp.status_code == 200
-        mock_reason.assert_called_once_with(10, "Not relevant")
+        # The owner scope rides along, like every other write on this table (issue #914).
+        mock_reason.assert_called_once_with(10, "Not relevant", user_id=SESSION_USER_ID)
 
     def test_blank_rejection_reason_not_persisted(self, client, signed_in):
         body = dict(_POST_BODY, status="rejected", rejection_reason="   ")

@@ -42,8 +42,13 @@ SESSION_TOKEN = "session-token-abc"
 
 @pytest.fixture
 def signed_in():
-    """Any token resolves to SESSION_USER_ID, who owns every post named."""
+    """Any token resolves to SESSION_USER_ID, who owns every post named.
+
+    `record_auth_event` is stubbed because a denied foreign target writes an `auth_audit_log` row
+    (`_deny`) — best effort in production, but an unmocked one here is a real connection attempt on
+    every 403 case."""
     with patch("cqc_lem.api.main.get_session_user_id", return_value=SESSION_USER_ID), \
          patch("cqc_lem.api.main.get_user_email", return_value=SESSION_EMAIL), \
+         patch("cqc_lem.api.main.record_auth_event", return_value=True), \
          patch("cqc_lem.api.main.user_owns_posts", return_value=True):
         yield SESSION_USER_ID

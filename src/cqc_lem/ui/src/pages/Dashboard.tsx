@@ -277,7 +277,11 @@ function StatCard({ label, value, color }: { label: string; value: number; color
 }
 
 export default function Dashboard() {
-  const { sessionToken } = useAuth()
+  const { user, sessionToken } = useAuth()
+  // The REQUEST is authorised by the session (issue #914); the cache KEY is the user id. Since #745
+  // `sessionToken` is the same `'cookie'` sentinel for every account, so keying on it would let one
+  // user's dashboard render out of the cache for the next person to sign in on this tab.
+  const userId = user?.userId
   const userTimezone = useUserTimezone()
 
   // Personalized best-times-to-post recommendations (read-only)
@@ -314,7 +318,7 @@ export default function Dashboard() {
   })
 
   const { data: statsData } = useQuery<{ detail: DashboardStats }>({
-    queryKey: ['dashboard-stats', sessionToken],
+    queryKey: ['dashboard-stats', userId],
     queryFn: () =>
       api.get(`/dashboard/stats/?session_token=${encodeURIComponent(sessionToken!)}`).then((r) => r.data),
     enabled: !!sessionToken,
@@ -324,7 +328,7 @@ export default function Dashboard() {
   // Upcoming (future-dated, non-terminal) work across posts, scheduled DMs, and newsletter
   // editions — the backend already filters terminal states, sorts soonest-first, and caps.
   const { data: plannedData } = useQuery<{ detail: { tasks: PlannedTask[] } }>({
-    queryKey: ['planned-tasks', sessionToken],
+    queryKey: ['planned-tasks', userId],
     queryFn: () =>
       api
         .get(`/dashboard/planned-tasks/?session_token=${encodeURIComponent(sessionToken!)}&limit=10`)
@@ -334,7 +338,7 @@ export default function Dashboard() {
   })
 
   const { data: activityData } = useQuery<{ detail: ActivityEntry[] }>({
-    queryKey: ['activity', sessionToken],
+    queryKey: ['activity', userId],
     queryFn: () =>
       api.get(`/activity/?session_token=${encodeURIComponent(sessionToken!)}&limit=15`).then((r) => r.data),
     enabled: !!sessionToken,

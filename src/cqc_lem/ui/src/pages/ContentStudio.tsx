@@ -481,7 +481,9 @@ export default function ContentStudio() {
       : 'Generating content…'
 
   const { data: postUrlData, isLoading: postUrlLoading } = useQuery<{ detail: { post_url: string | null } }>({
-    queryKey: ['post_url', editingPost?.post_id, sessionToken],
+    // Keyed on the address, like every other cache key on this page — `sessionToken` is the same
+    // sentinel for every account since #745 and carries no identity of its own (issue #914).
+    queryKey: ['post_url', editingPost?.post_id, email],
     queryFn: () =>
       api
         .get(`/post_url/?post_id=${editingPost!.post_id}&session_token=${encodeURIComponent(sessionToken!)}`)

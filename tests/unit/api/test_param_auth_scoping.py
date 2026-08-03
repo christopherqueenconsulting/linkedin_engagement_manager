@@ -227,7 +227,8 @@ class TestDenialsAreVisible:
         from cqc_lem.api.main import _reject_foreign_user_id
         from fastapi import HTTPException
 
-        with patch(f"{_M}.log_warning") as warn:
+        with patch(f"{_M}.log_warning") as warn, \
+             patch(f"{_M}.record_auth_event", return_value=True):
             with pytest.raises(HTTPException) as exc:
                 _reject_foreign_user_id(SESSION_USER_ID, _OTHER_USER_ID)
         assert exc.value.status_code == 403
@@ -252,7 +253,7 @@ class TestDenialsAreVisible:
         from cqc_lem.api.main import _reject_foreign_user_id
         from fastapi import HTTPException
 
-        with patch(f"{_M}.log_warning"):
+        with patch(f"{_M}.log_warning"), patch(f"{_M}.record_auth_event", return_value=True):
             with pytest.raises(HTTPException) as exc:
                 _reject_foreign_user_id(SESSION_USER_ID, "not-a-number")
         assert exc.value.status_code == 403
@@ -263,3 +264,143 @@ class TestDenialsAreVisible:
         with patch(f"{_M}.log_warning") as warn:
             _reject_foreign_user_id(SESSION_USER_ID, SESSION_USER_ID)
         warn.assert_not_called()
+
+
+class TestADeniedTargetIsAudited:
+    """A log line is greppable; an audit row is queryable per account. "Has this user been naming
+    other people's accounts?" is a question asked about ONE user after the fact, which is the same
+    reason `_scope_checked` writes one for a misused extension token."""
+
+    def test_the_row_names_the_kind_of_identifier_and_the_path_only(self, client, no_session):
+        from cqc_lem.api.main import AuthAuditEvent
+
+        with patch(f"{_M}.get_session_user_id", return_value=SESSION_USER_ID), \
+             patch(f"{_M}.get_user_email", return_value=SESSION_EMAIL), \
+             patch(f"{_M}.get_recent_logs"), \
+             patch(f"{_M}.record_auth_event", return_value=True) as recorded:
+            resp = client.get("/api/activity/", params={"session_token": SESSION_TOKEN,
+                                                        "email": _OTHER_EMAIL})
+
+        assert resp.status_code == 403
+        recorded.assert_called_once()
+        assert recorded.call_args[0][0] == AuthAuditEvent.FOREIGN_TARGET_DENIED
+        kwargs = recorded.call_args.kwargs
+        assert kwargs["user_id"] == SESSION_USER_ID
+        assert kwargs["success"] is False
+        assert kwargs["details"] == {"target": "email", "path": "/activity"}
+        # The caller-supplied address is somebody else's and never lands in the audit trail.
+        assert _OTHER_EMAIL not in str(recorded.call_args)
+
+    def test_a_failed_audit_write_does_not_turn_the_refusal_into_a_500(self, client, no_session):
+        """The refusal IS the control; the row is the record of it."""
+        with patch(f"{_M}.get_session_user_id", return_value=SESSION_USER_ID), \
+             patch(f"{_M}.get_user_email", return_value=SESSION_EMAIL), \
+             patch(f"{_M}.get_recent_logs"), \
+             patch(f"{_M}.record_auth_event", side_effect=RuntimeError("db down")):
+            resp = client.get("/api/activity/", params={"session_token": SESSION_TOKEN,
+                                                        "email": _OTHER_EMAIL})
+        assert resp.status_code == 403
+
+
+class TestAnOutageIsNotAPermissionError:
+    """`user_owns_posts` fails closed either way — but "you may not touch these posts" and "we
+    could not find out" are different facts. Answering 403 for a database fault tells a user they
+    lack permission to their own drafts, sends on-call hunting an authorisation bug, and files a
+    security-shaped defect through `_deny`'s recurrence escalation."""
+
+    @pytest.mark.parametrize("method,path,params,body,db_call", _POST_ID_CASES,
+                             ids=_ids(_POST_ID_CASES))
+    def test_an_unprovable_check_is_503_and_touches_nothing(self, client, signed_in, method, path,
+                                                            params, body, db_call):
+        from cqc_lem.utilities.db import OwnershipUnprovable
+
+        with patch(f"{_M}.user_owns_posts", side_effect=OwnershipUnprovable("db down")), \
+             patch(f"{_M}.{db_call}") as touched:
+            resp = _call(client, method, path, params, body, token=SESSION_TOKEN)
+        assert resp.status_code == 503, f"{method} {path} answered {resp.status_code}"
+        assert not _touched(touched)
+
+    def test_an_outage_does_not_warn_as_a_denial(self):
+        """`_deny` escalates a repeat into a filed GitHub issue — a database blip must not be the
+        thing that files it."""
+        from cqc_lem.api.main import _require_own_posts
+        from cqc_lem.utilities.db import OwnershipUnprovable
+        from fastapi import HTTPException
+
+        with patch(f"{_M}.user_owns_posts", side_effect=OwnershipUnprovable("db down")), \
+             patch(f"{_M}.log_warning") as warn, \
+             patch(f"{_M}.record_auth_event") as recorded:
+            with pytest.raises(HTTPException) as exc:
+                _require_own_posts(SESSION_USER_ID, [1])
+
+        assert exc.value.status_code == 503
+        warn.assert_not_called()
+        recorded.assert_not_called()
+
+
+class TestACredentialNeverRendersInAModelRepr:
+    """`/update_post/` carried `myprint(f"Received Post Request: {post}")` and gained a
+    `session_token` field in the same change. Deleting that line fixed the instance; `repr=False`
+    is what makes the next such line harmless."""
+
+    def test_session_token_is_absent_from_the_model_repr(self):
+        from cqc_lem.api.main import PostRequest, BulkUpdateRequest, BulkDeleteRequest, \
+            UserSettingsRequest
+        from datetime import datetime, timezone
+
+        models = [
+            PostRequest(session_token="live-secret", content="hi",
+                        scheduled_datetime=datetime(2026, 7, 10, 15, 0, tzinfo=timezone.utc)),
+            BulkUpdateRequest(session_token="live-secret", post_ids=[1]),
+            BulkDeleteRequest(session_token="live-secret", post_ids=[1]),
+            UserSettingsRequest(session_token="live-secret"),
+        ]
+        for model in models:
+            assert "live-secret" not in repr(model), type(model).__name__
+            assert "live-secret" not in f"{model}", type(model).__name__
+            # Still readable by the handler — this is a repr rule, not a parsing one.
+            assert model.session_token == "live-secret"
+
+
+class TestTheAuthorisedIdIsTheOnlyOneThatReachesATask:
+    """Two names for one account is how these routes got here. The parameter is authorised and then
+    never used again — `caller_id` is the only thing that reaches Celery."""
+
+    def test_weekly_content_runs_as_the_caller_not_the_parameter(self, client, signed_in):
+        with patch(f"{_M}.mark_queued") as queued, \
+             patch(f"{_M}.celery_chain") as chain, \
+             patch(f"{_M}.plan_content_for_user") as plan, \
+             patch(f"{_M}.auto_create_weekly_content") as fill:
+            resp = client.post("/api/create_weekly_content/",
+                               params={"session_token": SESSION_TOKEN,
+                                       "user_id": SESSION_USER_ID})
+
+        assert resp.status_code == 200
+        queued.assert_called_once_with(SESSION_USER_ID)
+        plan.si.assert_called_once_with(user_id=SESSION_USER_ID)
+        fill.si.assert_called_once_with(user_id=SESSION_USER_ID)
+        chain.assert_called_once()
+
+    def test_aws_profile_test_runs_as_the_caller(self, client, signed_in):
+        with patch(f"{_M}.test_get_my_profile") as task:
+            resp = client.post("/api/aws_test_get_my_profile/",
+                               params={"session_token": SESSION_TOKEN})
+        assert resp.status_code == 200
+        assert task.apply_async.call_args.kwargs["kwargs"] == {"user_id": SESSION_USER_ID}
+
+
+class TestAResolvedSessionWithNoAddressIsOurFault:
+    """`schedule_post` answered 403 "User not found" for a session that RESOLVED — which tells the
+    caller they lack permission to their own account while hiding a data fault."""
+
+    def test_it_is_a_500_not_a_403(self, client, no_session):
+        with patch(f"{_M}.get_session_user_id", return_value=SESSION_USER_ID), \
+             patch(f"{_M}.get_user_email", return_value=None), \
+             patch(f"{_M}.log_error") as err, \
+             patch(f"{_M}.insert_post") as inserted:
+            resp = client.post("/api/schedule_post/",
+                               json={"session_token": SESSION_TOKEN, "content": "hi",
+                                     "scheduled_datetime": "2026-07-10T15:00:00Z"})
+        assert resp.status_code == 500
+        inserted.assert_not_called()
+        err.assert_called_once()

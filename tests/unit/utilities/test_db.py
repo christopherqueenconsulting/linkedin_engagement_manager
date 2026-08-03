@@ -88,14 +88,28 @@ class TestUserOwnsPosts:
             assert user_owns_posts(None, [1]) is False
         mock_database_connection["cursor"].execute.assert_not_called()
 
-    def test_fails_closed_on_a_db_error(self, mock_database_connection):
-        """"Could not prove ownership" must never be spelled the same way as "they own it"."""
-        from cqc_lem.utilities.db import user_owns_posts
+    def test_a_db_error_raises_rather_than_answering_false(self, mock_database_connection):
+        """Still a refusal at the call site, but a truthful one: the query never ran, so nothing was
+        proved either way and reporting that as "not owned" (403) hides an outage behind a
+        permission error."""
+        from cqc_lem.utilities.db import user_owns_posts, OwnershipUnprovable
         import mysql.connector
 
         with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
             mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("boom")
-            assert user_owns_posts(7, [1]) is False
+            with pytest.raises(OwnershipUnprovable):
+                user_owns_posts(7, [1])
+
+    def test_a_db_error_still_closes_the_cursor_and_connection(self, mock_database_connection):
+        from cqc_lem.utilities.db import user_owns_posts, OwnershipUnprovable
+        import mysql.connector
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].execute.side_effect = mysql.connector.Error("boom")
+            with pytest.raises(OwnershipUnprovable):
+                user_owns_posts(7, [1])
+        mock_database_connection["cursor"].close.assert_called_once()
+        mock_database_connection["connection"].close.assert_called_once()
 
     def test_false_when_the_row_is_missing(self, mock_database_connection):
         from cqc_lem.utilities.db import user_owns_posts
@@ -158,6 +172,27 @@ class TestPostMutationsAreOwnerScoped:
             mock_database_connection["cursor"].rowcount = 1
             update_db_post("body", None, datetime(2026, 8, 2, 12, 0), PostType.TEXT, 9,
                            PostStatus.PENDING)
+        sql, _ = mock_database_connection["cursor"].execute.call_args[0]
+        assert "user_id" not in sql
+
+    def test_rejection_reason_scopes_the_where_clause(self, mock_database_connection):
+        """The sibling write `/update_post/` makes right after `update_db_post` — every write on
+        this table carries the scope or the claim "forgetting the gate is harmless" is not true."""
+        from cqc_lem.utilities.db import update_db_post_rejection_reason
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].rowcount = 1
+            assert update_db_post_rejection_reason(9, "too salesy", user_id=7) is True
+        sql, params = mock_database_connection["cursor"].execute.call_args[0]
+        assert sql.rstrip().endswith("AND user_id = %s")
+        assert params[-1] == 7
+
+    def test_rejection_reason_without_a_user_id_is_unscoped(self, mock_database_connection):
+        from cqc_lem.utilities.db import update_db_post_rejection_reason
+
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].rowcount = 1
+            update_db_post_rejection_reason(9, "too salesy")
         sql, _ = mock_database_connection["cursor"].execute.call_args[0]
         assert "user_id" not in sql
 
@@ -637,30 +672,15 @@ class TestBuildContentSearchClause:
 
 
 @pytest.mark.unit
-class TestGetPostByEmail:
-    def test_unknown_email_returns_empty(self):
-        from cqc_lem.utilities.db import get_post_by_email
+class TestGetPostByEmailIsGone:
+    """`get_post_by_email` turned an ADDRESS into somebody's posts — the exact shape `GET /posts/`
+    used to authenticate on. Its one caller resolves the session now, so the wrapper was deleted
+    rather than deprecated (issue #914); this test is what stops it coming back."""
 
-        with patch("cqc_lem.utilities.db.get_user_id", return_value=None):
-            assert get_post_by_email("nobody@example.com") == ([], 0)
+    def test_address_keyed_post_reader_no_longer_exists(self):
+        import cqc_lem.utilities.db as db
 
-    def test_forwards_all_filters_to_get_posts(self):
-        from cqc_lem.utilities.db import get_post_by_email
-
-        with patch("cqc_lem.utilities.db.get_user_id", return_value=7), \
-             patch("cqc_lem.utilities.db.get_posts", return_value=(["p"], 1)) as mock_gp:
-            result = get_post_by_email(
-                "u@example.com", limit=5, offset=10, sort_order='desc',
-                status_filter='approved', post_type_filter='video',
-                search='ai OR ml', sort_by='status',
-            )
-
-        assert result == (["p"], 1)
-        mock_gp.assert_called_once_with(
-            7, limit=5, offset=10, sort_order='desc', status_filter='approved',
-            post_type_filter='video', search='ai OR ml', sort_by='status',
-            start_date=None, end_date=None,
-        )
+        assert not hasattr(db, "get_post_by_email")
 
 
 @pytest.mark.unit

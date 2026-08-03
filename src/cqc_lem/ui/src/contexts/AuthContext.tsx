@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useState, useEffect, useRef } from 'react'
 import type { ReactNode } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import api from '../api/client'
 import { identifyUser, resetAnalytics } from '../utils/analytics'
 
@@ -64,6 +65,7 @@ const SESSION_KEY = 'lem_session'
 export const COOKIE_SESSION = 'cookie'
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const queryClient = useQueryClient()
   const [user, setUser] = useState<AuthUser | null>(null)
   const [sessionToken, setSessionToken] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -167,6 +169,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setIsAdmin(false)
     setEnrollmentRequired(false)
     setStrongFactorPrompt(false)
+    // Every cached response in this tab belongs to the person who just signed out. Since #745 the
+    // session token is the same non-secret sentinel for everybody, so a cache key carrying it
+    // carries NO identity — sign out, sign in as somebody else in the same tab, and React Query
+    // serves the previous account's dashboard from cache until the first refetch lands. Clearing
+    // here is the structural half; the per-query keys below carry the user id as well.
+    queryClient.clear()
     // Break the browser↔person link, or the next person to sign in on this machine inherits it.
     identifiedUserId.current = null
     resetAnalytics()
