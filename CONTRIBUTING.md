@@ -209,7 +209,6 @@ poetry run ruff check --fix src/ tests/
 
 - Update README.md for user-facing changes
 - Add docstrings to new functions and classes
-- Update TODO_PROJECT_TIMELINE.md for task tracking
 - Include inline comments for complex logic
 
 ## Pull Request Process
@@ -345,7 +344,6 @@ Include:
 
 ## Additional Resources
 
-- [TODO Project Timeline](docs/TODO_PROJECT_TIMELINE.md)
 - [README](README.md)
 - [Test Infrastructure Documentation](tests/README.md)
 
