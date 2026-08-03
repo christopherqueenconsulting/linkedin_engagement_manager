@@ -411,7 +411,6 @@ poetry install --with test
 
 - [pytest documentation](https://docs.pytest.org/)
 - [pytest-cov documentation](https://pytest-cov.readthedocs.io/)
-- [TODO Project Timeline](../docs/TODO_PROJECT_TIMELINE.md)
 - [Contributing Guidelines](../CONTRIBUTING.md)
 
 ## Questions?
@@ -419,5 +418,4 @@ poetry install --with test
 If you have questions about testing:
 1. Check this documentation
 2. Review existing tests for examples
-3. Consult TODO_PROJECT_TIMELINE.md
-4. Ask in pull request or issue comments
+3. Ask in pull request or issue comments

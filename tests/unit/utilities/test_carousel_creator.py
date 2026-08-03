@@ -52,31 +52,26 @@ class TestCarouselTypes:
     def test_handle_personal_story_carousel(self):
         """Test handling PersonalStoryCarousel type."""
         # TODO: Handle PersonalStoryCarousel
-        # Reference: TODO_PROJECT_TIMELINE.md Line 167
         pass
 
     def test_handle_industry_insights_carousel(self):
         """Test handling IndustryInsightsCarousel type."""
         # TODO: Handle IndustryInsightsCarousel
-        # Reference: TODO_PROJECT_TIMELINE.md Line 170
         pass
 
     def test_handle_event_recap_carousel(self):
         """Test handling EventRecapCarousel type."""
         # TODO: Handle EventRecapCarousel
-        # Reference: TODO_PROJECT_TIMELINE.md Line 173
         pass
 
     def test_handle_testimonial_carousel(self):
         """Test handling TestimonialCarousel type."""
         # TODO: Handle TestimonialCarousel
-        # Reference: TODO_PROJECT_TIMELINE.md Line 176
         pass
 
     def test_handle_product_demo_carousel(self):
         """Test handling ProductDemoCarousel type."""
         # TODO: Handle ProductDemoCarousel
-        # Reference: TODO_PROJECT_TIMELINE.md Line 208
         pass
 
 
@@ -87,13 +82,11 @@ class TestCarouselLayouts:
     def test_two_column_layout(self):
         """Test two-column carousel layout."""
         # TODO: Figure if and how to implement this one
-        # Reference: TODO_PROJECT_TIMELINE.md Line 254
         pass
 
     def test_two_column_slide_layout(self):
         """Test two-column slide layout within carousel."""
         # TODO: Figure how to implement this one
-        # Reference: TODO_PROJECT_TIMELINE.md Line 319
         pass
 
     def test_single_column_layout(self):
@@ -109,7 +102,6 @@ class TestImageIntegration:
     def test_image_grabber_integration(self):
         """Test integration with image grabber service."""
         # TODO: Update this with something from pexels or other image grabber function
-        # Reference: TODO_PROJECT_TIMELINE.md Lines 264 and 279
         pass
 
     @patch("cqc_lem.utilities.pexels_helper.get_photos")
