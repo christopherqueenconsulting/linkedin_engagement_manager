@@ -3296,11 +3296,18 @@ SESSION_SCOPE_FULL = "full"
 SESSION_SCOPE_EXTENSION = "extension"
 SESSION_SCOPE_RECOVERY = "recovery"
 SESSION_SCOPE_ENROLL = "enroll"
+# An `agent` session (issue #1011) belongs to a headless automation — no browser, no ceremony, no
+# mailbox round trip. It is minted ONCE by a human in the SPA (step-up gated, like the extension
+# token) and then held by a machine, so it is scoped to the queueing surface and nothing else: it
+# can read the review queues and CREATE pending work for a human to approve. It can never approve,
+# touch a credential, move the account, or mint another token.
+SESSION_SCOPE_AGENT = "agent"
 
 
 def create_session(user_id: int, user_agent: Optional[str] = None,
                    ip: Optional[str] = None, label: Optional[str] = None,
-                   scope: str = SESSION_SCOPE_FULL, verified: bool = False) -> Optional[str]:
+                   scope: str = SESSION_SCOPE_FULL, verified: bool = False,
+                   ttl_hours: Optional[int] = None) -> Optional[str]:
     """Mint a session and return the token to the CALLER ONLY — the row stores its SHA-256.
 
     Since #745 (2b) `sessions.session_token` holds the hash, so a DB dump hands over no live
@@ -3309,11 +3316,16 @@ def create_session(user_id: int, user_agent: Optional[str] = None,
 
     `verified=True` stamps the session as having proven a strong factor AT MINT TIME (2c) — a
     passkey login or PIN+TOTP. It is deliberately not the default: an email-PIN login and a
-    recovery-code login both mint a session that cannot yet touch LinkedIn credentials."""
+    recovery-code login both mint a session that cannot yet touch LinkedIn credentials.
+
+    `ttl_hours` overrides the idle window for sessions that are NOT idle-driven (issue #1011). A
+    headless agent runs on a schedule — a weekly one would find a 24h session dead every single
+    run — so its row gets an explicit, longer life. It is still an ordinary revocable row on the
+    Security card, so a long TTL is not a one-way door."""
     import secrets
     token = secrets.token_hex(32)
     now = datetime.now(timezone.utc)
-    expires_at = now + timedelta(hours=SESSION_IDLE_HOURS)
+    expires_at = now + timedelta(hours=ttl_hours if ttl_hours is not None else SESSION_IDLE_HOURS)
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
@@ -3545,6 +3557,7 @@ class AuthAuditEvent(StrEnum):
     PIN_LOCKED = "pin_locked"
     LOGOUT = "logout"
     SESSION_REVOKED = "session_revoked"
+    AGENT_TOKEN_MINTED = "agent_token_minted"
     SESSIONS_REVOKED_ALL = "sessions_revoked_all"
     EMAIL_CHANGE_REQUESTED = "email_change_requested"
     EMAIL_CHANGED = "email_changed"
