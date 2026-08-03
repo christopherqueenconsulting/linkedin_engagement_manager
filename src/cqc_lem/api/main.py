@@ -5904,7 +5904,7 @@ async def billing_webhook(request: Request) -> dict:
             package = meta.get("package", "unknown")
 
             if not stripe_customer_id or credits <= 0:
-                myprint(f"Avatar credits webhook: missing customer or zero credits — skipping")
+                myprint("Avatar credits webhook: missing customer or zero credits — skipping")
                 return {"received": True}
 
             # Idempotency: Stripe may retry — skip if credits already granted for this session.
@@ -5976,7 +5976,7 @@ async def billing_webhook(request: Request) -> dict:
         session_meta = session.get("metadata", {})
         credit_type = session_meta.get("type")
         if credit_type not in ("avatar_credits", "video_credits"):
-            myprint(f"charge.refunded: not a credits charge — ignoring")
+            myprint("charge.refunded: not a credits charge — ignoring")
             return {"received": True}
 
         # Route to the right ledger based on what was purchased.
