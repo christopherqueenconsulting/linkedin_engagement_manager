@@ -2,9 +2,16 @@
 celery-once dedup key (issue #989 — `KeyError: 'sweep_slot'` raised inside apply_async, 500'ing the
 inbound reply-notification webhook before the message was ever sent)."""
 
+import re
+from pathlib import Path
+
 import pytest
 
 pytestmark = pytest.mark.unit
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+SRC = REPO_ROOT / "src" / "cqc_lem"
+SHIM = SRC / "app" / "queue_once.py"
 
 
 class TestRestrictedKeyDefaults:
@@ -61,3 +68,31 @@ class TestUnrestrictedKeysUnchanged:
         key = required_key.get_key(kwargs={"user_id": 4})
         assert "user_id-4" in key
         assert "note" not in key
+
+
+class TestEveryTaskUsesTheShim:
+    """The fix only holds while every task base is OUR QueueOnce — a task that imports the upstream
+    class straight from `celery_once` silently gets the KeyError back, and nothing at runtime says
+    so. Source-text guard (same shape as test_selenium_queue_routing) because the failure is a
+    missing import, not a behaviour a passing task can demonstrate."""
+
+    def _sources(self) -> list[Path]:
+        return [p for p in SRC.rglob("*.py") if p != SHIM]
+
+    def test_no_module_imports_queueonce_from_celery_once(self):
+        offenders = [
+            str(path.relative_to(REPO_ROOT))
+            for path in self._sources()
+            if re.search(r"^\s*from\s+celery_once\s+import\s+.*\bQueueOnce\b", path.read_text(), re.M)
+            or re.search(r"\bcelery_once\.QueueOnce\b", path.read_text())
+        ]
+        assert offenders == [], f"import QueueOnce from cqc_lem.app.queue_once instead: {offenders}"
+
+    def test_every_module_declaring_a_queueonce_task_imports_the_shim(self):
+        missing = [
+            str(path.relative_to(REPO_ROOT))
+            for path in self._sources()
+            if "base=QueueOnce" in path.read_text()
+            and "from cqc_lem.app.queue_once import QueueOnce" not in path.read_text()
+        ]
+        assert missing == [], f"modules using base=QueueOnce without the shim import: {missing}"

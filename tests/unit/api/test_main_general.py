@@ -389,8 +389,8 @@ class TestCommentNotificationInbound:
                 "text": "great post!"})
         assert resp.status_code == 200 and resp.json()["detail"] == "accepted"
         sweep.apply_async.assert_called_once()
-        # sweep_slot must be explicit: QueueOnce keys on ['user_id', 'sweep_slot'] without applying
-        # function defaults, so omitting it raises KeyError at enqueue (500 on every notification).
+        # The inbound webhook is the single-shot trigger, so it must dispatch slot 0 — the golden-hour
+        # amplifier owns every other slot (cqc_lem.app.queue_once keys the lock on it, #989).
         assert sweep.apply_async.call_args.kwargs["kwargs"] == {"user_id": 7, "sweep_slot": 0}
 
     def test_reaction_email_ignored(self, client):

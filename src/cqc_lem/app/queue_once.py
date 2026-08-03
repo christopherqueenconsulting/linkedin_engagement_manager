@@ -1,4 +1,5 @@
 from inspect import Parameter
+from typing import Optional, Sequence
 
 from celery_once import QueueOnce as _CeleryQueueOnce
 
@@ -19,7 +20,7 @@ class QueueOnce(_CeleryQueueOnce):
 
     abstract = True
 
-    def _get_call_args(self, args, kwargs) -> dict:
+    def _get_call_args(self, args: Optional[Sequence], kwargs: Optional[dict]) -> dict:
         call_args = super()._get_call_args(args, kwargs)
         for key in self.once.get('keys') or ():
             if key in call_args:

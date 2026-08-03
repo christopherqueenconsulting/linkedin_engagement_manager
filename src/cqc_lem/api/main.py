@@ -2383,8 +2383,9 @@ def _process_reply_inbound(form) -> ResponseModel:
     if not _reply_sweep_debounced(user_id):
         _log_inbound_verdict("debounced", form, user_id=user_id)
         return ResponseModel(status_code=200, detail="debounced")
-    # QueueOnce builds its dedup key from once['keys'] and does NOT apply function defaults — omitting
-    # sweep_slot here raised KeyError at enqueue and 500'd every forwarded notification.
+    # slot 0 is the single-shot trigger (the golden-hour amplifier owns the other slots). Omitting it
+    # once raised KeyError at enqueue and 500'd every forwarded notification; cqc_lem.app.queue_once
+    # now fills the default into the dedup key, so this stays explicit for meaning, not for safety.
     sweep_reply_comments.apply_async(kwargs={"user_id": user_id, "sweep_slot": 0}, countdown=120)
     _log_inbound_verdict("comment_accepted", form, user_id=user_id)
     log_info("Triggered reply sweep from comment notification", user_id=user_id)

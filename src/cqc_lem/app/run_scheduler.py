@@ -409,8 +409,9 @@ def dispatch_scheduled_reply_sweeps():
             # Replying to comments on the user's OWN post is the one engagement a human really does
             # fast, so it keeps the RESPONSIVE profile (issue #626): the exact minute moves, the
             # response stays timely.
-            # sweep_slot must be explicit: QueueOnce keys on ['user_id', 'sweep_slot'] and does not
-            # apply function defaults — omitting it raises KeyError at enqueue.
+            # slot 0 is the single-shot scheduled trigger — the golden-hour amplifier owns the other
+            # slots. Explicit here for that reason, not for safety: cqc_lem.app.queue_once fills the
+            # default into the dedup key, so omitting it would build the identical lock (#989).
             sweep_reply_comments.apply_async(kwargs={'user_id': user_id, 'sweep_slot': 0},
                                              countdown=dispatch_jitter_seconds(PACE_RESPONSIVE))
             dispatched += 1
