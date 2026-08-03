@@ -1508,9 +1508,16 @@ def auto_sync_brand_account():
     # policy has none, and reporting the phase's numbers there would read as an edit that never
     # happened.
     caps = ", ".join(f"{labels[f]} {applied[f]}" for f in CAP_FIELDS if f in applied)
-    summary = (f"Brand account {user_id} synced to phase {phase} ({caps})" if caps else
-               f"Brand account {user_id} checked against phase {phase} — its own caps are within "
-               f"policy, nothing changed")
+    if caps:
+        summary = f"Brand account {user_id} synced to phase {phase} ({caps})"
+    elif applied:
+        # Caps were left alone but something else was (the content seeding) — "nothing changed"
+        # would be as wrong here as reporting caps this run never wrote.
+        summary = (f"Brand account {user_id} checked against phase {phase} — its own caps stand; "
+                   f"seeded {', '.join(sorted(applied))}")
+    else:
+        summary = (f"Brand account {user_id} checked against phase {phase} — its own caps are "
+                   f"within policy, nothing changed")
     log_info(summary, user_id=user_id, task_name="auto_sync_brand_account")
     return summary
 

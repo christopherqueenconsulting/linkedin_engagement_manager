@@ -4993,15 +4993,24 @@ def get_engagement_preferences(user_id: int) -> dict:
 def engagement_preferences_are_configured(user_id: int) -> Optional[bool]:
     """Whether the user has SAVED an engagement-preferences row of their own.
 
+    The ONE existence check — `has_engagement_preferences` is this function with the unreadable
+    case folded back into False, so the question is asked with one query and one semantics.
+
     Three-valued: None means the row could not be READ, which is NOT the same as "never configured"
     (issue #639). A caller that would otherwise write policy defaults over settings the user chose
     has to be able to tell those two apart (issue #952)."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
     try:
-        return _select_engagement_row(user_id) is not None
+        cursor.execute("SELECT 1 FROM engagement_preferences WHERE user_id = %s LIMIT 1", (user_id,))
+        return cursor.fetchone() is not None
     except mysql.connector.Error as err:
         log_error("Could not read engagement prefs — configured state unknown",
                   exc=err, user_id=user_id)
         return None
+    finally:
+        cursor.close()
+        connection.close()
 
 
 def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
@@ -11214,18 +11223,12 @@ def get_onboarding_candidate_user_ids() -> list:
 
 def has_engagement_preferences(user_id: int) -> bool:
     """True when the user has actually SAVED engagement preferences. get_engagement_preferences()
-    returns code defaults for everyone, so only the row's existence proves they configured it."""
-    connection = get_db_connection()
-    cursor = connection.cursor()
-    try:
-        cursor.execute("SELECT 1 FROM engagement_preferences WHERE user_id = %s LIMIT 1", (user_id,))
-        return cursor.fetchone() is not None
-    except mysql.connector.Error as err:
-        log_error(f"Could not check engagement prefs for user_id {user_id}", exc=err)
-        return False
-    finally:
-        cursor.close()
-        connection.close()
+    returns code defaults for everyone, so only the row's existence proves they configured it.
+
+    The two-valued view of `engagement_preferences_are_configured` for callers that only steer UI
+    copy: an unreadable row reads as False, exactly as this has always behaved. A caller that would
+    WRITE on the answer must use the three-valued function instead (issue #952)."""
+    return engagement_preferences_are_configured(user_id) is True
 
 
 def has_post_with_status(user_id: int, statuses: tuple) -> bool:

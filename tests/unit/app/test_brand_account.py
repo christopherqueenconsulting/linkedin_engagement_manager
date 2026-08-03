@@ -467,6 +467,18 @@ class TestAutoSyncBrandAccount:
         assert "comments/day 20" in result
         assert "DMs/day" not in result
 
+    def test_a_content_only_sync_does_not_report_nothing_changed(self):
+        """The converse of the rule above: a run that seeded focus topics but wrote no cap DID
+        change the owner's row, so "nothing changed" would be as wrong as a phantom cap."""
+        from cqc_lem.app.run_scheduler import auto_sync_brand_account
+        with _Patched(_enabled(phase="P0")), \
+             patch(f"{_BA}.sync_brand_preferences", return_value={"focus_topics": ["a"]}), \
+             patch(f"{_RS}.get_active_user_ids", return_value=[1]):
+            result = auto_sync_brand_account()
+        assert "nothing changed" not in result
+        assert "focus_topics" in result
+        assert "comments/day" not in result
+
     def test_reports_a_failed_sync_without_touching_the_user_list(self):
         from cqc_lem.app.run_scheduler import auto_sync_brand_account
         with patch(f"{_BA}.brand_user_id", return_value=7), \
