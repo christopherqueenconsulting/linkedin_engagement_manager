@@ -283,6 +283,41 @@ class TestCommentInGroups:
         assert "No enabled groups" in result
         gp.assert_not_called()
 
+    def test_a_session_quit_out_from_under_the_run_ends_it_on_what_shipped(self):
+        """Issue #988: a deploy recreates the containers once the drain window is spent, so a group
+        walk that outlives it loses its browser. That is a routine release, not a defect — the run
+        keeps the comments it already posted, logs INFO, and never raises."""
+        from cqc_lem.app.run_automation import auto_comment_in_groups
+        from selenium.common import InvalidSessionIdException
+        driver = MagicMock()
+        driver.get.side_effect = [None, InvalidSessionIdException("Unable to find session with ID: abc")]
+        with patch(f"{_RA}.get_enabled_group_ids", return_value=["1", "2", "3"]), \
+             patch(f"{_RA}.get_current_profile", return_value=(driver, MagicMock(), "e", MagicMock())), \
+             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
+             patch(f"{_RA}.get_recent_engagers", return_value=set()), \
+             patch(f"{_RA}.comment_on_feed_inline", return_value=2) as cfi, \
+             patch(f"{_RA}.log_info") as info, \
+             patch(f"{_RA}.log_error") as err, \
+             patch(f"{_RA}.quit_gracefully") as quit_driver:
+            result = auto_comment_in_groups.run(user_id=1)
+        assert result == "Commented 2 time(s) before the browser session ended"
+        assert cfi.call_count == 1  # the second group is unreachable on a dead session
+        assert info.called and not err.called
+        quit_driver.assert_called_once_with(driver)
+
+    def test_a_real_failure_mid_run_still_raises(self):
+        """Only a LOST SESSION is absorbed — anything else stays a crash, and a defect."""
+        from cqc_lem.app.run_automation import auto_comment_in_groups
+        driver = MagicMock()
+        with patch(f"{_RA}.get_enabled_group_ids", return_value=["1"]), \
+             patch(f"{_RA}.get_current_profile", return_value=(driver, MagicMock(), "e", MagicMock())), \
+             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
+             patch(f"{_RA}.get_recent_engagers", return_value=set()), \
+             patch(f"{_RA}.comment_on_feed_inline", side_effect=RuntimeError("boom")), \
+             patch(f"{_RA}.quit_gracefully"):
+            with pytest.raises(RuntimeError):
+                auto_comment_in_groups.run(user_id=1)
+
 
 _READY_DRAFT = {"id": 11, "user_id": 1, "group_id": "123", "group_name": "AI Leaders",
                 "content": "A useful insight.", "status": "ready"}

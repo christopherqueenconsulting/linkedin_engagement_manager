@@ -101,7 +101,7 @@ from cqc_lem.utilities.observability import track_post_outcome, track_audience_s
 from cqc_lem.utilities.env_constants import INLINE_REACTIONS_ENABLED, MAX_WAIT_RETRY
 from cqc_lem.utilities.selenium_util import click_element_wait_retry, \
     get_element_wait_retry, get_elements_as_list_wait_stale, getText, close_tab, get_driver_wait_pair, quit_gracefully, \
-    wait_for_ajax, find_first, click_first, find_all_first
+    wait_for_ajax, find_first, click_first, find_all_first, is_session_lost
 from dotenv import load_dotenv
 from selenium.common import NoSuchElementException, JavascriptException, StaleElementReferenceException, \
     ElementNotInteractableException, WebDriverException, TimeoutException, ElementClickInterceptedException
@@ -1941,6 +1941,16 @@ def comment_on_roster_posts(driver, wait, my_profile: LinkedInProfile, user_id: 
             driver.get(url)
             wait_for_ajax(driver)
         except Exception as e:
+            if is_session_lost(e):
+                # The browser is gone (issue #988 — a deploy quits the session once the drain
+                # window is spent). Every remaining target is unreachable for that same reason, so
+                # warning per target would file the deploy as a defect through this door instead:
+                # three of these identical warnings cross the escalation threshold. Stop the walk
+                # on what already shipped and let the caller end the run.
+                log_info("Browser session ended mid-run (worker or Grid restart) — stopping the "
+                         "roster walk", user_id=user_id, action_type="comment",
+                         task_name="comment_on_roster_posts")
+                break
             log_warning("Could not open roster target's activity page", exc=e, user_id=user_id,
                         action_type="comment", task_name="comment_on_roster_posts")
             continue
@@ -3257,10 +3267,23 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
     total = 0
     try:
         for gid in enabled:
-            driver.get(f"https://www.linkedin.com/groups/{gid}/")
-            time.sleep(random.uniform(4, 7))
-            total += comment_on_feed_inline(driver, wait, my_profile, user_id,
-                                            max_posts=max_per_group, prefs=prefs, engagers=engagers)
+            try:
+                driver.get(f"https://www.linkedin.com/groups/{gid}/")
+                time.sleep(random.uniform(4, 7))
+                total += comment_on_feed_inline(driver, wait, my_profile, user_id,
+                                                max_posts=max_per_group, prefs=prefs, engagers=engagers)
+            except Exception as e:
+                if not is_session_lost(e):
+                    raise
+                # A walk across several group feeds is one of the longest browser sessions LEM
+                # holds, so it is the one a release lands on: the deploy drains for 8 minutes and
+                # then recreates the containers anyway, quitting this session out from under us
+                # (issue #988). The run is genuinely over — no later group can be reached on a dead
+                # session — but a routine release is not a defect, so end on what already shipped
+                # at INFO instead of crashing the task into a grouped $exception.
+                log_info("Browser session ended mid-run (worker or Grid restart) — stopping group "
+                         "commenting", user_id=user_id, task_name="auto_comment_in_groups")
+                return f"Commented {total} time(s) before the browser session ended"
         return f"Commented {total} time(s) across {len(enabled)} group(s)"
     finally:
         quit_gracefully(driver)
