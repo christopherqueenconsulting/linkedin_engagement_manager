@@ -305,7 +305,12 @@ auth flow success/failure, session revocation, rate-limit/lockout, migration bac
   It was a single shared secret compiled into the public SPA bundle, so every visitor held it. #914
   made the session the identity on every route and #950 stopped shipping it to the browser; it
   survives only as a rotatable **non-browser** credential (scripts, Postman) and, paired with
-  `X-Admin-Secret`, on `/api/admin/*`. Anything that reads as "the API is behind a token" in the
+  `X-Admin-Secret`, on the six `/api/admin/*` routes that gate through `_require_api_and_admin` —
+  **not on `/api/admin/*` as a whole.** The other twelve run on `X-Admin-Secret` alone or on an
+  admin session; #950 dropped the bearer the middleware used to add on top of them, which is free
+  only until #965 rotates the values. The per-route breakdown is in
+  [`identity-and-sessions.md`](identity-and-sessions.md).
+  Anything that reads as "the API is behind a token" in the
   sections above means the session, not this. **Every value that was ever built into a bundle is
   still public and still valid** until it is rotated out of the server `.env` — #950 retired the
   shipping mechanism, #965 is the rotation. Posture:

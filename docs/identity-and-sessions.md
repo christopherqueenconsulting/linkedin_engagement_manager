@@ -173,8 +173,23 @@ So the SPA ships none, and the token's contract is now written down rather than 
   fails the build. `_NO_IDENTITY_BY_DESIGN` is the one escape hatch and each entry has to argue the
   route reads nothing user-scoped.
 - **`API_ACCESS_TOKENS` stays set in production**, rotatable in the server `.env` alone now that no
-  build artifact has to match it. `_require_api_and_admin` (the `/api/admin/*` routes) still demands
-  it *and* `X-Admin-Secret`.
+  build artifact has to match it.
+- **`/api/admin/*` is NOT uniformly a two-credential surface, and #950 is why — say so plainly.**
+  Eighteen admin routes run on three different gates, and the middleware used to add the bearer on
+  top of all of them:
+
+  | Gate | Routes | Credentials after #950 |
+  |---|---|---|
+  | `_require_api_and_admin` | the five `/admin/test/*` runs + `/admin/consolidate-duplicate-comments` + `/admin/task-status/{id}` (6) | bearer **and** `X-Admin-Secret` — it re-checks the bearer itself, so this pair is unchanged |
+  | `_require_admin` | `/admin/automation-{pause,resume,status}`, `/admin/fix-video-urls`, `/admin/user/location`, `/admin/regenerate-{carousel,video}`, `/admin/generate-media-variants`, `/admin/youtube-token` (9) | `X-Admin-Secret` **alone** — the bearer was the middleware's, and the middleware no longer demands it |
+  | `_require_user_admin` | `/admin/feedback`, `/admin/feedback/{id}/review`, `/admin/youtube-status` (3) | an **admin session** — these are SPA pages, so they never could hold a bearer |
+
+  For the twelve non-`_require_api_and_admin` routes this is a layer removed. It costs nothing
+  *today* — every bearer value is public, so a caller who has `ADMIN_SECRET` has one too — but it
+  stops being free the moment **#965** rotates them, and that is exactly the kind of book-keeping
+  this section exists to keep honest. `X-Admin-Secret` is a custom header, so none of the three
+  gates is reachable by a cross-site form. `tests/unit/api/test_api_route_identity.py` pins the
+  invariant that survives: every `/api/admin/*` route reaches one of the three.
 
 **Rollout, and the part that is not free.** The change is breakage-free in both directions — an old
 SPA bundle cached across the release still sends the bearer (still valid), a new one sends the
@@ -243,8 +258,15 @@ the worst a forged one buys is a job the user could have started themselves. But
 layer, and a new query-parameter mutating route inherits it. A non-secret custom request header the
 SPA sends and a forged form cannot — the standard replacement — is tracked on **#957**.
 
-If a future change adds CORS with credentials, or another form-encoded/query-only mutating endpoint,
-this section is the thing that has to be revisited first.
+**One layer means one env var can delete it.** `_samesite()` accepts `none` (a browser rejects
+anything else, so the resolver has to), and `SESSION_COOKIE_SAMESITE=none` attaches the cookie to
+cross-site POSTs — which for those four routes is now the whole defence, not a redundant one. It was
+survivable while the bearer was also required; since #950 it is not. Leave it `lax`. Nothing in LEM
+needs otherwise: the cookie is only ever sent to LEM's own origin, and the one cross-site arrival
+that matters (the LinkedIn OAuth return trip) is a top-level GET, which `Lax` already covers.
+
+If a future change adds CORS with credentials, sets `SESSION_COOKIE_SAMESITE=none`, or adds another
+form-encoded/query-only mutating endpoint, this section is the thing that has to be revisited first.
 
 ## Per-device sessions
 
@@ -316,7 +338,7 @@ unknown address has no account. The write is best effort — an audit failure mu
 |---|---|---|
 | `SESSION_COOKIE_NAME` | `lem_session` | rarely |
 | `SESSION_COOKIE_SECURE` | `true` | `false` for a plain-http local origin, or the browser drops the cookie |
-| `SESSION_COOKIE_SAMESITE` | `lax` | `strict` breaks the LinkedIn OAuth return trip |
+| `SESSION_COOKIE_SAMESITE` | `lax` | `strict` breaks the LinkedIn OAuth return trip. **Never `none`** — since #950 `Lax` is the only CSRF defence the four query-parameter mutating routes have, and `none` removes it (see [CSRF](#csrf)) |
 | `AUTH_INIT_MAX_PER_HOUR` | `5` | PIN emails per address per hour |
 | `AUTH_VERIFY_MAX_PER_HOUR` | `10` | PIN submissions per address per hour |
 | `AUTH_IP_MAX_PER_HOUR` | `30` | auth calls per client IP per hour |

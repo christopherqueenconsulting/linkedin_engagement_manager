@@ -40,6 +40,13 @@ _NO_IDENTITY_BY_DESIGN = {
 _IDENTITY_SEEDS = frozenset({"get_session_user_id"})
 _ADMIN_SEEDS = frozenset({"_require_admin", "_require_api_and_admin"})
 
+# The three gates an `/api/admin/*` route may run on. `_require_api_and_admin` re-checks the bearer
+# in the handler, so those routes still take two credentials; the other two take `X-Admin-Secret`
+# alone or an admin session, because #950 stopped the middleware demanding a bearer on top. What
+# survives as an invariant is that an admin route reaches ONE of the three — a new one that only
+# resolved a session would be reachable by any signed-in user.
+_ADMIN_GATES = ("_require_api_and_admin", "_require_admin", "_require_user_admin")
+
 
 @pytest.fixture(scope="module")
 def main_mod():
@@ -139,10 +146,39 @@ class TestEveryGatedApiRouteResolvesItsCaller:
             f"_NO_IDENTITY_BY_DESIGN with a reason it reads no user-scoped data: {unguarded}"
         )
 
+    def test_every_admin_route_reaches_an_admin_gate(self, main_mod):
+        """`/api/admin/*` is where the loosened middleware costs the most, so pin what is left.
+
+        The test above would accept an admin route that merely resolved a session — every signed-in
+        user has one. An admin route has to reach a gate that checks something ADMIN: the secret, or
+        `is_user_admin`. Which of the three it picks is a real difference in credential count and is
+        documented per-route in `docs/identity-and-sessions.md`; that all eighteen reach one of them
+        is the part that must not drift.
+        """
+        ungated: List[str] = []
+        admin_routes = 0
+        for route in _iter_routes(main_mod.app.routes):
+            path = getattr(route, "path", "")
+            if not path.startswith("/api/admin"):
+                continue
+            admin_routes += 1
+            source = _source_of(route.endpoint)
+            if not any(_references(source, gate) for gate in _ADMIN_GATES):
+                ungated.append(f"{path} -> {route.endpoint.__name__}")
+
+        assert admin_routes >= 18, f"only {admin_routes} /api/admin routes found — the walk broke"
+        assert not ungated, (
+            "These /api/admin routes reach none of "
+            f"{list(_ADMIN_GATES)}, so being signed in is enough to call them: {ungated}"
+        )
+
     def test_allowlist_entries_are_real_gated_routes(self, main_mod):
         """A stale allowlist entry silently excuses nothing — and hides that it stopped applying."""
         paths = {getattr(r, "path", "") for r in _iter_routes(main_mod.app.routes)}
         for path in _NO_IDENTITY_BY_DESIGN:
             assert path in paths, f"{path} is allowlisted but is not a route any more"
-            assert main_mod._api_token_required(path) or not main_mod._API_ACCESS_TOKEN_SET, \
+            # Asked of `_is_public_api_path`, not `_api_token_required`: the latter short-circuits
+            # on an empty `_API_ACCESS_TOKEN_SET`, which is what the unit env has, so it would
+            # answer "not gated" for every path and this assertion would never run.
+            assert not main_mod._is_public_api_path(path), \
                 f"{path} is allowlisted as a GATED route but is public"
