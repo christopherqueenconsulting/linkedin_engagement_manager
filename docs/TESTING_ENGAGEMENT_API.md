@@ -12,8 +12,8 @@ work for my account now?"
 |---|---|
 | App (SPA + API) | <https://lem.christopherqueenconsulting.com> |
 | API base prefix | <https://lem.christopherqueenconsulting.com/api> |
-| **Interactive API docs (Swagger)** | <https://lem.christopherqueenconsulting.com/docs> |
-| OpenAPI schema (import into Postman) | <https://lem.christopherqueenconsulting.com/openapi.json> |
+| **Interactive API docs (Swagger)** | <https://lem.christopherqueenconsulting.com/api/docs> |
+| OpenAPI schema (import into Postman) | <https://lem.christopherqueenconsulting.com/api/openapi.json> |
 | **Live browser (VNC)** | <https://lemvnc.christopherqueenconsulting.com/?autoconnect=1&password=secret> |
 
 > The VNC link auto-connects and passes the noVNC password (`secret`) in the
@@ -40,9 +40,14 @@ correct, so the recipe below works for all of them.
   only and is rotatable there without a rebuild — you, Postman and `scripts/` are its callers.
 - **`X-Admin-Secret`** is what actually gates the `/api/admin/*` endpoints (per-route breakdown in
   [`identity-and-sessions.md`](identity-and-sessions.md)).
-- In the [Swagger page](https://lem.christopherqueenconsulting.com/docs), click
-  **Authorize** — it now presents **both** schemes (`HTTPBearer` and
-  `X-Admin-Secret`). Fill in both, then every endpoint's **Try it out** works.
+
+> ### The `/api/admin/*` endpoints are no longer in Swagger (issue #1020)
+>
+> The docs surface is public — it is what a first-time API caller needs — so publishing the admin
+> operations there handed anyone probing `X-Admin-Secret` the exact list of paths to aim at. They
+> are now excluded from the generated schema, which means Swagger's **Try it out** cannot drive
+> them. **Nothing about their auth or behaviour changed**; use curl (§3) or Postman (§4) instead,
+> both of which are documented below and send the two headers for you.
 
 > Print the values:
 > ```bash
@@ -53,9 +58,9 @@ correct, so the recipe below works for all of them.
 
 ## 3. The test-run endpoints
 
-All take **typed query parameters** (so Swagger renders individual input fields,
-not a raw JSON body) and return a Celery `task_id` you can poll. Your only
-LinkedIn account is **`user_id = 1`** (christopher.queen@gmail.com).
+All take **typed query parameters** (not a raw JSON body) and return a Celery
+`task_id` you can poll. Your only LinkedIn account is **`user_id = 1`**
+(christopher.queen@gmail.com).
 
 | Method & path | Params | Task |
 |---|---|---|
@@ -68,12 +73,7 @@ LinkedIn account is **`user_id = 1`** (christopher.queen@gmail.com).
 `loop_for_duration` is in **seconds** (default **300**) so a test run ends on its
 own instead of running for an hour.
 
-### Easiest: use Swagger
-1. Open <https://lem.christopherqueenconsulting.com/docs> → **Authorize** (fill both).
-2. Expand e.g. `POST /api/admin/test/dm-direct` → **Try it out** → fill the fields →
-   **Execute**. You'll get `{ "detail": { "task_id": "…" } }`.
-
-### Or curl (query params, both headers)
+### Easiest: curl (query params, both headers)
 ```bash
 BASE=https://lem.christopherqueenconsulting.com
 curl -X POST "$BASE/api/admin/test/dm-direct?user_id=1&profile_url=https%3A%2F%2Fwww.linkedin.com%2Fin%2Fsome-person%2F&message=Hi%20there" \

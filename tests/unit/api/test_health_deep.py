@@ -5,6 +5,8 @@ The API was genuinely fine; nothing reachable from outside knew automation was d
 pin the three answers that matter and, in particular, that an unreadable control channel is
 reported as `unknown` rather than `healthy`."""
 
+import json
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -28,7 +30,12 @@ def _no_maintenance():
 
 
 class TestHealthDeep:
-    def test_reports_each_worker_and_its_lanes(self):
+    def test_counts_workers_and_consumers_without_naming_them(self):
+        """The counts are derived from the per-worker lane map, but only the COUNTS ship.
+
+        This endpoint is unauthenticated by design — an external dead-man's switch cannot carry a
+        credential — so the body is public. `lanes` named container IDs and the internal queue
+        topology (issue #1020); the counts it feeds do not."""
         replies = {
             "celery@worker": [{"name": "default"}],
             "celery@selenium": [{"name": "se_engage"}],
@@ -39,7 +46,33 @@ class TestHealthDeep:
             out = _call()
         assert out["status"] == "healthy"
         assert out["workers"] == 2
-        assert out["lanes"]["celery@selenium"] == ["se_engage"]
+        assert out["consuming"] == 2
+
+    def test_body_leaks_no_worker_or_queue_topology(self):
+        """The whole point of #1020: a name that identifies a container or a queue must not appear
+        in a body anyone on the internet can GET. Asserted on the SHAPE (an exact key set), not on
+        the absence of the string "lanes" — a future field re-adding the same disclosure under a
+        different name has to fail this too."""
+        insp = MagicMock()
+        insp.active_queues.return_value = {
+            "selenium-se_engage-worker@3571c22235c8": [{"name": "se_engage"}],
+        }
+        with patch("cqc_lem.utilities.maintenance._inspect", return_value=insp):
+            out = _call()
+        assert set(out) == {"status", "workers", "consuming", "maintenance"}
+        assert "3571c22235c8" not in json.dumps(out)
+        assert "se_engage" not in json.dumps(out)
+
+    def test_field_order_keeps_the_status_literal_first(self):
+        """`docs/stack-watchdog.md` pins the literal `"status":"healthy"` as a monitor contract.
+        FastAPI preserves dict insertion order, so `status` staying FIRST is what makes dropping a
+        later key byte-identical to a monitor asserting on that substring."""
+        insp = MagicMock()
+        insp.active_queues.return_value = {"celery@worker": [{"name": "default"}]}
+        with patch("cqc_lem.utilities.maintenance._inspect", return_value=insp):
+            out = _call()
+        assert list(out) == ["status", "workers", "consuming", "maintenance"]
+        assert json.dumps(out).startswith('{"status": "healthy"')
 
     def test_registered_but_consuming_nothing_is_degraded(self):
         """The gap this closes, observed live during the v0.120.0 deploy: `maint begin` cancels

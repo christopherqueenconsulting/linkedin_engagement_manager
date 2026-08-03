@@ -156,7 +156,7 @@ case "$NGROK_PLAN" in
   paid)
     urls=(
       "https://${NGROK_CUSTOM_DOMAIN}"
-      "https://${NGROK_CUSTOM_DOMAIN}/docs"
+      "https://${NGROK_CUSTOM_DOMAIN}/api/docs"
       "https://${NGROK_FLOWER_PREFIX}.${NGROK_FREE_DOMAIN}"
       "https://${NGROK_CHROME_PREFIX}.${NGROK_FREE_DOMAIN}"
     )
@@ -168,7 +168,7 @@ case "$NGROK_PLAN" in
     # lem-chrome is excluded to stay within the 3-tunnel free-plan limit.
     urls=(
       "https://${NGROK_CUSTOM_DOMAIN}"
-      "https://${NGROK_CUSTOM_DOMAIN}/docs"
+      "https://${NGROK_CUSTOM_DOMAIN}/api/docs"
       "${FLOWER_NGROK_URL:-Dynamic — see http://localhost:${NGROK_UI_PORT}}"
       "http://localhost:7900 (local only)"
     )
@@ -178,7 +178,7 @@ case "$NGROK_PLAN" in
   *)
     urls=(
       "http://localhost:${API_PORT}"
-      "http://localhost:${API_PORT}/docs"
+      "http://localhost:${API_PORT}/api/docs"
       "http://localhost:${CELERY_FLOWER_PORT}"
       "http://localhost:7900"
     )
