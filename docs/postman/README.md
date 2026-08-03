@@ -24,7 +24,7 @@ Click the **eye icon** (top-right) → **Edit** the selected environment and set
 
 | Variable | Prod value | Local value |
 |---|---|---|
-| `api_token` | one of `API_ACCESS_TOKENS` from `/opt/lem/.env` on the VPS | one of `API_ACCESS_TOKENS` from your local `.env` |
+| `api_token` | one of `API_ACCESS_TOKENS` from `/opt/lem/.env` on the VPS (the **non-browser** credential — the SPA holds none since #950) | one of `API_ACCESS_TOKENS` from your local `.env` |
 | `admin_secret` | `ADMIN_SECRET` from `/opt/lem/.env` | `ADMIN_SECRET` from your local `.env` |
 | `user_id` | `1` (already set) | your local user id |
 

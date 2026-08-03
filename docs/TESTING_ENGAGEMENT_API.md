@@ -32,7 +32,9 @@ same time. Sending only one returns 401 or 403.
 | `Authorization` | `Bearer <API_ACCESS_TOKEN>` | `API_ACCESS_TOKENS=` in `/opt/lem/.env` (comma-separated; use any one) |
 | `X-Admin-Secret` | `<ADMIN_SECRET>` | `ADMIN_SECRET=` in `/opt/lem/.env` |
 
-- **`Authorization` bearer** gates every `/api/*` route (set globally).
+- **`Authorization` bearer** is the **non-browser** credential for `/api/*`. Since issue #950 the
+  SPA holds none (it authenticates on its session cookie), so this token lives in the server `.env`
+  only and is rotatable there without a rebuild — you, Postman and `scripts/` are its callers.
 - **`X-Admin-Secret`** additionally gates the `/api/admin/*` endpoints.
 - In the [Swagger page](https://lem.christopherqueenconsulting.com/docs), click
   **Authorize** — it now presents **both** schemes (`HTTPBearer` and

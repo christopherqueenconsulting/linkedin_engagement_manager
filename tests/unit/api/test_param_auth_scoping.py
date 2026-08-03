@@ -1,8 +1,9 @@
 """Issue #914 — no `/api` route derives the acting user from a request parameter.
 
 Every endpoint below used to authenticate on an `email` or `user_id` query/body parameter, behind
-nothing but the shared bearer token the SPA ships in its build (`VITE_API_TOKEN`) — which is to say
-behind nothing at all, because anyone who loads the page holds it. This module is the standing proof
+nothing but the shared bearer token the SPA shipped in its build (`VITE_API_TOKEN`) — which is to say
+behind nothing at all, because anyone who loaded the page held it. (#950 retired that token from the
+bundle; `test_api_token_gate.py` covers the gate's contract.) This module is the standing proof
 that the parameter is now a TARGET:
 
 * **401** — a request with a valid bearer token and no session reaches nothing.

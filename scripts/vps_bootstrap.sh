@@ -220,7 +220,7 @@ ${BOLD}${GRN}Bootstrap complete.${RST} Remaining manual steps (see docs/SETUP_CH
   • Fill secrets in ${ENV_FILE} (esp. TUNNEL_TOKEN, API_ACCESS_TOKENS)
   • Create the Cloudflare Tunnel + Access policies; map app/flower/litellm/vnc
   • LinkedIn redirect → https://app.<domain>/auth/linkedin/callback
-  • GitHub: secrets (VPS_HOST/USER/SSH_KEY, GHCR_PAT, UI_API_TOKEN),
+  • GitHub: secrets (VPS_HOST/USER/SSH_KEY, GHCR_PAT),
     'production' environment, branch protection on main
   • Add nightly backup cron:
       su - ${DEPLOY_USER} -c 'crontab -l 2>/dev/null; echo "0 3 * * * cd ${APP_DIR} && ./scripts/backup.sh >> logs/backup.log 2>&1" | crontab -'

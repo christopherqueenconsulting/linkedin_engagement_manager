@@ -28,8 +28,27 @@ jobs:
         working-directory: src/cqc_lem/ui
         run: npm run build
         env:
-          VITE_API_TOKEN: ${{ secrets.UI_API_TOKEN }}
+          # LEM-issued shared secrets must never reach the bundle (issue #950): Vite inlines every
+          # import.meta.env.VITE_* it can see at build time, so anything named here that the SPA
+          # reads becomes a public constant. They are set to CANARY values, not real ones — the
+          # grep below is what keeps the rule true, and a canary is the only way it can see a
+          # regression without a real secret being in this file.
+          VITE_API_TOKEN: LEM_BUNDLE_CANARY_api_access_token
+          VITE_ADMIN_SECRET: LEM_BUNDLE_CANARY_admin_secret
           VITE_POSTHOG_KEY: ${{ secrets.UI_POSTHOG_KEY }}
           VITE_POSTHOG_HOST: ${{ vars.UI_POSTHOG_HOST }}
           VITE_POSTHOG_REPLAY: ${{ vars.UI_POSTHOG_REPLAY }}
           VITE_POSTHOG_REPLAY_SAMPLE: ${{ vars.UI_POSTHOG_REPLAY_SAMPLE }}
+
+      # The standing proof for issue #950's first acceptance criterion. VITE_POSTHOG_KEY is
+      # deliberately not canaried: it is a third-party write-only ingest key that is MEANT to be
+      # public, not a LEM-issued credential.
+      - name: No LEM-issued shared secret in the SPA bundle
+        working-directory: src/cqc_lem/ui
+        run: |
+          if grep -rl 'LEM_BUNDLE_CANARY' dist/; then
+            echo "::error::A LEM-issued shared secret was inlined into the SPA bundle (the files above)."
+            echo "::error::The SPA authenticates on its httpOnly session cookie — see issue #950 and src/cqc_lem/ui/src/api/client.ts."
+            exit 1
+          fi
+          echo "✓ dist/ carries no LEM-issued shared secret"

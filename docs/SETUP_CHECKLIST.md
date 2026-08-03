@@ -48,8 +48,10 @@ Legend: 🖱️ click-ops in a web console · ⌨️ run a command · ⏱️ rou
       API_ACCESS_TOKENS, all API keys, live Stripe, SendGrid). Use strong random
       values: `openssl rand -hex 32`.
 - [ ] ⌨️ `chmod 600 .env`
-- [ ] 📝 Record the value you put in **`API_ACCESS_TOKENS`** — you'll reuse it as
-      the GitHub `UI_API_TOKEN` secret (they must match).
+- [ ] 📝 Keep **`API_ACCESS_TOKENS`** on the server only. Since issue #950 it is a
+      **non-browser** credential (scripts, Postman, `/api/admin/*`); the SPA authenticates
+      on its session cookie, so nothing in the build has to match it and you can rotate it
+      here alone.
 - [ ] ⌨️ Sanity check: `./scripts/check_env.sh`
 
 ## 4. Cloudflare Tunnel + Access ⏱️ ~25 min
@@ -81,8 +83,8 @@ Legend: 🖱️ click-ops in a web console · ⌨️ run a command · ⏱️ rou
       - `VPS_USER` = `deploy`
       - `VPS_SSH_KEY` = contents of `~/.ssh/lem_ci_deploy` (the **private** key)
       - `GHCR_PAT` = a Personal Access Token with `read:packages` (for the VPS pull)
-      - `UI_API_TOKEN` = the same value as `API_ACCESS_TOKENS` on the server
       - (verify existing: `GITGUARDIAN_API_KEY`, `ANTHROPIC_API_KEY`, `CODECOV_TOKEN`)
+      - *(no `UI_API_TOKEN` — retired in #950; the SPA ships no LEM secret)*
 - [ ] 🖱️ **Settings → Environments → New environment** `production` → add yourself
       as a **Required reviewer** (gates the deploy job).
 - [ ] 🖱️ **Settings → Branches → Add branch ruleset** for `main`: require PR +

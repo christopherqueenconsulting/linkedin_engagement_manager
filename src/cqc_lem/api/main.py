@@ -190,31 +190,43 @@ async def observability_middleware(request: Request, call_next):
         )
 
 
-# Bearer-token gate for /api routes. Active only when API_ACCESS_TOKENS is set,
-# so local/dev (and existing tests) run open. Login and the Stripe webhook stay
-# public; everything else under /api requires a valid bearer token. Routes served
-# outside /api (SPA, /health, /docs, /auth/linkedin/*) are never gated here.
+# Credential gate for /api routes. Active only when API_ACCESS_TOKENS is set, so local/dev (and
+# existing tests) run open. Login and the Stripe webhook stay public; everything else under /api
+# must present ONE of two credentials. Routes served outside /api (SPA, /health, /docs,
+# /auth/linkedin/*) are never gated here.
+#
+# Since issue #950 the bearer token is a NON-BROWSER credential and nothing else. It used to be
+# baked into the SPA bundle at build time (`VITE_API_TOKEN`), which made it a secret every visitor
+# held — worth nothing as a gate, unrotatable without a rebuild + redeploy, and counted as a layer
+# in threat models it was not one in. The SPA authenticates on its httpOnly session cookie, which
+# is what every /api handler already resolves the caller from since #914.
+#
+# So the gate asks only "did this caller bring A credential": a valid bearer (scripts, Postman, the
+# admin tooling in `scripts/`) or a session credential the route itself will judge. It is an edge
+# filter that keeps credential-less traffic off the handlers — it is NOT authorisation. Authorisation
+# is `require_session_user_id()` in the handler, which fails closed on a cookie that does not
+# resolve; presenting a junk cookie buys a 401 from the route instead of a 401 from here.
 _API_ACCESS_TOKEN_SET = {t.strip() for t in API_ACCESS_TOKENS.split(",") if t.strip()}
 # /api/assets is public: it serves generated post media (images/videos) that
 # LinkedIn fetches over an unauthenticated public URL when publishing. The
 # handler (get_assets) is GET-only and path-traversal safe (_find_asset_file
 # rejects .. / separators and only returns real files under assets_dir).
 # /api/extension is public: it serves the browser-extension zip as a plain <a href>
-# download from the account page, which carries no bearer token. The bundle is
+# download from the account page, which carries no credential. The bundle is
 # non-sensitive public code (destined for the Chrome Web Store); the route is GET-only.
-# /api/user/linkedin-cookie is public because the browser extension POSTs to it WITHOUT the
-# SPA's bearer token (the extension can't hold the rotating API token). It is
-# self-authenticating: the handler validates the user's own LEM session_token and 401s if
-# it's invalid — same model as the /api/auth/ endpoints. This exact leaf path only; the rest
-# of /api/user/* stays gated.
+# /api/user/linkedin-cookie is public because the browser extension POSTs to it cross-origin from
+# linkedin.com, so it carries neither a bearer token nor the LEM cookie. It is self-authenticating:
+# the handler validates the user's own LEM session_token in the body and 401s if it's invalid — same
+# model as the /api/auth/ endpoints. This exact leaf path only; the rest of /api/user/* stays gated.
 # /api/faq is public: it serves the published front-page FAQ (issue #506) to logged-out visitors on
 # the landing page. GET-only, no user data — same shape as /api/app-info.
 # /api/flags is public for the SAME reason (issue #651): the landing page bootstraps its feature
-# flags from it and carries no bearer token. Gating it would 401 the flags query, and the SPA's
-# axios interceptor treats ANY 401 as a dead session — it clears lem_session and redirects, so a
-# signed-in visitor hitting the landing page would be silently logged out. GET-only; it returns the
-# registry's own toggle values, and the optional session_token is self-authenticating (an invalid
-# one resolves the "system" identity rather than erroring) — same model as /api/user/linkedin-cookie.
+# flags from it while logged out, so it carries no credential at all. Gating it would 401 the flags
+# query, and the SPA's axios interceptor treats ANY 401 as a dead session — it clears lem_session
+# and redirects, so a signed-in visitor hitting the landing page would be silently logged out.
+# GET-only; it returns the registry's own toggle values, and the optional session_token is
+# self-authenticating (an invalid one resolves the "system" identity rather than erroring) — same
+# model as /api/user/linkedin-cookie.
 _PUBLIC_API_PREFIXES = ("/api/auth/", "/api/billing/webhook", "/api/assets",
                         "/api/linkedin/verification-pin", "/api/linkedin/comment-notification",
                         "/api/app-info", "/api/faq", "/api/flags",
@@ -249,11 +261,27 @@ def _bearer_token(authorization: Optional[str]) -> Optional[str]:
     return token.strip()
 
 
+def _has_session_credential(request: Request) -> bool:
+    """Did the caller bring something the SESSION resolver can judge?
+
+    Presence only — whether it resolves is the handler's call, and it fails closed there. The
+    middleware runs before routing and has no database, so validating here would mean a second
+    session lookup on every request that answers nothing the route does not already answer.
+
+    Two shapes, because the SPA has two: the httpOnly cookie (normal), and the `X-Session-Token`
+    header the axios interceptor sends when it holds a real token instead — a plain-http origin
+    where `Secure` cookies never stuck, and the tutorial capture harness.
+    """
+    if request.cookies.get(SESSION_COOKIE_NAME):
+        return True
+    return bool((request.headers.get("X-Session-Token") or "").strip())
+
+
 @app.middleware("http")
 async def api_token_middleware(request: Request, call_next):
     if _api_token_required(request.url.path):
         token = _bearer_token(request.headers.get("Authorization"))
-        if token not in _API_ACCESS_TOKEN_SET:
+        if token not in _API_ACCESS_TOKEN_SET and not _has_session_credential(request):
             return JSONResponse(status_code=401, content={"status_code": 401, "detail": "Unauthorized"})
     return await call_next(request)
 
@@ -6230,7 +6258,9 @@ def _require_admin(x_admin_secret: Optional[str] = Header(default=None)) -> None
 # the Authorize dialog: the bearer API token AND the admin secret. Both are needed.
 _bearer_scheme = HTTPBearer(
     auto_error=False,
-    description="API access token — one of API_ACCESS_TOKENS. Sent as 'Authorization: Bearer <token>'.",
+    description="Non-browser API access token — one of API_ACCESS_TOKENS. Sent as "
+                "'Authorization: Bearer <token>'. Never shipped in the SPA bundle (issue #950); "
+                "browsers authenticate on the session cookie instead.",
 )
 _admin_secret_scheme = APIKeyHeader(
     name="X-Admin-Secret", auto_error=False,

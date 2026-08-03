@@ -29,10 +29,9 @@ WORKDIR /app
 FROM node:22-slim AS ui-builder
 
 WORKDIR /ui
-# Build-time API bearer token baked into the SPA bundle (Vite reads VITE_*).
-# Empty by default so dev images stay tokenless; CI passes the prod token.
-ARG VITE_API_TOKEN=""
-ENV VITE_API_TOKEN=${VITE_API_TOKEN}
+# No VITE_API_TOKEN (issue #950). A LEM-issued shared secret baked in here ends up inlined in a
+# public bundle, i.e. held by every visitor and unrotatable without a rebuild. The SPA authenticates
+# on its httpOnly session cookie; the bearer is a non-browser credential and stays server-side.
 # Browser-side PostHog (issue #646). Empty key = the SPA ships with analytics fully disabled and
 # never fetches the posthog-js chunk.
 ARG VITE_POSTHOG_KEY=""
