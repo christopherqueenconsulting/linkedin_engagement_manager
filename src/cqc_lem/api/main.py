@@ -1418,6 +1418,10 @@ class EngagementPreferencesRequest(BaseModel):
     # older SPA build that never learned this field must not resurrect 3 follows/day over a 0 the
     # user set to switch an outbound lane off.
     max_follows_per_day: Optional[int] = None
+    # Opt-in auto-connect for roster targets following did not unlock (issue #979), OFF by default
+    # and independent of roster_auto_follow. No cap of its own — roster invites take at most a
+    # minority share of whatever max_invites_per_day has left.
+    roster_auto_connect: bool = False
     # Catch-up congratulations (issue #482)
     max_catchup_touches_per_day: int = CATCHUP_TOUCHES_MAX_STANDARD
     catchup_touch_mode: str = "pre_review"  # 'pre_review' (default) | 'auto_approve'

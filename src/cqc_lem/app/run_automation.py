@@ -10,7 +10,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, NamedTuple, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
 from cqc_lem.app.queue_once import QueueOnce
@@ -24,8 +24,8 @@ from cqc_lem.utilities.ai.ai_helper import generate_ai_response, get_ai_message_
 from cqc_lem.utilities.ai.lead_intent import detect_lead_signals
 from cqc_lem.utilities.ai.dm_nurture import classify_reply_intent, is_stop_intent, nurture_delay_hours
 from cqc_lem.utilities.connection_targeting import CandidateSignal, ScoredCandidate, \
-    CONNECT_NOTE_LIMIT, SOURCE_ADJACENT_POST, SOURCE_OWN_POST, default_connect_note, \
-    rank_candidates, target_terms_from_prefs
+    CONNECT_NOTE_LIMIT, SOURCE_ADJACENT_POST, SOURCE_OWN_POST, SOURCE_ROSTER, \
+    default_connect_note, rank_candidates, target_terms_from_prefs
 from cqc_lem.utilities.lead_scoring import person_key
 from cqc_lem.utilities.ai.content_alignment import humanize_text, split_link_for_first_comment, \
     append_link_to_comment, resolve_artifact_delivery, ARTIFACT_KIND_LEAD_MAGNET
@@ -65,7 +65,9 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     update_catchup_touch_status, count_catchup_touches_sent_today, max_catchup_touches_allowed, \
     get_engagement_targets, record_target_engagement, resolve_weekly_cap, \
     record_target_comment_blocked, set_target_follow_status, record_target_follow_failure, \
+    set_target_connect_status, \
     ENGAGEMENT_TARGET_BLOCKED_BADGE_STREAK, ENGAGEMENT_TARGET_FOLLOW_TERMINAL, FollowStatus, \
+    ENGAGEMENT_TARGET_CONNECT_TERMINAL, ConnectStatus, \
     ROSTER_FOLLOWS_PER_DAY_DEFAULT, \
     record_follower_stat, get_linkedin_profile_url_by_user_id, \
     get_comment_outcome_targets, record_comment_outcome, \
@@ -1673,10 +1675,11 @@ def roster_follow_budget(user_id: int, prefs: dict) -> int:
                                     caps=engagement_caps_from_prefs(prefs)))
 
 
-def _follow_hold_reason(user_id: int) -> str:
-    """Why a follow must not go out right now — '' when every hard gate is clear.
+def _outbound_hold_reason(user_id: int) -> str:
+    """Why an outbound roster action (a follow, a connect invite) must not go out right now — ''
+    when every hard gate is clear.
 
-    Pacing only ever slows the lane down; these are the harder gates, re-read per follow because the
+    Pacing only ever slows a lane down; these are the harder gates, re-read per action because the
     breaker can trip mid-run. The suppression tripwire (#629) rides `is_automation_paused` too, so
     one check covers the manual pause, the deploy pause and a suppression hold."""
     if is_automation_paused():
@@ -1742,7 +1745,7 @@ def auto_follow_roster_target(driver: WebDriver, user_id: int, target: dict,
     if not profile_url:
         return FollowOutcome.NONE
     name = str(target.get("name") or "")
-    hold = _follow_hold_reason(user_id)
+    hold = _outbound_hold_reason(user_id)
     if hold:
         # DEBUG, not INFO: this is re-read per target because the breaker can trip mid-run, so an
         # INFO here is one line per roster target for a condition that has nothing to do with the
@@ -1789,6 +1792,253 @@ def auto_follow_roster_target(driver: WebDriver, user_id: int, target: dict,
     log_info(f"Followed roster target {name or profile_url}", user_id=user_id,
              action_type="follow", task_name="auto_follow_roster_target")
     return FollowOutcome.FOLLOWED
+
+
+# --- connect rung of the roster ladder (issue #979) ----------------------------------------------
+# blocked -> follow (#962) -> STILL blocked -> needs connection -> (opt-in) auto-connect.
+
+# Reading the top card's CONNECT state, anchored on the page owner's name for exactly the reason
+# _FOLLOW_CONTROL_JS is: LinkedIn renders "Connect" and "Message" inside recommendation modules and
+# other people's cards all over an activity page. Strictly a READ — no element is returned, because
+# nothing here ever clicks. The invite itself goes out through the existing rail
+# (`invite_to_connect_now`), which opens the profile and uses the already-grounded Connect
+# affordance; this resolver only advances what we believe about a target for free.
+_CONNECT_STATE_JS = r"""
+const SLUG = (arguments[0] || '').toLowerCase(), NAME = (arguments[1] || '')
+  .replace(/\s+/g, ' ').trim().toLowerCase();
+const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+const label = (b) => norm(b.getAttribute('aria-label')) || norm(b.textContent);
+// The owner's name must appear in the label. LinkedIn writes "Message Arvid Kahl",
+// "Invite Arvid Kahl to connect", "Pending, awaiting response from Arvid Kahl" — a bare nameless
+// "Message" could belong to anyone on the page.
+const names = (text) => !!NAME && text.includes(NAME);
+const shown = (el) => { const r = el.getBoundingClientRect(); return !!(r.width && r.height); };
+const slugOf = (href) => {
+  const m = (href || '').toLowerCase().match(/\/in\/([^\/?#]+)/);
+  return m ? m[1] : '';
+};
+
+if (!NAME) return 'unknown';   // no owner name = nothing to anchor on = no safe read
+
+let pending = false, message = false, connect = false;
+for (const b of document.querySelectorAll("button, [role='button'], a[role='link']")) {
+  if (!shown(b)) continue;
+  const text = label(b);
+  if (!names(text)) continue;
+  if (text.startsWith('pending') || text.includes('awaiting response')) pending = true;
+  else if (text.startsWith('message')) message = true;
+  else if (text.includes('to connect') || text.startsWith('connect')) connect = true;
+}
+
+// A 1st-degree badge inside the owner's own card is the strongest evidence there is; it is read
+// only from the DOM around the target's exact /in/<slug> anchor, never page-wide (every 1st-degree
+// person in a "More profiles for you" rail carries one).
+let degreeFirst = false;
+if (SLUG) {
+  for (const a of document.querySelectorAll("a[href*='/in/']")) {
+    if (slugOf(a.getAttribute('href')) !== SLUG) continue;
+    let el = a, d = 0;
+    while (el && d < 8) {
+      if (/(^|[^a-z0-9])1st([^a-z0-9]|$)/.test(norm(el.textContent))) { degreeFirst = true; break; }
+      el = el.parentElement; d++;
+    }
+    if (degreeFirst) break;
+  }
+}
+
+if (pending) return 'requested';
+if (degreeFirst) return 'connected';
+// A named Message control alone is only evidence when LinkedIn is NOT still offering to connect —
+// open profiles and creators expose Message to strangers too.
+if (message && !connect) return 'connected';
+return 'unknown';
+"""
+
+
+def _connect_status_of(target: dict) -> ConnectStatus:
+    """A roster row's stored connect state as a member. Anything unrecognised (a row written before
+    the migration, a column read back NULL) is `UNKNOWN` — the resting state, which does nothing."""
+    stored = str((target or {}).get("connect_status") or "")
+    try:
+        return ConnectStatus(stored)
+    except ValueError:
+        return ConnectStatus.UNKNOWN
+
+
+def _resolve_connect_state(driver: WebDriver, profile_url: str, name: str = "") -> ConnectStatus:
+    """What the OPEN activity page says about our connection to its owner (issue #979).
+
+    Three readings only: `REQUESTED` (a Pending control), `CONNECTED` (a 1st-degree badge in the
+    owner's own card, or a Message control with no Connect offered), and `UNKNOWN` — which means "we
+    could not tell", never "not connected". Every caller treats `UNKNOWN` as "change nothing"."""
+    owner = _activity_page_owner_name(driver) or str(name or "").strip()
+    if not owner:
+        log_debug("Connect state unresolvable — no owner name to anchor the label match on",
+                  action_type="invite_connect", task_name="_resolve_connect_state")
+        return ConnectStatus.UNKNOWN
+    try:
+        state = driver.execute_script(_CONNECT_STATE_JS, _profile_slug(profile_url), owner)
+    except Exception as e:
+        log_debug(f"Connect state resolution JS failed ({type(e).__name__}: {e})",
+                  action_type="invite_connect", task_name="_resolve_connect_state")
+        return ConnectStatus.UNKNOWN
+    if state not in (ConnectStatus.REQUESTED, ConnectStatus.CONNECTED):
+        return ConnectStatus.UNKNOWN
+    return ConnectStatus(state)
+
+
+def reconcile_roster_connect_state(driver: WebDriver, user_id: int, target: dict) -> ConnectStatus:
+    """Advance a roster target's connect state from the activity page that is open anyway (issue
+    #979). Clicks NOTHING and spends no budget — the `reconcile_roster_follow_state` pattern.
+
+    This is the free half of the ladder: LinkedIn already shows whether our invite is pending or
+    whether we are connected, so the state advances without a single extra action. It only ever
+    moves FORWARD — an unreadable card leaves the record exactly as it was, because 'unknown' means
+    we could not tell, not that the invite vanished.
+
+    Returns the target's connect state after the reading."""
+    stored = _connect_status_of(target)
+    profile_url = str(target.get("profile_url") or "").strip()
+    if not profile_url:
+        return ConnectStatus.UNKNOWN
+    state = _resolve_connect_state(driver, profile_url, name=str(target.get("name") or ""))
+    if state == ConnectStatus.UNKNOWN or state == stored:
+        return stored
+    if state == ConnectStatus.REQUESTED and stored == ConnectStatus.CONNECTED:
+        # Never walk the ladder backwards on one ambiguous reading.
+        return ConnectStatus.CONNECTED
+    set_target_connect_status(user_id, profile_url, state)
+    log_info(f"Roster target {target.get('name') or profile_url} reads as {state} on LinkedIn — "
+             f"connect state advanced", user_id=user_id, action_type="invite_connect",
+             task_name="reconcile_roster_connect_state")
+    return state
+
+
+# How small a slice of the day's REMAINING invite budget the roster ladder may take. A third, so
+# #398's profile-viewer and proactive lanes are never starved by a roster of restricted authors —
+# most days that arithmetic means zero or one roster invite, which is the intended pace.
+ROSTER_CONNECT_BUDGET_DIVISOR = 3
+
+
+def roster_connect_budget(user_id: int, prefs: dict) -> int:
+    """How many roster connect invites this user may send right now (issue #979), or 0 when the lane
+    is off.
+
+    There is no separate roster invite cap on purpose: an invite is an invite to LinkedIn, so the
+    ladder spends the SAME `max_invites_per_day` the profile-viewer and proactive flows spend
+    (`ACTION_INVITE`, the account envelope's own field). Already-queued requests count as spent for
+    the same reason `_connect_target_budget` counts them — they will spend tomorrow's cap the moment
+    it opens."""
+    if not (prefs or {}).get("roster_auto_connect"):
+        return 0
+    try:
+        cap = max(0, int(prefs.get("max_invites_per_day") or 0))
+    except (TypeError, ValueError):
+        cap = 0
+    if cap <= 0:
+        return 0
+    remaining = remaining_actions(user_id, ACTION_INVITE, cap,
+                                  count_invites_sent_today(user_id)
+                                  + count_open_connection_requests(user_id),
+                                  caps=engagement_caps_from_prefs(prefs))
+    if remaining <= 0:
+        return 0
+    # Ceiling division, floored at 1: a minority SHARE, but never a share so small it rounds the
+    # ladder out of existence on a day that does have budget left.
+    return max(1, -(-remaining // ROSTER_CONNECT_BUDGET_DIVISOR))
+
+
+def _roster_connect_note(user_id: int, target: dict, prefs: dict) -> str:
+    """The invite note for a roster target — the SAME voice-aligned path #486 uses
+    (`_draft_connect_note` → grounded template + `lem-simple` refinement), with the roster's own
+    honest shared ground: we read and comment on their posts. Never a pitch."""
+    profile_url = str(target.get("profile_url") or "").strip()
+    name = str(target.get("name") or "").strip() or _author_display_name(profile_url)
+    terms = target_terms_from_prefs(prefs)
+    candidate = ScoredCandidate(person_key=person_key(name, profile_url), person_name=name,
+                                person_profile_url=profile_url, source=SOURCE_ROSTER)
+    return _draft_connect_note(user_id, candidate, topic=(terms[0] if terms else None))
+
+
+def queue_roster_connect_invite(user_id: int, target: dict, prefs: dict,
+                                queued_this_run: int = 0) -> bool:
+    """Send the ladder's ONE connection request for a roster target following did not unlock
+    (issue #979). Returns True when an invite was dispatched.
+
+    It goes out through the EXISTING invite rail (`invite_to_connect_now`, via the `se_outreach`
+    task below) — no second invite mechanic, and deliberately NOT through Outreach/Leads, whose unit
+    of work is a DM sequence for a prospect. A curated peer or creator needs comment access, not a
+    sales journey.
+
+    `requested` is written BEFORE the dispatch, not after: this is the one-shot guarantee. A
+    dispatch that is lost, or a worker that dies mid-send, must not leave the target eligible for a
+    second invite on the next rotation — the task hands the target back to the ladder only when it
+    knows nothing reached LinkedIn.
+
+    `queued_this_run` is what the budget re-read cannot see. The send is ASYNCHRONOUS, so nothing
+    durable records the invite until the task actually reaches LinkedIn — re-reading alone would
+    hand every target in the walk the same "3 left" and invite the whole roster in one pass. The
+    fresh read still does the rest of the job (other lanes, other runs, a cap changed mid-run)."""
+    if not (prefs or {}).get("roster_auto_connect"):
+        return False
+    profile_url = str(target.get("profile_url") or "").strip()
+    if not profile_url:
+        return False
+    if _connect_status_of(target) in ENGAGEMENT_TARGET_CONNECT_TERMINAL:
+        # ONE shot per target, enforced here as well as by the caller: LinkedIn's withdraw/expire
+        # cycle governs a request that is already out, and a second automatic invite to someone who
+        # declined the first is the pattern that gets accounts restricted.
+        return False
+    hold = _outbound_hold_reason(user_id)
+    if hold:
+        # DEBUG for the same reason the follow rung's is: re-read per target because the breaker can
+        # trip mid-run, and a hold is a fact about the account, not about this person.
+        log_debug(f"Roster connect invite skipped — {hold}", user_id=user_id,
+                  action_type="invite_connect", task_name="queue_roster_connect_invite")
+        return False
+    if roster_connect_budget(user_id, prefs) - max(0, int(queued_this_run or 0)) <= 0:
+        log_debug("Roster connect invite skipped — no share of today's invite budget left",
+                  user_id=user_id, action_type="invite_connect",
+                  task_name="queue_roster_connect_invite")
+        return False
+    note = _roster_connect_note(user_id, target, prefs)
+    set_target_connect_status(user_id, profile_url, ConnectStatus.REQUESTED)
+    send_roster_connect_invite.apply_async(kwargs={"user_id": user_id, "profile_url": profile_url,
+                                                   "message": note})
+    log_info(f"Queued a connection request for roster target "
+             f"{target.get('name') or profile_url} — following did not unlock commenting",
+             user_id=user_id, action_type="invite_connect",
+             task_name="queue_roster_connect_invite")
+    return True
+
+
+class RosterConnectOutcome(NamedTuple):
+    """What the connect rung did for one target: the state it left behind, and whether THIS run is
+    what sent the invite. The two are not the same — a target read as `requested` because the user
+    invited them by hand is not a send the run may claim in its funnel."""
+    state: ConnectStatus
+    invited: bool
+
+
+def advance_roster_connect(driver: WebDriver, user_id: int, target: dict, prefs: dict,
+                           queued_this_run: int = 0) -> RosterConnectOutcome:
+    """The connect rung for ONE roster target, on the activity page already open (issue #979).
+
+    Read-only advancement runs whatever the toggle says — a user who connected by hand must not keep
+    a badge telling them to connect — and it runs FIRST, so a target LinkedIn already shows as
+    connected or pending never draws an invite. Only `needs_connection` survives that reading, and
+    only then does the opt-in invite fire."""
+    stored = _connect_status_of(target)
+    if stored not in (ConnectStatus.NEEDS_CONNECTION, ConnectStatus.REQUESTED):
+        # 'unknown' has nothing to advance (the escalation has not fired), and 'connected'/'failed'
+        # are done. Reading the card anyway would spend a JS round-trip per target per run.
+        return RosterConnectOutcome(stored, False)
+    state = reconcile_roster_connect_state(driver, user_id, target)
+    if state != ConnectStatus.NEEDS_CONNECTION:
+        return RosterConnectOutcome(state, False)
+    if not queue_roster_connect_invite(user_id, target, prefs, queued_this_run=queued_this_run):
+        return RosterConnectOutcome(state, False)
+    return RosterConnectOutcome(ConnectStatus.REQUESTED, True)
 
 
 # What the run's feed sort actually was. Only FEED_SORT_RECENT means the recency-dominant scoring
@@ -2023,7 +2273,8 @@ def comment_on_roster_posts(driver, wait, my_profile: LinkedInProfile, user_id: 
     tell the user that following or connecting would unlock the account. When they have opted in,
     the same visit also does the paced follow, on the page that is already open."""
     stats = {"posted": 0, "targets_visited": 0, "examined": 0, "off_topic_skipped": 0,
-             "comment_blocked": 0, "followed": 0, "key_sources": {}, "commented_key_sources": {}}
+             "comment_blocked": 0, "followed": 0, "connect_requested": 0,
+             "key_sources": {}, "commented_key_sources": {}}
     if max_posts <= 0:
         return stats
     targets = get_engagement_targets(user_id, active_only=True)
@@ -2032,7 +2283,7 @@ def comment_on_roster_posts(driver, wait, my_profile: LinkedInProfile, user_id: 
     follow_enabled = bool((prefs or {}).get("roster_auto_follow"))
     # Announced ONCE per run rather than per target: a pause or an open breaker is not a fact about
     # any one roster target, and the per-follow re-read (the breaker can trip mid-run) is DEBUG.
-    follow_hold = _follow_hold_reason(user_id) if follow_enabled else ""
+    follow_hold = _outbound_hold_reason(user_id) if follow_enabled else ""
     if follow_hold:
         log_info(f"Roster auto-follow standing down this run — {follow_hold}", user_id=user_id,
                  action_type="follow", task_name="comment_on_roster_posts")
@@ -2122,7 +2373,7 @@ def comment_on_roster_posts(driver, wait, my_profile: LinkedInProfile, user_id: 
                          task_name="comment_on_roster_posts")
         if posts_seen and not commentable_seen and not truncated:
             stats["comment_blocked"] += 1
-            blocked_visits.append(profile_url)
+            blocked_visits.append(target)
             # DEBUG, not a warning: an author who restricts commenting is WORKING behaviour on their
             # side, and this visit repeats every rotation — warning it would escalate and file a
             # defect for a post nobody was ever allowed to comment on.
@@ -2147,12 +2398,23 @@ def comment_on_roster_posts(driver, wait, my_profile: LinkedInProfile, user_id: 
                 # dispatch, so this is also what stops two overlapping runs each spending the cap.
                 if auto_follow_roster_target(driver, user_id, target) == FollowOutcome.FOLLOWED:
                     stats["followed"] += 1
+        # The rung above follow (#979): free read-only advancement for a target already on the
+        # ladder, and — only when the user opted in — the one connect invite for a target following
+        # demonstrably did not unlock. Never gated on `follow_enabled`: a user who turned auto-follow
+        # off (or connected by hand) must still see their badge clear.
+        # The run's own count is passed in because the send is asynchronous: the budget re-read
+        # cannot see an invite that has been dispatched but not yet delivered to LinkedIn.
+        if advance_roster_connect(driver, user_id, target, prefs,
+                                  queued_this_run=stats["connect_requested"]).invited:
+            stats["connect_requested"] += 1
     _record_blocked_visits(user_id, blocked_visits, stats["targets_visited"])
     return stats
 
 
 def _record_blocked_visits(user_id: int, blocked_visits: list, targets_visited: int) -> None:
     """Persist the run's restricted-comments findings, unless the run itself is the suspect.
+    `blocked_visits` holds the roster ROWS as the run loaded them — the connect escalation is
+    announced by comparing what came back against that pre-run state.
 
     `_card_for_textbox` returning None for EVERY card of EVERY target is far more likely to be that
     helper drifting against LinkedIn's SDUI than a roster where nobody accepts comments — and the
@@ -2164,14 +2426,23 @@ def _record_blocked_visits(user_id: int, blocked_visits: list, targets_visited: 
                     f"restricted authors; no blocked visits recorded", user_id=user_id,
                     action_type="comment", task_name="comment_on_roster_posts")
         return
-    for profile_url in blocked_visits:
-        streak = record_target_comment_blocked(user_id, profile_url)
+    for target in blocked_visits:
+        profile_url = str(target.get("profile_url") or "").strip()
+        visit = record_target_comment_blocked(user_id, profile_url)
         # Exactly at the threshold, so the surface crossing is announced ONCE rather than on every
         # visit for as long as the target stays blocked.
-        if streak == ENGAGEMENT_TARGET_BLOCKED_BADGE_STREAK:
-            log_info(f"Roster target {profile_url} has been un-commentable for {streak} visits "
+        if visit.streak == ENGAGEMENT_TARGET_BLOCKED_BADGE_STREAK:
+            log_info(f"Roster target {profile_url} has been un-commentable for {visit.streak} visits "
                      f"— surfaced on the roster card", user_id=user_id, action_type="comment",
                      task_name="comment_on_roster_posts")
+        # Announced once, on the CROSSING, for the same reason: the escalation only ever fires on
+        # the transition out of 'unknown', so comparing against what the run loaded is what keeps a
+        # target that has been waiting for a connection for weeks from saying so every rotation.
+        if (visit.connect_status == ConnectStatus.NEEDS_CONNECTION
+                and _connect_status_of(target) != ConnectStatus.NEEDS_CONNECTION):
+            log_info(f"Roster target {profile_url} is still un-commentable after we followed them "
+                     f"— flagged for a connection request", user_id=user_id,
+                     action_type="invite_connect", task_name="comment_on_roster_posts")
 
 
 def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: int,
@@ -2405,6 +2676,9 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
         # this run (issue #962). Both are roster-only — the home feed has neither notion.
         "roster_comment_blocked": roster_stats.get("comment_blocked", 0),
         "roster_followed": roster_stats.get("followed", 0),
+        # Invites the connect rung sent this run (issue #979) — targets following did not unlock.
+        # A rising blocked count with zero of these is a roster the user has to fix by hand.
+        "roster_connect_requested": roster_stats.get("connect_requested", 0),
         "off_topic_skipped": off_topic_total,  # failed the on-topic gate — never commented on
         "fallback_used": fallback_used,
         "key_sources": examined_key_sources,           # every post we looked at
@@ -6750,6 +7024,42 @@ def invite_to_connect(self, user_id: int, profile_url: str, message: str = None)
         return CONNECTION_REQUEST_SENT_MESSAGE
     log_warning(f"Connection request failed: {reason}", user_id=user_id, action_type="invite_connect")
     return f"Connection Request Failed: {reason}"
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['user_id', 'profile_url']},
+                  reject_on_worker_lost=True, rate_limit='1/m', queue='se_outreach')
+def send_roster_connect_invite(self, user_id: int, profile_url: str, message: str = None):
+    """Send the roster ladder's ONE connection request for a target (issue #979).
+
+    A thin wrapper over the SAME `invite_to_connect_now` rail the reactive and proactive flows use —
+    it exists only to write the outcome back onto the roster row, so the badge tells the truth about
+    what happened. It runs on `se_outreach` rather than inline in the roster pass because the rail
+    opens its OWN Chrome session, and a second session inside the roster pass's would take a slot
+    out of the pool the Selenium lanes share.
+
+    The status is already 'requested' before this runs (the one-shot guarantee). Only two things
+    move it: a send that could not happen at all — throttled, nothing reached LinkedIn — hands the
+    target back to the ladder, and a real failure is terminal ('failed'), never auto-retried."""
+    try:
+        sent, reason = invite_to_connect_now(user_id, profile_url, message)
+    except LinkedInRateLimited as e:
+        # Nothing went out, so the one shot was not spent. DEBUG, not a warning: an open breaker is
+        # working behaviour and this lane retries on the next rotation by design.
+        log_debug(f"Roster connect invite deferred (throttled): {e}", user_id=user_id,
+                  action_type="invite_connect", task_name="send_roster_connect_invite")
+        set_target_connect_status(user_id, profile_url, ConnectStatus.NEEDS_CONNECTION)
+        return "Roster connection request deferred (LinkedIn throttled)"
+    if sent:
+        return CONNECTION_REQUEST_SENT_MESSAGE
+    if reason == ALREADY_CONNECTED_MESSAGE:
+        # Not a failure — the ladder's goal was already met, so record the truth rather than badging
+        # a connected account as a failed invite.
+        set_target_connect_status(user_id, profile_url, ConnectStatus.CONNECTED)
+        return ALREADY_CONNECTED_MESSAGE
+    set_target_connect_status(user_id, profile_url, ConnectStatus.FAILED)
+    log_warning(f"Roster connection request failed: {reason}", user_id=user_id,
+                action_type="invite_connect", task_name="send_roster_connect_invite")
+    return f"Roster connection request failed: {reason}"
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'keys': ['request_id']},

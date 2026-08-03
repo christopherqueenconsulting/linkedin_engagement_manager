@@ -445,3 +445,71 @@ that ceiling and drags the acceptance rate the outreach features are judged on.
 - **Observability:** every run emits `stale_invite_run`, including the ones that do nothing. A series
   carrying only withdrawals would reproduce exactly the invisible-stub problem this replaced;
   `rows_seen` is the tell.
+## Connect escalation when following doesn't unblock commenting (issue #979)
+
+The rung above follow. The ladder per roster target is **blocked → follow (#962) → still blocked →
+needs connection → (opt-in) auto-connect**, and every step of it is evidence-driven: a
+connections-only author is indistinguishable from a followers-only one until a follow has been tried
+and has failed to change anything.
+
+- **`needs_connection` is a claim we have to have evidence for.** It is set only when a target is
+  `follow_status='following'`, HAS a `followed_at`, and its PREVIOUS blocked visit was already after
+  that follow — i.e. this is the SECOND post-follow blocked visit. One is a render race; two is the
+  account telling us following was not the missing permission. A target that was never followed is
+  never escalated, so a user who leaves auto-follow off never sees this badge from automation.
+- **It is decided in the SAME statement that records the blocked visit**
+  (`record_target_comment_blocked`), with `connect_status` assigned FIRST: MySQL evaluates SET
+  clauses left to right, so updating `last_blocked_at` first would destroy the very evidence the
+  test reads. The function returns a `BlockedVisit(streak, connect_status)` so the caller can
+  announce the crossing exactly once, comparing against the state the run loaded.
+- **A landed comment stands the escalation back down.** `record_target_engagement` resets
+  `needs_connection` → `unknown` alongside the streak: commenting just worked, so "following didn't
+  unlock commenting" is no longer true. Only that state is cleared — an invite already sent is a
+  fact about LinkedIn that a comment does not undo.
+- **The badge names the ONE move left.** Distinct copy from the #962 badge
+  ("Following didn't unlock commenting — connect with this account"), and it SUPERSEDES it: two
+  badges naming different moves for one account is how a user stops reading either.
+- **Free read-only advancement, every visit** (`reconcile_roster_connect_state`). LinkedIn already
+  shows a Pending control or a 1st-degree marker on the page the roster pass has open, so
+  `requested` and `connected` are read for nothing — no click, no budget, and NOT gated on either
+  toggle, because a user who connected by hand must see their badge clear. It only ever moves
+  FORWARD: `unknown` means "we could not tell", never "the invite vanished".
+- **The connect reading names the page owner too** (`_CONNECT_STATE_JS`), for the reason
+  `_FOLLOW_CONTROL_JS` does: "Connect" and "Message" render all over an activity page. A 1st-degree
+  marker counts only inside the target's OWN `/in/<slug>` card, and a Message control counts only
+  when LinkedIn is not still offering to Connect — open profiles expose Message to strangers.
+- **Auto-connect is OFF by default** (`roster_auto_connect`) and INDEPENDENT of `roster_auto_follow`
+  — an invite is heavier and less reversible than a follow. It fires only for `needs_connection`
+  targets and every hard gate applies (`_outbound_hold_reason`, re-read per target).
+- **No new invite mechanic, and NOT via Outreach/Leads.** The invite is enqueued onto the existing
+  rail — `send_roster_connect_invite` (`se_outreach`) is a thin wrapper over the same
+  `invite_to_connect_now` the reactive profile-viewer and proactive #398 flows use. It runs as a
+  task rather than inline because that rail opens its OWN Chrome session, and a second session
+  inside the roster pass's would take a slot out of the pool the Selenium lanes share. Outreach /
+  Leads / Pipeline are DM-sequence flows for prospects: a curated peer needs comment access, not a
+  sales journey, and a second invite path would double-spend LinkedIn's invite tolerance.
+- **Roster invites take a MINORITY share of the shared budget.** There is no roster invite cap:
+  `roster_connect_budget` spends the same `max_invites_per_day` (`ACTION_INVITE`, with queued-but-
+  unsent requests counted as spent) and takes at most `ceil(remaining / 3)`, min 1, so #398's lanes
+  are never starved. Most days that arithmetic is 0–1 invites — the ladder is slow by design.
+  The budget is re-read per target AND the run's own dispatches are subtracted (`queued_this_run`).
+  Both halves are needed: unlike a follow, the send is ASYNCHRONOUS, so nothing durable records the
+  invite until the task reaches LinkedIn — a re-read alone would hand every target in the walk the
+  same "3 left" and invite a whole roster of restricted authors in one pass.
+- **ONE shot per target, ever.** `requested` is written BEFORE the dispatch: a lost dispatch or a
+  worker that dies mid-send must not leave the target eligible for a second invite. Only a send that
+  provably never reached LinkedIn (429 breaker / kill-switch → `LinkedInRateLimited`) hands the
+  target back to the ladder. A real failure is terminal (`failed`, badged, never auto-retried), and
+  an "already connected" answer records `connected` rather than badging a connection as a failure.
+  `ENGAGEMENT_TARGET_CONNECT_TERMINAL` is the closed vocabulary for that, and
+  `queue_roster_connect_invite` re-checks it even though its caller already did.
+- **`ConnectStatus` (db.py) is the ONE vocabulary** — MySQL ENUM, DOM reading, write sites — exactly
+  as `FollowStatus` is, and a unit test parses the ENUM out of the migration so a member added
+  without one fails in CI.
+- **Live grounding:** `python -m scripts.linkedin_live_validation --roster-connect <profile-url>`
+  reports what the top card says about our connection (Pending / 1st-degree / nothing readable) plus
+  every visible control label. Read-only — no invite is sent. Note this rung ships NO new clicker at
+  all: the only thing that clicks is the already-grounded Connect affordance on the profile page.
+- **Observability:** `roster_connect_requested` rides the feed funnel — invites the ladder sent this
+  run. A `requested` state read off the card (the user invited them by hand) is deliberately NOT
+  counted there; it is not a send the run made.
