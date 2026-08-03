@@ -5145,6 +5145,18 @@ _ENGAGEMENT_TARGET_COLS = ("id", "profile_url", "name", "category", "max_comment
                            "source")
 
 
+def resolve_weekly_cap(value: Any) -> int:
+    """The per-author weekly cap, with an EXPLICIT 0 preserved. 0 is how the SPA pauses an account
+    without removing it, so `value or DEFAULT` would read that pause as "unset" and hand the account
+    the default two comments a week — the opposite of what the operator asked for."""
+    if value is None:
+        return ENGAGEMENT_TARGET_WEEKLY_DEFAULT
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return ENGAGEMENT_TARGET_WEEKLY_DEFAULT
+
+
 def engagement_week_start(today: Optional[date] = None) -> date:
     """Monday of the week `today` falls in — the reset boundary for the per-author weekly cap."""
     today = today or datetime.now().date()
@@ -5158,8 +5170,7 @@ def _clean_target_row(row: dict) -> dict:
     if row.get("week_start") != engagement_week_start():
         row["comments_this_week"] = 0
     row["comments_this_week"] = int(row.get("comments_this_week") or 0)
-    row["max_comments_per_week"] = int(row.get("max_comments_per_week")
-                                       or ENGAGEMENT_TARGET_WEEKLY_DEFAULT)
+    row["max_comments_per_week"] = resolve_weekly_cap(row.get("max_comments_per_week"))
     return row
 
 

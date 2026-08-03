@@ -49,6 +49,15 @@ class TestSelectRosterTargets:
         picked = select_roster_targets([spent, left], 5)
         assert [t["profile_url"] for t in picked] == ["left"]
 
+    def test_a_zero_cap_pauses_the_author(self):
+        # The SPA tells the operator 0 pauses an account; `cap or DEFAULT` used to read that 0 as
+        # unset and give the author two comments a week instead.
+        from cqc_lem.app.run_automation import select_roster_targets
+        paused = _target("paused", "peer", cap=0, used=0)
+        live = _target("live", "peer", cap=2, used=0)
+        picked = select_roster_targets([paused, live], 5)
+        assert [t["profile_url"] for t in picked] == ["live"]
+
     def test_inactive_targets_are_skipped(self):
         from cqc_lem.app.run_automation import select_roster_targets
         picked = select_roster_targets([_target("off", "peer", active=False)], 5)
