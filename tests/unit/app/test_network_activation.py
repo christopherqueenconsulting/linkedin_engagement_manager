@@ -134,7 +134,9 @@ class TestReplyCheckUnblocksNurture:
     def test_an_appreciation_dm_now_leaves_a_reply_check_behind(self, monkeypatch):
         from cqc_lem.app import run_automation as ra
         monkeypatch.delenv("DM_NURTURE_ENABLED", raising=False)
-        with patch(f"{_RA}.build_dm_from_template", return_value="hi Jane"), \
+        with patch(f"{_RA}.has_appreciation_touch", return_value=False), \
+             patch(f"{_RA}.claim_appreciation_touch", return_value=True), \
+             patch(f"{_RA}.build_dm_from_template", return_value="hi Jane"), \
              patch(f"{_RA}.send_private_dm") as dm, \
              patch(f"{_RA}.get_dm_template", return_value=None), \
              patch(f"{_RA}.enqueue_followup") as enq:
@@ -146,7 +148,9 @@ class TestReplyCheckUnblocksNurture:
 
     def test_the_recipient_name_is_cleaned_before_it_reaches_the_template(self):
         from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}.build_dm_from_template", return_value="hi") as build, \
+        with patch(f"{_RA}.has_appreciation_touch", return_value=False), \
+             patch(f"{_RA}.claim_appreciation_touch", return_value=True), \
+             patch(f"{_RA}.build_dm_from_template", return_value="hi") as build, \
              patch(f"{_RA}.send_private_dm"), \
              patch(f"{_RA}.enqueue_next_followup"):
             ra._dispatch_appreciation_dms(1, MagicMock(), "connection_accepted",
@@ -155,12 +159,17 @@ class TestReplyCheckUnblocksNurture:
 
     def test_a_missing_template_is_logged_not_swallowed(self, caplog):
         from cqc_lem.app import run_automation as ra
-        with patch(f"{_RA}.build_dm_from_template", return_value=None), \
+        with patch(f"{_RA}.has_appreciation_touch", return_value=False), \
+             patch(f"{_RA}.claim_appreciation_touch") as claim, \
+             patch(f"{_RA}.build_dm_from_template", return_value=None), \
              patch(f"{_RA}.send_private_dm") as dm:
             sent = ra._dispatch_appreciation_dms(1, MagicMock(), "collaboration",
                                                  {"https://x/in/jane": "Jane"})
         assert sent == 0
         dm.apply_async.assert_not_called()
+        # #968: the ledger claim comes AFTER the message is written, so a template gap does not
+        # burn this person's one shot at ever being thanked.
+        claim.assert_not_called()
         assert "No 'collaboration' DM template" in caplog.text
 
     def test_an_empty_followup_run_says_so(self, caplog):

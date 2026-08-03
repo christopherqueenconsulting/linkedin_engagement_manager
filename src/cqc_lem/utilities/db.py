@@ -9096,6 +9096,58 @@ def upsert_dm_templates(user_id: int, templates: list) -> bool:
         connection.close()
 
 
+# The appreciation triggers that share `_dispatch_appreciation_dms` — and therefore the ledger below.
+APPRECIATION_EVENT_TYPES = ("connection_accepted", "recommendation_received", "collaboration")
+
+
+def claim_appreciation_touch(user_id: int, profile_url: str, event_type: str,
+                             person_name: str = None) -> bool:
+    """Claim the right to send ONE appreciation DM to this person for this event (issue #968).
+
+    True only when THIS call inserted the row. The recommendation and collaboration sources read a
+    standing LinkedIn surface (a recommendation never leaves the profile, a mention sits in the
+    notifications feed for weeks) and the appreciation beat re-queues itself every ~60s, so the
+    unique key is the only thing between "thanked once" and "thanked every minute".
+
+    Claim BEFORE dispatch, never after: a thank-you that fails to send is recoverable by a human,
+    one sent twenty times is not. A DB error therefore returns False — no claim, no DM.
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "INSERT IGNORE INTO appreciation_touches (user_id, profile_url, person_name, event_type) "
+            "VALUES (%s,%s,%s,%s)",
+            (user_id, profile_url, person_name, str(event_type)))
+        connection.commit()
+        return cursor.rowcount == 1
+    except mysql.connector.Error as err:
+        myprint(f"Could not claim appreciation touch for user_id {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def has_appreciation_touch(user_id: int, profile_url: str, event_type: str) -> bool:
+    """Whether this person was already thanked for this event. Read-only — the CLAIM is what makes
+    the decision (see claim_appreciation_touch); this exists so a scraper can skip parsing work and
+    so the live probe can report what production would do without writing a row."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT 1 FROM appreciation_touches WHERE user_id = %s AND profile_url = %s "
+            "AND event_type = %s LIMIT 1", (user_id, profile_url, str(event_type)))
+        return cursor.fetchone() is not None
+    except mysql.connector.Error as err:
+        myprint(f"Could not check appreciation touch for user_id {user_id} | Error: {err}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def enqueue_followup(user_id: int, profile_url: str, first_name: str, event_type: str,
                      next_step: int, due_at) -> bool:
     """Schedule a follow-up DM touch. `due_at` is a datetime."""

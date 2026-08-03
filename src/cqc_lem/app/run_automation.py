@@ -50,6 +50,7 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     update_db_post_content, update_db_post_first_comment_link, get_post_first_comment_link, \
     get_dm_history_for_profile, get_post_status, get_user_blog_url, get_post_type, get_carousel_slides, \
     get_dm_template, enqueue_followup, get_due_followups, mark_followup, stop_followups_for_profile, \
+    claim_appreciation_touch, has_appreciation_touch, \
     set_profile_synthesis, get_duplicate_comment_posts, get_recent_comment_texts, count_dms_sent_today, \
     get_approved_outreach_targets, update_outreach_target, update_outreach_target_status, \
     OutreachStage, OutreachStatus, insert_outreach_target, get_outreach_target_by_url, \
@@ -4910,22 +4911,249 @@ def _next_pending_invitation(driver: WebDriver, accepted_urls: set[str]) -> tupl
     return None
 
 
-def get_recent_recommendations(driver, wait) -> dict[str, str]:
-    """Return {profile_url: name} for users who recently recommended the current user.
+# --- Appreciation-DM sources beyond the invitation manager (issue #968) -------------------------
+#
+# Both surfaces below are STANDING lists, not event queues: a recommendation stays on the profile
+# forever and a mention sits in the notifications feed for weeks. Two things therefore bound them
+# and neither is optional — a lookback window (so a first run does not thank a five-year-old
+# recommendation) and the durable claim in `appreciation_touches` (so the 60s re-queue of
+# `automate_appreciation_dms_for_user` cannot thank the same person twice).
+#
+# OFF by default until the selectors below are live-grounded (`scripts/linkedin_live_validation.py
+# --appreciation-sources`). An ungrounded scraper that finds nothing is a quiet no-op; one that
+# finds the WRONG cards sends real DMs to real people, so the flip is the owner's.
+_APPRECIATION_LOOKBACK_DEFAULT_DAYS = 30
 
-    Scrapin the LinkedIn Recommendations Received section is not yet implemented;
-    returns an empty dict until a scraper is added here.
+
+def appreciation_sources_enabled() -> bool:
+    """Read at the CALL SITE so the owner can flip it after grounding without a code change."""
+    return os.getenv("APPRECIATION_SOURCES_ENABLED", "false").strip().lower() == "true"
+
+
+# Recommendations Received. `data-view-name` first, then the semantic list item proved by what the
+# card must contain (a /in/ link), then the legacy paged-list class — never a hashed class alone.
+_RECOMMENDATION_TAB_LOCATORS = [
+    (By.XPATH, "//button[@role='tab'][contains(normalize-space(),'Received')]"),
+    (By.XPATH, "//*[@role='tab'][contains(normalize-space(),'Received')]"),
+    (By.XPATH, "//button[normalize-space()='Received']"),
+]
+_RECOMMENDATION_CARD_LOCATORS = [
+    (By.CSS_SELECTOR, "main li[data-view-name='profile-recommendation']"),
+    (By.CSS_SELECTOR, "main div[data-view-name='profile-recommendation']"),
+    (By.XPATH, "//main//li[.//a[contains(@href,'/in/')] and .//time]"),
+    (By.XPATH, "//main//li[contains(@class,'pvs-list__paged-list-item')][.//a[contains(@href,'/in/')]]"),
+    (By.XPATH, "//main//section//li[.//a[contains(@href,'/in/')]]"),
+]
+_RECOMMENDATION_AUTHOR_LOCATORS = [
+    (By.CSS_SELECTOR, "a[data-view-name='profile-recommendation-author']"),
+    (By.CSS_SELECTOR, "a[href*='/in/']"),
+]
+
+# Mentions notifications — the closest thing LinkedIn exposes to "we did something together":
+# somebody put this user's name in their own post or comment.
+_MENTIONS_URL = "https://www.linkedin.com/notifications/?filter=mentions"
+_MENTION_CARD_LOCATORS = [
+    (By.CSS_SELECTOR, "main article[data-view-name='notification-card']"),
+    (By.CSS_SELECTOR, "main div[data-view-name='notification-card']"),
+    (By.XPATH, "//main//article[.//a[contains(@href,'/in/')]]"),
+    (By.XPATH, "//main//li[.//a[contains(@href,'/in/')]][.//time or .//span]"),
+]
+_MENTION_ACTOR_LOCATORS = [
+    (By.CSS_SELECTOR, "a[data-view-name='notification-actor']"),
+    (By.CSS_SELECTOR, "a[href*='/in/']"),
+]
+# A mentions-filtered feed still mixes in "X posted", so the card has to SAY it was a mention.
+_MENTION_TEXT_RE = re.compile(r"\b(mentioned|tagged)\s+you\b", re.IGNORECASE)
+_RECOMMENDATION_DATE_RE = re.compile(
+    r"\b(January|February|March|April|May|June|July|August|September|October|November|December)"
+    r"\s+(\d{1,2}),\s*(\d{4})\b")
+# LinkedIn writes notification ages compactly ("2h", "3d", "1w", "2mo", "1y") but spells them out on
+# some surfaces, so both forms parse. Ordered so "months" can never be read as "minutes".
+_RELATIVE_AGE_RE = re.compile(
+    r"\b(\d{1,3})\s*(mo(?:nths?)?|min(?:utes?)?|h(?:ours?)?|d(?:ays?)?|w(?:eeks?)?|y(?:ears?)?|m)\b",
+    re.IGNORECASE)
+# Anything under a day is "today" for a lookback measured in days.
+_RELATIVE_AGE_UNIT_DAYS = (("mo", 30.0), ("min", 0.0), ("h", 0.0), ("d", 1.0), ("w", 7.0),
+                           ("y", 365.0), ("m", 0.0))
+
+
+def appreciation_lookback_days() -> int:
+    """How far back a standing surface may be read. Anything older is somebody else's history, not
+    a moment worth reacting to."""
+    try:
+        return max(1, int(os.getenv("APPRECIATION_LOOKBACK_DAYS")
+                          or _APPRECIATION_LOOKBACK_DEFAULT_DAYS))
+    except ValueError:
+        return _APPRECIATION_LOOKBACK_DEFAULT_DAYS
+
+
+def _parse_recommendation_date(text: str, now: datetime = None) -> "float | None":
+    """Age in days of the newest 'Month D, YYYY' in a recommendation card, or None when the card
+    carries no readable date. None means SKIP — an undated card could be from 2018."""
+    matches = _RECOMMENDATION_DATE_RE.findall(text or "")
+    if not matches:
+        return None
+    moment = now or datetime.now(timezone.utc)
+    ages = []
+    for month, day, year in matches:
+        try:
+            received = datetime.strptime(f"{month} {day} {year}", "%B %d %Y").replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        ages.append((moment - received).total_seconds() / 86400.0)
+    return min(ages) if ages else None
+
+
+def _parse_relative_age_days(text: str) -> "float | None":
+    """Age in days from a LinkedIn relative timestamp ('2h', '3d', '2mo'). None when nothing in the
+    card reads as an age — which, like an undated recommendation, means SKIP."""
+    match = _RELATIVE_AGE_RE.search(text or "")
+    if not match:
+        return None
+    amount, unit = match.group(1), match.group(2).lower()
+    for prefix, days in _RELATIVE_AGE_UNIT_DAYS:
+        if unit.startswith(prefix):
+            return float(amount) * days
+    return None
+
+
+def _card_person(card: WebElement, locators: list) -> tuple:
+    """(normalized profile_url, display name) for the person a card is about, or ('', '')."""
+    link = _first_in_card(card, locators)
+    if link is None:
+        return "", ""
+    try:
+        href = link.get_attribute("href") or ""
+        raw_name = (getText(link) or "").strip().split("\n")[0]
+    except (StaleElementReferenceException, NoSuchElementException, WebDriverException):
+        return "", ""
+    if "/in/" not in href:
+        return "", ""
+    return _normalize_profile_url(href), clean_person_name(raw_name)
+
+
+def _card_text(card: WebElement) -> str:
+    try:
+        return getText(card) or ""
+    except (StaleElementReferenceException, NoSuchElementException, WebDriverException):
+        return ""
+
+
+def get_recent_recommendations(driver, wait, user_id: int = None,
+                               profile_url: str = None) -> dict[str, str]:
+    """Return {profile_url: name} for people who recommended this user inside the lookback window.
+
+    Reads the user's OWN profile → Recommendations → Received. Undated cards are skipped rather
+    than thanked: the section carries every recommendation ever received, so "no date" and "this
+    week" must never collapse into the same answer.
     """
-    return {}
+    if not appreciation_sources_enabled():
+        return {}
+
+    own_url = _normalize_profile_url(profile_url or "") or _own_profile_url(driver, user_id)
+    if not own_url:
+        log_debug("No own profile URL — skipping the recommendations scan", user_id=user_id,
+                  action_type="scrape")
+        return {}
+
+    driver.get(f"{own_url}/details/recommendations/")
+    wait_for_ajax(driver)
+    time.sleep(random.uniform(2, 4))
+    # The Received tab is the default; clicking it is only a correction, so a miss is a no-op.
+    click_first(driver, wait, _RECOMMENDATION_TAB_LOCATORS, "Recommendations Received tab",
+                required=False, max_try=1, warn_on_miss=False, user_id=user_id)
+    time.sleep(random.uniform(1, 2))
+
+    cards = find_all_first(driver, _RECOMMENDATION_CARD_LOCATORS)
+    if not cards:
+        log_debug("No recommendation cards rendered", user_id=user_id, action_type="scrape")
+        return {}
+
+    lookback = appreciation_lookback_days()
+    recommenders: dict[str, str] = {}
+    dated = 0
+    for card in cards:
+        text = _card_text(card)
+        age_days = _parse_recommendation_date(text)
+        if age_days is None:
+            continue
+        dated += 1
+        if age_days > lookback:
+            continue
+        url, name = _card_person(card, _RECOMMENDATION_AUTHOR_LOCATORS)
+        if not url or url == own_url:
+            continue
+        recommenders.setdefault(url, name)
+
+    if not dated:
+        # Cards rendered but not one carried a parseable date — that is selector/format drift, and
+        # the feature is silently dead until it is fixed. Warning on repeat is the point.
+        log_warning("Recommendation cards carried no readable date", user_id=user_id,
+                    action_type="scrape", url=f"{own_url}/details/recommendations/")
+    log_info(f"Found {len(recommenders)} recommendation(s) received in the last {lookback} day(s)",
+             user_id=user_id, action_type="dm")
+    return recommenders
 
 
-def get_recent_collaborators(driver, wait) -> dict[str, str]:
-    """Return {profile_url: name} for recent collaborators to thank.
+def get_recent_collaborators(driver, wait, user_id: int = None) -> dict[str, str]:
+    """Return {profile_url: name} for people to thank for a recent collaboration.
 
-    No structured LinkedIn data source exists for this yet; returns an empty dict
-    until a notification-scraper is added here.
+    LinkedIn exposes no "collaboration" event, so the source is the nearest structured one it does
+    expose: the mentions notification feed — somebody put this user's name in their own post or
+    comment inside the lookback window. A card that does not SAY it was a mention is skipped, as is
+    one with no readable age.
     """
-    return {}
+    if not appreciation_sources_enabled():
+        return {}
+
+    driver.get(_MENTIONS_URL)
+    wait_for_ajax(driver)
+    time.sleep(random.uniform(2, 4))
+
+    cards = find_all_first(driver, _MENTION_CARD_LOCATORS)
+    if not cards:
+        log_debug("No mention notifications rendered", user_id=user_id, action_type="scrape")
+        return {}
+
+    lookback = appreciation_lookback_days()
+    collaborators: dict[str, str] = {}
+    for card in cards:
+        text = _card_text(card)
+        if not _MENTION_TEXT_RE.search(text):
+            continue
+        age_days = _parse_relative_age_days(text)
+        if age_days is None or age_days > lookback:
+            continue
+        url, name = _card_person(card, _MENTION_ACTOR_LOCATORS)
+        if not url:
+            continue
+        collaborators.setdefault(url, name)
+
+    log_info(f"Found {len(collaborators)} collaboration mention(s) in the last {lookback} day(s)",
+             user_id=user_id, action_type="dm")
+    return collaborators
+
+
+def _own_profile_url(driver, user_id: "int | None") -> str:
+    """The user's own profile URL: the stored one first, else resolved live by letting LinkedIn's
+    /in/me/ redirect answer it. Empty string when neither works."""
+    if user_id is not None:
+        try:
+            stored = get_linkedin_profile_url_by_user_id(user_id)
+        except Exception as e:
+            log_debug(f"Could not read stored profile URL: {e}", user_id=user_id, action_type="scrape")
+            stored = None
+        if stored:
+            return _normalize_profile_url(stored)
+    try:
+        driver.get("https://www.linkedin.com/in/me/")
+        wait_for_ajax(driver)
+        time.sleep(random.uniform(1, 2))
+        resolved = _normalize_profile_url(driver.current_url or "")
+    except WebDriverException as e:
+        log_debug(f"Could not resolve own profile URL: {e}", user_id=user_id, action_type="scrape")
+        return ""
+    return resolved if "/in/" in resolved else ""
 
 
 class _SafePlaceholders(dict):
@@ -5304,14 +5532,31 @@ def _dispatch_appreciation_dms(user_id: int, my_profile: LinkedInProfile, event_
     """Send the step-0 appreciation DM for one trigger event to everyone it fired for, and put each
     thread on the follow-up sequencer. Returns how many were dispatched. A missing template used to
     drop the recipient in silence — now it says so, because a template gap here is the difference
-    between a nurture pipeline and an empty one (issue #623)."""
+    between a nurture pipeline and an empty one (issue #623).
+
+    Every recipient is CLAIMED in `appreciation_touches` (issue #968). The recommendation and
+    collaboration sources read standing LinkedIn surfaces and this beat re-queues itself every ~60s,
+    so without the claim the same person is thanked on every pass. Already thanked is the normal
+    steady state, not a fault — it logs at DEBUG, and it is checked BEFORE the message is written so
+    a repeat costs no LLM call. The claim itself lands after the write and before the send, so a
+    missing template never burns a person's one shot at being thanked."""
     sent = 0
     for profile_url, name in (recipients or {}).items():
         first_name = clean_person_name(name).split(" ")[0] or "there"
+        if has_appreciation_touch(user_id, profile_url, event_type):
+            log_debug(f"Already appreciated {first_name} for '{event_type}' — skipping",
+                      user_id=user_id, action_type="dm")
+            continue
         message = build_dm_from_template(user_id, event_type, first_name, my_profile)
         if not message:
             log_warning(f"No '{event_type}' DM template for step 0 — skipping the appreciation DM "
                         f"to {first_name}", user_id=user_id, action_type="dm")
+            continue
+        if not claim_appreciation_touch(user_id, profile_url, event_type, person_name=name):
+            # A concurrent pass got there first (or the ledger is unreadable) — either way the safe
+            # answer is not to send.
+            log_debug(f"Appreciation claim for {first_name} not granted — skipping",
+                      user_id=user_id, action_type="dm")
             continue
         send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": profile_url,
                                             "message": message})
@@ -5343,12 +5588,14 @@ def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: in
         _dispatch_appreciation_dms(user_id, my_profile, "connection_accepted", invitations_accepted)
 
         # After Receiving a Recommendation — thank the recommender
+        own_profile_url = str(getattr(my_profile, "profile_url", "") or "")
         _dispatch_appreciation_dms(user_id, my_profile, "recommendation_received",
-                                   get_recent_recommendations(driver, wait))
+                                   get_recent_recommendations(driver, wait, user_id,
+                                                              own_profile_url))
 
         # After a Successful Collaboration — express gratitude and offer to connect further
         _dispatch_appreciation_dms(user_id, my_profile, "collaboration",
-                                   get_recent_collaborators(driver, wait))
+                                   get_recent_collaborators(driver, wait, user_id))
 
         # Re-schedule the task in the queue for the future
         if loop_for_duration:

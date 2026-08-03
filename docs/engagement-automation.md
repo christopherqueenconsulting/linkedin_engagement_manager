@@ -268,3 +268,34 @@ invisible: the user could never learn that following or connecting would unlock 
 - **Observability:** `roster_comment_blocked` / `roster_followed` ride the feed funnel and the
   `feed_scan` event. A rising blocked count with a flat followed count is a roster the user has to
   fix by connecting, not a broken selector.
+
+## Appreciation-DM sources: recommendations + collaborations (issue #968)
+
+`automate_appreciation_dms_for_user` advertises three triggers; two of them were permanent
+empty-dict stubs, so only new connections ever produced a DM and the
+`recommendation_received` / `collaboration` templates were dead code.
+
+- **Two sources, both STANDING lists.** `get_recent_recommendations` reads the user's own
+  profile → `/details/recommendations/` (Received tab); `get_recent_collaborators` reads the
+  mentions notification feed (`/notifications/?filter=mentions`) — the nearest thing LinkedIn
+  exposes to a collaboration event, i.e. somebody put this user's name in their own post or
+  comment. Neither is an event queue: a recommendation never leaves the profile and a mention sits
+  in the feed for weeks. Everything below follows from that.
+- **Undated is SKIPPED, never thanked.** A card with no readable date could be from 2018, so
+  `_parse_recommendation_date` / `_parse_relative_age_days` return `None` and the card is dropped.
+  Only what falls inside `APPRECIATION_LOOKBACK_DAYS` (default 30) is a moment worth reacting to.
+  Cards that render but NONE of which date is the one thing that warns: that is format drift, and
+  it reads in production as "no recent recommendations" forever — a silently dead trigger.
+- **`appreciation_touches` is the claim, and it is what makes this safe.** The beat re-queues
+  itself every ~60s inside its window, so a standing list without a durable claim is a DM a minute.
+  One row per (user, person, event_type); the unique key is the guarantee. `_dispatch_appreciation_dms`
+  checks `has_appreciation_touch` BEFORE writing the message (a repeat costs no LLM call) and
+  `claim_appreciation_touch` AFTER (so a missing template never burns a person's one shot). The
+  claim lands before the send: a thank-you that fails to send is recoverable by a human, one sent
+  twenty times is not — so an unreadable ledger reads as "don't send". `connection_accepted` flows
+  through the same dispatcher and gets the same protection.
+- **OFF until grounded.** `APPRECIATION_SOURCES_ENABLED` (default `false`, read at the call site)
+  gates both scrapers. A scraper that finds nothing is a quiet no-op; one that finds the WRONG
+  cards DMs real people, so the flip belongs to the owner after a live run of
+  `python -m scripts.linkedin_live_validation --appreciation-sources` — read-only, messages
+  nobody, claims no ledger row, and reports per card what production would do with it.

@@ -937,6 +937,89 @@ def probe_roster_follow(driver, profile_url: str,
     return reading
 
 
+def appreciation_verdict(reading: dict) -> str:
+    """What one reading proves about an appreciation source (#968).
+
+    'cards but nothing dated' is the finding that matters: production skips an undated card rather
+    than thank a five-year-old recommendation, so a section that renders and never dates reads as
+    "no recent recommendations" forever — a silently dead trigger, not an empty one."""
+    reading = dict(reading or {})
+    cards = int(reading.get("cards") or 0)
+    if not cards:
+        return ("no cards resolved — either the surface is genuinely empty or the card locator "
+                "chain has rotated; production sends nothing either way")
+    if not reading.get("dated"):
+        return (f"{cards} card(s) resolved but none carried a readable date — production skips "
+                f"every one of them, so this trigger is silently dead")
+    people = reading.get("people") or []
+    return (f"{cards} card(s), {reading.get('dated')} dated, {len(people)} inside the "
+            f"{reading.get('lookback_days')}-day window — production would thank those")
+
+
+def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
+                               sleep: Callable[[float], None] = time.sleep) -> dict:
+    """#968: read the two standing surfaces the recommendation + collaboration appreciation DMs are
+    scraped from, and report what production would make of them.
+
+    STRICTLY read-only, and it deliberately does NOT call the production scrapers — those are gated
+    OFF by `APPRECIATION_SOURCES_ENABLED` precisely until this probe has grounded them, so the probe
+    drives the same locator chains and the same date parsers directly. Nothing is messaged: the
+    ledger is only READ (`has_appreciation_touch`), never claimed."""
+    from cqc_lem.app.run_automation import (_MENTIONS_URL, _MENTION_ACTOR_LOCATORS,
+                                            _MENTION_CARD_LOCATORS, _MENTION_TEXT_RE,
+                                            _RECOMMENDATION_AUTHOR_LOCATORS,
+                                            _RECOMMENDATION_CARD_LOCATORS, _card_person, _card_text,
+                                            _own_profile_url, _parse_recommendation_date,
+                                            _parse_relative_age_days, appreciation_lookback_days)
+    from cqc_lem.utilities.db import has_appreciation_touch
+    from cqc_lem.utilities.selenium_util import find_all_first
+
+    lookback = appreciation_lookback_days()
+
+    def _read(url: str, card_locators, person_locators, age_of, event_type: str,
+              require=None) -> dict:
+        driver.get(url)
+        sleep(5)
+        cards = find_all_first(driver, card_locators)
+        rows, dated = [], 0
+        for card in cards:
+            text = _card_text(card)
+            if require is not None and not require(text):
+                continue
+            age_days = age_of(text)
+            if age_days is not None:
+                dated += 1
+            person_url, name = _card_person(card, person_locators)
+            rows.append({"profile_url": person_url, "name": name,
+                         "age_days": None if age_days is None else round(age_days, 2),
+                         "in_window": age_days is not None and age_days <= lookback,
+                         # Already thanked = production skips it even when everything else resolves.
+                         "already_thanked": bool(person_url) and has_appreciation_touch(
+                             user_id, person_url, event_type),
+                         "text": (text or "")[:160]})
+        reading = {"url": url, "current_url": getattr(driver, "current_url", url),
+                   "lookback_days": lookback, "cards": len(rows), "dated": dated,
+                   "people": [r for r in rows if r["in_window"] and r["profile_url"]
+                              and not r["already_thanked"]],
+                   "rows": rows[:10]}
+        reading["verdict"] = appreciation_verdict(reading)
+        return reading
+
+    own = _own_profile_url(driver, user_id) if not profile_url else profile_url.rstrip("/")
+    report = {"own_profile_url": own}
+    if own:
+        report["recommendations_received"] = _read(
+            f"{own}/details/recommendations/", _RECOMMENDATION_CARD_LOCATORS,
+            _RECOMMENDATION_AUTHOR_LOCATORS, _parse_recommendation_date, "recommendation_received")
+    else:
+        report["recommendations_received"] = {
+            "verdict": "own profile URL unresolved — production skips the recommendations scan"}
+    report["mentions"] = _read(_MENTIONS_URL, _MENTION_CARD_LOCATORS, _MENTION_ACTOR_LOCATORS,
+                               _parse_relative_age_days, "collaboration",
+                               require=lambda t: bool(_MENTION_TEXT_RE.search(t or "")))
+    return report
+
+
 def probe_message_thread(driver, profile_url: str, person_name: str = "", self_name: str = "",
                          sleep=time.sleep) -> dict:
     """#731: walk the message-thread resolution ladder against a REAL profile and report which route
@@ -1011,6 +1094,11 @@ def main(argv: Optional[list] = None) -> int:
                         help="a roster target's profile URL — reports whether the top-card "
                              "Follow/Following control resolves on their activity page (#962). "
                              "Read-only: nothing is clicked, nobody is followed.")
+    parser.add_argument("--appreciation-sources", action="store_true",
+                        help="read the Recommendations Received section and the mentions "
+                             "notification feed and report what the appreciation-DM triggers would "
+                             "make of them (#968). Read-only: nothing is messaged and no ledger row "
+                             "is claimed.")
     parser.add_argument("--feed-sort", action="store_true",
                         help="report whether the home feed's 'Sort by -> Recent' control resolves "
                              "and whether the flip sticks (#817)")
@@ -1029,10 +1117,10 @@ def main(argv: Optional[list] = None) -> int:
 
     if not (args.post_url or args.probe_composer or args.comment_outcome_url or args.dm_thread_url
             or args.article_editor_url or args.feed_sort or args.reaction_probe
-            or args.roster_follow):
+            or args.roster_follow or args.appreciation_sources):
         parser.error("nothing to probe — pass --post-url, --comment-outcome-url, --dm-thread-url, "
-                     "--article-editor-url, --feed-sort, --reaction-probe, --roster-follow and/or "
-                     "--probe-composer")
+                     "--article-editor-url, --feed-sort, --reaction-probe, --roster-follow, "
+                     "--appreciation-sources and/or --probe-composer")
 
     from cqc_lem.app.run_automation import get_current_profile
     from cqc_lem.utilities.selenium_util import quit_gracefully
@@ -1062,6 +1150,9 @@ def main(argv: Optional[list] = None) -> int:
             report["feed_sort"] = probe_feed_sort(driver)
         if args.roster_follow:
             report["roster_follow"] = probe_roster_follow(driver, args.roster_follow)
+        if args.appreciation_sources:
+            report["appreciation_sources"] = probe_appreciation_sources(
+                driver, args.user_id, str(getattr(profile, "profile_url", "") or ""))
         if args.probe_composer:
             report["composer"] = probe_composer(driver)
         if args.article_editor_url:
