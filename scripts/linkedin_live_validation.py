@@ -40,6 +40,14 @@ unit-tested; the browser steps take injected callables so they are mocked in tes
 grounding pass that can stop an unvalidated selector chain from shipping happens before the merge
 that ships it. It carries the chain itself when the running image has none, and says so in the
 report (``chain_source``).
+
+Since issue #1013 every probe grades itself ``ok`` / ``drift`` / ``unknown`` (``state``) beside its
+prose ``verdict``, ``--surfaces`` prints the Selenium surface → probe coverage matrix
+(``docs/sdui-probe-coverage.md``), and ``--sweep`` runs every target-free probe in ONE session —
+which is what ``scripts/weekly_sdui_drift_check.sh`` runs, filing ONE deduped ``agent:ready`` issue
+per ``drift`` verdict. ``drift`` is claimed only against a page-native cross-check (a headline
+count, the page's own empty-state copy, an anchor the chain should have matched); a page that did
+not render is ``unknown`` and is never filed as a defect.
 """
 
 import argparse
@@ -55,6 +63,103 @@ from selenium.webdriver.common.keys import Keys
 SIGNALS = ("reactions", "comments", "reposts", "impressions", "saves")
 ANALYTICS_URL = "https://www.linkedin.com/analytics/post-summary/{urn}/"
 FEED_URL = "https://www.linkedin.com/feed/"
+CATCHUP_PROBE_URL = "https://www.linkedin.com/mynetwork/catch-up/all/"
+
+# ─────────────────────────── the three-state verdict (issue #1013) ───────────────────────────
+# Every probe grades itself into exactly one of these, next to its prose `verdict`. The prose is
+# for a human reading one report; the state is what the weekly sweep files issues from, so the
+# three have to stay decision-shaped and NOT interchangeable:
+#
+#   ok      — the locator chain resolved what production needs on this surface.
+#   drift   — the PAGE shows content the locator cannot see. This is the only state that files an
+#             issue, and it is only ever claimed against a page-native cross-check (a headline
+#             count, the page's own empty-state copy, an anchor the chain should have matched).
+#   unknown — the page did not render (auth wall, redirect, read raced the load) or the surface is
+#             legitimately absent. Grounds nothing; re-run it. NEVER filed as a defect — three
+#             separate lanes died silently because "nothing found" was read as "nothing there",
+#             and reading "did not render" as drift is the same mistake pointed the other way.
+STATE_OK = "ok"
+STATE_DRIFT = "drift"
+STATE_UNKNOWN = "unknown"
+# Worst-wins ordering when a probe grades several sections (appreciation reads two surfaces) or the
+# sweep summarizes many probes: a drift anywhere is the report's state.
+_STATE_RANK = {STATE_OK: 0, STATE_UNKNOWN: 1, STATE_DRIFT: 2}
+
+
+def worst_state(states) -> str:
+    """The most severe of several states — drift beats unknown beats ok. Empty grades `unknown`:
+    a sweep that measured nothing must not read as a clean bill of health."""
+    ranked = [s for s in (states or []) if s in _STATE_RANK]
+    if not ranked:
+        return STATE_UNKNOWN
+    return max(ranked, key=lambda s: _STATE_RANK[s])
+
+
+def graded(reading: dict, state: str, verdict: str) -> dict:
+    """Stamp a probe reading with its three-state grade and its prose verdict, in that order."""
+    reading["state"] = state
+    reading["verdict"] = verdict
+    return reading
+
+
+# ─────────────────────── surface inventory / probe coverage matrix (#1013) ───────────────────
+# Every Selenium touchpoint in run_automation.py + utilities/linkedin/*, and the probe flag that
+# grounds it. This is the machine-readable half of docs/sdui-probe-coverage.md — `--surfaces`
+# prints it, a unit test asserts every `flag` is a real CLI argument and every `sweep` entry runs
+# in the sweep, and another asserts the doc names every surface. A touchpoint with no probe row is
+# a surface that can rot silently, which is exactly what this issue exists to end.
+#
+# `sweep`: runs in the weekly unattended sweep, which means it needs NO caller-supplied target
+# (or resolves one itself from the user's own profile / DB) and is read-only enough to run
+# unattended. Everything else needs a URL a human picks.
+SURFACES = (
+    {"key": "feed_sort", "surface": "Home feed 'Sort by → Recent' control",
+     "code": "run_automation._switch_feed_to_recent", "flag": "--feed-sort", "sweep": True},
+    {"key": "feed_reactions", "surface": "Feed card walk + reaction controls",
+     "code": "run_automation._card_for_textbox / react_to_post_inline",
+     "flag": "--reaction-probe", "sweep": True},
+    {"key": "composer", "surface": "Feed share-box composer",
+     "code": "run_automation.auto_post_to_group (share box) / _post_composer_for_card",
+     "flag": "--probe-composer", "sweep": True},
+    {"key": "profile_views", "surface": "Profile-views analytics viewer list",
+     "code": "run_automation._PROFILE_VIEWER_ROWS_JS", "flag": "--profile-views", "sweep": True},
+    {"key": "profile_scrape", "surface": "Profile header scrape (name / headline / degree badge)",
+     "code": "scrapper.parse_profile_header + run_automation._profile_is_first_degree",
+     "flag": "--profile-scrape", "sweep": True},
+    {"key": "connect_dialog", "surface": "Connect invite dialog (custom-invite URL route)",
+     "code": "run_automation._open_connect_invite_dialog", "flag": "--connect-dialog",
+     "sweep": False},
+    {"key": "catchup_cards", "surface": "Catch-up moment cards",
+     "code": "run_automation._CATCHUP_CARD_LOCATORS", "flag": "--catchup-cards", "sweep": True},
+    {"key": "group_composer", "surface": "Group share box / post editor",
+     "code": "run_automation.auto_post_to_group", "flag": "--group-composer", "sweep": False},
+    {"key": "company_invite", "surface": "Company-page invite modal (credits / invitees / Invite)",
+     "code": "company_page_inviter.automate_invitations", "flag": "--company-invite",
+     "sweep": True},
+    {"key": "sent_invites", "surface": "Invitation manager → Sent (withdraw controls)",
+     "code": "stale_invites.read_pending_invites", "flag": "--sent-invites", "sweep": True},
+    {"key": "roster_follow", "surface": "Roster target's activity page Follow control",
+     "code": "run_automation._resolve_follow_control", "flag": "--roster-follow", "sweep": False},
+    {"key": "appreciation_sources", "surface": "Recommendations received + mentions feed",
+     "code": "run_automation._RECOMMENDATION_CARD_LOCATORS / _MENTION_CARD_LOCATORS",
+     "flag": "--appreciation-sources", "sweep": True},
+    {"key": "article_editor", "surface": "Newsletter/article editor publish steps",
+     "code": "article_editor.find_article_editor_elements", "flag": "--article-editor-url",
+     "sweep": True},
+    {"key": "post_stats", "surface": "Own post detail + analytics counts",
+     "code": "run_automation._post_social_counts", "flag": "--post-url", "sweep": False},
+    {"key": "document_render", "surface": "Published post media render (document vs image)",
+     "code": "run_automation (media anchors)", "flag": "--post-url", "sweep": False},
+    {"key": "comment_outcome", "surface": "Comment thread + sort (demotion read)",
+     "code": "run_automation._comment_items / _switch_comment_sort",
+     "flag": "--comment-outcome-url", "sweep": False},
+    {"key": "message_thread", "surface": "Message-thread resolution ladder",
+     "code": "message_thread.open_message_thread", "flag": "--dm-thread-url", "sweep": False},
+)
+
+# The sweep runs these in ONE Chrome session, cheapest/safest first so a session that dies part-way
+# still grounds the surfaces most likely to have rotted.
+SWEEP_ORDER = tuple(s["key"] for s in SURFACES if s["sweep"])
 
 # Whole-line labels worth echoing back with their neighbours. The analytics page renders each
 # label and its value in separate elements, so seeing the neighbouring lines is what tells us
@@ -185,6 +290,30 @@ def _read_main(driver, counts_fn) -> tuple:
     return text, counts_fn(container)
 
 
+def post_stats_state(reading: Optional[dict]) -> str:
+    """Three-state grade for one stats read. The label LINES are the page-native cross-check: a
+    signal the parser scored zero while the page renders its label is the parser reading a layout
+    it no longer matches — drift. Neither counts nor labels means the page never rendered."""
+    reading = dict(reading or {})
+    signals = (reading.get("signals") or {}).values()
+    lines = (reading.get("detail_lines") or []) + (reading.get("analytics_lines") or [])
+    if any((s or {}).get("value") for s in signals):
+        return STATE_OK
+    if lines:
+        return STATE_DRIFT
+    return STATE_UNKNOWN
+
+
+def post_stats_verdict(reading: Optional[dict]) -> str:
+    state = post_stats_state(reading)
+    if state == STATE_OK:
+        return "counts read"
+    if state == STATE_DRIFT:
+        return ("the page renders count labels but the parser scored every signal 0 — layout drift; "
+                "rewrite _post_social_counts from `detail_lines` / `analytics_lines`")
+    return "no counts and no count labels — the post/analytics page did not render; re-run"
+
+
 def probe_post_stats(driver, post_url: str, counts_fn=_social_counts, sleep=time.sleep) -> dict:
     """B2: read the counts off the post detail page, then off the author's analytics page."""
     driver.get(post_url)
@@ -198,10 +327,11 @@ def probe_post_stats(driver, post_url: str, counts_fn=_social_counts, sleep=time
         sleep(5)
         analytics_text, analytics_counts = _read_main(driver, counts_fn)
 
-    return {"post_url": post_url, "activity_urn": urn,
-            "signals": signal_sources(detail_counts, analytics_counts),
-            "detail_lines": label_lines(detail_text),
-            "analytics_lines": label_lines(analytics_text)}
+    reading = {"post_url": post_url, "activity_urn": urn,
+               "signals": signal_sources(detail_counts, analytics_counts),
+               "detail_lines": label_lines(detail_text),
+               "analytics_lines": label_lines(analytics_text)}
+    return graded(reading, post_stats_state(reading), post_stats_verdict(reading))
 
 
 def probe_document_render(driver, post_url: str, sleep=time.sleep) -> dict:
@@ -212,8 +342,14 @@ def probe_document_render(driver, post_url: str, sleep=time.sleep) -> dict:
     try:
         anchors = driver.execute_script(_MEDIA_JS, list(_MEDIA_TOKENS)) or []
     except Exception as e:
-        return {"post_url": post_url, "verdict": "unknown", "error": str(e), "anchors": []}
-    return {"post_url": post_url, "verdict": media_verdict(anchors),
+        return {"post_url": post_url, "verdict": "unknown", "state": STATE_UNKNOWN,
+                "error": str(e), "anchors": []}
+    verdict = media_verdict(anchors)
+    # `verdict` stays the MEDIA KIND here (document/image/unknown) — callers and tests read it as
+    # that. The three-state grade rides alongside: a post whose media nodes carry no recognizable
+    # token is a render this probe cannot classify, never a proven drift.
+    return {"post_url": post_url, "verdict": verdict,
+            "state": STATE_OK if verdict != "unknown" else STATE_UNKNOWN,
             "anchors": [dict(a, kind=classify_media_anchor(a)) for a in anchors]}
 
 
@@ -232,7 +368,18 @@ def probe_composer(driver, sleep=time.sleep) -> dict:
         "//button[contains(normalize-space(),'Start a post') or contains(@aria-label,'Start a post') "
         "or contains(@aria-label,'Create a post')]")], "Composer share box", required=False)
     if opened is None:
-        return {"opened": False, "controls": [], "document_affordance": None}
+        # A share box that did not resolve is only DRIFT if the feed itself rendered — otherwise
+        # this run was signed out or redirected and grounds nothing.
+        reading = {"opened": False, "controls": [], "document_affordance": None,
+                   "page_text": page_text_sample(driver),
+                   "visible_controls": visible_button_labels(driver)}
+        if reading["page_text"]:
+            return graded(reading, STATE_DRIFT,
+                          "the feed rendered but no share-box control resolved — re-ground the "
+                          "'Start a post' locator from `visible_controls`")
+        return graded(reading, STATE_UNKNOWN,
+                      "the feed did not render at all (signed out, redirected, or the read raced "
+                      "the load) — this reading grounds nothing; re-run it")
     sleep(3)
 
     dialog = find_first(driver, wait, [(By.CSS_SELECTOR, "div[role='dialog']")], "Composer dialog",
@@ -255,8 +402,13 @@ def probe_composer(driver, sleep=time.sleep) -> dict:
         # Closing the composer is courtesy only — the driver is quit right after in main(), and
         # a failed Escape must not mask the anchors this probe exists to report.
         pass
-    return {"opened": True, "controls": controls,
-            "document_affordance": find_document_affordance(controls)}
+    reading = {"opened": True, "controls": controls,
+               "document_affordance": find_document_affordance(controls)}
+    if not controls:
+        return graded(reading, STATE_DRIFT,
+                      "the composer opened but carries no readable control labels — its dialog "
+                      "anchors have rotated")
+    return graded(reading, STATE_OK, f"composer opened with {len(controls)} control(s)")
 
 
 def comment_outcome_verdict(reading: Optional[dict]) -> str:
@@ -276,6 +428,20 @@ def comment_outcome_verdict(reading: Optional[dict]) -> str:
     if reading.get("found_most_recent"):
         return "demoted"
     return "ambiguous: comment not found in either sort"
+
+
+def comment_outcome_state(reading: Optional[dict]) -> str:
+    """Three-state grade for one comment-outcome read. The rendered comment count is the
+    page-native cross-check: a thread that rendered comments but yielded no sort control (or none
+    of our own) is a reader that has lost the surface, while a thread that rendered NOTHING never
+    grounded anything."""
+    reading = dict(reading or {})
+    rendered = int(reading.get("rendered_comments") or 0)
+    if not rendered:
+        return STATE_UNKNOWN
+    if not reading.get("sort_control_found"):
+        return STATE_DRIFT
+    return STATE_OK
 
 
 def probe_comment_outcome(driver, post_url: str, our_slug: str, comment_text: str = "",
@@ -321,8 +487,7 @@ def probe_comment_outcome(driver, post_url: str, our_slug: str, comment_text: st
         reading["like_count"] = _comment_like_count(driver, ours)
         reading["reply_authors"] = [a for (_c, a) in replies][:20]
         reading["post_author_href"] = _post_author_href(driver)
-    reading["verdict"] = comment_outcome_verdict(reading)
-    return reading
+    return graded(reading, comment_outcome_state(reading), comment_outcome_verdict(reading))
 
 
 # This probe is piped into a RUNNING Selenium worker, so the `cqc_lem` it imports is the code baked
@@ -421,6 +586,20 @@ def feed_sort_verdict(reading: Optional[dict]) -> str:
     return f"control resolved, sort state unreadable after the flip ({state}){note}"
 
 
+def feed_sort_state(reading: Optional[dict]) -> str:
+    """Three-state grade for one feed-sort read. `visible_controls` is the page-native cross-check:
+    a feed that rendered controls but yielded no sort control among them is drift, while a screen
+    with no controls at all is a feed that never rendered."""
+    reading = dict(reading or {})
+    if reading.get("sort_after") == SORT_RECENT:
+        return STATE_OK
+    if not reading.get("visible_controls"):
+        return STATE_UNKNOWN
+    if not reading.get("control_found") or reading.get("option_found") is False:
+        return STATE_DRIFT
+    return STATE_UNKNOWN
+
+
 def menu_item_labels(driver, limit: int = 40) -> list:
     """Every visible menu-role label on screen. LinkedIn's sort options are not always <button>s, so
     `visible_button_labels` alone can report an empty menu that is actually rendered as list items —
@@ -515,8 +694,7 @@ def probe_feed_sort(driver, sleep=time.sleep) -> dict:
         reading.update({"option_found": None, "sort_after": SORT_UNKNOWN,
                         "flip_error": f"{type(e).__name__}: {e}"})
     reading["visible_controls"] = visible_button_labels(driver) + menu_item_labels(driver)
-    reading["verdict"] = feed_sort_verdict(reading)
-    return reading
+    return graded(reading, feed_sort_state(reading), feed_sort_verdict(reading))
 
 
 def probe_profile_viewers(driver, sleep=time.sleep) -> dict:
@@ -546,14 +724,21 @@ def probe_profile_viewers(driver, sleep=time.sleep) -> dict:
         "sample_rows": [{"href": r.get("href"), "viewed": r.get("viewed")} for r in rows[:5]],
     }
     if stat and not rows:
-        reading["verdict"] = f"headline reports {stat} viewers but the row locator matched none — selector drift"
-    elif not rows:
-        reading["verdict"] = "no viewers listed and no headline stat — page empty or not rendered"
-    elif len(rows_after_scroll) <= len(rows):
-        reading["verdict"] = f"{len(rows)} rows matched but the scroll did not grow the list — lazy-load drift"
-    else:
-        reading["verdict"] = f"{len(rows)} rows matched, scroll grew the list to {len(rows_after_scroll)}"
-    return reading
+        return graded(reading, STATE_DRIFT,
+                      f"headline reports {stat} viewers but the row locator matched none — "
+                      f"selector drift")
+    if not rows:
+        return graded(reading, STATE_UNKNOWN,
+                      "no viewers listed and no headline stat — page empty or not rendered")
+    if len(rows_after_scroll) <= len(rows) and stat and len(rows_after_scroll) < int(stat):
+        # A scroll that grew nothing is only drift when the page's OWN headline says there is more
+        # to load. An account with eight viewers really does have one page of them, and grading
+        # that as drift would file the same issue every week for a healthy surface.
+        return graded(reading, STATE_DRIFT,
+                      f"{len(rows)} rows matched and the scroll did not grow the list, but the "
+                      f"headline reports {stat} viewers — lazy-load drift")
+    return graded(reading, STATE_OK,
+                  f"{len(rows)} rows matched, scroll grew the list to {len(rows_after_scroll)}")
 
 
 def message_thread_verdict(reading: Optional[dict]) -> str:
@@ -573,6 +758,17 @@ def message_thread_verdict(reading: Optional[dict]) -> str:
         return (f"opened via {route}, but no LinkedIn display name is saved for this user "
                 f"(reply state = unknown — set it under Settings > Setup & Connection)")
     return f"opened via {route}"
+
+
+def message_thread_state(reading: Optional[dict]) -> str:
+    """Three-state grade for one ladder walk. Six routes are tried, so a walk that opened NOTHING
+    while the profile page rendered is drift; a walk that never reached a rendered page is unknown.
+    A thread that opened but reads no message events is drift too — that is exactly the reply
+    detection going quiet."""
+    reading = dict(reading or {})
+    if not reading.get("opened"):
+        return STATE_DRIFT if reading.get("routes_tried") else STATE_UNKNOWN
+    return STATE_OK if reading.get("events") else STATE_DRIFT
 
 
 def element_evidence(element) -> dict:
@@ -704,7 +900,7 @@ def probe_feed_reactions(driver, max_cards: int = 3, open_menu: bool = False,
             sleep(2)
     except Exception as e:
         out["error"] = f"{type(e).__name__}: {e}"
-        return out
+        return graded(out, STATE_UNKNOWN, f"the feed could not be loaded ({out['error']}) — re-run")
 
     # Always record WHICH screen we landed on. A zero-card result is only actionable next to the
     # evidence of what was actually rendered — an auth wall and a drifted card selector look
@@ -774,7 +970,7 @@ def probe_feed_reactions(driver, max_cards: int = 3, open_menu: bool = False,
                 cards.append(card)
     except Exception as e:
         out["error"] = f"card enumeration failed: {type(e).__name__}: {e}"
-        return out
+        return graded(out, STATE_UNKNOWN, f"{out['error']} — re-run")
     out["cards_found"] = len(cards)
 
     # The card walk climbs to the nearest ancestor carrying a comment affordance, so when it fails
@@ -884,7 +1080,39 @@ def probe_feed_reactions(driver, max_cards: int = 3, open_menu: bool = False,
         "opener": "opener" in seen,
         "toggle": "toggle" in seen,
     }
-    return out
+    return graded(out, feed_reactions_state(out), feed_reactions_verdict(out))
+
+
+def feed_reactions_state(reading: Optional[dict]) -> str:
+    """Three-state grade for one feed-card capture. The page's own controls are the cross-check:
+    text boxes that resolved but walked to no card is the #964/#1012 shape (the DOM is there, the
+    walk cannot see it), while a feed with no text boxes AND no buttons never rendered."""
+    reading = dict(reading or {})
+    if reading.get("error"):
+        return STATE_UNKNOWN
+    if reading.get("cards_found"):
+        return STATE_OK if any((reading.get("anchors_present") or {}).values()) else STATE_DRIFT
+    if reading.get("textboxes_found") or reading.get("comment_controls"):
+        return STATE_DRIFT
+    if reading.get("visible_buttons"):
+        return STATE_DRIFT
+    return STATE_UNKNOWN
+
+
+def feed_reactions_verdict(reading: Optional[dict]) -> str:
+    state = feed_reactions_state(reading)
+    reading = dict(reading or {})
+    if state == STATE_OK:
+        return (f"{reading.get('cards_found')} card(s) walked, reaction anchors present: "
+                f"{sorted(k for k, v in (reading.get('anchors_present') or {}).items() if v)}")
+    if state == STATE_UNKNOWN:
+        return ("the feed did not render (no post text nodes and no controls) — this reading "
+                "grounds nothing; re-run it")
+    if not reading.get("cards_found"):
+        return (f"{reading.get('textboxes_found') or 0} post text node(s) resolved but the card "
+                f"walk reached none of them — re-ground _card_for_textbox from `comment_controls`")
+    return ("cards walked but not one carried a reaction anchor — re-ground react_to_post_inline "
+            "from the per-card `controls`")
 
 
 def _safe_displayed(element) -> bool:
@@ -930,8 +1158,19 @@ def probe_article_editor(driver, editor_url: str = "https://www.linkedin.com/art
             verdict[key]["element"] = element_evidence(resolved.element)
     verdict["url"] = getattr(driver, "current_url", editor_url)
     verdict["buttons"] = visible_button_labels(driver)
-    verdict["verdict"] = article_editor_reading(verdict)
-    return verdict
+    return graded(verdict, article_editor_state(verdict), article_editor_reading(verdict))
+
+
+def article_editor_state(verdict: Optional[dict]) -> str:
+    """Three-state grade for one editor read. The screen's own buttons are the cross-check: an
+    editor that rendered controls but resolved none of the publish steps is drift; a screen with no
+    controls at all never rendered."""
+    verdict = dict(verdict or {})
+    if verdict.get("editor_ready"):
+        return STATE_OK
+    if not verdict.get("buttons"):
+        return STATE_UNKNOWN
+    return STATE_DRIFT
 
 
 def roster_follow_verdict(reading: dict) -> str:
@@ -941,7 +1180,7 @@ def roster_follow_verdict(reading: dict) -> str:
     reporting unknown on accounts you know you do not follow means the owner-named control has
     rotated and the lane has gone quiet — not that the roster is fully followed."""
     reading = dict(reading or {})
-    state = reading.get("state")
+    state = reading.get("follow_state")
     if state == "following":
         return "already following — production would record this WITHOUT a click"
     if state == "not_following":
@@ -955,6 +1194,20 @@ def roster_follow_verdict(reading: dict) -> str:
                 "and clicks nothing")
     return ("no control naming the page owner resolved — production returns unknown and clicks "
             "nothing")
+
+
+def roster_follow_state(reading: Optional[dict]) -> str:
+    """Three-state grade for one activity-page read. The posts on the page are the cross-check: a
+    page that rendered the owner's activity but yielded no follow control is drift, while a page
+    that rendered neither posts nor an owner name never loaded."""
+    reading = dict(reading or {})
+    if reading.get("follow_state") in ("following", "not_following"):
+        return STATE_OK
+    if not reading.get("owner_name") and not reading.get("posts_on_page"):
+        return STATE_UNKNOWN
+    if not reading.get("posts_on_page"):
+        return STATE_UNKNOWN
+    return STATE_DRIFT
 
 
 def probe_roster_follow(driver, profile_url: str,
@@ -980,7 +1233,10 @@ def probe_roster_follow(driver, profile_url: str,
     reading = {"profile_url": profile_url,
                "activity_url": url,
                "url": getattr(driver, "current_url", url),
-               "state": str(state),
+               # `follow_state`, not `state`: every probe's `state` is now the three-state drift
+               # grade (#1013), and the resolver's own following/not_following/unknown is a
+               # different question that must not be collapsed into it.
+               "follow_state": str(state),
                # The name the label match anchored on — the resolver only accepts controls that
                # carry it, so a wrong or empty name here explains an unknown above.
                "owner_name": _activity_page_owner_name(driver),
@@ -989,8 +1245,7 @@ def probe_roster_follow(driver, profile_url: str,
                # The live labels the next locator pass would be written from — a bare "not found"
                # is not re-groundable.
                "visible_controls": visible_button_labels(driver)}
-    reading["verdict"] = roster_follow_verdict(reading)
-    return reading
+    return graded(reading, roster_follow_state(reading), roster_follow_verdict(reading))
 
 
 def appreciation_verdict(reading: dict) -> str:
@@ -1010,6 +1265,16 @@ def appreciation_verdict(reading: dict) -> str:
     people = reading.get("people") or []
     return (f"{cards} card(s), {reading.get('dated')} dated, {len(people)} inside the "
             f"{reading.get('lookback_days')}-day window — production would thank those")
+
+
+def appreciation_state(reading: Optional[dict]) -> str:
+    """Three-state grade for ONE appreciation surface. Cards that resolved but never date is the
+    silently-dead trigger this probe exists to catch — drift. No cards at all cannot be told apart
+    from an empty section, so it grades unknown and is never filed as a defect."""
+    reading = dict(reading or {})
+    if not int(reading.get("cards") or 0):
+        return STATE_UNKNOWN
+    return STATE_OK if reading.get("dated") else STATE_DRIFT
 
 
 def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
@@ -1063,8 +1328,7 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
                    "people": [r for r in rows if r["in_window"] and r["profile_url"]
                               and not r["already_thanked"]],
                    "rows": rows[:10]}
-        reading["verdict"] = appreciation_verdict(reading)
-        return reading
+        return graded(reading, appreciation_state(reading), appreciation_verdict(reading))
 
     own = _own_profile_url(driver, user_id) if not profile_url else profile_url.rstrip("/")
     report = {"own_profile_url": own}
@@ -1074,12 +1338,19 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
             _RECOMMENDATION_AUTHOR_LOCATORS, _parse_recommendation_date, "recommendation_received")
     else:
         report["recommendations_received"] = {
+            "state": STATE_UNKNOWN,
             "verdict": "own profile URL unresolved — production skips the recommendations scan"}
     report["mentions"] = _read(_MENTIONS_URL, _MENTION_CARD_LOCATORS, _MENTION_ACTOR_LOCATORS,
                                _parse_relative_age_days, "collaboration",
                                require=lambda t: bool(_MENTION_TEXT_RE.search(t or "")),
                                name_of=_mention_actor_name)
-    return report
+    # Two surfaces, one report: worst-wins, so a dead recommendations trigger is not hidden by a
+    # healthy mentions feed.
+    sections = (report["recommendations_received"], report["mentions"])
+    return graded(report, worst_state([s.get("state") for s in sections]),
+                  " | ".join(f"{name}: {section.get('verdict')}"
+                             for name, section in (("recommendations", sections[0]),
+                                                   ("mentions", sections[1]))))
 
 
 # LinkedIn's own "there is nothing here" copy on the sent-invitation manager. Matching one of these
@@ -1140,6 +1411,22 @@ def sent_invites_verdict(reading: dict) -> str:
             f"-day threshold — production would attempt that many (bounded by the daily budget)")
 
 
+def sent_invites_state(reading: Optional[dict]) -> str:
+    """Three-state grade for one invitation-manager read. Zero rows has THREE readings and the
+    page's own words are what separate them: its rendered empty state means the account really has
+    nothing outstanding (ok), no text at all means the page never rendered (unknown), and a page
+    full of prose that yielded no rows is the anchors having moved (drift)."""
+    reading = dict(reading or {})
+    rows = int(reading.get("rows_seen") or 0)
+    if rows:
+        return STATE_OK if int(reading.get("dated") or 0) else STATE_DRIFT
+    if reading.get("empty_state"):
+        return STATE_OK
+    if not str(reading.get("page_text") or "").strip():
+        return STATE_UNKNOWN
+    return STATE_DRIFT
+
+
 def probe_sent_invites(driver, threshold_days: Optional[int] = None,
                        sleep: Callable[[float], None] = time.sleep) -> dict:
     """#969: open the sent-invitation manager and report which pending rows resolve, what their
@@ -1184,8 +1471,498 @@ def probe_sent_invites(driver, threshold_days: Optional[int] = None,
                "page_text": page_text_sample(driver),
                "visible_controls": visible_button_labels(driver)}
     reading["empty_state"] = sent_invite_empty_state(reading["page_text"])
-    reading["verdict"] = sent_invites_verdict(reading)
-    return reading
+    return graded(reading, sent_invites_state(reading), sent_invites_verdict(reading))
+
+
+# ─────────────────────────── connect invite dialog (#1012 / #1013) ───────────────────────────
+# The rail hazard, as a pure function. Every "Invite <someone> to connect" control on a profile
+# page is enumerated and attributed: the ones naming somebody other than the target are the
+# "More profiles for you" rail, and clicking one sends a connection request to a stranger.
+_INVITE_LABEL_RE = re.compile(r"invite\s+(.+?)\s+to\s+connect", re.IGNORECASE)
+# What the profile says when there is already an invite outstanding — no dialog renders for those,
+# which is an EXPECTED outcome and must not be graded as the locators having rotated.
+_CONNECT_PENDING_RE = re.compile(r"\bpending\b|\binvitation sent\b|\bwithdraw invitation\b",
+                                 re.IGNORECASE)
+
+
+def _norm_person(name: Optional[str]) -> str:
+    return " ".join(re.sub(r"[^a-z ]+", " ", str(name or "").lower()).split())
+
+
+def invite_control_names(labels) -> list:
+    """The person each 'Invite … to connect' control names, in order."""
+    out = []
+    for label in labels or []:
+        match = _INVITE_LABEL_RE.search(str(label or ""))
+        if match:
+            out.append(match.group(1).strip())
+    return out
+
+
+def rail_invite_hazards(labels, target_name: str = "") -> list:
+    """The invite controls that name someone OTHER than the target — the #1012 wrong-person hazard.
+
+    With no target name, EVERY invite control is a hazard: a control we cannot attribute is
+    precisely the one production must never click."""
+    target = _norm_person(target_name)
+    hazards = []
+    for named in invite_control_names(labels):
+        person = _norm_person(named)
+        if not target or not (person in target or target in person):
+            hazards.append(named)
+    return hazards
+
+
+def connect_dialog_state(reading: Optional[dict]) -> str:
+    """Three-state grade for one connect-dialog read. The page's own words are the cross-check: a
+    profile that rendered and offers no dialog is drift UNLESS it says an invite is already pending
+    — that profile simply cannot ground this route, and grading it drift would file an issue for
+    working behaviour."""
+    reading = dict(reading or {})
+    if reading.get("dialog_present"):
+        return STATE_OK
+    if not str(reading.get("page_text") or "").strip():
+        return STATE_UNKNOWN
+    if reading.get("invite_pending"):
+        return STATE_UNKNOWN
+    return STATE_DRIFT
+
+
+def connect_dialog_verdict(reading: Optional[dict]) -> str:
+    reading = dict(reading or {})
+    hazards = reading.get("rail_hazards") or []
+    tail = (f" WARNING: {len(hazards)} 'Invite … to connect' control(s) on this page name someone "
+            f"else ({hazards[:3]}) — never click one." if hazards else "")
+    state = connect_dialog_state(reading)
+    if state == STATE_OK:
+        return f"the custom-invite URL rendered the Connect dialog's own controls.{tail}"
+    if reading.get("invite_pending"):
+        return (f"an invite is already pending for this profile, so no dialog renders — this "
+                f"reading grounds nothing; probe a profile with no outstanding invite.{tail}")
+    if not str(reading.get("page_text") or "").strip():
+        return f"the page did not render at all — re-run.{tail}"
+    return (f"the page rendered but no Connect dialog control resolved — re-ground "
+            f"_CONNECT_DIALOG_LOCATORS from `visible_controls`.{tail}")
+
+
+def probe_connect_dialog(driver, profile_url: str, sleep=time.sleep) -> dict:
+    """#1012/#1013: navigate the custom-invite URL for `profile_url` and report whether the Connect
+    dialog's own controls render, plus every 'Invite … to connect' control the PROFILE page carries
+    and which of them name somebody else.
+
+    STRICTLY read-only — it never clicks Send, never clicks an Invite control, and never opens the
+    More menu. That is the whole point: this surface's last drift sent ~20 connection requests to
+    strangers, so the probe that grounds it must be incapable of sending one."""
+    from cqc_lem.app.run_automation import (_CONNECT_DIALOG_LOCATORS, _CONNECT_INVITE_URL,
+                                            _PROFILE_MORE_MENU_LOCATORS, _profile_slug)
+    from cqc_lem.utilities.selenium_util import find_first
+    from selenium.webdriver.support.ui import WebDriverWait
+
+    wait = WebDriverWait(driver, 10)
+    slug = _profile_slug(profile_url)
+    reading = {"profile_url": profile_url, "slug": slug,
+               "invite_url": _CONNECT_INVITE_URL.format(slug=slug) if slug else None}
+    if not slug:
+        return graded(reading, STATE_UNKNOWN,
+                      "no /in/<slug> in the profile URL — production skips the URL route entirely")
+
+    driver.get(reading["invite_url"])
+    sleep(5)
+    dialog = find_first(driver, wait, _CONNECT_DIALOG_LOCATORS, "Connect invite dialog",
+                        required=False, warn_on_miss=False, max_try=1, visible_only=True)
+    reading.update({"url": getattr(driver, "current_url", ""),
+                    "dialog_present": dialog is not None,
+                    "dialog_control": element_evidence(dialog) if dialog is not None else None,
+                    "page_text": page_text_sample(driver),
+                    "visible_controls": visible_button_labels(driver)})
+
+    # Then the profile page itself — the rail hazard only exists there, and the More-menu route is
+    # production's fallback, so its trigger is RESOLVED (never clicked) as evidence it still exists.
+    driver.get(profile_url)
+    sleep(5)
+    profile_controls = visible_button_labels(driver)
+    more_menu = find_first(driver, wait, _PROFILE_MORE_MENU_LOCATORS, "Profile More menu",
+                           required=False, warn_on_miss=False, max_try=1, visible_only=True)
+    profile_text = page_text_sample(driver)
+    reading.update({"profile_controls": profile_controls,
+                    "more_menu_present": more_menu is not None,
+                    "invite_controls": invite_control_names(profile_controls),
+                    "rail_hazards": rail_invite_hazards(profile_controls, _page_owner_name(driver)),
+                    "invite_pending": bool(_CONNECT_PENDING_RE.search(profile_text or ""))})
+    reading["page_text"] = reading["page_text"] or profile_text
+    return graded(reading, connect_dialog_state(reading), connect_dialog_verdict(reading))
+
+
+def _page_owner_name(driver) -> str:
+    """The profile's own display name from the <title> — the only thing an Invite control's label
+    can honestly be attributed against."""
+    try:
+        title = str(driver.title or "")
+    except Exception:
+        return ""
+    title = re.sub(r"^\(\d+\+?\)\s*", "", title)
+    return re.sub(r"\s*[|\-–—]\s*LinkedIn.*$", "", title, flags=re.IGNORECASE).strip()
+
+
+# ─────────────────────────────── profile header scrape (#1013) ───────────────────────────────
+# The degree badge, page-natively. `_PROFILE_DEGREE_LOCATORS` is class-based (`span.dist-value` /
+# `span.distance-badge`) and was confirmed dead on 2026-08-03, so the cross-check has to come from
+# the page's own words: the top card still writes the degree as TEXT.
+_DEGREE_TEXT_RE = re.compile(r"\b(1st|2nd|3rd)\b", re.IGNORECASE)
+
+# Candidate re-grounding anchors: leaf nodes under <main> whose whole text IS a degree badge.
+_DEGREE_ANCHOR_JS = """
+const out = [];
+const root = document.querySelector('main') || document.body;
+for (const el of root.querySelectorAll('span,div,p,li')) {
+  if (el.children.length) { continue; }
+  const t = (el.textContent || '').trim();
+  if (/^(1st|2nd|3rd)(\\s*\\+?\\s*degree.*)?$/i.test(t)) {
+    out.push({tag: el.tagName.toLowerCase(), cls: el.getAttribute('class') || '',
+              testid: el.getAttribute('data-testid') || '',
+              aria: el.getAttribute('aria-label') || '', text: t});
+  }
+  if (out.length >= 8) { break; }
+}
+return out;
+"""
+
+
+def profile_scrape_state(reading: Optional[dict]) -> str:
+    """Three-state grade for one profile-header read. The page's own degree TEXT is the
+    cross-check: a badge the page writes and the locator chain cannot see is exactly the drift that
+    made `_profile_is_first_degree` blind (and, through `profile.is_1st_connection`, made every
+    profile viewer look like a non-connection)."""
+    reading = dict(reading or {})
+    if not str(reading.get("page_text") or "").strip():
+        return STATE_UNKNOWN
+    if not reading.get("full_name"):
+        return STATE_DRIFT
+    if reading.get("page_degree_token") and not reading.get("degree_locator_matches"):
+        return STATE_DRIFT
+    return STATE_OK
+
+
+def profile_scrape_verdict(reading: Optional[dict]) -> str:
+    reading = dict(reading or {})
+    state = profile_scrape_state(reading)
+    if state == STATE_UNKNOWN:
+        return "the profile page did not render (auth wall, challenge, or redirect) — re-run"
+    if not reading.get("full_name"):
+        return (f"the page rendered but parse_profile_header found no name "
+                f"({reading.get('parse_error') or 'no <h1> and no usable <title>'}) — every "
+                f"profile-driven lane is blind here")
+    if reading.get("page_degree_token") and not reading.get("degree_locator_matches"):
+        return (f"name reads OK but the page shows a '{reading.get('page_degree_token')}' degree "
+                f"badge that _PROFILE_DEGREE_LOCATORS matched none of — invites run against "
+                f"existing connections and every profile viewer reads as a non-connection. "
+                f"Re-ground from `degree_anchors`")
+    if not reading.get("degree_grounded"):
+        return (f"name '{reading.get('full_name')}' reads OK, but this profile carries no degree "
+                f"badge at all (your own profile, or a page that renders none) — the degree half "
+                f"is UNGROUNDED by this run; re-probe with a 2nd/3rd-degree profile URL")
+    return (f"name '{reading.get('full_name')}' and degree "
+            f"'{reading.get('connection') or reading.get('page_degree_token') or 'n/a'}' both read")
+
+
+def probe_profile_scrape(driver, profile_url: str, sleep=time.sleep) -> dict:
+    """#1013 (+ the owner's #1013 comment): run the SHIPPED profile-header parser and the SHIPPED
+    degree-badge locator chain against a real profile, and cross-check both against what the page
+    itself says. Read-only — it navigates and reads.
+
+    `degree_anchors` is the point: `span.dist-value` / `span.distance-badge` are class anchors and
+    CLAUDE.md says class anchors are gone, so this hands back the leaf nodes that DO carry the
+    badge today, which is what the replacement chain gets written from."""
+    from cqc_lem.app.run_automation import _PROFILE_DEGREE_LOCATORS
+    from cqc_lem.utilities.linkedin.scrapper import ProfileUnavailableError, parse_profile_header
+    from bs4 import BeautifulSoup
+
+    driver.get(profile_url)
+    sleep(6)
+    reading = {"profile_url": profile_url, "url": getattr(driver, "current_url", profile_url),
+               "page_text": page_text_sample(driver)}
+
+    try:
+        parsed = parse_profile_header(BeautifulSoup(driver.page_source, "html.parser"), profile_url)
+    except ProfileUnavailableError as e:
+        parsed, reading["parse_error"] = {}, str(e)[:200]
+    except Exception as e:
+        parsed, reading["parse_error"] = {}, f"{type(e).__name__}: {e}"[:200]
+    reading.update({"full_name": parsed.get("full_name") or "",
+                    "job_title": parsed.get("job_title") or "",
+                    "connection": parsed.get("connection") or ""})
+
+    matches = []
+    for by, selector in _PROFILE_DEGREE_LOCATORS:
+        try:
+            texts = [(e.text or "").strip() for e in driver.find_elements(by, selector)]
+        except Exception as e:
+            texts = [f"<{type(e).__name__}>"]
+        if texts:
+            matches.append({"locator": f"{by}={selector}", "texts": texts[:5]})
+    reading["degree_locator_matches"] = matches
+
+    token = _DEGREE_TEXT_RE.search(reading["page_text"] or "")
+    reading["page_degree_token"] = token.group(1) if token else None
+    # Neither the page nor the locators showed a badge: this run says NOTHING about the degree
+    # read. Reported explicitly so a sweep against the user's own profile (which carries no badge)
+    # cannot be mistaken for a clean bill of health on the read that #1012 found blind.
+    reading["degree_grounded"] = bool(reading["page_degree_token"] or matches)
+    try:
+        reading["degree_anchors"] = driver.execute_script(_DEGREE_ANCHOR_JS) or []
+    except Exception as e:
+        reading["degree_anchors"] = [{"error": f"{type(e).__name__}: {e}"}]
+    try:
+        reading["activity_links"] = len(driver.find_elements(
+            By.CSS_SELECTOR, "a[href*='/recent-activity/']"))
+    except Exception:
+        # Provenance only — the name/degree reads above are what this probe grades on.
+        reading["activity_links"] = 0
+    return graded(reading, profile_scrape_state(reading), profile_scrape_verdict(reading))
+
+
+# ───────────────────────────────── catch-up moment cards (#964) ──────────────────────────────
+def catchup_state(reading: Optional[dict]) -> str:
+    """Three-state grade for one catch-up read. The page's own `/in/` anchor count is the
+    cross-check, and it is exactly the reading #964 lacked: the chain matched zero cards on a feed
+    visibly showing ten, and `no_moments` was logged daily as if the feed were empty."""
+    reading = dict(reading or {})
+    if reading.get("cards_matched"):
+        return STATE_OK
+    if not str(reading.get("page_text") or "").strip():
+        return STATE_UNKNOWN
+    if reading.get("profile_anchors"):
+        return STATE_DRIFT
+    return STATE_UNKNOWN
+
+
+def catchup_verdict(reading: Optional[dict]) -> str:
+    reading = dict(reading or {})
+    state = catchup_state(reading)
+    if state == STATE_OK:
+        return (f"{reading.get('cards_matched')} card(s) matched via "
+                f"{reading.get('winning_locator')}, {reading.get('classified')} classified into a "
+                f"milestone type")
+    if state == STATE_DRIFT:
+        return (f"the page renders {reading.get('profile_anchors')} profile anchor(s) but "
+                f"_CATCHUP_CARD_LOCATORS matched NO cards — the #964 shape; re-ground from "
+                f"`candidate_counts`")
+    return ("the catch-up feed rendered nothing to read — an empty day or a page that did not "
+            "load; grounds nothing")
+
+
+def probe_catchup_cards(driver, sleep=time.sleep) -> dict:
+    """#964/#1013: run the SHIPPED `_CATCHUP_CARD_LOCATORS` chain against the real catch-up feed and
+    report which locator wins, how many cards each candidate matches, how many classify into a
+    milestone, and the page's own profile-anchor count. Read-only — no card is clicked, no
+    composer opened, nothing is sent."""
+    from cqc_lem.app.run_automation import (_CATCHUP_CARD_LOCATORS, _classify_catchup_moment)
+    from cqc_lem.utilities.selenium_util import find_all_first
+
+    driver.get(CATCHUP_PROBE_URL)
+    sleep(6)
+    for _ in range(2):  # the feed lazy-loads, exactly as the production scan does
+        try:
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        except Exception:
+            break
+        sleep(2)
+
+    counts, winner = {}, None
+    for by, selector in _CATCHUP_CARD_LOCATORS:
+        try:
+            found = len(driver.find_elements(by, selector))
+        except Exception as e:
+            found = f"<{type(e).__name__}>"
+        counts[f"{by}={selector}"] = found
+        if winner is None and isinstance(found, int) and found:
+            winner = f"{by}={selector}"
+
+    cards = find_all_first(driver, _CATCHUP_CARD_LOCATORS)
+    texts, classified = [], 0
+    for card in cards[:20]:
+        try:
+            text = " ".join((card.text or "").split())
+        except Exception:
+            continue
+        if _classify_catchup_moment(text):
+            classified += 1
+        if len(texts) < 5:
+            texts.append(text[:200])
+
+    try:
+        anchors = len(driver.find_elements(By.CSS_SELECTOR, "main a[href*='/in/']"))
+    except Exception:
+        anchors = 0
+    reading = {"url": getattr(driver, "current_url", CATCHUP_PROBE_URL),
+               "cards_matched": len(cards), "winning_locator": winner,
+               "candidate_counts": counts, "classified": classified,
+               "profile_anchors": anchors, "sample_cards": texts,
+               "page_text": page_text_sample(driver)}
+    return graded(reading, catchup_state(reading), catchup_verdict(reading))
+
+
+# ────────────────────────────────── group share box (#932) ───────────────────────────────────
+def group_composer_state(reading: Optional[dict]) -> str:
+    """Three-state grade for one group-composer read. A share box that opened an editor with a Post
+    button is ok. A share box that resolved but produced neither is drift. NO share box at all is
+    unknown, deliberately: an announcement / admin-only group legitimately renders none, and
+    production already treats that as 'rotate past this group', not a failure."""
+    reading = dict(reading or {})
+    if not str(reading.get("page_text") or "").strip():
+        return STATE_UNKNOWN
+    if not reading.get("share_box_present"):
+        return STATE_UNKNOWN
+    return STATE_OK if (reading.get("editor_present") and reading.get("post_button_present")) \
+        else STATE_DRIFT
+
+
+def group_composer_verdict(reading: Optional[dict]) -> str:
+    reading = dict(reading or {})
+    state = group_composer_state(reading)
+    if state == STATE_OK:
+        return "share box, editor and Post button all resolved — a draft would publish here"
+    if not str(reading.get("page_text") or "").strip():
+        return "the group page did not render — re-run"
+    if not reading.get("share_box_present"):
+        return ("no share box on this group — production records it unpostable and rotates past "
+                "it, which is correct for an announcement/admin-only group. Probe a group you can "
+                "post in to ground the chain")
+    return (f"the share box opened but "
+            f"{'the editor' if not reading.get('editor_present') else 'the Post button'} did not "
+            f"resolve — re-ground from `dialog_controls`")
+
+
+def probe_group_composer(driver, group_id: str, sleep=time.sleep) -> dict:
+    """#932/#1013: open a group's share box and report whether the editor and Post button resolve.
+
+    Read-only in the way that matters: it OPENS the composer (like `--probe-composer` does on the
+    feed) because the editor and Post button do not exist until it is open, then closes it with
+    Escape. **Nothing is typed and the Post button is never clicked**, so no group post can result
+    from running this."""
+    from cqc_lem.app.run_automation import (_GROUP_EDITOR_LOCATORS, _GROUP_POST_BUTTON_LOCATORS,
+                                            _GROUP_SHARE_BOX_LOCATORS)
+    from cqc_lem.utilities.selenium_util import click_first, find_first
+    from selenium.webdriver import ActionChains
+    from selenium.webdriver.support.ui import WebDriverWait
+
+    wait = WebDriverWait(driver, 10)
+    url = f"https://www.linkedin.com/groups/{group_id}/"
+    driver.get(url)
+    sleep(6)
+    reading = {"group_id": str(group_id), "url": getattr(driver, "current_url", url),
+               "page_text": page_text_sample(driver)}
+
+    share_box = click_first(driver, wait, _GROUP_SHARE_BOX_LOCATORS, "Group share box",
+                            required=False, warn_on_miss=False, max_try=1)
+    reading["share_box_present"] = share_box is not None
+    if share_box is None:
+        reading["visible_controls"] = visible_button_labels(driver)
+        return graded(reading, group_composer_state(reading), group_composer_verdict(reading))
+
+    sleep(3)
+    editor = find_first(driver, wait, _GROUP_EDITOR_LOCATORS, "Group post editor",
+                        required=False, warn_on_miss=False, max_try=1, visible_only=True)
+    post_button = find_first(driver, wait, _GROUP_POST_BUTTON_LOCATORS, "Group Post button",
+                             required=False, warn_on_miss=False, max_try=1, visible_only=True)
+    reading.update({"editor_present": editor is not None,
+                    "editor": element_evidence(editor) if editor is not None else None,
+                    "post_button_present": post_button is not None,
+                    "post_button": element_evidence(post_button) if post_button is not None
+                    else None,
+                    "dialog_controls": visible_button_labels(driver)})
+    try:
+        ActionChains(driver).send_keys(Keys.ESCAPE).perform()
+    except Exception:
+        # Courtesy only — the driver is quit right after, and a failed Escape must not lose the
+        # anchors this probe exists to report.
+        pass
+    return graded(reading, group_composer_state(reading), group_composer_verdict(reading))
+
+
+# ─────────────────────────── company-page invite modal (#732) ────────────────────────────────
+_CREDITS_TEXT_RE = re.compile(r"credits? available", re.IGNORECASE)
+
+
+def company_invite_state(reading: Optional[dict]) -> str:
+    """Three-state grade for one company-invite read. The page's own 'credits available' copy is
+    the cross-check: credit text the parser could not read, or an invitee list the row locator
+    missed on a page that renders one, is drift. A page that never rendered is unknown, and so is
+    a genuinely exhausted credit pool — production stands down for that by design."""
+    reading = dict(reading or {})
+    if not str(reading.get("page_text") or "").strip():
+        return STATE_UNKNOWN
+    if not reading.get("credits_text_on_page"):
+        return STATE_UNKNOWN
+    if reading.get("total_credits") in (None, 0):
+        return STATE_DRIFT
+    if reading.get("credits_remaining") and not reading.get("invitee_rows"):
+        return STATE_DRIFT
+    return STATE_OK
+
+
+def company_invite_verdict(reading: Optional[dict]) -> str:
+    reading = dict(reading or {})
+    state = company_invite_state(reading)
+    if state == STATE_OK:
+        return (f"credits {reading.get('credits_remaining')}/{reading.get('total_credits')} read, "
+                f"{reading.get('invitee_rows')} invitee row(s) and "
+                f"{reading.get('checkboxes')} checkbox(es) resolved")
+    if not str(reading.get("page_text") or "").strip():
+        return "the invite page did not render — re-run"
+    if not reading.get("credits_text_on_page"):
+        return ("no 'credits available' copy on the page — either this page has no invite "
+                "affordance for this account, or the invite panel never opened; grounds nothing")
+    if reading.get("total_credits") in (None, 0):
+        return ("the page says 'credits available' but get_available_credits parsed nothing — "
+                "re-ground its '<span>N/M</span>' locator from `page_text`")
+    return (f"credits remain ({reading.get('credits_remaining')}) but the invitee-row locator "
+            f"matched none — re-ground select_connection_checkboxes' list/checkbox XPaths")
+
+
+def probe_company_invite(driver, user_id: int, company_url: str = "", sleep=time.sleep) -> dict:
+    """#732/#1013: open the company page's invite panel and report what the invite lane's own
+    readers see — the credit counter, the invitee rows, the checkboxes and the modal's Invite
+    button. Read-only: **no checkbox is ticked and the Invite button is never clicked**, so no
+    invitation can be sent by running this."""
+    from cqc_lem.utilities.db import get_company_linked_in_url_for_user
+    from cqc_lem.utilities.linkedin.company_page_inviter import get_available_credits
+    from selenium.webdriver.support.ui import WebDriverWait
+
+    wait = WebDriverWait(driver, 10)
+    page = (company_url or get_company_linked_in_url_for_user(user_id) or "").rstrip("/")
+    reading = {"user_id": user_id, "company_url": page}
+    if not page:
+        return graded(reading, STATE_UNKNOWN,
+                      "no company page is configured for this user — the lane never opens a "
+                      "browser, so there is nothing to ground")
+
+    invite_url = f"{page}?invite=true"
+    reading["invite_url"] = invite_url
+    driver.get(invite_url)
+    sleep(6)
+    current, total = get_available_credits(driver, wait)
+    text = page_text_sample(driver, limit=1200)
+
+    def _count(selector: str) -> int:
+        try:
+            return len(driver.find_elements(By.XPATH, selector))
+        except Exception:
+            return 0
+
+    reading.update({
+        "url": getattr(driver, "current_url", invite_url),
+        "page_text": text,
+        "credits_text_on_page": bool(_CREDITS_TEXT_RE.search(text or "")),
+        "credits_remaining": current,
+        "total_credits": total,
+        # The SAME XPaths select_connection_checkboxes drives, counted rather than clicked.
+        "invitee_rows": _count("//div[contains(@class,'scaffold-finite-scroll__content')]//li"),
+        "checkboxes": _count("//input[@type='checkbox' and contains(@id, 'invitee')]"),
+        "invite_button_present": bool(_count(
+            "//div[contains(@class,'modal')]//button[contains(@class,'artdeco-button--primary')]")),
+        "visible_controls": visible_button_labels(driver)})
+    return graded(reading, company_invite_state(reading), company_invite_verdict(reading))
 
 
 def probe_message_thread(driver, profile_url: str, person_name: str = "", self_name: str = "",
@@ -1217,8 +1994,7 @@ def probe_message_thread(driver, profile_url: str, person_name: str = "", self_n
     sleep(1)
     reading["last_sender"] = read_last_sender(driver) if opened.opened else ""
     reading["reply_state"] = _reply_state(reading)
-    reading["verdict"] = message_thread_verdict(reading)
-    return reading
+    return graded(reading, message_thread_state(reading), message_thread_verdict(reading))
 
 
 def _reply_state(reading: dict) -> str:
@@ -1237,7 +2013,77 @@ def _reply_state(reading: dict) -> str:
     return "not_replied" if name_matches(self_name, last_sender) else "replied"
 
 
-def main(argv: Optional[list] = None) -> int:
+# ──────────────────────────── the weekly drift sweep (issue #1013) ───────────────────────────
+def sweep_summary(probes: Optional[dict]) -> dict:
+    """Fold a sweep's per-probe states into the shape the issue filer plans from.
+
+    `drift` is the only list that becomes GitHub issues. `unknown` is reported and NOT filed — a
+    surface whose page never rendered grounds nothing, and filing it would bury the real drift
+    under a weekly re-run of the same non-finding."""
+    by_state = {STATE_OK: [], STATE_DRIFT: [], STATE_UNKNOWN: []}
+    errors = []
+    for key, reading in sorted((probes or {}).items()):
+        state = (reading or {}).get("state")
+        by_state.setdefault(state if state in by_state else STATE_UNKNOWN, []).append(key)
+        if (reading or {}).get("probe_error"):
+            errors.append(key)
+    return {"probed": len(probes or {}), "ok": by_state[STATE_OK], "drift": by_state[STATE_DRIFT],
+            "unknown": by_state[STATE_UNKNOWN], "errors": errors,
+            "state": worst_state([(r or {}).get("state") for r in (probes or {}).values()])}
+
+
+def run_sweep(driver, user_id: int, runners: Optional[dict] = None,
+              keys: Optional[list] = None, profile_url: str = "") -> dict:
+    """Run every sweepable probe in ONE Chrome session and grade the lot.
+
+    A probe that RAISES is recorded as `unknown` with its exception rather than killing the sweep:
+    one rotated surface must not cost the reading of the nine that did not rotate — that is how a
+    sweep silently covers less than it claims."""
+    runners = runners if runners is not None else {
+        "feed_sort": lambda: probe_feed_sort(driver),
+        "feed_reactions": lambda: probe_feed_reactions(driver),
+        "composer": lambda: probe_composer(driver),
+        "profile_views": lambda: probe_profile_viewers(driver),
+        "profile_scrape": lambda: probe_profile_scrape(
+            driver, profile_url or _sweep_own_profile(driver, user_id)),
+        "catchup_cards": lambda: probe_catchup_cards(driver),
+        "company_invite": lambda: probe_company_invite(driver, user_id),
+        "sent_invites": lambda: probe_sent_invites(driver),
+        "appreciation_sources": lambda: probe_appreciation_sources(driver, user_id),
+        "article_editor": lambda: probe_article_editor(driver),
+    }
+    wanted = [k for k in (keys or SWEEP_ORDER) if k in runners]
+    probes = {}
+    for key in wanted:
+        try:
+            probes[key] = runners[key]() or {}
+        except Exception as e:
+            probes[key] = {"state": STATE_UNKNOWN, "probe_error": f"{type(e).__name__}: {e}"[:300],
+                           "verdict": f"the probe itself raised ({type(e).__name__}) — grounds "
+                                      f"nothing; re-run it"}
+    # Surfaces the sweep deliberately cannot cover: named, never silently dropped. A coverage
+    # matrix that reads as complete while a third of it never ran is the failure this issue is about.
+    skipped = [s["key"] for s in SURFACES if not s["sweep"]]
+    # The matrix rides along so the issue filer needs nothing from this module (it runs on the cron
+    # host, which has neither selenium nor the app env).
+    surfaces = {s["key"]: {k: s[k] for k in ("surface", "code", "flag")}
+                for s in SURFACES if s["key"] in probes}
+    return {"user_id": user_id, "probes": probes, "skipped": skipped, "surfaces": surfaces,
+            "summary": sweep_summary(probes)}
+
+
+def _sweep_own_profile(driver, user_id: int) -> str:
+    """The user's own profile URL — the one profile a sweep may scrape without a human choosing a
+    target. It carries a degree badge of its own ('You'/no badge), so the header/name half is what
+    it grounds; a stranger's profile is what `--profile-scrape <url>` is for."""
+    from cqc_lem.app.run_automation import _own_profile_url
+    return _own_profile_url(driver, user_id) or ""
+
+
+def build_parser() -> "argparse.ArgumentParser":
+    """The CLI, built apart from `main` so the coverage matrix can be checked against it without
+    running a browser: a `SURFACES` row naming a flag that does not exist is a surface nobody can
+    actually probe (issue #1013)."""
     parser = argparse.ArgumentParser(description="Read-only live LinkedIn validation probe (#404)")
     parser.add_argument("--user-id", type=int, default=1, help="user whose session drives the probe")
     parser.add_argument("--post-url", help="permalink of one of that user's OWN published posts")
@@ -1292,16 +2138,60 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--reaction-open-menu", action="store_true",
                         help="also hover and open the reaction fly-out to capture its option "
                              "labels. Changes no persisted state; the options are never clicked.")
+    parser.add_argument("--connect-dialog", metavar="PROFILE_URL",
+                        help="navigate the custom-invite URL for this profile and report whether "
+                             "the Connect dialog renders, plus every 'Invite … to connect' control "
+                             "on the profile page that names someone ELSE (#1012). Read-only: no "
+                             "Send, no Invite control and no menu is ever clicked.")
+    parser.add_argument("--profile-scrape", metavar="PROFILE_URL",
+                        help="run the shipped profile-header parser and degree-badge locators "
+                             "against a real profile and cross-check both against the page's own "
+                             "text (#1013). Read-only.")
+    parser.add_argument("--catchup-cards", action="store_true",
+                        help="run the shipped _CATCHUP_CARD_LOCATORS chain against the catch-up "
+                             "feed and grade it against the page's own profile-anchor count "
+                             "(#964). Read-only: no card is clicked, nothing is sent.")
+    parser.add_argument("--group-composer", metavar="GROUP_ID",
+                        help="open this group's share box and report whether the editor and Post "
+                             "button resolve (#932). Types nothing and NEVER clicks Post.")
+    parser.add_argument("--company-invite", action="store_true",
+                        help="open the company page's invite panel and report the credit counter, "
+                             "invitee rows and checkboxes the invite lane reads (#732). Ticks no "
+                             "checkbox and never clicks Invite.")
+    parser.add_argument("--company-url", default="",
+                        help="company page URL for --company-invite (defaults to the user's "
+                             "configured page)")
+    parser.add_argument("--sweep", action="store_true",
+                        help="run every target-free probe in ONE session and grade each ok/drift/"
+                             "unknown (#1013). This is what the weekly drift cron runs.")
+    parser.add_argument("--sweep-profile-url", default="",
+                        help="profile URL for the sweep's --profile-scrape leg; defaults to the "
+                             "user's OWN profile, which carries no degree badge and therefore "
+                             "leaves the degree half ungrounded")
+    parser.add_argument("--surfaces", action="store_true",
+                        help="print the Selenium surface / probe coverage matrix as JSON and exit "
+                             "(no browser, no network)")
+    return parser
+
+
+def main(argv: Optional[list] = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.surfaces:
+        print(json.dumps({"surfaces": list(SURFACES), "sweep": list(SWEEP_ORDER)}, indent=2))
+        return 0
 
     if not (args.post_url or args.probe_composer or args.comment_outcome_url or args.dm_thread_url
             or args.article_editor_url or args.feed_sort or args.reaction_probe
             or args.roster_follow or args.appreciation_sources or args.sent_invites
-            or args.profile_views):
-        parser.error("nothing to probe — pass --post-url, --comment-outcome-url, --dm-thread-url, "
-                     "--article-editor-url, --feed-sort, --profile-views, --reaction-probe, "
-                     "--roster-follow, --appreciation-sources, --sent-invites and/or "
-                     "--probe-composer")
+            or args.profile_views or args.connect_dialog or args.profile_scrape
+            or args.catchup_cards or args.group_composer or args.company_invite or args.sweep):
+        parser.error("nothing to probe — pass --sweep, --surfaces, --post-url, "
+                     "--comment-outcome-url, --dm-thread-url, --article-editor-url, --feed-sort, "
+                     "--profile-views, --profile-scrape, --connect-dialog, --catchup-cards, "
+                     "--group-composer, --company-invite, --reaction-probe, --roster-follow, "
+                     "--appreciation-sources, --sent-invites and/or --probe-composer")
 
     from cqc_lem.app.run_automation import get_current_profile
     from cqc_lem.utilities.selenium_util import quit_gracefully
@@ -1311,6 +2201,10 @@ def main(argv: Optional[list] = None) -> int:
                                                         debug=args.watch)
     report = {"user_id": args.user_id}
     try:
+        if args.sweep:
+            # The sweep IS the report: it replaces the per-probe keys wholesale, so the weekly
+            # cron's JSON has exactly one shape for the issue filer to plan from.
+            report = run_sweep(driver, args.user_id, profile_url=args.sweep_profile_url)
         if args.post_url:
             report["document_render"] = probe_document_render(driver, args.post_url)
             report["post_stats"] = probe_post_stats(driver, args.post_url)
@@ -1338,6 +2232,16 @@ def main(argv: Optional[list] = None) -> int:
                 driver, args.user_id, str(getattr(profile, "profile_url", "") or ""))
         if args.sent_invites:
             report["sent_invites"] = probe_sent_invites(driver, args.sent_invite_days)
+        if args.connect_dialog:
+            report["connect_dialog"] = probe_connect_dialog(driver, args.connect_dialog)
+        if args.profile_scrape:
+            report["profile_scrape"] = probe_profile_scrape(driver, args.profile_scrape)
+        if args.catchup_cards:
+            report["catchup_cards"] = probe_catchup_cards(driver)
+        if args.group_composer:
+            report["group_composer"] = probe_group_composer(driver, args.group_composer)
+        if args.company_invite:
+            report["company_invite"] = probe_company_invite(driver, args.user_id, args.company_url)
         if args.probe_composer:
             report["composer"] = probe_composer(driver)
         if args.article_editor_url:

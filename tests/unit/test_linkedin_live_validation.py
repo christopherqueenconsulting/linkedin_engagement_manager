@@ -198,8 +198,23 @@ class TestProbeComposer:
 
     def test_reports_a_composer_that_never_opened(self, monkeypatch):
         monkeypatch.setattr("cqc_lem.utilities.selenium_util.click_first", lambda *a, **k: None)
-        report = llv.probe_composer(MagicMock(), sleep=lambda s: None)
-        assert report == {"opened": False, "controls": [], "document_affordance": None}
+        driver = MagicMock()
+        driver.find_elements.return_value = []
+        report = llv.probe_composer(driver, sleep=lambda s: None)
+        assert report["opened"] is False
+        assert report["controls"] == []
+        assert report["document_affordance"] is None
+        # No share box AND no page text: the feed never rendered, so this run grounds nothing.
+        assert report["state"] == llv.STATE_UNKNOWN
+
+    def test_a_rendered_feed_with_no_share_box_is_drift_not_unknown(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.click_first", lambda *a, **k: None)
+        driver = _fake_driver()
+        main = MagicMock()
+        main.text = "Sort by Recent  Start a conversation"
+        driver.find_elements.side_effect = lambda *a, **k: [main]
+        report = llv.probe_composer(driver, sleep=lambda s: None)
+        assert report["state"] == llv.STATE_DRIFT
 
 
 @pytest.mark.unit
@@ -631,3 +646,250 @@ class TestSentInvitesProbe:
 def llv_sent_url():
     from cqc_lem.utilities.linkedin.stale_invites import SENT_INVITATIONS_URL
     return SENT_INVITATIONS_URL
+
+
+@pytest.mark.unit
+class TestThreeStateVerdicts:
+    """#1013: every probe grades ok / drift / unknown, and the three are NOT interchangeable.
+
+    `drift` is the only state that files an issue, so it may only be claimed against a page-native
+    cross-check; `unknown` (the page did not render) must never be filed, or the weekly sweep puts
+    the same non-finding in the backlog until it buries the real drift underneath."""
+
+    def test_worst_state_is_drift_then_unknown_then_ok(self):
+        assert llv.worst_state([llv.STATE_OK, llv.STATE_UNKNOWN]) == llv.STATE_UNKNOWN
+        assert llv.worst_state([llv.STATE_DRIFT, llv.STATE_OK]) == llv.STATE_DRIFT
+        assert llv.worst_state([llv.STATE_OK, llv.STATE_OK]) == llv.STATE_OK
+
+    def test_a_report_that_measured_nothing_is_unknown_not_ok(self):
+        """An empty grade list must never read as a clean bill of health."""
+        assert llv.worst_state([]) == llv.STATE_UNKNOWN
+        assert llv.worst_state([None, "nonsense"]) == llv.STATE_UNKNOWN
+
+    def test_post_stats_labels_on_the_page_turn_zero_counts_into_drift(self):
+        zeroed = {"signals": {"reactions": {"value": 0}}, "detail_lines": ["72 | Impressions | x"]}
+        assert llv.post_stats_state(zeroed) == llv.STATE_DRIFT
+        assert llv.post_stats_state({"signals": {"reactions": {"value": 4}}}) == llv.STATE_OK
+        # No counts AND no labels: the page never rendered, which grounds nothing.
+        assert llv.post_stats_state({"signals": {}, "detail_lines": []}) == llv.STATE_UNKNOWN
+
+    def test_feed_sort_needs_visible_controls_before_it_may_claim_drift(self):
+        blank = {"control_found": False, "visible_controls": []}
+        assert llv.feed_sort_state(blank) == llv.STATE_UNKNOWN
+        rendered = {"control_found": False, "visible_controls": ["Start a post"]}
+        assert llv.feed_sort_state(rendered) == llv.STATE_DRIFT
+        assert llv.feed_sort_state({"sort_after": llv.SORT_RECENT}) == llv.STATE_OK
+
+    def test_sent_invites_zero_rows_reads_three_different_ways(self):
+        assert llv.sent_invites_state({"rows_seen": 0, "empty_state": "no pending invitations",
+                                       "page_text": "x"}) == llv.STATE_OK
+        assert llv.sent_invites_state({"rows_seen": 0, "page_text": "  "}) == llv.STATE_UNKNOWN
+        assert llv.sent_invites_state({"rows_seen": 0, "page_text": "Manage invitations Sent"}) == \
+            llv.STATE_DRIFT
+        assert llv.sent_invites_state({"rows_seen": 4, "dated": 0}) == llv.STATE_DRIFT
+
+    def test_appreciation_no_cards_is_unknown_because_empty_and_dead_look_alike(self):
+        assert llv.appreciation_state({"cards": 0}) == llv.STATE_UNKNOWN
+        assert llv.appreciation_state({"cards": 3, "dated": 0}) == llv.STATE_DRIFT
+        assert llv.appreciation_state({"cards": 3, "dated": 3}) == llv.STATE_OK
+
+    def test_profile_viewers_only_calls_a_flat_scroll_drift_when_the_headline_says_theres_more(self):
+        """An account with eight viewers really does have one page of them — grading that drift
+        would file the same issue every week for a healthy surface."""
+        driver = MagicMock()
+        rows = [{"href": "/in/a/", "viewed": "Viewed 1h ago"}] * 8
+        driver.execute_script.side_effect = [rows, 8, None, rows]
+        assert llv.probe_profile_viewers(driver, sleep=lambda *_: None)["state"] == llv.STATE_OK
+
+        driver = MagicMock()
+        driver.execute_script.side_effect = [rows, 136, None, rows]
+        reading = llv.probe_profile_viewers(driver, sleep=lambda *_: None)
+        assert reading["state"] == llv.STATE_DRIFT
+        assert "lazy-load drift" in reading["verdict"]
+
+    def test_a_headline_stat_with_no_rows_is_drift(self):
+        driver = MagicMock()
+        driver.execute_script.side_effect = [[], 136, None, []]
+        assert llv.probe_profile_viewers(driver, sleep=lambda *_: None)["state"] == llv.STATE_DRIFT
+
+    def test_an_empty_viewers_page_grounds_nothing(self):
+        driver = MagicMock()
+        driver.execute_script.side_effect = [[], None, None, []]
+        assert llv.probe_profile_viewers(driver, sleep=lambda *_: None)["state"] == \
+            llv.STATE_UNKNOWN
+
+
+@pytest.mark.unit
+class TestSurfaceCoverageMatrix:
+    """Deliverable 1: a touchpoint with no probe row is a surface that can rot silently."""
+
+    def test_every_surface_names_a_real_cli_flag(self):
+        flags = set(llv.build_parser()._option_string_actions)
+        missing = [s["flag"] for s in llv.SURFACES if s["flag"] not in flags]
+        assert not missing, f"surfaces name flags the CLI does not have: {missing}"
+
+    def test_every_sweepable_surface_actually_runs_in_the_sweep(self):
+        ran = []
+        runners = {key: (lambda k=key: ran.append(k) or {"state": llv.STATE_OK})
+                   for key in llv.SWEEP_ORDER}
+        llv.run_sweep(MagicMock(), 1, runners=runners)
+        assert sorted(ran) == sorted(llv.SWEEP_ORDER)
+
+    def test_the_doc_names_every_surface(self):
+        doc = (Path(__file__).resolve().parents[2] / "docs" / "sdui-probe-coverage.md").read_text()
+        missing = [s["flag"] for s in llv.SURFACES if s["flag"] not in doc]
+        assert not missing, f"docs/sdui-probe-coverage.md is missing: {missing}"
+
+
+@pytest.mark.unit
+class TestSweep:
+    def test_a_probe_that_raises_costs_only_its_own_reading(self):
+        """One rotated surface must not cost the reading of the nine that did not rotate."""
+        runners = {"feed_sort": lambda: {"state": llv.STATE_OK},
+                   "catchup_cards": lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+                   "sent_invites": lambda: {"state": llv.STATE_DRIFT}}
+        report = llv.run_sweep(MagicMock(), 1, runners=runners, keys=list(runners))
+        assert report["probes"]["catchup_cards"]["state"] == llv.STATE_UNKNOWN
+        assert "RuntimeError" in report["probes"]["catchup_cards"]["probe_error"]
+        assert report["summary"]["drift"] == ["sent_invites"]
+        assert report["summary"]["ok"] == ["feed_sort"]
+
+    def test_the_sweep_names_what_it_could_not_cover(self):
+        report = llv.run_sweep(MagicMock(), 1, runners={"feed_sort": lambda: {"state": "ok"}},
+                               keys=["feed_sort"])
+        assert "connect_dialog" in report["skipped"]
+        assert report["surfaces"]["feed_sort"]["flag"] == "--feed-sort"
+
+    def test_summary_state_is_worst_wins(self):
+        probes = {"a": {"state": llv.STATE_OK}, "b": {"state": llv.STATE_DRIFT}}
+        assert llv.sweep_summary(probes)["state"] == llv.STATE_DRIFT
+
+
+@pytest.mark.unit
+class TestConnectDialogProbe:
+    """#1012: the surface whose last drift sent ~20 connection requests to strangers."""
+
+    def test_a_control_naming_someone_else_is_a_hazard(self):
+        labels = ["Message", "Invite Bob Smith to connect", "Invite Jane Doe to connect"]
+        assert llv.rail_invite_hazards(labels, "Jane Doe") == ["Bob Smith"]
+
+    def test_an_unattributable_control_is_a_hazard_too(self):
+        """With no target name every invite control is a hazard: a control we cannot attribute is
+        precisely the one production must never click."""
+        assert llv.rail_invite_hazards(["Invite Bob Smith to connect"], "") == ["Bob Smith"]
+
+    def test_invite_control_names_are_extracted_in_order(self):
+        assert llv.invite_control_names(["Invite A B to connect", "Follow", None]) == ["A B"]
+
+    def test_a_pending_invite_grounds_nothing_rather_than_reading_as_drift(self):
+        reading = {"dialog_present": False, "page_text": "Pending", "invite_pending": True}
+        assert llv.connect_dialog_state(reading) == llv.STATE_UNKNOWN
+        assert "already pending" in llv.connect_dialog_verdict(reading)
+
+    def test_a_rendered_profile_with_no_dialog_is_drift(self):
+        reading = {"dialog_present": False, "page_text": "About Experience", "invite_pending": False}
+        assert llv.connect_dialog_state(reading) == llv.STATE_DRIFT
+
+    def test_the_verdict_carries_the_hazard_even_when_the_dialog_opened(self):
+        reading = {"dialog_present": True, "page_text": "x", "rail_hazards": ["Bob Smith"]}
+        assert llv.connect_dialog_state(reading) == llv.STATE_OK
+        assert "never click one" in llv.connect_dialog_verdict(reading)
+
+
+@pytest.mark.unit
+class TestProfileScrapeProbe:
+    """The owner's #1013 comment: `span.dist-value` / `span.distance-badge` are dead, and the same
+    read drives `profile.is_1st_connection` for every profile viewer."""
+
+    def test_a_badge_the_page_writes_and_the_locators_miss_is_drift(self):
+        reading = {"page_text": "Jane Doe · 2nd  Head of Ops", "full_name": "Jane Doe",
+                   "page_degree_token": "2nd", "degree_locator_matches": []}
+        assert llv.profile_scrape_state(reading) == llv.STATE_DRIFT
+        assert "every profile viewer reads as a non-connection" in \
+            llv.profile_scrape_verdict(reading)
+
+    def test_a_locator_that_still_matches_is_ok(self):
+        reading = {"page_text": "Jane Doe · 2nd", "full_name": "Jane Doe", "connection": "2nd",
+                   "page_degree_token": "2nd", "degree_grounded": True,
+                   "degree_locator_matches": [{"locator": "css=main span.dist-value",
+                                               "texts": ["2nd"]}]}
+        assert llv.profile_scrape_state(reading) == llv.STATE_OK
+
+    def test_a_profile_with_no_badge_at_all_says_the_degree_half_is_ungrounded(self):
+        """Your OWN profile carries no degree badge — a green verdict there would claim coverage
+        the run does not have."""
+        reading = {"page_text": "Jane Doe  Head of Ops", "full_name": "Jane Doe",
+                   "page_degree_token": None, "degree_grounded": False,
+                   "degree_locator_matches": []}
+        assert llv.profile_scrape_state(reading) == llv.STATE_OK
+        assert "UNGROUNDED" in llv.profile_scrape_verdict(reading)
+
+    def test_a_page_that_never_rendered_grounds_nothing(self):
+        assert llv.profile_scrape_state({"page_text": "", "full_name": ""}) == llv.STATE_UNKNOWN
+
+    def test_a_rendered_page_with_no_name_is_drift(self):
+        reading = {"page_text": "Something rendered", "full_name": "",
+                   "parse_error": "Could not locate profile name"}
+        assert llv.profile_scrape_state(reading) == llv.STATE_DRIFT
+        assert "blind" in llv.profile_scrape_verdict(reading)
+
+
+@pytest.mark.unit
+class TestCatchupProbe:
+    """#964: the chain matched zero cards on a feed showing ten, and `no_moments` was logged daily."""
+
+    def test_profile_anchors_with_no_matched_cards_is_the_964_shape(self):
+        reading = {"cards_matched": 0, "profile_anchors": 12, "page_text": "Catch up"}
+        assert llv.catchup_state(reading) == llv.STATE_DRIFT
+        assert "#964 shape" in llv.catchup_verdict(reading)
+
+    def test_a_genuinely_empty_feed_is_not_drift(self):
+        reading = {"cards_matched": 0, "profile_anchors": 0, "page_text": "No new moments"}
+        assert llv.catchup_state(reading) == llv.STATE_UNKNOWN
+
+    def test_matched_cards_are_ok(self):
+        assert llv.catchup_state({"cards_matched": 10, "profile_anchors": 10}) == llv.STATE_OK
+
+
+@pytest.mark.unit
+class TestGroupComposerProbe:
+    def test_an_admin_only_group_is_unknown_not_drift(self):
+        """Production already records such a group unpostable and rotates past it — that is correct
+        behaviour, and filing an issue for it every week would be noise."""
+        reading = {"page_text": "Announcements group", "share_box_present": False}
+        assert llv.group_composer_state(reading) == llv.STATE_UNKNOWN
+
+    def test_a_share_box_that_opens_nothing_is_drift(self):
+        reading = {"page_text": "x", "share_box_present": True, "editor_present": False,
+                   "post_button_present": True}
+        assert llv.group_composer_state(reading) == llv.STATE_DRIFT
+        assert "the editor" in llv.group_composer_verdict(reading)
+
+    def test_all_three_steps_resolving_is_ok(self):
+        reading = {"page_text": "x", "share_box_present": True, "editor_present": True,
+                   "post_button_present": True}
+        assert llv.group_composer_state(reading) == llv.STATE_OK
+
+
+@pytest.mark.unit
+class TestCompanyInviteProbe:
+    def test_credit_copy_the_parser_cannot_read_is_drift(self):
+        reading = {"page_text": "50 credits available", "credits_text_on_page": True,
+                   "total_credits": 0}
+        assert llv.company_invite_state(reading) == llv.STATE_DRIFT
+        assert "parsed nothing" in llv.company_invite_verdict(reading)
+
+    def test_credits_with_no_invitee_rows_is_drift(self):
+        reading = {"page_text": "x credits available", "credits_text_on_page": True,
+                   "total_credits": 100, "credits_remaining": 50, "invitee_rows": 0}
+        assert llv.company_invite_state(reading) == llv.STATE_DRIFT
+
+    def test_a_page_with_no_invite_panel_grounds_nothing(self):
+        reading = {"page_text": "Company home", "credits_text_on_page": False}
+        assert llv.company_invite_state(reading) == llv.STATE_UNKNOWN
+
+    def test_a_healthy_panel_is_ok(self):
+        reading = {"page_text": "x credits available", "credits_text_on_page": True,
+                   "total_credits": 100, "credits_remaining": 50, "invitee_rows": 20,
+                   "checkboxes": 20}
+        assert llv.company_invite_state(reading) == llv.STATE_OK
