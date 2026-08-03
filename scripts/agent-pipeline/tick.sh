@@ -27,6 +27,7 @@ RUNBOOK="$BASE/RUNBOOK.md"
 PAUSED="$BASE/PAUSED"
 LOCK="$BASE/lock"
 MAX_FIX_ATTEMPTS=4
+MAX_PHASEFIX_ATTEMPTS=2
 CLAUDE_TIMEOUT="45m"
 DRY_RUN="${DRY_RUN:-0}"
 
@@ -48,7 +49,7 @@ export PATH="/home/lem/.local/bin:/usr/local/bin:/usr/bin:/bin"
 export HOME="/home/lem"
 export GH_PROMPT_DISABLED=1
 
-mkdir -p "$WORKROOT" "$LOGDIR" "$BASE/locks"
+mkdir -p "$WORKROOT" "$LOGDIR" "$BASE/locks" "$BASE/state"
 LOG="$LOGDIR/tick-$(date +%Y%m%d).log"
 log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG" ; }
 
@@ -131,7 +132,7 @@ claim_branch() {  # $1=branch -> 0 claimed, 1 busy
 # posthog_capture is fire-and-forget and never breaks a tick.
 TICK_T0="$SECONDS"                       # wall-clock seconds since shell start
 TICK_OUTCOME="unknown"                   # dispatched | skipped | error | nothing_to_do
-TICK_REASON=""                           # free-form: "both_lanes_exhausted", "no_ready", "all_slots_busy", "paused", "all_prs_clean", "mode_start", "mode_fix", "mode_review", "mode_merge", "mode_selfreview", "mode_rebase", "mode_depfix", "mode_revise", "escalate"
+TICK_REASON=""                           # free-form: "both_lanes_exhausted", "no_ready", "all_slots_busy", "paused", "all_prs_clean", "mode_start", "mode_fix", "mode_review", "mode_merge", "mode_selfreview", "mode_rebase", "mode_depfix", "mode_revise", "mode_phasefix", "escalate"
 TICK_MODE=""                             # mode name if a Claude run was dispatched
 TICK_ISSUE=""                            # issue number dispatched
 TICK_PR=""                               # PR number processed
@@ -404,7 +405,9 @@ review_wait_expired() {  # $1=head-commit-iso-date -> 0 when the no-review fallb
 # #548 shipped "Phase 1" and its PR auto-closed the issue; Phase 2 was never filed and the work
 # silently vanished (same for #568, #647). Before ANY merge, read the issue the PR closes:
 #   * an EXPLICIT later phase ("Phase 2", "lands in a follow-up PR", "deferred to", …) with no
-#     linked follow-up  -> park the PR + escalate the issue, never merge it silently;
+#     linked follow-up  -> route the PR to MODE=phasefix (an agent files+links the follow-up
+#     itself — that is mechanical, not a human decision); only after MAX_PHASEFIX_ATTEMPTS
+#     failed agent passes does it park to the owner;
 #   * merely UNCHECKED acceptance boxes -> one warning comment, merge proceeds (acceptance lists
 #     in this repo are routinely left unticked, so parking on those alone would stall everything).
 # A "#N" sitting next to follow-up/phase wording — on the PR or in the issue's comments — counts as
@@ -433,6 +436,31 @@ phase_followup_linked() {  # $1=pr $2=issue -> 0 when a follow-up issue is alrea
   [ -n "$hit" ]
 }
 
+# Phasefix budget: ONE counter per PR, bumped where the SPEND happens (the phasefix lane, at
+# dispatch) and cleared the moment the guard passes. Counting holds instead of dispatches would not
+# bound anything: a MODE=phasefix run that dies — or escalates — without handing the PR back to
+# agent:working never reaches phase_guard_ok again, so the label (and the re-dispatch) would live
+# forever on a counter that never moves.
+phasefix_attempts() {  # $1=pr -> echoes the dispatch count (0 when unset/garbage)
+  local c; c="$(cat "$BASE/state/phasefix-$1.count" 2>/dev/null || echo 0)"
+  case "$c" in ''|*[!0-9]*) c=0 ;; esac
+  echo "$c"
+}
+phasefix_bump()  { echo "$(( $(phasefix_attempts "$1") + 1 ))" > "$BASE/state/phasefix-$1.count"; }
+phasefix_clear() { rm -f "$BASE/state/phasefix-$1.count"; }
+
+phase_park_to_human() {  # $1=pr $2=issue $3=leftover $4=attempts — the agent lane gave up
+  local P="$1" N="$2" leftover="$3" tries="$4"
+  log "PHASE GUARD: PR #$P still fails after $tries phasefix attempt(s) — parking to human."
+  if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would park PR #$P + escalate issue #$N (phase guard, autofix exhausted)."; return 0; fi
+  if ! gh pr view "$P" --repo "$SLUG" --json comments --jq '((.comments // [])[].body)' 2>/dev/null | grep -qF "phasefix exhausted"; then
+    gh pr comment "$P" --repo "$SLUG" --body "$PHASE_GUARD_MARKER — **phasefix exhausted** after $tries attempt(s); this PR closes issue #$N whose later phase ($leftover) is still untracked. To clear: file + link the follow-up as \`Follow-up: #<n>\` (or remove \`Closes #$N\`), then re-label \`agent:working\`. Assigning @$ASSIGNEE." >/dev/null 2>&1
+  fi
+  gh pr edit "$P" --repo "$SLUG" --add-label needs-human --add-label agent:blocked --remove-label agent:working --remove-label agent:phasefix >/dev/null 2>&1
+  gh issue edit "$N" --repo "$SLUG" --add-label needs-human --add-assignee "$ASSIGNEE" >/dev/null 2>&1
+  gh pr edit "$P" --repo "$SLUG" --add-assignee "$ASSIGNEE" >/dev/null 2>&1
+}
+
 phase_guard_ok() {  # $1=pr -> 0 when merging is safe (guard off / nothing closed / scope complete)
   [ "$PHASE_GUARD" = "1" ] || return 0
   local P="$1" N leftover
@@ -443,7 +471,7 @@ phase_guard_ok() {  # $1=pr -> 0 when merging is safe (guard off / nothing close
   [ -n "$N" ] || return 0                      # closes nothing -> nothing can be dropped
   leftover="$(phase_leftover "$N")"
   [ -n "$leftover" ] || return 0
-  phase_followup_linked "$P" "$N" && return 0   # the remainder is already tracked
+  phase_followup_linked "$P" "$N" && { phasefix_clear "$P"; return 0; }   # the remainder is already tracked
 
   # Unchecked boxes alone: warn once and let it merge — see the note above.
   case "$leftover" in
@@ -455,21 +483,24 @@ phase_guard_ok() {  # $1=pr -> 0 when merging is safe (guard off / nothing close
       return 0 ;;
   esac
 
-  # Explicit later phase with nothing tracking it: this is the #548 failure mode — hold it.
-  log "PHASE GUARD: PR #$P closes issue #$N which declares a later phase ($leftover) and no follow-up is linked — parking instead of merging."
-  if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would park PR #$P + escalate issue #$N (phase guard)."; return 1; fi
-  if ! gh pr view "$P" --repo "$SLUG" --json comments --jq '((.comments // [])[].body)' 2>/dev/null | grep -qF "$PHASE_GUARD_MARKER"; then
-    gh pr comment "$P" --repo "$SLUG" --body "$PHASE_GUARD_MARKER — **held before merge.** This PR closes issue #$N, whose body declares work beyond this PR ($leftover), and no follow-up issue is linked anywhere on this PR or that issue. Merging now would close #$N and drop that scope silently — exactly how #548 was lost.
-
-To clear this, do ONE of:
-1. File the follow-up issue (topical labels + \`agent:ready\` + a \`priority:\`) and link it here as \`Follow-up: #<n>\`, then re-label this PR \`agent:working\`; or
-2. Remove \`Closes #$N\` from the PR body, say what remains, and re-label this PR \`agent:working\` — the issue stays open.
-
-Assigning @$ASSIGNEE." >/dev/null 2>&1
+  # Explicit later phase with nothing tracking it: the #548 failure mode. Filing + linking the
+  # follow-up is MECHANICAL (the RUNBOOK's phased-work rule spells out exactly what to do), so it
+  # is NOT a human decision — route the PR to MODE=phasefix and let an agent clear it. The owner
+  # is only assigned after MAX_PHASEFIX_ATTEMPTS agent passes have failed to satisfy the guard.
+  local pf_cnt
+  pf_cnt="$(phasefix_attempts "$P")"
+  if [ "$pf_cnt" -lt "$MAX_PHASEFIX_ATTEMPTS" ]; then
+    log "PHASE GUARD: PR #$P closes issue #$N with a later phase ($leftover) untracked — queuing MODE=phasefix (attempt $((pf_cnt+1))/$MAX_PHASEFIX_ATTEMPTS) instead of parking."
+    if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would label PR #$P agent:phasefix."; return 1; fi
+    if ! gh pr view "$P" --repo "$SLUG" --json comments --jq '((.comments // [])[].body)' 2>/dev/null | grep -qF "$PHASE_GUARD_MARKER"; then
+      gh pr comment "$P" --repo "$SLUG" --body "$PHASE_GUARD_MARKER — **held before merge.** This PR closes issue #$N, whose body declares work beyond this PR ($leftover), and no follow-up issue is linked. Queued for **MODE=phasefix**: an agent will file + link the follow-up issue (or drop the closing keyword) and hand the PR back to the merge loop — no owner action needed unless that fails." >/dev/null 2>&1
+    fi
+    gh pr edit "$P" --repo "$SLUG" --add-label agent:phasefix --remove-label agent:working >/dev/null 2>&1
+    return 1
   fi
-  gh pr edit "$P" --repo "$SLUG" --add-label needs-human --add-label agent:blocked --remove-label agent:working >/dev/null 2>&1
-  gh issue edit "$N" --repo "$SLUG" --add-label needs-human --add-assignee "$ASSIGNEE" >/dev/null 2>&1
-  gh pr edit "$P" --repo "$SLUG" --add-assignee "$ASSIGNEE" >/dev/null 2>&1
+
+  # The agent had its chances and the guard still fails — NOW it is the owner's.
+  phase_park_to_human "$P" "$N" "$leftover" "$pf_cnt"
   return 1
 }
 
@@ -747,6 +778,58 @@ for MPR in $(gh pr list --repo "$SLUG" --state open --label "agent:working" \
   if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would fast-path merge #$MPR."; exit 0; fi
   gh pr merge --auto "$(gh pr view "$MPR" --repo "$SLUG" --json url --jq .url)" >/dev/null 2>&1 \
     && gh pr comment "$MPR" --repo "$SLUG" --body "✅ CI green, review satisfied & all threads resolved — merging (fast path)." >/dev/null 2>&1
+  exit 0
+done
+
+# ---- PHASEFIX LANE: the merge gate held a PR that closes a multi-phase issue with the remainder
+# untracked (label agent:phasefix). Filing + linking the follow-up is mechanical, so an agent does
+# it and hands the PR back to agent:working; the owner is only pulled in when phase_guard_ok gives
+# up (MAX_PHASEFIX_ATTEMPTS). Runs before revise: a phasefix hold blocks an otherwise-green merge.
+# A PR the agent escalated (or a human parked) keeps its labels, so filter the human holds out —
+# otherwise this lane would re-dispatch on top of a deliberate `needs-human` every 5 minutes.
+for FJSON in $(gh pr list --repo "$SLUG" --state open --label "agent:phasefix" \
+  --json number,headRefName,labels \
+  --jq 'map(select((.labels|map(.name)) | (index("needs-human")|not) and (index("agent:blocked")|not)))
+        | sort_by(.number)|.[]|@base64' 2>/dev/null); do
+  FPR="$(echo "$FJSON" | base64 -d | jq -r .number)"
+  FBR="$(echo "$FJSON" | base64 -d | jq -r .headRefName)"
+  # Claim FIRST: an in-flight phasefix run holds this branch, and it is about to relabel the PR.
+  # Judging (or parking) it from another slot mid-run would race that hand-back.
+  if ! claim_branch "$FBR"; then
+    log "PR #$FPR (phasefix) claimed by another slot — trying next."
+    continue
+  fi
+  FISS="$(closing_issue_for_pr "$FPR")"
+  # Stale hold: the PR closes nothing any more — option (b), the closing keyword was dropped — so
+  # the guard has nothing left to hold. Hand it back to the merge loop instead of burning a run.
+  if [ -z "$FISS" ]; then
+    log "PR #$FPR — phasefix hold is stale (the PR closes no issue) — returning it to the merge loop."
+    [ "$DRY_RUN" = "1" ] || gh pr edit "$FPR" --repo "$SLUG" --add-label agent:working --remove-label agent:phasefix >/dev/null 2>&1
+    continue
+  fi
+  # The budget is enforced HERE, not only in phase_guard_ok: a run that dies before handing the PR
+  # back to agent:working never re-enters the guard, so without this the label would re-dispatch a
+  # Claude run every tick forever.
+  FCNT="$(phasefix_attempts "$FPR")"
+  if [ "$FCNT" -ge "$MAX_PHASEFIX_ATTEMPTS" ]; then
+    log "PR #$FPR — still held after $FCNT phasefix dispatch(es) — parking to human."
+    TICK_OUTCOME="escalated"; TICK_REASON="phasefix_exhausted"; TICK_PR="$FPR"; TICK_BRANCH="$FBR"
+    phase_park_to_human "$FPR" "$FISS" "$(phase_leftover "$FISS")" "$FCNT"
+    exit 0
+  fi
+  log "PR #$FPR — phase-guard hold — dispatching MODE=phasefix to file/link the follow-up (issue #$FISS)."
+  TICK_OUTCOME="dispatched"; TICK_REASON="mode_phasefix"; TICK_MODE="phasefix"; TICK_PR="$FPR"; TICK_BRANCH="$FBR"
+  if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would run MODE=phasefix for #$FPR ($FBR)."; exit 0; fi
+  WT="$(add_worktree "$FBR" origin/main)"
+  # Same hazard the START lane guards: an empty path would `cd ""` and run the agent in $HOME.
+  if [ -z "$WT" ] || [ ! -d "$WT" ]; then
+    log "PR #$FPR — worktree creation failed for $FBR; leaving the phasefix hold for the next tick."
+    TICK_OUTCOME="failed"; TICK_REASON="worktree_create_failed"
+    exit 1
+  fi
+  phasefix_bump "$FPR"
+  export MODE=phasefix PR="$FPR" ISSUE="$FISS" BRANCH="$FBR" WORKTREE="$WT"
+  run_claude "$WT" "Read $RUNBOOK and follow MODE=phasefix. PR=$FPR ISSUE=$FISS BRANCH=$FBR."
   exit 0
 done
 
