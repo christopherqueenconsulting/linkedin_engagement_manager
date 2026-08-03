@@ -1055,6 +1055,9 @@ class TestDispatchScheduledReplySweeps:
             result = dispatch_scheduled_reply_sweeps()
         assert sweep.apply_async.call_count == 2
         assert "2/2" in result
+        # QueueOnce keys on ['user_id', 'sweep_slot'] without applying function defaults — an
+        # enqueue missing sweep_slot raises KeyError.
+        assert sweep.apply_async.call_args.kwargs["kwargs"] == {"user_id": 2, "sweep_slot": 0}
         # interval TTL for 4/day = 6h
         assert redis.set.call_args.kwargs["ex"] == 6 * 60 * 60
 

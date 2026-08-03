@@ -48,6 +48,18 @@ a notification isn't forwarded.
 - The per-user token is minted lazily and stored on `users.reply_inbound_token` (unique).
 - The webhook is public (`_PUBLIC_API_PREFIXES`) and always returns 200.
 
+## Observability — how to tell the chain is working
+
+Every inbound parse POST (both endpoints) now logs ONE line and emits ONE `inbound_parse_email`
+PostHog event carrying a `verdict` string: `comment_accepted` / `debounced` / `gmail_confirmation` /
+`linkedin_not_comment` / `unrelated` / `unknown_reply_token` / `no_reply_token` / `no_pin_token` /
+`no_pin_in_text` / `pin_accepted` / `pin_ignored`. The log line includes the truncated raw
+`to`/`envelope`/`from`/`subject` so a token or format mismatch is visible without payload capture.
+The webhook ignores most mail BY DESIGN, so before this a broken chain was indistinguishable from no
+mail arriving: prod silently dropped 100% of inbound mail for weeks (wrong/missing token upstream)
+and separately 500'd on every valid comment notification (the `sweep_slot` QueueOnce KeyError, fixed
+alongside). Healthy = a steady share of `comment_accepted`; broken = mail volume with zero accepts.
+
 ## Related code
 
 - `src/cqc_lem/utilities/linkedin/notification_email.py` — address + comment-vs-reaction classifier.

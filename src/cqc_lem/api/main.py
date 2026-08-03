@@ -2018,8 +2018,12 @@ async def linkedin_verification_pin_inbound(request: Request) -> ResponseModel:
     token = extract_token_from_address(to_field) or extract_token_from_address(envelope)
     pin = extract_pin_from_text(text) or extract_pin_from_text(subject)
     if not token or not pin:
+        # Mail addressed to neither pin+ nor reply+ lands here (catch-all spam, misdirected
+        # forwards) — the one bucket that used to vanish without a trace.
+        _log_inbound_verdict("no_pin_token" if not token else "no_pin_in_text", form)
         return ResponseModel(status_code=200, detail="ignored")
     user_id = submit_pin_by_token(token, pin)
+    _log_inbound_verdict("pin_accepted" if user_id else "pin_ignored", form, user_id=user_id)
     if user_id:
         log_info("Received LinkedIn verification PIN via email reply", user_id=user_id)
     return ResponseModel(status_code=200, detail="accepted" if user_id else "ignored")
@@ -2159,6 +2163,24 @@ def _reply_sweep_debounced(user_id: int, window_s: int = 120) -> bool:
         return True
 
 
+def _log_inbound_verdict(verdict: str, form, user_id: "Optional[int]" = None) -> None:
+    """One log line + one PostHog event per inbound parse email saying what we did with it. The
+    webhook ignores most mail BY DESIGN, which made a broken forwarding chain indistinguishable from
+    no mail at all — weeks of 100%-silently-dropped traffic looked like "feature never used". The
+    raw (truncated) address fields are included so a token/format mismatch is visible from the log."""
+    to_field = str(form.get("to") or "")[:160]
+    envelope = str(form.get("envelope") or "")[:240]
+    from_field = str(form.get("from") or "")[:120]
+    subject = str(form.get("subject") or "")[:120]
+    log_info(f"Inbound parse email verdict={verdict} to={to_field!r} envelope={envelope!r} "
+             f"from={from_field!r} subject={subject!r}", user_id=user_id)
+    try:
+        from cqc_lem.utilities.observability import track_inbound_email
+        track_inbound_email(verdict, user_id=user_id)
+    except Exception as e:
+        log_debug("Could not track inbound email verdict", exc=e, user_id=user_id)
+
+
 def _process_reply_inbound(form) -> ResponseModel:
     """Handle inbound mail sent to a reply+<token>@parse-domain address: a Gmail forwarding
     confirmation (auto-click the verify link) or a forwarded LinkedIn comment notification (trigger a
@@ -2176,12 +2198,15 @@ def _process_reply_inbound(form) -> ResponseModel:
     html = str(form.get("html") or "")
     token = extract_reply_token_from_address(to_field) or extract_reply_token_from_address(envelope)
     if not token:
+        _log_inbound_verdict("no_reply_token", form)
         return ResponseModel(status_code=200, detail="ignored")
     user_id = get_user_id_by_reply_token(token)
     if not user_id:
+        _log_inbound_verdict("unknown_reply_token", form)
         return ResponseModel(status_code=200, detail="ignored")
     # Gmail forwarding confirmation: the address is ours + token-gated, so auto-click the verify link.
     if is_gmail_forwarding_confirmation(from_field, subject, text or html):
+        _log_inbound_verdict("gmail_confirmation", form, user_id=user_id)
         return _handle_gmail_forwarding_confirmation(user_id, subject, text, html)
     comment = is_comment_notification(subject, text or html)
     # Record the proof BEFORE the comment/reaction split — a forwarded reaction email shows the
@@ -2190,10 +2215,16 @@ def _process_reply_inbound(form) -> ResponseModel:
     if comment or is_linkedin_notification(from_field, subject, text or html):
         _record_forwarding_confirmed_by_delivery(user_id)
     if not comment:
+        _log_inbound_verdict("linkedin_not_comment" if is_linkedin_notification(
+            from_field, subject, text or html) else "unrelated", form, user_id=user_id)
         return ResponseModel(status_code=200, detail="ignored")
     if not _reply_sweep_debounced(user_id):
+        _log_inbound_verdict("debounced", form, user_id=user_id)
         return ResponseModel(status_code=200, detail="debounced")
-    sweep_reply_comments.apply_async(kwargs={"user_id": user_id}, countdown=120)
+    # QueueOnce builds its dedup key from once['keys'] and does NOT apply function defaults — omitting
+    # sweep_slot here raised KeyError at enqueue and 500'd every forwarded notification.
+    sweep_reply_comments.apply_async(kwargs={"user_id": user_id, "sweep_slot": 0}, countdown=120)
+    _log_inbound_verdict("comment_accepted", form, user_id=user_id)
     log_info("Triggered reply sweep from comment notification", user_id=user_id)
     return ResponseModel(status_code=200, detail="accepted")
 

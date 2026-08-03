@@ -1715,6 +1715,19 @@ def track_task(
     )
 
 
+def track_inbound_email(verdict: str, user_id: Optional[int] = None) -> None:
+    """One event per SendGrid Inbound Parse POST, carrying the dispatch verdict (comment_accepted /
+    debounced / unknown_reply_token / …). The webhook drops most mail BY DESIGN, so without this a
+    broken forwarding chain is indistinguishable from no mail arriving at all — weeks of 100%-ignored
+    traffic left no signal anywhere. `verdict` is a STRING prop so alert tiles can filter on it
+    (docs/kpi-dashboards.md)."""
+    posthog.capture(
+        distinct_id=str(user_id or "anonymous"),
+        event="inbound_parse_email",
+        properties={"verdict": verdict},
+    )
+
+
 def track_api_call(
     route: str,
     method: str,
