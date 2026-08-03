@@ -32,14 +32,12 @@ making the cron fight a live agent.
 `main`, `master`, `develop`, plus:
 
 - `release-please--branches--main` — the release-please bot's working branch (the bot owns it)
-- `feature/release-please-dedup` — active PR #777, the new release-please config
-- `ci/claude-release-token-split` — release-token plumbing
-- `chore/pipeline-sync-and-release-automerge` — release-pipeline sync
-- `fix/release-pipeline-reliability` — release-pipeline reliability
-- `hotfix/dashboard-stats-month-boundary` — long-lived hotfix
-- `milestone/*` — milestone boundary branches
-- `worktree-agent-*` — agent-pipeline worktree branches (orphans from the runner, but the agent
-  may come back to them; the EXEMPT regex catches them all rather than a per-name list)
+- `release/*` — release branches
+
+The 2026-07-28 historical pins (`milestone/*`, `worktree-agent-*`, `feature/release-please-dedup`
+and four named release/pipeline branches) were deleted by hand on 2026-08-03 with owner approval —
+all of their content is on `main` — and dropped from the regex. Agent worktree branches don't need
+a pin: a live push is inside the 48h grace, and an orphan (no PR ever) is surfaced, never deleted.
 
 Encoded in two places that MUST stay in sync:
 - `scripts/branch_cleanup.py` → `EXEMPT_RE`
@@ -52,7 +50,7 @@ test that catches drift — keep them aligned by hand.
 
 ```
 branch tip is <48h old?         → HELD (grace window)
-matches EXEMPT_RE?              → HELD (release/milestone/agent)
+matches EXEMPT_RE?              → HELD (main/release-please/release)
 PR is MERGED, branch >48h?      → DELETE
 PR is CLOSED, branch >48h?      → DELETE (PR records the rejection)
 PR is OPEN, branch >48h?        → SURFACE for review (author paused?)
