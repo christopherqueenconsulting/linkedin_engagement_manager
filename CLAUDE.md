@@ -78,6 +78,14 @@ All LLM calls go through LiteLLM proxy via `utilities/ai/client.py`:
 response = client.chat.completions.create(model="lem-simple", messages=[...])
 ```
 
+`AttributedOpenAI` is the ONE client — it stamps attribution + trace ids on every endpoint, and it
+**rides out a proxy that is not accepting connections** (#986): the proxy is a container LEM restarts
+on deploys/reboots, and the SDK's own retries are spent in ~1.5s, so one blip used to lose the
+generation and file a defect for it. ONLY a connection that was never established is retried
+(`LLM_CONNECT_RETRY_ATTEMPTS` / `LLM_CONNECT_RETRY_BACKOFF_SECONDS`, ~24s by default) — nothing was
+sent, so there is no spend to duplicate; a timeout, a 4xx or a 5xx is the proxy answering and fails
+exactly as before.
+
 **Model tier aliases** (defined in `.litellm/config.yaml`):
 
 | Alias | Use case |
