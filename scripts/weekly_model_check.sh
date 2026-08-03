@@ -200,6 +200,18 @@ for n in json.load(sys.stdin)['notices']:
     alert "Ollama Cloud retirements scheduled for models we still run:"$'\n'"$MSG"
   fi
 
+  # A configured tag that left the catalog is next week's 410, found early — and the PR below is
+  # the only other place it appears. That PR is opened and merged by the agent pipeline, and
+  # merging it re-baselines the snapshot, so this is the ONE run that can report it: page a human.
+  GONE_MSG=$(printf '%s' "$CAT" | python3 -c "
+import sys, json
+for name in json.load(sys.stdin)['catalog'].get('removed_configured') or []:
+    print(f\"{name}: no longer listed on ollama.com/api/tags, but the box config still serves it\")
+" 2>/dev/null)
+  if [ -n "$GONE_MSG" ]; then
+    alert "Configured Ollama models have left the live catalog (a 410 is coming):"$'\n'"$GONE_MSG"
+  fi
+
   if [ "${REPOCH:-0}" -gt 0 ]; then
     # Title + body come from the plan we already read, so they name THIS run's diff. The two halves
     # (map pre-approval, snapshot refresh) fire independently, and a fixed string claiming both was

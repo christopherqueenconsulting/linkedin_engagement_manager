@@ -184,6 +184,26 @@ def _tags():
     return json.loads((FIXTURES / "tags.json").read_text())
 
 
+# ollama.com/api/tags as of 2026-08-02, FROZEN on purpose. The weekly cron rewrites
+# tests/unit/fixtures/ollama/tags.json from the live catalog (that is what keeps the fixture and the
+# committed snapshot on ONE fetch), so a pure-logic test that pins a candidate NAME must not read
+# it: the week Ollama publishes glm-5.3, `glm-5.1 -> glm-5.2` stops being true of the live fixture
+# and the cron's own PR arrives red on an assertion that was never about our code. Same rule as
+# tests/unit/test_litellm_roster_config.py — never pin a moving id. Updating this list is a
+# deliberate edit; the tests that must track the vendor (the shipped-state guard, the parse-every-
+# tag check, the snapshot/fixture lockstep) go on reading `_tags()`.
+FROZEN_TAGS = ("deepseek-v4-flash", "deepseek-v4-flash:0731", "deepseek-v4-pro", "gemma4:31b",
+               "glm-5.1", "glm-5.2", "gpt-oss:120b", "gpt-oss:20b", "kimi-k2.6", "kimi-k2.7-code",
+               "kimi-k3", "minimax-m2.7", "minimax-m3", "mistral-large-3:675b",
+               "nemotron-3-nano:30b", "nemotron-3-super", "nemotron-3-ultra", "qwen3.5:397b")
+
+
+def _frozen_catalog() -> dict:
+    """Real catalog names, pinned in time. `plan_family_upgrades` reads tag NAMES only, so the
+    per-tag metadata the live fixture carries is not part of what these tests assert."""
+    return {name: {} for name in FROZEN_TAGS}
+
+
 def _ollama_cfg(*models):
     return {"model_list": [
         {"model_name": "lem-medium", "litellm_params": {
@@ -551,28 +571,30 @@ class TestParseModelVersion:
 
 
 class TestPlanFamilyUpgrades:
+    """Reads `_frozen_catalog()`, never the cron-rewritten fixture: every assertion here names the
+    candidate the planner must pick, and a vendor release must not turn that into a red CI run."""
+
     def _rows(self, *models):
         return mhc.parse_deployments(_ollama_cfg(*models))
 
     def test_major_bump_against_the_real_catalog(self):
-        out = mhc.plan_family_upgrades(self._rows("minimax-m2.7"), mhc.parse_catalog(_tags()))
+        out = mhc.plan_family_upgrades(self._rows("minimax-m2.7"), _frozen_catalog())
         assert len(out) == 1
         assert out[0]["candidate"] == "minimax-m3" and out[0]["urgency"] == "major"
         assert out[0]["groups"] == ["lem-medium"]
 
     def test_minor_bump_is_reported_at_lower_urgency(self):
-        out = mhc.plan_family_upgrades(self._rows("glm-5.1"), mhc.parse_catalog(_tags()))
+        out = mhc.plan_family_upgrades(self._rows("glm-5.1"), _frozen_catalog())
         assert out[0]["candidate"] == "glm-5.2" and out[0]["urgency"] == "minor"
 
     def test_current_newest_produces_nothing(self):
-        assert mhc.plan_family_upgrades(self._rows("minimax-m3"), mhc.parse_catalog(_tags())) == []
-        assert mhc.plan_family_upgrades(self._rows("qwen3.5:397b"),
-                                        mhc.parse_catalog(_tags())) == []
+        assert mhc.plan_family_upgrades(self._rows("minimax-m3"), _frozen_catalog()) == []
+        assert mhc.plan_family_upgrades(self._rows("qwen3.5:397b"), _frozen_catalog()) == []
 
     def test_a_variant_is_never_offered_as_the_base_models_upgrade(self):
         # kimi-k2.7-code is a coding variant, not a newer kimi-k2.6 — so the plain-family kimi-k3
         # is the only thing that may be offered, however much higher the variant's version reads.
-        out = mhc.plan_family_upgrades(self._rows("kimi-k2.6"), mhc.parse_catalog(_tags()))
+        out = mhc.plan_family_upgrades(self._rows("kimi-k2.6"), _frozen_catalog())
         assert [u["candidate"] for u in out] == ["kimi-k3"]
 
     def test_a_variant_is_not_an_upgrade_when_the_family_has_nothing_newer(self):
@@ -580,7 +602,7 @@ class TestPlanFamilyUpgrades:
         assert mhc.plan_family_upgrades(self._rows("kimi-k2.6"), catalog) == []
 
     def test_size_tagged_unversioned_model_with_no_versioned_sibling_is_skipped(self):
-        assert mhc.plan_family_upgrades(self._rows("gpt-oss:20b"), mhc.parse_catalog(_tags())) == []
+        assert mhc.plan_family_upgrades(self._rows("gpt-oss:20b"), _frozen_catalog()) == []
 
     def test_unversioned_current_with_a_versioned_sibling_is_a_major(self):
         out = mhc.plan_family_upgrades(self._rows("gpt-oss:20b"), {"gpt-oss2": {}})
@@ -595,8 +617,7 @@ class TestPlanFamilyUpgrades:
     def test_non_ollama_deployments_are_ignored(self):
         cfg = {"model_list": [{"model_name": "lem-medium", "litellm_params": {
             "model": "openai/minimax-m2.7", "api_key": "os.environ/OPENAI_API_KEY"}}]}
-        assert mhc.plan_family_upgrades(mhc.parse_deployments(cfg),
-                                        mhc.parse_catalog(_tags())) == []
+        assert mhc.plan_family_upgrades(mhc.parse_deployments(cfg), _frozen_catalog()) == []
 
     def test_duplicate_deployments_report_once_with_every_tier(self):
         cfg = {"model_list": [
@@ -604,13 +625,13 @@ class TestPlanFamilyUpgrades:
                 "model": "openai/minimax-m2.7", "api_base": "os.environ/OLLAMA_CLOUD_URL"}},
             {"model_name": "lem-complex", "litellm_params": {
                 "model": "openai/minimax-m2.7", "api_base": "os.environ/OLLAMA_CLOUD_URL"}}]}
-        out = mhc.plan_family_upgrades(mhc.parse_deployments(cfg), mhc.parse_catalog(_tags()))
+        out = mhc.plan_family_upgrades(mhc.parse_deployments(cfg), _frozen_catalog())
         assert len(out) == 1 and out[0]["groups"] == ["lem-complex", "lem-medium"]
 
     def test_usage_levels_ride_along_and_flag_a_tier_jump(self):
         levels = {"minimax-m2.7": {"level": 2, "label": "medium"},
                   "minimax-m3": {"level": 3, "label": "high"}}
-        out = mhc.plan_family_upgrades(self._rows("minimax-m2.7"), mhc.parse_catalog(_tags()),
+        out = mhc.plan_family_upgrades(self._rows("minimax-m2.7"), _frozen_catalog(),
                                        usage_lookup=lambda m: levels.get(m))
         assert out[0]["usage_jump"] is True
         assert out[0]["candidate_usage"]["label"] == "high"
@@ -619,7 +640,7 @@ class TestPlanFamilyUpgrades:
         def boom(_model):
             raise RuntimeError("ollama.com down")
 
-        out = mhc.plan_family_upgrades(self._rows("minimax-m2.7"), mhc.parse_catalog(_tags()),
+        out = mhc.plan_family_upgrades(self._rows("minimax-m2.7"), _frozen_catalog(),
                                        usage_lookup=boom)
         assert out[0]["usage_jump"] is None
 
