@@ -214,11 +214,14 @@ remaining password-only accounts, so nobody's automation stops without warning.
    (`PUT /user/linkedin-password`, `POST /user/linkedin-cookie`, email change, recovery-code
    regeneration, device revocation) require a **fresh** passkey/TOTP assertion within 5 minutes. Stealing
    a session is then not enough — the attacker still needs the physical factor.
-   **Caveat found while auditing:** `/api/user/linkedin-cookie` is deliberately bearer-exempt
-   (`src/cqc_lem/api/main.py:143-153`) because the browser extension POSTs to it with only the LEM
-   `session_token` in the body. A naive step-up gate would break the one-click extension, so 2c must
-   either issue the extension a short-lived, single-purpose token minted after a step-up in the SPA, or
-   scope the step-up requirement to the SPA-originated path only. Decide this in 2c, don't discover it.
+   **Caveat found while auditing:** `/api/user/linkedin-cookie` is deliberately exempt from the `/api`
+   credential gate (`_PUBLIC_API_PREFIXES` in `src/cqc_lem/api/main.py`) because the browser extension
+   POSTs to it with only the LEM `session_token` in the body. A naive step-up gate would break the
+   one-click extension, so 2c must either issue the extension a short-lived, single-purpose token
+   minted after a step-up in the SPA, or scope the step-up requirement to the SPA-originated path
+   only. Decide this in 2c, don't discover it. *(Resolved in 2c/#905: the extension gets a
+   `scope='extension'` session minted behind a step-up at `/user/extension-token`, and that scope
+   reaches this one path and nothing else.)*
 6. **Rate limiting + lockout** on `/api/auth/*`: Redis-backed counters per email **and** per IP
    (Redis is already in the stack), exponential backoff, hard lock after N failures, generic error
    messages that don't confirm account existence.
@@ -298,6 +301,20 @@ auth flow success/failure, session revocation, rate-limit/lockout, migration bac
 - **Sessions:** hashed tokens, httpOnly cookie, per-device rows + revocation, rotation on privilege
   change, **step-up auth on every endpoint that touches LinkedIn credentials**, Redis rate limiting,
   audit log.
+- **The `/api` bearer token (`API_ACCESS_TOKENS`) is NOT a control in this design and never was one.**
+  It was a single shared secret compiled into the public SPA bundle, so every visitor held it. #914
+  made the session the identity on every route and #950 stopped shipping it to the browser; it
+  survives only as a rotatable **non-browser** credential (scripts, Postman) and, paired with
+  `X-Admin-Secret`, on the six `/api/admin/*` routes that gate through `_require_api_and_admin` —
+  **not on `/api/admin/*` as a whole.** The other twelve run on `X-Admin-Secret` alone or on an
+  admin session; #950 dropped the bearer the middleware used to add on top of them, which is free
+  only until #965 rotates the values. The per-route breakdown is in
+  [`identity-and-sessions.md`](identity-and-sessions.md).
+  Anything that reads as "the API is behind a token" in the
+  sections above means the session, not this. **Every value that was ever built into a bundle is
+  still public and still valid** until it is rotated out of the server `.env` — #950 retired the
+  shipping mechanism, #965 is the rotation. Posture:
+  [`identity-and-sessions.md`](identity-and-sessions.md).
 - **Recovery:** one-time argon2id-hashed recovery codes; the mailbox stops being a single point of failure.
 - **Rollout (3A):** 2a encryption → 2b identity/sessions → 2c passkeys, each independently revertible.
 - **Cost:** $0. Three permissively licensed libraries (BSD-3-Clause / MIT), no new service, no third party.

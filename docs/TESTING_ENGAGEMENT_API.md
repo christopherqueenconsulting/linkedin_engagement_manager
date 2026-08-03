@@ -24,16 +24,22 @@ work for my account now?"
 
 ## 2. Authentication — BOTH headers are required
 
-The engagement test endpoints (`/api/admin/*`) require **two** credentials at the
-same time. Sending only one returns 401 or 403.
+The engagement test endpoints (`/api/admin/test/*`, `/admin/consolidate-duplicate-comments`,
+`/admin/task-status/{id}`) require **two** credentials at the same time — they gate through
+`_require_api_and_admin`, which checks the bearer itself. Sending only one returns 401 or 403.
+Other `/api/admin/*` routes take `X-Admin-Secret` alone or an admin session; sending both is always
+correct, so the recipe below works for all of them.
 
 | Header | Value | Where to find it (on the VPS) |
 |---|---|---|
 | `Authorization` | `Bearer <API_ACCESS_TOKEN>` | `API_ACCESS_TOKENS=` in `/opt/lem/.env` (comma-separated; use any one) |
 | `X-Admin-Secret` | `<ADMIN_SECRET>` | `ADMIN_SECRET=` in `/opt/lem/.env` |
 
-- **`Authorization` bearer** gates every `/api/*` route (set globally).
-- **`X-Admin-Secret`** additionally gates the `/api/admin/*` endpoints.
+- **`Authorization` bearer** is the **non-browser** credential for `/api/*`. Since issue #950 the
+  SPA holds none (it authenticates on its session cookie), so this token lives in the server `.env`
+  only and is rotatable there without a rebuild — you, Postman and `scripts/` are its callers.
+- **`X-Admin-Secret`** is what actually gates the `/api/admin/*` endpoints (per-route breakdown in
+  [`identity-and-sessions.md`](identity-and-sessions.md)).
 - In the [Swagger page](https://lem.christopherqueenconsulting.com/docs), click
   **Authorize** — it now presents **both** schemes (`HTTPBearer` and
   `X-Admin-Secret`). Fill in both, then every endpoint's **Try it out** works.

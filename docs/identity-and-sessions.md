@@ -69,9 +69,10 @@ did not. `PUT /user/`, `GET|DELETE /posts/`, `POST /posts/bulk_update/`, `POST /
 `POST /invite_to_li_company_page/`, `POST /automate_reply_commenting` and
 `POST /aws_test_get_my_profile/` read the acting account out of an `email` / `user_id` / `post_id`
 **request parameter**. The only thing in front of them was the shared bearer token
-(`API_ACCESS_TOKENS`), which the SPA ships in its build (`VITE_API_TOKEN`) — so it is held by
-everyone who has ever loaded the page. `PUT /user/` was the worst of them: it MOVED the account
-email given only the current one, which is the whole account for one query parameter.
+(`API_ACCESS_TOKENS`), which the SPA shipped in its build (`VITE_API_TOKEN`) — so it was held by
+everyone who had ever loaded the page. (**#950 retired that**; see the next section.) `PUT /user/`
+was the worst of them: it MOVED the account email given only the current one, which is the whole
+account for one query parameter.
 
 Every one of them now resolves the caller through **`require_session_user_id()`** — the 401 wrapper
 around the same resolver — and treats what the request named as a target to authorise:
@@ -136,33 +137,136 @@ everything else now — **there is one resolver, and a route that imports around
 `tests/unit/api/test_param_auth_scoping.py` is the standing proof: one 401 case and one 403 case per
 converted route, each asserting the db call behind it was never reached.
 
+## The `/api` bearer token is a non-browser credential (issue #950)
+
+#914 made the session the identity everywhere, which left `API_ACCESS_TOKENS` **still checked and
+no longer sufficient for anything**. It was also still being handed to every visitor: the SPA read
+it from `VITE_API_TOKEN`, and Vite inlines a `VITE_*` at build time, so it was a constant in a
+public bundle. A secret everyone holds is not a secret — and carrying it as one meant it read as a
+layer in threat models it was not one in, and could not be rotated without rebuilding and
+redeploying the SPA.
+
+So the SPA ships none, and the token's contract is now written down rather than assumed:
+
+- **The browser never holds it.** `ui/src/api/client.ts` sends no `Authorization` header, the
+  Dockerfile has no `VITE_API_TOKEN` ARG, and `.github/workflows/ui-build.yml` enforces both ends:
+  it greps `src/` for a `VITE_API_TOKEN` / `VITE_ADMIN_SECRET` read (the diff that reintroduces
+  one), then builds with CANARY values for those names and greps `dist/` (the bundle that already
+  did). The bundle grep carries a **positive control** — a fixed fake `VITE_POSTHOG_KEY` that must
+  be present in `dist/` — because a negative grep only proves something if it could have found
+  anything; without it, a change to Vite's inlining would turn the canary into a silent pass.
+  (`VITE_POSTHOG_KEY` is deliberately not canaried — a write-only third-party ingest key is *meant*
+  to be public, which is exactly what qualifies it as the control.)
+- **The middleware asks only "did this caller bring A credential"** — a valid bearer, or a session
+  credential (the `lem_session` cookie, or the `X-Session-Token` header the SPA sends on the
+  cookie-less fallback). Presence, not validity: the middleware runs before routing and has no
+  database, and the route's own `require_session_user_id()` already fails closed. It is an edge
+  filter that keeps credential-less traffic off the handlers — and only the naive kind, since one
+  arbitrary cookie byte clears it. **It is not authorisation** — a forged cookie clears it and is
+  then refused by the route, which is the same 401 from one step further in.
+- **That safety argument is a TEST, not a paragraph.** Loosening a global edge control is only safe
+  while every gated route really does resolve its caller, so
+  `tests/unit/api/test_api_route_identity.py` walks the live route table and asserts it: every
+  `/api` path outside `_PUBLIC_API_PREFIXES` reaches either the session resolver or the admin
+  secret. The two sets are derived by closing over the call graph from `get_session_user_id` /
+  `_require_admin`, so a new wrapper counts automatically and a route that leans on the bearer alone
+  fails the build. `_NO_IDENTITY_BY_DESIGN` is the one escape hatch and each entry has to argue the
+  route reads nothing user-scoped.
+- **`API_ACCESS_TOKENS` stays set in production**, rotatable in the server `.env` alone now that no
+  build artifact has to match it.
+- **`/api/admin/*` is NOT uniformly a two-credential surface, and #950 is why — say so plainly.**
+  Eighteen admin routes run on three different gates, and the middleware used to add the bearer on
+  top of all of them:
+
+  | Gate | Routes | Credentials after #950 |
+  |---|---|---|
+  | `_require_api_and_admin` | the five `/admin/test/*` runs + `/admin/consolidate-duplicate-comments` + `/admin/task-status/{id}` (6) | bearer **and** `X-Admin-Secret` — it re-checks the bearer itself, so this pair is unchanged |
+  | `_require_admin` | `/admin/automation-{pause,resume,status}`, `/admin/fix-video-urls`, `/admin/user/location`, `/admin/regenerate-{carousel,video}`, `/admin/generate-media-variants`, `/admin/youtube-token` (9) | `X-Admin-Secret` **alone** — the bearer was the middleware's, and the middleware no longer demands it |
+  | `_require_user_admin` | `/admin/feedback`, `/admin/feedback/{id}/review`, `/admin/youtube-status` (3) | an **admin session** — these are SPA pages, so they never could hold a bearer |
+
+  For the twelve non-`_require_api_and_admin` routes this is a layer removed. It costs nothing
+  *today* — every bearer value is public, so a caller who has `ADMIN_SECRET` has one too — but it
+  stops being free the moment **#965** rotates them, and that is exactly the kind of book-keeping
+  this section exists to keep honest. `X-Admin-Secret` is a custom header, so none of the three
+  gates is reachable by a cross-site form. `tests/unit/api/test_api_route_identity.py` pins the
+  invariant that survives: every `/api/admin/*` route reaches one of the three.
+
+**Rollout, and the part that is not free.** The change is breakage-free in both directions — an old
+SPA bundle cached across the release still sends the bearer (still valid), a new one sends the
+cookie — but *"still valid"* is doing real work in that sentence. **Every token value that was ever
+shipped in a bundle is a known-public credential**, and this PR retires the shipping mechanism, not
+the leaked secret: post-merge those values still clear the edge filter, and still pair with
+`X-Admin-Secret` on `/api/admin/*`. They keep working only so the cached-bundle window (a browser
+tab open across the release — hours, not days; see `docs/spa-deploy-freshness.md`) does not 401. So
+the rotation is the second half of the fix, not a nice-to-have: rotate `API_ACCESS_TOKENS` in
+`/opt/lem/.env` once that window has passed, and delete the now-unread `UI_API_TOKEN` repo secret.
+Tracked on **#965**.
+
+Every non-browser caller of `/api`, and what it authenticates on:
+
+| Caller | Credential |
+|---|---|
+| SPA (`ui/src/api/client.ts`) | session cookie — **no bearer** |
+| Tutorial capture harness (`marketing/video_tutorials.py`) | drives the SPA with a real session token in `localStorage` → `X-Session-Token` |
+| Browser extension (`browser_extension/popup.js`) | none — posts only to the public, self-authenticating `/api/user/linkedin-cookie` with the user's `session_token` in the body |
+| `scripts/generate_media_variants.sh` | bearer **+** `X-Admin-Secret` (an `/api/admin/*` route) |
+| Postman collection (`docs/postman/`) | bearer, from the server `.env` |
+| Stripe webhook | none — signature-verified, in `_PUBLIC_API_PREFIXES` |
+| LinkedIn OAuth return trip | not under `/api` (`/auth/linkedin/*`), never gated here |
+| Celery tasks | in-process; they call `db.py` directly and never loop through HTTP |
+
+`db.update_user` lost its `email=` parameter in the same change. #914 removed its last caller, but
+it still moved an account's address with a bare `UPDATE` — no `user_email_history` row, no PIN to
+the new address, no session revoke — which is every guarantee `POST /user/email/change/init|verify`
+exists to make. `email = %s` is out of `_ALLOWED_USER_CLAUSES` too, so the clause cannot be
+reintroduced by a caller alone.
+
 ## CSRF
 
 Cookie auth means a state-changing request can now be authenticated by something the browser
-attaches automatically, which is the shape CSRF exploits. Three things stand between that and a
+attaches automatically, which is the shape CSRF exploits. **Two** things stand between that and a
 forged write:
 
 - **`SameSite=Lax`** — the cookie is not attached to a cross-site POST at all. It rides only on
   top-level GET navigations, which is exactly what the LinkedIn OAuth return trip needs and nothing
-  more. (`strict` would break that return trip; that is why it is `lax` and not tighter.)
+  more. (`strict` would break that return trip; that is why it is `lax` and not tighter.) Since
+  #950 the cookie is the browser's ONLY credential, so its attributes are pinned by test rather
+  than by review: `TestSessionCookieAttributes` asserts `httponly` / `secure` / `samesite=lax` /
+  `path=/` on what `_set_session_cookie` issues, that an unset or unusable `SESSION_COOKIE_SAMESITE`
+  falls back to `lax` instead of 500ing a login, and that the four query-parameter routes below are
+  `POST`-only — `Lax` *does* send the cookie on a top-level GET, so a state-changing `GET` would be
+  forgeable by a bare link.
 - Almost every mutating endpoint is `POST`/`PUT` with a JSON body — a form POST from another origin
   cannot set `Content-Type: application/json` without a preflight, and no CORS middleware is
   installed, so the preflight has nothing to succeed against.
-- In deployments with `API_ACCESS_TOKENS` set, `/api/*` also needs the bearer token, which lives in
-  the SPA bundle and not in the browser's ambient credentials.
+**There used to be a third, and #950 removed it — say so plainly.** In deployments with
+`API_ACCESS_TOKENS` set, `/api/*` also needed the bearer token, and a cross-site form POST cannot
+set an `Authorization` header even when the attacker knows the value, so it *did* work here despite
+being public. It was worthless as access control and real as a CSRF layer; retiring it from the
+bundle trades the second for the first. What replaced it is not a CSRF layer: the middleware accepts
+a session credential, and the browser attaches the cookie by itself.
 
 **"Almost" is exact, and #914 is why.** Four mutating routes take query parameters and no body —
 `POST /create_weekly_content/`, `POST /invite_to_li_company_page/`, `POST /aws_test_get_my_profile/`
 and `POST /automate_reply_commenting`. Before #914 they authenticated on a `user_id`/`post_id`
 parameter, so the cookie was irrelevant to them; now they resolve the session like everything else,
 which is what puts them under this heading at all. A cross-site form POST reaches them without a
-preflight, so for those four the JSON-body layer is not there and `SameSite=Lax` plus the bearer
-token are the whole defence. Both hold, and each of the four only ever queues work for the CALLER's
-own account, so the worst a forged one buys is a job the user could have started themselves — but
-the layer count is two, not three, and a new query-parameter mutating route inherits that.
+preflight, so for those four the JSON-body layer is not there and **`SameSite=Lax` is the whole
+defence** — one layer, not two, since #950. It holds on its own (the cookie is simply not attached
+to a cross-site POST), and each of the four only ever queues work for the CALLER's own account, so
+the worst a forged one buys is a job the user could have started themselves. But one layer is one
+layer, and a new query-parameter mutating route inherits it. A non-secret custom request header the
+SPA sends and a forged form cannot — the standard replacement — is tracked on **#957**.
 
-If a future change adds CORS with credentials, or another form-encoded/query-only mutating endpoint,
-this section is the thing that has to be revisited first.
+**One layer means one env var can delete it.** `_samesite()` accepts `none` (a browser rejects
+anything else, so the resolver has to), and `SESSION_COOKIE_SAMESITE=none` attaches the cookie to
+cross-site POSTs — which for those four routes is now the whole defence, not a redundant one. It was
+survivable while the bearer was also required; since #950 it is not. Leave it `lax`. Nothing in LEM
+needs otherwise: the cookie is only ever sent to LEM's own origin, and the one cross-site arrival
+that matters (the LinkedIn OAuth return trip) is a top-level GET, which `Lax` already covers.
+
+If a future change adds CORS with credentials, sets `SESSION_COOKIE_SAMESITE=none`, or adds another
+form-encoded/query-only mutating endpoint, this section is the thing that has to be revisited first.
 
 ## Per-device sessions
 
@@ -234,7 +338,7 @@ unknown address has no account. The write is best effort — an audit failure mu
 |---|---|---|
 | `SESSION_COOKIE_NAME` | `lem_session` | rarely |
 | `SESSION_COOKIE_SECURE` | `true` | `false` for a plain-http local origin, or the browser drops the cookie |
-| `SESSION_COOKIE_SAMESITE` | `lax` | `strict` breaks the LinkedIn OAuth return trip |
+| `SESSION_COOKIE_SAMESITE` | `lax` | `strict` breaks the LinkedIn OAuth return trip. **Never `none`** — since #950 `Lax` is the only CSRF defence the four query-parameter mutating routes have, and `none` removes it (see [CSRF](#csrf)) |
 | `AUTH_INIT_MAX_PER_HOUR` | `5` | PIN emails per address per hour |
 | `AUTH_VERIFY_MAX_PER_HOUR` | `10` | PIN submissions per address per hour |
 | `AUTH_IP_MAX_PER_HOUR` | `30` | auth calls per client IP per hour |

@@ -81,10 +81,15 @@ header of that file) instead of the dashboard.
 ### 5. GitHub repo configuration
 
 **Secrets:** `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY`, `GHCR_PAT`
-(a PAT with `read:packages` for the VPS pull), `UI_API_TOKEN` (must equal one of
-the `API_ACCESS_TOKENS` values in the server `.env`), plus existing
+(a PAT with `read:packages` for the VPS pull), plus existing
 `GITGUARDIAN_API_KEY`, `ANTHROPIC_API_KEY`, `CODECOV_TOKEN`. GHCR **push** uses
 the built-in `GITHUB_TOKEN`.
+
+> `UI_API_TOKEN` is **retired** (issue #950). The SPA used to be built with it as
+> `VITE_API_TOKEN`, which inlined one of the server's `API_ACCESS_TOKENS` into a public
+> bundle. The SPA authenticates on its httpOnly session cookie; `API_ACCESS_TOKENS` is now a
+> non-browser credential and can be rotated in the server `.env` alone, with no rebuild. Delete
+> the repo secret — nothing reads it.
 
 **Environment:** create a `production` environment with required reviewers to
 gate the deploy job.
@@ -260,7 +265,7 @@ prod overlay.
 | Symptom | Check |
 |---|---|
 | Deploy rolls back | `docker compose logs web_app`; `/health` not reachable |
-| 401 on the SPA | `UI_API_TOKEN` (build) ≠ `API_ACCESS_TOKENS` (server) |
+| 401 on the SPA | dead/absent session cookie — check `SESSION_COOKIE_SECURE` matches the origin's scheme (the SPA holds no API token since #950) |
 | Migrations fail | `docker compose run --rm flyway`; inspect Flyway output |
 | Tunnel down | `docker compose logs cloudflared`; verify `TUNNEL_TOKEN` |
 | OAuth fails | `LI_REDIRECT_URL` matches the LinkedIn app + `app.<domain>` |

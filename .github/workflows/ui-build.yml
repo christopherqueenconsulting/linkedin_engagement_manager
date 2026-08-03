@@ -21,6 +21,42 @@ jobs:
       - name: npm ci (strict — matches the Docker build)
         working-directory: src/cqc_lem/ui
         run: npm ci
+
+      # Cheaper and earlier than the bundle canary below: the canary can only fire once a build has
+      # inlined the value, this fires on the diff that reintroduces the read. Both, because they
+      # fail on different mistakes — a source read here, a build-arg or a transitive dep there.
+      - name: No LEM-issued shared secret read by the SPA source
+        working-directory: src/cqc_lem/ui
+        run: |
+          set -u
+          # What Vite inlines is a READ — `import.meta.env.VITE_X`, bracketed, or destructured off
+          # `import.meta.env` (a bundler's `process.env.VITE_X` counts the same). NAMING one is not
+          # a read: src/api/client.ts documents the retired VITE_API_TOKEN on purpose, and a grep
+          # for the bare name fails on the very comment that records why it is gone.
+          pattern='(import\.meta|process)\.env\.(VITE_API_TOKEN|VITE_ADMIN_SECRET)\b'
+          pattern="$pattern"'|(import\.meta|process)\.env\[[^]]*(VITE_API_TOKEN|VITE_ADMIN_SECRET)'
+          pattern="$pattern"'|\{[^}]*(VITE_API_TOKEN|VITE_ADMIN_SECRET)[^}]*\}[[:space:]]*=[[:space:]]*(import\.meta|process)\.env'
+
+          # Positive control, same reason as the bundle canary's: a narrowed pattern is worth
+          # trusting only once it has been shown to still match what it forbids. One sample per
+          # read form, so dropping a form from the pattern fails here instead of going blind.
+          matched=$(printf '%s\n' \
+            "const t = import.meta.env.VITE_API_TOKEN" \
+            "const s = process.env['VITE_ADMIN_SECRET']" \
+            "const { VITE_API_TOKEN } = import.meta.env" \
+            | grep -cE "$pattern" || true)
+          if [ "$matched" -ne 3 ]; then
+            echo "::error::Positive control failed: the read pattern matched $matched/3 known-bad lines."
+            echo "::error::This check cannot detect anything in this state — fix the pattern before trusting it."
+            exit 1
+          fi
+
+          if grep -rnE "$pattern" src/; then
+            echo "::error::The SPA source reads a LEM-issued shared secret (the lines above)."
+            echo "::error::A VITE_* is inlined at build time, so it would be a constant in a public bundle — see issue #950."
+            exit 1
+          fi
+          echo "✓ src/ reads no LEM-issued shared secret (positive control present)"
       - name: Unit tests (vitest)
         working-directory: src/cqc_lem/ui
         run: npm test
@@ -28,8 +64,46 @@ jobs:
         working-directory: src/cqc_lem/ui
         run: npm run build
         env:
-          VITE_API_TOKEN: ${{ secrets.UI_API_TOKEN }}
-          VITE_POSTHOG_KEY: ${{ secrets.UI_POSTHOG_KEY }}
-          VITE_POSTHOG_HOST: ${{ vars.UI_POSTHOG_HOST }}
+          # LEM-issued shared secrets must never reach the bundle (issue #950): Vite inlines every
+          # import.meta.env.VITE_* it can see at build time, so anything named here that the SPA
+          # reads becomes a public constant. They are set to CANARY values, not real ones — the
+          # grep below is what keeps the rule true, and a canary is the only way it can see a
+          # regression without a real secret being in this file.
+          VITE_API_TOKEN: LEM_BUNDLE_CANARY_api_access_token
+          VITE_ADMIN_SECRET: LEM_BUNDLE_CANARY_admin_secret
+          # The POSITIVE CONTROL for the canary below. A negative grep only proves anything if the
+          # grep could have found something, so this build feeds FIXED fake values to two VITE_*
+          # names the SPA reads at module scope (utils/analytics.ts) and the next step asserts at
+          # least one reached dist/. If Vite's envPrefix or its inlining behaviour ever changes, that
+          # assertion fails instead of the canary silently going blind. This dist/ is a build check
+          # only; the shipped bundle is built by build-and-push.yml with the real values.
+          VITE_POSTHOG_KEY: phc_LEM_UI_BUILD_POSITIVE_CONTROL
+          VITE_POSTHOG_HOST: https://LEM-UI-BUILD-POSITIVE-CONTROL.example
           VITE_POSTHOG_REPLAY: ${{ vars.UI_POSTHOG_REPLAY }}
           VITE_POSTHOG_REPLAY_SAMPLE: ${{ vars.UI_POSTHOG_REPLAY_SAMPLE }}
+
+      # The standing proof for issue #950's first acceptance criterion. VITE_POSTHOG_KEY is
+      # deliberately not canaried: it is a third-party write-only ingest key that is MEANT to be
+      # public, not a LEM-issued credential — which is exactly why it can serve as the control.
+      - name: No LEM-issued shared secret in the SPA bundle
+        working-directory: src/cqc_lem/ui
+        run: |
+          set -u
+          # A missing dist/ makes `grep -rl` exit 2, which reads as "found nothing" to an `if`.
+          # Without this the whole check would report success having never run.
+          test -d dist || { echo "::error::dist/ not found — the bundle check did not run."; exit 1; }
+
+          if ! grep -rqE 'phc_LEM_UI_BUILD_POSITIVE_CONTROL|LEM-UI-BUILD-POSITIVE-CONTROL' dist/; then
+            echo "::error::Positive control missing: neither VITE_* the SPA reads was inlined into dist/."
+            echo "::error::The canary below cannot detect anything in this state — fix the build before trusting it."
+            exit 1
+          fi
+
+          grep -rl 'LEM_BUNDLE_CANARY' dist/ && found=0 || found=$?
+          if [ "$found" -eq 0 ]; then
+            echo "::error::A LEM-issued shared secret was inlined into the SPA bundle (the files above)."
+            echo "::error::The SPA authenticates on its httpOnly session cookie — see issue #950 and src/cqc_lem/ui/src/api/client.ts."
+            exit 1
+          fi
+          [ "$found" -eq 1 ] || { echo "::error::grep failed (exit $found) — the canary check did not run."; exit 1; }
+          echo "✓ dist/ carries no LEM-issued shared secret (positive control present)"

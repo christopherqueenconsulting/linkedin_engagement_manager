@@ -199,23 +199,23 @@ class TestUpdateUser:
             assert update_user(1) is False
         gdc.assert_not_called()
 
-    def test_email_only(self):
+    def test_blog_url_only(self):
         conn, cur = _conn(rowcount=1)
         with patch(f"{_DB}.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_user
-            assert update_user(9, email="new@x.com") is True
+            assert update_user(9, blog_url="https://x.com/blog") is True
         sql, values = cur.execute.call_args[0]
-        assert sql == "UPDATE users SET email = %s WHERE id = %s"
-        assert values == ["new@x.com", 9]
+        assert sql == "UPDATE users SET blog_url = %s WHERE id = %s"
+        assert values == ["https://x.com/blog", 9]
 
     def test_all_fields(self):
         conn, cur = _conn(rowcount=1)
         with patch(f"{_DB}.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_user
-            assert update_user(9, email="a@x.com", blog_url="b", sitemap_url="s") is True
+            assert update_user(9, blog_url="b", sitemap_url="s") is True
         sql, values = cur.execute.call_args[0]
-        assert "email = %s, blog_url = %s, sitemap_url = %s" in sql
-        assert values == ["a@x.com", "b", "s", 9]
+        assert "blog_url = %s, sitemap_url = %s" in sql
+        assert values == ["b", "s", 9]
 
     def test_zero_rowcount_returns_false(self):
         conn, _ = _conn(rowcount=0)
@@ -228,7 +228,22 @@ class TestUpdateUser:
         cur.execute.side_effect = mysql.connector.Error(msg="boom")
         with patch(f"{_DB}.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_user
-            assert update_user(9, email="a@x.com") is False
+            assert update_user(9, blog_url="b") is False
+
+    # --- issue #950: the address cannot move through here at all ------------------------------
+    def test_email_keyword_is_rejected(self):
+        """`update_user(..., email=…)` moved an account's address with no `user_email_history`
+        row, no PIN to the new address and no session revoke. The parameter is gone, so the call
+        raises instead of silently doing it."""
+        with patch(f"{_DB}.get_db_connection") as gdc:
+            from cqc_lem.utilities.db import update_user
+            with pytest.raises(TypeError):
+                update_user(9, email="attacker@example.com")
+        gdc.assert_not_called()
+
+    def test_email_is_not_an_updatable_clause(self):
+        from cqc_lem.utilities.db import _ALLOWED_USER_CLAUSES
+        assert "email = %s" not in _ALLOWED_USER_CLAUSES
 
 
 class TestGetUserLocation:

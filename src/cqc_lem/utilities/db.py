@@ -2570,18 +2570,21 @@ def get_linkedin_profile_url_by_user_id(user_id: int) -> Optional[str]:
     return row[0] if row else None
 
 
-_ALLOWED_USER_CLAUSES = frozenset({"email = %s", "blog_url = %s", "sitemap_url = %s"})
+# `email` is deliberately NOT here (issue #950). An address is not a profile field: moving one has
+# to write `user_email_history`, PIN the NEW address and revoke the account's other sessions, and
+# `change_user_email` is the only path that does all three. `update_user` used to take an `email=`
+# and UPDATE the column directly, which walked around every one of them — #914 removed its last
+# caller, so what was left was a loaded footgun one keyword argument from being fired again.
+_ALLOWED_USER_CLAUSES = frozenset({"blog_url = %s", "sitemap_url = %s"})
 
 
-def update_user(user_id: int, email: str = None, blog_url: str = None, sitemap_url: str = None) -> bool:
-    if not any([email, blog_url, sitemap_url]):
+def update_user(user_id: int, blog_url: Optional[str] = None,
+                sitemap_url: Optional[str] = None) -> bool:
+    if not any([blog_url, sitemap_url]):
         return False
     connection = get_db_connection()
     cursor = connection.cursor()
     fields, values = [], []
-    if email:
-        fields.append("email = %s")
-        values.append(email)
     if blog_url:
         fields.append("blog_url = %s")
         values.append(blog_url)
