@@ -266,6 +266,30 @@ class TestCommentOnRosterPosts:
         assert stats["posted"] == 0 and stats["targets_visited"] == 0
         engage.assert_not_called()
 
+    def test_a_session_quit_out_from_under_the_walk_stops_it_without_warning(self):
+        """Issue #988: a deploy quits the browser once the drain window is spent. Every remaining
+        target is unreachable for that same reason, so warning per target would escalate into a
+        filed defect for a routine release — the walk stops at INFO on what already shipped."""
+        from cqc_lem.app import run_automation as ra
+        from selenium.common import InvalidSessionIdException
+        driver = MagicMock()
+        driver.get.side_effect = InvalidSessionIdException("Unable to find session with ID: abc")
+        with ExitStack() as es:
+            p = lambda name, **kw: es.enter_context(patch(f"{_RA}.{name}", **kw))
+            p("get_engagement_targets", return_value=[_target("https://www.linkedin.com/in/jane"),
+                                                      _target("https://www.linkedin.com/in/john")])
+            p("wait_for_ajax")
+            warned = p("log_warning")
+            info = p("log_info")
+            engage = p("_engage_card")
+            stats = ra.comment_on_roster_posts(driver, MagicMock(), MagicMock(), 1, 5, {},
+                                               "synthesis", [], set())
+        assert stats["posted"] == 0 and stats["targets_visited"] == 0
+        assert driver.get.call_count == 1  # the 2nd target is unreachable on a dead session
+        warned.assert_not_called()
+        assert info.called
+        engage.assert_not_called()
+
 
 def _run_feed(boxes, *, prefs=None, relevant=True, roster_stats=None, matches=True):
     """Drive comment_on_feed_inline end-to-end with the roster pass stubbed, so the assertions are

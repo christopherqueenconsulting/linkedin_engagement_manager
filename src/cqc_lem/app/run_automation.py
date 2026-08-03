@@ -1941,6 +1941,16 @@ def comment_on_roster_posts(driver, wait, my_profile: LinkedInProfile, user_id: 
             driver.get(url)
             wait_for_ajax(driver)
         except Exception as e:
+            if is_session_lost(e):
+                # The browser is gone (issue #988 — a deploy quits the session once the drain
+                # window is spent). Every remaining target is unreachable for that same reason, so
+                # warning per target would file the deploy as a defect through this door instead:
+                # three of these identical warnings cross the escalation threshold. Stop the walk
+                # on what already shipped and let the caller end the run.
+                log_info("Browser session ended mid-run (worker or Grid restart) — stopping the "
+                         "roster walk", user_id=user_id, action_type="comment",
+                         task_name="comment_on_roster_posts")
+                break
             log_warning("Could not open roster target's activity page", exc=e, user_id=user_id,
                         action_type="comment", task_name="comment_on_roster_posts")
             continue

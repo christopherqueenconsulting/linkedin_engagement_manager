@@ -123,8 +123,11 @@ containers regardless, so a long Selenium task still holding a browser has its s
 under it — and the next WebDriver call raised `InvalidSessionIdException`, crashed the task, and the
 `task_failure` signal filed it as a defect for a routine release (issue #988). `selenium_util.
 is_session_lost(exc)` is the ONE place that fault is recognised; a task that hits it ends on what
-already shipped and logs INFO. Deliberately NOT covered by it: a hub that refuses connections — an
-unreachable Grid is a different fault and must stay loud.
+already shipped and logs INFO. A **best-effort catch site on the way there has to recognise it too**:
+the roster walk warns per target when an activity page won't open, so a dead session warned once per
+remaining target and crossed the escalation threshold — filing the same release as a defect through
+the other door. It stops the walk at INFO instead. Deliberately NOT covered by `is_session_lost`: a
+hub that refuses connections — an unreachable Grid is a different fault and must stay loud.
 
 | Env | Default | Purpose |
 |---|---|---|
