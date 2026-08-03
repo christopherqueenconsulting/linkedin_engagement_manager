@@ -455,3 +455,81 @@ class TestMain:
         monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
         monkeypatch.setattr(llv, "probe_feed_sort", lambda d: {"verdict": "sort control OK"})
         assert llv.main(["--feed-sort"]) == 0
+
+
+@pytest.mark.unit
+class TestAppreciationSourcesProbe:
+    """#968: the probe exists so the scrapers can be grounded BEFORE the flag is flipped, so its
+    job is to distinguish 'nothing there' from 'there but unreadable'."""
+
+    def test_no_cards_says_production_sends_nothing(self):
+        verdict = llv.appreciation_verdict({"cards": 0})
+        assert "no cards resolved" in verdict
+
+    def test_cards_but_nothing_dated_is_the_finding_that_matters(self):
+        verdict = llv.appreciation_verdict({"cards": 4, "dated": 0})
+        assert "silently dead" in verdict
+
+    def test_dated_cards_report_who_would_be_thanked(self):
+        verdict = llv.appreciation_verdict({"cards": 4, "dated": 4, "lookback_days": 30,
+                                            "people": [{"name": "Jane"}]})
+        assert "1 inside the 30-day window" in verdict
+
+    def test_appreciation_sources_alone_is_enough_to_probe(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.app.run_automation.get_current_profile",
+                            lambda **k: (MagicMock(), MagicMock(), "a@b.c", MagicMock()))
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
+        monkeypatch.setattr(llv, "probe_appreciation_sources",
+                            lambda d, u, p="": {"mentions": {"verdict": "no cards resolved"}})
+        assert llv.main(["--appreciation-sources"]) == 0
+
+    def test_probe_reads_both_surfaces_and_never_claims_a_ledger_row(self, monkeypatch):
+        """It grounds the PRODUCTION locator chains + parsers (the scrapers themselves are gated
+        off until this run happens), and it must stay read-only."""
+        from unittest.mock import patch
+
+        link = MagicMock()
+        link.get_attribute.return_value = "https://www.linkedin.com/in/jane?trk=x"
+        link.text = "Jane Doe"
+        card = MagicMock()
+        card.text = "July 24, 2026, Jane was my client"
+        card.find_elements.return_value = [link]
+
+        driver = _fake_driver(current_url="https://www.linkedin.com/in/me")
+        with patch("cqc_lem.utilities.selenium_util.find_all_first", return_value=[card]), \
+             patch("cqc_lem.utilities.db.has_appreciation_touch", return_value=False), \
+             patch("cqc_lem.app.run_automation.getText", side_effect=lambda el: el.text), \
+             patch("cqc_lem.app.run_automation._parse_recommendation_date", return_value=3.0):
+            report = llv.probe_appreciation_sources(driver, 1, "https://www.linkedin.com/in/me/",
+                                                    sleep=lambda s: None)
+
+        rec = report["recommendations_received"]
+        assert rec["url"].endswith("/details/recommendations/")
+        assert rec["cards"] == 1 and rec["dated"] == 1
+        assert rec["people"][0]["profile_url"] == "https://www.linkedin.com/in/jane"
+        # The mentions surface is read too, and its cards must SAY they were a mention.
+        assert report["mentions"]["cards"] == 0
+        assert "no cards resolved" in report["mentions"]["verdict"]
+
+    def test_mention_row_reports_the_name_production_would_use(self, monkeypatch):
+        """A textless actor link is what the live run actually hit — the probe has to apply the same
+        sentence fallback, or a blank name here would read as a probe artifact."""
+        from unittest.mock import patch
+
+        link = MagicMock()
+        link.get_attribute.return_value = "https://www.linkedin.com/in/jane%2Ddoe%2D42"
+        link.text = ""
+        card = MagicMock()
+        card.text = "Unread notification.\nJane Doe mentioned you in a comment 2h"
+        card.find_elements.return_value = [link]
+
+        driver = _fake_driver(current_url="https://www.linkedin.com/notifications/")
+        with patch("cqc_lem.utilities.selenium_util.find_all_first", return_value=[card]), \
+             patch("cqc_lem.utilities.db.has_appreciation_touch", return_value=False), \
+             patch("cqc_lem.app.run_automation.getText", side_effect=lambda el: el.text):
+            report = llv.probe_appreciation_sources(driver, 1, "https://www.linkedin.com/in/me/",
+                                                    sleep=lambda s: None)
+
+        row = report["mentions"]["rows"][0]
+        assert row["name"] == "Jane Doe"
+        assert row["profile_url"] == "https://www.linkedin.com/in/jane-doe-42"

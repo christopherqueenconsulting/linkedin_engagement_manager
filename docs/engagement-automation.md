@@ -268,3 +268,65 @@ invisible: the user could never learn that following or connecting would unlock 
 - **Observability:** `roster_comment_blocked` / `roster_followed` ride the feed funnel and the
   `feed_scan` event. A rising blocked count with a flat followed count is a roster the user has to
   fix by connecting, not a broken selector.
+
+## Appreciation-DM sources: recommendations + collaborations (issue #968)
+
+`automate_appreciation_dms_for_user` advertises three triggers; two of them were permanent
+empty-dict stubs, so only new connections ever produced a DM and the
+`recommendation_received` / `collaboration` templates were dead code.
+
+- **Two sources, both STANDING lists.** `get_recent_recommendations` reads the user's own
+  profile → `/details/recommendations/` (Received tab); `get_recent_collaborators` reads the
+  mentions notification feed (`/notifications/?filter=mentions`) — the nearest thing LinkedIn
+  exposes to a collaboration event, i.e. somebody put this user's name in their own post or
+  comment. Neither is an event queue: a recommendation never leaves the profile and a mention sits
+  in the feed for weeks. Everything below follows from that.
+- **Undated is SKIPPED, never thanked.** A card with no readable date could be from 2018, so
+  `_parse_recommendation_date` / `_parse_relative_age_days` return `None` and the card is dropped.
+  Only what falls inside `APPRECIATION_LOOKBACK_DAYS` (default 30) is a moment worth reacting to.
+  Cards that render but NONE of which date is the one thing that warns: that is format drift, and
+  it reads in production as "no recent recommendations" forever — a silently dead trigger.
+- **`appreciation_touches` is the claim, and it is what makes this safe.** The beat re-queues
+  itself every ~60s inside its window, so a standing list without a durable claim is a DM a minute.
+  One row per (user, person, event_type); the unique key is the guarantee. `_dispatch_appreciation_dms`
+  checks `has_appreciation_touch` BEFORE writing the message (a repeat costs no LLM call) and
+  `claim_appreciation_touch` AFTER (so a missing template never burns a person's one shot). The
+  claim lands before the send: a thank-you that fails to send is recoverable by a human, one sent
+  twenty times is not — so an unreadable ledger reads as "don't send". `connection_accepted` flows
+  through the same dispatcher and gets the same protection.
+- **A profile URL is percent-DECODED before it keys anything.** SDUI escapes the hyphens of a
+  vanity slug (`/in/jane%2Ddoe%2D1234`), and the 2026-08-03 grounding run returned exactly that,
+  so `_normalize_profile_url` decodes the path as well as stripping query/fragment/trailing slash.
+  Encoded and decoded are the same person; two spellings in `appreciation_touches` would mean two
+  thank-yous. This is the shared normalizer, so the catch-up and roster ledgers get the same fix.
+- **A name is read from the card's sentence when the actor link has none.** The same run found a
+  mention whose `/in/` link rendered with no text at all, while the card plainly read *"Utkarsh
+  Tiwari mentioned you in a comment in …"*. `_mention_actor_name` recovers the name from that
+  sentence, bounded to the ≤5 punctuation-free words before the verb so notification chrome
+  ("Unread notification.") can never be mistaken for a name. Nothing name-like left means the DM
+  opens with "Hi there" — a deliberate fallback, since a generically addressed thank-you still
+  beats not thanking someone who publicly featured you. The probe applies the same fallback, so a
+  blank `name` in its report means production really would say "there".
+- **The age has to be a STANDALONE token.** A notification card carries the quoted post as well as
+  its own timestamp, and `$5m ARR` clears a `\b` just like `2h` does — so a word-boundary match
+  would read a two-year-old mention as posted minutes ago and thank the person for it.
+  `_RELATIVE_AGE_RE` requires start-of-text or a whitespace/bullet/bracket before the digits.
+  Prose that still parses ("10 years of experience") can only push the age OUT of the window, and
+  out of the window means skip — the safe direction on a surface that DMs real people.
+- **The stock `collaboration` template says what fired it.** A mention, not a project: *"thanks for
+  the mention — genuinely appreciated. What are you working on at the moment?"*. It is the code
+  DEFAULT only — a user who customized the template in `dm_templates` keeps theirs.
+- **Appreciation DMs spend the ordinary per-day DM budget.** `_appreciation_dm_budget` is
+  `remaining_actions(..., ACTION_DM, max_dms_per_day, count_dms_sent_today, caps=…)` — the same
+  allowance and the same #626 account envelope `send_scheduled_dm` and the outreach funnel spend,
+  computed ONCE per pass and threaded through all three triggers so they cannot each spend the cap.
+  This is what the dedup ledger does not cover: the ledger stops one person being thanked twice,
+  the budget stops thirty people being thanked at once, which is what the first pass after the flag
+  is flipped would otherwise be. Whoever the budget cannot afford is left **unclaimed**, so a later
+  pass thanks them; a spent budget also skips both scrapes rather than loading two pages for a list
+  it cannot act on.
+- **OFF until grounded.** `APPRECIATION_SOURCES_ENABLED` (default `false`, read at the call site)
+  gates both scrapers. A scraper that finds nothing is a quiet no-op; one that finds the WRONG
+  cards DMs real people, so the flip belongs to the owner after a live run of
+  `python -m scripts.linkedin_live_validation --appreciation-sources` — read-only, messages
+  nobody, claims no ledger row, and reports per card what production would do with it.
