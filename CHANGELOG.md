@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.129.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.129.1...v0.129.2) (2026-08-03)
+
+
+### Bug Fixes
+
+* **analytics:** format avg engagement as a percentage in Best Times to Post (closes [#1004](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1004)) ([#1016](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1016)) ([9d21df8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9d21df8bf30eada53e3b2ced826dd98221f07f33))
+* **analytics:** show Best Times avg engagement as a percentage when it is a rate ([9d21df8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9d21df8bf30eada53e3b2ced826dd98221f07f33)), closes [#1004](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1004)
+* **celery:** fill task defaults into the celery-once dedup key (closes [#989](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/989)) ([#1018](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1018)) ([1b7fc3b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1b7fc3b528b074ebf120369098ca15ad97645240))
+
 ## [0.129.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.129.0...v0.129.1) (2026-08-03)
 
 
