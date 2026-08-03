@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.129.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.129.0...v0.129.1) (2026-08-03)
+
+
+### Bug Fixes
+
+* **automation:** connect invites clicked the suggestion rail — open the invite dialog by URL ([#1012](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1012)) ([4e6e514](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4e6e51486245955748c1985b93bbee79f6ea4fd5))
+
+
+### Documentation
+
+* **claude:** trim CLAUDE.md back under the drift threshold (closes [#1010](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1010)) ([#1014](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1014)) ([53076e8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/53076e8fd173687c2ef539f7eeeb5838ed5b05e0))
+
 ## [0.129.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.128.0...v0.129.0) (2026-08-03)
 
 
