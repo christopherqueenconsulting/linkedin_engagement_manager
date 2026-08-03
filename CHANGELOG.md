@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.130.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.129.2...v0.130.0) (2026-08-03)
+
+
+### Features
+
+* **selenium:** probe-cover every SDUI surface + weekly drift cron (closes [#1013](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1013)) ([#1022](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1022)) ([41a4819](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/41a48195f114f011cdaa10d459218a5e8cd3ea8f))
+
 ## [0.129.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.129.1...v0.129.2) (2026-08-03)
 
 
