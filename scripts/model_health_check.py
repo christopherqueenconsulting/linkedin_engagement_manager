@@ -48,6 +48,8 @@ Options:
   --snapshot PATH        Committed catalog snapshot (default .litellm/ollama_catalog_snapshot.json).
   --today YYYY-MM-DD     Override today's date (dry-run proofs / tests).
   --catalog-fixture DIR  Read cloud.md + tags.json from DIR instead of the network (offline proof).
+  --tags-fixture PATH    With --catalog-apply, also rewrite that offline tags.json from the SAME
+                         fetch the snapshot was written from, so the two can never drift apart.
   --no-usage-levels      Skip the per-model usage-level fetch (one page request per candidate).
 Exit: 0 healthy/no-op, 2 swaps/actions planned or applied, 3 manual alert needed, 1 error.
 """
@@ -443,6 +445,25 @@ def render_snapshot(models: dict, updated: str) -> str:
     return json.dumps(doc, indent=2, sort_keys=False) + "\n"
 
 
+def render_tags_payload(models: dict) -> str:
+    """Render a parsed catalog back into the /api/tags shape, for the committed offline fixture.
+
+    The fixture and the snapshot are two views of the SAME fetch, so a run that refreshes only the
+    snapshot leaves `tests/unit/fixtures/ollama/tags.json` describing a catalog that no longer
+    exists — and the shipped-state guard then fails on every PR this cron opens. Only the fields
+    `parse_catalog` reads are written (the live payload's `digest` is not one of them), so a
+    parse -> render -> parse round trip is the identity."""
+    payload = {"models": [{"name": name,
+                           "model": name,
+                           "modified_at": (models[name] or {}).get("modified_at") or "",
+                           "size": int((models[name] or {}).get("size") or 0),
+                           "details": {"family": (models[name] or {}).get("family") or "",
+                                       "parameter_size": (models[name] or {}).get(
+                                           "parameter_size") or ""}}
+                          for name in sorted(models or {})]}
+    return json.dumps(payload, indent=2) + "\n"
+
+
 def diff_catalog(snapshot: dict, current: dict) -> dict:
     """Tag NAMES that appeared or disappeared. A tag whose BUILD moved under an unchanged name is
     invisible here by construction — that is `plan_repoints`' job (issue #925)."""
@@ -624,6 +645,10 @@ def _usage_text(usage: dict) -> str:
     return label or (f"level {level}" if level else "unknown")
 
 
+def _plural(count: int, noun: str) -> str:
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
 def _titled(prefix: str, items: list[str]) -> str:
     title = f"{prefix} {', '.join(items)}"
     if len(title) <= MAX_TITLE_CHARS:
@@ -788,6 +813,114 @@ def build_repoint_issue_body(repoints: list[dict], today: str) -> str:
               "Auto-filed by `scripts/model_health_check.py --file-issues` (issue #925). Dedup "
               "markers (do not remove): " + ", ".join(f"`{repoint_marker(r)}`" for r in repoints)]
     return "\n".join(lines)
+
+
+def build_catalog_pr_title(plan: dict) -> str:
+    """Title the catalog PR after what the run actually changed.
+
+    A fixed title lies on most weeks: the two halves (map pre-approval, snapshot refresh) fire
+    independently, and claiming a pre-approval that did not happen sends the reviewer looking for a
+    `.litellm/model_upgrades.yaml` diff that isn't there."""
+    additions = sorted(plan.get("map_additions") or {})
+    catalog = plan.get("catalog") or {}
+    added, removed = list(catalog.get("added") or []), list(catalog.get("removed") or [])
+    repointed = len(plan.get("repoints") or [])
+
+    def compose(shown: int) -> str:
+        parts: list[str] = []
+        if additions:
+            named = ", ".join(additions[:shown])
+            extra = len(additions) - shown
+            if extra > 0:
+                named = f"{named} +{extra} more" if named else f"{extra} more"
+            parts.append(f"pre-approve {_plural(len(additions), 'Ollama retirement')}"
+                         + (f" ({named})" if named else ""))
+        if plan.get("snapshot_changed"):
+            delta = ", ".join(bit for bit in (f"+{len(added)} new" if added else "",
+                                              f"-{len(removed)} gone" if removed else "",
+                                              f"{repointed} re-pointed" if repointed else "") if bit)
+            parts.append(f"refresh catalog snapshot ({delta or 'metadata only'})")
+        return f"chore(litellm): {' + '.join(parts)}"
+
+    if not (additions or plan.get("snapshot_changed")):
+        return "chore(litellm): weekly Ollama catalog check"
+    # Drop names rather than slicing: a title cut mid-tag reads as a different model, and the
+    # counts (which the body then itemises) survive at any length.
+    for shown in range(min(len(additions), 3), -1, -1):
+        title = compose(shown)
+        if len(title) <= MAX_TITLE_CHARS or shown == 0:
+            return title[:MAX_TITLE_CHARS]
+    return compose(0)[:MAX_TITLE_CHARS]
+
+
+def build_catalog_pr_body(plan: dict, catalog: Optional[dict] = None) -> str:
+    """Describe the diff a reviewer is about to read, not the job that produced it."""
+    additions = dict(plan.get("map_additions") or {})
+    cat = plan.get("catalog") or {}
+    added, removed = list(cat.get("added") or []), list(cat.get("removed") or [])
+    configured_gone = list(cat.get("removed_configured") or [])
+    repoints = list(plan.get("repoints") or [])
+    lines = [f"Opened by the weekly model-health check (issue #716) on {plan.get('today', '?')}, "
+             f"against {cat.get('total', 0)} tags on ollama.com/api/tags.",
+             "",
+             "## What changed", ""]
+    if additions:
+        lines += [f"**`.litellm/model_upgrades.yaml`** — {_plural(len(additions), 'retirement')} "
+                  "the vendor has scheduled, mapped to the vendor's own named replacement so the "
+                  "reactive half swaps before the 410 rather than after it:", ""]
+        lines += [f"- `{k}` → `{v}`" for k, v in sorted(additions.items())]
+        lines.append("")
+    else:
+        lines += ["**`.litellm/model_upgrades.yaml`** — unchanged. No configured model has a "
+                  "newly published retirement date this week.", ""]
+    if plan.get("snapshot_changed"):
+        lines += ["**`.litellm/ollama_catalog_snapshot.json`** (+ the offline fixture built from "
+                  "the same fetch) — the record of what the catalog looked like this week, so next "
+                  "week's scan reports a delta instead of the whole catalog:", ""]
+        for name in added:
+            info = (catalog or {}).get(name) or {}
+            bits = [f"{int(info['size']) / 1e9:.0f}GB"] if info.get("size") else []
+            if info.get("modified_at"):
+                bits.append(f"published {str(info['modified_at'])[:10]}")
+            lines.append(f"- **new** `{name}`" + (f" — {'; '.join(bits)}" if bits else ""))
+        for name in removed:
+            lines.append(f"- **gone** `{name}`"
+                         + (" — ⚠️ STILL CONFIGURED in `.litellm/config.yaml`"
+                            if name in configured_gone else ""))
+        for r in repoints:
+            detail = "; ".join(f"{c['field']} {_fmt_build_value(c['field'], c['old'])} → "
+                               f"{_fmt_build_value(c['field'], c['new'])}"
+                               for c in r.get("changes") or [])
+            lines.append(f"- **re-pointed** `{r.get('tag')}` — {detail} — ⚠️ STILL CONFIGURED in "
+                         "`.litellm/config.yaml`")
+        if not (added or removed or repoints):
+            lines.append("- no tags added, removed or re-pointed; only per-tag metadata moved")
+        lines.append("")
+    lines += ["## What this PR does NOT do", "",
+              "- It does not touch `.litellm/config.yaml`, so no `lem-*` alias changes model here. "
+              "Adopting a new tag is a separate, deliberate config change (the evaluation issue "
+              "this scan files is where that decision gets made).",
+              "- The snapshot is a bookkeeping file read only by "
+              "`scripts/model_health_check.py`; nothing loads it at runtime.", ""]
+    if configured_gone or repoints:
+        lines += ["## ⚠️ Needs a look before merge", ""]
+    if configured_gone:
+        lines += ["These tags left the live catalog while `.litellm/config.yaml` still points a "
+                  "deployment at them — merging the snapshot marks them 'known gone', so confirm "
+                  "the tier still answers first:", ""]
+        lines += [f"- `{name}`" for name in configured_gone]
+        lines.append("")
+    if repoints:
+        # Merging re-baselines the fingerprint, so this is the LAST run that reports the swap —
+        # the scan cannot tell next week that a live tier changed build (issue #925).
+        lines += ["These tags kept their name but changed BUILD underneath, and a live tier runs "
+                  "them unversioned — merging the snapshot re-baselines the fingerprint, so no "
+                  "later scan will report the swap. Benchmark or pin first:", ""]
+        lines += [f"- `{r.get('tag')}` — serving "
+                  + (", ".join(f"`{g}`" for g in (r.get('groups') or [])) or "n/a")
+                  for r in repoints]
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def build_append_comment(markers: list[str], body: str) -> str:
@@ -1056,6 +1189,11 @@ def _catalog_scan(config_path: str, map_path: str, snapshot_path: str, *, today:
             deployments, catalog, {r["model"] for r in retirements},
             usage_fn if usage_levels else None)
 
+    # A tag leaving the catalog is normally housekeeping — unless config.yaml still points a
+    # deployment at it, which is the 410 the reactive half exists to catch, one week early.
+    configured = {d["bare"] for d in deployments if d["is_ollama"]}
+    removed_configured = [n for n in catalog_diff["removed"] if n in configured]
+
     snapshot_changed = catalog is not None and catalog != snapshot
     plan = {
         "today": today,
@@ -1063,12 +1201,17 @@ def _catalog_scan(config_path: str, map_path: str, snapshot_path: str, *, today:
                     "snapshot_seeded": seeded},
         "notices": notices,
         "map_additions": additions,
-        "catalog": {**catalog_diff, "total": len(catalog or {})},
+        "catalog": {**catalog_diff, "removed_configured": removed_configured,
+                    "total": len(catalog or {})},
         "upgrades": family_upgrades,
         "repoints": repoints,
         "snapshot_changed": snapshot_changed,
         "repo_changes": bool(additions) or snapshot_changed,
     }
+    # The orchestrator opens the PR from the plan it already read, so the title and body describe
+    # THIS run's diff instead of a fixed string that is wrong on most weeks.
+    plan["pr"] = {"title": build_catalog_pr_title(plan),
+                  "body": build_catalog_pr_body(plan, catalog or {})}
     plan["issues"] = {
         "upgrade": {"markers": [upgrade_marker(u) for u in family_upgrades],
                     "title": build_upgrade_issue_title(family_upgrades) if family_upgrades else "",
@@ -1102,7 +1245,8 @@ def _print_catalog_plan(plan: dict) -> None:
     for name in plan["catalog"]["added"]:
         print(f"  NEW TAG {name}")
     for name in plan["catalog"]["removed"]:
-        print(f"  GONE TAG {name}")
+        configured = name in (plan["catalog"].get("removed_configured") or [])
+        print(f"  GONE TAG {name}" + (" [STILL CONFIGURED]" if configured else ""))
     for u in plan["upgrades"]:
         print(f"  UPGRADE ({u['urgency']}) {upgrade_marker(u)} — usage "
               f"{_usage_text(u['current_usage'])} -> {_usage_text(u['candidate_usage'])}")
@@ -1119,7 +1263,8 @@ def _print_catalog_plan(plan: dict) -> None:
         print("  nothing to do")
 
 
-def _catalog_apply(plan: dict, map_path: str, snapshot_path: str) -> None:
+def _catalog_apply(plan: dict, map_path: str, snapshot_path: str,
+                   tags_fixture_path: Optional[str] = None) -> None:
     added = []
     if plan["map_additions"]:
         text, added = append_upgrade_mappings(_read_text(map_path), plan["map_additions"],
@@ -1133,6 +1278,12 @@ def _catalog_apply(plan: dict, map_path: str, snapshot_path: str) -> None:
         with open(snapshot_path, "w") as f:
             f.write(render_snapshot(plan["_catalog"], plan["today"]))
         print(f"snapshot refreshed ({plan['catalog']['total']} tags) -> {snapshot_path}")
+        # Same fetch, second view: refresh the offline fixture in lockstep or the shipped-state
+        # guard fails on every PR this cron opens (it diffs the snapshot against that fixture).
+        if tags_fixture_path:
+            with open(tags_fixture_path, "w") as f:
+                f.write(render_tags_payload(plan["_catalog"]))
+            print(f"tags fixture refreshed -> {tags_fixture_path}")
 
 
 def _issue_spec(plan: dict, kind: str) -> dict:
@@ -1190,6 +1341,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--today", default=None)
     ap.add_argument("--plan-file", metavar="PATH", default=None)
     ap.add_argument("--catalog-fixture", default=None)
+    ap.add_argument("--tags-fixture", metavar="PATH", default=None)
     ap.add_argument("--no-usage-levels", action="store_true")
     ap.add_argument("--repo", default=DEFAULT_REPO)
     args = ap.parse_args(argv)
@@ -1213,7 +1365,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         else:
             _print_catalog_plan(plan)
         if args.catalog_apply:
-            _catalog_apply(plan, args.map, args.snapshot)
+            _catalog_apply(plan, args.map, args.snapshot, args.tags_fixture)
         if args.file_issues:
             _file_issues(plan, GitHubIssues(args.repo))
         if plan["notices"]:
