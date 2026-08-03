@@ -294,8 +294,11 @@ finish an issue's stated requirements is never a human decision.
    from the PR body, comment "Remaining on #$ISSUE: …") only when the remainder is too underspecified
    to write honest acceptance criteria for.
 4. Hand the PR back to the merge loop: `gh pr edit $PR --add-label agent:working --remove-label agent:phasefix`. STOP.
-5. Escalate (`needs-human` + Decision Comment) ONLY if the remaining scope requires a genuine product
-   decision you cannot capture as an issue — that should be rare; when in doubt, file the issue.
+5. Escalate ONLY if the remaining scope requires a genuine product decision you cannot capture as an
+   issue — that should be rare; when in doubt, file the issue. To escalate, drop the lane label too
+   or this lane keeps re-dispatching on top of the hold:
+   `gh pr edit $PR --add-label needs-human --add-label agent:blocked --remove-label agent:phasefix
+    --add-assignee gitchrisqueen`, then post a Decision Comment. STOP.
 
 ---
 ## Model labels (`agent:model:*`)
