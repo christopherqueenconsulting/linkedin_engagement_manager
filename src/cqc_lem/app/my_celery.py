@@ -10,8 +10,7 @@ from celery.signals import (worker_process_init, task_received, task_success, ta
 from cqc_lem.app import celeryconfig
 from cqc_lem.app.celeryconfig import broker_url
 from cqc_lem.utilities.engagement_window import STAGGER_TICK_MINUTES
-from cqc_lem.utilities.env_constants import CODE_TRACING, AWS_REGION
-from cqc_lem.utilities.jaeger_tracer_helper import get_jaeger_tracer
+from cqc_lem.utilities.env_constants import AWS_REGION
 from cqc_lem.utilities.logger import myprint, logger
 from cqc_lem.utilities.observability import capture_exception, track_task
 from cqc_lem.utilities.utils import get_cloudwatch_client
@@ -389,28 +388,6 @@ def restore_all_unacknowledged_messages(*args, **kwargs):
     qos.restore_visible()
     myprint('Unacknowledged messages restored')
 '''
-
-
-@worker_process_init.connect(weak=False)
-def init_celery_tracing(*args, **kwargs):
-    if CODE_TRACING:
-
-        try:
-            tracer = get_jaeger_tracer("celery_worker", __name__)
-
-            # Instrument Celery
-            from opentelemetry.instrumentation.celery import CeleryInstrumentor
-            ci = CeleryInstrumentor()
-            ci.instrument()
-
-            with tracer.start_as_current_span("init_celery_tracing"):
-                myprint("Instrumented Celery for tracing")
-        except ImportError:
-            logger.debug("Celery tracing dependencies not found. Tracing Disabled")
-    else:
-        # DEBUG, not INFO: this is a configuration statement, not an event, and it fires once per
-        # worker process init — 354 identical rows in 48h of PostHog Logs, all saying nothing changed.
-        logger.debug("Tracing is disabled")
 
 
 def get_queue_metric(name_space: str = 'cqc-lem/celery_queue/celery', metric_name: str = 'QueueLength',

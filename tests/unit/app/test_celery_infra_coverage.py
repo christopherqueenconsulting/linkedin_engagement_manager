@@ -83,28 +83,6 @@ class TestGetQueueMetric:
 
 
 class TestCelerySignalHandlers:
-    def test_tracing_disabled_logs_and_skips(self):
-        import cqc_lem.app.my_celery as mc
-        with patch.object(mc, "CODE_TRACING", False), \
-             patch.object(mc, "get_jaeger_tracer") as tracer:
-            mc.init_celery_tracing()
-        tracer.assert_not_called()
-
-    def test_tracing_enabled_instruments_celery(self):
-        import cqc_lem.app.my_celery as mc
-        tracer = MagicMock()
-        with patch.object(mc, "CODE_TRACING", True), \
-             patch.object(mc, "get_jaeger_tracer", return_value=tracer) as get_tracer:
-            mc.init_celery_tracing()
-        # The tracer must actually be requested for the celery worker; if the optional
-        # instrumentor import succeeded a span was opened on it as well.
-        get_tracer.assert_called_once_with("celery_worker", mc.__name__)
-        try:
-            import opentelemetry.instrumentation.celery  # noqa: F401
-            tracer.start_as_current_span.assert_called_once_with("init_celery_tracing")
-        except ImportError:
-            tracer.start_as_current_span.assert_not_called()
-
     def test_task_pre_and_postrun_track_duration(self):
         import cqc_lem.app.my_celery as mc
         task = MagicMock()
