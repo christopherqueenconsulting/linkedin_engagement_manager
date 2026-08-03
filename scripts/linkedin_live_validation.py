@@ -63,7 +63,14 @@ from selenium.webdriver.common.keys import Keys
 SIGNALS = ("reactions", "comments", "reposts", "impressions", "saves")
 ANALYTICS_URL = "https://www.linkedin.com/analytics/post-summary/{urn}/"
 FEED_URL = "https://www.linkedin.com/feed/"
-CATCHUP_PROBE_URL = "https://www.linkedin.com/mynetwork/catch-up/all/"
+
+# The report is fenced because this script's stdout is NOT only this script's: it runs inside the
+# worker, and `cqc_lem.utilities.logger` writes to stdout too (`get_current_profile` alone emits
+# "Getting Updated Profile" before the first probe). A human reading one report skims past those
+# lines; the weekly cron pipes stdout into `json.loads`, which does not. Everything between the
+# fences is the report and nothing else — see `scripts/sdui_drift_issues.py:load_sweep`.
+REPORT_JSON_BEGIN = "===LEM-PROBE-JSON-BEGIN==="
+REPORT_JSON_END = "===LEM-PROBE-JSON-END==="
 
 # ─────────────────────────── the three-state verdict (issue #1013) ───────────────────────────
 # Every probe grades itself into exactly one of these, next to its prose `verdict`. The prose is
@@ -112,6 +119,10 @@ def graded(reading: dict, state: str, verdict: str) -> dict:
 # `sweep`: runs in the weekly unattended sweep, which means it needs NO caller-supplied target
 # (or resolves one itself from the user's own profile / DB) and is read-only enough to run
 # unattended. Everything else needs a URL a human picks.
+#
+# `arg`: the value the flag takes, when it takes one. It rides into the sweep JSON so the drift
+# filer can print a reproduce command that actually RUNS — a `--profile-scrape` with no URL after
+# it is an argparse error, and an issue whose repro line does not run is an issue nobody reproduces.
 SURFACES = (
     {"key": "feed_sort", "surface": "Home feed 'Sort by → Recent' control",
      "code": "run_automation._switch_feed_to_recent", "flag": "--feed-sort", "sweep": True},
@@ -125,36 +136,41 @@ SURFACES = (
      "code": "run_automation._PROFILE_VIEWER_ROWS_JS", "flag": "--profile-views", "sweep": True},
     {"key": "profile_scrape", "surface": "Profile header scrape (name / headline / degree badge)",
      "code": "scrapper.parse_profile_header + run_automation._profile_is_first_degree",
-     "flag": "--profile-scrape", "sweep": True},
+     "flag": "--profile-scrape", "arg": "<profile-url>", "sweep": True},
     {"key": "connect_dialog", "surface": "Connect invite dialog (custom-invite URL route)",
      "code": "run_automation._open_connect_invite_dialog", "flag": "--connect-dialog",
-     "sweep": False},
+     "arg": "<profile-url>", "sweep": False},
     {"key": "catchup_cards", "surface": "Catch-up moment cards",
      "code": "run_automation._CATCHUP_CARD_LOCATORS", "flag": "--catchup-cards", "sweep": True},
     {"key": "group_composer", "surface": "Group share box / post editor",
-     "code": "run_automation.auto_post_to_group", "flag": "--group-composer", "sweep": False},
+     "code": "run_automation.auto_post_to_group", "flag": "--group-composer",
+     "arg": "<group-id>", "sweep": False},
     {"key": "company_invite", "surface": "Company-page invite modal (credits / invitees / Invite)",
      "code": "company_page_inviter.automate_invitations", "flag": "--company-invite",
      "sweep": True},
     {"key": "sent_invites", "surface": "Invitation manager → Sent (withdraw controls)",
      "code": "stale_invites.read_pending_invites", "flag": "--sent-invites", "sweep": True},
     {"key": "roster_follow", "surface": "Roster target's activity page Follow control",
-     "code": "run_automation._resolve_follow_control", "flag": "--roster-follow", "sweep": False},
+     "code": "run_automation._resolve_follow_control", "flag": "--roster-follow",
+     "arg": "<profile-url>", "sweep": False},
     {"key": "appreciation_sources", "surface": "Recommendations received + mentions feed",
      "code": "run_automation._RECOMMENDATION_CARD_LOCATORS / _MENTION_CARD_LOCATORS",
      "flag": "--appreciation-sources", "sweep": True},
     {"key": "article_editor", "surface": "Newsletter/article editor publish steps",
      "code": "article_editor.find_article_editor_elements", "flag": "--article-editor-url",
-     "sweep": True},
+     "arg": "<editor-url>", "sweep": True},
     {"key": "post_stats", "surface": "Own post detail + analytics counts",
-     "code": "run_automation._post_social_counts", "flag": "--post-url", "sweep": False},
+     "code": "run_automation._post_social_counts", "flag": "--post-url", "arg": "<post-url>",
+     "sweep": False},
     {"key": "document_render", "surface": "Published post media render (document vs image)",
-     "code": "run_automation (media anchors)", "flag": "--post-url", "sweep": False},
+     "code": "run_automation (media anchors)", "flag": "--post-url", "arg": "<post-url>",
+     "sweep": False},
     {"key": "comment_outcome", "surface": "Comment thread + sort (demotion read)",
      "code": "run_automation._comment_items / _switch_comment_sort",
-     "flag": "--comment-outcome-url", "sweep": False},
+     "flag": "--comment-outcome-url", "arg": "<post-url>", "sweep": False},
     {"key": "message_thread", "surface": "Message-thread resolution ladder",
-     "code": "message_thread.open_message_thread", "flag": "--dm-thread-url", "sweep": False},
+     "code": "message_thread.open_message_thread", "flag": "--dm-thread-url",
+     "arg": "<profile-url>", "sweep": False},
 )
 
 # The sweep runs these in ONE Chrome session, cheapest/safest first so a session that dies part-way
@@ -1756,10 +1772,13 @@ def probe_catchup_cards(driver, sleep=time.sleep) -> dict:
     report which locator wins, how many cards each candidate matches, how many classify into a
     milestone, and the page's own profile-anchor count. Read-only — no card is clicked, no
     composer opened, nothing is sent."""
-    from cqc_lem.app.run_automation import (_CATCHUP_CARD_LOCATORS, _classify_catchup_moment)
+    # The production URL, not a copy of it — a probe that reads a different screen than the lane
+    # does grounds nothing about the lane (the same reason the card walk is imported, not inlined).
+    from cqc_lem.app.run_automation import (CATCHUP_URL, _CATCHUP_CARD_LOCATORS,
+                                            _classify_catchup_moment)
     from cqc_lem.utilities.selenium_util import find_all_first
 
-    driver.get(CATCHUP_PROBE_URL)
+    driver.get(CATCHUP_URL)
     sleep(6)
     for _ in range(2):  # the feed lazy-loads, exactly as the production scan does
         try:
@@ -1794,7 +1813,7 @@ def probe_catchup_cards(driver, sleep=time.sleep) -> dict:
         anchors = len(driver.find_elements(By.CSS_SELECTOR, "main a[href*='/in/']"))
     except Exception:
         anchors = 0
-    reading = {"url": getattr(driver, "current_url", CATCHUP_PROBE_URL),
+    reading = {"url": getattr(driver, "current_url", CATCHUP_URL),
                "cards_matched": len(cards), "winning_locator": winner,
                "candidate_counts": counts, "classified": classified,
                "profile_anchors": anchors, "sample_cards": texts,
@@ -2032,13 +2051,49 @@ def sweep_summary(probes: Optional[dict]) -> dict:
             "state": worst_state([(r or {}).get("state") for r in (probes or {}).values()])}
 
 
+# LinkedIn's guest / challenge screens, by URL and by their own words. A session that has fallen
+# out of login renders one of these at EVERY surface, and it renders prose and controls — so a
+# per-probe grade reads "the page rendered but our locators found nothing", i.e. `drift`, on nearly
+# every surface at once. That is a whole Monday of `priority:high` issues about a cookie.
+_SIGNED_OUT_URL_PATHS = ("/authwall", "/checkpoint/", "/uas/login", "/login", "/challenge/",
+                         "/captcha/", "/security-verification")
+
+
+def sweep_session_state(driver, sleep=time.sleep) -> str:
+    """`signed_in` / `signed_out` for the session the sweep is about to run on.
+
+    Fails OPEN — only a POSITIVE signed-out signal (a challenge/guest URL, or LinkedIn's own guest
+    copy) stands the sweep down. An unreadable page is exactly what `unknown` is for, and the
+    per-probe grades handle it; refusing to sweep on an unreadable read would be the same silence
+    this issue exists to end, just one level up."""
+    try:
+        driver.get(FEED_URL)
+        sleep(4)
+    except Exception:
+        return "signed_in"
+    url = str(getattr(driver, "current_url", "") or "")
+    if any(path in url for path in _SIGNED_OUT_URL_PATHS):
+        return "signed_out"
+    try:
+        from cqc_lem.utilities.linkedin.scrapper import _is_linkedin_error_page
+    except Exception:
+        return "signed_in"
+    return "signed_out" if _is_linkedin_error_page(page_text_sample(driver, limit=1200)) \
+        else "signed_in"
+
+
 def run_sweep(driver, user_id: int, runners: Optional[dict] = None,
-              keys: Optional[list] = None, profile_url: str = "") -> dict:
+              keys: Optional[list] = None, profile_url: str = "",
+              session_state: Optional[str] = None) -> dict:
     """Run every sweepable probe in ONE Chrome session and grade the lot.
 
     A probe that RAISES is recorded as `unknown` with its exception rather than killing the sweep:
     one rotated surface must not cost the reading of the nine that did not rotate — that is how a
-    sweep silently covers less than it claims."""
+    sweep silently covers less than it claims.
+
+    A sweep on a signed-out session probes nothing: every surface would grade `drift` off the SAME
+    auth wall, and the filer would open an issue per surface for one expired cookie. `unknown` is
+    the honest grade for a page that never rendered, and `unknown` files nothing."""
     runners = runners if runners is not None else {
         "feed_sort": lambda: probe_feed_sort(driver),
         "feed_reactions": lambda: probe_feed_reactions(driver),
@@ -2053,8 +2108,15 @@ def run_sweep(driver, user_id: int, runners: Optional[dict] = None,
         "article_editor": lambda: probe_article_editor(driver),
     }
     wanted = [k for k in (keys or SWEEP_ORDER) if k in runners]
+    session = session_state or sweep_session_state(driver)
     probes = {}
     for key in wanted:
+        if session == "signed_out":
+            probes[key] = {"state": STATE_UNKNOWN, "session": session,
+                           "verdict": "the session is signed out (auth wall / challenge), so this "
+                                      "surface never rendered — nothing is graded or filed; "
+                                      "re-authenticate and re-run"}
+            continue
         try:
             probes[key] = runners[key]() or {}
         except Exception as e:
@@ -2066,10 +2128,11 @@ def run_sweep(driver, user_id: int, runners: Optional[dict] = None,
     skipped = [s["key"] for s in SURFACES if not s["sweep"]]
     # The matrix rides along so the issue filer needs nothing from this module (it runs on the cron
     # host, which has neither selenium nor the app env).
-    surfaces = {s["key"]: {k: s[k] for k in ("surface", "code", "flag")}
+    surfaces = {s["key"]: dict({k: s[k] for k in ("surface", "code", "flag")},
+                               arg=s.get("arg", ""))
                 for s in SURFACES if s["key"] in probes}
-    return {"user_id": user_id, "probes": probes, "skipped": skipped, "surfaces": surfaces,
-            "summary": sweep_summary(probes)}
+    return {"user_id": user_id, "session": session, "probes": probes, "skipped": skipped,
+            "surfaces": surfaces, "summary": sweep_summary(probes)}
 
 
 def _sweep_own_profile(driver, user_id: int) -> str:
@@ -2252,7 +2315,9 @@ def main(argv: Optional[list] = None) -> int:
     finally:
         quit_gracefully(driver)
 
+    print(REPORT_JSON_BEGIN)
     print(json.dumps(report, indent=2))
+    print(REPORT_JSON_END)
     return 0
 
 

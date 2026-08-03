@@ -732,7 +732,7 @@ class TestSurfaceCoverageMatrix:
         ran = []
         runners = {key: (lambda k=key: ran.append(k) or {"state": llv.STATE_OK})
                    for key in llv.SWEEP_ORDER}
-        llv.run_sweep(MagicMock(), 1, runners=runners)
+        llv.run_sweep(MagicMock(), 1, runners=runners, session_state="signed_in")
         assert sorted(ran) == sorted(llv.SWEEP_ORDER)
 
     def test_the_doc_names_every_surface(self):
@@ -748,7 +748,8 @@ class TestSweep:
         runners = {"feed_sort": lambda: {"state": llv.STATE_OK},
                    "catchup_cards": lambda: (_ for _ in ()).throw(RuntimeError("boom")),
                    "sent_invites": lambda: {"state": llv.STATE_DRIFT}}
-        report = llv.run_sweep(MagicMock(), 1, runners=runners, keys=list(runners))
+        report = llv.run_sweep(MagicMock(), 1, runners=runners, keys=list(runners),
+                               session_state="signed_in")
         assert report["probes"]["catchup_cards"]["state"] == llv.STATE_UNKNOWN
         assert "RuntimeError" in report["probes"]["catchup_cards"]["probe_error"]
         assert report["summary"]["drift"] == ["sent_invites"]
@@ -756,7 +757,7 @@ class TestSweep:
 
     def test_the_sweep_names_what_it_could_not_cover(self):
         report = llv.run_sweep(MagicMock(), 1, runners={"feed_sort": lambda: {"state": "ok"}},
-                               keys=["feed_sort"])
+                               keys=["feed_sort"], session_state="signed_in")
         assert "connect_dialog" in report["skipped"]
         assert report["surfaces"]["feed_sort"]["flag"] == "--feed-sort"
 
@@ -893,3 +894,69 @@ class TestCompanyInviteProbe:
                    "total_credits": 100, "credits_remaining": 50, "invitee_rows": 20,
                    "checkboxes": 20}
         assert llv.company_invite_state(reading) == llv.STATE_OK
+
+
+@pytest.mark.unit
+class TestSweepSessionGate:
+    """A signed-out session renders prose and controls at EVERY surface, so a per-probe grade reads
+    `drift` on nearly all of them at once — a whole Monday of `priority:high` issues about one
+    expired cookie. The sweep grades that `unknown`, which files nothing."""
+
+    def _driver(self, url: str = "https://www.linkedin.com/feed/", text: str = "Start a post"):
+        driver = MagicMock()
+        driver.current_url = url
+        element = MagicMock()
+        element.text = text
+        driver.find_elements.return_value = [element]
+        return driver
+
+    def test_an_auth_wall_url_is_signed_out(self):
+        driver = self._driver(url="https://www.linkedin.com/authwall?trk=x")
+        assert llv.sweep_session_state(driver, sleep=lambda *_: None) == "signed_out"
+
+    def test_linkedins_own_guest_copy_is_signed_out(self):
+        driver = self._driver(text="Join LinkedIn to see more")
+        assert llv.sweep_session_state(driver, sleep=lambda *_: None) == "signed_out"
+
+    def test_an_unreadable_page_fails_open_rather_than_standing_the_sweep_down(self):
+        """`unknown` is what an unreadable page is for; refusing to sweep on one would be the same
+        silence this issue exists to end, one level up."""
+        driver = MagicMock()
+        driver.get.side_effect = RuntimeError("session gone")
+        assert llv.sweep_session_state(driver, sleep=lambda *_: None) == "signed_in"
+
+    def test_a_signed_out_sweep_runs_no_probe_and_grades_everything_unknown(self):
+        ran = []
+        runners = {"feed_sort": lambda: ran.append("feed_sort") or {"state": llv.STATE_DRIFT},
+                   "catchup_cards": lambda: ran.append("catchup") or {"state": llv.STATE_DRIFT}}
+        report = llv.run_sweep(MagicMock(), 1, runners=runners, keys=list(runners),
+                               session_state="signed_out")
+        assert ran == []
+        assert report["session"] == "signed_out"
+        assert report["summary"]["drift"] == []
+        assert report["summary"]["unknown"] == ["catchup_cards", "feed_sort"]
+
+    def test_a_signed_in_sweep_still_grades_normally(self):
+        report = llv.run_sweep(MagicMock(), 1, runners={"feed_sort": lambda: {"state": "drift"}},
+                               keys=["feed_sort"], session_state="signed_in")
+        assert report["summary"]["drift"] == ["feed_sort"]
+
+    def test_the_matrix_carries_each_flags_argument_into_the_sweep(self):
+        """The filer builds its reproduce command from this — a `--profile-scrape` with nothing
+        after it is an argparse error, not a repro."""
+        report = llv.run_sweep(MagicMock(), 1,
+                               runners={"profile_scrape": lambda: {"state": "drift"},
+                                        "catchup_cards": lambda: {"state": "ok"}},
+                               keys=["profile_scrape", "catchup_cards"], session_state="signed_in")
+        assert report["surfaces"]["profile_scrape"]["arg"] == "<profile-url>"
+        assert report["surfaces"]["catchup_cards"]["arg"] == ""
+
+
+@pytest.mark.unit
+class TestReportFences:
+    """The probe shares stdout with `cqc_lem.utilities.logger` (`get_current_profile` alone logs
+    before the first probe), and the weekly cron pipes that stdout into `json.loads`."""
+
+    def test_the_fences_are_distinct_and_non_empty(self):
+        assert llv.REPORT_JSON_BEGIN and llv.REPORT_JSON_END
+        assert llv.REPORT_JSON_BEGIN != llv.REPORT_JSON_END

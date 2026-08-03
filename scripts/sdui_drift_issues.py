@@ -47,6 +47,13 @@ MARKER_PREFIX = "sdui-drift-"
 LABELS = ("agent:ready", "bug", "priority:high", "risk:live-linkedin")
 
 STATE_DRIFT = "drift"
+# The fences `linkedin_live_validation.py` prints around its report. Duplicated as a literal rather
+# than imported, deliberately: this script must keep running on a host clone with no app env. The
+# probe shares stdout with `cqc_lem.utilities.logger`, so the report has to be cut out of the noise
+# — without this, one "Getting Updated Profile" line ahead of the JSON loses the whole week's sweep.
+REPORT_JSON_BEGIN = "===LEM-PROBE-JSON-BEGIN==="
+REPORT_JSON_END = "===LEM-PROBE-JSON-END==="
+
 DEFAULT_MAX_NEW = 5
 MAX_TITLE_CHARS = 120
 MAX_EVIDENCE_CHARS = 6000
@@ -75,7 +82,10 @@ def drift_rows(sweep: Optional[dict]) -> list:
         rows.append({"key": key, "reading": reading,
                      "surface": meta.get("surface") or key,
                      "code": meta.get("code") or "",
-                     "flag": meta.get("flag") or ""})
+                     "flag": meta.get("flag") or "",
+                     # The value the flag takes, when it takes one. An issue whose repro line is
+                     # `--profile-scrape` with nothing after it is an argparse error, not a repro.
+                     "arg": meta.get("arg") or ""})
     return rows
 
 
@@ -90,7 +100,10 @@ def build_body(row: dict, user_id=None) -> str:
     row = dict(row or {})
     reading = dict(row.get("reading") or {})
     flag = row.get("flag") or ""
-    target = " <target-url>" if flag and flag.endswith("-url") else ""
+    # `arg` comes from the surface matrix; the `-url` suffix is the fallback for a sweep written
+    # before it carried one.
+    arg = row.get("arg") or ("<target-url>" if flag.endswith("-url") else "")
+    target = f" {arg}" if arg else ""
     probe_cmd = (f"sudo docker exec -i celery_worker_selenium python - "
                  f"--user-id {user_id or 1} {flag}{target} "
                  f"< scripts/linkedin_live_validation.py")
@@ -244,11 +257,30 @@ def apply_actions(github: GitHubIssues, actions: list, user_id=None,
     return applied
 
 
+def fenced_report(raw: str) -> str:
+    """The report, cut out of a stdout capture that also carries the app's own log lines.
+
+    The probe runs inside the Celery worker, where `cqc_lem.utilities.logger` writes to stdout too,
+    so a raw capture is `<log lines> <fence> <json> <fence>`. Unfenced input is passed through
+    untouched — a hand-saved report from before the fences still loads."""
+    text = raw or ""
+    start = text.rfind(REPORT_JSON_BEGIN)
+    if start < 0:
+        return text
+    body = text[start + len(REPORT_JSON_BEGIN):]
+    end = body.find(REPORT_JSON_END)
+    return body if end < 0 else body[:end]
+
+
 def load_sweep(path: Optional[str]) -> dict:
-    raw = sys.stdin.read() if not path or path == "-" else open(path, encoding="utf-8").read()
+    if not path or path == "-":
+        raw = sys.stdin.read()
+    else:
+        with open(path, encoding="utf-8") as handle:
+            raw = handle.read()
     if not (raw or "").strip():
         raise ValueError("sweep JSON is empty")
-    sweep = json.loads(raw)
+    sweep = json.loads(fenced_report(raw))
     if not isinstance(sweep, dict):
         raise ValueError("sweep JSON is not an object")
     return sweep

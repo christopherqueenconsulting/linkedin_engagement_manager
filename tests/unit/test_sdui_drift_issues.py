@@ -192,3 +192,47 @@ class TestMain:
         github.is_filed.side_effect = RuntimeError("gh down")
         monkeypatch.setattr(filer, "GitHubIssues", lambda repo: github)
         assert filer.main(["--sweep-file", str(path), "--apply"]) == 1
+
+
+@pytest.mark.unit
+class TestFencedReport:
+    """The probe runs inside the Celery worker, where the app logger writes to stdout too. The
+    week's sweep is `<log lines> <fence> <json> <fence>` — one unparsed line ahead of the JSON used
+    to lose the entire run."""
+
+    def test_the_report_is_cut_out_of_the_workers_log_noise(self, tmp_path):
+        path = tmp_path / "sweep.json"
+        path.write_text("\n".join([
+            "Getting Updated Profile",
+            "2026-08-03 06:40:01 INFO Connecting to selenium-chrome:4444",
+            filer.REPORT_JSON_BEGIN,
+            json.dumps(_sweep(catchup_cards={"state": "drift"})),
+            filer.REPORT_JSON_END,
+            "Session closed.",
+        ]))
+        assert len(filer.drift_rows(filer.load_sweep(str(path)))) == 1
+
+    def test_an_unfenced_report_still_loads(self, tmp_path):
+        path = tmp_path / "sweep.json"
+        path.write_text(json.dumps(_sweep(feed_sort={"state": "ok"})))
+        assert filer.load_sweep(str(path))["user_id"] == 1
+
+    def test_log_noise_with_no_fence_is_an_error_not_a_silent_no_drift(self, tmp_path):
+        path = tmp_path / "sweep.json"
+        path.write_text("Getting Updated Profile\nselenium session died\n")
+        assert filer.main(["--sweep-file", str(path)]) == 1
+
+
+@pytest.mark.unit
+class TestReproduceCommand:
+    def test_a_flag_that_takes_a_value_gets_one(self):
+        sweep = _sweep(profile_scrape={"state": "drift"})
+        sweep["surfaces"]["profile_scrape"] = {"surface": "Profile header scrape", "code": "x",
+                                               "flag": "--profile-scrape", "arg": "<profile-url>"}
+        body = filer.build_body(filer.drift_rows(sweep)[0], user_id=1)
+        assert "--profile-scrape <profile-url>" in body
+
+    def test_a_store_true_flag_gets_no_stray_placeholder(self):
+        body = filer.build_body(filer.drift_rows(_sweep(catchup_cards={"state": "drift"}))[0])
+        assert "--catchup-cards <target" not in body
+        assert "--catchup-cards <profile" not in body

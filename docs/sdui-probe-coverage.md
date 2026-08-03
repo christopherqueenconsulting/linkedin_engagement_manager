@@ -81,6 +81,10 @@ degree badge and a green verdict there would claim coverage the run does not hav
 1. Runs `linkedin_live_validation.py --sweep` inside `celery_worker_selenium` — every target-free
    probe, ONE Chrome session, off-peak. A probe that raises is recorded `unknown` and the sweep
    continues; one rotated surface must not cost the reading of the nine that did not rotate.
+   The sweep checks the session FIRST (`sweep_session_state`): a signed-out one renders an auth wall
+   at every surface, which reads as `drift` on nearly all of them at once, so it grades every probe
+   `unknown` and probes nothing. That check fails OPEN — only LinkedIn's own challenge URL or guest
+   copy stands the sweep down, never an unreadable page.
 2. `scripts/sdui_drift_issues.py --apply` files ONE `agent:ready` issue per `drift`, with the probe
    JSON, the reproduce command and real acceptance criteria. Labels: `agent:ready`, `bug`,
    `priority:high`, `risk:live-linkedin` (re-grounding cannot be verified without a live run, so the
@@ -92,6 +96,12 @@ degree badge and a green verdict there would claim coverage the run does not hav
 Env overrides: `SDUI_PROBE_CONTAINER`, `SDUI_PROBE_USER_ID`, `SDUI_PROBE_PROFILE_URL` (a
 2nd/3rd-degree profile, so the degree badge is actually grounded), `SDUI_DRIFT_DIR`,
 `SDUI_DRIFT_REPO`, `DRY_RUN=1`.
+
+The report is printed between `===LEM-PROBE-JSON-BEGIN===` / `===LEM-PROBE-JSON-END===` fences,
+because the probe does NOT own its stdout: it runs inside the worker, where
+`cqc_lem.utilities.logger` writes there too (`get_current_profile` logs before the first probe).
+`sdui_drift_issues.fenced_report` is the ONE place that capture is cut back down to the report —
+an ad-hoc second parse would fail on the first log line and read as "no drift".
 
 The sweep is read-only in the way that matters: it sends no invite, posts nothing, comments on
 nothing, ticks no checkbox, and clicks no Send / Post / Invite control. The composer probes open a

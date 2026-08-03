@@ -81,15 +81,11 @@ if [ ! -s "$SWEEP" ]; then
 fi
 log "sweep written -> $SWEEP"
 
-# One line a human can read without opening the JSON. A sweep whose summary won't parse is still
-# handed to the filer below — the filer plans from `probes`, not from this summary.
-"${PY[@]}" - "$SWEEP" <<'PY' | tee -a "$LOG" >&2 || true
-import json, sys
-s = json.load(open(sys.argv[1]))["summary"]
-print(f"summary: {s['probed']} probed | ok={len(s['ok'])} drift={len(s['drift'])} "
-      f"unknown={len(s['unknown'])} -> {s['drift'] or 'no drift'}")
-PY
-
+# The filer prints the one-line summary a human reads (ok / drift / unknown counts, then a line per
+# issue). It is the ONLY thing that parses the sweep: the capture below is the worker's whole stdout
+# — the app logger writes there too — so `json.loads` on it belongs in exactly one place, behind the
+# report fences, unit-tested (sdui_drift_issues.fenced_report). A second ad-hoc parse here would
+# fail on the first log line and report "no drift" for a week that had some.
 FILER_ARGS=(--sweep-file "$SWEEP")
 [ "$DRY_RUN" = "1" ] && FILER_ARGS+=(--dry-run) || FILER_ARGS+=(--apply)
 "${PY[@]}" "$REPO/scripts/sdui_drift_issues.py" "${FILER_ARGS[@]}" >>"$LOG" 2>&1
