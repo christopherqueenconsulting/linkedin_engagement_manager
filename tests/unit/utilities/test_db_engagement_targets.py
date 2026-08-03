@@ -58,6 +58,22 @@ class TestGetEngagementTargets:
             rows = get_engagement_targets(1)
         assert rows[0]["comments_this_week"] == 2
 
+    def test_a_zero_cap_reads_back_as_zero(self):
+        # 0 is the SPA's "pause this account without removing it" — reading it as unset would hand
+        # the author the default cap back and show the operator a number they never typed.
+        conn, _ = _mock_conn(fetch_all=[self._row(max_comments_per_week=0)])
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_engagement_targets
+            rows = get_engagement_targets(1)
+        assert rows[0]["max_comments_per_week"] == 0
+
+    def test_a_missing_cap_falls_back_to_the_default(self):
+        conn, _ = _mock_conn(fetch_all=[self._row(max_comments_per_week=None)])
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_engagement_targets, ENGAGEMENT_TARGET_WEEKLY_DEFAULT
+            rows = get_engagement_targets(1)
+        assert rows[0]["max_comments_per_week"] == ENGAGEMENT_TARGET_WEEKLY_DEFAULT
+
     def test_active_only_filters_in_sql(self):
         conn, cursor = _mock_conn()
         with patch(f"{_DB}.get_db_connection", return_value=conn):

@@ -8,6 +8,12 @@ import { useRegisterSaveSection, sectionSaveCallbacks } from './SettingsSaveCont
 
 type RosterResponse = { targets: EngagementTarget[]; suggestions: EngagementTarget[] }
 
+// Every row's number field says only "/wk" next to it, which told a sighted user nothing about what
+// it controls (issue #956) — so the column header, the tooltip and the aria-label all say it here.
+const PER_WEEK_LABEL = 'Max comments/wk'
+const PER_WEEK_HINT =
+  "LEM will comment on this account's recent posts at most this many times per week (0 pauses the account)."
+
 const blank = (): EngagementTarget => ({
   profile_url: '', name: '', category: 'peer', max_comments_per_week: 2, active: true, source: 'user',
 })
@@ -115,20 +121,33 @@ export default function EngagementRosterCard() {
       <h2 className="text-base font-semibold text-gray-700">Engagement Roster</h2>
       <p className="text-xs text-gray-500">
         LEM comments on these accounts' recent posts <span className="font-semibold">before</span> it
-        looks at your home feed, at most the set number of times per week each. Aim for 50–100
-        accounts, roughly 50% peers / 30% ICP / 20% large creators. Off-topic posts are always
-        skipped, roster or not.
+        looks at your home feed. The <span className="font-semibold">{PER_WEEK_LABEL}</span> number on
+        each row is that account's weekly ceiling — set it to 0 to pause an account without removing
+        it. Aim for 50–100 accounts, roughly 50% peers / 30% ICP / 20% large creators. Off-topic posts
+        are always skipped, roster or not.
       </p>
       <MixBar targets={targets} />
 
       <div className="space-y-2">
+        {/* Column headers name each field on wide screens; on mobile the rows stack, so every field
+            carries its own inline label instead. */}
+        {targets.length > 0 && (
+          <div className="hidden sm:grid sm:grid-cols-12 gap-2 items-end text-xs font-medium text-gray-500"
+               data-testid="roster-headers">
+            <span className="sm:col-span-4">Profile URL</span>
+            <span className="sm:col-span-3">Name</span>
+            <span className="sm:col-span-2">Type</span>
+            <span className="sm:col-span-2" title={PER_WEEK_HINT}>{PER_WEEK_LABEL}</span>
+            <span className="sm:col-span-1 text-right">On</span>
+          </div>
+        )}
         {targets.map((t, idx) => (
           <div key={t.id ?? `new-${idx}`} className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
             <input type="text" value={t.profile_url} maxLength={512}
               onChange={(e) => update(idx, { profile_url: e.target.value })}
               placeholder="https://www.linkedin.com/in/their-handle"
               aria-label="Profile URL"
-              className="sm:col-span-5 border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+              className="sm:col-span-4 border border-gray-300 rounded-lg px-3 py-2 text-sm" />
             <input type="text" value={t.name ?? ''} maxLength={255}
               onChange={(e) => update(idx, { name: e.target.value })}
               placeholder="Name (optional)" aria-label="Name"
@@ -140,12 +159,14 @@ export default function EngagementRosterCard() {
                 <option key={c.key} value={c.key} title={c.hint}>{c.label}</option>
               ))}
             </select>
-            <label className="sm:col-span-1 flex items-center gap-1 text-xs text-gray-500">
+            <label className="sm:col-span-2 flex items-center gap-1 text-xs text-gray-500"
+                   title={PER_WEEK_HINT}>
               <input type="number" min={0} max={14} value={t.max_comments_per_week}
                 onChange={(e) => update(idx, { max_comments_per_week: Number(e.target.value) })}
-                aria-label="Max comments per week"
+                aria-label={PER_WEEK_LABEL} title={PER_WEEK_HINT}
                 className="w-14 border border-gray-300 rounded px-1 py-1" />
-              /wk
+              <span className="sm:hidden">{PER_WEEK_LABEL}</span>
+              <span className="hidden sm:inline">/wk</span>
             </label>
             <div className="sm:col-span-1 flex items-center justify-end gap-2 text-xs">
               <label className="flex items-center gap-1 text-gray-500">

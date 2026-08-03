@@ -61,7 +61,7 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     get_engager_candidates, get_profile_facts, count_invites_sent_today, ConnectionRequestStatus, \
     CatchupTouchStatus, insert_catchup_touch, has_catchup_touch, get_catchup_touch, \
     update_catchup_touch_status, count_catchup_touches_sent_today, max_catchup_touches_allowed, \
-    get_engagement_targets, record_target_engagement, ENGAGEMENT_TARGET_WEEKLY_DEFAULT, \
+    get_engagement_targets, record_target_engagement, resolve_weekly_cap, \
     record_follower_stat, get_linkedin_profile_url_by_user_id, \
     get_comment_outcome_targets, record_comment_outcome, \
     count_user_comments_on_post_url, get_post_age_minutes, get_story_bank_entries, \
@@ -1362,7 +1362,7 @@ def select_roster_targets(targets: list, limit: int) -> list:
     for t in targets or []:
         if not t.get("active", True):
             continue
-        cap = int(t.get("max_comments_per_week") or ENGAGEMENT_TARGET_WEEKLY_DEFAULT)
+        cap = resolve_weekly_cap(t.get("max_comments_per_week"))
         if int(t.get("comments_this_week") or 0) >= cap:
             continue
         eligible.append(t)
@@ -1639,7 +1639,7 @@ def comment_on_roster_posts(driver, wait, my_profile: LinkedInProfile, user_id: 
             continue
         time.sleep(random.uniform(2, 4))
         stats["targets_visited"] += 1
-        weekly_left = max(0, int(target.get("max_comments_per_week") or ENGAGEMENT_TARGET_WEEKLY_DEFAULT)
+        weekly_left = max(0, resolve_weekly_cap(target.get("max_comments_per_week"))
                           - int(target.get("comments_this_week") or 0))
         allowed_here = min(_ROSTER_MAX_POSTS_PER_AUTHOR, weekly_left, max_posts - stats["posted"])
         posted_here = 0
