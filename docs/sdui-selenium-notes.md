@@ -38,6 +38,25 @@ Zero rows against a non-zero "N Profile viewers" headline stat is selector drift
 zero rows with no stat is a quiet no-op. Re-ground with
 `scripts/linkedin_live_validation.py --profile-views`.
 
+## The Connect invite is a URL, and unscoped "Invite …" buttons are a WRONG-PERSON hazard
+
+Live-grounded 2026-08-03 (3rd-degree profile, user 1, Sales-Nav overlay): the profile top card
+offers only `Save in Sales Navigator` / `More` / `Message`/`Follow` — **no Connect button for the
+target at all** — while the "More profiles for you" rail renders one
+`button[aria-label="Invite <someone else> to connect"]` per suggested person. The old unscoped
+`//main//button[contains(@aria-label,"Invite ")]` therefore clicked the rail and **sent a
+connection request to a random suggested person** (~20 strays on 2026-08-03), then failed with
+`no Send button on the open Connect dialog` because no dialog ever opened for the target. Never
+click an Invite control whose label names someone other than the target.
+The top-card More menu (`aria-label="More"`, no longer `"More actions"`) holds Connect as an
+`<a role="menuitem">` (text `Connect`, no aria-label) whose href is
+`https://www.linkedin.com/preload/custom-invite/?vanityName=<slug>` — the dialog is addressable
+by URL, so `_open_connect_invite_dialog` navigates there directly and only falls back to the
+menu. The dialog's own controls are UNCHANGED: `Add a note` / `Send without a note` aria-labels,
+`textarea#custom-message` (0/300), and `Send` (aria `Send invitation`, disabled until input, plus
+a new `Write with AI` button). Success is the dialog's controls being present — never a click
+having landed.
+
 ## The comment composer has no `<form>`
 
 "Submit" means clicking the Comment/Post button next to the composer (`_composer_submitted`).

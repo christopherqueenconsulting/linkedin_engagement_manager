@@ -6409,33 +6409,71 @@ def _profile_is_first_degree(driver) -> bool:
     return False
 
 
-def _click_connect_affordance(driver, wait, user_id: int) -> bool:
-    """Click Connect on an open profile — the direct button first, else the one inside the
-    More-actions overflow. False when NEITHER is there, which is an ordinary outcome (an invite is
-    already pending, LinkedIn only offers Follow/Message on that profile, or the SDUI selector
-    drifted) and is why the miss is a WARNING and not an error (issue #571)."""
-    try:
-        click_element_wait_retry(driver, wait, '//main//button[contains(@aria-label, "Invite ")]',
-                                 "Finding Connect Button", max_retry=1, use_action_chain=True)
-        myprint("Found Connect Button and clicked it")
-        return True
-    except Exception:
-        pass  # No direct Connect button — LinkedIn buries it in the More menu on many profiles.
+# Grounded live 2026-08-03 (docs/sdui-selenium-notes.md): the profile top card carries NO
+# "Invite <name> to connect" button on the current layout — the only buttons matching
+# //main//button[contains(@aria-label,"Invite ")] are the "More profiles for you" rail, so an
+# unscoped click INVITED A RANDOM SUGGESTED PERSON and then failed on the missing Send dialog.
+# The top-card More menu's Connect item is an <a role=menuitem> linking to /preload/custom-invite,
+# which means the invite dialog is addressable by URL — that hazard-free route leads, and no
+# locator here may ever click an Invite button that names someone other than the target.
+_CONNECT_INVITE_URL = "https://www.linkedin.com/preload/custom-invite/?vanityName={slug}"
 
-    try:
-        click_element_wait_retry(driver, wait,
-                                 '//main//button[contains(@aria-label,"More actions")]',
-                                 "Finding More Button", max_retry=1, use_action_chain=True)
-        myprint("Found More Button and clicked it")
+# The dialog's own controls, unchanged across the rotation: its presence — not a click having
+# landed — is what proves the invite flow is actually open for the TARGET.
+_CONNECT_DIALOG_LOCATORS = [
+    (By.XPATH, '//button[@aria-label="Send without a note"]'),
+    (By.XPATH, '//button[@aria-label="Add a note"]'),
+]
 
-        click_element_wait_retry(driver, wait, '//main//div[contains(@aria-label,"connect")]',
-                                 "Finding Connect Button", max_retry=1, use_action_chain=True)
-        myprint("Found Connect Button and clicked it")
-        return True
-    except Exception as e:
-        log_warning("No Connect option on this profile (direct button and More menu both missed)",
-                    exc=e, user_id=user_id, action_type="invite_connect")
-        return False
+_PROFILE_MORE_MENU_LOCATORS = [
+    (By.XPATH, '//main//button[@aria-label="More" or normalize-space()="More"]'),
+    (By.XPATH, '//main//button[contains(@aria-label,"More actions")]'),  # pre-2026 label
+]
+
+_CONNECT_MENU_ITEM_LOCATORS = [
+    (By.XPATH, '//a[@role="menuitem"][contains(@href,"custom-invite")]'),
+    (By.XPATH, '//*[@role="menuitem"][normalize-space()="Connect"]'),
+]
+
+
+def _connect_dialog_present(driver, wait, user_id: int) -> bool:
+    return find_first(driver, wait, _CONNECT_DIALOG_LOCATORS, "Connect invite dialog",
+                      required=False, warn_on_miss=False, max_try=1, visible_only=True,
+                      user_id=user_id) is not None
+
+
+def _open_connect_invite_dialog(driver, wait, user_id: int, profile_url: str) -> bool:
+    """Open the Connect invite dialog for the profile at `profile_url` — the custom-invite URL
+    first, else the profile page's top-card More menu. True only when the dialog's own controls
+    are provably present. False is an ordinary outcome (invite already pending, Connect not
+    offered, or the SDUI rotated again) and is why the total miss is a WARNING, not an error
+    (issue #571)."""
+    slug = _profile_slug(profile_url)
+    if slug:
+        driver.get(_CONNECT_INVITE_URL.format(slug=slug))
+        if _connect_dialog_present(driver, wait, user_id):
+            myprint("Connect dialog opened via the custom-invite URL")
+            return True
+        # An already-pending invite renders no dialog here — an expected outcome for this
+        # route, so the miss stays quiet and the profile-page route gets its turn.
+        log_debug("custom-invite page did not render the Connect dialog — trying the "
+                  "profile-page More menu", user_id=user_id, action_type="invite_connect")
+
+    if profile_url != driver.current_url:
+        driver.get(profile_url)
+    if click_first(driver, wait, _PROFILE_MORE_MENU_LOCATORS, "Profile More menu",
+                   required=False, warn_on_miss=False, max_try=1, use_action_chain=True,
+                   user_id=user_id) is not None:
+        item = click_first(driver, wait, _CONNECT_MENU_ITEM_LOCATORS, "Connect menu item",
+                           required=False, warn_on_miss=False, max_try=1, use_action_chain=True,
+                           user_id=user_id)
+        if item is not None and _connect_dialog_present(driver, wait, user_id):
+            myprint("Connect dialog opened via the profile More menu")
+            return True
+
+    log_warning("No route opened the Connect invite dialog for this profile",
+                user_id=user_id, action_type="invite_connect")
+    return False
 
 
 def _add_connect_note(driver, wait, message: str, user_id: int) -> bool:
@@ -6531,9 +6569,9 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None) -
                            message=ALREADY_CONNECTED_MESSAGE)
             return False, ALREADY_CONNECTED_MESSAGE
 
-        # Locate the connect button. With no Connect dialog open the note/send steps below can only
-        # fail, and their errors would bury the real reason — so stop here with a named one instead.
-        if not _click_connect_affordance(driver, wait, user_id):
+        # Open the Connect dialog. With none open the note/send steps below can only fail, and
+        # their errors would bury the real reason — so stop here with a named one instead.
+        if not _open_connect_invite_dialog(driver, wait, user_id, profile_url):
             insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
                            result=LogResultType.FAILURE, post_url=profile_url,
                            message=NO_CONNECT_BUTTON_MESSAGE)
