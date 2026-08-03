@@ -376,6 +376,16 @@ class TestCatalogSnapshot:
         assert mhc.diff_catalog({"a": {}, "b": {}}, {"b": {}, "c": {}}) == {"added": ["c"],
                                                                             "removed": ["a"]}
 
+    def test_tags_payload_round_trips_through_the_parser(self):
+        catalog = mhc.parse_catalog(_tags())
+        assert mhc.parse_catalog(json.loads(mhc.render_tags_payload(catalog))) == catalog
+
+    def test_the_committed_fixture_is_exactly_what_the_renderer_would_write(self):
+        """The fixture and the snapshot are two views of ONE fetch. If a refresh moves only the
+        snapshot, the shipped-state guard below fails on every PR the weekly cron opens."""
+        assert (FIXTURES / "tags.json").read_text() == mhc.render_tags_payload(mhc.parse_catalog(
+            _tags()))
+
     def test_committed_snapshot_matches_the_real_catalog_shape(self):
         snapshot = mhc.load_snapshot_text((_ROOT / ".litellm"
                                            / "ollama_catalog_snapshot.json").read_text())
@@ -560,8 +570,14 @@ class TestPlanFamilyUpgrades:
                                         mhc.parse_catalog(_tags())) == []
 
     def test_a_variant_is_never_offered_as_the_base_models_upgrade(self):
-        # kimi-k2.7-code is a coding variant, not a newer kimi-k2.6.
-        assert mhc.plan_family_upgrades(self._rows("kimi-k2.6"), mhc.parse_catalog(_tags())) == []
+        # kimi-k2.7-code is a coding variant, not a newer kimi-k2.6 — so the plain-family kimi-k3
+        # is the only thing that may be offered, however much higher the variant's version reads.
+        out = mhc.plan_family_upgrades(self._rows("kimi-k2.6"), mhc.parse_catalog(_tags()))
+        assert [u["candidate"] for u in out] == ["kimi-k3"]
+
+    def test_a_variant_is_not_an_upgrade_when_the_family_has_nothing_newer(self):
+        catalog = {"kimi-k2.6": {}, "kimi-k2.7-code": {}}
+        assert mhc.plan_family_upgrades(self._rows("kimi-k2.6"), catalog) == []
 
     def test_size_tagged_unversioned_model_with_no_versioned_sibling_is_skipped(self):
         assert mhc.plan_family_upgrades(self._rows("gpt-oss:20b"), mhc.parse_catalog(_tags())) == []
@@ -673,6 +689,100 @@ class TestIssueRendering:
         assert "more)" in title
         body = mhc.build_eval_issue_body(names, {}, "2026-07-27")
         assert all(n in body for n in names)
+
+
+class TestCatalogPRRendering:
+    """The PR this cron opens is the ONLY thing a reviewer sees before merging a config-adjacent
+    file, so its title and body have to be the diff — not the job description."""
+
+    def _plan(self, **over) -> dict:
+        plan = {"today": "2026-08-02", "map_additions": {}, "snapshot_changed": True,
+                "catalog": {"added": [], "removed": [], "removed_configured": [], "total": 18}}
+        plan.update({k: v for k, v in over.items() if k != "catalog"})
+        plan["catalog"] = {**plan["catalog"], **(over.get("catalog") or {})}
+        return plan
+
+    def test_a_snapshot_only_run_never_claims_a_pre_approval(self):
+        plan = self._plan(catalog={"added": ["kimi-k3"], "removed": ["kimi-k2.5", "minimax-m2.5"]})
+        title = mhc.build_catalog_pr_title(plan)
+        assert title == ("chore(litellm): refresh catalog snapshot (+1 new, -2 gone)")
+        body = mhc.build_catalog_pr_body(plan, {"kimi-k3": {"size": 1560860324864,
+                                                            "modified_at": "2026-07-27T08:00:00Z"}})
+        assert "pre-approve" not in body and "unchanged" in body
+        assert "**new** `kimi-k3`" in body and "1561GB" in body and "published 2026-07-27" in body
+        assert "**gone** `kimi-k2.5`" in body and "**gone** `minimax-m2.5`" in body
+        assert "does not touch `.litellm/config.yaml`" in body
+
+    def test_a_map_only_run_names_every_mapping(self):
+        plan = self._plan(map_additions={"minimax-m2.5": "minimax-m2.7"}, snapshot_changed=False)
+        title = mhc.build_catalog_pr_title(plan)
+        assert title == "chore(litellm): pre-approve 1 Ollama retirement (minimax-m2.5)"
+        body = mhc.build_catalog_pr_body(plan)
+        assert "`minimax-m2.5` → `minimax-m2.7`" in body
+        assert "ollama_catalog_snapshot.json" not in body
+
+    def test_both_halves_are_named_when_both_fire(self):
+        plan = self._plan(map_additions={"a": "b", "c": "d"}, catalog={"added": ["e"]})
+        title = mhc.build_catalog_pr_title(plan)
+        assert title.startswith("chore(litellm): pre-approve 2 Ollama retirements (a, c)")
+        assert "refresh catalog snapshot (+1 new)" in title
+
+    def test_a_metadata_only_refresh_says_so_rather_than_looking_empty(self):
+        body = mhc.build_catalog_pr_body(self._plan())
+        assert "only per-tag metadata moved" in body
+        assert "metadata only" in mhc.build_catalog_pr_title(self._plan())
+
+    def test_a_configured_model_leaving_the_catalog_is_called_out_not_buried(self):
+        plan = self._plan(catalog={"removed": ["gpt-oss:20b", "kimi-k2.5"],
+                                   "removed_configured": ["gpt-oss:20b"]})
+        body = mhc.build_catalog_pr_body(plan)
+        assert "STILL CONFIGURED" in body and "Needs a look before merge" in body
+        # The unconfigured one is ordinary housekeeping and must not be escalated with it.
+        assert body.count("STILL CONFIGURED") == 1
+
+    def test_a_re_pointed_tag_is_not_filed_under_metadata_moved(self):
+        """Merging re-baselines the fingerprint, so this PR is the LAST run that can report the
+        swap — a body that calls it 'metadata' loses it for good (issue #925)."""
+        plan = self._plan(repoints=[{"tag": "gpt-oss:120b", "model": "ollama/gpt-oss:120b",
+                                     "groups": ["lem-complex"],
+                                     "changes": [{"field": "size", "old": 65_000_000_000,
+                                                  "new": 71_000_000_000}]}])
+        title = mhc.build_catalog_pr_title(plan)
+        assert "1 re-pointed" in title and "metadata only" not in title
+        body = mhc.build_catalog_pr_body(plan)
+        assert "**re-pointed** `gpt-oss:120b`" in body and "65GB → 71GB" in body
+        assert "only per-tag metadata moved" not in body
+        assert "Needs a look before merge" in body and "`lem-complex`" in body
+
+    def test_a_removed_and_a_re_pointed_tag_share_one_needs_a_look_heading(self):
+        plan = self._plan(catalog={"removed": ["gpt-oss:20b"],
+                                   "removed_configured": ["gpt-oss:20b"]},
+                          repoints=[{"tag": "kimi-k2.6", "groups": ["lem-medium"],
+                                     "changes": [{"field": "modified_at", "old": "2026-07-01",
+                                                  "new": "2026-08-01"}]}])
+        body = mhc.build_catalog_pr_body(plan)
+        assert body.count("Needs a look before merge") == 1
+        assert "`gpt-oss:20b`" in body and "`kimi-k2.6`" in body
+
+    def test_a_long_title_drops_names_rather_than_cutting_one_in_half(self):
+        plan = self._plan(map_additions={f"model-with-a-long-name-{i}": "x" for i in range(9)},
+                          catalog={"added": [f"n{i}" for i in range(9)]})
+        title = mhc.build_catalog_pr_title(plan)
+        assert len(title) <= mhc.MAX_TITLE_CHARS
+        assert "pre-approve 9 Ollama retirements" in title
+        assert "refresh catalog snapshot (+9 new)" in title  # the second half survives
+        # Names are dropped whole; the one that fits is intact, never cut mid-tag.
+        assert "(model-with-a-long-name-0 +8 more)" in title
+
+    def test_a_title_too_long_for_even_one_name_keeps_the_counts(self):
+        plan = self._plan(map_additions={"m" * 200: "x"}, catalog={"added": ["a"]})
+        title = mhc.build_catalog_pr_title(plan)
+        assert len(title) <= mhc.MAX_TITLE_CHARS
+        assert title.startswith("chore(litellm): pre-approve 1 Ollama retirement")
+
+    def test_a_no_op_plan_still_renders_a_conventional_commit_title(self):
+        title = mhc.build_catalog_pr_title({"snapshot_changed": False})
+        assert title.startswith("chore(litellm): ") and len(title) > len("chore(litellm): ")
 
 
 class TestPlanIssue:
@@ -923,6 +1033,21 @@ class TestCatalogScanCLI:
         assert ((tmp_path / "map.yaml").read_text(),
                 (tmp_path / "snapshot.json").read_text()) == second
 
+    def test_catalog_apply_refreshes_the_offline_fixture_from_the_same_fetch(self, tmp_path):
+        """Without this the cron's own PR is red on arrival: it moves the snapshot, the fixture
+        stays on last week's catalog, and the shipped-state guard diffs the two."""
+        args = self._workspace(tmp_path)
+        fixture = tmp_path / "tags.json"
+        mhc.main(["--catalog-apply", f"--tags-fixture={fixture}", *args])
+        snapshot = mhc.load_snapshot_text((tmp_path / "snapshot.json").read_text())
+        assert mhc.parse_catalog(json.loads(fixture.read_text())) == snapshot
+
+    def test_the_fixture_is_left_alone_when_the_snapshot_does_not_move(self, tmp_path):
+        args = self._workspace(tmp_path, model="minimax-m3", drop=())
+        fixture = tmp_path / "tags.json"
+        mhc.main(["--catalog-apply", f"--tags-fixture={fixture}", *args])
+        assert not fixture.exists()
+
     def test_catalog_json_is_machine_readable_and_hides_the_raw_catalog(self, tmp_path, capsys):
         args = self._workspace(tmp_path)
         mhc.main(["--catalog-json", *args])
@@ -931,6 +1056,25 @@ class TestCatalogScanCLI:
         assert plan["repo_changes"] is True
         assert [n["bare"] for n in plan["notices"]] == ["minimax-m2.5"]
         assert plan["catalog"]["added"] == ["glm-5.2", "minimax-m3"]
+        # The orchestrator opens the PR straight from this plan — no re-scan, no fixed string.
+        assert "glm-5.2" in plan["pr"]["body"] and "minimax-m3" in plan["pr"]["body"]
+        assert plan["pr"]["title"].startswith("chore(litellm): pre-approve 1 Ollama retirement")
+
+    def test_a_configured_tag_leaving_the_catalog_is_flagged_in_the_plan_and_the_dry_run(
+            self, tmp_path, capsys):
+        """A configured model vanishing from /api/tags is next week's 410, found early — it must
+        not read the same as an unconfigured tag being tidied away."""
+        args = self._workspace(tmp_path, model="gone-model:1b", drop=())
+        snapshot = mhc.parse_catalog(_tags())
+        snapshot["gone-model:1b"] = {"modified_at": "", "size": 0, "parameter_size": "",
+                                     "family": ""}
+        (tmp_path / "snapshot.json").write_text(mhc.render_snapshot(snapshot, "2026-07-01"))
+        mhc.main(["--catalog-scan", *args])
+        assert "GONE TAG gone-model:1b [STILL CONFIGURED]" in capsys.readouterr().out
+        mhc.main(["--catalog-json", *args])
+        plan = json.loads(capsys.readouterr().out)
+        assert plan["catalog"]["removed_configured"] == ["gone-model:1b"]
+        assert "Needs a look before merge" in plan["pr"]["body"]
 
     def test_clean_config_is_exit_zero(self, tmp_path, capsys):
         args = self._workspace(tmp_path, model="minimax-m3", drop=())

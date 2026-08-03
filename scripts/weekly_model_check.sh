@@ -104,10 +104,14 @@ mutate_swap(){  # re-plan against the worktree's own config so the PR diff match
 }
 
 mutate_catalog(){  # pre-approve upcoming retirements + refresh the committed catalog snapshot
+                   # --tags-fixture keeps the offline fixture on the SAME fetch as the snapshot;
+                   # without it the shipped-state guard fails on every PR this function opens.
   "${PY[@]}" "$REPO/scripts/model_health_check.py" --catalog-scan --catalog-apply \
       --config "$1/.litellm/config.yaml" --map "$1/.litellm/model_upgrades.yaml" \
-      --snapshot "$1/.litellm/ollama_catalog_snapshot.json" --no-usage-levels >>"$LOG" 2>&1
-  git add .litellm/model_upgrades.yaml .litellm/ollama_catalog_snapshot.json
+      --snapshot "$1/.litellm/ollama_catalog_snapshot.json" \
+      --tags-fixture "$1/tests/unit/fixtures/ollama/tags.json" --no-usage-levels >>"$LOG" 2>&1
+  git add .litellm/model_upgrades.yaml .litellm/ollama_catalog_snapshot.json \
+          tests/unit/fixtures/ollama/tags.json
 }
 
 mutate_benchmark(){  # render the run we ALREADY measured into the worktree (issue #721)
@@ -197,10 +201,16 @@ for n in json.load(sys.stdin)['notices']:
   fi
 
   if [ "${REPOCH:-0}" -gt 0 ]; then
-    open_pr "auto/ollama-catalog" \
-      "chore(litellm): pre-approve upcoming Ollama retirements + refresh catalog snapshot" \
-      "Automated by the weekly model-health check (issue #716). Appends the vendor's own recommended replacement for any configured model with a published retirement date, so the swap is pre-approved before the 410, and refreshes .litellm/ollama_catalog_snapshot.json." \
-      mutate_catalog
+    # Title + body come from the plan we already read, so they name THIS run's diff. The two halves
+    # (map pre-approval, snapshot refresh) fire independently, and a fixed string claiming both was
+    # wrong on most weeks — it sent reviewers looking for a map diff that wasn't there.
+    CAT_TITLE="$(printf '%s' "$CAT" | python3 -c "
+import sys, json; print((json.load(sys.stdin).get('pr') or {}).get('title') or '')" 2>/dev/null)"
+    CAT_BODY="$(printf '%s' "$CAT" | python3 -c "
+import sys, json; print((json.load(sys.stdin).get('pr') or {}).get('body') or '')" 2>/dev/null)"
+    [ -n "$CAT_TITLE" ] || CAT_TITLE="chore(litellm): refresh Ollama catalog snapshot"
+    [ -n "$CAT_BODY" ] || CAT_BODY="Automated by the weekly model-health check (issue #716). See the diff — the plan's own summary could not be rendered."
+    open_pr "auto/ollama-catalog" "$CAT_TITLE" "$CAT_BODY" mutate_catalog
   fi
 
   if [ "${NEWTAG:-0}" -gt 0 ] || [ "${NUPG:-0}" -gt 0 ] || [ "${NREPOINT:-0}" -gt 0 ]; then
