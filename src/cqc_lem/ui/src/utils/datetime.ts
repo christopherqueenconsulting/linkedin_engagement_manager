@@ -66,6 +66,28 @@ export function formatInTimezone(
   }
 }
 
+// 12-hour label for a bare hour-of-day 0–23 (never 24h): 0 -> "12:00 AM", 13 -> "1:00 PM".
+// An hour-of-day has no date to hang an Intl format off, so it gets its own formatter rather than a
+// synthetic Date — but it still obeys the same "always 12-hour" display rule as formatInTimezone.
+export function formatHour12(hour: number): string {
+  const h = ((Math.trunc(hour) % 24) + 24) % 24
+  return `${h % 12 === 0 ? 12 : h % 12}:00 ${h < 12 ? 'AM' : 'PM'}`
+}
+
+// Short zone label ("EDT", "GMT+5:30") for a bare hour-of-day, so a time with no date attached still
+// says WHICH clock it is on. Falls back to the IANA id when the engine has no short name for it.
+export function timezoneAbbreviation(tz: string, at: Date = new Date()): string {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      timeZoneName: 'short',
+    }).formatToParts(at)
+    return parts.find((p) => p.type === 'timeZoneName')?.value || tz
+  } catch {
+    return tz
+  }
+}
+
 // UTC ISO string -> the `YYYY-MM-DDTHH:mm` value for an <input type="datetime-local">, expressed in
 // the user's timezone. A `datetime-local` input has no timezone of its own, so its value MUST be
 // the same wall clock formatInTimezone renders next to it — otherwise the editor and the label

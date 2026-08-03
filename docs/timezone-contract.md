@@ -89,6 +89,14 @@ from logs rather than only from a post that went out at the wrong hour.
 | `toZonedInputValue(iso, tz)` | UTC ISO → `<input type="datetime-local">` value in `tz` |
 | `zonedInputToUtcIso(value, tz)` | `datetime-local` value read as `tz` → UTC ISO with `Z` |
 
+Some surfaces render a bare **hour-of-day** with no date attached — the Dashboard's "Your Best Times
+to Post", the newsletter publish-hour picker, the compose-page suggestion. There is no instant to
+hand `Intl`, so those get the other two helpers instead: `formatHour12(hour)` (12-hour, never a
+`14:00` clock face) and `timezoneAbbreviation(tz)` (the `EDT`/`GMT+5:30` label that says WHICH clock
+the hour is on). Never hand-roll either — three near-copies of the AM/PM arithmetic is how the Best
+Times list ended up 24-hour and unlabelled (issue #1003). A bucketed hour is labelled with the zone
+the SERVER bucketed it into (`/user/post-stats` returns `timezone`), not the browser guess.
+
 A `datetime-local` input carries **no timezone**. Its value must be the same wall clock
 `formatInTimezone` renders beside it, or the editor and its own label disagree about one post. On
 the way back out, `new Date(value).toISOString()` is always wrong — it interprets the value in the

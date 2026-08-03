@@ -4,7 +4,7 @@ import api from '../api/client'
 import { useAuth } from '../contexts/AuthContext'
 import { useUserTimezone } from '../hooks/useUserTimezone'
 import { useScrollAffordance } from '../hooks/useScrollAffordance'
-import { formatInTimezone } from '../utils/datetime'
+import { formatHour12, formatInTimezone, timezoneAbbreviation } from '../utils/datetime'
 import { isHttpUrl, commentsActivityUrl } from '../utils/links'
 import OnboardingChecklist from '../components/OnboardingChecklist'
 import PostHogStatsPanel from '../components/PostHogStatsPanel'
@@ -17,6 +17,10 @@ interface PostStats {
   recommendations: { weekday: string; hour: number; avg_engagement: number; sample: number }[]
   rankings: Record<string, RankEntry[]>
   sample_size: number
+  // The zone `recommendations[].hour` was bucketed into server-side (the user's configured Login
+  // Location). Label the hours with THIS, not the browser guess, or a traveling user reads an
+  // America/New_York hour as their device's clock.
+  timezone?: string
 }
 
 interface TrendPoint {
@@ -401,6 +405,9 @@ export default function Dashboard() {
 
   const formatBoard = postStats?.rankings?.format ?? []
   const hookBoard = postStats?.rankings?.hook_style ?? []
+  // Prefer the zone the API bucketed the hours into; `userTimezone` (configured zone, browser
+  // fallback) only stands in for an older payload that carried no `timezone`.
+  const bestTimesTimezone = postStats?.timezone || userTimezone
 
   // Window totals for the KPI row.
   const totalImpressions = perPost.reduce((s, p) => s + (p.impressions ?? 0), 0)
@@ -930,11 +937,14 @@ export default function Dashboard() {
           <h2 className="text-base font-semibold text-gray-700">Your Best Times to Post</h2>
           {postStats.recommendations.length > 0 ? (
             <>
-              <p className="text-xs text-gray-500">Learned from your own post engagement — scheduling leans toward these.</p>
+              <p className="text-xs text-gray-500">
+                Learned from your own post engagement — scheduling leans toward these. Times are in{' '}
+                {bestTimesTimezone} ({timezoneAbbreviation(bestTimesTimezone)}).
+              </p>
               <ul className="text-sm text-gray-700 space-y-1">
                 {postStats.recommendations.map((r, i) => (
                   <li key={i} className="flex justify-between">
-                    <span>{r.weekday} @ {String(r.hour).padStart(2, '0')}:00</span>
+                    <span>{r.weekday} @ {formatHour12(r.hour)}</span>
                     <span className="text-gray-400">avg engagement {r.avg_engagement} · {r.sample} post(s)</span>
                   </li>
                 ))}
