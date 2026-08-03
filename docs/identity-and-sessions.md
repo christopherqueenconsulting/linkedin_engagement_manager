@@ -272,9 +272,8 @@ preflight the server answers nothing to. So the server checks that the header is
 what it says — comparing the value would buy nothing against an attacker who can read the bundle,
 and would invite the next reader to rotate it like a token and put it in `.env`.
 
-This is the layer #950 took away without meaning to. The shared bearer token was worthless as ACCESS
-control — every visitor held it — but it was real as a CSRF layer for exactly this reason, and
-retiring it left `SameSite=Lax` holding those four routes alone.
+It is the same property the retired bearer token had, which is why #950 took a layer away without
+meaning to — but held by a value that is not pretending to be a credential.
 
 Enforcement is in `api/main._require_client_header()`, called from the **one resolver**
 (`get_session_user_id`) on its cookie branch, before the scope check and before anything writes —

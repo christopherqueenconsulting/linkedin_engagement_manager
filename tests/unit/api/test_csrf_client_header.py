@@ -25,8 +25,8 @@ body, so the "a JSON body needs a preflight" layer never covered them either —
   the session cookie is read in exactly **one** place.
 """
 
+import ast
 import inspect
-import re
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
 
@@ -160,18 +160,34 @@ class TestTheFourQueryParameterWrites:
 
 class TestAGuessedBearerBuysNothing:
     """Split by which layer is doing the refusing, so neither test can pass through a regression in
-    the other. Which one answers is deployment-dependent: the credential gate only exists when
-    `API_ACCESS_TOKENS` is set, and this layer is what stands behind it."""
+    the other. Which one answers depends on what else the request carried: since #950 the credential
+    gate takes a bearer OR a session credential, so a forged request that brings the victim's cookie
+    is past the edge by definition — which is exactly why this layer has to stand behind it."""
 
     @pytest.mark.parametrize("path,params", _QUERY_PARAM_WRITES)
-    def test_the_credential_gate_401s_it_at_the_edge_when_one_is_configured(
+    def test_the_credential_gate_401s_it_at_the_edge_with_no_session_credential(
             self, client: Any, cookie_session: None, work: Dict[str, MagicMock],
             path: str, params: Dict[str, Any]) -> None:
+        with patch(f"{_M}._API_ACCESS_TOKEN_SET", {"non-browser-token"}):
+            resp = client.post(path, params=params,
+                               headers={"Authorization": "Bearer guessed"})
+
+        assert resp.status_code == 401
+        work[path].assert_not_called()
+
+    @pytest.mark.parametrize("path,params", _QUERY_PARAM_WRITES)
+    def test_this_layer_403s_it_when_the_cookie_carried_it_past_the_edge(
+            self, client: Any, cookie_session: None, work: Dict[str, MagicMock],
+            path: str, params: Dict[str, Any]) -> None:
+        """The CSRF-relevant shape, and the one #950 changed: the gate accepts the session
+        credential the browser attached by itself, so a guessed bearer is never what the edge is
+        judging. The exemption is keyed on a bearer that MATCHES, so it stays shut."""
         with patch(f"{_M}._API_ACCESS_TOKEN_SET", {"non-browser-token"}):
             resp = client.post(path, params=params, cookies={"lem_session": _COOKIE},
                                headers={"Authorization": "Bearer guessed"})
 
-        assert resp.status_code == 401
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["code"] == "client_header_required"
         work[path].assert_not_called()
 
     @pytest.mark.parametrize("path,params", _QUERY_PARAM_WRITES)
@@ -378,16 +394,30 @@ class TestTheAssumptionsTheLayerRestsOn:
         assert "_request_session_cookie.set(" in body
         assert "_request_object.set(request)" in body
 
-    def test_the_session_cookie_is_read_in_exactly_one_place(self) -> None:
+    def test_no_handler_reads_the_session_cookie_for_itself(self) -> None:
         """The ONE-resolver claim, made executable. A handler that read the cookie on its own path
         would authenticate a caller without ever passing this check — and `/auth/logout` and
-        `/user/sessions/revoke` are exactly the shortcuts where that is tempting."""
+        `/user/sessions/revoke` are exactly the shortcuts where that is tempting.
+
+        Named functions, not a count: since #950 the edge gate reads it too
+        (`_has_session_credential`), and that read authenticates nobody — it asks only whether the
+        caller brought SOMETHING for the resolver to judge, before routing, with no database. Both
+        readers run ahead of every handler, which is the property that matters."""
         from cqc_lem.api import main
 
-        source = Path(main.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(Path(main.__file__).read_text(encoding="utf-8"))
 
-        reads = re.findall(r"\.cookies\.get\(", source)
-        assert len(reads) == 1, (
-            "The session cookie must be read only by session_cookie_middleware; every consumer "
-            "reads the ContextVar so the CSRF and scope checks cannot be bypassed."
+        readers = set()
+        for func in ast.walk(tree):
+            if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(func):
+                if (isinstance(node, ast.Attribute) and node.attr == "get"
+                        and isinstance(node.value, ast.Attribute) and node.value.attr == "cookies"):
+                    readers.add(func.name)
+
+        assert readers == {"session_cookie_middleware", "_has_session_credential"}, (
+            "The session cookie must be read only by session_cookie_middleware (which stamps the "
+            "ContextVar) and the edge gate's presence check; every consumer reads the ContextVar so "
+            "the CSRF and scope checks cannot be bypassed."
         )
