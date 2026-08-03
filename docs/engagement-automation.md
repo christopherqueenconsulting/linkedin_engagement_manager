@@ -4,6 +4,58 @@ Full design detail for the `app/run_automation.py` subsystems that CLAUDE.md's "
 automation" section only names. This doc is the load-bearing detail; CLAUDE.md keeps the
 one-line invariant + pointer.
 
+## Feed commenting on the SDUI feed (`comment_on_feed_inline`, issues #622 / #817)
+
+The commenting engine was rebuilt for LinkedIn's SDUI: the old `urn:` / `feed-shared-*` anchors are
+gone, so every lookup goes through the resilient `find_first` / `click_first` / `find_all_first`
+helpers in `utilities/linkedin/helper.py`, compose+submit happens inline on the card, and every
+composer lookup is scoped to its OWN post (`_post_composer_for_card` / `_reply_composer_for_comment`
+— a miss is a DEBUG no-op, never a warning). Targeting, per-day caps and voice/tone come from
+`engagement_preferences`. Runs pre-post (~15 min before a scheduled post) and daily at a golden hour.
+
+### The scoring matrix is recency-DOMINANT
+
+`_score_feed_post` ranks candidates on four weighted terms — recency (dominant), relevance,
+reciprocity (the author engaged with us, or is an include-author target), and a healthy-activity
+bonus off comment count. Each weight is env-overridable (`FEED_SCORE_W_RECENCY`,
+`FEED_SCORE_W_RELEVANCE`, `FEED_SCORE_W_RECIPROCITY`, `FEED_SCORE_W_ACTIVITY`).
+
+Because recency dominates, the matrix only does what #622 intended when the feed it ranks is
+actually recency-ordered. With the sort control missing, the recency term re-ranks a pool LinkedIn
+already reordered by engagement, and the run quietly degrades to roughly what #622 replaced.
+
+### `_switch_feed_to_recent` — best-effort, but never silent (#817)
+
+It flips the home feed from 'Top' to 'Recent' AND **reports what the run actually got**. The
+returned state rides onto the feed funnel and the `feed_scan` event, so an unsorted scan can never
+be read as recency-sorted:
+
+| State | Meaning |
+|---|---|
+| `recent` | Confirmed on 'Recent' by the control itself |
+| `top` | Control found, still on the algorithmic sort |
+| `missing` | No sort control on the home feed at all |
+| `unknown` | Control there, but which sort applies could not be read |
+| `n/a` | A surface that never had one (group feed, roster activity) |
+
+- `recent` is returned ONLY when the control confirms it **afterwards**. An unverified flip recorded
+  as sorted tells the same lie the old silent no-op told.
+- `_feed_sort_state` returns `''` (→ `unknown`) when the label is unreadable, **including a label
+  naming BOTH sorts** — some dropdown triggers spell their options into the accessible name ("Sort
+  by, currently Top, options Top and Recent"), and reading 'recent' out of one would skip the flip
+  AND record the run as sorted.
+- `_is_home_feed` gates the whole thing: group feeds and a roster author's recent-activity page
+  reuse the same engine but never had the control, so a miss there is `n/a` at DEBUG. An
+  **unreadable URL counts as NOT the home feed** (#872) — a dead session cannot say which surface it
+  was on, and escalating on a guess costs a triage for working behaviour.
+- Locators are an ordered fallback chain, most-stable anchor first: `aria-label` → `data-testid` →
+  visible 'Sort by' text → a popup trigger whose whole label IS the current sort → any
+  `role=button` carrying 'sort'. Class names are never keyed on.
+- Fail-fast (`max_try=1`): this runs twice per run and each retry round burned `MAX_WAIT_RETRY` ×
+  ~5s to report the same miss.
+
+Live grounding: `scripts/linkedin_live_validation.py --feed-sort`.
+
 ## Golden-hour presence & second wave (`utilities/golden_hour.py`, issue #622)
 
 The ONE place the first-hour amplifier's timing is decided.
