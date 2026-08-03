@@ -4990,6 +4990,20 @@ def get_engagement_preferences(user_id: int) -> dict:
     return _code_engagement_defaults(user_id) if row is None else row
 
 
+def engagement_preferences_are_configured(user_id: int) -> Optional[bool]:
+    """Whether the user has SAVED an engagement-preferences row of their own.
+
+    Three-valued: None means the row could not be READ, which is NOT the same as "never configured"
+    (issue #639). A caller that would otherwise write policy defaults over settings the user chose
+    has to be able to tell those two apart (issue #952)."""
+    try:
+        return _select_engagement_row(user_id) is not None
+    except mysql.connector.Error as err:
+        log_error("Could not read engagement prefs — configured state unknown",
+                  exc=err, user_id=user_id)
+        return None
+
+
 def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
     """Upsert the user's engagement preferences (INSERT ... ON DUPLICATE KEY UPDATE)."""
     # The upsert writes EVERY column, so a partial `prefs` dict must merge over the user's own
