@@ -11,10 +11,20 @@ import PostHogStatsPanel from '../components/PostHogStatsPanel'
 import LineChart, { type LinePoint } from '../components/charts/LineChart'
 import Leaderboard, { type RankEntry } from '../components/charts/Leaderboard'
 import PerPostTable, { type PerPost } from '../components/charts/PerPostTable'
-import { compactNumber, formatRate, shortDate, titleCase } from '../components/charts/palette'
+import {
+  ENGAGEMENT_RATE_METRIC,
+  compactNumber,
+  formatEngagementMetric,
+  formatRate,
+  shortDate,
+  titleCase,
+} from '../components/charts/palette'
 
 interface PostStats {
-  recommendations: { weekday: string; hour: number; avg_engagement: number; sample: number }[]
+  // `metric` names the scale `avg_engagement` is on — `engagement_rate` (a per-impression
+  // fraction) or `engagement` (a weighted per-post count). Optional so a payload predating it
+  // still renders as a count rather than a bogus percentage.
+  recommendations: { weekday: string; hour: number; avg_engagement: number; sample: number; metric?: string }[]
   rankings: Record<string, RankEntry[]>
   sample_size: number
   // The zone `recommendations[].hour` was bucketed into server-side (the user's configured Login
@@ -945,7 +955,10 @@ export default function Dashboard() {
                 {postStats.recommendations.map((r, i) => (
                   <li key={i} className="flex justify-between">
                     <span>{r.weekday} @ {formatHour12(r.hour)}</span>
-                    <span className="text-gray-400">avg engagement {r.avg_engagement} · {r.sample} post(s)</span>
+                    <span className="text-gray-400 tabular-nums">
+                      {r.metric === ENGAGEMENT_RATE_METRIC ? 'avg engagement rate' : 'avg engagement'}{' '}
+                      {formatEngagementMetric(r.avg_engagement, r.metric)} · {r.sample} post(s)
+                    </span>
                   </li>
                 ))}
               </ul>
