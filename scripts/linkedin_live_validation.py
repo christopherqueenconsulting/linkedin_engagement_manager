@@ -519,6 +519,43 @@ def probe_feed_sort(driver, sleep=time.sleep) -> dict:
     return reading
 
 
+def probe_profile_viewers(driver, sleep=time.sleep) -> dict:
+    """Profile-views analytics page: report how many viewer rows the production locator matches,
+    the caption forms in play, and the page's own headline count so a locator miss cannot read as
+    an empty page. Read-only — nothing is clicked and nobody is engaged.
+
+    The production locator is a TEXT discriminator (an /in/ anchor carrying a "Viewed …" line);
+    `sample_rows` holds each row's text lines, which is exactly what the next locator gets
+    re-grounded from when this rotates again."""
+    from cqc_lem.app.run_automation import (_PROFILE_VIEWER_ROWS_JS, _PROFILE_VIEWER_SCROLL_JS,
+                                            _PROFILE_VIEWER_STAT_JS)
+
+    driver.get("https://www.linkedin.com/analytics/profile-views/")
+    sleep(8)
+    rows = driver.execute_script(_PROFILE_VIEWER_ROWS_JS) or []
+    stat = driver.execute_script(_PROFILE_VIEWER_STAT_JS)
+    driver.execute_script(_PROFILE_VIEWER_SCROLL_JS)
+    sleep(3)
+    rows_after_scroll = driver.execute_script(_PROFILE_VIEWER_ROWS_JS) or []
+    reading = {
+        "url": getattr(driver, "current_url", ""),
+        "row_count": len(rows),
+        "row_count_after_scroll": len(rows_after_scroll),
+        "headline_stat": stat,
+        "caption_forms": sorted({(r.get("viewed") or "").split(" ", 2)[-1] for r in rows if r.get("viewed")}),
+        "sample_rows": [{"href": r.get("href"), "viewed": r.get("viewed")} for r in rows[:5]],
+    }
+    if stat and not rows:
+        reading["verdict"] = f"headline reports {stat} viewers but the row locator matched none — selector drift"
+    elif not rows:
+        reading["verdict"] = "no viewers listed and no headline stat — page empty or not rendered"
+    elif len(rows_after_scroll) <= len(rows):
+        reading["verdict"] = f"{len(rows)} rows matched but the scroll did not grow the list — lazy-load drift"
+    else:
+        reading["verdict"] = f"{len(rows)} rows matched, scroll grew the list to {len(rows_after_scroll)}"
+    return reading
+
+
 def message_thread_verdict(reading: Optional[dict]) -> str:
     """What one thread-open probe proves about the #731 resolution ladder.
 
@@ -1240,6 +1277,10 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--feed-sort", action="store_true",
                         help="report whether the home feed's 'Sort by -> Recent' control resolves "
                              "and whether the flip sticks (#817)")
+    parser.add_argument("--profile-views", action="store_true",
+                        help="report the profile-views analytics page's viewer-row locator state: "
+                             "rows matched vs the page's own headline count, caption forms, and "
+                             "whether the lazy-load scroll grows the list")
     parser.add_argument("--watch", action="store_true",
                         help="request the watchable Grid debug node so the session is visible via "
                              "noVNC; falls back to the pool if the debug node is busy/absent")
@@ -1255,10 +1296,12 @@ def main(argv: Optional[list] = None) -> int:
 
     if not (args.post_url or args.probe_composer or args.comment_outcome_url or args.dm_thread_url
             or args.article_editor_url or args.feed_sort or args.reaction_probe
-            or args.roster_follow or args.appreciation_sources or args.sent_invites):
+            or args.roster_follow or args.appreciation_sources or args.sent_invites
+            or args.profile_views):
         parser.error("nothing to probe — pass --post-url, --comment-outcome-url, --dm-thread-url, "
-                     "--article-editor-url, --feed-sort, --reaction-probe, --roster-follow, "
-                     "--appreciation-sources, --sent-invites and/or --probe-composer")
+                     "--article-editor-url, --feed-sort, --profile-views, --reaction-probe, "
+                     "--roster-follow, --appreciation-sources, --sent-invites and/or "
+                     "--probe-composer")
 
     from cqc_lem.app.run_automation import get_current_profile
     from cqc_lem.utilities.selenium_util import quit_gracefully
@@ -1286,6 +1329,8 @@ def main(argv: Optional[list] = None) -> int:
                 self_name=resolve_self_name(args.user_id, profile))
         if args.feed_sort:
             report["feed_sort"] = probe_feed_sort(driver)
+        if args.profile_views:
+            report["profile_views"] = probe_profile_viewers(driver)
         if args.roster_follow:
             report["roster_follow"] = probe_roster_follow(driver, args.roster_follow)
         if args.appreciation_sources:

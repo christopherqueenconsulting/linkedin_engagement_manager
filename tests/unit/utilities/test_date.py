@@ -339,6 +339,34 @@ class TestDateUtilitiesExtended:
         assert isinstance(result, datetime.datetime)
 
     def test_convert_viewed_on_replaces_w_with_week(self):
-        # "1w ago" should become "1week ago" which dateparser can handle
         result = convert_viewed_on_to_date("1w ago")
         assert isinstance(result, datetime.datetime)
+
+    # Live caption forms from the SDUI profile-views page (grounded 2026-08-03):
+    # "Viewed 1h ago" / "20h" / "1d" / "1w" / "1mo" / "2mo".
+
+    def test_convert_viewed_on_live_relative_forms_land_at_the_right_age(self):
+        now = datetime.datetime.now()
+        expectations = {
+            "Viewed 5m ago": datetime.timedelta(minutes=5),
+            "Viewed 20h ago": datetime.timedelta(hours=20),
+            "Viewed 1d ago": datetime.timedelta(days=1),
+            "Viewed 2w ago": datetime.timedelta(weeks=2),
+            "Viewed 1mo ago": datetime.timedelta(days=30),
+            "Viewed 2mo ago": datetime.timedelta(days=60),
+            "Viewed 1yr ago": datetime.timedelta(days=365),
+        }
+        for caption, age in expectations.items():
+            result = convert_viewed_on_to_date(caption)
+            assert abs((now - result) - age) < datetime.timedelta(minutes=1), caption
+
+    def test_convert_viewed_on_week_caption_is_not_mangled(self):
+        # The old 'w'->'week' substitution turned "week" into "weekeek"; the parser must
+        # take spelled-out units as-is.
+        result = convert_viewed_on_to_date("Viewed 2 weeks ago")
+        assert abs((datetime.datetime.now() - result) - datetime.timedelta(weeks=2)) \
+            < datetime.timedelta(minutes=1)
+
+    def test_convert_viewed_on_unparseable_raises_value_error(self):
+        with pytest.raises(ValueError):
+            convert_viewed_on_to_date("Viewed ??")
