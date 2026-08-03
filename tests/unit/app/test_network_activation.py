@@ -7,6 +7,7 @@ and the reply check that unblocks the nurture queue — plus the logging that ma
 exit impossible.
 """
 
+import logging
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
@@ -186,7 +187,7 @@ def _roster(**over):
 
 
 def _scan_funnel(prefs=None, roster=None, engagers=None, open_targets=0, requested=None,
-                 existing=None, max_new=None, commenters=None, activity=None):
+                 existing=None, max_new=None, commenters=None, activity=None, profile_exc=None):
     from cqc_lem.app import run_automation as ra
     with patch(f"{_RA}.get_engagement_preferences",
                return_value=prefs if prefs is not None else _prefs()), \
@@ -205,8 +206,11 @@ def _scan_funnel(prefs=None, roster=None, engagers=None, open_targets=0, request
                else [{"link": "https://x/feed/update/1", "text": "Post body"}]), \
          patch(f"{_RA}.get_current_profile") as profile, \
          patch(f"{_RA}.quit_gracefully"):
-        profile.return_value = (MagicMock(), MagicMock(), "me@x.com",
-                                MagicMock(full_name="Me Myself"))
+        if profile_exc is not None:
+            profile.side_effect = profile_exc
+        else:
+            profile.return_value = (MagicMock(), MagicMock(), "me@x.com",
+                                    MagicMock(full_name="Me Myself"))
         return ra.scan_outreach_funnel_targets.run(user_id=1, max_new=max_new), insert
 
 
@@ -265,6 +269,7 @@ class TestOutreachFunnelSourcing:
         assert "off" in out
 
     def test_a_deep_approval_backlog_stops_sourcing(self, caplog):
+        caplog.set_level(logging.DEBUG, logger="cqc-lem")
         out, insert = _scan_funnel(engagers=[_engager(degree="2nd")], open_targets=25)
         insert.assert_not_called()
         assert "backlog full" in out
@@ -276,6 +281,7 @@ class TestOutreachFunnelSourcing:
         assert insert.call_count == 2
 
     def test_an_empty_roster_and_no_engagers_is_logged(self, caplog):
+        caplog.set_level(logging.DEBUG, logger="cqc-lem")
         out, insert = _scan_funnel()
         insert.assert_not_called()
         assert "No outreach funnel prospects" in out
@@ -295,6 +301,15 @@ class TestOutreachFunnelSourcing:
             out = ra.scan_outreach_funnel_targets.run(user_id=1)
         assert insert.call_count == 1 and "Filed 1" in out
 
+    def test_a_roster_sourcing_failure_still_warns(self):
+        """The degraded path is a real failure — dropping the empty outcomes must not silence it."""
+        with patch(f"{_RA}.log_warning") as warn:
+            _out, insert = _scan_funnel(roster=[_roster()], engagers=[_engager(degree="2nd")],
+                                        profile_exc=RuntimeError("no session"))
+        assert insert.call_count == 1
+        assert any("Roster sourcing for the outreach funnel failed" in str(call.args[0])
+                   for call in warn.call_args_list)
+
     def test_a_gated_comment_draft_leaves_the_text_to_the_operator(self):
         from cqc_lem.app import run_automation as ra
         # generate_ai_response returns None when the #617 quality gate rejects every attempt.
@@ -303,6 +318,22 @@ class TestOutreachFunnelSourcing:
         with patch(f"{_RA}.generate_ai_response", side_effect=RuntimeError("llm down")):
             assert ra._draft_funnel_comment(1, {"context_text": "Post body"}, MagicMock()) == ""
         assert ra._draft_funnel_comment(1, {"context_text": ""}, MagicMock()) == ""
+
+
+class TestEmptyFunnelScanIsNotAWarning:
+    """Filing nothing is this scan's resting state, so none of its three empty outcomes may warn —
+    a daily beat that warns escalates to ERROR and files a defect for working behaviour (#995)."""
+
+    @pytest.mark.parametrize("kwargs, marker", [
+        ({"open_targets": 25}, "are already waiting for approval"),
+        ({"engagers": [_engager(degree="2nd")]}, "No active engagement-roster targets"),
+        ({}, "the engagement roster produced no"),
+    ])
+    def test_empty_outcome_logs_debug_not_warning(self, kwargs, marker):
+        with patch(f"{_RA}.log_warning") as warn, patch(f"{_RA}.log_debug") as debug:
+            _out, _insert = _scan_funnel(**kwargs)
+        warn.assert_not_called()
+        assert any(marker in str(call.args[0]) for call in debug.call_args_list)
 
 
 class TestSourcingDispatch:
