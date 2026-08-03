@@ -15,13 +15,12 @@ pytestmark = pytest.mark.unit
 
 _RA = "cqc_lem.app.run_automation"
 
-_INVITE_XPATH = '//main//button[contains(@aria-label, "Invite ")]'
 _NOTE_XPATH = '//button[contains(@aria-label,"Add a note")]'
 _TEXTAREA_XPATH = '//textarea[@id="custom-message"]'
 _SEND_XPATH = '//button[contains(@aria-label,"Send invitation")]'
 _SEND_BARE_XPATH = '//button[contains(@aria-label,"Send without a note")]'
 
-_NOTE_DIALOG = {_INVITE_XPATH, _NOTE_XPATH, _TEXTAREA_XPATH, _SEND_XPATH}
+_NOTE_DIALOG = {_NOTE_XPATH, _TEXTAREA_XPATH, _SEND_XPATH}
 
 
 def _clicker(found: set[str], box: MagicMock = None):
@@ -42,6 +41,7 @@ def _invite(found: set[str], message: str = None, box: MagicMock = None, refined
          patch(f"{_RA}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
          patch(f"{_RA}.login_to_linkedin"), \
          patch(f"{_RA}._profile_is_first_degree", return_value=False), \
+         patch(f"{_RA}._open_connect_invite_dialog", return_value=True), \
          patch(f"{_RA}.click_element_wait_retry", click), \
          patch(f"{_RA}.get_ai_message_refinement", return_value=refined) as refine, \
          patch(f"{_RA}.time.sleep"), \
@@ -63,7 +63,7 @@ class TestNoteIsBestEffort:
         from cqc_lem.utilities.db import CONNECTION_REQUEST_SENT_MESSAGE
         # LinkedIn offers only the bare dialog once the personalized-invite quota is spent.
         sent, reason, click, insert_log, log_error, log_warning, _r, record = _invite(
-            found={_INVITE_XPATH, _SEND_BARE_XPATH}, message="hi jane")
+            found={_SEND_BARE_XPATH}, message="hi jane")
         assert sent is True and reason == CONNECTION_REQUEST_SENT_MESSAGE
         assert _SEND_BARE_XPATH in _clicked(click)
         assert insert_log.call_args.kwargs["message"] == CONNECTION_REQUEST_SENT_MESSAGE
@@ -104,7 +104,7 @@ class TestNoteHappyPath:
         sent, reason, click, _log, log_error, log_warning, refine, _rec = _invite(
             found=_NOTE_DIALOG, message="hi jane", box=box)
         assert sent is True and reason == CONNECTION_REQUEST_SENT_MESSAGE
-        assert _clicked(click) == [_INVITE_XPATH, _NOTE_XPATH, _TEXTAREA_XPATH, _SEND_XPATH]
+        assert _clicked(click) == [_NOTE_XPATH, _TEXTAREA_XPATH, _SEND_XPATH]
         box.clear.assert_called_once()
         box.send_keys.assert_called_once_with("hi jane")
         refine.assert_not_called()  # already under the limit
@@ -113,8 +113,8 @@ class TestNoteHappyPath:
 
     def test_an_invite_with_no_note_never_opens_the_note_composer(self):
         _sent, _reason, click, _log, _err, _warn, _r, _rec = _invite(
-            found={_INVITE_XPATH, _SEND_BARE_XPATH})
-        assert _clicked(click) == [_INVITE_XPATH, _SEND_BARE_XPATH]
+            found={_SEND_BARE_XPATH})
+        assert _clicked(click) == [_SEND_BARE_XPATH]
 
 
 class TestSendFailureIsStillAnError:
