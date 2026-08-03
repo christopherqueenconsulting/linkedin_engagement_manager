@@ -352,7 +352,13 @@ that ceiling and drags the acceptance rate the outreach features are judged on.
   and an ungrounded Selenium lane that silently matches nothing is exactly how the catch-up lane
   (#792/#964) spent months doing nothing. Ground it first:
   `python -m scripts.linkedin_live_validation --sent-invites` — strictly read-only, it resolves rows
-  and describes them, **nothing is withdrawn by running it**.
+  and describes them, **nothing is withdrawn by running it**. Zero rows has THREE readings and the
+  probe separates them, because an account with nothing outstanding and a rotated row anchor report
+  the same zero: it samples the page's own text (`page_text`) and reports the rendered empty state
+  (`empty_state`, e.g. "no pending invitations"). Empty state ⇒ clean account, anchors **untested**;
+  page text but no empty state ⇒ probable drift; no page text at all ⇒ the page never rendered and
+  the run grounds nothing. The first live run (2026-08-03) returned zero rows on an account with no
+  outstanding invites, which is why the distinction exists.
 - **Paced and capped like every other Selenium lane.** `plan_withdrawals` decides the allowance
   BEFORE a Chrome session opens (most runs are zero and must cost no slot). The lane draws its own
   `ACTION_WITHDRAW_INVITE` budget — its own key, or `daily_budget` would overwrite the connection

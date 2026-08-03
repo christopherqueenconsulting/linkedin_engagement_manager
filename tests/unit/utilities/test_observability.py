@@ -1108,6 +1108,48 @@ class TestTrackCatchupRun:
         assert mock_ph.capture.call_args.kwargs["properties"]["status"] is None
 
 
+class TestTrackStaleInviteRun:
+    """#969: the beat this replaced was a stub that LOOKED operational. A series that only carried
+    withdrawals would reproduce exactly that, so every run emits — `rows_seen` is the tell."""
+
+    def test_a_run_that_withdrew_nothing_still_emits(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_stale_invite_run
+            track_stale_invite_run(7, {"status": "no_rows", "rows_seen": 0, "threshold_days": 21})
+
+        kwargs = mock_ph.capture.call_args.kwargs
+        assert kwargs["event"] == "stale_invite_run"
+        assert kwargs["distinct_id"] == "7"
+        props = kwargs["properties"]
+        assert props["status"] == "no_rows"
+        assert props["rows_seen"] == 0
+        assert props["threshold_days"] == 21
+        assert props["withdrawn"] == 0  # absent counts read 0, never missing
+
+    def test_the_counts_that_separate_a_clean_run_from_selector_rot_ride_along(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_stale_invite_run
+            track_stale_invite_run(7, {"status": "withdrew", "withdrawn": 3, "unverified": 1,
+                                       "budget": 5, "cap": 10, "withdrawn_today": 4,
+                                       "rows_seen": 40, "stale_seen": 9, "unreadable": 2,
+                                       "expansions": 3}, trigger="beat")
+
+        props = mock_ph.capture.call_args.kwargs["properties"]
+        assert props["withdrawn"] == 3 and props["unverified"] == 1
+        assert props["stale_seen"] == 9 and props["unreadable"] == 2
+        assert props["budget"] == 5 and props["withdrawn_today"] == 4
+        assert props["expansions"] == 3
+        assert props["trigger"] == "beat"
+
+    def test_an_empty_report_still_emits(self):
+        with patch(f"{_MOD}.posthog") as mock_ph:
+            from cqc_lem.utilities.observability import track_stale_invite_run
+            track_stale_invite_run(None)
+        kwargs = mock_ph.capture.call_args.kwargs
+        assert kwargs["distinct_id"] == "system"
+        assert kwargs["properties"]["status"] is None
+
+
 class TestTrackFeedScan:
     """#817: the sort the scan actually ran against has to reach the event, or a run that ranked
     LinkedIn's algorithmic feed is indistinguishable from one that ranked a recency-sorted one."""

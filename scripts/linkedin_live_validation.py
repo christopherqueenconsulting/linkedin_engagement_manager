@@ -44,6 +44,7 @@ report (``chain_source``).
 
 import argparse
 import json
+import re
 import sys
 import time
 from typing import Callable, Optional
@@ -582,6 +583,24 @@ def visible_button_labels(driver, limit: int = 40) -> list:
     return labels
 
 
+def page_text_sample(driver, limit: int = 600) -> str:
+    """The screen's own words — what the page SAYS, next to what the probe could resolve on it.
+
+    Control labels alone cannot tell a rendered-but-empty surface apart from one whose anchors
+    rotated: both hand back nothing. A page that rendered says so in prose ("No pending
+    invitations"), and a page that did not render says nothing at all. Best-effort by design — a
+    probe must not lose its reading because one text read went stale."""
+    for selector in ("main", "body"):
+        try:
+            for element in driver.find_elements(By.CSS_SELECTOR, selector):
+                text = " ".join((element.text or "").split())
+                if text:
+                    return text[:limit]
+        except Exception:
+            continue
+    return ""
+
+
 # Candidate routes to a feed post's card root / text node. LinkedIn commonly keeps SEVERAL of
 # these alive at once and rotates which is canonical, so the probe counts them all and the fix
 # builds an ordered chain from whatever currently resolves. Ordered most-stable-first by kind:
@@ -1026,18 +1045,54 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
     return report
 
 
+# LinkedIn's own "there is nothing here" copy on the sent-invitation manager. Matching one of these
+# is what tells an EMPTY account apart from rotated row anchors: both resolve zero rows, so without
+# the page's own words a clean account and a dead selector produce the same report — which is the
+# reading the first live run of this probe came back with (PR #983).
+#
+# Every alternative carries its OWN negation, deliberately: a pattern loose enough to match "You have
+# 3 pending invitations" would report an empty state on a page that is full of rows the anchors
+# missed — a false clean bill of health on exactly the drift this probe exists to catch.
+_SENT_EMPTY_STATE_RE = re.compile(
+    r"\bno (?:pending |sent |new )?invitations?\b"
+    r"|\bhaven'?t sent any (?:pending )?invitations?\b"
+    r"|\bnothing to see here\b", re.IGNORECASE)
+
+
+def sent_invite_empty_state(page_text: Optional[str]) -> Optional[str]:
+    """The empty-state phrase the page rendered, or `None`.
+
+    `None` is not "the account has invites" — it is "the page never said it was empty", which is
+    exactly the case that must NOT be read as a clean account."""
+    match = _SENT_EMPTY_STATE_RE.search(str(page_text or ""))
+    return match.group(0).strip() if match else None
+
+
 def sent_invites_verdict(reading: dict) -> str:
     """What one invitation-manager reading proves about the #969 withdrawal lane.
 
     The lane ships OFF and cannot be turned on honestly until this says rows resolved AND their sent
     dates parsed: production skips every row it cannot age, so "0 rows" and "rows, none dated" both
-    mean the lane would run every night and withdraw nothing — which is the stub it replaced."""
+    mean the lane would run every night and withdraw nothing — which is the stub it replaced.
+
+    Zero rows has THREE readings and they are not interchangeable — an empty account, rotated
+    anchors, and a page that never rendered. The page's own text is what separates them; a report
+    that cannot tell them apart grounds nothing."""
     reading = dict(reading or {})
     rows = int(reading.get("rows_seen") or 0)
     if not rows:
-        return ("no pending-invite rows resolved — either this account has none outstanding, or the "
-                "row anchors (a Withdraw control above an /in/ link) have moved. Check "
-                "`visible_controls` against the page")
+        empty_state = reading.get("empty_state")
+        if empty_state:
+            return (f"no rows, and the page rendered its own empty state ({empty_state!r}) — this "
+                    f"account has nothing outstanding. The row anchors are UNTESTED, not proven "
+                    f"broken: re-probe once an invite is actually pending, before enabling the lane")
+        if not str(reading.get("page_text") or "").strip():
+            return ("no rows AND no page text — the invitation manager did not render at all "
+                    "(signed out, redirected, or the read raced the load). This reading grounds "
+                    "nothing; re-run it")
+        return ("no pending-invite rows resolved and no empty-state copy on the page — either this "
+                "account has none outstanding, or the row anchors (a Withdraw control above an "
+                "/in/ link) have moved. Check `page_text` / `visible_controls` against the page")
     dated = int(reading.get("dated") or 0)
     if not dated:
         return (f"{rows} row(s) resolved but NOT ONE carried a readable 'Sent ... ago' stamp — "
@@ -1056,7 +1111,11 @@ def probe_sent_invites(driver, threshold_days: Optional[int] = None,
     STRICTLY read-only — it resolves rows and describes them. **Nothing is withdrawn by running
     this**, which is the point: withdrawing is one-way (LinkedIn blocks re-inviting the same person
     for weeks), so the clicker must not be switched on before a live run has shown that these
-    anchors find the real rows and that their dates parse."""
+    anchors find the real rows and that their dates parse.
+
+    It also samples the page's own text, because zero rows is otherwise undecidable: an account with
+    nothing outstanding and a rotated row anchor report the same zero, and only the rendered empty
+    state says which one this run looked at."""
     from cqc_lem.utilities.linkedin.stale_invites import (SENT_INVITATIONS_URL, _load_more_rows,
                                                           read_pending_invites, stale_after_days)
 
@@ -1082,7 +1141,12 @@ def probe_sent_invites(driver, threshold_days: Optional[int] = None,
                          else None}
                         for i in invites[:10]],
                "sample_text": [i["text"][:240] for i in invites[:3]],
+               # The page's own words. Zero rows is ambiguous without them — an account with nothing
+               # outstanding and a rotated row anchor both report zero — and the empty state is the
+               # only thing on the page that says which one this run is looking at.
+               "page_text": page_text_sample(driver),
                "visible_controls": visible_button_labels(driver)}
+    reading["empty_state"] = sent_invite_empty_state(reading["page_text"])
     reading["verdict"] = sent_invites_verdict(reading)
     return reading
 
