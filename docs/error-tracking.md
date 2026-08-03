@@ -117,6 +117,15 @@ escalated to ERROR and filed `RecurringWarning: Automation PAUSED for 1800s (rea
 detect it (the suppression tripwire escalates CRITICAL, the 429 breaker warns in `mark_rate_limited`),
 and only failing to store the pause — a kill-switch that didn't take — still warns.
 
+**A release that interrupts an in-flight task is the same shape one level up: an uncaught exception.**
+The deploy drains the workers for `DEFAULT_DRAIN_TIMEOUT_SECONDS` (8 min) and then recreates the
+containers regardless, so a long Selenium task still holding a browser has its session quit out from
+under it — and the next WebDriver call raised `InvalidSessionIdException`, crashed the task, and the
+`task_failure` signal filed it as a defect for a routine release (issue #988). `selenium_util.
+is_session_lost(exc)` is the ONE place that fault is recognised; a task that hits it ends on what
+already shipped and logs INFO. Deliberately NOT covered by it: a hub that refuses connections — an
+unreachable Grid is a different fault and must stay loud.
+
 | Env | Default | Purpose |
 |---|---|---|
 | `LOG_ESCALATION_ENABLED` | `true` | master switch; false → zero Redis calls |

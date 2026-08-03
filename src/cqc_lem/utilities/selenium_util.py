@@ -12,7 +12,8 @@ import requests
 import selenium
 from selenium import webdriver
 from selenium.common import ElementNotInteractableException, StaleElementReferenceException, \
-    TimeoutException, WebDriverException, NoSuchElementException, SessionNotCreatedException
+    TimeoutException, WebDriverException, NoSuchElementException, SessionNotCreatedException, \
+    InvalidSessionIdException
 from selenium.webdriver import ActionChains
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -37,6 +38,31 @@ def quit_gracefully(driver: WebDriver):
     except Exception as e:
         myprint(f"Error while quitting driver: {e}")
         pass
+
+
+# What the Grid says when the session a call names is gone. The exception type covers the normal
+# case; the message markers catch the same fault arriving as a bare WebDriverException from an
+# older/wrapped driver. Deliberately NOT here: connection failures to the hub itself — a Grid that
+# cannot be reached is a different fault and must stay loud.
+_SESSION_GONE_MARKERS = ("invalid session id", "unable to find session", "no such session",
+                         "session deleted")
+
+
+def is_session_lost(exc: BaseException) -> bool:
+    """True when a WebDriver call failed because the browser SESSION no longer exists.
+
+    A deploy is the ordinary cause (issue #988): maintenance mode drains the workers for
+    `maintenance.DEFAULT_DRAIN_TIMEOUT_SECONDS` and then recreates the containers regardless, so a
+    long Selenium task still holding a session has it quit out from under it. The run is over
+    either way — what this decides is whether the caller ends it on what already shipped or crashes
+    and files a defect for a routine release.
+    """
+    if isinstance(exc, InvalidSessionIdException):
+        return True
+    if isinstance(exc, WebDriverException):
+        message = (getattr(exc, "msg", None) or str(exc) or "").lower()
+        return any(marker in message for marker in _SESSION_GONE_MARKERS)
+    return False
 
 
 def get_available_session_driver_id(wait_for_available=True, wait_time=60, retry=3):
