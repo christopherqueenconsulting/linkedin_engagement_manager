@@ -307,9 +307,24 @@ empty-dict stubs, so only new connections ever produced a DM and the
   opens with "Hi there" — a deliberate fallback, since a generically addressed thank-you still
   beats not thanking someone who publicly featured you. The probe applies the same fallback, so a
   blank `name` in its report means production really would say "there".
+- **The age has to be a STANDALONE token.** A notification card carries the quoted post as well as
+  its own timestamp, and `$5m ARR` clears a `\b` just like `2h` does — so a word-boundary match
+  would read a two-year-old mention as posted minutes ago and thank the person for it.
+  `_RELATIVE_AGE_RE` requires start-of-text or a whitespace/bullet/bracket before the digits.
+  Prose that still parses ("10 years of experience") can only push the age OUT of the window, and
+  out of the window means skip — the safe direction on a surface that DMs real people.
 - **The stock `collaboration` template says what fired it.** A mention, not a project: *"thanks for
   the mention — genuinely appreciated. What are you working on at the moment?"*. It is the code
   DEFAULT only — a user who customized the template in `dm_templates` keeps theirs.
+- **Appreciation DMs spend the ordinary per-day DM budget.** `_appreciation_dm_budget` is
+  `remaining_actions(..., ACTION_DM, max_dms_per_day, count_dms_sent_today, caps=…)` — the same
+  allowance and the same #626 account envelope `send_scheduled_dm` and the outreach funnel spend,
+  computed ONCE per pass and threaded through all three triggers so they cannot each spend the cap.
+  This is what the dedup ledger does not cover: the ledger stops one person being thanked twice,
+  the budget stops thirty people being thanked at once, which is what the first pass after the flag
+  is flipped would otherwise be. Whoever the budget cannot afford is left **unclaimed**, so a later
+  pass thanks them; a spent budget also skips both scrapes rather than loading two pages for a list
+  it cannot act on.
 - **OFF until grounded.** `APPRECIATION_SOURCES_ENABLED` (default `false`, read at the call site)
   gates both scrapers. A scraper that finds nothing is a quiet no-op; one that finds the WRONG
   cards DMs real people, so the flip belongs to the owner after a live run of

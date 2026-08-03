@@ -4977,8 +4977,14 @@ _RECOMMENDATION_DATE_RE = re.compile(
     r"\s+(\d{1,2}),\s*(\d{4})\b")
 # LinkedIn writes notification ages compactly ("2h", "3d", "1w", "2mo", "1y") but spells them out on
 # some surfaces, so both forms parse. Ordered so "months" can never be read as "minutes".
+# The age has to be a STANDALONE token — a notification timestamp always is, and a card carries the
+# quoted post/comment too, where "$5m ARR" or "v2h" would otherwise read as "posted moments ago" and
+# make a two-year-old mention look like today's. A `\b` before the digits is not enough for that:
+# `$5m` clears one. Prose that still parses ("10 years of experience") can only push the age OUT of
+# the window, which skips — the safe direction for a surface that DMs real people.
 _RELATIVE_AGE_RE = re.compile(
-    r"\b(\d{1,3})\s*(mo(?:nths?)?|min(?:utes?)?|h(?:ours?)?|d(?:ays?)?|w(?:eeks?)?|y(?:ears?)?|m)\b",
+    r"(?:^|(?<=[\s•·|(\[]))(\d{1,3})\s*"
+    r"(mo(?:nths?)?|min(?:utes?)?|h(?:ours?)?|d(?:ays?)?|w(?:eeks?)?|y(?:ears?)?|m)\b",
     re.IGNORECASE)
 # Anything under a day is "today" for a lookback measured in days.
 _RELATIVE_AGE_UNIT_DAYS = (("mo", 30.0), ("min", 0.0), ("h", 0.0), ("d", 1.0), ("w", 7.0),
@@ -5544,8 +5550,22 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
             f"skipped {skipped} unreadable thread(s)")
 
 
+def _appreciation_dm_budget(user_id: int) -> int:
+    """How many appreciation DMs one pass may dispatch — the SAME per-day DM budget every other DM
+    lane spends (`send_scheduled_dm`, the outreach funnel), plus the #626 account envelope.
+
+    The standing-list sources are what make this necessary (issue #968): a month of un-thanked
+    mentions is not one DM, it is a burst of them, and the first pass after the flag is flipped
+    would otherwise dispatch every one at once. Whoever is left over is never claimed, so the next
+    pass thanks them."""
+    prefs = get_engagement_preferences(user_id)
+    return max(0, remaining_actions(user_id, ACTION_DM, int(prefs.get("max_dms_per_day") or 0),
+                                    count_dms_sent_today(user_id),
+                                    caps=engagement_caps_from_prefs(prefs)))
+
+
 def _dispatch_appreciation_dms(user_id: int, my_profile: LinkedInProfile, event_type: str,
-                               recipients: dict) -> int:
+                               recipients: dict, budget: "int | None" = None) -> int:
     """Send the step-0 appreciation DM for one trigger event to everyone it fired for, and put each
     thread on the follow-up sequencer. Returns how many were dispatched. A missing template used to
     drop the recipient in silence — now it says so, because a template gap here is the difference
@@ -5556,9 +5576,17 @@ def _dispatch_appreciation_dms(user_id: int, my_profile: LinkedInProfile, event_
     so without the claim the same person is thanked on every pass. Already thanked is the normal
     steady state, not a fault — it logs at DEBUG, and it is checked BEFORE the message is written so
     a repeat costs no LLM call. The claim itself lands after the write and before the send, so a
-    missing template never burns a person's one shot at being thanked."""
+    missing template never burns a person's one shot at being thanked.
+
+    `budget` is the day's remaining DM allowance (`_appreciation_dm_budget`); once it is spent the
+    rest of the list is LEFT UNCLAIMED and thanked on a later pass. None means unbounded, which is
+    only for callers that have already bounded themselves."""
     sent = 0
     for profile_url, name in (recipients or {}).items():
+        if budget is not None and sent >= budget:
+            log_info(f"Daily DM budget spent — deferring the remaining '{event_type}' "
+                     f"appreciation DMs to a later pass", user_id=user_id, action_type="dm")
+            break
         first_name = clean_person_name(name).split(" ")[0] or "there"
         if has_appreciation_touch(user_id, profile_url, event_type):
             log_debug(f"Already appreciated {first_name} for '{event_type}' — skipping",
@@ -5600,19 +5628,32 @@ def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: in
 
         my_profile = load_profile_for_user(user_id)  # cached DB read — only supplies {headline}
 
+        # Every appreciation DM spends the account's ordinary per-day DM budget (issue #968). The
+        # two standing-list sources below can each hand back a month of people at once, so without
+        # this the first pass after the flag is flipped is a burst LinkedIn reads as a campaign.
+        budget = _appreciation_dm_budget(user_id)
+
         # After Accepting a Connection Request:
         invitations_accepted = accept_connection_request(user_id)
-        _dispatch_appreciation_dms(user_id, my_profile, "connection_accepted", invitations_accepted)
+        budget -= _dispatch_appreciation_dms(user_id, my_profile, "connection_accepted",
+                                             invitations_accepted, budget)
 
-        # After Receiving a Recommendation — thank the recommender
-        own_profile_url = str(getattr(my_profile, "profile_url", "") or "")
-        _dispatch_appreciation_dms(user_id, my_profile, "recommendation_received",
-                                   get_recent_recommendations(driver, wait, user_id,
-                                                              own_profile_url))
+        if budget <= 0:
+            # Scraping a standing list we cannot act on is two page loads for nothing.
+            log_debug("Daily DM budget spent — skipping the appreciation source scans",
+                      user_id=user_id, action_type="dm")
+        else:
+            # After Receiving a Recommendation — thank the recommender
+            own_profile_url = str(getattr(my_profile, "profile_url", "") or "")
+            budget -= _dispatch_appreciation_dms(
+                user_id, my_profile, "recommendation_received",
+                get_recent_recommendations(driver, wait, user_id, own_profile_url), budget)
 
-        # After a Successful Collaboration — express gratitude and offer to connect further
-        _dispatch_appreciation_dms(user_id, my_profile, "collaboration",
-                                   get_recent_collaborators(driver, wait, user_id))
+        if budget > 0:
+            # After a Successful Collaboration — express gratitude and offer to connect further
+            budget -= _dispatch_appreciation_dms(
+                user_id, my_profile, "collaboration",
+                get_recent_collaborators(driver, wait, user_id), budget)
 
         # Re-schedule the task in the queue for the future
         if loop_for_duration:

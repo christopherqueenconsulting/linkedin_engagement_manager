@@ -85,6 +85,21 @@ class TestDateParsers:
         from cqc_lem.app.run_automation import _parse_relative_age_days
         assert _parse_relative_age_days("Jane mentioned you in a post") is None
 
+    @pytest.mark.parametrize("quoted", ["we hit $5m ARR", "shipped v2h of the SDK", "up 40% in Q3"])
+    def test_a_number_inside_the_quoted_post_is_not_the_timestamp(self, quoted):
+        """A notification card carries the quoted post as well as its own age. '$5m' clears a `\\b`,
+        so without the standalone-token rule a two-year-old mention reads as posted minutes ago —
+        and gets thanked."""
+        from cqc_lem.app.run_automation import _parse_relative_age_days
+        assert _parse_relative_age_days(f"Jane mentioned you: '{quoted}' 2h") == 0.0
+
+    def test_a_glued_timestamp_still_parses(self):
+        """LinkedIn separates the age with a bullet on some surfaces and a newline on others."""
+        from cqc_lem.app.run_automation import _parse_relative_age_days
+        assert _parse_relative_age_days("Jane mentioned you in a post • 3d") == 3.0
+        assert _parse_relative_age_days("Jane mentioned you in a post\n3d") == 3.0
+        assert _parse_relative_age_days("3d") == 3.0
+
 
 class TestRecommendations:
     def _run(self, cards, own="https://www.linkedin.com/in/me"):
@@ -262,3 +277,104 @@ class TestDispatchDedup:
                                               {"https://x/in/jane": "Jane"}) == 0
         claim.assert_not_called()
         send.apply_async.assert_not_called()
+
+
+class TestDailyDmBudget:
+    """A standing list can hand back a month of people at once, so the appreciation lane spends the
+    SAME per-day DM allowance every other DM lane does. Whoever it can't afford is left UNCLAIMED,
+    so a later pass thanks them rather than nobody ever doing so."""
+
+    _PEOPLE = {f"https://www.linkedin.com/in/p{i}": f"Person {i}" for i in range(5)}
+
+    def _dispatch(self, budget):
+        from cqc_lem.app.run_automation import _dispatch_appreciation_dms
+        with patch(f"{_RA}.has_appreciation_touch", return_value=False), \
+             patch(f"{_RA}.claim_appreciation_touch", return_value=True) as claim, \
+             patch(f"{_RA}.build_dm_from_template", return_value="Thanks!"), \
+             patch(f"{_RA}.send_private_dm") as send, \
+             patch(f"{_RA}.enqueue_next_followup"):
+            sent = _dispatch_appreciation_dms(1, MagicMock(), "collaboration", dict(self._PEOPLE),
+                                              budget)
+        return sent, claim, send
+
+    def test_the_budget_caps_the_burst(self):
+        sent, claim, send = self._dispatch(2)
+        assert sent == 2
+        assert send.apply_async.call_count == 2
+
+    def test_the_unaffordable_rest_is_never_claimed(self):
+        """Claiming them would burn their one shot at being thanked without sending anything."""
+        _, claim, _ = self._dispatch(2)
+        assert claim.call_count == 2
+
+    def test_a_spent_budget_sends_nothing(self):
+        sent, claim, send = self._dispatch(0)
+        assert sent == 0
+        claim.assert_not_called()
+        send.apply_async.assert_not_called()
+
+    def test_no_budget_means_unbounded(self):
+        """None is for callers that have already bounded themselves — the task never passes it."""
+        sent, _, send = self._dispatch(None)
+        assert sent == len(self._PEOPLE)
+        assert send.apply_async.call_count == len(self._PEOPLE)
+
+    def test_budget_is_the_shared_dm_allowance_not_a_new_one(self):
+        from cqc_lem.app.run_automation import _appreciation_dm_budget
+        with patch(f"{_RA}.get_engagement_preferences", return_value={"max_dms_per_day": 20}), \
+             patch(f"{_RA}.count_dms_sent_today", return_value=18), \
+             patch(f"{_RA}.engagement_caps_from_prefs", return_value={"dm": 20}), \
+             patch(f"{_RA}.remaining_actions", return_value=2) as remaining:
+            assert _appreciation_dm_budget(1) == 2
+        assert remaining.call_args[0][1] == "dm"
+        assert remaining.call_args[1]["caps"] == {"dm": 20}
+
+    def test_a_negative_remainder_is_clamped_to_zero(self):
+        from cqc_lem.app.run_automation import _appreciation_dm_budget
+        with patch(f"{_RA}.get_engagement_preferences", return_value={"max_dms_per_day": 5}), \
+             patch(f"{_RA}.count_dms_sent_today", return_value=9), \
+             patch(f"{_RA}.engagement_caps_from_prefs", return_value={}), \
+             patch(f"{_RA}.remaining_actions", return_value=-4):
+            assert _appreciation_dm_budget(1) == 0
+
+
+class TestTheBeatSpendsOneBudget:
+    """The three triggers share ONE day's allowance — three lanes each spending the full cap is the
+    burst the cap exists to prevent."""
+
+    def _run(self, budget, dispatched=0):
+        from cqc_lem.app.run_automation import automate_appreciation_dms_for_user
+        with patch(f"{_RA}.get_user_password_pair_by_id", return_value=("a@b.c", "pw")), \
+             patch(f"{_RA}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+             patch(f"{_RA}.login_to_linkedin"), \
+             patch(f"{_RA}.quit_gracefully"), \
+             patch(f"{_RA}.load_profile_for_user", return_value=MagicMock(profile_url="")), \
+             patch(f"{_RA}.accept_connection_request", return_value={}), \
+             patch(f"{_RA}._appreciation_dm_budget", return_value=budget), \
+             patch(f"{_RA}._dispatch_appreciation_dms", return_value=dispatched) as dispatch, \
+             patch(f"{_RA}.get_recent_recommendations", return_value={}) as recs, \
+             patch(f"{_RA}.get_recent_collaborators", return_value={}) as mentions:
+            automate_appreciation_dms_for_user.run(user_id=1)
+        return dispatch, recs, mentions
+
+    def test_a_spent_budget_never_opens_the_scrapers(self):
+        """Two page loads to build a list we cannot act on — and the standing lists are the pages
+        most worth not hammering."""
+        dispatch, recs, mentions = self._run(budget=0)
+        recs.assert_not_called()
+        mentions.assert_not_called()
+        assert dispatch.call_count == 1  # connection_accepted only, and with a budget of 0
+
+    def test_what_one_trigger_spends_the_next_one_cannot(self):
+        """Two of the day's DMs left: connections take one, recommendations take the other, and
+        the mentions scan never opens."""
+        dispatch, recs, mentions = self._run(budget=2, dispatched=1)
+        recs.assert_called_once()
+        mentions.assert_not_called()
+        assert [call.args[-1] for call in dispatch.call_args_list] == [2, 1]
+
+    def test_a_healthy_budget_runs_all_three(self):
+        dispatch, recs, mentions = self._run(budget=20)
+        recs.assert_called_once()
+        mentions.assert_called_once()
+        assert dispatch.call_count == 3
