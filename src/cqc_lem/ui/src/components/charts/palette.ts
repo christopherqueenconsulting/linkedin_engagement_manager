@@ -27,6 +27,19 @@ export function formatRate(value: number): string {
   return `${(value * 100).toFixed(2)}%`
 }
 
+// The metric name post_stats stamps on a ranking when it scored impression-normalized rates
+// (`METRIC_RATE`); anything else is a weighted per-post count (`METRIC_COUNT`).
+export const ENGAGEMENT_RATE_METRIC = 'engagement_rate'
+
+// `avg_engagement` carries BOTH scales — a per-impression fraction in rate mode, a weighted
+// per-post count otherwise — so the raw number reads as a bare decimal either way. Only the
+// fraction is a percentage: percent-ifying a count would render 40 engagements as "4000%".
+export function formatEngagementMetric(value: number, metric?: string | null): string {
+  if (!Number.isFinite(value)) return '—'
+  if (metric === ENGAGEMENT_RATE_METRIC) return formatRate(value)
+  return value.toLocaleString(undefined, { maximumFractionDigits: 1 })
+}
+
 // "2026-07-20" → "Jul 20" for compact chart/table axes (dates are tz-agnostic calendar days).
 const _MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 export function shortDate(iso: string): string {
