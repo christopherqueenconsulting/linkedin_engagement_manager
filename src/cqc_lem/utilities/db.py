@@ -2578,7 +2578,8 @@ def get_linkedin_profile_url_by_user_id(user_id: int) -> Optional[str]:
 _ALLOWED_USER_CLAUSES = frozenset({"blog_url = %s", "sitemap_url = %s"})
 
 
-def update_user(user_id: int, blog_url: str = None, sitemap_url: str = None) -> bool:
+def update_user(user_id: int, blog_url: Optional[str] = None,
+                sitemap_url: Optional[str] = None) -> bool:
     if not any([blog_url, sitemap_url]):
         return False
     connection = get_db_connection()

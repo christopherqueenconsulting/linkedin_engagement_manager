@@ -306,7 +306,10 @@ auth flow success/failure, session revocation, rate-limit/lockout, migration bac
   made the session the identity on every route and #950 stopped shipping it to the browser; it
   survives only as a rotatable **non-browser** credential (scripts, Postman) and, paired with
   `X-Admin-Secret`, on `/api/admin/*`. Anything that reads as "the API is behind a token" in the
-  sections above means the session, not this. Posture: [`identity-and-sessions.md`](identity-and-sessions.md).
+  sections above means the session, not this. **Every value that was ever built into a bundle is
+  still public and still valid** until it is rotated out of the server `.env` — #950 retired the
+  shipping mechanism, #965 is the rotation. Posture:
+  [`identity-and-sessions.md`](identity-and-sessions.md).
 - **Recovery:** one-time argon2id-hashed recovery codes; the mailbox stops being a single point of failure.
 - **Rollout (3A):** 2a encryption → 2b identity/sessions → 2c passkeys, each independently revertible.
 - **Cost:** $0. Three permissively licensed libraries (BSD-3-Clause / MIT), no new service, no third party.

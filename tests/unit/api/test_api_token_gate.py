@@ -149,6 +149,9 @@ class TestGateMiddleware:
 
     @pytest.mark.parametrize("headers", [
         {"Cookie": f"{SESSION_COOKIE_NAME}="},        # present but empty
+        # Whitespace only — the quoted form is the one that survives cookie parsing as "  ",
+        # so the cookie has to be stripped like the header is, not just tested for presence.
+        {"Cookie": f'{SESSION_COOKIE_NAME}="  "'},
         {"X-Session-Token": "   "},                   # whitespace only
         {"Cookie": "some_other_cookie=1"},            # a different cookie is not a credential
     ])
@@ -202,6 +205,63 @@ class TestQueryParamMutatingRoutesStillRefuseAnonymous:
             resp = client.post(path, params=params,
                                headers={"Authorization": f"Bearer {self.TOKEN}"})
         assert resp.status_code == 401
+
+
+class TestSessionCookieAttributes:
+    """The cookie is now the browser's ONLY credential (issue #950), so its attributes are the
+    whole of the browser-side defence and belong under test rather than under review.
+
+    `SameSite` is the one that replaced a layer: a cross-site form POST could never set an
+    `Authorization` header, so the retired bearer was incidentally blocking form-based CSRF on the
+    four query-parameter mutating routes #914 converted. `Lax` covers that on its own — the cookie
+    is simply not attached to a cross-site POST — and #957 restores the explicit layer.
+    """
+
+    class _Recorder:
+        """Captures what `_set_session_cookie` asks for, without a live response."""
+
+        def __init__(self) -> None:
+            self.kwargs = {}
+
+        def set_cookie(self, **kwargs) -> None:
+            self.kwargs = kwargs
+
+    def _issued(self, main_mod, samesite: str = "lax", secure: bool = True):
+        response = self._Recorder()
+        with patch.object(main_mod, "SESSION_COOKIE_SAMESITE", samesite), \
+             patch.object(main_mod, "SESSION_COOKIE_SECURE", secure):
+            main_mod._set_session_cookie(response, "tok")
+        return response.kwargs
+
+    def test_cookie_is_httponly_secure_and_samesite_lax(self, main_mod):
+        kwargs = self._issued(main_mod)
+        assert kwargs["key"] == SESSION_COOKIE_NAME
+        assert kwargs["httponly"] is True   # no XSS-readable session token
+        assert kwargs["secure"] is True     # prod default
+        assert kwargs["samesite"] == "lax"  # the CSRF layer the bearer's retirement leans on
+        assert kwargs["path"] == "/"
+
+    @pytest.mark.parametrize("configured,expected", [
+        ("strict", "strict"),
+        ("none", "none"),
+        ("", "lax"),          # unset falls back to the documented default
+        ("garbage", "lax"),   # and so does an unusable value — never a 500 on login
+    ])
+    def test_samesite_never_resolves_to_something_a_browser_would_reject(
+            self, main_mod, configured, expected):
+        assert self._issued(main_mod, samesite=configured)["samesite"] == expected
+
+    def test_the_four_query_param_mutating_routes_are_post_only(self, main_mod):
+        """`Lax` still sends the cookie on a top-level GET navigation, so a state-changing route
+        reachable by GET would be CSRF-able by a bare link. These four are not."""
+        wanted = {p.rstrip("/") for p, _ in TestQueryParamMutatingRoutesStillRefuseAnonymous.ROUTES}
+        seen = set()
+        for route in main_mod.router.routes:
+            path = getattr(route, "path", "").rstrip("/")
+            if path in wanted:
+                seen.add(path)
+                assert set(route.methods) == {"POST"}, f"{path} accepts {sorted(route.methods)}"
+        assert seen == wanted, f"routes not found in the table: {sorted(wanted - seen)}"
 
 
 class TestAppInfo:

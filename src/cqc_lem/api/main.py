@@ -8,7 +8,7 @@ from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum, StrEnum
 from typing import Dict, List, Union
-from typing import Optional, Any, NoReturn, Annotated
+from typing import Optional, Any, NoReturn, Annotated, Awaitable, Callable
 from urllib.parse import urlparse
 
 from cqc_lem import assets_dir
@@ -203,9 +203,13 @@ async def observability_middleware(request: Request, call_next):
 #
 # So the gate asks only "did this caller bring A credential": a valid bearer (scripts, Postman, the
 # admin tooling in `scripts/`) or a session credential the route itself will judge. It is an edge
-# filter that keeps credential-less traffic off the handlers — it is NOT authorisation. Authorisation
-# is `require_session_user_id()` in the handler, which fails closed on a cookie that does not
-# resolve; presenting a junk cookie buys a 401 from the route instead of a 401 from here.
+# filter, and a weak one on purpose — one arbitrary cookie byte clears it, so what it actually keeps
+# off the handlers is unauthenticated traffic that never tries, not anything automated. It is NOT
+# authorisation. Authorisation is `require_session_user_id()` in the handler, which fails closed on a
+# cookie that does not resolve; presenting a junk cookie buys a 401 from the route instead of a 401
+# from here. That the handler ALWAYS does so is checked, not assumed —
+# `tests/unit/api/test_api_route_identity.py` walks the route table and fails the build on a gated
+# /api route that resolves no caller.
 _API_ACCESS_TOKEN_SET = {t.strip() for t in API_ACCESS_TOKENS.split(",") if t.strip()}
 # /api/assets is public: it serves generated post media (images/videos) that
 # LinkedIn fetches over an unauthenticated public URL when publishing. The
@@ -272,13 +276,14 @@ def _has_session_credential(request: Request) -> bool:
     header the axios interceptor sends when it holds a real token instead — a plain-http origin
     where `Secure` cookies never stuck, and the tutorial capture harness.
     """
-    if request.cookies.get(SESSION_COOKIE_NAME):
+    if (request.cookies.get(SESSION_COOKIE_NAME) or "").strip():
         return True
     return bool((request.headers.get("X-Session-Token") or "").strip())
 
 
 @app.middleware("http")
-async def api_token_middleware(request: Request, call_next):
+async def api_token_middleware(request: Request,
+                               call_next: Callable[[Request], Awaitable[Response]]) -> Response:
     if _api_token_required(request.url.path):
         token = _bearer_token(request.headers.get("Authorization"))
         if token not in _API_ACCESS_TOKEN_SET and not _has_session_credential(request):

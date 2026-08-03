@@ -149,20 +149,43 @@ redeploying the SPA.
 So the SPA ships none, and the token's contract is now written down rather than assumed:
 
 - **The browser never holds it.** `ui/src/api/client.ts` sends no `Authorization` header, the
-  Dockerfile has no `VITE_API_TOKEN` ARG, and `.github/workflows/ui-build.yml` builds with CANARY
-  values for the LEM-issued `VITE_*` names and greps `dist/` for them. Read one back into the
-  bundle and UI Build fails. (`VITE_POSTHOG_KEY` is deliberately not canaried — a write-only
-  third-party ingest key is *meant* to be public.)
+  Dockerfile has no `VITE_API_TOKEN` ARG, and `.github/workflows/ui-build.yml` enforces both ends:
+  it greps `src/` for a `VITE_API_TOKEN` / `VITE_ADMIN_SECRET` read (the diff that reintroduces
+  one), then builds with CANARY values for those names and greps `dist/` (the bundle that already
+  did). The bundle grep carries a **positive control** — a fixed fake `VITE_POSTHOG_KEY` that must
+  be present in `dist/` — because a negative grep only proves something if it could have found
+  anything; without it, a change to Vite's inlining would turn the canary into a silent pass.
+  (`VITE_POSTHOG_KEY` is deliberately not canaried — a write-only third-party ingest key is *meant*
+  to be public, which is exactly what qualifies it as the control.)
 - **The middleware asks only "did this caller bring A credential"** — a valid bearer, or a session
   credential (the `lem_session` cookie, or the `X-Session-Token` header the SPA sends on the
   cookie-less fallback). Presence, not validity: the middleware runs before routing and has no
   database, and the route's own `require_session_user_id()` already fails closed. It is an edge
-  filter that keeps credential-less traffic off the handlers. **It is not authorisation** — a
-  forged cookie clears it and is then refused by the route, which is the same 401 from one step
-  further in.
+  filter that keeps credential-less traffic off the handlers — and only the naive kind, since one
+  arbitrary cookie byte clears it. **It is not authorisation** — a forged cookie clears it and is
+  then refused by the route, which is the same 401 from one step further in.
+- **That safety argument is a TEST, not a paragraph.** Loosening a global edge control is only safe
+  while every gated route really does resolve its caller, so
+  `tests/unit/api/test_api_route_identity.py` walks the live route table and asserts it: every
+  `/api` path outside `_PUBLIC_API_PREFIXES` reaches either the session resolver or the admin
+  secret. The two sets are derived by closing over the call graph from `get_session_user_id` /
+  `_require_admin`, so a new wrapper counts automatically and a route that leans on the bearer alone
+  fails the build. `_NO_IDENTITY_BY_DESIGN` is the one escape hatch and each entry has to argue the
+  route reads nothing user-scoped.
 - **`API_ACCESS_TOKENS` stays set in production**, rotatable in the server `.env` alone now that no
   build artifact has to match it. `_require_api_and_admin` (the `/api/admin/*` routes) still demands
   it *and* `X-Admin-Secret`.
+
+**Rollout, and the part that is not free.** The change is breakage-free in both directions — an old
+SPA bundle cached across the release still sends the bearer (still valid), a new one sends the
+cookie — but *"still valid"* is doing real work in that sentence. **Every token value that was ever
+shipped in a bundle is a known-public credential**, and this PR retires the shipping mechanism, not
+the leaked secret: post-merge those values still clear the edge filter, and still pair with
+`X-Admin-Secret` on `/api/admin/*`. They keep working only so the cached-bundle window (a browser
+tab open across the release — hours, not days; see `docs/spa-deploy-freshness.md`) does not 401. So
+the rotation is the second half of the fix, not a nice-to-have: rotate `API_ACCESS_TOKENS` in
+`/opt/lem/.env` once that window has passed, and delete the now-unread `UI_API_TOKEN` repo secret.
+Tracked on **#965**.
 
 Every non-browser caller of `/api`, and what it authenticates on:
 
@@ -191,7 +214,13 @@ forged write:
 
 - **`SameSite=Lax`** — the cookie is not attached to a cross-site POST at all. It rides only on
   top-level GET navigations, which is exactly what the LinkedIn OAuth return trip needs and nothing
-  more. (`strict` would break that return trip; that is why it is `lax` and not tighter.)
+  more. (`strict` would break that return trip; that is why it is `lax` and not tighter.) Since
+  #950 the cookie is the browser's ONLY credential, so its attributes are pinned by test rather
+  than by review: `TestSessionCookieAttributes` asserts `httponly` / `secure` / `samesite=lax` /
+  `path=/` on what `_set_session_cookie` issues, that an unset or unusable `SESSION_COOKIE_SAMESITE`
+  falls back to `lax` instead of 500ing a login, and that the four query-parameter routes below are
+  `POST`-only — `Lax` *does* send the cookie on a top-level GET, so a state-changing `GET` would be
+  forgeable by a bare link.
 - Almost every mutating endpoint is `POST`/`PUT` with a JSON body — a form POST from another origin
   cannot set `Content-Type: application/json` without a preflight, and no CORS middleware is
   installed, so the preflight has nothing to succeed against.
