@@ -30,6 +30,7 @@ it. **An issue without `agent:ready` does not exist to the pipeline.**
 | `agent:revise` | (PR) Owner requested changes / answered a Decision Comment | Runner |
 | `agent:blocked` | Held after escalation; runner skips it | Runner/agent |
 | `agent:depfix` | (PR) Dependabot PR with failing CI, priority fix lane | CI router |
+| `agent:phasefix` | (PR) Phase-guard hold: agent files/links the follow-up for a multi-phase close | Runner |
 | `needs-human` | Waiting on a human decision or human-only action | Agent (on escalation) or human |
 
 ### Priority (queue order within the ready pool)
@@ -114,9 +115,12 @@ this issue / stretch*. If anything remains, do one of exactly two things:
 2. **Drop `Closes #N`** — write "Remaining on #N: …" instead and leave the issue open.
 
 The pipeline enforces this at the merge gate: a PR whose closed issue declares a later phase with no
-linked follow-up is **not merged**. It gets a `🧩 phase-guard` comment, `needs-human` +
-`agent:blocked`, and the owner is assigned. Unchecked boxes alone only produce a warning comment —
-so tick the boxes you actually satisfied, and don't leave a phase living in prose.
+linked follow-up is **not merged**. It gets a `🧩 phase-guard` comment and is routed to
+**MODE=phasefix** (`agent:phasefix`): an agent files + links the follow-up issue itself and hands the
+PR back to the merge loop — filing the follow-up is mechanical, not a human decision. The owner is
+assigned (`needs-human` + `agent:blocked`) only after two failed phasefix passes. Unchecked boxes
+alone only produce a warning comment — so tick the boxes you actually satisfied, and don't leave a
+phase living in prose.
 
 Clearing the hold is a two-part manual step — the guard **strips `agent:working`**, and a PR without
 it is invisible to the merge loop no matter how you fixed the scope. So do one of the two above,
