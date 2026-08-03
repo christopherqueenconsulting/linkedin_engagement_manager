@@ -193,9 +193,12 @@ class TestCookieResolution:
     def test_revoke_all_others_keeps_the_cookie_session_not_a_stale_token(self, client):
         with _live_session(), \
              patch(f"{_M}.revoke_other_sessions", return_value=1) as ro:
+            # A cookie-authenticated write, so it carries the SPA's client header like the real one
+            # does (issue #957); `test_csrf_client_header.py` is where its absence is the subject.
             resp = client.post("/api/user/sessions/revoke",
                                json={"session_token": "expired", "all_others": True},
-                               cookies={_COOKIE: "real"})
+                               cookies={_COOKIE: "real"},
+                               headers={"X-LEM-Client": "spa"})
         assert resp.status_code == 200
         assert ro.call_args[1]["keep_token"] == "real"
 

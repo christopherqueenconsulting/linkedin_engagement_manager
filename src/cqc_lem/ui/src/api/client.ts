@@ -13,7 +13,15 @@ const api = axios.create({
 // NON-BROWSER credential only (scripts, Postman, admin tooling).
 // `.github/workflows/ui-build.yml` builds with canary values and greps dist/ to keep that true.
 
+// NOT a secret, and it must never be turned into one (issue #957). A cross-origin HTML form cannot
+// set a request header at all — whatever its value would have been — and setting one from fetch()
+// needs a preflight the server answers nothing to. That is the whole mechanism: the server checks
+// that the header is PRESENT on a cookie-authenticated write, never what it says. Sent on every
+// request from this one client so no call site has to remember it.
+const CLIENT_HEADER = 'X-LEM-Client'
+
 api.interceptors.request.use((config) => {
+  config.headers[CLIENT_HEADER] = 'spa'
   // Since #745 (2b) the session normally rides in an httpOnly cookie the browser attaches itself,
   // and localStorage holds only the 'cookie' sentinel — there is nothing to put in this header.
   // It is still sent when a real token is held (cookie-less fallback, tutorial capture harness).

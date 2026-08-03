@@ -224,7 +224,7 @@ reintroduced by a caller alone.
 ## CSRF
 
 Cookie auth means a state-changing request can now be authenticated by something the browser
-attaches automatically, which is the shape CSRF exploits. **Two** things stand between that and a
+attaches automatically, which is the shape CSRF exploits. **Three** things stand between that and a
 forged write:
 
 - **`SameSite=Lax`** — the cookie is not attached to a cross-site POST at all. It rides only on
@@ -239,31 +239,71 @@ forged write:
 - Almost every mutating endpoint is `POST`/`PUT` with a JSON body — a form POST from another origin
   cannot set `Content-Type: application/json` without a preflight, and no CORS middleware is
   installed, so the preflight has nothing to succeed against.
-**There used to be a third, and #950 removed it — say so plainly.** In deployments with
-`API_ACCESS_TOKENS` set, `/api/*` also needed the bearer token, and a cross-site form POST cannot
-set an `Authorization` header even when the attacker knows the value, so it *did* work here despite
-being public. It was worthless as access control and real as a CSRF layer; retiring it from the
-bundle trades the second for the first. What replaced it is not a CSRF layer: the middleware accepts
-a session credential, and the browser attaches the cookie by itself.
+- **The `X-LEM-Client` header** (issue #957) — required on every state-changing `/api` request that
+  authenticates on the session **cookie**. This is the layer that covers the four query-parameter
+  routes below, where the JSON-body layer does not exist.
+
+The third one is a REPLACEMENT, and what it replaces matters. Between #950 and #957 there were only
+two: in deployments with `API_ACCESS_TOKENS` set, `/api/*` also needed the bearer token, and a
+cross-site form POST cannot set an `Authorization` header even when the attacker knows the value, so
+it *did* work here despite being public. It was worthless as access control and real as a CSRF
+layer; #950 retired it from the bundle and traded the second for the first. What #950 put in its
+place is not a CSRF layer — the `/api` middleware accepts a session credential, and the browser
+attaches the cookie by itself — so #957 restored the layer on its own terms rather than on a
+credential's.
 
 **"Almost" is exact, and #914 is why.** Four mutating routes take query parameters and no body —
 `POST /create_weekly_content/`, `POST /invite_to_li_company_page/`, `POST /aws_test_get_my_profile/`
 and `POST /automate_reply_commenting`. Before #914 they authenticated on a `user_id`/`post_id`
 parameter, so the cookie was irrelevant to them; now they resolve the session like everything else,
 which is what puts them under this heading at all. A cross-site form POST reaches them without a
-preflight, so for those four the JSON-body layer is not there and **`SameSite=Lax` is the whole
-defence** — one layer, not two, since #950. It holds on its own (the cookie is simply not attached
-to a cross-site POST), and each of the four only ever queues work for the CALLER's own account, so
-the worst a forged one buys is a job the user could have started themselves. But one layer is one
-layer, and a new query-parameter mutating route inherits it. A non-secret custom request header the
-SPA sends and a forged form cannot — the standard replacement — is tracked on **#957**.
+preflight, so for those four the JSON-body layer is not there — and each of the four only ever
+queues work for the CALLER's own account, so the worst a forged one buys is a job the user could
+have started themselves. Even so the layer count is what matters, because a new query-parameter
+mutating route inherits it: with `X-LEM-Client` it is **two** (`SameSite=Lax` + the header), where
+between #950 and #957 it was one.
 
-**One layer means one env var can delete it.** `_samesite()` accepts `none` (a browser rejects
+### `X-LEM-Client` is not a secret
+
+Its value is a constant in a public bundle (`'spa'`, set in `ui/src/api/client.ts`'s one request
+interceptor) and it is meant to be. **The mechanism is that a cross-origin HTML form cannot set a
+request header at all**, whatever the value would have been, and setting one from `fetch()` needs a
+preflight the server answers nothing to. So the server checks that the header is PRESENT and never
+what it says — comparing the value would buy nothing against an attacker who can read the bundle,
+and would invite the next reader to rotate it like a token and put it in `.env`.
+
+This is the layer #950 took away without meaning to. The shared bearer token was worthless as ACCESS
+control — every visitor held it — but it was real as a CSRF layer for exactly this reason, and
+retiring it left `SameSite=Lax` holding those four routes alone.
+
+Enforcement is in `api/main._require_client_header()`, called from the **one resolver**
+(`get_session_user_id`) on its cookie branch, before the scope check and before anything writes —
+the same argument as the session-scope narrowing (#905): the credential this defends against is the
+one the browser attaches by itself, so the check belongs where that credential is read, not at ~150
+call sites. Refusal is **403 `client_header_required`**, never 401, because the SPA's axios
+interceptor reads any 401 as a dead session and signs the user out.
+
+Two deliberate exemptions:
+
+- **Reads.** CSRF is a forged write; with no CORS the attacker cannot read the response, and
+  requiring a header on GET would break the browser's own credentialed navigations (a plain
+  `<a href>` download, an `<img>` src).
+- **A bearer-authenticated caller.** Scripts, Postman and the admin tooling are not browsers and
+  have no ambient credential to forge with. It also makes the rollout breakage-free: an SPA bundle
+  cached from before #950 still sends a bearer and no header. A request with an explicit
+  `session_token` is likewise untouched — the attacker would have to know it, and it is httpOnly.
+
+`tests/unit/api/test_csrf_client_header.py` is the standing proof, with a refused case per each of
+the four routes; `ui/src/api/client.test.ts` proves the header rides on every request out of the
+one axios client.
+
+**One env var still deletes the other layer.** `_samesite()` accepts `none` (a browser rejects
 anything else, so the resolver has to), and `SESSION_COOKIE_SAMESITE=none` attaches the cookie to
-cross-site POSTs — which for those four routes is now the whole defence, not a redundant one. It was
-survivable while the bearer was also required; since #950 it is not. Leave it `lax`. Nothing in LEM
-needs otherwise: the cookie is only ever sent to LEM's own origin, and the one cross-site arrival
-that matters (the LinkedIn OAuth return trip) is a top-level GET, which `Lax` already covers.
+cross-site POSTs. Between #950 and #957 that was the whole defence on those four routes; with
+`X-LEM-Client` it is one of two again, which is a reason to leave it `lax` rather than a licence to
+change it. Nothing in LEM needs otherwise: the cookie is only ever sent to LEM's own origin, and the
+one cross-site arrival that matters (the LinkedIn OAuth return trip) is a top-level GET, which `Lax`
+already covers.
 
 If a future change adds CORS with credentials, sets `SESSION_COOKIE_SAMESITE=none`, or adds another
 form-encoded/query-only mutating endpoint, this section is the thing that has to be revisited first.
