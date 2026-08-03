@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.125.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.124.0...v0.125.0) (2026-08-03)
+
+
+### Features
+
+* **agents:** add Claude Code skills for recurring dev workflows ([#947](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/947)) ([8c1cb39](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8c1cb39ee60d418d5c3f34c15458dc9cbb47f38c))
+
+
+### Bug Fixes
+
+* **security:** /api endpoints resolve the caller from the session, not an email/user_id parameter (closes [#914](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/914)) ([#918](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/918)) ([ed58375](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ed58375989bfcfc48aedc698806b4d805bf96b47))
+
 ## [0.124.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.123.3...v0.124.0) (2026-08-02)
 
 
