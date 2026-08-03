@@ -245,6 +245,21 @@ unavailable (deterministic missing-label, staleness, and phase-drop checks). Env
 
 The weekly margin report needs no cron — Celery beat runs it (`weekly-margin-report`, Mon 12:00 UTC).
 
+## Weekly SDUI drift sweep
+
+One read-only probe sweep of every Selenium surface (issue #1013), grading each `ok` / `drift` /
+`unknown` and filing ONE deduped `agent:ready` issue per `drift`. Runs as `lem`, off-peak, inside
+the selenium worker's session:
+
+```cron
+40 6 * * 1 /home/lem/<repo-clone>/scripts/weekly_sdui_drift_check.sh
+```
+
+Sends no invite, posts nothing, ticks no checkbox and clicks no Send/Post/Invite control. Env
+overrides: `SDUI_PROBE_CONTAINER`, `SDUI_PROBE_USER_ID`, `SDUI_PROBE_PROFILE_URL` (use a
+2nd/3rd-degree profile so the degree badge is actually grounded), `SDUI_DRIFT_DIR`,
+`SDUI_DRIFT_REPO`, `DRY_RUN=1`. Full posture + the coverage matrix: `docs/sdui-probe-coverage.md`.
+
 ## Persistent state
 
 Named volumes survive deploys: `db_data` (MySQL), `redis_data`, `flower_db`,

@@ -542,6 +542,53 @@ return null;
 # renders two text nodes inside one card still widens. Issue #916.
 _POST_MARKER_SELECTORS = [_FEED_POST_TEXT_SEL, "button[aria-label^='Hide post by']"]
 
+# ── zero-walk tripwires (issue #1013) ────────────────────────────────────────────────────────
+# A walk that returns zero items is ambiguous, and every silent SDUI outage of Aug 2026 lived in
+# that ambiguity: #964's catch-up scan logged `no_moments` daily while the feed showed ten moments,
+# and #1009's viewer walk engaged nobody for weeks. The fix is the same everywhere — before a zero
+# is treated as "nothing to do", ask the PAGE, through an anchor the walk itself does not depend on.
+# The independence is the whole point: cross-checking a chain against its own selector proves
+# nothing, since a rotated anchor answers zero to both questions.
+_FEED_CARD_CROSSCHECK_SEL = "button[aria-label^='Hide post by']"
+_CATCHUP_CARD_CROSSCHECK_SEL = "main div[role='listitem']"
+
+
+def _page_native_count(driver, selector: str) -> "int | None":
+    """How many of `selector` the page renders, or None when the read itself failed. None is
+    load-bearing: "we could not ask the page" must never be recorded as "the page said zero"."""
+    try:
+        return len(driver.find_elements(By.CSS_SELECTOR, selector))
+    except WebDriverException:
+        return None
+
+
+def zero_walk_verdict(page_native: "int | None") -> str:
+    """What a zero-item walk means, given the page's own count of an INDEPENDENT anchor.
+
+    'drift'   — the page renders items the walk could not see. A real defect.
+    'empty'   — the page renders none either. An ordinary quiet day, and a no-op.
+    'unknown' — the cross-check itself could not be read. Grounds nothing, so never a defect."""
+    if page_native is None:
+        return "unknown"
+    return "drift" if page_native > 0 else "empty"
+
+
+def _report_zero_walk(driver, selector: str, what: str, **context) -> str:
+    """Cross-check a zero-item walk and log at the level the answer deserves.
+
+    Drift is a WARNING on purpose — once is a warning, repeatedly is a defect, and repeated selector
+    rot is exactly the defect that should file itself. An empty page and an unreadable cross-check
+    are DEBUG: warning on either would file an issue for a quiet day (see utilities/CLAUDE.md)."""
+    count = _page_native_count(driver, selector)
+    verdict = zero_walk_verdict(count)
+    if verdict == "drift":
+        log_warning(f"{what} matched nothing while the page still renders cards — selector drift",
+                    **context)
+    else:
+        log_debug(f"{what} matched nothing and the page shows none either ({verdict})", **context)
+    return verdict
+
+
 _SINGLE_POST_SCOPE_JS = "const MARKERS = " + json.dumps(_POST_MARKER_SELECTORS) + r""";
 const counts = (root) => MARKERS.map((sel) => root.querySelectorAll(sel).length).join(",");
 let scope = arguments[0], el = scope, d = 0;
@@ -2146,6 +2193,10 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     # existing include-miss fallback only triggers on posts that first passed the hard gates.
     soft_seen: set = set()
     hard_relaxed = False
+    # The most post-text nodes any scroll pass saw. Zero across a whole scan is the "the walk is
+    # blind" case the zero-walk tripwire below cross-checks against the page (issue #1013) — every
+    # other funnel number is downstream of this one, so a zero here makes them all meaningless.
+    textboxes_seen = 0
     _incl = [f for f in ((prefs.get("include_keywords") or []) + (prefs.get("include_authors") or [])
                          + (prefs.get("include_topics") or [])) if f]
     fallback_enabled = bool(prefs.get("feed_fallback_when_empty", True)) and bool(_incl)
@@ -2154,7 +2205,9 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             break
         # Gather + score every fresh candidate currently in view (cheap, no-LLM gates).
         candidates = []
-        for box in driver.find_elements(By.CSS_SELECTOR, _FEED_POST_TEXT_SEL):
+        boxes = driver.find_elements(By.CSS_SELECTOR, _FEED_POST_TEXT_SEL)
+        textboxes_seen = max(textboxes_seen, len(boxes))
+        for box in boxes:
             try:
                 content = (box.text or "").strip()
             except StaleElementReferenceException:
@@ -2270,6 +2323,13 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
         posted_key_sources[source] = posted_key_sources.get(source, 0) + count
     feed_commented = posted - roster_stats["posted"]
     off_topic_total = off_topic_skipped + roster_stats["off_topic_skipped"]
+    # Zero post-text nodes across the whole scan is indistinguishable from an empty feed in every
+    # funnel number below — which is exactly how #964 and #1009 stayed invisible for weeks. Ask the
+    # page, through a per-post control the text-node chain does not use (issue #1013).
+    feed_walk = ("ok" if textboxes_seen else
+                 _report_zero_walk(driver, _FEED_CARD_CROSSCHECK_SEL, "Feed post-text walk",
+                                   user_id=user_id, action_type="comment",
+                                   task_name="comment_on_feed_inline"))
     funnel = {
         "examined": len(examined_keys) + roster_stats["examined"],
         "passed_filters": len(hard_keys),      # cleared excludes + recency + min-reactions
@@ -2294,6 +2354,11 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
         # Which feed ordering the recency-dominant scoring matrix actually ranked (#817). Anything
         # other than FEED_SORT_RECENT means the candidate pool was LinkedIn's algorithmic one.
         "feed_sort": feed_sort,
+        # How many post-text nodes the walk ever saw, and what a zero meant when cross-checked
+        # against the page (issue #1013): ok / empty / drift / unknown. `feed_walk='drift'` says the
+        # feed had cards this scan could not see — every zero below it is a lie, not a quiet day.
+        "textboxes_seen": textboxes_seen,
+        "feed_walk": feed_walk,
         "at": datetime.now().isoformat(),
     }
     set_feed_funnel(user_id, funnel)
@@ -3325,6 +3390,20 @@ def auto_draft_group_post(self, user_id: int, group_id: str, group_name: str = N
     return f"Drafted group post {draft_id}"
 
 
+# The group composer's three steps, as module constants so the live probe drives the SHIPPED chain
+# instead of a copy of it (issue #1013): `--group-composer` imports these. An inlined duplicate
+# grounds whatever the probe's author last pasted — that is how the reaction probe reported
+# cards_found: 0 against a build whose walk was already fixed.
+_GROUP_SHARE_BOX_LOCATORS = [
+    (By.XPATH,
+     "//button[contains(normalize-space(),'Start a post') or contains(normalize-space(),'Start a public post') "
+     "or contains(@aria-label,'Start a post') or contains(@aria-label,'Create a post') "
+     "or (contains(normalize-space(),'Start a') and contains(normalize-space(),'post'))]"),
+]
+_GROUP_EDITOR_LOCATORS = [(By.CSS_SELECTOR, "div[role='textbox']")]
+_GROUP_POST_BUTTON_LOCATORS = [(By.XPATH, "//button[normalize-space()='Post']")]
+
+
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id', 'group_id']},
                   queue='se_content')
 def auto_post_to_group(self, user_id: int, group_id: str, group_name: str = None,
@@ -3367,21 +3446,18 @@ def auto_post_to_group(self, user_id: int, group_id: str, group_name: str = None
             return reason
 
         # Open the group share box, type, and post (best-effort SDUI selectors).
-        if click_first(driver, wait, [(By.XPATH,
-                "//button[contains(normalize-space(),'Start a post') or contains(normalize-space(),'Start a public post') "
-                "or contains(@aria-label,'Start a post') or contains(@aria-label,'Create a post') "
-                "or (contains(normalize-space(),'Start a') and contains(normalize-space(),'post'))]")],
+        if click_first(driver, wait, _GROUP_SHARE_BOX_LOCATORS,
                        "Group share box", required=False) is None:
             return _unpostable("Group share box not found")
         time.sleep(random.uniform(2, 3))
-        box = find_first(driver, wait, [(By.CSS_SELECTOR, "div[role='textbox']")], "Group post editor",
+        box = find_first(driver, wait, _GROUP_EDITOR_LOCATORS, "Group post editor",
                          visible_only=True, required=False)
         if box is None:
             return _unpostable("Group post editor not found")
         box.click()
         box.send_keys(text)
         time.sleep(random.uniform(1, 2))
-        if click_first(driver, wait, [(By.XPATH, "//button[normalize-space()='Post']")], "Group Post button",
+        if click_first(driver, wait, _GROUP_POST_BUTTON_LOCATORS, "Group Post button",
                        required=False) is None:
             return _unpostable("Group Post button not found")
         time.sleep(random.uniform(3, 5))
@@ -7488,8 +7564,10 @@ def _scrape_catchup_moments(driver: WebDriver, max_moments: int = 40, user_id: i
 
     moments: List[dict] = []
     seen: set = set()
+    cards_seen = 0
     for _ in range(3):  # the feed lazy-loads; a few scrolls cover a normal day's moments
         cards = find_all_first(driver, _CATCHUP_CARD_LOCATORS)
+        cards_seen = max(cards_seen, len(cards))
         for card in cards:
             if len(moments) >= max_moments:
                 break
@@ -7519,11 +7597,20 @@ def _scrape_catchup_moments(driver: WebDriver, max_moments: int = 40, user_id: i
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(random.uniform(2, 4))
 
-    if not moments:
-        # DEBUG, not WARNING: an empty catch-up feed is a normal day, and the scan beat runs daily
-        # per user — three of them inside the escalation window would re-emit at ERROR and file a
-        # grouped $exception for a no-op. The `no_moments` status on the run report carries it.
-        log_debug("Catch-up feed produced no moments", user_id=user_id, action_type="catchup")
+    if not cards_seen:
+        # The #964 shape, caught this time: the chain matched no cards at all. Ask the page whether
+        # it rendered any — `main div[role='listitem']` is independent of which SDUI screen wrapper
+        # the chain leads with, so a rotated `data-sdui-screen` shows up here as drift instead of as
+        # another quiet `no_moments` day. Warns ONLY on drift (see _report_zero_walk).
+        _report_zero_walk(driver, _CATCHUP_CARD_CROSSCHECK_SEL, "Catch-up card walk",
+                          user_id=user_id, action_type="catchup")
+    elif not moments:
+        # Cards rendered, none survived the funnel. DEBUG, not WARNING: an empty catch-up feed is a
+        # normal day, ads and prompts render as listitems and are filtered by design, and the scan
+        # beat runs daily per user — three warnings inside the escalation window would re-emit at
+        # ERROR and file a grouped $exception for a no-op. The `no_moments` run status carries it.
+        log_debug(f"Catch-up feed produced no moments from {cards_seen} card(s)", user_id=user_id,
+                  action_type="catchup")
     return moments
 
 

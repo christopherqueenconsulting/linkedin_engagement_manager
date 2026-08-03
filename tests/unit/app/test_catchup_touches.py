@@ -1171,3 +1171,67 @@ class TestCatchupBeatSchedule:
         schedule = app.conf.beat_schedule
         assert schedule["scan-catchup-moments"]["task"] == "cqc_lem.app.run_scheduler.auto_scan_catchup_moments"
         assert schedule["send-catchup-touches"]["task"] == "cqc_lem.app.run_scheduler.auto_check_catchup_touches"
+
+
+class TestZeroWalkTripwire:
+    """#1013: a walk that returns zero items must ask the PAGE before it reads as 'nothing to do'.
+
+    #964's catch-up scan matched zero cards on a feed showing ten and logged `no_moments` daily for
+    weeks. The cross-check anchor is deliberately independent of the chain — cross-checking a chain
+    against its own selector proves nothing, since a rotated anchor answers zero to both."""
+
+    @pytest.fixture(autouse=True)
+    def _no_sleeps(self):
+        with patch("time.sleep"):
+            yield
+
+    def test_verdict_is_three_valued(self):
+        from cqc_lem.app.run_automation import zero_walk_verdict
+        assert zero_walk_verdict(7) == "drift"
+        assert zero_walk_verdict(0) == "empty"
+        # None is load-bearing: "we could not ask the page" is not "the page said zero".
+        assert zero_walk_verdict(None) == "unknown"
+
+    def test_no_cards_while_the_page_renders_listitems_warns(self):
+        from cqc_lem.app.run_automation import _scrape_catchup_moments
+        driver = MagicMock()
+        driver.find_elements.return_value = [MagicMock()] * 10
+        with patch(f"{_RA}.find_all_first", return_value=[]), \
+             patch(f"{_RA}.log_warning") as warn:
+            assert _scrape_catchup_moments(driver, max_moments=10, user_id=1) == []
+        warn.assert_called_once()
+        assert "selector drift" in warn.call_args[0][0]
+
+    def test_no_cards_on_a_genuinely_empty_page_stays_a_debug_no_op(self):
+        """Warning here would file a defect for a quiet day — the scan beat runs daily per user."""
+        from cqc_lem.app.run_automation import _scrape_catchup_moments
+        driver = MagicMock()
+        driver.find_elements.return_value = []
+        with patch(f"{_RA}.find_all_first", return_value=[]), \
+             patch(f"{_RA}.log_warning") as warn, patch(f"{_RA}.log_debug") as debug:
+            assert _scrape_catchup_moments(driver, max_moments=10, user_id=1) == []
+        warn.assert_not_called()
+        debug.assert_called_once()
+
+    def test_an_unreadable_cross_check_is_never_a_defect(self):
+        from cqc_lem.app.run_automation import _scrape_catchup_moments
+        from selenium.common.exceptions import WebDriverException
+        driver = MagicMock()
+        driver.find_elements.side_effect = WebDriverException("session gone")
+        with patch(f"{_RA}.find_all_first", return_value=[]), \
+             patch(f"{_RA}.log_warning") as warn:
+            assert _scrape_catchup_moments(driver, max_moments=10, user_id=1) == []
+        warn.assert_not_called()
+
+    def test_cards_that_render_but_yield_no_moments_do_not_trip_the_wire(self):
+        """Ads and prompts render as listitems and are filtered by design — that is the funnel
+        doing its job, not the locator being blind."""
+        from cqc_lem.app.run_automation import _scrape_catchup_moments
+        card = MagicMock()
+        card.find_elements.return_value = []
+        driver = MagicMock()
+        driver.find_elements.return_value = [MagicMock()] * 10
+        with patch(f"{_RA}.find_all_first", return_value=[card]), \
+             patch(f"{_RA}.log_warning") as warn:
+            assert _scrape_catchup_moments(driver, max_moments=10, user_id=1) == []
+        warn.assert_not_called()
