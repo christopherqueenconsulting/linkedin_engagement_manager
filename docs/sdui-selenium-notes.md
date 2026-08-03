@@ -1,7 +1,39 @@
 # LinkedIn SDUI Selenium gotchas
 
 Full detail for the SDUI DOM/composer invariant CLAUDE.md's "Known Gotchas" only states in one
-line.
+line. Which surface is covered by which read-only probe, and the weekly drift cron that grades them
+all: **`docs/sdui-probe-coverage.md`**.
+
+## The two fix invariants (issue #1013)
+
+Every SDUI fix obeys these. They are not style — each one is the direct lesson of a shipped
+incident, and both failures looked like success at the time.
+
+### 1. Success is the OUTCOME being present, never a click having landed
+
+A `click_first` that returns an element proves a control was clickable, nothing more. #1012's
+invite path clicked a button and reported success while no dialog had opened for the target at all.
+Gate on the thing you were trying to produce: `_connect_dialog_present` (the dialog's own controls),
+`_composer_submitted` (the comment is in the thread), `read_pending_invites` (the row is gone). If
+you cannot read the outcome, the honest verdict is `unknown` — and `unknown` must SKIP, never
+proceed as if it were success.
+
+The same rule reads backwards for a walk that finds nothing: **zero items is not "nothing to do"
+until the page agrees.** Cross-check against an anchor the walk does not itself depend on
+(`_report_zero_walk` / `zero_walk_verdict` in `run_automation.py`), because a rotated selector
+answers zero to both questions. `drift` there warns — once is a warning, repeatedly is a defect, and
+repeated selector rot is exactly the defect that should file itself. An empty page and an unreadable
+cross-check stay DEBUG.
+
+### 2. Never click a control whose label names a different entity than the target
+
+#1012's `//main//button[contains(@aria-label,"Invite ")]` was unscoped, the profile top card
+carried no Connect button for the target, and the "More profiles for you" rail carried one per
+suggested person — so the click sent a connection request to a **stranger**, ~20 times in a day. A
+control whose label names somebody must be attributed to the target before it is clicked, and a
+control that cannot be attributed is precisely the one that must never be clicked. Prefer an
+addressable route (the `/preload/custom-invite/?vanityName=<slug>` URL) over hunting a button, and
+scope every locator to the owning card or dialog.
 
 ## Anchors are gone
 

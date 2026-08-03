@@ -24,13 +24,19 @@ def _box(text):
 
 def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=10,
               author="Jane Author", is_me=False, react_returns=True, post_returns=True,
-              prefs=None, matches=True, real_key=False, urn_scan=None):
+              prefs=None, matches=True, real_key=False, urn_scan=None, find_elements=None):
     """Drive comment_on_feed_inline with all the SDUI/DB collaborators mocked. Returns a dict of
-    the key mocks so assertions can inspect calls."""
+    the key mocks so assertions can inspect calls.
+
+    `find_elements` overrides the driver's element lookup wholesale, so a test can answer the post-
+    text selector and the zero-walk cross-check selector differently (issue #1013)."""
     from cqc_lem.app import run_automation as ra
 
     driver = MagicMock()
-    driver.find_elements.return_value = boxes
+    if find_elements is not None:
+        driver.find_elements.side_effect = find_elements
+    else:
+        driver.find_elements.return_value = boxes
     wait = MagicMock()
     # The ancestor/attribute URN scan runs through the driver; a non-str return means "no URN".
     driver.execute_script.return_value = urn_scan
@@ -314,3 +320,58 @@ class TestFeedFunnelAndFallback:
                              "feed_fallback_when_empty": False, "min_reactions": 5})
         assert r["posted"] == 0
         assert r["funnel"]["fallback_used"] is False
+
+
+class TestFeedZeroWalkTripwire:
+    """#1013: zero post-text nodes across a whole scan is indistinguishable from an empty feed in
+    every funnel number — which is how #964 and #1009 stayed invisible for weeks. The scan asks the
+    page through a per-post control the text-node chain does not use."""
+
+    def test_a_walk_that_saw_cards_is_ok(self):
+        r = _run_feed([_box("A feed post with plenty of content to comment on.")])
+        assert r["funnel"]["feed_walk"] == "ok"
+        assert r["funnel"]["textboxes_seen"] == 1
+
+    def test_zero_textboxes_on_an_empty_feed_is_empty_not_drift(self):
+        r = _run_feed([])
+        assert r["funnel"]["textboxes_seen"] == 0
+        assert r["funnel"]["feed_walk"] == "empty"
+
+    def test_zero_textboxes_while_the_page_renders_posts_is_drift(self):
+        from cqc_lem.app.run_automation import _FEED_CARD_CROSSCHECK_SEL, _FEED_POST_TEXT_SEL
+
+        def _find(by, selector):
+            if selector == _FEED_POST_TEXT_SEL:
+                return []                       # the walk is blind
+            if selector == _FEED_CARD_CROSSCHECK_SEL:
+                return [MagicMock()] * 8        # but the page rendered eight posts
+            return []
+
+        r = _run_feed([], find_elements=_find)
+        assert r["funnel"]["feed_walk"] == "drift"
+
+    def test_only_drift_warns(self):
+        """The log LEVEL is the contract: a warning that repeats re-emits at ERROR and files a
+        grouped $exception, so an empty feed or an unreadable cross-check must stay DEBUG."""
+        from cqc_lem.app.run_automation import _report_zero_walk
+        driver = MagicMock()
+
+        driver.find_elements.return_value = [MagicMock()] * 3
+        with patch(f"{_RA}.log_warning") as warn, patch(f"{_RA}.log_debug") as debug:
+            assert _report_zero_walk(driver, "sel", "Feed post-text walk") == "drift"
+        warn.assert_called_once()
+        debug.assert_not_called()
+
+        driver.find_elements.return_value = []
+        with patch(f"{_RA}.log_warning") as warn, patch(f"{_RA}.log_debug") as debug:
+            assert _report_zero_walk(driver, "sel", "Feed post-text walk") == "empty"
+        warn.assert_not_called()
+        debug.assert_called_once()
+
+        # "We could not ask the page" is not "the page said zero", and is never a defect.
+        from selenium.common.exceptions import WebDriverException
+        driver.find_elements.side_effect = WebDriverException("session gone")
+        with patch(f"{_RA}.log_warning") as warn, patch(f"{_RA}.log_debug") as debug:
+            assert _report_zero_walk(driver, "sel", "Feed post-text walk") == "unknown"
+        warn.assert_not_called()
+        debug.assert_called_once()
