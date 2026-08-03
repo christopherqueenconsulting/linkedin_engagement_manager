@@ -176,3 +176,125 @@ class TestSuggestEngagementTargets:
             assert suggest_engagement_targets(1, limit=-3) == []
         roster.assert_not_called()
         candidates.assert_not_called()
+
+
+# --- blocked-comment streak + follow state (issue #962) ------------------------------------------
+
+class TestBlockedAndFollowDefaults:
+    def _row(self, **kw):
+        from cqc_lem.utilities.db import engagement_week_start
+        row = {"id": 1, "profile_url": "https://x/in/jane", "name": "Jane", "category": "peer",
+               "max_comments_per_week": 2, "active": 1, "last_engaged_at": None,
+               "comments_this_week": 0, "week_start": engagement_week_start(), "source": "user",
+               "comment_blocked_streak": None, "last_blocked_at": None, "follow_status": None,
+               "followed_at": None, "follow_attempts": None}
+        row.update(kw)
+        return row
+
+    def test_null_columns_read_as_the_safe_defaults(self):
+        # Rows written before the migration come back with NULLs; the SPA must not see them.
+        conn, _ = _mock_conn(fetch_all=[self._row()])
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_engagement_targets
+            row = get_engagement_targets(1)[0]
+        assert row["comment_blocked_streak"] == 0
+        assert row["follow_attempts"] == 0
+        assert row["follow_status"] == "unknown"
+
+    def test_an_unrecognised_follow_status_falls_back_to_unknown(self):
+        conn, _ = _mock_conn(fetch_all=[self._row(follow_status="requested")])
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_engagement_targets
+            assert get_engagement_targets(1)[0]["follow_status"] == "unknown"
+
+    def test_real_values_survive(self):
+        conn, _ = _mock_conn(fetch_all=[self._row(comment_blocked_streak=3,
+                                                  follow_status="follow_failed",
+                                                  follow_attempts=2)])
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import get_engagement_targets
+            row = get_engagement_targets(1)[0]
+        assert (row["comment_blocked_streak"], row["follow_status"], row["follow_attempts"]) == \
+            (3, "follow_failed", 2)
+
+    def test_the_editable_upsert_never_writes_the_automation_columns(self):
+        # An operator saving the roster in the SPA must not reset a streak or a follow state.
+        conn, cursor = _mock_conn()
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import upsert_engagement_targets
+            upsert_engagement_targets(1, [{"profile_url": "https://x/in/jane"}])
+        sql = cursor.executemany.call_args[0][0]
+        for col in ("comment_blocked_streak", "follow_status", "followed_at", "follow_attempts"):
+            assert col not in sql
+
+
+class TestRecordTargetCommentBlocked:
+    def test_increments_and_returns_the_new_streak(self):
+        conn, cursor = _mock_conn()
+        cursor.fetchone.return_value = (2,)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import record_target_comment_blocked
+            assert record_target_comment_blocked(1, "https://x/in/jane") == 2
+        sql = cursor.execute.call_args_list[0][0][0]
+        assert "comment_blocked_streak = LEAST(255, comment_blocked_streak + 1)" in sql
+        assert "last_blocked_at = NOW()" in sql
+
+    def test_an_unmatched_target_reports_no_streak(self):
+        conn, cursor = _mock_conn()
+        cursor.rowcount = 0
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import record_target_comment_blocked
+            assert record_target_comment_blocked(1, "https://x/in/nobody") == 0
+
+    def test_a_db_error_is_never_read_as_a_streak(self):
+        import mysql.connector
+        conn, cursor = _mock_conn()
+        cursor.execute.side_effect = mysql.connector.Error("boom")
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import record_target_comment_blocked
+            assert record_target_comment_blocked(1, "https://x/in/jane") == 0
+
+
+class TestSetTargetFollowStatus:
+    def test_following_stamps_the_timestamp_and_clears_attempts(self):
+        conn, cursor = _mock_conn()
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import set_target_follow_status
+            assert set_target_follow_status(1, "https://x/in/jane", "following") is True
+        sql = cursor.execute.call_args[0][0]
+        assert "followed_at=NOW()" in sql and "follow_attempts=0" in sql
+
+    def test_other_statuses_do_not_stamp_followed_at(self):
+        conn, cursor = _mock_conn()
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import set_target_follow_status
+            set_target_follow_status(1, "https://x/in/jane", "not_following")
+        assert "followed_at" not in cursor.execute.call_args[0][0]
+
+    def test_an_unknown_status_is_refused_without_a_query(self):
+        conn, cursor = _mock_conn()
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import set_target_follow_status
+            assert set_target_follow_status(1, "https://x/in/jane", "requested") is False
+        cursor.execute.assert_not_called()
+
+
+class TestRecordTargetFollowFailure:
+    def test_goes_terminal_at_the_attempt_cap(self):
+        from cqc_lem.utilities.db import ENGAGEMENT_TARGET_FOLLOW_MAX_ATTEMPTS
+        conn, cursor = _mock_conn()
+        cursor.fetchone.return_value = (2,)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import record_target_follow_failure
+            assert record_target_follow_failure(1, "https://x/in/jane") == 2
+        sql, params = cursor.execute.call_args_list[0][0]
+        # follow_status is assigned BEFORE the increment, so the test reads the pre-increment count.
+        assert sql.index("follow_status") < sql.index("follow_attempts = LEAST")
+        assert params[0] == ENGAGEMENT_TARGET_FOLLOW_MAX_ATTEMPTS
+
+    def test_an_unmatched_target_reports_no_attempts(self):
+        conn, cursor = _mock_conn()
+        cursor.rowcount = 0
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import record_target_follow_failure
+            assert record_target_follow_failure(1, "https://x/in/nobody") == 0

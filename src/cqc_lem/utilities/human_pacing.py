@@ -61,6 +61,15 @@ ACTION_COMPANY_INVITE = "company_invite"
 # (the same reason #629's suppression pause covers engagement only). It draws its own daily budget
 # purely so the writer inherits the rest-day and variable-volume behaviour every other lane has.
 ACTION_AFFILIATE_PROMO = "affiliate_promo"
+# Following a roster target (issue #962). LinkedIn rate-limits follows and bulk-following is one of
+# the oldest bot signatures there is, so this lane draws its own small daily budget rather than
+# riding the comment lane's. It is deliberately NOT in ENVELOPE_ACTIONS: a follow is one click on a
+# page the roster pass already opened, and letting it into the envelope would ENLARGE the account's
+# daily allowance by its cap (`account_envelope` sums every envelope lane's budget) — the opposite
+# of what a conservative opt-in should do. The caller still passes `caps`, so an account that has
+# spent its comment/DM/invite envelope stops following too: bounded by the envelope, never adding
+# to it.
+ACTION_FOLLOW = "follow"
 ENGAGEMENT_ACTIONS = (ACTION_COMMENT, ACTION_REPLY, ACTION_DM, ACTION_INVITE)
 
 # Which preference key caps each lane.
@@ -68,6 +77,7 @@ ACTION_CAP_PREF = {
     ACTION_COMMENT: "max_comments_per_day",
     ACTION_DM: "max_dms_per_day",
     ACTION_INVITE: "max_invites_per_day",
+    ACTION_FOLLOW: "max_follows_per_day",
 }
 
 # Lanes that spend the account envelope. Replies are deliberately NOT one of them: a reply is an

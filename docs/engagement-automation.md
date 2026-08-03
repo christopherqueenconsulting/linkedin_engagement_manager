@@ -187,3 +187,54 @@ is now two beats with a review window between them.
   registry (`useRegisterSaveSection('group-post', …)`), so *Save All* writes it and the
   unsaved-changes guard fires on leaving. Without that the page would report a clean save having
   written only the toggles, and the text the user thought they'd replaced is what would publish.
+
+## Roster targets LEM can't comment on + opt-in auto-follow (issue #962)
+
+The roster opens each target's `/recent-activity/all/` page directly, so no follow is needed to SEE
+their posts. Authors who restrict commenting to connections or followers render **no comment
+affordance at all**, and `comment_on_roster_posts` skips them fail-closed. Before #962 that skip was
+invisible: the user could never learn that following or connecting would unlock the account.
+
+- **The signature is "posts, but nothing to comment with."** A visit that finds post text but where
+  EVERY card resolves to `_card_for_textbox → None` records one blocked visit
+  (`record_target_comment_blocked`). A page with no posts, or only short/reshare text nodes, is a
+  plain skip and records NOTHING — "they haven't posted" says nothing about whether they accept
+  comments, and badging those people would be a lie about their account.
+- **The per-visit skip is DEBUG.** An author restricting comments is working behaviour on their side
+  and repeats every rotation; warning on it would escalate and file a defect for a post nobody was
+  ever allowed to comment on. Only the streak CROSSING `ENGAGEMENT_TARGET_BLOCKED_BADGE_STREAK`
+  logs INFO, and exactly once (`streak == threshold`, not `>=`).
+- **A landed comment clears the streak in the same statement.** `record_target_engagement` sets
+  `comment_blocked_streak = 0` — the streak means "we could not comment here" and a comment IS the
+  proof that we could. One statement, so the two can never disagree.
+- **The badge names the fix, and does not overpromise.** Following unlocks a followers-only
+  commenter; a connections-only one stays blocked, so the copy names both moves.
+- **Auto-follow is OFF by default** (`roster_auto_follow`) and piggybacks on the roster pass only —
+  the activity page is already open, so there is no dedicated follow session and no extra
+  navigation. It runs AFTER the comment walk for that target: a follow click re-renders the top card
+  and would stale the very cards the walk reads.
+- **The follow lane draws its OWN paced budget** (`ACTION_FOLLOW`, cap `max_follows_per_day`,
+  default 3). It is deliberately NOT in `ENVELOPE_ACTIONS`: `account_envelope` sums every envelope
+  lane's budget, so joining it would ENLARGE a day's outbound allowance by the follow cap. The
+  caller still passes `caps`, so the lane is **bounded by** the envelope without adding to it.
+  Every hard gate applies too (`_follow_hold_reason`: `is_automation_paused` — which the #629
+  suppression trip rides — and the 429 breaker), re-read per follow because a breaker can trip
+  mid-run.
+- **The control is scoped to the profile's own top card.** LinkedIn renders "Follow" inside feed
+  cards and recommendation modules; clicking one of those follows the wrong account, which no retry
+  undoes. `_resolve_follow_control` resolves by href and label only (never a class name) via two
+  routes — the target's own `/in/<slug>` anchor walked up to the card carrying the control, then a
+  positional scan above the first post. Both missing returns `unknown` and clicks **nothing**.
+- **`following` is written only after the control confirms it.** An unverified flip counts as a
+  failed attempt, because `following` is TERMINAL — recording it on a click that never registered is
+  the one failure that never self-corrects. Two failures → `follow_failed`, also terminal, also
+  badged. A card that ALREADY says "Following" is recorded without a click and without spending
+  budget: the zero-cost catch-up that stops the lane redoing this work every run.
+- **Live grounding before the clicker:**
+  `python -m scripts.linkedin_live_validation --roster-follow <profile-url>` opens the activity page
+  and reports which state resolves plus every visible control label. Strictly read-only — nothing is
+  clicked, nobody is followed. `unknown` on an account you know you don't follow means the top-card
+  control rotated and the lane has gone quiet, not that the roster is fully followed.
+- **Observability:** `roster_comment_blocked` / `roster_followed` ride the feed funnel and the
+  `feed_scan` event. A rising blocked count with a flat followed count is a roster the user has to
+  fix by connecting, not a broken selector.

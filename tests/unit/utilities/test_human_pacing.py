@@ -362,3 +362,34 @@ class TestGovernor:
              patch(f"{_HP}.log_warning"):
             record_action(1, ACTION_COMMENT)
             assert actions_used_today(1) == 0
+
+
+class TestFollowLane:
+    """The roster auto-follow lane (issue #962)."""
+
+    def test_the_follow_lane_has_its_own_cap_preference(self):
+        from cqc_lem.utilities.human_pacing import ACTION_FOLLOW, ACTION_CAP_PREF
+        assert ACTION_CAP_PREF[ACTION_FOLLOW] == "max_follows_per_day"
+
+    def test_following_never_enlarges_the_account_envelope(self, monkeypatch, no_redis):
+        """A follow is bounded BY the envelope, it does not add to it — putting it in
+        ENVELOPE_ACTIONS would hand every account its follow cap in extra daily allowance."""
+        from cqc_lem.utilities.human_pacing import (ACTION_FOLLOW, ENVELOPE_ACTIONS,
+                                                    account_envelope, engagement_caps_from_prefs)
+        assert ACTION_FOLLOW not in ENVELOPE_ACTIONS
+        monkeypatch.setenv("PACING_REST_DAY_CHANCE", "0")
+        prefs = {"max_comments_per_day": 20, "max_dms_per_day": 10, "max_invites_per_day": 10,
+                 "max_follows_per_day": 5}
+        caps = engagement_caps_from_prefs(prefs)
+        assert ACTION_FOLLOW not in caps
+        assert account_envelope(1, caps, _FRIDAY) == \
+               account_envelope(1, engagement_caps_from_prefs({**prefs, "max_follows_per_day": 50}),
+                                _FRIDAY)
+
+    def test_the_follow_budget_is_drawn_under_its_own_key(self, monkeypatch, no_redis):
+        # Sharing another lane's key would let whichever lane ran first that day write the other's
+        # budget — the ACTION_COMPANY_INVITE lesson.
+        from cqc_lem.utilities.human_pacing import daily_budget, ACTION_FOLLOW, ACTION_COMMENT
+        monkeypatch.setenv("PACING_REST_DAY_CHANCE", "0")
+        assert daily_budget(1, ACTION_FOLLOW, 3, _FRIDAY) <= 3
+        assert daily_budget(1, ACTION_COMMENT, 20, _FRIDAY) > 3

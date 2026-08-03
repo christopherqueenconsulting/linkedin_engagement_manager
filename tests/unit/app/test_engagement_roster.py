@@ -142,8 +142,12 @@ def _box(text):
     return b
 
 
-def _run_roster(boxes, targets, *, prefs=None, relevant=True, engage=True, max_posts=5):
-    """Drive comment_on_roster_posts with every Selenium/DB collaborator mocked."""
+def _run_roster(boxes, targets, *, prefs=None, relevant=True, engage=True, max_posts=5,
+                card=True, follow_budget=0, follow_outcome=""):
+    """Drive comment_on_roster_posts with every Selenium/DB collaborator mocked.
+
+    `card=False` makes every item render WITHOUT a comment affordance — the restricted-comments
+    signature #962 detects. `follow_budget`/`follow_outcome` drive the opt-in auto-follow lane."""
     from cqc_lem.app import run_automation as ra
 
     driver = MagicMock()
@@ -152,13 +156,15 @@ def _run_roster(boxes, targets, *, prefs=None, relevant=True, engage=True, max_p
 
     engage_mock = MagicMock(return_value=engage)
     record = MagicMock(return_value=True)
+    blocked = MagicMock(return_value=1)
+    follow = MagicMock(return_value=follow_outcome)
     seen = set()
 
     with ExitStack() as es:
         p = lambda name, **kw: es.enter_context(patch(f"{_RA}.{name}", **kw))
         p("get_engagement_targets", return_value=targets)
         p("wait_for_ajax")
-        p("_card_for_textbox", side_effect=lambda d, b: MagicMock())
+        p("_card_for_textbox", side_effect=lambda d, b: MagicMock() if card else None)
         p("_post_author_from_card", return_value="Jane Author")
         p("_post_permalink_from_card", return_value=None)
         p("has_commented_post", return_value=False)
@@ -167,9 +173,13 @@ def _run_roster(boxes, targets, *, prefs=None, relevant=True, engage=True, max_p
         p("post_is_relevant", return_value=relevant)
         p("_engage_card", new=engage_mock)
         p("record_target_engagement", new=record)
+        p("record_target_comment_blocked", new=blocked)
+        p("roster_follow_budget", return_value=follow_budget)
+        p("auto_follow_roster_target", new=follow)
         stats = ra.comment_on_roster_posts(driver, MagicMock(), MagicMock(), 1, max_posts,
                                            prefs or {}, "synthesis", [], seen)
-    return {"stats": stats, "engage": engage_mock, "record": record, "driver": driver, "seen": seen}
+    return {"stats": stats, "engage": engage_mock, "record": record, "driver": driver, "seen": seen,
+            "blocked": blocked, "follow": follow}
 
 
 class TestCommentOnRosterPosts:
@@ -216,19 +226,10 @@ class TestCommentOnRosterPosts:
         assert r["seen"], "roster keys must be shared so the feed walk can't re-comment them"
 
     def test_page_without_commentable_cards_is_skipped(self):
-        from cqc_lem.app import run_automation as ra
-        driver = MagicMock()
-        driver.find_elements.return_value = [_box("An item with no comment affordance at all.")]
-        with ExitStack() as es:
-            p = lambda name, **kw: es.enter_context(patch(f"{_RA}.{name}", **kw))
-            p("get_engagement_targets", return_value=[_target("https://www.linkedin.com/in/jane")])
-            p("wait_for_ajax")
-            p("_card_for_textbox", return_value=None)  # fail closed
-            engage = es.enter_context(patch(f"{_RA}._engage_card"))
-            stats = ra.comment_on_roster_posts(driver, MagicMock(), MagicMock(), 1, 5, {},
-                                               "synthesis", [], set())
-        assert stats["posted"] == 0
-        engage.assert_not_called()
+        r = _run_roster([_box("An item with no comment affordance at all.")],
+                        [_target("https://www.linkedin.com/in/jane")], card=False)
+        assert r["stats"]["posted"] == 0
+        r["engage"].assert_not_called()
 
     def test_deadline_stops_the_roster_pass(self):
         from cqc_lem.app import run_automation as ra
@@ -350,3 +351,211 @@ class TestFunnelSourceSplit:
                       roster_stats=roster)
         assert r["posted"] == 5
         r["engage"].assert_not_called()
+
+
+# --- restricted-comment detection + opt-in auto-follow (issue #962) ------------------------------
+
+class TestCommentBlockedDetection:
+    def test_posts_with_no_comment_affordance_record_a_blocked_visit(self):
+        r = _run_roster([_box("A post from an author who restricts commenting.")],
+                        [_target("https://www.linkedin.com/in/jane")], card=False)
+        assert r["stats"]["comment_blocked"] == 1
+        r["blocked"].assert_called_once_with(1, "https://www.linkedin.com/in/jane")
+
+    def test_a_page_with_no_posts_at_all_is_not_blocked(self):
+        # "No posts / only reshares" says nothing about whether the author accepts comments —
+        # recording it would badge people who simply have not posted.
+        r = _run_roster([], [_target("https://www.linkedin.com/in/jane")], card=False)
+        assert r["stats"]["comment_blocked"] == 0
+        r["blocked"].assert_not_called()
+
+    def test_short_text_nodes_are_not_counted_as_posts(self):
+        r = _run_roster([_box("too short")], [_target("https://www.linkedin.com/in/jane")],
+                        card=False)
+        assert r["stats"]["comment_blocked"] == 0
+        r["blocked"].assert_not_called()
+
+    def test_a_commentable_page_is_never_recorded_as_blocked(self):
+        r = _run_roster([_box("A roster author's post, long enough to scan.")],
+                        [_target("https://www.linkedin.com/in/jane")])
+        assert r["stats"]["comment_blocked"] == 0
+        r["blocked"].assert_not_called()
+
+    def test_a_landed_comment_clears_the_streak_in_the_same_statement(self):
+        # record_target_engagement is the ONE place the streak resets — a comment landing IS the
+        # proof the target is commentable.
+        from cqc_lem.utilities import db
+        conn, cursor = MagicMock(), MagicMock()
+        cursor.rowcount = 1
+        conn.cursor.return_value = cursor
+        with patch.object(db, "get_db_connection", return_value=conn):
+            assert db.record_target_engagement(1, "https://www.linkedin.com/in/jane") is True
+        sql = cursor.execute.call_args[0][0]
+        assert "comment_blocked_streak = 0" in sql
+
+
+class TestRosterAutoFollow:
+    def test_lane_is_off_unless_the_budget_allows_it(self):
+        r = _run_roster([_box("A roster author's post, long enough to scan.")],
+                        [_target("https://www.linkedin.com/in/jane")], follow_budget=0)
+        r["follow"].assert_not_called()
+
+    def test_follows_within_budget_and_counts_it(self):
+        r = _run_roster([_box("A roster author's post, long enough to scan.")],
+                        [_target("https://www.linkedin.com/in/jane")],
+                        follow_budget=1, follow_outcome="followed")
+        r["follow"].assert_called_once()
+        assert r["stats"]["followed"] == 1
+
+    def test_budget_is_spent_across_targets(self):
+        targets = [_target(f"https://www.linkedin.com/in/p{i}") for i in range(3)]
+        r = _run_roster([_box("A roster author's post, long enough to scan.")], targets,
+                        follow_budget=2, follow_outcome="followed", max_posts=3)
+        assert r["follow"].call_count == 2
+        assert r["stats"]["followed"] == 2
+
+    def test_a_terminal_follow_status_is_never_re_examined(self):
+        target = _target("https://www.linkedin.com/in/jane")
+        target["follow_status"] = "following"
+        r = _run_roster([_box("A roster author's post, long enough to scan.")], [target],
+                        follow_budget=3)
+        r["follow"].assert_not_called()
+
+    def test_a_failed_click_still_spends_the_budget(self):
+        # Otherwise a run where the control stopped flipping keeps clicking Follow on every target
+        # it visits — the cap exists to bound CLICKS, not just successes.
+        targets = [_target(f"https://www.linkedin.com/in/p{i}") for i in range(3)]
+        r = _run_roster([_box("A roster author's post, long enough to scan.")], targets,
+                        follow_budget=1, follow_outcome="failed", max_posts=3)
+        assert r["follow"].call_count == 1
+        assert r["stats"]["followed"] == 0
+
+    def test_a_target_with_no_follow_control_does_not_spend_the_budget(self):
+        # Nothing was clicked, so nothing was spent — plenty of profiles simply expose no control.
+        targets = [_target(f"https://www.linkedin.com/in/p{i}") for i in range(3)]
+        r = _run_roster([_box("A roster author's post, long enough to scan.")], targets,
+                        follow_budget=1, follow_outcome="", max_posts=3)
+        assert r["follow"].call_count == 3
+        assert r["stats"]["followed"] == 0
+
+
+class TestRosterFollowBudget:
+    def test_zero_when_the_toggle_is_off(self):
+        from cqc_lem.app.run_automation import roster_follow_budget
+        assert roster_follow_budget(1, {"max_follows_per_day": 5}) == 0
+
+    def test_zero_when_the_cap_is_zero(self):
+        from cqc_lem.app.run_automation import roster_follow_budget
+        assert roster_follow_budget(1, {"roster_auto_follow": True,
+                                        "max_follows_per_day": 0}) == 0
+
+    def test_draws_its_own_paced_budget_not_the_comment_lane_s(self):
+        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.human_pacing import ACTION_FOLLOW
+        with patch(f"{_RA}.remaining_actions", return_value=2) as remaining, \
+             patch(f"{_RA}.actions_used_today", return_value=1):
+            assert ra.roster_follow_budget(7, {"roster_auto_follow": True,
+                                               "max_follows_per_day": 4}) == 2
+        assert remaining.call_args[0][1] == ACTION_FOLLOW
+        assert remaining.call_args[0][2] == 4        # the follow cap, not max_comments_per_day
+        assert remaining.call_args[1]["caps"] is not None  # still bounded by the account envelope
+
+    def test_a_missing_cap_falls_back_to_the_conservative_default(self):
+        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.db import ROSTER_FOLLOWS_PER_DAY_DEFAULT
+        with patch(f"{_RA}.remaining_actions", return_value=9) as remaining, \
+             patch(f"{_RA}.actions_used_today", return_value=0):
+            ra.roster_follow_budget(7, {"roster_auto_follow": True})
+        assert remaining.call_args[0][2] == ROSTER_FOLLOWS_PER_DAY_DEFAULT
+
+
+def _follow_env(state_before, state_after=None, hold=""):
+    """Patch stack for auto_follow_roster_target: the resolver returns `state_before`, then
+    `state_after` on the post-click re-read."""
+    es = ExitStack()
+    p = lambda name, **kw: es.enter_context(patch(f"{_RA}.{name}", **kw))
+    control = MagicMock()
+    states = [(state_before, control if state_before == "not_following" else None)]
+    if state_after is not None:
+        states.append((state_after, None))
+    p("_resolve_follow_control", side_effect=states)
+    p("_follow_hold_reason", return_value=hold)
+    return es, {
+        "set": p("set_target_follow_status", return_value=True),
+        "fail": p("record_target_follow_failure", return_value=1),
+        "record": p("record_action"),
+    }
+
+
+class TestAutoFollowRosterTarget:
+    def _target_dict(self):
+        return {"profile_url": "https://www.linkedin.com/in/jane", "name": "Jane"}
+
+    def test_an_already_following_card_is_recorded_without_a_click(self):
+        from cqc_lem.app import run_automation as ra
+        driver = MagicMock()
+        es, m = _follow_env("following")
+        with es:
+            assert ra.auto_follow_roster_target(driver, 1, self._target_dict()) == "already_following"
+        m["set"].assert_called_once_with(1, "https://www.linkedin.com/in/jane", "following")
+        driver.execute_script.assert_not_called()
+        m["record"].assert_not_called()   # a catch-up spends no daily budget
+
+    def test_a_verified_flip_records_following_and_spends_the_budget(self):
+        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.human_pacing import ACTION_FOLLOW
+        es, m = _follow_env("not_following", "following")
+        with es:
+            assert ra.auto_follow_roster_target(MagicMock(), 1, self._target_dict()) == "followed"
+        m["set"].assert_called_once_with(1, "https://www.linkedin.com/in/jane", "following")
+        m["fail"].assert_not_called()
+        m["record"].assert_called_once_with(1, ACTION_FOLLOW)
+
+    def test_an_unverified_flip_counts_as_a_failed_attempt(self):
+        # Writing 'following' on an unverified click is the one failure that never self-corrects:
+        # the status is terminal, so the target would never be looked at again.
+        from cqc_lem.app import run_automation as ra
+        es, m = _follow_env("not_following", "not_following")
+        with es:
+            assert ra.auto_follow_roster_target(MagicMock(), 1, self._target_dict()) == "failed"
+        m["fail"].assert_called_once_with(1, "https://www.linkedin.com/in/jane")
+        assert all(c.args[2] != "following" for c in m["set"].call_args_list)
+        m["record"].assert_not_called()
+
+    def test_an_unreadable_control_clicks_nothing(self):
+        from cqc_lem.app import run_automation as ra
+        driver = MagicMock()
+        es, m = _follow_env("unknown")
+        with es:
+            assert ra.auto_follow_roster_target(driver, 1, self._target_dict()) == ""
+        driver.execute_script.assert_not_called()
+        m["fail"].assert_not_called()
+
+    def test_a_hard_gate_stands_the_lane_down(self):
+        from cqc_lem.app import run_automation as ra
+        driver = MagicMock()
+        es, m = _follow_env("not_following", "following", hold="LinkedIn 429 breaker open")
+        with es:
+            assert ra.auto_follow_roster_target(driver, 1, self._target_dict()) == ""
+        driver.execute_script.assert_not_called()
+        m["set"].assert_not_called()
+
+
+class TestFollowHoldReason:
+    def test_a_paused_account_holds_follows(self):
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.is_automation_paused", return_value=True), \
+             patch(f"{_RA}.automation_pause_reason", return_value="suppression"):
+            assert ra._follow_hold_reason(1) == "suppression"
+
+    def test_an_open_breaker_holds_follows(self):
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.is_automation_paused", return_value=False), \
+             patch(f"{_RA}.rate_limit_cooldown_remaining", return_value=900):
+            assert ra._follow_hold_reason(1) == "LinkedIn 429 breaker open"
+
+    def test_clear_gates_return_no_reason(self):
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}.is_automation_paused", return_value=False), \
+             patch(f"{_RA}.rate_limit_cooldown_remaining", return_value=0):
+            assert ra._follow_hold_reason(1) == ""

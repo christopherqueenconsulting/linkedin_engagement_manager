@@ -67,6 +67,7 @@ from cqc_lem.utilities.db import (
     DEFAULT_POSTING_DAYS, normalize_posting_days,
     COMPANY_PAGE_INVITES_PER_DAY_DEFAULT, COMPANY_PAGE_INVITES_PER_DAY_MIN,
     COMPANY_PAGE_INVITES_PER_DAY_MAX,
+    ROSTER_FOLLOWS_PER_DAY_DEFAULT, ROSTER_FOLLOWS_PER_DAY_MIN, ROSTER_FOLLOWS_PER_DAY_MAX,
     get_or_create_reply_inbound_token,
     get_newsletter_settings, update_newsletter_settings,
     get_pending_newsletter_editions,
@@ -1240,6 +1241,10 @@ class EngagementPreferencesRequest(BaseModel):
     # AI image on generated TEXT posts (image-generation overhaul). The review queue stays the
     # human gate on every image; this only controls whether one is generated at all.
     text_post_images: bool = True
+    # Opt-in auto-follow of roster targets (issue #962), OFF by default. The cap is its own small
+    # per-day budget — a follow never spends the comment lane's.
+    roster_auto_follow: bool = False
+    max_follows_per_day: int = ROSTER_FOLLOWS_PER_DAY_DEFAULT
     # Catch-up congratulations (issue #482)
     max_catchup_touches_per_day: int = CATCHUP_TOUCHES_MAX_STANDARD
     catchup_touch_mode: str = "pre_review"  # 'pre_review' (default) | 'auto_approve'
@@ -1303,6 +1308,14 @@ class EngagementPreferencesRequest(BaseModel):
                        max(COMPANY_PAGE_INVITES_PER_DAY_MIN, int(v)))
         except (TypeError, ValueError):
             return COMPANY_PAGE_INVITES_PER_DAY_DEFAULT
+
+    @field_validator("max_follows_per_day")
+    @classmethod
+    def _clamp_follows(cls, v: int) -> int:
+        try:
+            return min(ROSTER_FOLLOWS_PER_DAY_MAX, max(ROSTER_FOLLOWS_PER_DAY_MIN, int(v)))
+        except (TypeError, ValueError):
+            return ROSTER_FOLLOWS_PER_DAY_DEFAULT
 
     @field_validator("posts_per_week")
     @classmethod

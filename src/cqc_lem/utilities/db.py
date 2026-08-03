@@ -4832,6 +4832,14 @@ def normalize_posting_days(value) -> list:
 COMPANY_PAGE_INVITES_PER_DAY_DEFAULT = 5
 COMPANY_PAGE_INVITES_PER_DAY_MIN, COMPANY_PAGE_INVITES_PER_DAY_MAX = 0, 50
 
+# Roster auto-follows per day (issue #962). Far smaller than any other lane on purpose: a follow is
+# the cheapest action to automate and the easiest to over-run, and LinkedIn's own follow limits are
+# what a bulk-follower trips first. 3/day is a catch-up rate — a 50-account roster reaches full
+# coverage in a few weeks — and the #626 budget draw (40-100% of cap, plus rest days) keeps the
+# realised average below it. 0 turns the lane off without touching the toggle.
+ROSTER_FOLLOWS_PER_DAY_DEFAULT = 3
+ROSTER_FOLLOWS_PER_DAY_MIN, ROSTER_FOLLOWS_PER_DAY_MAX = 0, 20
+
 _ENGAGEMENT_DEFAULTS: dict = {
     # Default to MEDIUM (issue #394): 2026 LinkedIn weights substantive ≥15-word comments ~2.5× short
     # one-liners, so the out-of-the-box length produces a real, specific reply rather than a throwaway.
@@ -4874,6 +4882,10 @@ _ENGAGEMENT_DEFAULTS: dict = {
     # AI image on generated TEXT posts (image-generation overhaul). ON by default — a bare text
     # post is the lowest-reach format; the review queue is still the human gate on every image.
     "text_post_images": True,
+    # Opt-in auto-follow of roster targets (issue #962). OFF by default and small when on: bulk
+    # following is a classic bot signature, so this only ever runs because the user asked for it.
+    "roster_auto_follow": False,
+    "max_follows_per_day": ROSTER_FOLLOWS_PER_DAY_DEFAULT,
 }
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
                            "exclude_keywords", "include_authors", "exclude_authors", "post_types",
@@ -4881,7 +4893,7 @@ _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords
                            "posting_days")
 _ENGAGEMENT_BOOL_FIELDS = ("use_emojis", "use_hashtags", "reply_to_own_comments",
                            "feed_fallback_when_empty", "link_in_first_comment",
-                           "text_post_images")
+                           "text_post_images", "roster_auto_follow")
 _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "use_hashtags",
                     "include_topics", "exclude_topics", "include_keywords", "exclude_keywords",
                     "include_authors", "exclude_authors", "post_types", "focus_topics",
@@ -4897,7 +4909,7 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "feed_fallback_when_empty", "link_in_first_comment",
                     "max_catchup_touches_per_day", "catchup_touch_mode", "catchup_event_types",
                     "catchup_message_source", "posts_per_week", "posting_days",
-                    "text_post_images")
+                    "text_post_images", "roster_auto_follow", "max_follows_per_day")
 
 VALID_VIDEO_QUALITIES = ("standard", "premium", "premium_top")
 VALID_REPLY_MODES = ("event", "scheduled", "off")
@@ -4955,6 +4967,12 @@ def _select_engagement_row(user_id: int) -> Optional[dict]:
         # lane off for every existing user; an explicit 0 IS "off" and is preserved.
         if row.get("max_company_page_invites_per_day") is None:
             row["max_company_page_invites_per_day"] = COMPANY_PAGE_INVITES_PER_DAY_DEFAULT
+        # Same reading for the follow cap (issue #962): NULL is "never chosen" -> the conservative
+        # code default. An explicit 0 is the user switching the lane off and is preserved. The
+        # TOGGLE is not read this way — it is NOT NULL DEFAULT 0, because "off" and "never chosen"
+        # must behave identically for a feature that did not exist yesterday.
+        if row.get("max_follows_per_day") is None:
+            row["max_follows_per_day"] = ROSTER_FOLLOWS_PER_DAY_DEFAULT
         for f in _ENGAGEMENT_JSON_FIELDS:
             row[f] = _coerce_json_list(row.get(f))
         # A NULL/empty posting_days (any row predating the V20260727045811 migration) means "never
@@ -5074,6 +5092,13 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
             if _cpi is not None else COMPANY_PAGE_INVITES_PER_DAY_DEFAULT)
     except (TypeError, ValueError):
         merged["max_company_page_invites_per_day"] = COMPANY_PAGE_INVITES_PER_DAY_DEFAULT
+    _fol = merged.get("max_follows_per_day")
+    try:
+        merged["max_follows_per_day"] = (
+            min(ROSTER_FOLLOWS_PER_DAY_MAX, max(ROSTER_FOLLOWS_PER_DAY_MIN, int(_fol)))
+            if _fol is not None else ROSTER_FOLLOWS_PER_DAY_DEFAULT)
+    except (TypeError, ValueError):
+        merged["max_follows_per_day"] = ROSTER_FOLLOWS_PER_DAY_DEFAULT
     # The publishing day allow-list (issue #581): de-duped, sorted, Mon..Sun only. Anything
     # unusable — an empty set, strings, out-of-range ints — falls back to Mon-Fri rather than
     # persisting a cadence that would schedule nothing or a value the column would reject.
@@ -5140,9 +5165,22 @@ ENGAGEMENT_TARGET_CATEGORIES = ("peer", "icp", "creator")
 ENGAGEMENT_TARGET_SOURCES = ("user", "suggested")
 ENGAGEMENT_TARGET_WEEKLY_DEFAULT = 2
 ENGAGEMENT_TARGET_WEEKLY_MAX = 14
+# Follow state of a roster target (issue #962). 'following' and 'follow_failed' are TERMINAL — once
+# a target reaches either, the roster pass never examines it for a follow again, which is what keeps
+# the opt-in lane from redoing the same work every run.
+ENGAGEMENT_TARGET_FOLLOW_STATUSES = ("unknown", "not_following", "following", "follow_failed")
+ENGAGEMENT_TARGET_FOLLOW_TERMINAL = ("following", "follow_failed")
+# Failed follow attempts before a target goes 'follow_failed'. Two, because one failure is usually a
+# render race and the second says the control genuinely is not there.
+ENGAGEMENT_TARGET_FOLLOW_MAX_ATTEMPTS = 2
+# Consecutive BLOCKED VISITS before the roster card badges the target. Two distinct visits, not two
+# cards on one visit: a single page that happened to render only reshares is not evidence that the
+# author restricts commenting.
+ENGAGEMENT_TARGET_BLOCKED_BADGE_STREAK = 2
 _ENGAGEMENT_TARGET_COLS = ("id", "profile_url", "name", "category", "max_comments_per_week",
                            "active", "last_engaged_at", "comments_this_week", "week_start",
-                           "source")
+                           "source", "comment_blocked_streak", "last_blocked_at", "follow_status",
+                           "followed_at", "follow_attempts")
 
 
 def resolve_weekly_cap(value: Any) -> int:
@@ -5171,6 +5209,10 @@ def _clean_target_row(row: dict) -> dict:
         row["comments_this_week"] = 0
     row["comments_this_week"] = int(row.get("comments_this_week") or 0)
     row["max_comments_per_week"] = resolve_weekly_cap(row.get("max_comments_per_week"))
+    row["comment_blocked_streak"] = int(row.get("comment_blocked_streak") or 0)
+    row["follow_attempts"] = int(row.get("follow_attempts") or 0)
+    if row.get("follow_status") not in ENGAGEMENT_TARGET_FOLLOW_STATUSES:
+        row["follow_status"] = "unknown"
     return row
 
 
@@ -5257,7 +5299,11 @@ def delete_engagement_target(user_id: int, profile_url: str) -> bool:
 def record_target_engagement(user_id: int, profile_url: str) -> bool:
     """Count one comment against a roster author's weekly cap and stamp last_engaged_at. The
     counter resets in the same statement when the stored week_start is not the current week, so a
-    new week always starts from 1 without a separate reset job."""
+    new week always starts from 1 without a separate reset job.
+
+    A landed comment also clears `comment_blocked_streak` (issue #962): the streak means "we could
+    not comment here", and this IS the proof that we could. Folded into this one statement rather
+    than a second call site so the two can never disagree."""
     week = engagement_week_start()
     connection = get_db_connection()
     cursor = connection.cursor()
@@ -5265,13 +5311,108 @@ def record_target_engagement(user_id: int, profile_url: str) -> bool:
         cursor.execute(
             "UPDATE engagement_targets SET "
             "comments_this_week = IF(week_start = %s, comments_this_week + 1, 1), "
-            "week_start = %s, last_engaged_at = NOW() "
+            "week_start = %s, last_engaged_at = NOW(), comment_blocked_streak = 0 "
             "WHERE user_id=%s AND profile_url=%s", (week, week, user_id, str(profile_url or "").strip()))
         connection.commit()
         return cursor.rowcount > 0
     except mysql.connector.Error as err:
         log_error("Could not record target engagement", exc=err, user_id=user_id)
         return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def record_target_comment_blocked(user_id: int, profile_url: str) -> int:
+    """Count ONE visit where a roster target's posts rendered but none carried a comment affordance
+    — the restricted-comments signature (issue #962). Returns the new streak, or 0 if nothing was
+    written, so the caller can log the surface crossing exactly once.
+
+    Distinct from "no posts / only reshares", which the caller never reports here: that is a plain
+    skip and says nothing about whether the author accepts comments."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    url = str(profile_url or "").strip()
+    try:
+        cursor.execute(
+            "UPDATE engagement_targets SET "
+            # LEAST() keeps the TINYINT UNSIGNED column from wrapping on a target that stays blocked
+            # for months — the badge only cares that the streak is at or past its threshold.
+            "comment_blocked_streak = LEAST(255, comment_blocked_streak + 1), last_blocked_at = NOW() "
+            "WHERE user_id=%s AND profile_url=%s", (user_id, url))
+        connection.commit()
+        if cursor.rowcount <= 0:
+            return 0
+        cursor.execute("SELECT comment_blocked_streak FROM engagement_targets "
+                       "WHERE user_id=%s AND profile_url=%s", (user_id, url))
+        row = cursor.fetchone()
+        return int(row[0]) if row else 0
+    except mysql.connector.Error as err:
+        log_error("Could not record blocked roster target", exc=err, user_id=user_id)
+        return 0
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def set_target_follow_status(user_id: int, profile_url: str, status: str) -> bool:
+    """Write a roster target's follow state (issue #962). 'following' stamps `followed_at` and
+    clears the attempt counter — it is reached both by a verified click and by the zero-cost
+    catch-up where the top card already said "Following"."""
+    if status not in ENGAGEMENT_TARGET_FOLLOW_STATUSES:
+        log_error(f"Refusing to write unknown follow status {status!r}", user_id=user_id)
+        return False
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        if status == "following":
+            cursor.execute(
+                "UPDATE engagement_targets SET follow_status=%s, followed_at=NOW(), "
+                "follow_attempts=0 WHERE user_id=%s AND profile_url=%s",
+                (status, user_id, str(profile_url or "").strip()))
+        else:
+            cursor.execute(
+                "UPDATE engagement_targets SET follow_status=%s WHERE user_id=%s AND profile_url=%s",
+                (status, user_id, str(profile_url or "").strip()))
+        connection.commit()
+        return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        log_error("Could not set roster target follow status", exc=err, user_id=user_id)
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def record_target_follow_failure(user_id: int, profile_url: str) -> int:
+    """One failed follow attempt on a roster target. Returns the new attempt count.
+
+    At `ENGAGEMENT_TARGET_FOLLOW_MAX_ATTEMPTS` the status goes terminal ('follow_failed') in the
+    same statement, which both badges the target for the user and stops the roster pass from
+    spending a click on it every single run."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    url = str(profile_url or "").strip()
+    try:
+        cursor.execute(
+            "UPDATE engagement_targets SET "
+            # follow_status is assigned FIRST on purpose: MySQL evaluates SET clauses left to right
+            # and a later one already sees the new value, so incrementing first would make this test
+            # read the post-increment count and fire a run early.
+            "follow_status = IF(follow_attempts + 1 >= %s, 'follow_failed', 'not_following'), "
+            "follow_attempts = LEAST(255, follow_attempts + 1) "
+            "WHERE user_id=%s AND profile_url=%s",
+            (ENGAGEMENT_TARGET_FOLLOW_MAX_ATTEMPTS, user_id, url))
+        connection.commit()
+        if cursor.rowcount <= 0:
+            return 0
+        cursor.execute("SELECT follow_attempts FROM engagement_targets "
+                       "WHERE user_id=%s AND profile_url=%s", (user_id, url))
+        row = cursor.fetchone()
+        return int(row[0]) if row else 0
+    except mysql.connector.Error as err:
+        log_error("Could not record roster follow failure", exc=err, user_id=user_id)
+        return 0
     finally:
         cursor.close()
         connection.close()

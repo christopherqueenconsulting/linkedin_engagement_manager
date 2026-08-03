@@ -45,6 +45,10 @@ export type EngPrefs = {
   posting_days: number[]
   // AI image on generated text posts (image-generation overhaul). Default on.
   text_post_images?: boolean
+  // Opt-in auto-follow of roster targets (issue #962). Default OFF — bulk following is a classic
+  // bot signature, so it only ever runs because the user asked for it.
+  roster_auto_follow?: boolean
+  max_follows_per_day?: number
   max_catchup_touches_per_day: number
   catchup_touch_mode: string
   catchup_event_types: string[]
@@ -114,7 +118,21 @@ export type EngagementTarget = {
   source: 'user' | 'suggested'
   last_engaged_at?: string | null
   comments_this_week?: number
+  // Written by the roster pass, read-only here (issue #962). A streak counts consecutive VISITS
+  // where the target's posts rendered with no comment affordance at all — the signature of an
+  // author who only accepts comments from connections or followers.
+  comment_blocked_streak?: number
+  last_blocked_at?: string | null
+  // 'following' and 'follow_failed' are terminal: the roster never re-examines the target.
+  follow_status?: 'unknown' | 'not_following' | 'following' | 'follow_failed'
+  followed_at?: string | null
+  follow_attempts?: number
 }
+
+// A target is badged once it has been un-commentable on this many consecutive visits — one visit
+// that happened to render only reshares is not evidence. Mirrors
+// db.ENGAGEMENT_TARGET_BLOCKED_BADGE_STREAK.
+export const ROSTER_BLOCKED_BADGE_STREAK = 2
 
 export const TARGET_CATEGORIES: { key: EngagementTargetCategory; label: string; hint: string }[] = [
   { key: 'peer', label: 'Peer', hint: 'Creators at your level — aim for ~50% of the roster' },

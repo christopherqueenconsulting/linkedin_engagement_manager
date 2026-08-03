@@ -38,6 +38,13 @@ export default function VolumeSection() {
               })}
               className={inputClass} />
           </Field>
+          <Field settingKey="max_follows_per_day">
+            <input type="number" min={0} max={20} value={eng.max_follows_per_day ?? 3}
+              onChange={(e) => setEng({
+                max_follows_per_day: Math.min(20, Math.max(0, Number(e.target.value) || 0)),
+              })}
+              className={inputClass} />
+          </Field>
           <Field settingKey="max_catchup_touches_per_day">
             <input type="number" min={0} max={catchupAllowed} value={eng.max_catchup_touches_per_day ?? 5}
               onChange={(e) => setEng({

@@ -349,3 +349,37 @@ class TestConnectionTargetingPrefs:
         assert resp.status_code == 200
         assert upd.call_args[0][1]["connection_targeting_mode"] == "suggest"
         assert upd.call_args[0][1]["min_connection_icp_score"] == 100
+
+
+class TestRosterAutoFollow:
+    """Opt-in roster auto-follow (issue #962)."""
+
+    def test_defaults_to_off_with_the_conservative_cap(self, client):
+        from cqc_lem.utilities.db import ROSTER_FOLLOWS_PER_DAY_DEFAULT
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/engagement-preferences",
+                              json={"session_token": _SESSION})
+        assert resp.status_code == 200
+        assert upd.call_args[0][1]["roster_auto_follow"] is False
+        assert upd.call_args[0][1]["max_follows_per_day"] == ROSTER_FOLLOWS_PER_DAY_DEFAULT
+
+    def test_the_toggle_round_trips(self, client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+            resp = client.put("/api/user/engagement-preferences",
+                              json={"session_token": _SESSION, "roster_auto_follow": True})
+        assert resp.status_code == 200
+        assert upd.call_args[0][1]["roster_auto_follow"] is True
+
+    def test_the_cap_clamps_instead_of_422ing_the_whole_save(self, client):
+        # The SPA writes every engagement field in one request, so one bad number must never take
+        # the other 40 settings down with it (the V52 lesson).
+        from cqc_lem.utilities.db import ROSTER_FOLLOWS_PER_DAY_MAX
+        for given, expected in ((0, 0), (3, 3), (-5, 0), (999, ROSTER_FOLLOWS_PER_DAY_MAX)):
+            with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+                 patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
+                resp = client.put("/api/user/engagement-preferences",
+                                  json={"session_token": _SESSION, "max_follows_per_day": given})
+            assert resp.status_code == 200
+            assert upd.call_args[0][1]["max_follows_per_day"] == expected

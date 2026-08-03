@@ -2,9 +2,11 @@ import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/AuthContext'
-import { TARGET_CATEGORIES } from './types'
+import { ROSTER_BLOCKED_BADGE_STREAK, TARGET_CATEGORIES } from './types'
 import type { EngagementTarget, EngagementTargetCategory } from './types'
 import { useRegisterSaveSection, sectionSaveCallbacks } from './SettingsSaveContext'
+import { useEngagementPrefs } from './settings/EngagementPrefsContext'
+import { ConflictNotices } from './settings/Field'
 
 type RosterResponse = { targets: EngagementTarget[]; suggestions: EngagementTarget[] }
 
@@ -13,6 +15,51 @@ type RosterResponse = { targets: EngagementTarget[]; suggestions: EngagementTarg
 const PER_WEEK_LABEL = 'Max comments/wk'
 const PER_WEEK_HINT =
   "LEM will comment on this account's recent posts at most this many times per week (0 pauses the account)."
+
+// What LEM learned about a target it could not act on (issue #962). A blocked target is not an
+// error — the author simply restricts who may comment — so the badge says what to DO about it.
+// Following and being ABLE to comment are not the same thing: a connections-only commenter stays
+// blocked after a follow, which is why the copy names both moves.
+const BLOCKED_LABEL = "Can't comment — follow or connect with this account"
+const BLOCKED_HINT =
+  'This account\'s recent posts rendered with no comment box, which is how LinkedIn shows a post ' +
+  'that only accepts comments from connections or followers. Following may unlock it; if the ' +
+  'author is connections-only, you have to connect.'
+const FOLLOW_FAILED_LABEL = 'Follow failed'
+const FOLLOW_FAILED_HINT =
+  'LEM found a Follow button but it never flipped to Following, twice. Follow this account by ' +
+  'hand — LEM will not keep retrying.'
+const FOLLOWING_LABEL = 'Following'
+
+function TargetBadges({ target }: { target: EngagementTarget }) {
+  const blocked = (target.comment_blocked_streak ?? 0) >= ROSTER_BLOCKED_BADGE_STREAK
+  const failed = target.follow_status === 'follow_failed'
+  const following = target.follow_status === 'following'
+  if (!blocked && !failed && !following) return null
+  return (
+    <div className="sm:col-span-12 flex flex-wrap gap-2 text-xs -mt-1"
+         data-testid={`roster-badges-${target.id ?? target.profile_url}`}>
+      {blocked && (
+        <span title={BLOCKED_HINT} data-testid="roster-blocked-badge"
+              className="bg-amber-100 text-amber-900 rounded-full px-2 py-0.5 font-medium">
+          {BLOCKED_LABEL}
+        </span>
+      )}
+      {failed && (
+        <span title={FOLLOW_FAILED_HINT} data-testid="roster-follow-failed-badge"
+              className="bg-red-100 text-red-800 rounded-full px-2 py-0.5 font-medium">
+          {FOLLOW_FAILED_LABEL}
+        </span>
+      )}
+      {following && !failed && (
+        <span data-testid="roster-following-badge"
+              className="bg-gray-100 text-gray-600 rounded-full px-2 py-0.5">
+          {FOLLOWING_LABEL}
+        </span>
+      )}
+    </div>
+  )
+}
 
 const blank = (): EngagementTarget => ({
   profile_url: '', name: '', category: 'peer', max_comments_per_week: 2, active: true, source: 'user',
@@ -46,6 +93,10 @@ function MixBar({ targets }: { targets: EngagementTarget[] }) {
 export default function EngagementRosterCard() {
   const { sessionToken } = useAuth()
   const queryClient = useQueryClient()
+  // The auto-follow toggle is an engagement PREFERENCE, so it shares the one prefs row and the one
+  // mutation every settings section writes through — a second writer here would save the other
+  // sections' stale copies over the user's edits (see EngagementPrefsContext).
+  const { eng, setEng, save: savePrefs } = useEngagementPrefs()
   const [targets, setTargets] = useState<EngagementTarget[]>([])
   const [savedSig, setSavedSig] = useState<string | null>(null)
   const [init, setInit] = useState(false)
@@ -106,9 +157,31 @@ export default function EngagementRosterCard() {
     },
   })
 
+  // The toggle lives on this card but is stored in the shared prefs row, so "Save Roster" has to
+  // write both — a switch that silently needed a second save button elsewhere is how a user ends up
+  // believing auto-follow is on when it never was. Tracked from the control itself rather than by
+  // diffing loaded state, so the prefs row is only rewritten when the user actually moved it.
+  const [autoFollowTouched, setAutoFollowTouched] = useState(false)
+  const autoFollow = !!eng?.roster_auto_follow
+
+  const saveRoster = async (): Promise<boolean> => {
+    const analytics = sectionSaveCallbacks('engagement-roster')
+    try {
+      await saveMutation.mutateAsync()
+    } catch {
+      analytics.onError()
+      return false
+    }
+    analytics.onSuccess()
+    if (autoFollowTouched) {
+      if (!(await savePrefs())) return false
+      setAutoFollowTouched(false)
+    }
+    return true
+  }
+
   const isDirty = init && savedSig !== null && JSON.stringify(targets) !== savedSig
-  useRegisterSaveSection('engagement-roster', 'Engagement Roster', isDirty,
-    async () => { await saveMutation.mutateAsync(); return true })
+  useRegisterSaveSection('engagement-roster', 'Engagement Roster', isDirty, saveRoster)
 
   if (!init) return null
 
@@ -126,6 +199,10 @@ export default function EngagementRosterCard() {
         it. Aim for 50–100 accounts, roughly 50% peers / 30% ICP / 20% large creators. Off-topic posts
         are always skipped, roster or not.
       </p>
+      {/* The account-level half of the blocked-roster signal (issue #962): the per-row badges say
+          WHICH accounts, this says the roster as a whole has stopped working. Tolerant of no
+          provider, so the card still renders standalone. */}
+      <ConflictNotices anchor="engagement_roster" />
       <MixBar targets={targets} />
 
       <div className="space-y-2">
@@ -179,12 +256,37 @@ export default function EngagementRosterCard() {
                 title="Remove account"
                 className="text-red-500 hover:text-red-600">×</button>
             </div>
+            <TargetBadges target={t} />
           </div>
         ))}
       </div>
 
       <button type="button" onClick={addRow}
         className="text-xs text-blue-600 font-medium hover:text-blue-700">+ Add account</button>
+
+      {eng && (
+        <div className="border-t border-gray-100 pt-3">
+          <label className="flex items-start gap-2 text-sm text-gray-700">
+            <input type="checkbox" checked={autoFollow} data-testid="roster-auto-follow"
+              aria-label="Follow blocked roster accounts automatically"
+              onChange={(e) => {
+                setEng({ roster_auto_follow: e.target.checked })
+                setAutoFollowTouched(true)
+              }}
+              className="mt-0.5" />
+            <span>
+              Follow roster accounts automatically
+              <span className="block text-xs text-gray-500">
+                Off by default. When on, LEM follows up to{' '}
+                <span className="font-semibold">{eng.max_follows_per_day ?? 3}</span> roster accounts
+                a day while it is already on their activity page — never in a separate browsing
+                session. Following can unlock a followers-only account; a connections-only one still
+                needs a connection request. Change the daily number under Volume → Daily caps.
+              </span>
+            </span>
+          </label>
+        </div>
+      )}
 
       {suggestions.length > 0 && (
         <div className="border-t border-gray-100 pt-3 space-y-2">
@@ -204,7 +306,7 @@ export default function EngagementRosterCard() {
       )}
 
       {msg && <p className={`text-sm font-medium ${msg.ok ? 'text-green-600' : 'text-red-600'}`}>{msg.text}</p>}
-      <button type="button" onClick={() => saveMutation.mutate(undefined, sectionSaveCallbacks('engagement-roster'))}
+      <button type="button" onClick={() => { void saveRoster() }}
         disabled={saveMutation.isPending}
         className="w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
         {saveMutation.isPending ? 'Saving…' : 'Save Roster'}
