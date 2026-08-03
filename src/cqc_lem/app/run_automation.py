@@ -72,6 +72,7 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     record_story_bank_use
 from cqc_lem.utilities.audience_stats import parse_follower_count, parse_connection_count, \
     parse_profile_views, parse_search_appearances
+from cqc_lem.utilities.blog_source import resolve_blog_source
 from cqc_lem.utilities.engagement_window import record_pre_post_run
 from cqc_lem.utilities.ai import story_bank as _story_bank
 from cqc_lem.utilities import golden_hour as _golden
@@ -2539,9 +2540,8 @@ def auto_publish_newsletter_edition(self, user_id: int):
         log_error("Error getting profile for newsletter", exc=e, user_id=user_id, task_name="auto_publish_newsletter_edition")
         return f"Failed to start newsletter: {e}"
     try:
-        # TODO(blog-align): when align_with_blog, fetch recent blog/sitemap content to pass as
-        # blog_content. For now the edition is generated from topic + profile.
-        edition = generate_newsletter_edition(my_profile, topic=settings.get("topic"), blog_content=None)
+        edition = generate_newsletter_edition(my_profile, topic=settings.get("topic"),
+                                              blog_content=resolve_blog_source(user_id, settings))
         if not edition:
             return "No newsletter edition generated"
         driver.get("https://www.linkedin.com/article/new/")

@@ -739,6 +739,7 @@ def _topup_newsletter_drafts_for_user(user_id: int, now: datetime,
                                                 get_or_create_profile_synthesis)
     from cqc_lem.utilities.ai.content_framework import compact_blueprint
     from cqc_lem.utilities.ai.content_research import research_topic
+    from cqc_lem.utilities.blog_source import resolve_blog_source
     from cqc_lem.utilities.newsletter import upcoming_publish_slots, should_generate_now
     from cqc_lem.utilities.notifications import notify_newsletter_draft_ready
 
@@ -791,8 +792,15 @@ def _topup_newsletter_drafts_for_user(user_id: int, now: datetime,
                                      len(slots), recent_formats=recent_formats,
                                      recent_hook_styles=recent_hooks)
 
+    # Blog alignment (issue #967): resolved PER edition, so two editions queued in the same run
+    # repurpose two different recent articles instead of rehashing one. The first empty resolve means
+    # there is nothing readable (no blog set / unreachable), so stop paying for the fetch this run.
+    blog_align = bool(settings.get("align_with_blog"))
+
     generated = 0
     for i, slot in enumerate(slots):
+        blog_content = resolve_blog_source(user_id, settings) if blog_align else None
+        blog_align = blog_align and blog_content is not None
         plan = planned[i] if i < len(planned) else None
         subject_ctx = None
         if plan:
@@ -808,6 +816,7 @@ def _topup_newsletter_drafts_for_user(user_id: int, now: datetime,
             (plan.get("subject") if plan else None) or description or "",
             content_type="newsletter", blueprint=plan, context_description=description, prefs=prefs)
         edition = generate_newsletter_edition(profile, topic=description, prefs=prefs,
+                                              blog_content=blog_content,
                                               subject=subject_ctx, avoid_subjects=avoid,
                                               profile_synthesis=synthesis, blueprint=plan,
                                               avoid_openers=recent_openers, research=research)
@@ -967,6 +976,7 @@ def regenerate_newsletter_edition(edition_id: int, guidance: str = None):
                                                 get_or_create_profile_synthesis)
     from cqc_lem.utilities.ai.content_framework import compact_blueprint, select_blueprint
     from cqc_lem.utilities.ai.content_research import research_topic
+    from cqc_lem.utilities.blog_source import resolve_blog_source
 
     edition = get_newsletter_edition(edition_id)
     if not edition or edition.get("status") not in ("draft", "approved"):
@@ -999,9 +1009,12 @@ def regenerate_newsletter_edition(edition_id: int, guidance: str = None):
     research = research_topic(subject or settings.get("topic") or "", content_type="newsletter",
                               blueprint=blueprint,
                               context_description=settings.get("topic"), prefs=prefs)
+    # Blog alignment (issue #967) — None when the toggle is off or nothing readable came back.
+    blog_content = resolve_blog_source(user_id, settings)
     try:
         with llm_attribution(user_id=user_id, feature=FEATURE_NEWSLETTER):
             new_ed = generate_newsletter_edition(profile, topic=settings.get("topic"), prefs=prefs,
+                                                 blog_content=blog_content,
                                                  subject=subject, avoid_subjects=avoid,
                                                  profile_synthesis=synthesis, guidance=guidance,
                                                  blueprint=blueprint, avoid_openers=recent_openers,

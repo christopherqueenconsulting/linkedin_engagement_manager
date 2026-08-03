@@ -40,6 +40,22 @@ class TestAutoPublishNewsletterEdition:
         # subtitle is threaded through to the publisher
         assert fill.call_args.kwargs.get("subtitle") == "The reach levers most creators miss."
 
+    def test_align_with_blog_reaches_the_generator(self):
+        """#967: the toggle used to change nothing — blog_content was hardcoded None."""
+        from cqc_lem.app.run_automation import auto_publish_newsletter_edition
+        edition = {"title": "T", "subtitle": "S", "body": "B"}
+        settings = {"enabled": True, "topic": "reach", "align_with_blog": True}
+        with patch(f"{_RA}.get_newsletter_settings", return_value=settings), \
+             patch(f"{_RA}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_RA}.resolve_blog_source", return_value="my blog words") as resolve, \
+             patch(f"{_RA}.generate_newsletter_edition", return_value=edition) as gen, \
+             patch(f"{_RA}._fill_and_publish_article", return_value=("https://x/pulse/t", None)), \
+             patch(f"{_RA}.mark_newsletter_published"), \
+             patch(f"{_RA}.quit_gracefully"):
+            auto_publish_newsletter_edition.run(user_id=1)
+        resolve.assert_called_once_with(1, settings)
+        assert gen.call_args.kwargs.get("blog_content") == "my blog words"
+
 
 class TestFillEditionDescription:
     def test_returns_false_on_empty_subtitle(self):
@@ -133,7 +149,7 @@ class TestAutoPublishEdition:
 
 def _run_generate(*, settings, pending, latest=None, gen_now=True,
                   edition=None, edition_side_effect=None, create_ret=1, create_side_effect=None,
-                  user_ids=None, tz_side_effect=None):
+                  user_ids=None, tz_side_effect=None, blog_side_effect=None, gen_spy=None):
     """Drive auto_generate_newsletter_drafts with the new pure-count collaborators mocked out."""
     from contextlib import ExitStack
     from cqc_lem.app.run_scheduler import auto_generate_newsletter_drafts
@@ -141,6 +157,7 @@ def _run_generate(*, settings, pending, latest=None, gen_now=True,
         edition = {"title": "T", "subtitle": "S", "body": "B"}
     if user_ids is None:
         user_ids = [1]
+    blog_kw = {"side_effect": blog_side_effect} if blog_side_effect else {"return_value": None}
     gen_kw = {"side_effect": edition_side_effect} if edition_side_effect else {"return_value": edition}
     create_kw = {"side_effect": create_side_effect} if create_side_effect else {"return_value": create_ret}
     tz_kw = {"side_effect": tz_side_effect} if tz_side_effect else {"return_value": "UTC"}
@@ -159,12 +176,15 @@ def _run_generate(*, settings, pending, latest=None, gen_now=True,
         p(patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user", return_value=MagicMock()))
         p(patch("cqc_lem.utilities.ai.ai_helper.get_or_create_profile_synthesis", return_value="voice brief"))
         p(patch("cqc_lem.utilities.ai.ai_helper.plan_newsletter_topics", return_value=[]))
-        p(patch("cqc_lem.utilities.ai.ai_helper.generate_newsletter_edition", **gen_kw))
+        gen = p(patch("cqc_lem.utilities.ai.ai_helper.generate_newsletter_edition", **gen_kw))
+        blog = p(patch("cqc_lem.utilities.blog_source.resolve_blog_source", **blog_kw))
         p(patch("cqc_lem.utilities.ai.content_research.research_topic",
                 return_value={"findings": "", "sources": []}))
         p(patch("cqc_lem.utilities.newsletter.should_generate_now", return_value=gen_now))
         notify = p(patch("cqc_lem.utilities.notifications.notify_newsletter_draft_ready"))
         result = auto_generate_newsletter_drafts()
+    if gen_spy is not None:
+        gen_spy.extend([gen, blog])
     return result, create, notify
 
 
@@ -221,6 +241,33 @@ class TestGenerateNewsletterDrafts:
             settings=_settings(max_queued_drafts=3), pending=0, create_side_effect=[10, 0])
         assert create.call_count == 2
         assert "Generated 1 newsletter draft" in result
+
+    def test_blog_source_resolved_per_edition(self):
+        """#967: each edition repurposes a DIFFERENT recent article, not one fetched per run."""
+        spy = []
+        _run_generate(settings=_settings(max_queued_drafts=3, align_with_blog=True), pending=0,
+                      blog_side_effect=["article one", "article two", "article three"], gen_spy=spy)
+        gen, blog = spy
+        assert blog.call_count == 3
+        assert [c.kwargs.get("blog_content") for c in gen.call_args_list] == [
+            "article one", "article two", "article three"]
+
+    def test_blog_source_stops_refetching_once_empty(self):
+        """Nothing readable on the first try means nothing readable this run — don't pay 3x for it."""
+        spy = []
+        _run_generate(settings=_settings(max_queued_drafts=3, align_with_blog=True), pending=0,
+                      blog_side_effect=[None, "never reached"], gen_spy=spy)
+        gen, blog = spy
+        blog.assert_called_once()
+        assert [c.kwargs.get("blog_content") for c in gen.call_args_list] == [None, None, None]
+
+    def test_blog_source_not_resolved_when_toggle_off(self):
+        spy = []
+        _run_generate(settings=_settings(max_queued_drafts=2, align_with_blog=False), pending=0,
+                      gen_spy=spy)
+        gen, blog = spy
+        blog.assert_not_called()
+        assert all(c.kwargs.get("blog_content") is None for c in gen.call_args_list)
 
     def test_one_user_failure_does_not_stop_loop(self):
         result, create, _ = _run_generate(
@@ -295,9 +342,9 @@ class TestTopupPlansDistinctSubjects:
         from contextlib import ExitStack
         from cqc_lem.app.run_scheduler import auto_generate_newsletter_drafts
 
-        def _gen(profile, topic=None, prefs=None, subject=None, avoid_subjects=None,
-                 profile_synthesis=None, guidance=None, blueprint=None, avoid_openers=None,
-                 research=None):
+        def _gen(profile, topic=None, prefs=None, blog_content=None, subject=None,
+                 avoid_subjects=None, profile_synthesis=None, guidance=None, blueprint=None,
+                 avoid_openers=None, research=None):
             if gen_captures is not None:
                 gen_captures.append({"subject": subject, "blueprint": blueprint,
                                      "avoid_openers": avoid_openers, "research": research})
@@ -415,16 +462,17 @@ class TestTopupPlansDistinctSubjects:
 
 
 def _run_regenerate(*, edition, guidance=None, others=None, recent=None, new_ed=None,
-                    shape_history=None, research=None):
+                    shape_history=None, research=None, settings=None, blog_content=None):
     from contextlib import ExitStack
     from cqc_lem.app.run_scheduler import regenerate_newsletter_edition
     if new_ed is None:
         new_ed = {"title": "New T", "subtitle": "New S", "subject": "New Subject", "body": "New B"}
     captured = {}
 
-    def _gen(profile, topic=None, prefs=None, subject=None, avoid_subjects=None,
+    def _gen(profile, topic=None, prefs=None, blog_content=None, subject=None, avoid_subjects=None,
              profile_synthesis=None, guidance=None, blueprint=None, avoid_openers=None,
              research=None):
+        captured["blog_content"] = blog_content
         captured["subject"] = subject
         captured["avoid"] = avoid_subjects
         captured["guidance"] = guidance
@@ -436,8 +484,9 @@ def _run_regenerate(*, edition, guidance=None, others=None, recent=None, new_ed=
     with ExitStack() as es:
         p = es.enter_context
         p(patch("cqc_lem.utilities.db.get_newsletter_edition", return_value=edition))
-        p(patch("cqc_lem.utilities.db.get_newsletter_settings", return_value=_settings()))
+        p(patch("cqc_lem.utilities.db.get_newsletter_settings", return_value=settings or _settings()))
         p(patch("cqc_lem.utilities.db.get_engagement_preferences", return_value={}))
+        blog = p(patch("cqc_lem.utilities.blog_source.resolve_blog_source", return_value=blog_content))
         pending_eds = [{"id": o_id, "subject": s} for o_id, s in (others or [])]
         p(patch("cqc_lem.utilities.db.get_pending_newsletter_editions", return_value=pending_eds))
         p(patch("cqc_lem.utilities.db.get_recent_newsletter_subjects", return_value=recent or []))
@@ -451,6 +500,7 @@ def _run_regenerate(*, edition, guidance=None, others=None, recent=None, new_ed=
         upd = p(patch("cqc_lem.utilities.db.update_newsletter_edition", return_value=True))
         result = regenerate_newsletter_edition.run(edition_id=edition["id"], guidance=guidance)
     captured["research_calls"] = research_mock.call_count
+    captured["blog_calls"] = blog.call_count
     return result, upd, captured
 
 
@@ -475,6 +525,14 @@ class TestRegenerateNewsletterEdition:
         assert cap["subject"] is None  # no guidance -> AI picks a fresh, distinct subject
         assert upd.call_args.kwargs["status"] == "draft"
         assert upd.call_args.kwargs["subject"] == "New Subject"  # persisted from the regenerated edition
+
+    def test_blog_source_reaches_the_rewrite(self):
+        """#967: a regenerated edition repurposes the blog too, not just the first draft."""
+        ed = {"id": 9, "user_id": 1, "status": "draft", "subject": "Mine"}
+        _, _, cap = _run_regenerate(edition=ed, settings=_settings(align_with_blog=True),
+                                    blog_content="my blog words")
+        assert cap["blog_calls"] == 1
+        assert cap["blog_content"] == "my blog words"
 
     def test_avoids_other_editions_subjects(self):
         ed = {"id": 9, "user_id": 1, "status": "draft", "subject": "Mine"}
