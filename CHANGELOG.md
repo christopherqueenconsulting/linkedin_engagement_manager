@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.126.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.125.1...v0.126.0) (2026-08-03)
+
+
+### Features
+
+* **agent-pipeline:** phase-guard holds route to MODE=phasefix instead of the owner ([#949](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/949)) ([4a6868c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4a6868c5cc673c16b0c7dfbf0fdea4d04b0756bc))
+
+
+### Bug Fixes
+
+* **billing:** daily caps stop resetting — the brand phase seeds, it no longer re-asserts (closes [#952](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/952)) ([#955](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/955)) ([c16bb85](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c16bb850108497b1e276d5fe2ba1e6989e12c275))
+
 ## [0.125.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.125.0...v0.125.1) (2026-08-03)
 
 
