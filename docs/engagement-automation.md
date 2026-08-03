@@ -330,3 +330,66 @@ empty-dict stubs, so only new connections ever produced a DM and the
   cards DMs real people, so the flip belongs to the owner after a live run of
   `python -m scripts.linkedin_live_validation --appreciation-sources` — read-only, messages
   nobody, claims no ledger row, and reports per card what production would do with it.
+
+## Stale-invite withdrawal (`utilities/linkedin/stale_invites.py`, issue #969)
+
+The beat `clean-up-stale-invites` had sat on the schedule at 02:00 every night returning
+`{"status": "not_implemented"}`. Nothing withdrew anything, so pending invites accumulated forever —
+LinkedIn caps how many may be outstanding at once, and a pile of months-old unanswered ones both eats
+that ceiling and drags the acceptance rate the outreach features are judged on.
+
+- **Withdrawing is ONE-WAY.** LinkedIn blocks re-inviting the same person for ~3 weeks afterwards, so
+  every decision fails CLOSED. An invite whose "Sent … ago" stamp cannot be read is **never stale**
+  (`parse_sent_age_days` returns `None`, and `None` is skipped), and a row with no resolvable
+  Withdraw control is left alone.
+- **Only the row's own `Sent …` line is parsed.** The text handed to the parser is the WHOLE card —
+  name, headline, buttons — and a headline is free to read "10 years ago I started…". The trailing
+  `ago` is required too. If LinkedIn ever stops writing "Sent", every row reads unreadable and the
+  lane withdraws **nothing**; the run report's `unreadable` count (and one run-level warning when
+  EVERY row is undated) is what makes that visible instead of silent.
+- **OFF until someone turns it on** (`STALE_INVITE_WITHDRAWAL_ENABLED`, default false). These
+  selectors were written from the invitation manager as documented, not from a live grounding run,
+  and an ungrounded Selenium lane that silently matches nothing is exactly how the catch-up lane
+  (#792/#964) spent months doing nothing. Ground it first:
+  `python -m scripts.linkedin_live_validation --sent-invites` — strictly read-only, it resolves rows
+  and describes them, **nothing is withdrawn by running it**. Zero rows has THREE readings and the
+  probe separates them, because an account with nothing outstanding and a rotated row anchor report
+  the same zero: it samples the page's own text (`page_text`) and reports the rendered empty state
+  (`empty_state`, e.g. "no pending invitations"). Empty state ⇒ clean account, anchors **untested**;
+  page text but no empty state ⇒ probable drift; no page text at all ⇒ the page never rendered and
+  the run grounds nothing. The first live run (2026-08-03) returned zero rows on an account with no
+  outstanding invites, which is why the distinction exists.
+- **Paced and capped like every other Selenium lane.** `plan_withdrawals` decides the allowance
+  BEFORE a Chrome session opens (most runs are zero and must cost no slot). The lane draws its own
+  `ACTION_WITHDRAW_INVITE` budget — its own key, or `daily_budget` would overwrite the connection
+  lane's stored draw with this different cap for the rest of the day — and is deliberately NOT in
+  `ENVELOPE_ACTIONS`: housekeeping must never ENLARGE a day's outbound allowance. It still passes
+  `caps`, so it is **bounded by** the envelope. Every hard gate (`is_automation_paused`, which the
+  #629 suppression trip rides, and the 429 breaker) is re-read per withdrawal, because a breaker can
+  trip mid-walk.
+- **Oldest first.** The budget is small, so it is spent on the invites least likely to ever be
+  accepted rather than on whichever row happened to render first. The list renders newest-first, so
+  the run expands it (`_load_more_rows`, bounded) before reading — a walk that never loads past the
+  first page can only see rows it must not touch, which looks exactly like "nothing is stale".
+  `expansions` on the report says whether the walk ran out of road.
+- **A handle read before a withdrawal is never spent after one.** A withdrawal RE-RENDERS the list —
+  that is how verification works at all — so every click after the first re-reads the page and
+  matches the target on its profile URL (`_resolve_control`). Re-using the original element handle
+  has two failure modes and only one is harmless: the node is detached and the click raises, or the
+  framework re-used that node for the row that shifted up into its place, and a one-way withdrawal
+  lands on a DIFFERENT, possibly days-old invite. A row that cannot be re-identified is skipped —
+  a missed withdrawal is recoverable next run, a wrong one is not. For the same reason a container
+  holding more than one Withdraw control is rejected page-side rather than read as one row: it is the
+  LIST, and accepting it would date every invite by the newest one's stamp.
+- **The daily spend is counted on the CLICK, not the verdict.** One `logs` row per DISPATCHED
+  withdrawal (`STALE_INVITE_WITHDRAWN_MESSAGE`; SUCCESS when the row was verifiably gone afterwards,
+  FAILURE when it was not) and `count_invite_withdrawals_today` counts BOTH — the click already
+  reached LinkedIn, and a lane whose verification broke must not be free to click every row on the
+  page. Counting the immutable logs rather than Redis is what makes a second run the same day, or a
+  worker restart, idempotent.
+- **Only a verified withdrawal earns the success status.** A run that clicked without verifying, and
+  a run whose stale rows all went stale before they could be clicked, both report `failed` — they are
+  the two shapes selector rot takes here.
+- **Observability:** every run emits `stale_invite_run`, including the ones that do nothing. A series
+  carrying only withdrawals would reproduce exactly the invisible-stub problem this replaced;
+  `rows_seen` is the tell.

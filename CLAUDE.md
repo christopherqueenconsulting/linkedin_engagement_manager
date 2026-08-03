@@ -153,6 +153,13 @@ the on-time/resource curve that sizes it. See `docs/SELENIUM_GRID.md` and `docs/
 - **Suppression tripwire** (`auto_suppression_tripwire` + `utilities/suppression.py`, #629): 2026 LinkedIn penalties are SILENT (reach step-collapses, no notification). A daily beat compares impressions-per-post against the user's OWN trailing 14-day median; a sustained drop `pause_automation()`s **engagement only** (posting is never gated) and escalates CRITICAL. Cold start / thin baseline = `unknown`, never actioned. Recovery is human (`POST /user/automation-resume`).
 - **Weekly group post** (`auto_draft_group_post` → `auto_post_to_group`, #932): TWO beats with a review window between them. `auto_draft_group_post` (Sun) is the ONE place a group post's text is written — no browser, cached profile — and `auto_post_to_group` (Tue) publishes that draft and generates NOTHING, so **a run with no READY draft publishes nothing**. Silence ships it (resting status is `ready`, not pending approval), so the cadence is unchanged; the SPA (`GroupsCard`, `GET`/`PUT /user/group-post-draft`) is where a user rewrites or skips it. ONE open draft per user — it may hold their edits, so it is carried forward, never replaced.
 - **Roster targets LEM can't comment on** (`comment_on_roster_posts` + `auto_follow_roster_target`, #962): posts but ZERO commentable cards records a blocked visit; no posts, a truncated walk, or a WHOLE roster blocked (`_card_for_textbox` drift) record nothing. Auto-follow is opt-in and OFF (`roster_auto_follow`), rides the open page, draws `ACTION_FOLLOW`/`max_follows_per_day` bounded by the account envelope but never in it, and clicks NOTHING unless the control names the page owner.
+- **Stale-invite withdrawal** (`utilities/linkedin/stale_invites.py`, #969): the 02:00 beat was a
+  `not_implemented` stub that LOOKED operational. Withdrawing is ONE-WAY (no re-invite for ~3 weeks),
+  so reads fail CLOSED — an unreadable "Sent … ago" is NEVER stale, and only the row's OWN `Sent`
+  line is parsed. OFF until `STALE_INVITE_WITHDRAWAL_ENABLED` (ground it:
+  `linkedin_live_validation --sent-invites`). `plan_withdrawals` decides the allowance BEFORE Chrome
+  opens; own `ACTION_WITHDRAW_INVITE` budget, bounded by the envelope, never IN it; the day's spend
+  is counted on the CLICK.
 - **Company-page invitations** (`utilities/linkedin/company_page_inviter.py`, #732): a paced DAILY drip bounded by the SMALLEST of three ceilings — per-day cap, credit spread (`credits_remaining / days_left_in_month`), and live credit count. `plan_daily_invites` decides all of that BEFORE a Chrome session opens — most days the allowance is zero.
 
 ### Engagement configuration (`engagement_preferences` table, API in `api/main.py`, SPA in `ui/.../Account.tsx`)

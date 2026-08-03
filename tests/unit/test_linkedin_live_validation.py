@@ -533,3 +533,101 @@ class TestAppreciationSourcesProbe:
         row = report["mentions"]["rows"][0]
         assert row["name"] == "Jane Doe"
         assert row["profile_url"] == "https://www.linkedin.com/in/jane-doe-42"
+
+
+@pytest.mark.unit
+class TestSentInvitesProbe:
+    """#969: the probe that has to run GREEN before the withdrawal lane may be switched on.
+
+    Two readings mean "production would withdraw nothing tonight" and must be named as such rather
+    than read as a clean account: no rows at all, and rows whose sent dates do not parse."""
+
+    def test_no_rows_on_a_rendered_page_names_selector_drift_as_a_possibility(self):
+        verdict = llv.sent_invites_verdict(
+            {"rows_seen": 0, "page_text": "Manage invitations Received Sent"})
+        assert "no pending-invite rows resolved" in verdict
+        assert "moved" in verdict
+
+    def test_the_pages_own_empty_state_separates_a_clean_account_from_drift(self):
+        """The first live run (PR #983) came back with zero rows and no way to tell which of the two
+        it was looking at. The page says so itself when it renders empty — so read that, and still
+        refuse to call the anchors grounded on a run that never saw a row."""
+        verdict = llv.sent_invites_verdict(
+            {"rows_seen": 0, "page_text": "Manage invitations You have no pending invitations",
+             "empty_state": "no pending invitations"})
+        assert "nothing outstanding" in verdict
+        assert "UNTESTED" in verdict
+        assert "moved" not in verdict
+
+    def test_no_rows_and_no_page_text_grounds_nothing(self):
+        verdict = llv.sent_invites_verdict({"rows_seen": 0, "page_text": "   "})
+        assert "did not render" in verdict
+        assert "grounds nothing" in verdict
+
+    def test_an_empty_state_phrase_needs_its_own_negation(self):
+        """A looser pattern would match "You have 3 pending invitations" and report an empty state on
+        a page FULL of rows the anchors missed — a false clean bill of health on the exact drift this
+        probe exists to catch."""
+        assert llv.sent_invite_empty_state("You have no pending invitations") == \
+            "no pending invitations"
+        assert llv.sent_invite_empty_state("No invitations") == "No invitations"
+        assert llv.sent_invite_empty_state("You have 3 pending invitations") is None
+        assert llv.sent_invite_empty_state("Manage invitations") is None
+        assert llv.sent_invite_empty_state(None) is None
+
+    def test_page_text_is_sampled_best_effort(self):
+        driver = MagicMock()
+        main = MagicMock()
+        main.text = "You have no  pending\ninvitations"
+        driver.find_elements.return_value = [main]
+        assert llv.page_text_sample(driver) == "You have no pending invitations"
+        broken = MagicMock()
+        broken.find_elements.side_effect = RuntimeError("stale")
+        assert llv.page_text_sample(broken) == ""
+
+    def test_rows_without_dates_are_not_a_clean_account(self):
+        verdict = llv.sent_invites_verdict({"rows_seen": 6, "dated": 0})
+        assert "NOT ONE" in verdict
+        assert "withdraws nothing" in verdict
+
+    def test_dated_rows_report_what_production_would_attempt(self):
+        verdict = llv.sent_invites_verdict({"rows_seen": 6, "dated": 6, "stale_at_threshold": 2,
+                                            "threshold_days": 21})
+        assert "2 at/over the 21-day threshold" in verdict
+
+    def test_the_probe_clicks_nothing(self, monkeypatch):
+        """Read-only is the whole safety story: withdrawing is one-way, so grounding the selectors
+        must not withdraw anybody."""
+        driver = MagicMock()
+        driver.current_url = llv_sent_url()
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.stale_invites._load_more_rows",
+                            lambda d, sleep=None: 0)
+        monkeypatch.setattr(
+            "cqc_lem.utilities.linkedin.stale_invites.read_pending_invites",
+            lambda d: [{"profile_url": "/in/ann/", "name": "Ann", "text": "Sent 9 weeks ago",
+                        "age_days": 63.0, "control": MagicMock()}])
+        reading = llv.probe_sent_invites(driver, threshold_days=21, sleep=lambda *_: None)
+        assert reading["rows_seen"] == 1 and reading["stale_at_threshold"] == 1
+        assert reading["oldest_days"] == 63.0
+        # driver.get navigates; nothing else on the driver is exercised by the probe.
+        driver.execute_script.assert_not_called()
+
+    def test_an_empty_account_reads_as_empty_rather_than_as_drift(self, monkeypatch):
+        driver = MagicMock()
+        driver.current_url = llv_sent_url()
+        main = MagicMock()
+        main.text = "Manage invitations\nSent\nYou have no pending invitations"
+        driver.find_elements.return_value = [main]
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.stale_invites._load_more_rows",
+                            lambda d, sleep=None: 0)
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.stale_invites.read_pending_invites",
+                            lambda d: [])
+        reading = llv.probe_sent_invites(driver, threshold_days=21, sleep=lambda *_: None)
+        assert reading["rows_seen"] == 0
+        assert reading["empty_state"] == "no pending invitations"
+        assert "nothing outstanding" in reading["verdict"]
+
+
+def llv_sent_url():
+    from cqc_lem.utilities.linkedin.stale_invites import SENT_INVITATIONS_URL
+    return SENT_INVITATIONS_URL
