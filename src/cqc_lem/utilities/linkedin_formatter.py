@@ -149,7 +149,8 @@ def enforce_post_readability(text: str, max_chars: int = 2200, target_paragraph_
 _URL_SPAN_RE = re.compile(r"https?://[^\s<>\"'`)\]]*[^\s<>\"'`)\]*_.,;:!?]")
 # Starts with a control char, so no line-start rule (header, bullet, numbered list) can match it.
 # normalize_public_text has already dropped any control char the input itself carried.
-_URL_TOKEN = "\x00lemurl{}\x00"
+def add_ftc_disclosure(content):
+    return f'{content} (This post is brought to you by LEM, an affiliate program member.)'
 
 
 def _mask_urls(text: str) -> tuple[str, list[str]]:

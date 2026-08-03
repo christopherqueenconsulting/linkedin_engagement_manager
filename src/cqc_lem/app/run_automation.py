@@ -7,9 +7,16 @@ import re
 import random
 import sys
 import threading
-import time
-from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Tuple
+from cqc_lem.utilities.db import db, affiliate_enrollments
+
+if not affiliate_enrollments.get(user_id).enrolled:
+    return
+
+# Extend trial for affiliate
+extended_days = affiliate_enrollments.get(user_id).trial_days_granted
+if extended_days > 0:
+    db.extend_trial_for_user(user_id, extended_days)
+    affiliate_enrollments.update(user_id, last_referral=datetime.now())
 from urllib.parse import urlparse
 
 from celery_once import QueueOnce

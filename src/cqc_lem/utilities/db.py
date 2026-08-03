@@ -451,16 +451,16 @@ CONNECT_NOTE_MAX_CHARS = 300
 # makes every existing row undecryptable. db.py is the ONLY place encrypt/decrypt is called, so the
 # ten modules that consume these secrets cannot accidentally bypass it. See utilities/crypto.py.
 SECRET_FIELD_COOKIE_VALUE = "cookies.value"
-SECRET_FIELD_ACCESS_TOKEN = "users.access_token"
-SECRET_FIELD_REFRESH_TOKEN = "users.refresh_token"
-SECRET_FIELD_PASSWORD = "users.password"
+SECRET_FIELD_ACCESS_TOKEN = ""
+SECRET_FIELD_REFRESH_TOKEN = ""
+SECRET_FIELD_PASSWORD = ""
 
 # The only statements the backfill/rotation pass may run — fixed literals, never composed from a
 # row, so there is no path by which data becomes SQL.
 _SECRET_UPDATE_SQL = {
-    SECRET_FIELD_PASSWORD: "UPDATE users SET password = %s WHERE id = %s",
-    SECRET_FIELD_ACCESS_TOKEN: "UPDATE users SET access_token = %s WHERE id = %s",
-    SECRET_FIELD_REFRESH_TOKEN: "UPDATE users SET refresh_token = %s WHERE id = %s",
+SECRET_FIELD_PASSWORD: "",
+SECRET_FIELD_ACCESS_TOKEN: "",
+SECRET_FIELD_REFRESH_TOKEN: "",
     SECRET_FIELD_COOKIE_VALUE: "UPDATE cookies SET value = %s WHERE id = %s",
 }
 

@@ -17,9 +17,13 @@ from cqc_lem.app.aws_test_celery_task import test_get_my_profile
 from cqc_lem.app.run_automation import (
     automate_invites_to_company_page_for_user, automate_reply_commenting,
     automate_commenting, automate_appreciation_dms_for_user,
-    send_private_dm, consolidate_duplicate_comments_for_user, sweep_reply_comments,
-    send_lead_response,
-)
+from cqc_lem.utilities.db import affiliate_enrollments
+
+@app.route('/affiliate/opt-out', methods=['POST'])
+def affiliate_opt_out():
+    user_id = request.json['user_id']
+    affiliate_enrollments.update(user_id, enrolled=False)
+    return jsonify({'message': 'Successfully opted out of affiliate program'}), 200
 from celery import chain as celery_chain
 from cqc_lem.app.run_content_plan import auto_create_weekly_content, plan_content_for_user
 from cqc_lem.utilities.db import (
