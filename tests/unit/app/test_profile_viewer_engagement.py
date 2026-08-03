@@ -1,141 +1,166 @@
-"""Unit tests for automate_profile_viewer_engagement's best-effort read of the profile-views page.
+"""Unit tests for automate_profile_viewer_engagement's JS-driven read of the profile-views page.
 
-The analytics list never resolves the wait when nobody viewed the profile — find_elements
-returns [] and the helper polls to a TimeoutException. That is "nothing to do", not a task
-failure, so it must degrade to a warning instead of paging the PostHog error cron (issue #572).
+The analytics page is SDUI (no <ul>/<li> container, hashed class names): a viewer row is an
+/in/ anchor whose text carries a "Viewed …" caption, read via one execute_script call so nothing
+goes stale while the list re-renders. Zero rows with a non-zero "Profile viewers" headline is
+selector drift and must stay loud; zero rows with no headline is nothing-to-do and must stay
+quiet (issue #572 — it must not page the error cron).
 """
 
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
-from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 
 pytestmark = pytest.mark.unit
 
 _MOD = "cqc_lem.app.run_automation"
 
 
-def _profile_pair():
-    driver = MagicMock(name="driver")
+def _profile_pair(driver=None):
+    driver = driver or MagicMock(name="driver")
     wait = MagicMock(name="wait")
     profile = MagicMock(name="profile")
     profile.email = "user@example.com"
     return driver, wait, "user@example.com", profile
 
 
-def _viewer_row(name: str, url: str) -> MagicMock:
-    """A row whose title/caption nodes carry real text, so getText runs unpatched."""
-    row = MagicMock(name=f"row_{name}")
-    row.get_attribute.return_value = url
-
-    def _find(by, value):
-        node = MagicMock(name=f"node_{name}")
-        node.text = name if "lockup__title" in value else "viewed 1h ago"
-        return node
-
-    row.find_element.side_effect = _find
-    return row
+def _row(name: str, slug: str, viewed: str) -> dict:
+    return {"href": f"https://www.linkedin.com/in/{slug}/", "name": name, "viewed": viewed}
 
 
-def _engaged_urls(mock_engage) -> list[str]:
-    return [c.kwargs["kwargs"]["viewer_url"] for c in mock_engage.apply_async.call_args_list]
+def _driver_scripting(rows_per_round: list[list[dict]], headline_stat=None) -> MagicMock:
+    """A driver whose execute_script answers the three JS reads the walk makes.
+
+    `rows_per_round` is consumed one list per rows-read; the last list repeats once exhausted
+    (the real list stops growing)."""
+    driver = MagicMock(name="driver")
+    reads = {"i": 0}
+
+    def _execute(script, *args):
+        if "Profile viewers" in script:
+            return headline_stat
+        if "scrollIntoView" in script:
+            return None
+        result = rows_per_round[min(reads["i"], len(rows_per_round) - 1)]
+        reads["i"] += 1
+        return result
+
+    driver.execute_script.side_effect = _execute
+    return driver
+
+
+def _run(driver, **kwargs):
+    with patch(f"{_MOD}.get_current_profile", return_value=_profile_pair(driver)), \
+         patch(f"{_MOD}.quit_gracefully") as mock_quit, \
+         patch(f"{_MOD}.get_user_id", return_value=1), \
+         patch(f"{_MOD}.time.sleep"), \
+         patch(f"{_MOD}._PROFILE_VIEWER_RENDER_WAIT_SECONDS", 0), \
+         patch(f"{_MOD}.log_debug") as mock_debug, \
+         patch(f"{_MOD}.log_warning") as mock_warning, \
+         patch(f"{_MOD}.log_error") as mock_error, \
+         patch(f"{_MOD}.engage_with_profile_viewer") as mock_engage:
+        from cqc_lem.app.run_automation import automate_profile_viewer_engagement
+
+        result = automate_profile_viewer_engagement.run(user_id=1, **kwargs)
+
+    return result, {"quit": mock_quit, "debug": mock_debug, "warning": mock_warning,
+                    "error": mock_error, "engage": mock_engage}
+
+
+def _engaged_urls(mocks) -> list[str]:
+    return [c.kwargs["kwargs"]["viewer_url"] for c in mocks["engage"].apply_async.call_args_list]
 
 
 class TestNoViewersFound:
-    def test_timeout_finding_viewers_is_a_warning_not_an_error(self):
-        with patch(f"{_MOD}.get_current_profile", return_value=_profile_pair()), \
-             patch(f"{_MOD}.get_elements_as_list_wait_stale",
-                   side_effect=TimeoutException("Finding Profile Viewers")), \
-             patch(f"{_MOD}.quit_gracefully") as mock_quit, \
-             patch(f"{_MOD}.log_warning") as mock_warning, \
-             patch(f"{_MOD}.log_error") as mock_error:
-            from cqc_lem.app.run_automation import automate_profile_viewer_engagement
+    def test_empty_page_with_no_headline_is_a_quiet_no_op(self):
+        result, mocks = _run(_driver_scripting([[]], headline_stat=None))
 
-            result = automate_profile_viewer_engagement.run(user_id=1)
-
-        mock_error.assert_not_called()
-        mock_warning.assert_called_once()
+        mocks["error"].assert_not_called()
+        mocks["warning"].assert_not_called()
+        mocks["debug"].assert_called_once()
+        mocks["engage"].apply_async.assert_not_called()
         assert "Engaged with 0 viewers" in result
-        mock_quit.assert_called_once()
+        mocks["quit"].assert_called_once()
 
-    def test_timeout_does_not_dispatch_any_engagement(self):
-        with patch(f"{_MOD}.get_current_profile", return_value=_profile_pair()), \
-             patch(f"{_MOD}.get_elements_as_list_wait_stale",
-                   side_effect=TimeoutException("Finding Profile Viewers")), \
-             patch(f"{_MOD}.quit_gracefully"), \
-             patch(f"{_MOD}.log_warning"), \
-             patch(f"{_MOD}.engage_with_profile_viewer") as mock_engage:
-            from cqc_lem.app.run_automation import automate_profile_viewer_engagement
+    def test_zero_rows_with_nonzero_headline_warns_selector_drift(self):
+        result, mocks = _run(_driver_scripting([[]], headline_stat=136))
 
-            automate_profile_viewer_engagement.run(user_id=1)
-
-        mock_engage.apply_async.assert_not_called()
-
-    def test_stale_list_is_also_treated_as_no_viewers(self):
-        with patch(f"{_MOD}.get_current_profile", return_value=_profile_pair()), \
-             patch(f"{_MOD}.get_elements_as_list_wait_stale",
-                   side_effect=StaleElementReferenceException("gone")), \
-             patch(f"{_MOD}.quit_gracefully"), \
-             patch(f"{_MOD}.log_warning") as mock_warning, \
-             patch(f"{_MOD}.log_error") as mock_error:
-            from cqc_lem.app.run_automation import automate_profile_viewer_engagement
-
-            result = automate_profile_viewer_engagement.run(user_id=1)
-
-        mock_error.assert_not_called()
-        mock_warning.assert_called_once()
+        mocks["error"].assert_not_called()
+        mocks["warning"].assert_called_once()
+        assert "selector drift" in mocks["warning"].call_args.args[0]
         assert "Engaged with 0 viewers" in result
 
 
-class TestUnreadableViewerRow:
-    def test_stale_row_is_skipped_and_the_readable_one_still_engages(self):
-        good = MagicMock(name="good_row")
-        good.get_attribute.return_value = "https://www.linkedin.com/in/good"
+class TestWalkTermination:
+    def test_list_that_stops_growing_ends_the_walk_and_engages_all_in_range(self):
+        rows = [_row("Ada", "ada", "Viewed 1h ago"), _row("Grace", "grace", "Viewed 20h ago")]
+        result, mocks = _run(_driver_scripting([rows, rows]))
 
-        def _stale_title_only(by, value):
-            # The row survives the date read but its title node has been re-rendered away.
-            if "lockup__title" in value:
-                raise StaleElementReferenceException("row re-rendered")
-            return MagicMock(name="viewed_on")
+        assert sorted(_engaged_urls(mocks)) == ["https://www.linkedin.com/in/ada/",
+                                                "https://www.linkedin.com/in/grace/"]
+        assert "Engaged with 2 viewers" in result
 
-        stale = MagicMock(name="stale_row")
-        stale.find_element.side_effect = _stale_title_only
+    def test_walk_stops_on_the_first_out_of_range_row(self):
+        first = [_row("Ada", "ada", "Viewed 1h ago")]
+        grown = first + [_row("Old", "old", "Viewed 3w ago")]
+        driver = _driver_scripting([first, grown])
 
-        # First lookup is the loop's own "is the last viewer older than a day?" check — an old
-        # date breaks the walk; the two that follow are the date filter over both rows.
-        dates = [datetime.now() - timedelta(days=5),
-                 datetime.now(), datetime.now()]
+        _, mocks = _run(driver)
 
-        with patch(f"{_MOD}.get_current_profile", return_value=_profile_pair()), \
-             patch(f"{_MOD}.get_elements_as_list_wait_stale", return_value=[stale, good]), \
-             patch(f"{_MOD}.convert_viewed_on_to_date", side_effect=dates), \
-             patch(f"{_MOD}.getText", return_value="Some Viewer"), \
-             patch(f"{_MOD}.get_user_id", return_value=1), \
-             patch(f"{_MOD}.close_tab"), \
-             patch(f"{_MOD}.quit_gracefully"), \
-             patch(f"{_MOD}.log_warning") as mock_warning, \
-             patch(f"{_MOD}.log_error") as mock_error, \
-             patch(f"{_MOD}.engage_with_profile_viewer") as mock_engage:
-            from cqc_lem.app.run_automation import automate_profile_viewer_engagement
+        # Two rows-reads: the grown list's last row is out of range, so no third scroll happens.
+        rows_reads = [c for c in driver.execute_script.call_args_list
+                      if "Viewed " in c.args[0] and "scrollIntoView" not in c.args[0]]
+        assert len(rows_reads) == 2
+        assert _engaged_urls(mocks) == ["https://www.linkedin.com/in/ada/"]
 
-            result = automate_profile_viewer_engagement.run(user_id=1)
+    def test_unparseable_last_caption_warns_and_keeps_in_range_viewers(self):
+        rows = [_row("Ada", "ada", "Viewed 1h ago"), _row("Odd", "odd", "Viewed ??")]
+        result, mocks = _run(_driver_scripting([rows]))
 
-        mock_error.assert_not_called()
-        mock_warning.assert_called_once()
+        mocks["error"].assert_not_called()
+        # Once for stopping the walk, once for dropping the unreadable row in the filter.
+        assert mocks["warning"].call_count == 2
+        assert _engaged_urls(mocks) == ["https://www.linkedin.com/in/ada/"]
         assert "Engaged with 1 viewers" in result
-        mock_engage.apply_async.assert_called_once()
-        assert mock_engage.apply_async.call_args.kwargs["kwargs"]["viewer_url"] == \
-            "https://www.linkedin.com/in/good"
+
+
+class TestDateFilter:
+    def test_out_of_range_rows_are_filtered_not_engaged(self):
+        rows = [_row("Ada", "ada", "Viewed 1h ago"), _row("Old", "old", "Viewed 2w ago")]
+        _, mocks = _run(_driver_scripting([rows, rows]))
+
+        assert _engaged_urls(mocks) == ["https://www.linkedin.com/in/ada/"]
+
+    def test_lookback_days_widens_the_window(self):
+        rows = [_row("Ada", "ada", "Viewed 1h ago"), _row("Old", "old", "Viewed 2w ago")]
+        _, mocks = _run(_driver_scripting([rows, rows]), lookback_days=14)
+
+        assert sorted(_engaged_urls(mocks)) == ["https://www.linkedin.com/in/ada/",
+                                                "https://www.linkedin.com/in/old/"]
+
+    def test_duplicate_hrefs_from_rerendered_rows_engage_once(self):
+        rows = [_row("Ada", "ada", "Viewed 1h ago"), _row("Ada", "ada", "Viewed 1h ago")]
+        _, mocks = _run(_driver_scripting([rows, rows]))
+
+        assert _engaged_urls(mocks) == ["https://www.linkedin.com/in/ada/"]
+
+    def test_same_name_different_profiles_both_engage(self):
+        rows = [_row("Ada", "ada-1", "Viewed 1h ago"), _row("Ada", "ada-2", "Viewed 2h ago")]
+        _, mocks = _run(_driver_scripting([rows, rows]))
+
+        assert sorted(_engaged_urls(mocks)) == ["https://www.linkedin.com/in/ada-1/",
+                                                "https://www.linkedin.com/in/ada-2/"]
 
 
 class TestUnexpectedFailureStillErrors:
     def test_non_selenium_failure_is_still_logged_as_an_error(self):
-        driver, wait, email, profile = _profile_pair()
-        driver.get.side_effect = RuntimeError("browser crashed")
+        driver = MagicMock(name="driver")
+        driver.execute_script.side_effect = RuntimeError("boom")
 
-        with patch(f"{_MOD}.get_current_profile", return_value=(driver, wait, email, profile)), \
-             patch(f"{_MOD}.quit_gracefully"), \
+        with patch(f"{_MOD}.get_current_profile", return_value=_profile_pair(driver)), \
+             patch(f"{_MOD}.quit_gracefully") as mock_quit, \
+             patch(f"{_MOD}.time.sleep"), \
              patch(f"{_MOD}.log_error") as mock_error:
             from cqc_lem.app.run_automation import automate_profile_viewer_engagement
 
@@ -143,105 +168,4 @@ class TestUnexpectedFailureStillErrors:
 
         mock_error.assert_called_once()
         assert "Error while engaging with profile viewers" in result
-
-
-class TestWalkTermination:
-    """The walk is `while True` — every exit path has to actually be reachable."""
-
-    def test_list_that_stops_growing_ends_the_walk(self):
-        """All viewers in range and no more to scroll: without a growth check this never exits."""
-        row = _viewer_row("Recent Viewer", "https://www.linkedin.com/in/recent")
-
-        with patch(f"{_MOD}.get_current_profile", return_value=_profile_pair()), \
-             patch(f"{_MOD}.get_elements_as_list_wait_stale", return_value=[row]), \
-             patch(f"{_MOD}.convert_viewed_on_to_date", return_value=datetime.now()), \
-             patch(f"{_MOD}.time.sleep"), \
-             patch(f"{_MOD}.get_user_id", return_value=1), \
-             patch(f"{_MOD}.close_tab"), \
-             patch(f"{_MOD}.quit_gracefully"), \
-             patch(f"{_MOD}.log_error") as mock_error, \
-             patch(f"{_MOD}.engage_with_profile_viewer") as mock_engage:
-            from cqc_lem.app.run_automation import automate_profile_viewer_engagement
-
-            result = automate_profile_viewer_engagement.run(user_id=1)
-
-        mock_error.assert_not_called()
-        assert "Engaged with 1 viewers" in result
-        assert _engaged_urls(mock_engage) == ["https://www.linkedin.com/in/recent"]
-
-    def test_mid_walk_timeout_keeps_the_viewers_already_found(self):
-        row = _viewer_row("Recent Viewer", "https://www.linkedin.com/in/recent")
-
-        with patch(f"{_MOD}.get_current_profile", return_value=_profile_pair()), \
-             patch(f"{_MOD}.get_elements_as_list_wait_stale",
-                   side_effect=[[row], TimeoutException("Finding Profile Viewers")]), \
-             patch(f"{_MOD}.convert_viewed_on_to_date", return_value=datetime.now()), \
-             patch(f"{_MOD}.time.sleep"), \
-             patch(f"{_MOD}.get_user_id", return_value=1), \
-             patch(f"{_MOD}.close_tab"), \
-             patch(f"{_MOD}.quit_gracefully"), \
-             patch(f"{_MOD}.log_warning") as mock_warning, \
-             patch(f"{_MOD}.log_error") as mock_error, \
-             patch(f"{_MOD}.engage_with_profile_viewer") as mock_engage:
-            from cqc_lem.app.run_automation import automate_profile_viewer_engagement
-
-            result = automate_profile_viewer_engagement.run(user_id=1)
-
-        mock_error.assert_not_called()
-        # The warning must not claim zero when a viewer was already collected.
-        assert "1 viewer(s)" in mock_warning.call_args_list[0].args[0]
-        assert "Engaged with 1 viewers" in result
-        assert _engaged_urls(mock_engage) == ["https://www.linkedin.com/in/recent"]
-
-    def test_unparseable_viewed_on_date_warns_instead_of_failing_the_task(self):
-        """convert_viewed_on_to_date raises ValueError on a caption it can't parse."""
-        row = _viewer_row("Odd Caption", "https://www.linkedin.com/in/odd")
-
-        with patch(f"{_MOD}.get_current_profile", return_value=_profile_pair()), \
-             patch(f"{_MOD}.get_elements_as_list_wait_stale", return_value=[row]), \
-             patch(f"{_MOD}.convert_viewed_on_to_date",
-                   side_effect=ValueError("invalid datetime as string: ")), \
-             patch(f"{_MOD}.time.sleep"), \
-             patch(f"{_MOD}.quit_gracefully"), \
-             patch(f"{_MOD}.log_warning") as mock_warning, \
-             patch(f"{_MOD}.log_error") as mock_error, \
-             patch(f"{_MOD}.engage_with_profile_viewer") as mock_engage:
-            from cqc_lem.app.run_automation import automate_profile_viewer_engagement
-
-            result = automate_profile_viewer_engagement.run(user_id=1)
-
-        mock_error.assert_not_called()
-        assert mock_warning.call_count == 2  # ends the walk, then drops the unreadable row
-        assert "Engaged with 0 viewers" in result
-        mock_engage.apply_async.assert_not_called()
-
-
-class TestDateFilter:
-    def test_unreadable_date_does_not_leak_out_of_range_viewers(self):
-        """The walk stops ON an out-of-range viewer, so it is always in the pre-filter list."""
-        odd = _viewer_row("Odd Caption", "https://www.linkedin.com/in/odd")
-        recent = _viewer_row("Recent Viewer", "https://www.linkedin.com/in/recent")
-        old = _viewer_row("Old Viewer", "https://www.linkedin.com/in/old")
-
-        long_ago = datetime.now() - timedelta(days=30)
-        # walk reads the last row, then the filter reads all three in order.
-        dates = [long_ago, ValueError("invalid datetime as string: "), datetime.now(), long_ago]
-
-        with patch(f"{_MOD}.get_current_profile", return_value=_profile_pair()), \
-             patch(f"{_MOD}.get_elements_as_list_wait_stale", return_value=[odd, recent, old]), \
-             patch(f"{_MOD}.convert_viewed_on_to_date", side_effect=dates), \
-             patch(f"{_MOD}.time.sleep"), \
-             patch(f"{_MOD}.get_user_id", return_value=1), \
-             patch(f"{_MOD}.close_tab"), \
-             patch(f"{_MOD}.quit_gracefully"), \
-             patch(f"{_MOD}.log_warning") as mock_warning, \
-             patch(f"{_MOD}.log_error") as mock_error, \
-             patch(f"{_MOD}.engage_with_profile_viewer") as mock_engage:
-            from cqc_lem.app.run_automation import automate_profile_viewer_engagement
-
-            result = automate_profile_viewer_engagement.run(user_id=1)
-
-        mock_error.assert_not_called()
-        mock_warning.assert_called_once()
-        assert "Engaged with 1 viewers" in result
-        assert _engaged_urls(mock_engage) == ["https://www.linkedin.com/in/recent"]
+        mock_quit.assert_called_once()

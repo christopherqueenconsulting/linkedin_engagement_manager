@@ -175,10 +175,31 @@ def convert_date_to_datetime(date: DT.date) -> DT.datetime:
     return DT.datetime.combine(date, DT.datetime.min.time())
 
 
-def convert_viewed_on_to_date(viewed_on):
-    viewed_on = re.sub(r'(?i)viewed', '', viewed_on)
-    viewed_on = re.sub(r'(?i)edited', '', viewed_on)
-    viewed_on = re.sub(r'(?i)•', '', viewed_on)
-    # Change 'w' to 'week'
-    viewed_on = re.sub(r'(?i)w', 'week', viewed_on)
-    return get_datetime(viewed_on.strip())
+# LinkedIn's viewed-on captions are relative ("Viewed 1h ago", "20h", "1d", "1w", "1mo", "2mo") —
+# grounded live 2026-08-03. Months/years only need to sort out of any realistic lookback window,
+# so calendar-exact arithmetic is not required for them.
+_VIEWED_ON_UNIT_DAYS = {'mo': 30, 'mos': 30, 'month': 30, 'months': 30,
+                        'y': 365, 'yr': 365, 'yrs': 365, 'year': 365, 'years': 365}
+_VIEWED_ON_UNITS = {'s': 'seconds', 'sec': 'seconds', 'secs': 'seconds',
+                    'second': 'seconds', 'seconds': 'seconds',
+                    'm': 'minutes', 'min': 'minutes', 'mins': 'minutes',
+                    'minute': 'minutes', 'minutes': 'minutes',
+                    'h': 'hours', 'hr': 'hours', 'hrs': 'hours',
+                    'hour': 'hours', 'hours': 'hours',
+                    'd': 'days', 'day': 'days', 'days': 'days',
+                    'w': 'weeks', 'wk': 'weeks', 'wks': 'weeks',
+                    'week': 'weeks', 'weeks': 'weeks'}
+
+
+def convert_viewed_on_to_date(viewed_on: str) -> DT.datetime:
+    text = re.sub(r'(?i)viewed|edited|•', '', viewed_on or '').strip()
+    match = re.fullmatch(r'(?i)(\d+)\s*([a-z]+)\.?(?:\s+ago)?', text)
+    if match:
+        count, unit = int(match.group(1)), match.group(2).lower()
+        if unit in _VIEWED_ON_UNIT_DAYS:
+            return DT.datetime.now() - DT.timedelta(days=_VIEWED_ON_UNIT_DAYS[unit] * count)
+        if unit in _VIEWED_ON_UNITS:
+            return DT.datetime.now() - DT.timedelta(**{_VIEWED_ON_UNITS[unit]: count})
+    # Anything non-relative (absolute dates, locale forms) still goes through dateparser,
+    # which raises ValueError via get_datetime when it can't parse — callers rely on that.
+    return get_datetime(text)

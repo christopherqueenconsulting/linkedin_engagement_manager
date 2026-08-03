@@ -22,6 +22,22 @@ prompts also render as listitems; the profile-link + classifier funnel filters t
 "Say congrats" suggestion chips carry no stable anchors either — when the harvest misses, drafting
 falls back to `_CATCHUP_DEFAULT_CONGRATS`, which is working as designed.
 
+## The profile-views analytics list is full SDUI — no `<ul>`, TEXT is the only anchor
+
+Live-grounded 2026-08-03 (`/analytics/profile-views/`, user 1): the page renders **zero** `<ul>`
+elements and no `artdeco-entity-lockup__*` classes, so the original
+`//ul[@aria-label="List of Entities"]//a[...]` walk matched nothing on a page visibly listing
+136 viewers — every run warned `Could not read the profile viewers list` and engaged nobody.
+A viewer row is an `/in/` anchor (componentkey UUID) whose innerText carries a
+`Viewed 1h ago`-style caption line (`1h`/`20h`/`1d`/`1w`/`1mo`/`2mo`); non-viewer profile
+anchors ("Interesting viewers", nav) carry no such line, so the caption IS the discriminator.
+The walk reads name+href+caption in ONE `execute_script` pass (`_PROFILE_VIEWER_ROWS_JS`) —
+per-element XPath reads go stale as the list re-renders. `window.scrollTo` alone never grows
+the list; `scrollIntoView` on the LAST row is what triggers the lazy loader (8 → 58 rows).
+Zero rows against a non-zero "N Profile viewers" headline stat is selector drift and warns;
+zero rows with no stat is a quiet no-op. Re-ground with
+`scripts/linkedin_live_validation.py --profile-views`.
+
 ## The comment composer has no `<form>`
 
 "Submit" means clicking the Comment/Post button next to the composer (`_composer_submitted`).
