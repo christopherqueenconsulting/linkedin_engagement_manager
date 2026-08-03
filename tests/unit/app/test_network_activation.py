@@ -187,7 +187,8 @@ def _roster(**over):
 
 
 def _scan_funnel(prefs=None, roster=None, engagers=None, open_targets=0, requested=None,
-                 existing=None, max_new=None, commenters=None, activity=None, profile_exc=None):
+                 existing=None, max_new=None, commenters=None, activity=None, profile_exc=None,
+                 activity_exc=None):
     from cqc_lem.app import run_automation as ra
     with patch(f"{_RA}.get_engagement_preferences",
                return_value=prefs if prefs is not None else _prefs()), \
@@ -202,6 +203,7 @@ def _scan_funnel(prefs=None, roster=None, engagers=None, open_targets=0, request
          patch(f"{_RA}.insert_outreach_target", return_value=11) as insert, \
          patch(f"{_RA}._harvest_post_commenters", return_value=commenters or []), \
          patch("cqc_lem.utilities.linkedin.scrapper.get_profile_recent_activity",
+               side_effect=activity_exc,
                return_value=activity if activity is not None
                else [{"link": "https://x/feed/update/1", "text": "Post body"}]), \
          patch(f"{_RA}.get_current_profile") as profile, \
@@ -328,12 +330,27 @@ class TestEmptyFunnelScanIsNotAWarning:
         ({"open_targets": 25}, "are already waiting for approval"),
         ({"engagers": [_engager(degree="2nd")]}, "No active engagement-roster targets"),
         ({}, "the engagement roster produced no"),
+        # A roster author who hasn't posted lately is the common case, not a degraded one (#987).
+        ({"roster": [_roster()], "activity": []}, "has no recent post to comment on"),
     ])
     def test_empty_outcome_logs_debug_not_warning(self, kwargs, marker):
         with patch(f"{_RA}.log_warning") as warn, patch(f"{_RA}.log_debug") as debug:
             _out, _insert = _scan_funnel(**kwargs)
         warn.assert_not_called()
         assert any(marker in str(call.args[0]) for call in debug.call_args_list)
+
+    def test_a_quiet_roster_author_is_skipped_without_filing_a_target(self):
+        """The skip itself must still hold: no post means nothing to comment on, so no draft."""
+        _out, insert = _scan_funnel(roster=[_roster()], activity=[])
+        insert.assert_not_called()
+
+    def test_an_unreadable_roster_author_still_warns(self):
+        """Silencing the quiet author must not silence the profile that could not be read at all."""
+        with patch(f"{_RA}.log_warning") as warn:
+            _out, _insert = _scan_funnel(roster=[_roster()],
+                                         activity_exc=RuntimeError("profile gone"))
+        assert any("Could not read a roster author's recent activity" in str(call.args[0])
+                   for call in warn.call_args_list)
 
 
 class TestSourcingDispatch:
