@@ -5931,7 +5931,6 @@ def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: in
                 log_debug("No profile viewers found on the analytics page — nothing to do",
                           user_id=user_id, task_name="automate_profile_viewer_engagement")
 
-        result = f"Profile Viewer DMs Started. Found {len(rows)} viewers"
         myprint(f"Final Viewers count: {len(rows)}")
 
         # Filter per row against the lookback. The walk stops ON an out-of-range viewer, so that
