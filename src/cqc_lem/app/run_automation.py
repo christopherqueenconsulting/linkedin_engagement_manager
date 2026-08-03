@@ -13,7 +13,7 @@ from enum import StrEnum
 from typing import Callable, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
-from celery_once import QueueOnce
+from cqc_lem.app.queue_once import QueueOnce
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.utilities.ai.content_framework import select_blueprint
 from cqc_lem.utilities.ai.ai_helper import generate_ai_response, get_ai_message_refinement, summarize_recent_activity, \

@@ -3,11 +3,10 @@ import shutil
 from datetime import timedelta, datetime, timezone
 from typing import Tuple
 
-from celery_once import QueueOnce
-
 from cqc_lem import assets_dir
 from cqc_lem.app.celeryconfig import SE_PREPOST_QUEUE
 from cqc_lem.app.my_celery import app as shared_task
+from cqc_lem.app.queue_once import QueueOnce
 from cqc_lem.app.run_automation import automate_commenting, automate_profile_viewer_engagement, \
     automate_appreciation_dms_for_user, clean_stale_invites, update_stale_profile, post_to_linkedin, \
     automate_invites_to_company_page_for_user, send_scheduled_dm, send_connection_request, \
@@ -410,8 +409,9 @@ def dispatch_scheduled_reply_sweeps():
             # Replying to comments on the user's OWN post is the one engagement a human really does
             # fast, so it keeps the RESPONSIVE profile (issue #626): the exact minute moves, the
             # response stays timely.
-            # sweep_slot must be explicit: QueueOnce keys on ['user_id', 'sweep_slot'] and does not
-            # apply function defaults — omitting it raises KeyError at enqueue.
+            # slot 0 is the single-shot scheduled trigger — the golden-hour amplifier owns the other
+            # slots. Explicit here for that reason, not for safety: cqc_lem.app.queue_once fills the
+            # default into the dedup key, so omitting it would build the identical lock (#989).
             sweep_reply_comments.apply_async(kwargs={'user_id': user_id, 'sweep_slot': 0},
                                              countdown=dispatch_jitter_seconds(PACE_RESPONSIVE))
             dispatched += 1
