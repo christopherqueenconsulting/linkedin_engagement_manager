@@ -389,7 +389,9 @@ class TestCommentNotificationInbound:
                 "text": "great post!"})
         assert resp.status_code == 200 and resp.json()["detail"] == "accepted"
         sweep.apply_async.assert_called_once()
-        assert sweep.apply_async.call_args.kwargs["kwargs"] == {"user_id": 7}
+        # sweep_slot must be explicit: QueueOnce keys on ['user_id', 'sweep_slot'] without applying
+        # function defaults, so omitting it raises KeyError at enqueue (500 on every notification).
+        assert sweep.apply_async.call_args.kwargs["kwargs"] == {"user_id": 7, "sweep_slot": 0}
 
     def test_reaction_email_ignored(self, client):
         with patch(self._DB, return_value=7), \
@@ -424,6 +426,64 @@ class TestCommentNotificationInbound:
                 "subject": "Jane commented on your post"})
         assert resp.json()["detail"] == "debounced"
         sweep.apply_async.assert_not_called()
+
+    _TRACK = "cqc_lem.utilities.observability.track_inbound_email"
+
+    def test_accepted_comment_logs_verdict(self, client):
+        with patch(self._DB, return_value=7), \
+             patch(f"{_MAIN}._reply_sweep_debounced", return_value=True), \
+             patch(f"{_MAIN}.sweep_reply_comments"), \
+             patch(self._TRACK) as track:
+            client.post(self.BASE, data={
+                "to": "reply+tok9@parse.example.com",
+                "subject": "Chris, Jane commented on your post"})
+        track.assert_called_once_with("comment_accepted", user_id=7)
+
+    def test_unknown_token_logs_verdict(self, client):
+        with patch(self._DB, return_value=None), \
+             patch(f"{_MAIN}.sweep_reply_comments"), \
+             patch(self._TRACK) as track:
+            client.post(self.BASE, data={
+                "to": "reply+stale@parse.example.com",
+                "subject": "someone commented on your post"})
+        track.assert_called_once_with("unknown_reply_token", user_id=None)
+
+    def test_linkedin_reaction_logs_verdict(self, client):
+        with patch(self._DB, return_value=7), \
+             patch(f"{_MAIN}.sweep_reply_comments"), \
+             patch(self._TRACK) as track:
+            client.post(self.BASE, data={
+                "to": "reply+tok9@parse.example.com",
+                "from": "notifications-noreply@linkedin.com",
+                "subject": "Jane liked your post", "text": ""})
+        track.assert_called_once_with("linkedin_not_comment", user_id=7)
+
+    def test_unrelated_mail_logs_verdict(self, client):
+        with patch(self._DB, return_value=7), \
+             patch(f"{_MAIN}.sweep_reply_comments"), \
+             patch(self._TRACK) as track:
+            client.post(self.BASE, data={
+                "to": "reply+tok9@parse.example.com",
+                "from": "spam@example.com", "subject": "hello", "text": "buy now"})
+        track.assert_called_once_with("unrelated", user_id=7)
+
+    def test_pin_endpoint_spam_logs_verdict(self, client):
+        with patch(self._TRACK) as track:
+            resp = client.post("/api/linkedin/verification-pin/inbound", data={
+                "to": "random@parse.example.com", "subject": "spam", "text": "spam"})
+        assert resp.json()["detail"] == "ignored"
+        track.assert_called_once_with("no_pin_token", user_id=None)
+
+    def test_tracking_failure_never_breaks_webhook(self, client):
+        with patch(self._DB, return_value=7), \
+             patch(f"{_MAIN}._reply_sweep_debounced", return_value=True), \
+             patch(f"{_MAIN}.sweep_reply_comments") as sweep, \
+             patch(self._TRACK, side_effect=RuntimeError("posthog down")):
+            resp = client.post(self.BASE, data={
+                "to": "reply+tok9@parse.example.com",
+                "subject": "Jane commented on your post"})
+        assert resp.json()["detail"] == "accepted"
+        sweep.apply_async.assert_called_once()
 
     def test_gmail_forwarding_confirmation_auto_clicks(self, client):
         body = ("please click the link below to confirm the request:\n"
