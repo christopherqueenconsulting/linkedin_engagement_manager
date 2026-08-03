@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.129.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.128.0...v0.129.0) (2026-08-03)
+
+
+### Features
+
+* **analytics:** 12-hour time + timezone label in Best Times to Post (closes [#1003](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1003)) ([#1011](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1011)) ([a9e459a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a9e459a129b4cbc3c86b107d10c8ac69cab5552d))
+* **dm:** implement recommendation + collaboration appreciation-DM sources (closes [#968](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/968)) ([#982](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/982)) ([7531ed5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7531ed51aef954654a487dfdc9000c6710413df1))
+* **outreach:** implement clean_stale_invites — withdraw aged pending invites (closes [#969](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/969)) ([#983](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/983)) ([a97adde](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a97adde7870f32556410033b66321598dc6e9355))
+
+
+### Bug Fixes
+
+* **automation:** profile viewer walk finds zero viewers — ground on live SDUI DOM ([#1009](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1009)) ([13ca520](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/13ca5202ac804534b6050952003097e3bf134dd5))
+
 ## [0.128.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.127.0...v0.128.0) (2026-08-03)
 
 
