@@ -1,5 +1,12 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { zonedDateToUtcStart, zonedDateToUtcEnd, toZonedInputValue, zonedInputToUtcIso } from './datetime'
+import {
+  formatHour12,
+  timezoneAbbreviation,
+  zonedDateToUtcStart,
+  zonedDateToUtcEnd,
+  toZonedInputValue,
+  zonedInputToUtcIso,
+} from './datetime'
 
 describe('zonedDateToUtcStart', () => {
   beforeEach(() => {
@@ -51,5 +58,42 @@ describe('round-trip datetime-local conversion', () => {
     const inputValue = toZonedInputValue(utcIso, tz)
     expect(inputValue).not.toBe('')
     expect(zonedInputToUtcIso(inputValue, tz)).toBe(utcIso)
+  })
+})
+
+describe('formatHour12', () => {
+  it('renders every hour-of-day 12-hour, never 24-hour', () => {
+    expect(formatHour12(0)).toBe('12:00 AM')
+    expect(formatHour12(9)).toBe('9:00 AM')
+    expect(formatHour12(11)).toBe('11:00 AM')
+    expect(formatHour12(12)).toBe('12:00 PM')
+    expect(formatHour12(13)).toBe('1:00 PM')
+    expect(formatHour12(16)).toBe('4:00 PM')
+    expect(formatHour12(23)).toBe('11:00 PM')
+  })
+
+  it('never emits a 24-hour clock face for any hour in range', () => {
+    for (let h = 0; h < 24; h++) {
+      expect(formatHour12(h)).toMatch(/^(1[0-2]|[1-9]):00 (AM|PM)$/)
+    }
+  })
+
+  it('normalizes out-of-range hours instead of rendering nonsense', () => {
+    expect(formatHour12(24)).toBe('12:00 AM')
+    expect(formatHour12(25)).toBe('1:00 AM')
+    expect(formatHour12(-1)).toBe('11:00 PM')
+    expect(formatHour12(13.7)).toBe('1:00 PM')
+  })
+})
+
+describe('timezoneAbbreviation', () => {
+  it('labels a zone with its short name at the given instant', () => {
+    // Same zone, opposite sides of a DST boundary — the label has to follow.
+    expect(timezoneAbbreviation('America/New_York', new Date('2026-07-29T12:00:00Z'))).toBe('EDT')
+    expect(timezoneAbbreviation('America/New_York', new Date('2026-01-15T12:00:00Z'))).toBe('EST')
+  })
+
+  it('falls back to the IANA id when the zone is unusable', () => {
+    expect(timezoneAbbreviation('Not/AZone')).toBe('Not/AZone')
   })
 })

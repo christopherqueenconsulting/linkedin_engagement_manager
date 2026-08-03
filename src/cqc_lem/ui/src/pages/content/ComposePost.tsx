@@ -6,7 +6,7 @@ import LinkedInPostPreview from '../../components/LinkedInPostPreview'
 import TopicAuthorityMeter from '../../components/TopicAuthorityMeter'
 import { useAuth } from '../../contexts/AuthContext'
 import { useUserTimezoneState } from '../../hooks/useUserTimezone'
-import { zonedInputToUtcIso } from '../../utils/datetime'
+import { formatHour12, zonedInputToUtcIso } from '../../utils/datetime'
 import { maskProps } from '../../utils/analytics'
 
 const POST_TYPES = ['TEXT', 'VIDEO', 'CAROUSEL'] as const
@@ -32,9 +32,7 @@ function getBestPostingTime(date: Date): { time: string; display: string; dayNam
     hour = 10
   }
   const hh = String(hour).padStart(2, '0')
-  const ampm = hour < 12 ? 'AM' : 'PM'
-  const display12 = `${hour > 12 ? hour - 12 : hour}:00 ${ampm}`
-  return { time: `${hh}:00`, dayName: DAY_NAMES[day], display: display12 }
+  return { time: `${hh}:00`, dayName: DAY_NAMES[day], display: formatHour12(hour) }
 }
 
 interface CarouselTemplate {
