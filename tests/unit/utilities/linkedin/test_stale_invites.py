@@ -171,6 +171,72 @@ class TestWithdrawWalk:
                                    sleep=lambda *_: None)
         assert [c.args[1]["name"] for c in record.call_args_list] == ["90.0"]
 
+    def test_the_second_withdrawal_clicks_the_re_read_control_not_the_captured_one(self):
+        """A withdrawal RE-RENDERS the list, so every handle read before it is suspect. Re-using one
+        is not merely a stale-element skip: the framework may have re-used that node for the row that
+        shifted up, and clicking it withdraws a DIFFERENT invite — one-way, for weeks."""
+        from cqc_lem.utilities.linkedin.stale_invites import withdraw_stale_invites
+        first, captured_second, rendered_second = MagicMock(), MagicMock(), MagicMock()
+        invites = [{"profile_url": "/in/a/", "name": "A", "text": "", "age_days": 90.0,
+                    "control": first},
+                   {"profile_url": "/in/b/", "name": "B", "text": "", "age_days": 60.0,
+                    "control": captured_second}]
+        reads = [invites,                                                  # the initial walk
+                 [],                                                       # A verified gone
+                 [{**invites[1], "control": rendered_second}],             # B, re-read
+                 []]                                                       # B verified gone
+        driver = MagicMock()
+        with patch(f"{_SI}._hold_reason", return_value=""), \
+                patch(f"{_SI}._load_more_rows", return_value=0), \
+                patch(f"{_SI}.read_pending_invites", side_effect=reads), \
+                patch(f"{_SI}._confirm_withdrawal", return_value=True), \
+                patch(f"{_SI}._record_withdrawal"):
+            report = withdraw_stale_invites(driver, MagicMock(), 1, plan=_plan(allowance=2),
+                                            sleep=lambda *_: None)
+        clicked = [c.args[1] for c in driver.execute_script.call_args_list if len(c.args) > 1]
+        assert report["withdrawn"] == 2
+        assert first in clicked and rendered_second in clicked
+        assert captured_second not in clicked
+
+    def test_a_row_that_no_longer_resolves_is_skipped_rather_than_clicked_stale(self):
+        from cqc_lem.utilities.linkedin.stale_invites import withdraw_stale_invites
+        first, captured_second = MagicMock(), MagicMock()
+        invites = [{"profile_url": "/in/a/", "name": "A", "text": "", "age_days": 90.0,
+                    "control": first},
+                   {"profile_url": "/in/b/", "name": "B", "text": "", "age_days": 60.0,
+                    "control": captured_second}]
+        driver = MagicMock()
+        with patch(f"{_SI}._hold_reason", return_value=""), \
+                patch(f"{_SI}._load_more_rows", return_value=0), \
+                patch(f"{_SI}.read_pending_invites", side_effect=[invites, [], [], []]), \
+                patch(f"{_SI}._confirm_withdrawal", return_value=True), \
+                patch(f"{_SI}._record_withdrawal") as record:
+            report = withdraw_stale_invites(driver, MagicMock(), 1, plan=_plan(allowance=2),
+                                            sleep=lambda *_: None)
+        clicked = [c.args[1] for c in driver.execute_script.call_args_list if len(c.args) > 1]
+        assert captured_second not in clicked
+        assert report["withdrawn"] == 1 and record.call_count == 1
+
+    def test_an_unidentifiable_row_is_never_re_resolved_by_position(self):
+        """No profile link means no way to prove which row this is on the re-rendered page. The FIRST
+        click may still go out (that handle predates any re-render); a later one may not."""
+        from cqc_lem.utilities.linkedin.stale_invites import withdraw_stale_invites
+        first, anonymous = MagicMock(), MagicMock()
+        invites = [{"profile_url": "/in/a/", "name": "A", "text": "", "age_days": 90.0,
+                    "control": first},
+                   {"profile_url": "", "name": "", "text": "", "age_days": 60.0,
+                    "control": anonymous}]
+        driver = MagicMock()
+        with patch(f"{_SI}._hold_reason", return_value=""), \
+                patch(f"{_SI}._load_more_rows", return_value=0), \
+                patch(f"{_SI}.read_pending_invites", side_effect=[invites, [], []]), \
+                patch(f"{_SI}._confirm_withdrawal", return_value=True), \
+                patch(f"{_SI}._record_withdrawal"):
+            withdraw_stale_invites(driver, MagicMock(), 1, plan=_plan(allowance=2),
+                                   sleep=lambda *_: None)
+        clicked = [c.args[1] for c in driver.execute_script.call_args_list if len(c.args) > 1]
+        assert anonymous not in clicked
+
     def test_an_unverified_withdrawal_is_still_recorded_and_never_counted_as_success(self):
         """The click already reached LinkedIn. A lane whose verification broke must not be free to
         click every row on the page, so the spend is recorded either way — but it is not a success."""

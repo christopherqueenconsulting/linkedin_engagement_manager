@@ -372,6 +372,15 @@ that ceiling and drags the acceptance rate the outreach features are judged on.
   the run expands it (`_load_more_rows`, bounded) before reading — a walk that never loads past the
   first page can only see rows it must not touch, which looks exactly like "nothing is stale".
   `expansions` on the report says whether the walk ran out of road.
+- **A handle read before a withdrawal is never spent after one.** A withdrawal RE-RENDERS the list —
+  that is how verification works at all — so every click after the first re-reads the page and
+  matches the target on its profile URL (`_resolve_control`). Re-using the original element handle
+  has two failure modes and only one is harmless: the node is detached and the click raises, or the
+  framework re-used that node for the row that shifted up into its place, and a one-way withdrawal
+  lands on a DIFFERENT, possibly days-old invite. A row that cannot be re-identified is skipped —
+  a missed withdrawal is recoverable next run, a wrong one is not. For the same reason a container
+  holding more than one Withdraw control is rejected page-side rather than read as one row: it is the
+  LIST, and accepting it would date every invite by the newest one's stamp.
 - **The daily spend is counted on the CLICK, not the verdict.** One `logs` row per DISPATCHED
   withdrawal (`STALE_INVITE_WITHDRAWN_MESSAGE`; SUCCESS when the row was verifiably gone afterwards,
   FAILURE when it was not) and `count_invite_withdrawals_today` counts BOTH — the click already

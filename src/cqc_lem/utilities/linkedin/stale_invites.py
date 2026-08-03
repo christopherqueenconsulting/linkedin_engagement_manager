@@ -113,6 +113,13 @@ for (const b of document.querySelectorAll("button, [role='button']")) {
     el = el.parentElement; depth++;
   }
   if (!row || seen.has(row)) continue;
+  // A container carrying MORE THAN ONE Withdraw control is the LIST, not a row. Accepting it would
+  // hand back every invite's text as one card — so the newest invite's "Sent ... ago" stamp would
+  // date the whole page — paired with whichever person's link happened to come first. Skip it: the
+  // row count drops to zero, which reads as drift on the report, instead of one mis-aged row that a
+  // one-way action then acts on.
+  if (Array.from(row.querySelectorAll("button, [role='button']"))
+        .filter((x) => shown(x) && isWithdraw(x)).length > 1) continue;
   seen.add(row);
   rows.push([anchor.getAttribute('href') || '', (anchor.innerText || '').trim(),
              (row.innerText || '').trim(), b]);
@@ -339,6 +346,27 @@ def _invite_still_pending(driver: WebDriver, profile_url: str,
     return True
 
 
+def _resolve_control(driver: WebDriver, invite: dict):
+    """This invite's Withdraw control AS THE PAGE RENDERS IT NOW, or `None`.
+
+    The controls handed back by the first `read_pending_invites` are element handles into a list that
+    a withdrawal RE-RENDERS. Re-using one afterwards has two failure modes and only one of them is
+    harmless: the node is detached and the click raises (a skip), or the framework re-used that node
+    for the row that shifted up into its place — in which case the click withdraws a DIFFERENT,
+    possibly days-old invite, and LinkedIn will not let us re-send it for weeks. So every click after
+    the list has moved re-reads the page and matches on the profile URL, and an invite that cannot be
+    re-identified is skipped rather than guessed at: a missed withdrawal is recoverable on the next
+    run, a wrong one is not.
+    """
+    profile_url = invite.get("profile_url") or ""
+    if not profile_url:
+        return None
+    for row in read_pending_invites(driver):
+        if row.get("profile_url") == profile_url:
+            return row.get("control")
+    return None
+
+
 def _record_withdrawal(user_id: int, invite: dict, verified: bool) -> None:
     """One immutable log row per DISPATCHED withdrawal, whatever the verdict.
 
@@ -433,8 +461,14 @@ def withdraw_stale_invites(driver: WebDriver, wait: WebDriverWait, user_id: int,
                      action_type="invite", task_name="withdraw_stale_invites")
             held = True
             break
-        control = invite.get("control")
+        # The first click spends the handles read off the page we just walked. Every click after one
+        # has gone out re-resolves against the re-rendered list — see `_resolve_control`.
+        control = invite.get("control") if not attempted else _resolve_control(driver, invite)
         if control is None:
+            if attempted:
+                log_debug("Skipping a stale invite that no longer resolves on the re-rendered list",
+                          user_id=user_id, action_type="invite",
+                          task_name="withdraw_stale_invites")
             continue
         sleep(random.uniform(ROW_PAUSE_MIN_SECONDS, ROW_PAUSE_MAX_SECONDS))
         try:
