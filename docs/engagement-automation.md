@@ -209,6 +209,15 @@ invisible: the user could never learn that following or connecting would unlock 
   proof that we could. One statement, so the two can never disagree.
 - **The badge names the fix, and does not overpromise.** Following unlocks a followers-only
   commenter; a connections-only one stays blocked, so the copy names both moves.
+- **A truncated walk never badges anyone.** If the run's `deadline_ts` cuts the card walk short,
+  "nothing offered a comment affordance" describes how far we got, not the author — that visit is
+  dropped rather than recorded.
+- **The run checks itself before it badges anybody** (`_record_blocked_visits`). Blocked visits are
+  buffered and written after the walk, because `_card_for_textbox` drifting against LinkedIn's SDUI
+  looks EXACTLY like a roster of restricted authors — and the badge would then tell the user
+  something false about other people's accounts. Every visited target reading blocked, on a roster of
+  3+, is treated as selector drift: `log_warning` and nothing persisted. Two out of two is an
+  ordinary small roster and is recorded normally.
 - **Auto-follow is OFF by default** (`roster_auto_follow`) and piggybacks on the roster pass only —
   the activity page is already open, so there is no dedicated follow session and no extra
   navigation. It runs AFTER the comment walk for that target: a follow click re-renders the top card
@@ -232,11 +241,25 @@ invisible: the user could never learn that following or connecting would unlock 
   bare nameless "Follow") — Route A prefers the control nearest the target's own exact-`/in/<slug>`
   anchor, Route B takes any owner-named control on the page. No owner name, or no owner-named
   control, returns `unknown` and clicks **nothing**.
-- **`following` is written only after the control confirms it.** An unverified flip counts as a
-  failed attempt, because `following` is TERMINAL — recording it on a click that never registered is
-  the one failure that never self-corrects. Two failures → `follow_failed`, also terminal, also
-  badged. A card that ALREADY says "Following" is recorded without a click and without spending
-  budget: the zero-cost catch-up that stops the lane redoing this work every run.
+- **`following` is written only after the control confirms it.** LinkedIn REPLACES the top card
+  rather than relabelling the button, so the check POLLS (`_await_follow_flip`) instead of re-reading
+  once — losing that render race would cost the target a failed attempt it never earned. A flip that
+  still never confirms counts as a failed attempt, because `following` is TERMINAL and recording it
+  on a click that did not register is the one failure that never self-corrects. Two failures →
+  `follow_failed`. A card that ALREADY says "Following" is recorded without a click and without
+  spending budget: the zero-cost catch-up that stops the lane redoing this work every run.
+- **Terminal means no more CLICKS, not no more reading.** A `follow_failed` target is re-read on
+  later visits by `reconcile_roster_follow_state` — read-only, no click, no budget — and an
+  affirmative "Following" clears the failure. An unverified flip is recorded as a failure precisely
+  because it may have landed, so the next visit has to be allowed to notice that it did.
+- **The daily budget is spent on the CLICK, not the outcome.** `record_action(ACTION_FOLLOW)` fires
+  the moment the click is dispatched: LinkedIn saw the action whether or not we could read the
+  result, and a lane whose verification broke must not be free to click every target on the roster.
+  The remaining budget is re-read before every follow rather than decremented from a per-run local,
+  so two overlapping runs for one user share one allowance instead of each spending the whole of it.
+- **`FollowStatus` (db.py) is the ONE vocabulary** — the MySQL ENUM, the DOM reading the resolver
+  returns, and every write site. A `StrEnum`, so a raw column value compares equal to a member with
+  no conversion at any boundary, and a typo is an import error rather than a MySQL error at 3am.
 - **Live grounding before the clicker:**
   `python -m scripts.linkedin_live_validation --roster-follow <profile-url>` opens the activity page
   and reports which state resolves plus every visible control label. Strictly read-only — nothing is

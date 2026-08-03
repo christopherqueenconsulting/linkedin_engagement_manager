@@ -9,7 +9,8 @@ import sys
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Tuple
+from enum import StrEnum
+from typing import Callable, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from celery_once import QueueOnce
@@ -63,7 +64,7 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id, get_user_id, inse
     update_catchup_touch_status, count_catchup_touches_sent_today, max_catchup_touches_allowed, \
     get_engagement_targets, record_target_engagement, resolve_weekly_cap, \
     record_target_comment_blocked, set_target_follow_status, record_target_follow_failure, \
-    ENGAGEMENT_TARGET_BLOCKED_BADGE_STREAK, ENGAGEMENT_TARGET_FOLLOW_TERMINAL, \
+    ENGAGEMENT_TARGET_BLOCKED_BADGE_STREAK, ENGAGEMENT_TARGET_FOLLOW_TERMINAL, FollowStatus, \
     ROSTER_FOLLOWS_PER_DAY_DEFAULT, \
     record_follower_stat, get_linkedin_profile_url_by_user_id, \
     get_comment_outcome_targets, record_comment_outcome, \
@@ -1475,12 +1476,25 @@ if (SLUG) {
 return controls(document) || ['unknown', null];
 """
 
-FOLLOW_STATE_FOLLOWING = "following"
-FOLLOW_STATE_NOT_FOLLOWING = "not_following"
-FOLLOW_STATE_UNKNOWN = "unknown"
+
+# What ONE follow attempt did. Produced in one place and compared in two, so it is a closed
+# vocabulary rather than four magic strings — a typo in the budget comparison would un-bound the
+# clicking.
+class FollowOutcome(StrEnum):
+    NONE = ""                    # nothing was attempted (held, no control, no URL)
+    FOLLOWED = "followed"        # clicked AND the control confirmed the flip
+    ALREADY_FOLLOWING = "already_following"   # the card already said so — recorded without a click
+    FAILED = "failed"            # a click was dispatched and did not verifiably take
 
 
-def _activity_page_owner_name(driver) -> str:
+# How long to give the top card to re-render after a Follow click before calling it a failure. The
+# card is replaced, not merely relabelled, so a single immediate re-read races the render — and an
+# unverified flip costs the target a failed attempt it may not have earned.
+_FOLLOW_FLIP_ATTEMPTS = 4
+_FOLLOW_FLIP_WAIT_SECONDS = 2.0
+
+
+def _activity_page_owner_name(driver: WebDriver) -> str:
     """The page owner's display name, read from the activity page's own <title>
     ("(8) Activity | Arvid Kahl | LinkedIn"). LinkedIn writes the title and the follow controls'
     aria-labels from the same display name, so this is the one spelling guaranteed to match — a
@@ -1494,37 +1508,41 @@ def _activity_page_owner_name(driver) -> str:
     return ""
 
 
-def _resolve_follow_control(driver, profile_url: str, name: str = "") -> tuple:
+def _resolve_follow_control(driver: WebDriver, profile_url: str,
+                            name: str = "") -> tuple[FollowStatus, WebElement | None]:
     """`(state, element)` for a roster target's follow control on the activity page already open.
     The control must carry the page owner's name in its label — see `_FOLLOW_CONTROL_JS` for why
     that, and not top-card geometry, is the scoping rule.
 
-    `FOLLOW_STATE_UNKNOWN` means we could not read it, NOT that there is nothing to follow — the
-    caller must treat it as "do nothing", never as "click the first Follow you can find"."""
+    `FollowStatus.UNKNOWN` means we could not read it, NOT that there is nothing to follow — the
+    caller must treat it as "do nothing", never as "click the first Follow you can find". The
+    element is None on every state but `NOT_FOLLOWING`, so a caller that clicks must check it."""
     owner = _activity_page_owner_name(driver) or str(name or "").strip()
     if not owner:
         # Selector-rot breadcrumb (not a warning — plenty of pages legitimately resolve nothing):
         # a run that keeps landing here means the <title> shape rotated AND no roster name was given.
         log_debug("Follow control unresolvable — no owner name to anchor the label match on",
                   action_type="follow", task_name="_resolve_follow_control")
-        return FOLLOW_STATE_UNKNOWN, None
+        return FollowStatus.UNKNOWN, None
     try:
         result = driver.execute_script(_FOLLOW_CONTROL_JS, _profile_slug(profile_url), owner)
     except Exception as e:
         log_debug(f"Follow control resolution JS failed ({type(e).__name__}: {e})",
                   action_type="follow", task_name="_resolve_follow_control")
-        return FOLLOW_STATE_UNKNOWN, None
+        return FollowStatus.UNKNOWN, None
     if not isinstance(result, (list, tuple)) or len(result) != 2:
-        return FOLLOW_STATE_UNKNOWN, None
+        return FollowStatus.UNKNOWN, None
     state, element = result[0], result[1]
-    if state not in (FOLLOW_STATE_FOLLOWING, FOLLOW_STATE_NOT_FOLLOWING):
-        return FOLLOW_STATE_UNKNOWN, None
-    return state, element
+    if state not in (FollowStatus.FOLLOWING, FollowStatus.NOT_FOLLOWING):
+        return FollowStatus.UNKNOWN, None
+    return FollowStatus(state), element
 
 
 def roster_follow_budget(user_id: int, prefs: dict) -> int:
     """How many roster targets this user may follow right now (issue #962), or 0 when the lane is
-    off. Decided ONCE per run, before any profile is visited.
+    off. Re-read before EVERY follow rather than decremented from a per-run local: a click is
+    recorded the moment it is dispatched, so re-reading is what makes two overlapping runs for the
+    same user share one daily allowance instead of each spending the whole of it.
 
     The cap draws its own paced daily budget (`ACTION_FOLLOW`) so a follow never eats the comment
     lane's, and `caps` still engages the shared account envelope — an account that has spent its
@@ -1557,29 +1575,76 @@ def _follow_hold_reason(user_id: int) -> str:
     return ""
 
 
-def auto_follow_roster_target(driver, user_id: int, target: dict) -> str:
-    """Follow ONE roster target from the activity page already open. Returns what happened:
-    'followed' / 'already_following' / 'failed' / '' (nothing attempted).
+def _await_follow_flip(driver: WebDriver, profile_url: str, name: str,
+                       sleep: Optional[Callable[[float], None]] = None) -> FollowStatus:
+    """Poll the control until it reads "Following", up to `_FOLLOW_FLIP_ATTEMPTS` times.
+
+    LinkedIn REPLACES the top card after a follow rather than relabelling the button, so a single
+    immediate re-read races that render — and losing that race costs the target a failed attempt it
+    did not earn, twice of which retires it."""
+    sleep = sleep or time.sleep
+    state = FollowStatus.UNKNOWN
+    for attempt in range(_FOLLOW_FLIP_ATTEMPTS):
+        if attempt:
+            sleep(_FOLLOW_FLIP_WAIT_SECONDS)
+        state, _ = _resolve_follow_control(driver, profile_url, name=name)
+        if state == FollowStatus.FOLLOWING:
+            return state
+    return state
+
+
+def reconcile_roster_follow_state(driver: WebDriver, user_id: int, target: dict) -> FollowStatus:
+    """Read-only follow-state correction for a target the lane already gave up on, from the activity
+    page that is open anyway. Clicks NOTHING and spends no budget.
+
+    This is what keeps `follow_failed` from being a life sentence: an unverified flip is recorded as
+    a failure precisely because it may have landed, so the next visit has to be allowed to notice
+    that it did. Only an affirmative "Following" is written — `unknown` leaves the record alone."""
+    profile_url = str(target.get("profile_url") or "").strip()
+    if not profile_url:
+        return FollowStatus.UNKNOWN
+    state, _ = _resolve_follow_control(driver, profile_url, name=str(target.get("name") or ""))
+    if state == FollowStatus.FOLLOWING:
+        set_target_follow_status(user_id, profile_url, FollowStatus.FOLLOWING)
+        log_info(f"Roster target {target.get('name') or profile_url} reads as followed after all — "
+                 f"clearing the failed follow", user_id=user_id, action_type="follow",
+                 task_name="reconcile_roster_follow_state")
+    return state
+
+
+def auto_follow_roster_target(driver: WebDriver, user_id: int, target: dict,
+                              sleep: Optional[Callable[[float], None]] = None) -> FollowOutcome:
+    """Follow ONE roster target from the activity page already open.
 
     Verification is the point: `follow_status='following'` is only written once the control itself
     reads "Following" AFTER the click, because a follow that silently did not register would be
     recorded as terminal and the target never looked at again. A card that already says "Following"
     is recorded WITHOUT a click — the zero-cost catch-up that stops the lane redoing this work every
     run.
+
+    The paced daily budget is spent on the CLICK, not on the outcome: LinkedIn saw the action
+    whether or not we could read the result, and a lane whose verification broke must not be free to
+    click every target on the roster.
     """
+    sleep = sleep or time.sleep
     profile_url = str(target.get("profile_url") or "").strip()
     if not profile_url:
-        return ""
+        return FollowOutcome.NONE
+    name = str(target.get("name") or "")
     hold = _follow_hold_reason(user_id)
     if hold:
-        log_info(f"Roster auto-follow skipped — {hold}", user_id=user_id, action_type="follow",
-                 task_name="auto_follow_roster_target")
-        return ""
-    state, control = _resolve_follow_control(driver, profile_url, name=str(target.get("name") or ""))
-    if state == FOLLOW_STATE_FOLLOWING:
-        set_target_follow_status(user_id, profile_url, "following")
-        return "already_following"
-    if state != FOLLOW_STATE_NOT_FOLLOWING or control is None:
+        # DEBUG, not INFO: this is re-read per target because the breaker can trip mid-run, so an
+        # INFO here is one line per roster target for a condition that has nothing to do with the
+        # follow lane. The caller announces the hold ONCE per run.
+        log_debug(f"Roster auto-follow skipped — {hold}", user_id=user_id, action_type="follow",
+                  task_name="auto_follow_roster_target")
+        return FollowOutcome.NONE
+    state, control = _resolve_follow_control(driver, profile_url, name=name)
+    if state == FollowStatus.FOLLOWING:
+        if str(target.get("follow_status") or "") != FollowStatus.FOLLOWING:
+            set_target_follow_status(user_id, profile_url, FollowStatus.FOLLOWING)
+        return FollowOutcome.ALREADY_FOLLOWING
+    if state != FollowStatus.NOT_FOLLOWING or control is None:
         # Expected no-op, not selector rot: plenty of profiles expose no Follow control at all
         # (already connected with following off, a creator-mode-off account, a restricted page). A
         # warning here would file a defect for working behaviour on every such target.
@@ -1588,30 +1653,31 @@ def auto_follow_roster_target(driver, user_id: int, target: dict) -> str:
         # `not_following` an earlier, readable visit had established.
         log_debug("No follow control on roster target's activity page", user_id=user_id,
                   action_type="follow", task_name="auto_follow_roster_target")
-        return ""
+        return FollowOutcome.NONE
     try:
         driver.execute_script("arguments[0].scrollIntoView({block:'center'});", control)
-        time.sleep(random.uniform(1.5, 3.5))  # a human reads the card before clicking Follow
+        sleep(random.uniform(1.5, 3.5))  # a human reads the card before clicking Follow
         driver.execute_script("arguments[0].click();", control)
-        time.sleep(random.uniform(2, 4))
     except Exception as e:
         log_warning("Roster follow click failed", exc=e, user_id=user_id, action_type="follow",
                     task_name="auto_follow_roster_target")
         record_target_follow_failure(user_id, profile_url)
-        return "failed"
-    after, _ = _resolve_follow_control(driver, profile_url, name=str(target.get("name") or ""))
-    if after != FOLLOW_STATE_FOLLOWING:
+        return FollowOutcome.FAILED
+    # Recorded on DISPATCH, before the verdict is known: the click has already gone to LinkedIn, so
+    # it costs the daily allowance whatever we read next.
+    record_action(user_id, ACTION_FOLLOW)
+    if _await_follow_flip(driver, profile_url, name, sleep=sleep) != FollowStatus.FOLLOWING:
         # The click landed somewhere but the button never flipped. Recording 'following' here is the
-        # one failure that never self-corrects, so an unverified flip counts as a failed attempt.
+        # one failure that never self-corrects, so an unverified flip counts as a failed attempt —
+        # and `reconcile_roster_follow_state` is what lets a later visit take it back.
         log_warning("Roster follow did not take — control never read 'Following'", user_id=user_id,
                     action_type="follow", task_name="auto_follow_roster_target")
         record_target_follow_failure(user_id, profile_url)
-        return "failed"
-    set_target_follow_status(user_id, profile_url, "following")
-    record_action(user_id, ACTION_FOLLOW)
-    log_info(f"Followed roster target {target.get('name') or profile_url}", user_id=user_id,
+        return FollowOutcome.FAILED
+    set_target_follow_status(user_id, profile_url, FollowStatus.FOLLOWING)
+    log_info(f"Followed roster target {name or profile_url}", user_id=user_id,
              action_type="follow", task_name="auto_follow_roster_target")
-    return "followed"
+    return FollowOutcome.FOLLOWED
 
 
 # What the run's feed sort actually was. Only FEED_SORT_RECENT means the recency-dominant scoring
@@ -1852,7 +1918,17 @@ def comment_on_roster_posts(driver, wait, my_profile: LinkedInProfile, user_id: 
     targets = get_engagement_targets(user_id, active_only=True)
     if not targets:
         return stats
-    follow_budget = roster_follow_budget(user_id, prefs)
+    follow_enabled = bool((prefs or {}).get("roster_auto_follow"))
+    # Announced ONCE per run rather than per target: a pause or an open breaker is not a fact about
+    # any one roster target, and the per-follow re-read (the breaker can trip mid-run) is DEBUG.
+    follow_hold = _follow_hold_reason(user_id) if follow_enabled else ""
+    if follow_hold:
+        log_info(f"Roster auto-follow standing down this run — {follow_hold}", user_id=user_id,
+                 action_type="follow", task_name="comment_on_roster_posts")
+    # Blocked visits are collected and written AFTER the walk, so one run-level check can tell a
+    # roster of genuinely restricted authors from `_card_for_textbox` having drifted — the latter
+    # would badge every target at once with a confident lie about their accounts.
+    blocked_visits: list = []
     for target in select_roster_targets(targets, max_posts):
         if stats["posted"] >= max_posts or (deadline_ts and time.time() >= deadline_ts):
             break
@@ -1875,9 +1951,14 @@ def comment_on_roster_posts(driver, wait, my_profile: LinkedInProfile, user_id: 
         posted_here = 0
         # The two halves of the restricted-comments signature (#962): posts that rendered, and posts
         # that offered a way to comment. Only "some of the first, none of the second" is evidence.
-        posts_seen, commentable_seen = 0, 0
+        posts_seen, commentable_seen, truncated = 0, 0, False
         for box in driver.find_elements(By.CSS_SELECTOR, _FEED_POST_TEXT_SEL):
-            if posted_here >= allowed_here or (deadline_ts and time.time() >= deadline_ts):
+            if deadline_ts and time.time() >= deadline_ts:
+                # The walk stopped early, so "no card offered a comment affordance" is a statement
+                # about how far we got, not about the author. Tracked so it can't badge them.
+                truncated = True
+                break
+            if posted_here >= allowed_here:
                 break
             try:
                 content = (box.text or "").strip()
@@ -1915,39 +1996,61 @@ def comment_on_roster_posts(driver, wait, my_profile: LinkedInProfile, user_id: 
                 stats["commented_key_sources"][key_source] = \
                     stats["commented_key_sources"].get(key_source, 0) + 1
                 record_target_engagement(user_id, profile_url)
-                myprint(f"Commented on roster target {author or profile_url} "
-                        f"({target.get('category')})")
-        if posts_seen and not commentable_seen:
+                log_info(f"Commented on roster target {author or profile_url} "
+                         f"({target.get('category')})", user_id=user_id, action_type="comment",
+                         task_name="comment_on_roster_posts")
+        if posts_seen and not commentable_seen and not truncated:
             stats["comment_blocked"] += 1
+            blocked_visits.append(profile_url)
             # DEBUG, not a warning: an author who restricts commenting is WORKING behaviour on their
             # side, and this visit repeats every rotation — warning it would escalate and file a
             # defect for a post nobody was ever allowed to comment on.
             log_debug(f"Roster target {profile_url} rendered {posts_seen} posts with no comment "
                       f"affordance — commenting looks restricted", user_id=user_id,
                       action_type="comment", task_name="comment_on_roster_posts")
-            streak = record_target_comment_blocked(user_id, profile_url)
-            # Exactly at the threshold, so the surface crossing is announced ONCE rather than on
-            # every visit for as long as the target stays blocked.
-            if streak == ENGAGEMENT_TARGET_BLOCKED_BADGE_STREAK:
-                log_info(f"Roster target {profile_url} has been un-commentable for {streak} visits "
-                         f"— surfaced on the roster card", user_id=user_id, action_type="comment",
-                         task_name="comment_on_roster_posts")
         elif posted_here == 0:
             log_info(f"No commentable on-topic post found for roster target {profile_url}",
                      user_id=user_id, action_type="comment", task_name="comment_on_roster_posts")
         # Auto-follow LAST, on the page that is already open: a follow click re-renders the top card,
-        # and doing it before the comment walk would stale the very cards that walk reads. A target
-        # already 'following' or 'follow_failed' is terminal and never re-examined.
-        if follow_budget > 0 and target.get("follow_status") not in ENGAGEMENT_TARGET_FOLLOW_TERMINAL:
-            outcome = auto_follow_roster_target(driver, user_id, target)
-            if outcome == "followed":
-                stats["followed"] += 1
-            # A CLICK is what the budget bounds, so a failed one spends it too — otherwise a run
-            # where the control stopped flipping would keep clicking Follow on every target it
-            # visited. `record_action` still only counts follows that landed.
-            if outcome in ("followed", "failed"):
-                follow_budget -= 1
+        # and doing it before the comment walk would stale the very cards that walk reads.
+        if follow_enabled:
+            follow_status = str(target.get("follow_status") or "")
+            if follow_status in ENGAGEMENT_TARGET_FOLLOW_TERMINAL:
+                if follow_status == FollowStatus.FOLLOW_FAILED:
+                    # Terminal means no more CLICKS, not no more reading. Read-only, costs no
+                    # budget: a follow we could not verify may well have landed, so the state has to
+                    # stay correctable or 'follow_failed' is a permanently wrong answer.
+                    reconcile_roster_follow_state(driver, user_id, target)
+            elif roster_follow_budget(user_id, prefs) > 0:
+                # Re-read per target, not decremented from a per-run local: the click is recorded on
+                # dispatch, so this is also what stops two overlapping runs each spending the cap.
+                if auto_follow_roster_target(driver, user_id, target) == FollowOutcome.FOLLOWED:
+                    stats["followed"] += 1
+    _record_blocked_visits(user_id, blocked_visits, stats["targets_visited"])
     return stats
+
+
+def _record_blocked_visits(user_id: int, blocked_visits: list, targets_visited: int) -> None:
+    """Persist the run's restricted-comments findings, unless the run itself is the suspect.
+
+    `_card_for_textbox` returning None for EVERY card of EVERY target is far more likely to be that
+    helper drifting against LinkedIn's SDUI than a roster where nobody accepts comments — and the
+    badge it would raise tells the user something false about other people's accounts. Small rosters
+    are exempt from the check: two restricted authors out of two visited is an ordinary roster."""
+    if targets_visited >= 3 and len(blocked_visits) == targets_visited:
+        log_warning(f"Every roster target visited ({targets_visited}) rendered posts with no "
+                    f"comment affordance — treating this as comment-selector drift, not {targets_visited} "
+                    f"restricted authors; no blocked visits recorded", user_id=user_id,
+                    action_type="comment", task_name="comment_on_roster_posts")
+        return
+    for profile_url in blocked_visits:
+        streak = record_target_comment_blocked(user_id, profile_url)
+        # Exactly at the threshold, so the surface crossing is announced ONCE rather than on every
+        # visit for as long as the target stays blocked.
+        if streak == ENGAGEMENT_TARGET_BLOCKED_BADGE_STREAK:
+            log_info(f"Roster target {profile_url} has been un-commentable for {streak} visits "
+                     f"— surfaced on the roster card", user_id=user_id, action_type="comment",
+                     task_name="comment_on_roster_posts")
 
 
 def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: int,

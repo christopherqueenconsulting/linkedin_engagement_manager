@@ -143,11 +143,13 @@ def _box(text):
 
 
 def _run_roster(boxes, targets, *, prefs=None, relevant=True, engage=True, max_posts=5,
-                card=True, follow_budget=0, follow_outcome=""):
+                card=True, follow_budget=0, follow_outcome="", follow_on=None, follow_hold="",
+                blocked_streak=1, deadline_ts=None):
     """Drive comment_on_roster_posts with every Selenium/DB collaborator mocked.
 
     `card=False` makes every item render WITHOUT a comment affordance — the restricted-comments
-    signature #962 detects. `follow_budget`/`follow_outcome` drive the opt-in auto-follow lane."""
+    signature #962 detects. `follow_budget`/`follow_outcome` drive the opt-in auto-follow lane;
+    `follow_on` overrides the toggle so the budget gate and the toggle can be tested apart."""
     from cqc_lem.app import run_automation as ra
 
     driver = MagicMock()
@@ -156,8 +158,12 @@ def _run_roster(boxes, targets, *, prefs=None, relevant=True, engage=True, max_p
 
     engage_mock = MagicMock(return_value=engage)
     record = MagicMock(return_value=True)
-    blocked = MagicMock(return_value=1)
+    blocked = MagicMock(return_value=blocked_streak)
     follow = MagicMock(return_value=follow_outcome)
+    reconcile = MagicMock(return_value="unknown")
+    prefs = dict(prefs or {})
+    prefs.setdefault("roster_auto_follow",
+                     bool(follow_budget) if follow_on is None else bool(follow_on))
     seen = set()
 
     with ExitStack() as es:
@@ -175,11 +181,13 @@ def _run_roster(boxes, targets, *, prefs=None, relevant=True, engage=True, max_p
         p("record_target_engagement", new=record)
         p("record_target_comment_blocked", new=blocked)
         p("roster_follow_budget", return_value=follow_budget)
+        p("_follow_hold_reason", return_value=follow_hold)
         p("auto_follow_roster_target", new=follow)
+        p("reconcile_roster_follow_state", new=reconcile)
         stats = ra.comment_on_roster_posts(driver, MagicMock(), MagicMock(), 1, max_posts,
-                                           prefs or {}, "synthesis", [], seen)
+                                           prefs, "synthesis", [], seen, deadline_ts=deadline_ts)
     return {"stats": stats, "engage": engage_mock, "record": record, "driver": driver, "seen": seen,
-            "blocked": blocked, "follow": follow}
+            "blocked": blocked, "follow": follow, "reconcile": reconcile}
 
 
 class TestCommentOnRosterPosts:
@@ -381,6 +389,49 @@ class TestCommentBlockedDetection:
         assert r["stats"]["comment_blocked"] == 0
         r["blocked"].assert_not_called()
 
+    def test_a_walk_cut_short_by_the_deadline_never_badges_the_author(self):
+        # "No card offered a comment affordance" is only evidence when the walk finished. A run that
+        # ran out of time says how far WE got, not what the author allows.
+        from cqc_lem.app import run_automation as ra
+        ticks = iter([0.0])   # the target-loop check passes, the inner one is past the deadline
+
+        def _clock():
+            return next(ticks, 100.0)
+
+        with patch(f"{_RA}.time.time", side_effect=_clock):
+            r = _run_roster([_box("A post from an author who restricts commenting.")],
+                            [_target("https://www.linkedin.com/in/jane")], card=False,
+                            deadline_ts=50.0)
+        assert r["stats"]["comment_blocked"] == 0
+        r["blocked"].assert_not_called()
+
+    def test_every_target_reading_blocked_is_treated_as_selector_drift(self):
+        # If `_card_for_textbox` breaks, EVERY target renders as restricted. Badging them all would
+        # tell the user something false about other people's accounts, so nothing is written.
+        targets = [_target(f"https://www.linkedin.com/in/p{i}") for i in range(3)]
+        r = _run_roster([_box("A post that renders with no comment affordance.")], targets,
+                        card=False, max_posts=3)
+        assert r["stats"]["comment_blocked"] == 3   # still reported — the run saw it
+        r["blocked"].assert_not_called()            # but nothing is persisted, and no badge appears
+
+    def test_a_small_roster_of_restricted_authors_is_still_recorded(self):
+        # Two out of two is an ordinary roster, not a broken selector.
+        targets = [_target(f"https://www.linkedin.com/in/p{i}") for i in range(2)]
+        r = _run_roster([_box("A post that renders with no comment affordance.")], targets,
+                        card=False, max_posts=3)
+        assert r["blocked"].call_count == 2
+
+    def test_the_badge_crossing_is_announced_exactly_once(self):
+        from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.db import ENGAGEMENT_TARGET_BLOCKED_BADGE_STREAK as THRESHOLD
+        for streak, announced in ((THRESHOLD - 1, 0), (THRESHOLD, 1), (THRESHOLD + 1, 0)):
+            with patch(f"{_RA}.log_info") as info:
+                _run_roster([_box("A post from an author who restricts commenting.")],
+                            [_target("https://www.linkedin.com/in/jane")], card=False,
+                            blocked_streak=streak)
+            assert len([c for c in info.call_args_list
+                        if "un-commentable" in str(c.args[0])]) == announced
+
     def test_a_landed_comment_clears_the_streak_in_the_same_statement(self):
         # record_target_engagement is the ONE place the streak resets — a comment landing IS the
         # proof the target is commentable.
@@ -397,8 +448,17 @@ class TestCommentBlockedDetection:
 class TestRosterAutoFollow:
     def test_lane_is_off_unless_the_budget_allows_it(self):
         r = _run_roster([_box("A roster author's post, long enough to scan.")],
-                        [_target("https://www.linkedin.com/in/jane")], follow_budget=0)
+                        [_target("https://www.linkedin.com/in/jane")], follow_on=True,
+                        follow_budget=0)
         r["follow"].assert_not_called()
+
+    def test_lane_is_off_unless_the_user_opted_in(self):
+        # The budget is never even read: the toggle is what makes this an outbound lane at all.
+        r = _run_roster([_box("A roster author's post, long enough to scan.")],
+                        [_target("https://www.linkedin.com/in/jane")], follow_on=False,
+                        follow_budget=5)
+        r["follow"].assert_not_called()
+        r["reconcile"].assert_not_called()
 
     def test_follows_within_budget_and_counts_it(self):
         r = _run_roster([_box("A roster author's post, long enough to scan.")],
@@ -407,36 +467,77 @@ class TestRosterAutoFollow:
         r["follow"].assert_called_once()
         assert r["stats"]["followed"] == 1
 
-    def test_budget_is_spent_across_targets(self):
-        targets = [_target(f"https://www.linkedin.com/in/p{i}") for i in range(3)]
-        r = _run_roster([_box("A roster author's post, long enough to scan.")], targets,
-                        follow_budget=2, follow_outcome="followed", max_posts=3)
-        assert r["follow"].call_count == 2
-        assert r["stats"]["followed"] == 2
-
-    def test_a_terminal_follow_status_is_never_re_examined(self):
+    def test_an_already_followed_target_is_never_re_examined(self):
         target = _target("https://www.linkedin.com/in/jane")
         target["follow_status"] = "following"
         r = _run_roster([_box("A roster author's post, long enough to scan.")], [target],
                         follow_budget=3)
         r["follow"].assert_not_called()
+        r["reconcile"].assert_not_called()
 
-    def test_a_failed_click_still_spends_the_budget(self):
-        # Otherwise a run where the control stopped flipping keeps clicking Follow on every target
-        # it visits — the cap exists to bound CLICKS, not just successes.
-        targets = [_target(f"https://www.linkedin.com/in/p{i}") for i in range(3)]
-        r = _run_roster([_box("A roster author's post, long enough to scan.")], targets,
-                        follow_budget=1, follow_outcome="failed", max_posts=3)
-        assert r["follow"].call_count == 1
-        assert r["stats"]["followed"] == 0
+    def test_a_failed_target_is_re_read_but_never_re_clicked(self):
+        # 'follow_failed' is terminal for CLICKS only: an unverified flip may well have landed, so
+        # a later visit has to be allowed to notice — read-only, and it spends no budget.
+        target = _target("https://www.linkedin.com/in/jane")
+        target["follow_status"] = "follow_failed"
+        r = _run_roster([_box("A roster author's post, long enough to scan.")], [target],
+                        follow_budget=3)
+        r["follow"].assert_not_called()
+        r["reconcile"].assert_called_once()
 
-    def test_a_target_with_no_follow_control_does_not_spend_the_budget(self):
-        # Nothing was clicked, so nothing was spent — plenty of profiles simply expose no control.
+    def test_the_budget_is_re_read_per_target_not_decremented_locally(self):
+        # The click is recorded on dispatch, so re-reading is what makes two overlapping runs for
+        # one user share a single daily allowance instead of each spending the whole of it.
+        from cqc_lem.app import run_automation as ra
         targets = [_target(f"https://www.linkedin.com/in/p{i}") for i in range(3)]
-        r = _run_roster([_box("A roster author's post, long enough to scan.")], targets,
-                        follow_budget=1, follow_outcome="", max_posts=3)
-        assert r["follow"].call_count == 3
-        assert r["stats"]["followed"] == 0
+        with patch(f"{_RA}.roster_follow_budget", side_effect=[2, 1, 0]) as budget, \
+             patch(f"{_RA}._follow_hold_reason", return_value=""), \
+             patch(f"{_RA}.auto_follow_roster_target", return_value="followed") as follow, \
+             patch(f"{_RA}.get_engagement_targets", return_value=targets), \
+             patch(f"{_RA}.wait_for_ajax"), \
+             patch(f"{_RA}.record_target_comment_blocked", return_value=1), \
+             patch(f"{_RA}._card_for_textbox", return_value=None):
+            driver = MagicMock()
+            driver.find_elements.return_value = [_box("A roster author's post, long enough.")]
+            stats = ra.comment_on_roster_posts(driver, MagicMock(), MagicMock(), 1, 3,
+                                               {"roster_auto_follow": True}, "s", [], set())
+        assert budget.call_count == 3      # asked again for every target, never cached
+        assert follow.call_count == 2      # the third read says the allowance is spent
+        assert stats["followed"] == 2
+
+
+    def test_a_hold_is_announced_once_per_run_not_once_per_target(self):
+        # A pause or an open breaker is a fact about the account, not about each roster target —
+        # one INFO per target is exactly the repeated-expected-condition noise #962 argues against.
+        targets = [_target(f"https://www.linkedin.com/in/p{i}") for i in range(3)]
+        with patch(f"{_RA}.log_info") as info:
+            _run_roster([_box("A roster author's post, long enough to scan.")], targets,
+                        follow_budget=3, max_posts=3, follow_hold="automation paused")
+        assert len([c for c in info.call_args_list
+                    if "standing down" in str(c.args[0])]) == 1
+
+
+class TestReconcileRosterFollowState:
+    _TARGET = {"profile_url": "https://www.linkedin.com/in/jane", "name": "Jane"}
+
+    def test_a_card_that_now_reads_following_clears_the_failure(self):
+        from cqc_lem.app import run_automation as ra
+        with patch(f"{_RA}._resolve_follow_control", return_value=("following", None)), \
+             patch(f"{_RA}.set_target_follow_status", return_value=True) as st:
+            assert ra.reconcile_roster_follow_state(MagicMock(), 1, self._TARGET) == "following"
+        st.assert_called_once_with(1, "https://www.linkedin.com/in/jane", "following")
+
+    def test_anything_else_leaves_the_record_alone_and_clicks_nothing(self):
+        from cqc_lem.app import run_automation as ra
+        driver = MagicMock()
+        for state in ("not_following", "unknown"):
+            with patch(f"{_RA}._resolve_follow_control", return_value=(state, MagicMock())), \
+                 patch(f"{_RA}.set_target_follow_status") as st, \
+                 patch(f"{_RA}.record_action") as rec:
+                assert ra.reconcile_roster_follow_state(driver, 1, self._TARGET) == state
+            st.assert_not_called()
+            rec.assert_not_called()
+        driver.execute_script.assert_not_called()
 
 
 class TestRosterFollowBudget:
@@ -469,16 +570,28 @@ class TestRosterFollowBudget:
         assert remaining.call_args[0][2] == ROSTER_FOLLOWS_PER_DAY_DEFAULT
 
 
-def _follow_env(state_before, state_after=None, hold=""):
+def _follow_env(state_before, state_after=None, hold="", flip_on_attempt=None):
     """Patch stack for auto_follow_roster_target: the resolver returns `state_before`, then
-    `state_after` on the post-click re-read."""
+    `state_after` on every post-click re-read — the verification POLLS, so the after-state has to
+    answer more than once. `flip_on_attempt` makes it read 'following' only from that poll onward,
+    which is the render race the polling exists for."""
     es = ExitStack()
     p = lambda name, **kw: es.enter_context(patch(f"{_RA}.{name}", **kw))
     control = MagicMock()
-    states = [(state_before, control if state_before == "not_following" else None)]
-    if state_after is not None:
-        states.append((state_after, None))
-    p("_resolve_follow_control", side_effect=states)
+    reads = iter([(state_before, control if state_before == "not_following" else None)])
+    after_calls = {"n": 0}
+
+    def _resolve(*_a, **_kw):
+        try:
+            return next(reads)
+        except StopIteration:
+            pass
+        after_calls["n"] += 1
+        if flip_on_attempt is not None:
+            return ("following" if after_calls["n"] >= flip_on_attempt else "not_following"), None
+        return (state_after, None)
+
+    p("_resolve_follow_control", side_effect=_resolve)
     p("_follow_hold_reason", return_value=hold)
     return es, {
         "set": p("set_target_follow_status", return_value=True),
@@ -515,12 +628,25 @@ class TestAutoFollowRosterTarget:
         # Writing 'following' on an unverified click is the one failure that never self-corrects:
         # the status is terminal, so the target would never be looked at again.
         from cqc_lem.app import run_automation as ra
+        from cqc_lem.utilities.human_pacing import ACTION_FOLLOW
         es, m = _follow_env("not_following", "not_following")
         with es:
             assert ra.auto_follow_roster_target(MagicMock(), 1, self._target_dict()) == "failed"
         m["fail"].assert_called_once_with(1, "https://www.linkedin.com/in/jane")
         assert all(c.args[2] != "following" for c in m["set"].call_args_list)
-        m["record"].assert_not_called()
+        # The click still went to LinkedIn, so it still costs the day's allowance — otherwise a lane
+        # whose verification broke would be free to click every target on the roster.
+        m["record"].assert_called_once_with(1, ACTION_FOLLOW)
+
+    def test_a_slow_re_render_is_polled_for_rather_than_called_a_failure(self):
+        # LinkedIn REPLACES the top card after a follow; losing that race once used to cost the
+        # target a failed attempt it never earned, and two of those retire it for good.
+        from cqc_lem.app import run_automation as ra
+        es, m = _follow_env("not_following", flip_on_attempt=3)
+        with es:
+            assert ra.auto_follow_roster_target(MagicMock(), 1, self._target_dict()) == "followed"
+        m["set"].assert_called_once_with(1, "https://www.linkedin.com/in/jane", "following")
+        m["fail"].assert_not_called()
 
     def test_an_unreadable_control_clicks_nothing(self):
         from cqc_lem.app import run_automation as ra

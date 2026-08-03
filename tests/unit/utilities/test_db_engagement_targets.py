@@ -255,6 +255,27 @@ class TestRecordTargetCommentBlocked:
             assert record_target_comment_blocked(1, "https://x/in/jane") == 0
 
 
+class TestFollowStatusEnum:
+    def test_the_enum_is_the_migration_s_enum(self):
+        # The Python vocabulary and the MySQL ENUM are the same list or a write becomes a runtime
+        # MySQL error. Read from the migration so adding a member without one fails HERE.
+        import re
+        from pathlib import Path
+        from cqc_lem.utilities.db import FollowStatus
+        sql = Path("compose/local/database/migrations/"
+                   "V20260803032507__add_roster_follow_state.sql").read_text()
+        declared = re.search(r"follow_status ENUM\(([^)]*)\)", sql).group(1)
+        assert {m.value for m in FollowStatus} == set(re.findall(r"'([^']+)'", declared))
+
+    def test_a_raw_column_value_compares_equal_to_a_member(self):
+        # StrEnum, so a status read back off the DB needs no conversion at any boundary.
+        from cqc_lem.utilities.db import FollowStatus, ENGAGEMENT_TARGET_FOLLOW_TERMINAL
+        assert "following" == FollowStatus.FOLLOWING
+        assert "following" in ENGAGEMENT_TARGET_FOLLOW_TERMINAL
+        assert "follow_failed" in ENGAGEMENT_TARGET_FOLLOW_TERMINAL
+        assert "not_following" not in ENGAGEMENT_TARGET_FOLLOW_TERMINAL
+
+
 class TestSetTargetFollowStatus:
     def test_following_stamps_the_timestamp_and_clears_attempts(self):
         conn, cursor = _mock_conn()

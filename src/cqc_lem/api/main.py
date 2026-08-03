@@ -1244,7 +1244,10 @@ class EngagementPreferencesRequest(BaseModel):
     # Opt-in auto-follow of roster targets (issue #962), OFF by default. The cap is its own small
     # per-day budget — a follow never spends the comment lane's.
     roster_auto_follow: bool = False
-    max_follows_per_day: int = ROSTER_FOLLOWS_PER_DAY_DEFAULT
+    # None (omitted by the client) means "leave what is stored alone" — NOT the code default. An
+    # older SPA build that never learned this field must not resurrect 3 follows/day over a 0 the
+    # user set to switch an outbound lane off.
+    max_follows_per_day: Optional[int] = None
     # Catch-up congratulations (issue #482)
     max_catchup_touches_per_day: int = CATCHUP_TOUCHES_MAX_STANDARD
     catchup_touch_mode: str = "pre_review"  # 'pre_review' (default) | 'auto_approve'
@@ -1311,7 +1314,11 @@ class EngagementPreferencesRequest(BaseModel):
 
     @field_validator("max_follows_per_day")
     @classmethod
-    def _clamp_follows(cls, v: int) -> int:
+    def _clamp_follows(cls, v: Optional[int]) -> Optional[int]:
+        # An explicit 0 is preserved (MIN is 0): it is how the user switches the follow lane off
+        # without touching the toggle, so clamping it up would re-enable an outbound action.
+        if v is None:
+            return None
         try:
             return min(ROSTER_FOLLOWS_PER_DAY_MAX, max(ROSTER_FOLLOWS_PER_DAY_MIN, int(v)))
         except (TypeError, ValueError):
@@ -3888,6 +3895,11 @@ def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     prefs = request.model_dump(exclude={"session_token"})
+    # NULL is "never chosen" for the follow cap (issue #962), and the upsert writes every column
+    # from this dict — so an omitted field is dropped here rather than merged as the code default,
+    # which would overwrite a deliberate 0 and restart an outbound lane the user had switched off.
+    if prefs.get("max_follows_per_day") is None:
+        prefs.pop("max_follows_per_day", None)
     if not update_engagement_preferences(user_id, prefs):
         raise HTTPException(status_code=500, detail="Could not update engagement preferences")
     return ResponseModel(status_code=200, detail="Engagement preferences updated")

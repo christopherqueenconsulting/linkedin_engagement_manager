@@ -46,7 +46,7 @@ import argparse
 import json
 import sys
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -901,7 +901,8 @@ def roster_follow_verdict(reading: dict) -> str:
             "nothing")
 
 
-def probe_roster_follow(driver, profile_url: str, sleep=time.sleep) -> dict:
+def probe_roster_follow(driver, profile_url: str,
+                        sleep: Callable[[float], None] = time.sleep) -> dict:
     """#962: open a roster target's recent-activity page and report whether the top-card follow
     control resolves, and which state it reads.
 
@@ -915,7 +916,6 @@ def probe_roster_follow(driver, profile_url: str, sleep=time.sleep) -> dict:
     driver.get(url)
     sleep(5)
     state, control = _resolve_follow_control(driver, profile_url)
-    posts = 0
     try:
         posts = len([b for b in driver.find_elements(By.CSS_SELECTOR, _FEED_POST_TEXT_SEL)
                      if b.is_displayed()])
@@ -924,7 +924,7 @@ def probe_roster_follow(driver, profile_url: str, sleep=time.sleep) -> dict:
     reading = {"profile_url": profile_url,
                "activity_url": url,
                "url": getattr(driver, "current_url", url),
-               "state": state,
+               "state": str(state),
                # The name the label match anchored on — the resolver only accepts controls that
                # carry it, so a wrong or empty name here explains an unknown above.
                "owner_name": _activity_page_owner_name(driver),

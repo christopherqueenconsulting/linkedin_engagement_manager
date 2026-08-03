@@ -354,15 +354,17 @@ class TestConnectionTargetingPrefs:
 class TestRosterAutoFollow:
     """Opt-in roster auto-follow (issue #962)."""
 
-    def test_defaults_to_off_with_the_conservative_cap(self, client):
-        from cqc_lem.utilities.db import ROSTER_FOLLOWS_PER_DAY_DEFAULT
+    def test_the_toggle_defaults_off_and_an_omitted_cap_is_left_alone(self, client):
+        # The toggle defaults OFF (a client that never learned the field cannot switch an outbound
+        # lane on), but the CAP is not written at all when omitted — writing the code default would
+        # overwrite a deliberate 0 and restart the lane at 3/day.
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
              patch("cqc_lem.api.main.update_engagement_preferences", return_value=True) as upd:
             resp = client.put("/api/user/engagement-preferences",
                               json={"session_token": _SESSION})
         assert resp.status_code == 200
         assert upd.call_args[0][1]["roster_auto_follow"] is False
-        assert upd.call_args[0][1]["max_follows_per_day"] == ROSTER_FOLLOWS_PER_DAY_DEFAULT
+        assert "max_follows_per_day" not in upd.call_args[0][1]
 
     def test_the_toggle_round_trips(self, client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \

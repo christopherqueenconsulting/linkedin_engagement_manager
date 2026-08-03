@@ -5165,11 +5165,23 @@ ENGAGEMENT_TARGET_CATEGORIES = ("peer", "icp", "creator")
 ENGAGEMENT_TARGET_SOURCES = ("user", "suggested")
 ENGAGEMENT_TARGET_WEEKLY_DEFAULT = 2
 ENGAGEMENT_TARGET_WEEKLY_MAX = 14
-# Follow state of a roster target (issue #962). 'following' and 'follow_failed' are TERMINAL — once
-# a target reaches either, the roster pass never examines it for a follow again, which is what keeps
-# the opt-in lane from redoing the same work every run.
-ENGAGEMENT_TARGET_FOLLOW_STATUSES = ("unknown", "not_following", "following", "follow_failed")
-ENGAGEMENT_TARGET_FOLLOW_TERMINAL = ("following", "follow_failed")
+class FollowStatus(StrEnum):
+    """Follow state of a roster target (issue #962) — the ONE vocabulary, shared by the MySQL ENUM,
+    the DOM reading the resolver returns, and every write site, so a typo is an import error instead
+    of a MySQL error at 3am. `StrEnum`, so a raw column value read back from the DB compares equal
+    to a member without a conversion at every boundary."""
+    UNKNOWN = 'unknown'                # we could not read the card — never "there is nothing to follow"
+    NOT_FOLLOWING = 'not_following'
+    FOLLOWING = 'following'
+    FOLLOW_FAILED = 'follow_failed'    # the control never flipped, twice
+
+
+ENGAGEMENT_TARGET_FOLLOW_STATUSES = frozenset(FollowStatus)
+# TERMINAL for CLICKING: the roster pass never spends another follow click on a target that reached
+# either. 'follow_failed' is still re-READ on later visits (a read-only correction costs nothing and
+# a follow that landed but could not be verified must not be retired forever) — see
+# `reconcile_roster_follow_state`.
+ENGAGEMENT_TARGET_FOLLOW_TERMINAL = frozenset({FollowStatus.FOLLOWING, FollowStatus.FOLLOW_FAILED})
 # Failed follow attempts before a target goes 'follow_failed'. Two, because one failure is usually a
 # render race and the second says the control genuinely is not there.
 ENGAGEMENT_TARGET_FOLLOW_MAX_ATTEMPTS = 2
@@ -5212,7 +5224,7 @@ def _clean_target_row(row: dict) -> dict:
     row["comment_blocked_streak"] = int(row.get("comment_blocked_streak") or 0)
     row["follow_attempts"] = int(row.get("follow_attempts") or 0)
     if row.get("follow_status") not in ENGAGEMENT_TARGET_FOLLOW_STATUSES:
-        row["follow_status"] = "unknown"
+        row["follow_status"] = FollowStatus.UNKNOWN.value
     return row
 
 
@@ -5355,25 +5367,26 @@ def record_target_comment_blocked(user_id: int, profile_url: str) -> int:
         connection.close()
 
 
-def set_target_follow_status(user_id: int, profile_url: str, status: str) -> bool:
+def set_target_follow_status(user_id: int, profile_url: str, status: FollowStatus) -> bool:
     """Write a roster target's follow state (issue #962). 'following' stamps `followed_at` and
     clears the attempt counter — it is reached both by a verified click and by the zero-cost
     catch-up where the top card already said "Following"."""
     if status not in ENGAGEMENT_TARGET_FOLLOW_STATUSES:
         log_error(f"Refusing to write unknown follow status {status!r}", user_id=user_id)
         return False
+    status = FollowStatus(status)
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
-        if status == "following":
+        if status is FollowStatus.FOLLOWING:
             cursor.execute(
                 "UPDATE engagement_targets SET follow_status=%s, followed_at=NOW(), "
                 "follow_attempts=0 WHERE user_id=%s AND profile_url=%s",
-                (status, user_id, str(profile_url or "").strip()))
+                (status.value, user_id, str(profile_url or "").strip()))
         else:
             cursor.execute(
                 "UPDATE engagement_targets SET follow_status=%s WHERE user_id=%s AND profile_url=%s",
-                (status, user_id, str(profile_url or "").strip()))
+                (status.value, user_id, str(profile_url or "").strip()))
         connection.commit()
         return cursor.rowcount > 0
     except mysql.connector.Error as err:
@@ -5399,10 +5412,11 @@ def record_target_follow_failure(user_id: int, profile_url: str) -> int:
             # follow_status is assigned FIRST on purpose: MySQL evaluates SET clauses left to right
             # and a later one already sees the new value, so incrementing first would make this test
             # read the post-increment count and fire a run early.
-            "follow_status = IF(follow_attempts + 1 >= %s, 'follow_failed', 'not_following'), "
+            "follow_status = IF(follow_attempts + 1 >= %s, %s, %s), "
             "follow_attempts = LEAST(255, follow_attempts + 1) "
             "WHERE user_id=%s AND profile_url=%s",
-            (ENGAGEMENT_TARGET_FOLLOW_MAX_ATTEMPTS, user_id, url))
+            (ENGAGEMENT_TARGET_FOLLOW_MAX_ATTEMPTS, FollowStatus.FOLLOW_FAILED.value,
+             FollowStatus.NOT_FOLLOWING.value, user_id, url))
         connection.commit()
         if cursor.rowcount <= 0:
             return 0
