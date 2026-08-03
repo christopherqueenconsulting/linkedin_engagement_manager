@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.127.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.126.1...v0.127.0) (2026-08-03)
+
+
+### Features
+
+* **hygiene:** weekly TODO-&gt;issues sweep cron + trim stale-branch exemptions ([#976](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/976)) ([6e7e12f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6e7e12f573426d0f825c9f233a2323cd04d9ac41))
+
+
+### Bug Fixes
+
+* **security:** retire the SPA's shared /api bearer token — the session is the identity (closes [#950](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/950)) ([#958](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/958)) ([e7b4379](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e7b4379c2f478fcc11facc9b13b37b710d344732))
+
 ## [0.126.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.126.0...v0.126.1) (2026-08-03)
 
 
