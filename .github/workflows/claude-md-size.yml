@@ -9,6 +9,13 @@ on:
     paths:
       - CLAUDE.md
       - scripts/check_claude_md_size.py
+  push:
+    branches: [main]
+    # No paths filter here on purpose (issue #1000): this is the ONLY place
+    # that catches CLAUDE.md drifting over the cap on its own — merges of
+    # squashed/rebased PRs, or anything else that lands on main without a
+    # PR ever touching CLAUDE.md's diff directly. The job is cheap; gating
+    # it would just reopen the hole this workflow exists to close.
 
 permissions:
   pull-requests: read
@@ -16,18 +23,73 @@ permissions:
 jobs:
   size:
     name: CLAUDE.md ≤ 40,000 chars
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           # Full history so the script reads the post-merge file state.
           fetch-depth: 0
+      - name: Fetch PR base branch for baseline comparison
+        run: git fetch origin "${{ github.event.pull_request.base.ref }}"
       - name: Check CLAUDE.md is within the harness cap
         # scripts/check_claude_md_size.py is stdlib-only and exits 1 over the cap.
-        # NOT currently in branch protection's required status checks — this job
-        # surfaces the failure on the PR but does not block merge on its own.
-        run: python3 scripts/check_claude_md_size.py
+        # NOT currently in branch protection's required status checks (confirmed
+        # against branch protection 2026-08-03) — this job surfaces the failure
+        # on the PR but does not block merge on its own.
+        #
+        # --baseline-ref tells apart a PR that INHERITED an already-over-cap
+        # main from one that PUSHED it over — see the script's printed note.
+        run: python3 scripts/check_claude_md_size.py --baseline-ref FETCH_HEAD
       - name: Annotate where the relocated detail goes
         if: failure()
         run: |
           echo "::error::CLAUDE.md exceeded the 40,000-char harness cap. Move detail to docs/*.md and leave CLAUDE.md as the map (locations, symbols, constants, invariants, where to find the detail). See CONTRIBUTING.md."
+
+  drift:
+    name: CLAUDE.md drift watch (main)
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Warn early, before the cap is inherited by an unrelated PR
+        id: size
+        # Soft mode: never fails this run (a docs-cap regression on main
+        # shouldn't redden the branch) — it warns at the threshold and lets
+        # the next step file/update a tracking issue while there's still
+        # runway to trim deliberately, per issue #1000.
+        run: python3 scripts/check_claude_md_size.py --warn-at
+      - name: File or update the drift issue
+        if: steps.size.outputs.status != 'ok'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          STATUS="${{ steps.size.outputs.status }}"
+          SIZE="${{ steps.size.outputs.size }}"
+          PREFIX="CLAUDE.md size drift:"
+          if [ "$STATUS" = "over" ]; then
+            TITLE="$PREFIX already over the 40,000-char cap (${SIZE} chars on main)"
+          else
+            TITLE="$PREFIX approaching the 40,000-char cap (${SIZE} chars on main)"
+          fi
+          BODY="\`CLAUDE.md\` is now **${SIZE} chars** on \`main\` (warn threshold 38,000; hard cap 40,000, enforced on PRs by \`.github/workflows/claude-md-size.yml\`). Move detail to \`docs/*.md\` and leave CLAUDE.md as the map — see CONTRIBUTING.md § CLAUDE.md size cap. Commit: ${GITHUB_SHA}."
+          # Listed and filtered client-side rather than handed to --search: the
+          # search index tokenizes/lags, and a miss here re-files a duplicate.
+          # Piped through the standalone jq binary (not gh's built-in --jq,
+          # which doesn't support --arg) so $p is never string-interpolated
+          # into the filter expression.
+          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 200 \
+            --json number,title | jq -r --arg p "$PREFIX" \
+            '[.[] | select(.title | startswith($p))][0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "$GITHUB_REPOSITORY" --body "$BODY"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body "$BODY" \
+              --label infrastructure --label priority:medium --label agent:ready
+          fi

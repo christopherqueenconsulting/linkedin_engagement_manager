@@ -221,14 +221,25 @@ cold. Move detail to `docs/*.md` and leave CLAUDE.md as the map (locations,
 symbols, constants, invariants, where to find the detail). Subsections already
 follow this `Full posture: docs/<file>.md` pattern.
 
-The guard is two layers:
+The guard is three layers (`.github/workflows/claude-md-size.yml`):
 
-- **CI check** (`.github/workflows/claude-md-size.yml`): runs on every PR touching
-  `CLAUDE.md` or `scripts/check_claude_md_size.py` and fails red over the cap, but
-  it is NOT in branch protection's required status checks, so a red run does not
-  block merge on its own — treat it as required anyway.
-- **`scripts/check_claude_md_size.py`**: stdlib-only Python script, prints the
-  current size, exits 1 over the cap. Run it locally before pushing:
+- **PR check** (`size` job): runs on every PR touching `CLAUDE.md` or
+  `scripts/check_claude_md_size.py`, fails red over the cap, and — since #1000 —
+  also compares against the PR's base branch so the check output says whether
+  an over-cap PR *caused* the overage or merely *inherited* an already-over-cap
+  `main`. NOT in branch protection's required status checks (confirmed
+  2026-08-03), so a red run does not block merge on its own — treat it as
+  required anyway.
+- **`main`-push drift watch** (`drift` job, issue #1000): the PR check only
+  fires when a diff touches `CLAUDE.md`, so a squash/rebase merge that leaves
+  `main` over the cap without a matching PR diff used to go undetected until
+  the next unrelated PR inherited it. This job runs on every push to `main`,
+  warns at 38,000 chars (before the 40,000 cap), and files/updates a tracking
+  issue — it never fails the build, since a docs-cap regression on `main`
+  shouldn't redden the branch.
+- **`scripts/check_claude_md_size.py`**: stdlib-only Python script behind both
+  jobs above; prints the current size, exits 1 over the cap by default. Run it
+  locally before pushing:
   ```bash
   python3 scripts/check_claude_md_size.py
   ```
