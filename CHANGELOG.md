@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.125.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.125.0...v0.125.1) (2026-08-03)
+
+
+### Bug Fixes
+
+* **api:** reply-notification webhook — pass sweep_slot to QueueOnce enqueue + log a verdict per inbound email ([c919f5e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c919f5edb1027296c85ce2c0e285bb875c7e2643))
+* **api:** reply-notification webhook — sweep_slot QueueOnce KeyError + per-email verdict logging ([#951](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/951)) ([c919f5e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c919f5edb1027296c85ce2c0e285bb875c7e2643))
+* **litellm:** weekly catalog PR describes its own diff + keeps the offline fixture in lockstep ([#920](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/920)) ([4ed0fa8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4ed0fa8219078fff854faae6ca737c2997ba52e8))
+
 ## [0.125.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.124.0...v0.125.0) (2026-08-03)
 
 
