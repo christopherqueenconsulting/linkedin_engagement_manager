@@ -24,12 +24,28 @@ def main_mod():
     return main
 
 
+_QUEUE_PATHS = ("/connection_requests", "/outreach/targets", "/dms", "/lead_signals", "/leads",
+                "/catchup/touches", "/user/engagement-preferences", "/user/automation-status",
+                "/dashboard/stats/", "/connection_request", "/outreach/target", "/schedule_dm",
+                "/lead_signal", "/lead")
+
+
 class TestAgentSurface:
-    def test_the_queue_reads_and_creates_are_reachable(self, main_mod):
-        for path in ("/connection_requests", "/outreach/targets", "/dms", "/lead_signals",
-                     "/leads", "/user/engagement-preferences", "/user/automation-status",
-                     "/connection_request", "/outreach/target", "/schedule_dm", "/lead_signal"):
-            assert main_mod._scope_allows(main_mod.SESSION_SCOPE_AGENT, path) is True, path
+    @pytest.mark.parametrize("path", _QUEUE_PATHS)
+    def test_the_queue_reads_and_creates_are_reachable(self, main_mod, path):
+        """Resolve through _scope_path, the way a real request does.
+
+        Asserting against the raw frozenset would pass on an entry that no live request can ever
+        match: _scope_path strips the /api prefix AND rstrips trailing slashes, so a surface entry
+        written as "/dashboard/stats/" is dead on arrival. That is not hypothetical — it was the
+        first version of this surface."""
+        key = main_mod._scope_path("/api" + path)
+        assert main_mod._scope_allows(main_mod.SESSION_SCOPE_AGENT, key) is True, f"{path} -> {key}"
+
+    @pytest.mark.parametrize("path", _QUEUE_PATHS)
+    def test_every_surface_entry_survives_path_normalisation(self, main_mod, path):
+        """No entry may be unreachable because of how it was spelled."""
+        assert main_mod._scope_path("/api" + path) in main_mod._AGENT_SESSION_SURFACE
 
     @pytest.mark.parametrize("path", [
         "/user/linkedin-cookie",        # the extension's one write — not this token's
@@ -44,7 +60,8 @@ class TestAgentSurface:
         "/user/agent-token",            # must not be able to mint its own successor
     ])
     def test_everything_that_would_widen_the_blast_radius_is_refused(self, main_mod, path):
-        assert main_mod._scope_allows(main_mod.SESSION_SCOPE_AGENT, path) is False
+        key = main_mod._scope_path("/api" + path)
+        assert main_mod._scope_allows(main_mod.SESSION_SCOPE_AGENT, key) is False
 
     def test_the_scope_is_not_unrestricted(self, main_mod):
         assert main_mod.SESSION_SCOPE_AGENT not in main_mod._UNRESTRICTED_SCOPES
