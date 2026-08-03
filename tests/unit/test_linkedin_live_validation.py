@@ -483,8 +483,14 @@ class TestAppreciationSourcesProbe:
                             lambda d, u, p="": {"mentions": {"verdict": "no cards resolved"}})
         assert llv.main(["--appreciation-sources"]) == 0
 
+    def test_zero_cards_on_a_dated_page_names_the_read_as_rotated(self):
+        """#1007's whole finding: the recommendations page rendered dated cards and the locator
+        ladder resolved none. That must not read the same as an account with no recommendations."""
+        verdict = llv.appreciation_verdict({"cards": 0, "page_dated": True, "profile_anchors": 24})
+        assert "silently dead" in verdict and "24 profile link(s)" in verdict
+
     def test_probe_reads_both_surfaces_and_never_claims_a_ledger_row(self, monkeypatch):
-        """It grounds the PRODUCTION locator chains + parsers (the scrapers themselves are gated
+        """It grounds the PRODUCTION card reads + parsers (the scrapers themselves are gated
         off until this run happens), and it must stay read-only."""
         from unittest.mock import patch
 
@@ -496,6 +502,11 @@ class TestAppreciationSourcesProbe:
         card.find_elements.return_value = [link]
 
         driver = _fake_driver(current_url="https://www.linkedin.com/in/me")
+        # Since #1007 the recommendations half is one JS read, not a locator chain.
+        driver.execute_script.return_value = {
+            "rows": [{"href": "https://www.linkedin.com/in/jane?trk=x", "name": "Jane Doe",
+                      "text": "Jane Doe\n· 1st\nJuly 24, 2026, Jane was my client"}],
+            "anchors": 24, "page_dated": True}
         with patch("cqc_lem.utilities.selenium_util.find_all_first", return_value=[card]), \
              patch("cqc_lem.utilities.db.has_appreciation_touch", return_value=False), \
              patch("cqc_lem.app.run_automation.getText", side_effect=lambda el: el.text), \
@@ -506,10 +517,34 @@ class TestAppreciationSourcesProbe:
         rec = report["recommendations_received"]
         assert rec["url"].endswith("/details/recommendations/")
         assert rec["cards"] == 1 and rec["dated"] == 1
+        assert rec["profile_anchors"] == 24 and rec["page_dated"] is True
         assert rec["people"][0]["profile_url"] == "https://www.linkedin.com/in/jane"
+        assert rec["people"][0]["name"] == "Jane Doe"
         # The mentions surface is read too, and its cards must SAY they were a mention.
         assert report["mentions"]["cards"] == 0
         assert "no cards resolved" in report["mentions"]["verdict"]
+
+    def test_the_probe_reports_the_grounded_shape_of_this_profile(self):
+        """The acceptance reading from the issue: two 2010-2012 recommendations resolve, both date,
+        and NEITHER is inside the 30-day window — a fixed reader that still sends nothing today."""
+        from unittest.mock import patch
+
+        driver = _fake_driver(current_url="https://www.linkedin.com/in/christopherqueen")
+        driver.execute_script.return_value = {
+            "rows": [{"href": "https://www.linkedin.com/in/uday", "name": "Uday Shankar",
+                      "text": "Uday Shankar\n· 1st\nGroup Supervisor at JHU/APL\n"
+                              "April 25, 2012, Uday was Christopher's client\nWe hired Chris..."},
+                     {"href": "https://www.linkedin.com/in/jeremiah", "name": "Jeremiah A. Myers",
+                      "text": "Jeremiah A. Myers\n· 1st\nSr. Technical Product Manager @ AWS\n"
+                              "September 14, 2010, Jeremiah A. and Christopher studied together"}],
+            "anchors": 24, "page_dated": True}
+        with patch("cqc_lem.utilities.db.has_appreciation_touch", return_value=False):
+            report = llv.probe_appreciation_sources(
+                driver, 1, "https://www.linkedin.com/in/christopherqueen/", sleep=lambda s: None)
+
+        rec = report["recommendations_received"]
+        assert (rec["cards"], rec["dated"], len(rec["people"])) == (2, 2, 0)
+        assert [r["name"] for r in rec["rows"]] == ["Uday Shankar", "Jeremiah A. Myers"]
 
     def test_mention_row_reports_the_name_production_would_use(self, monkeypatch):
         """A textless actor link is what the live run actually hit — the probe has to apply the same

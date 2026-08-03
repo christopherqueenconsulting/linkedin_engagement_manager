@@ -4955,24 +4955,72 @@ def appreciation_sources_enabled() -> bool:
     return os.getenv("APPRECIATION_SOURCES_ENABLED", "false").strip().lower() == "true"
 
 
-# Recommendations Received. `data-view-name` first, then the semantic list item proved by what the
-# card must contain (a /in/ link), then the legacy paged-list class — never a hashed class alone.
+# Recommendations Received, rebuilt on the live SDUI DOM (grounded 2026-08-03, issue #1007). The
+# page carries NO `<li>`, NO `<time>`, NO `[data-view-name]` and nothing with `role='tab'` anywhere,
+# so every rung of the original ladder was unmatchable and the scan read zero cards forever — the
+# invisible no-op the grounding runs exist to catch. Its one `main div[role=list]` is the footer
+# help-links list, never the recommendations list, so nothing anchors on that either.
+#
+# The tabs render as plain anchors/text. The bare URL already lands on Received, so the click below
+# is only ever a correction and a miss is a no-op; `?detailScreenTabIndex=2` is Pending, whose rows
+# are recommendation REQUESTS ("Requested"/"Sent") and never thank-worthy.
 _RECOMMENDATION_TAB_LOCATORS = [
-    (By.XPATH, "//button[@role='tab'][contains(normalize-space(),'Received')]"),
-    (By.XPATH, "//*[@role='tab'][contains(normalize-space(),'Received')]"),
-    (By.XPATH, "//button[normalize-space()='Received']"),
+    (By.XPATH, "//main//a[normalize-space()='Received']"),
+    (By.XPATH, "//main//button[normalize-space()='Received']"),
+    (By.XPATH, "//main//*[@role='tab'][normalize-space()='Received']"),
 ]
-_RECOMMENDATION_CARD_LOCATORS = [
-    (By.CSS_SELECTOR, "main li[data-view-name='profile-recommendation']"),
-    (By.CSS_SELECTOR, "main div[data-view-name='profile-recommendation']"),
-    (By.XPATH, "//main//li[.//a[contains(@href,'/in/')] and .//time]"),
-    (By.XPATH, "//main//li[contains(@class,'pvs-list__paged-list-item')][.//a[contains(@href,'/in/')]]"),
-    (By.XPATH, "//main//section//li[.//a[contains(@href,'/in/')]]"),
-]
-_RECOMMENDATION_AUTHOR_LOCATORS = [
-    (By.CSS_SELECTOR, "a[data-view-name='profile-recommendation-author']"),
-    (By.CSS_SELECTOR, "a[href*='/in/']"),
-]
+
+# What IS on the page is one `/in/` anchor per card (its text is "name · degree · headline") sitting
+# inside a block that also carries the card's "Month D, YYYY, X was Y's client" line. The read below
+# climbs from each anchor to the OUTERMOST ancestor still about that ONE person — it stops the
+# moment a second profile joins the block — and keeps the block only when it carries such a date.
+# That drops the "Who your viewers also viewed" rail (undated rows) structurally rather than by
+# class name, which is the whole point: hashed classes are all this page has left.
+#
+# One JS call returns every row at once, so nothing goes stale while the list re-renders under the
+# walk — the same shape the profile-viewer rebuild (#1009) uses on the same DOM generation.
+_RECOMMENDATION_ROWS_JS = r"""
+const DATE = /(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s*\d{4}\b/;
+const RAIL = /Who your viewers also viewed|People also viewed|Private to you/i;
+const MAX_CLIMB = 15;
+const root = document.querySelector('main') || document.body;
+const slug = (a) => {
+  const m = ((a.getAttribute('href') || '') || (a.href || '')).match(/\/in\/[^/?#]+/);
+  return m ? decodeURIComponent(m[0]).toLowerCase() : '';
+};
+const anchors = [...root.querySelectorAll('a[href*="/in/"]')];
+const rows = [];
+const seen = new Set();
+for (const anchor of anchors) {
+  if (!slug(anchor)) continue;
+  let block = anchor, hops = 0;
+  while (block.parentElement && hops < MAX_CLIMB) {
+    const parent = block.parentElement;
+    if (parent === root || parent.tagName === 'BODY') break;
+    const people = new Set([...parent.querySelectorAll('a[href*="/in/"]')].map(slug).filter(Boolean));
+    if (people.size > 1) break;
+    block = parent; hops++;
+  }
+  if (seen.has(block)) continue;
+  seen.add(block);
+  const text = block.innerText || '';
+  if (!DATE.test(text) || RAIL.test(text)) continue;
+  let name = '';
+  for (const link of [anchor, ...block.querySelectorAll('a[href*="/in/"]')]) {
+    const first = (link.innerText || '').split('\n').map(t => t.trim()).filter(Boolean)[0];
+    if (first) { name = first; break; }
+  }
+  rows.push({href: anchor.href, name: name, text: text});
+}
+return {rows: rows,
+        anchors: new Set(anchors.map(slug).filter(Boolean)).size,
+        page_dated: DATE.test(root.innerText || '')};
+"""
+
+# The SDUI page paints asynchronously, so the first read of an empty list is not evidence the list
+# is empty. Re-read a few times before believing it — an early zero reads exactly like an account
+# with no recommendations, which is the confusion this whole issue is about.
+_RECOMMENDATION_RENDER_ATTEMPTS = 5
 
 # Mentions notifications — the closest thing LinkedIn exposes to "we did something together":
 # somebody put this user's name in their own post or comment.
@@ -5087,6 +5135,26 @@ def _card_text(card: WebElement) -> str:
         return ""
 
 
+def _recommendation_reading(driver, user_id: int = None) -> dict:
+    """One JS read of the recommendations page: the resolved cards plus the two numbers that tell
+    an empty section apart from selectors that have rotated again.
+
+    `page_dated` is the tripwire — the page plainly showing "Month D, YYYY" while no block resolves
+    is drift, whereas neither is just an account nobody has recommended."""
+    empty = {"rows": [], "anchors": 0, "page_dated": False}
+    try:
+        reading = driver.execute_script(_RECOMMENDATION_ROWS_JS)
+    except WebDriverException as e:
+        log_warning("Could not read the recommendations page", exc=e, user_id=user_id,
+                    action_type="scrape")
+        return empty
+    if not isinstance(reading, dict):
+        return empty
+    return {"rows": [row for row in (reading.get("rows") or []) if isinstance(row, dict)],
+            "anchors": int(reading.get("anchors") or 0),
+            "page_dated": bool(reading.get("page_dated"))}
+
+
 def get_recent_recommendations(driver, wait, user_id: int = None,
                                profile_url: str = None) -> dict[str, str]:
     """Return {profile_url: name} for people who recommended this user inside the lookback window.
@@ -5112,32 +5180,37 @@ def get_recent_recommendations(driver, wait, user_id: int = None,
                 required=False, max_try=1, warn_on_miss=False, user_id=user_id)
     time.sleep(random.uniform(1, 2))
 
-    cards = find_all_first(driver, _RECOMMENDATION_CARD_LOCATORS)
-    if not cards:
-        log_debug("No recommendation cards rendered", user_id=user_id, action_type="scrape")
+    reading = {"rows": [], "anchors": 0, "page_dated": False}
+    for attempt in range(_RECOMMENDATION_RENDER_ATTEMPTS):
+        reading = _recommendation_reading(driver, user_id)
+        if reading["rows"] or reading["page_dated"]:
+            break
+        if attempt + 1 < _RECOMMENDATION_RENDER_ATTEMPTS:
+            time.sleep(2)
+
+    if not reading["rows"]:
+        if reading["page_dated"]:
+            # The page renders dated recommendations and not one block resolved around them — that
+            # is selector drift, which is exactly how this source went silently dead once already.
+            log_warning("Recommendations page shows dated cards but none resolved", user_id=user_id,
+                        action_type="scrape", url=f"{own_url}/details/recommendations/")
+        else:
+            log_debug("No recommendation cards rendered", user_id=user_id, action_type="scrape")
         return {}
 
     lookback = appreciation_lookback_days()
     recommenders: dict[str, str] = {}
-    dated = 0
-    for card in cards:
-        text = _card_text(card)
-        age_days = _parse_recommendation_date(text)
-        if age_days is None:
+    for row in reading["rows"]:
+        # Every row already carried a date-shaped line, but the parser is still the authority:
+        # "February 30, 2026" matches the shape and is not a date.
+        age_days = _parse_recommendation_date(row.get("text") or "")
+        if age_days is None or age_days > lookback:
             continue
-        dated += 1
-        if age_days > lookback:
-            continue
-        url, name = _card_person(card, _RECOMMENDATION_AUTHOR_LOCATORS)
+        url = _normalize_profile_url(row.get("href") or "")
         if not url or url == own_url:
             continue
-        recommenders.setdefault(url, name)
+        recommenders.setdefault(url, clean_person_name(row.get("name") or ""))
 
-    if not dated:
-        # Cards rendered but not one carried a parseable date — that is selector/format drift, and
-        # the feature is silently dead until it is fixed. Warning on repeat is the point.
-        log_warning("Recommendation cards carried no readable date", user_id=user_id,
-                    action_type="scrape", url=f"{own_url}/details/recommendations/")
     log_info(f"Found {len(recommenders)} recommendation(s) received in the last {lookback} day(s)",
              user_id=user_id, action_type="dm")
     return recommenders

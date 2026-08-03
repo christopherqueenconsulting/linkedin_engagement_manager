@@ -994,13 +994,21 @@ def probe_roster_follow(driver, profile_url: str,
 
 
 def appreciation_verdict(reading: dict) -> str:
-    """What one reading proves about an appreciation source (#968).
+    """What one reading proves about an appreciation source (#968, rebuilt for #1007).
 
     'cards but nothing dated' is the finding that matters: production skips an undated card rather
     than thank a five-year-old recommendation, so a section that renders and never dates reads as
-    "no recent recommendations" forever — a silently dead trigger, not an empty one."""
+    "no recent recommendations" forever — a silently dead trigger, not an empty one.
+
+    `page_dated` (recommendations only) is what finally separates the two zero readings the #1007
+    grounding could not tell apart: a page that plainly renders "Month D, YYYY" while nothing
+    resolves around it is drift, not an account nobody has recommended."""
     reading = dict(reading or {})
     cards = int(reading.get("cards") or 0)
+    if not cards and reading.get("page_dated"):
+        return (f"ZERO cards resolved on a page that renders dated recommendations "
+                f"({reading.get('profile_anchors') or 0} profile link(s) on it) — the card read has "
+                f"rotated again and production is silently dead")
     if not cards:
         return ("no cards resolved — either the surface is genuinely empty or the card locator "
                 "chain has rotated; production sends nothing either way")
@@ -1019,16 +1027,17 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
 
     STRICTLY read-only, and it deliberately does NOT call the production scrapers — those are gated
     OFF by `APPRECIATION_SOURCES_ENABLED` precisely until this probe has grounded them, so the probe
-    drives the same locator chains and the same date parsers directly. Nothing is messaged: the
-    ledger is only READ (`has_appreciation_touch`), never claimed."""
+    drives the same card reads (`_recommendation_reading` for recommendations since #1007, the
+    mention locator chain for the other) and the same date parsers directly. Nothing is messaged:
+    the ledger is only READ (`has_appreciation_touch`), never claimed."""
     from cqc_lem.app.run_automation import (_MENTIONS_URL, _MENTION_ACTOR_LOCATORS,
-                                            _MENTION_CARD_LOCATORS, _MENTION_TEXT_RE,
-                                            _RECOMMENDATION_AUTHOR_LOCATORS,
-                                            _RECOMMENDATION_CARD_LOCATORS, _card_person, _card_text,
-                                            _mention_actor_name, _own_profile_url,
-                                            _parse_recommendation_date, _parse_relative_age_days,
+                                            _MENTION_CARD_LOCATORS, _MENTION_TEXT_RE, _card_person,
+                                            _card_text, _mention_actor_name, _normalize_profile_url,
+                                            _own_profile_url, _parse_recommendation_date,
+                                            _parse_relative_age_days, _recommendation_reading,
                                             appreciation_lookback_days)
     from cqc_lem.utilities.db import has_appreciation_touch
+    from cqc_lem.utilities.linkedin.helper import clean_person_name
     from cqc_lem.utilities.selenium_util import find_all_first
 
     lookback = appreciation_lookback_days()
@@ -1066,12 +1075,41 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
         reading["verdict"] = appreciation_verdict(reading)
         return reading
 
+    def _read_recommendations(own: str) -> dict:
+        """The recommendations half reads its OWN way since #1007: the page has no list items, no
+        `<time>` and no `data-view-name`, so production resolves a card by climbing from each `/in/`
+        anchor to the block that carries its date line. Drive that same read here."""
+        url = f"{own}/details/recommendations/"
+        driver.get(url)
+        sleep(5)
+        reading = _recommendation_reading(driver)
+        rows = []
+        for row in reading["rows"]:
+            text = row.get("text") or ""
+            age_days = _parse_recommendation_date(text)
+            person_url = _normalize_profile_url(row.get("href") or "")
+            rows.append({"profile_url": person_url,
+                         "name": clean_person_name(row.get("name") or ""),
+                         "age_days": None if age_days is None else round(age_days, 2),
+                         "in_window": age_days is not None and age_days <= lookback,
+                         "already_thanked": bool(person_url) and has_appreciation_touch(
+                             user_id, person_url, "recommendation_received"),
+                         "text": text[:160]})
+        out = {"url": url, "current_url": getattr(driver, "current_url", url),
+               "lookback_days": lookback, "cards": len(rows),
+               "dated": sum(1 for r in rows if r["age_days"] is not None),
+               # The two numbers that tell an empty section apart from a rotated read.
+               "profile_anchors": reading["anchors"], "page_dated": reading["page_dated"],
+               "people": [r for r in rows if r["in_window"] and r["profile_url"]
+                          and not r["already_thanked"]],
+               "rows": rows[:10]}
+        out["verdict"] = appreciation_verdict(out)
+        return out
+
     own = _own_profile_url(driver, user_id) if not profile_url else profile_url.rstrip("/")
     report = {"own_profile_url": own}
     if own:
-        report["recommendations_received"] = _read(
-            f"{own}/details/recommendations/", _RECOMMENDATION_CARD_LOCATORS,
-            _RECOMMENDATION_AUTHOR_LOCATORS, _parse_recommendation_date, "recommendation_received")
+        report["recommendations_received"] = _read_recommendations(own)
     else:
         report["recommendations_received"] = {
             "verdict": "own profile URL unresolved — production skips the recommendations scan"}
@@ -1265,8 +1303,8 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--appreciation-sources", action="store_true",
                         help="read the Recommendations Received section and the mentions "
                              "notification feed and report what the appreciation-DM triggers would "
-                             "make of them (#968). Read-only: nothing is messaged and no ledger row "
-                             "is claimed.")
+                             "make of them (#968, recommendations rebuilt in #1007). Read-only: "
+                             "nothing is messaged and no ledger row is claimed.")
     parser.add_argument("--sent-invites", action="store_true",
                         help="open Manage invitations -> Sent and report which pending rows resolve "
                              "and how their 'Sent ... ago' stamps parse (#969). Read-only: nothing "
