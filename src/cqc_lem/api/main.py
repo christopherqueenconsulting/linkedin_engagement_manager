@@ -7067,6 +7067,9 @@ def _hide_admin_routes_from_schema() -> int:
 
 
 _ADMIN_ROUTES_HIDDEN = _hide_admin_routes_from_schema()
+# Logged, not just returned: the number is how you tell "no admin routes to hide" from "the walk
+# matched nothing", which is the failure this whole helper exists to make visible.
+log_debug("Admin routes hidden from the OpenAPI schema", hidden=_ADMIN_ROUTES_HIDDEN)
 
 # Backward-compat redirects for the docs surface moved under /api (issue #1020). Registered here so
 # they precede the SPA catch-all below, which would otherwise answer them with index.html. 301

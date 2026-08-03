@@ -5,8 +5,6 @@ The API was genuinely fine; nothing reachable from outside knew automation was d
 pin the three answers that matter and, in particular, that an unreadable control channel is
 reported as `unknown` rather than `healthy`."""
 
-import json
-
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -53,6 +51,7 @@ class TestHealthDeep:
         in a body anyone on the internet can GET. Asserted on the SHAPE (an exact key set), not on
         the absence of the string "lanes" — a future field re-adding the same disclosure under a
         different name has to fail this too."""
+        import json
         insp = MagicMock()
         insp.active_queues.return_value = {
             "selenium-se_engage-worker@3571c22235c8": [{"name": "se_engage"}],
@@ -67,6 +66,7 @@ class TestHealthDeep:
         """`docs/stack-watchdog.md` pins the literal `"status":"healthy"` as a monitor contract.
         FastAPI preserves dict insertion order, so `status` staying FIRST is what makes dropping a
         later key byte-identical to a monitor asserting on that substring."""
+        import json
         insp = MagicMock()
         insp.active_queues.return_value = {"celery@worker": [{"name": "default"}]}
         with patch("cqc_lem.utilities.maintenance._inspect", return_value=insp):
