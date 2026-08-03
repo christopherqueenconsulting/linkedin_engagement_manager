@@ -212,7 +212,7 @@ defence** — one layer, not two, since #950. It holds on its own (the cookie is
 to a cross-site POST), and each of the four only ever queues work for the CALLER's own account, so
 the worst a forged one buys is a job the user could have started themselves. But one layer is one
 layer, and a new query-parameter mutating route inherits it. A non-secret custom request header the
-SPA sends and a forged form cannot — the standard replacement — is tracked separately.
+SPA sends and a forged form cannot — the standard replacement — is tracked on **#957**.
 
 If a future change adds CORS with credentials, or another form-encoded/query-only mutating endpoint,
 this section is the thing that has to be revisited first.
