@@ -450,6 +450,12 @@ def _scope_refusal(scope: str) -> HTTPException:
 # "a JSON body needs a preflight" layer never covered them, and `SameSite=Lax` was left holding them
 # alone. `Lax` holds; one layer is still one layer, and a new query-parameter route inherits it.
 #
+# Query parameters are not the only shape that layer misses, which is why this gate is scoped to
+# EVERY state-changing cookie-authenticated request and not to those four. A cross-origin caller can
+# also produce `multipart/form-data` with no preflight, and `/user/newsletter-draft/cover` and
+# `/avatar/training` (the latter spends an avatar credit) take exactly that. Narrowing this back to a
+# route list would uncover them.
+#
 # Two deliberate narrowings:
 #
 #   * **State-changing methods only.** CSRF is a forged WRITE — with no CORS the attacker cannot read
@@ -468,8 +474,8 @@ def _scope_refusal(scope: str) -> HTTPException:
 # The layer depends on the SPA being same-origin with the API, and it is by construction, not by
 # deployment: the axios client's `baseURL` is the RELATIVE `/api`, so every request it makes is same
 # origin whatever the host — dev server, docker-compose, the prod nginx edge — and a custom header
-# on a same-origin request is never preflighted. `test_the_api_client_baseurl_is_relative` in
-# `ui/src/api/client.test.ts` pins that, and `test_no_cors_middleware_is_installed` pins the other
+# on a same-origin request is never preflighted. `ui/src/api/client.test.ts`'s "the baseURL is
+# relative" pins that, and `test_no_cors_middleware_is_installed` pins the other
 # half: CORS with credentials would let a real cross-origin caller ask permission for this header and
 # reinstate the hole the layer closes.
 # ---------------------------------------------------------------------------

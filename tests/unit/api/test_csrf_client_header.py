@@ -263,6 +263,39 @@ class TestEveryStateChangingMethod:
         cancel.assert_not_called()
 
 
+class TestTheMultipartWrites:
+    """Query parameters are not the only shape the JSON-body layer misses. A cross-origin caller can
+    produce `multipart/form-data` with no preflight — a plain `<form enctype=…>`, or a `no-cors`
+    `fetch` with a `FormData` body — and two mutating routes take exactly that. They are covered
+    only because the layer was scoped to EVERY state-changing cookie-authenticated request rather
+    than to the four routes that made the gap visible, so this is where that scoping is proven."""
+
+    def test_an_avatar_training_upload_without_the_header_is_refused(
+            self, client: Any, cookie_session: None) -> None:
+        """The most expensive of the two: it spends an avatar credit and starts a training run."""
+        with patch(f"{_M}.get_avatar_credit_balance") as balance:
+            resp = client.post("/api/avatar/training",
+                               data={"session_token": "cookie", "trigger_word": "TOK"},
+                               files={"photos": ("p.zip", b"not-a-zip", "application/zip")},
+                               cookies={"lem_session": _COOKIE})
+
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["code"] == "client_header_required"
+        balance.assert_not_called()
+
+    def test_a_newsletter_cover_upload_without_the_header_is_refused(
+            self, client: Any, cookie_session: None) -> None:
+        with patch(f"{_M}.get_newsletter_edition") as edition:
+            resp = client.post("/api/user/newsletter-draft/cover",
+                               data={"session_token": "cookie", "edition_id": 1},
+                               files={"file": ("c.png", b"not-a-png", "image/png")},
+                               cookies={"lem_session": _COOKIE})
+
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["code"] == "client_header_required"
+        edition.assert_not_called()
+
+
 class TestItRunsBeforeAnythingElse:
     def test_it_refuses_ahead_of_the_scope_check(self, client: Any, work: Dict[str, MagicMock]) -> None:
         """A scoped-away session that ALSO has no client header must be refused as a forgery, not as

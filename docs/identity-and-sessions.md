@@ -263,6 +263,16 @@ have started themselves. Even so the layer count is what matters, because a new 
 mutating route inherits it: with `X-LEM-Client` it is **two** (`SameSite=Lax` + the header), where
 between #950 and #957 it was one.
 
+**And query parameters are not the only shape the JSON-body layer misses.** A cross-origin caller
+can also produce `multipart/form-data` without a preflight (a plain `<form enctype=…>`, or
+`fetch(…, {mode: 'no-cors', credentials: 'include'})` with a `FormData` body), and two mutating
+routes take exactly that — `POST /user/newsletter-draft/cover` and `POST /avatar/training`, both
+`Form(...)` + `UploadFile`. `/avatar/training` is the more expensive one: it spends an avatar
+credit and starts a LoRA training run. They are covered because the layer was scoped to **every**
+state-changing cookie-authenticated request rather than to the four routes that made the gap
+visible — which is the whole argument for that scoping, made concrete. Enumerating "the four" as
+the complete no-preflight set would have shipped a layer that missed these two.
+
 ### `X-LEM-Client` is not a secret
 
 Its value is a constant in a public bundle (`'spa'`, set in `ui/src/api/client.ts`'s one request
