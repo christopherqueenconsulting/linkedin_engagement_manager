@@ -3296,7 +3296,7 @@ SESSION_SCOPE_FULL = "full"
 SESSION_SCOPE_EXTENSION = "extension"
 SESSION_SCOPE_RECOVERY = "recovery"
 SESSION_SCOPE_ENROLL = "enroll"
-# An `agent` session (issue #1011) belongs to a headless automation — no browser, no ceremony, no
+# An `agent` session (issue #1026) belongs to a headless automation — no browser, no ceremony, no
 # mailbox round trip. It is minted ONCE by a human in the SPA (step-up gated, like the extension
 # token) and then held by a machine, so it is scoped to the queueing surface and nothing else: it
 # can read the review queues and CREATE pending work for a human to approve. It can never approve,
@@ -3318,7 +3318,7 @@ def create_session(user_id: int, user_agent: Optional[str] = None,
     passkey login or PIN+TOTP. It is deliberately not the default: an email-PIN login and a
     recovery-code login both mint a session that cannot yet touch LinkedIn credentials.
 
-    `ttl_hours` overrides the idle window for sessions that are NOT idle-driven (issue #1011). A
+    `ttl_hours` overrides the idle window for sessions that are NOT idle-driven (issue #1026). A
     headless agent runs on a schedule — a weekly one would find a 24h session dead every single
     run — so its row gets an explicit, longer life. It is still an ordinary revocable row on the
     Security card, so a long TTL is not a one-way door."""
@@ -3375,6 +3375,9 @@ def resolve_session(token: str) -> Optional[dict]:
     bounded by an absolute cap (SESSION_ABSOLUTE_MAX_DAYS from first login) for security.
     Expired/unknown/revoked tokens return None so the caller forces a fresh PIN.
 
+    An `agent` session is the ONE exception and does not slide at all — its expiry is whatever
+    `create_session(ttl_hours=...)` granted, fixed from mint. See the branch below for why.
+
     The presented token is hashed before lookup (#745, 2b) — the plaintext never touches SQL.
 
     `scope` rides along because the API resolver has to decide, on the SAME request, whether a
@@ -3396,6 +3399,26 @@ def resolve_session(token: str) -> Optional[dict]:
         if not row:
             return None
 
+        scope = row.get('scope') or SESSION_SCOPE_FULL
+
+        if scope == SESSION_SCOPE_AGENT:
+            # An agent session's life is FIXED at mint, never slid (issue #1026). Sliding it is
+            # wrong in both directions. Sliding by SESSION_IDLE_HOURS — what every other session
+            # gets — would rewrite the 90-day expiry to 24 hours on the FIRST request, silently
+            # destroying the one thing `ttl_hours` exists to provide and leaving the weekly agent
+            # dead every run exactly as before. Sliding by the granted TTL instead would be worse:
+            # a machine calling on a schedule renews forever, so the credential with the widest
+            # time window would be the only one with no ceiling at all. A fixed expiry gives a real
+            # deadline that only a human ceremony can extend, which is also why the absolute cap
+            # (SESSION_ABSOLUTE_MAX_DAYS, counted from first login) is not applied here — it exists
+            # to bound a sliding window, and there is none to bound.
+            cursor.execute(
+                "UPDATE sessions SET last_seen_at = %s WHERE session_token = %s",
+                (now, token_hash),
+            )
+            connection.commit()
+            return {"user_id": row['user_id'], "scope": scope}
+
         new_expiry = now + timedelta(hours=SESSION_IDLE_HOURS)
         created_at = row.get('created_at')
         if created_at is not None:
@@ -3409,7 +3432,7 @@ def resolve_session(token: str) -> Optional[dict]:
             (new_expiry, now, token_hash),
         )
         connection.commit()
-        return {"user_id": row['user_id'], "scope": row.get('scope') or SESSION_SCOPE_FULL}
+        return {"user_id": row['user_id'], "scope": scope}
     except mysql.connector.Error as err:
         myprint(f"Could not validate session token | Error: {err}")
         return None

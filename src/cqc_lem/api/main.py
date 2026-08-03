@@ -374,7 +374,7 @@ _ENROLL_SESSION_SURFACE = frozenset({
 })
 
 # Everything a headless agent needs to QUEUE work and read its own results — and nothing else
-# (issue #1011). It reads the four review queues plus the settings that decide whether queueing is
+# (issue #1026). It reads the four review queues plus the settings that decide whether queueing is
 # even safe, and creates pending items. Absent by design: every credential path
 # (`/user/linkedin-cookie`, `/user/linkedin-password`, `/user/passkeys/*`, `/user/totp/*`,
 # `/user/recovery-codes/*`), the account-mover (`/user/email/change/*`), `/user/sessions/revoke`,
@@ -1064,7 +1064,7 @@ class ExtensionTokenRequest(BaseModel):
 
 
 class AgentTokenRequest(BaseModel):
-    """Mint a token for a headless automation (issue #1011). `label` is what the operator will
+    """Mint a token for a headless automation (issue #1026). `label` is what the operator will
     read on the Security card when deciding which machine to revoke."""
     session_token: SessionTokenField = None
     label: Optional[str] = Field(default=None, max_length=120)
@@ -3199,7 +3199,7 @@ def mint_extension_token(request: ExtensionTokenRequest, http_request: Request =
 
 @router.post("/user/agent-token")
 def mint_agent_token(request: AgentTokenRequest, http_request: Request = None) -> ResponseModel:
-    """Mint a long-lived, narrow session for a headless automation (issue #1011).
+    """Mint a long-lived, narrow session for a headless automation (issue #1026).
 
     Same shape as the extension token and for the same reason: a non-browser client needs a
     credential it can hold, and the ceremony that makes minting safe can only happen HERE, in the
@@ -3404,22 +3404,51 @@ def _step_up_error(user_id: int) -> HTTPException:
     })
 
 
+def _agent_scoped() -> bool:
+    """Is THIS request being served on an agent token? Read off the ContextVar the resolver stamped,
+    never a fresh lookup — same argument as `_enrollment_held`."""
+    return _request_session_scope.get() == SESSION_SCOPE_AGENT
+
+
+def _agent_approval_refusal() -> HTTPException:
+    return HTTPException(status_code=403, detail={
+        "code": "agent_may_not_approve",
+        "message": "This token can queue work for review but cannot approve it.",
+    })
+
+
 def _refuse_agent_approval(action: Optional[str]) -> None:
-    """An `agent`-scoped caller may queue work; only a human may authorise it (issue #1011).
+    """An `agent`-scoped caller may queue work; only a human may authorise it (issue #1026).
 
     The queueing surface has to include the PUT routes — that is how a draft gets saved for review —
     so "the agent cannot approve" cannot be expressed as a path list. It is expressed here, on the
     one field that turns a draft into a send. Enforcing it server-side means the guarantee survives
     a prompt change, a rewritten skill, or a stolen token; a convention in an agent's instructions
-    survives none of those."""
+    survives none of those.
+
+    This is only HALF the guarantee. `action` is how the five PUT handlers name approval; the create
+    handlers reach the identical state through `status` — see `_refuse_agent_approved_status`."""
     if action != "approve":
         return
-    if _request_session_scope.get() != SESSION_SCOPE_AGENT:
+    if not _agent_scoped():
         return
-    raise HTTPException(status_code=403, detail={
-        "code": "agent_may_not_approve",
-        "message": "This token can queue work for review but cannot approve it.",
-    })
+    raise _agent_approval_refusal()
+
+
+def _refuse_agent_approved_status(status: Optional[str]) -> None:
+    """The other way a row reaches APPROVED, and the one an `action` guard cannot see.
+
+    Every create endpoint on the queueing surface takes a `status` and inserts APPROVED when it
+    reads "approved". Guarding only the PUT `action` left that wide open: a POST /schedule_dm
+    carrying status="approved" lands a row `auto_check_scheduled_dms` then SENDS, with no human in
+    the loop and no `action` field for the other guard to inspect. An agent asking for an approved
+    row IS an agent approving, so it is refused rather than quietly downgraded — a silent downgrade
+    would let the caller believe it had dispatched something it had not."""
+    if status != "approved":
+        return
+    if not _agent_scoped():
+        return
+    raise _agent_approval_refusal()
 
 
 def _require_step_up(user_id: int, session_token: Optional[str], action: str,
@@ -4123,6 +4152,17 @@ def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+    # READ-ONLY for an agent (issue #1026). The scope surface matches on PATH, so the entry added so
+    # the agent could read whether automation is safe to queue for granted this write along with it
+    # — and this is the one write that re-opens everything else: it sets connection_request_mode /
+    # catchup_touch_mode (flipping either to auto_approve restores the passive approval bypass) and
+    # the per-day caps that bound every outbound lane. A token that cannot approve one item must not
+    # be able to configure the account into approving all of them.
+    if _agent_scoped():
+        raise HTTPException(status_code=403, detail={
+            "code": "agent_may_not_configure",
+            "message": "This token can read engagement preferences but cannot change them.",
+        })
     prefs = request.model_dump(exclude={"session_token"})
     # NULL is "never chosen" for the follow cap (issue #962), and the upsert writes every column
     # from this dict — so an omitted field is dropped here rather than merged as the code default,
@@ -4424,6 +4464,7 @@ def schedule_dm_endpoint(request: ScheduleDmRequest) -> ResponseModel:
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+    _refuse_agent_approved_status(request.status)
     status = ScheduledDmStatus.APPROVED if request.status == "approved" else ScheduledDmStatus.PENDING
     dm_id = insert_scheduled_dm(user_id, request.recipient_profile_url, request.message,
                                 request.scheduled_datetime, recipient_name=request.recipient_name,
@@ -4495,9 +4536,16 @@ def create_connection_request_endpoint(request: ConnectionRequestCreate) -> Resp
     user_id = get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+    _refuse_agent_approved_status(request.status)
     if request.status is None:
         mode = get_engagement_preferences(user_id).get("connection_request_mode", "auto_approve")
-        status = (ConnectionRequestStatus.APPROVED if mode == "auto_approve"
+        # The PASSIVE half of the same guarantee, and the one with no field to refuse on. This
+        # account default is `auto_approve` out of the box, so an agent that named no status at all
+        # would otherwise land an APPROVED row on nearly every account — the guarantee broken by
+        # doing nothing. The default speaks for the human who left it set, not for the machine
+        # holding a token, so an agent always queues for review here (issue #1026).
+        status = (ConnectionRequestStatus.APPROVED
+                  if mode == "auto_approve" and not _agent_scoped()
                   else ConnectionRequestStatus.PENDING)
     elif request.status in ("pending", "approved"):
         status = (ConnectionRequestStatus.APPROVED if request.status == "approved"
@@ -4580,6 +4628,7 @@ def create_outreach_target_endpoint(request: OutreachTargetRequest) -> ResponseM
         raise HTTPException(status_code=422, detail="target_profile_url is required")
     if get_outreach_target_by_url(user_id, target_profile_url):
         raise HTTPException(status_code=409, detail="Target is already in the outreach funnel")
+    _refuse_agent_approved_status(request.status)
     status = OutreachStatus.APPROVED if request.status == "approved" else OutreachStatus.PENDING
     target_id = insert_outreach_target(user_id, target_profile_url,
                                        target_name=target_name, context_url=context_url,
