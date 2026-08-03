@@ -510,3 +510,26 @@ class TestAppreciationSourcesProbe:
         # The mentions surface is read too, and its cards must SAY they were a mention.
         assert report["mentions"]["cards"] == 0
         assert "no cards resolved" in report["mentions"]["verdict"]
+
+    def test_mention_row_reports_the_name_production_would_use(self, monkeypatch):
+        """A textless actor link is what the live run actually hit — the probe has to apply the same
+        sentence fallback, or a blank name here would read as a probe artifact."""
+        from unittest.mock import patch
+
+        link = MagicMock()
+        link.get_attribute.return_value = "https://www.linkedin.com/in/jane%2Ddoe%2D42"
+        link.text = ""
+        card = MagicMock()
+        card.text = "Unread notification.\nJane Doe mentioned you in a comment 2h"
+        card.find_elements.return_value = [link]
+
+        driver = _fake_driver(current_url="https://www.linkedin.com/notifications/")
+        with patch("cqc_lem.utilities.selenium_util.find_all_first", return_value=[card]), \
+             patch("cqc_lem.utilities.db.has_appreciation_touch", return_value=False), \
+             patch("cqc_lem.app.run_automation.getText", side_effect=lambda el: el.text):
+            report = llv.probe_appreciation_sources(driver, 1, "https://www.linkedin.com/in/me/",
+                                                    sleep=lambda s: None)
+
+        row = report["mentions"]["rows"][0]
+        assert row["name"] == "Jane Doe"
+        assert row["profile_url"] == "https://www.linkedin.com/in/jane-doe-42"

@@ -294,6 +294,22 @@ empty-dict stubs, so only new connections ever produced a DM and the
   claim lands before the send: a thank-you that fails to send is recoverable by a human, one sent
   twenty times is not — so an unreadable ledger reads as "don't send". `connection_accepted` flows
   through the same dispatcher and gets the same protection.
+- **A profile URL is percent-DECODED before it keys anything.** SDUI escapes the hyphens of a
+  vanity slug (`/in/jane%2Ddoe%2D1234`), and the 2026-08-03 grounding run returned exactly that,
+  so `_normalize_profile_url` decodes the path as well as stripping query/fragment/trailing slash.
+  Encoded and decoded are the same person; two spellings in `appreciation_touches` would mean two
+  thank-yous. This is the shared normalizer, so the catch-up and roster ledgers get the same fix.
+- **A name is read from the card's sentence when the actor link has none.** The same run found a
+  mention whose `/in/` link rendered with no text at all, while the card plainly read *"Utkarsh
+  Tiwari mentioned you in a comment in …"*. `_mention_actor_name` recovers the name from that
+  sentence, bounded to the ≤5 punctuation-free words before the verb so notification chrome
+  ("Unread notification.") can never be mistaken for a name. Nothing name-like left means the DM
+  opens with "Hi there" — a deliberate fallback, since a generically addressed thank-you still
+  beats not thanking someone who publicly featured you. The probe applies the same fallback, so a
+  blank `name` in its report means production really would say "there".
+- **The stock `collaboration` template says what fired it.** A mention, not a project: *"thanks for
+  the mention — genuinely appreciated. What are you working on at the moment?"*. It is the code
+  DEFAULT only — a user who customized the template in `dm_templates` keeps theirs.
 - **OFF until grounded.** `APPRECIATION_SOURCES_ENABLED` (default `false`, read at the call site)
   gates both scrapers. A scraper that finds nothing is a quiet no-op; one that finds the WRONG
   cards DMs real people, so the flip belongs to the owner after a live run of

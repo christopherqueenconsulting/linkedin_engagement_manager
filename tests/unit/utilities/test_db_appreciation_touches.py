@@ -73,3 +73,14 @@ def test_event_types_match_the_migration_enum():
     from cqc_lem.utilities.db import APPRECIATION_EVENT_TYPES
     assert APPRECIATION_EVENT_TYPES == ("connection_accepted", "recommendation_received",
                                         "collaboration")
+
+
+def test_collaboration_default_thanks_them_for_the_mention():
+    """What fires this trigger is a mention, so the DEFAULT wording has to say that and not thank
+    somebody for a project neither party worked on. A customized template is read from the DB and
+    is untouched by this."""
+    from cqc_lem.utilities.db import _DM_DEFAULT_TEMPLATES
+    text = _DM_DEFAULT_TEMPLATES["collaboration"]
+    assert "{first_name}" in text
+    assert "mention" in text.lower()
+    assert "collaborating with you" not in text

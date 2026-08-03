@@ -9001,9 +9001,11 @@ _DM_DEFAULT_TEMPLATES = {
     "recommendation_received": "Hi {first_name}, thank you so much for the kind recommendation on LinkedIn! "
                                "I really appreciate you taking the time to share your experience working with me. "
                                "I hope we have the opportunity to collaborate again in the future.",
-    "collaboration": "Hi {first_name}, it was a pleasure collaborating with you! "
-                     "Your contributions made a real difference and I'm grateful for the opportunity. "
-                     "Let's stay in touch — I'd love to explore future opportunities to work together.",
+    # What actually fires this is a MENTION — somebody put this user's name in their own post or
+    # comment (#968). The old wording thanked them for a project neither party may have worked on,
+    # so it says what happened. DEFAULT only: a user who customized their template keeps theirs.
+    "collaboration": "Hi {first_name}, thanks for the mention — genuinely appreciated. "
+                     "What are you working on at the moment?",
     "profile_viewer": "Hi {first_name}, I noticed you viewed my LinkedIn profile and wanted to reach out. "
                       "I share insights on {headline} and thought there might be synergy between our work. "
                       "Would love to connect more directly — feel free to share what you're working on!",

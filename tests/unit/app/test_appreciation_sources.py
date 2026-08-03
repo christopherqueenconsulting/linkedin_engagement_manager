@@ -187,6 +187,34 @@ class TestCollaborators:
         got, _ = self._run([])
         assert got == {}
 
+    def test_actor_name_falls_back_to_the_card_sentence(self):
+        """The live grounding run (#968) found an actor link with NO text — the name only existed in
+        the card's own sentence. Read it from there rather than DM a real person as "there"."""
+        got, _ = self._run([_card("Status is online\nUnread notification.\n"
+                                  "Utkarsh Tiwari mentioned you in a comment in a group 2h",
+                                  href="https://www.linkedin.com/in/utkarsh%2Dtiwari%2D98164814b",
+                                  name="")])
+        assert got == {"https://www.linkedin.com/in/utkarsh-tiwari-98164814b": "Utkarsh Tiwari"}
+
+    def test_notification_chrome_is_never_read_as_a_name(self):
+        """Same line as the verb, so the bound on the fallback is what keeps it honest."""
+        from cqc_lem.app.run_automation import _mention_actor_name
+        assert _mention_actor_name("Unread notification. Jane Doe mentioned you in a post") == "Jane Doe"
+        assert _mention_actor_name("mentioned you in a post 2h") == ""
+        assert _mention_actor_name("") == ""
+
+    def test_link_text_still_wins_over_the_sentence(self):
+        got, _ = self._run([_card("Someone Else mentioned you in a post 1d", name="Jane Doe")])
+        assert got == {"https://www.linkedin.com/in/jane": "Jane Doe"}
+
+    def test_percent_encoded_slug_is_one_person_not_two(self):
+        """SDUI escapes the hyphens in a vanity slug. Encoded and decoded must key the ledger the
+        same way or the once-ever guarantee quietly breaks."""
+        from cqc_lem.app.run_automation import _normalize_profile_url
+        assert (_normalize_profile_url("https://www.linkedin.com/in/jane%2Ddoe%2D1234?trk=x")
+                == _normalize_profile_url("https://www.linkedin.com/in/jane-doe-1234/")
+                == "https://www.linkedin.com/in/jane-doe-1234")
+
 
 class TestDispatchDedup:
     """`automate_appreciation_dms_for_user` re-queues itself every ~60s, so the ledger claim is the

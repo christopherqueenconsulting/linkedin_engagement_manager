@@ -969,15 +969,16 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
                                             _MENTION_CARD_LOCATORS, _MENTION_TEXT_RE,
                                             _RECOMMENDATION_AUTHOR_LOCATORS,
                                             _RECOMMENDATION_CARD_LOCATORS, _card_person, _card_text,
-                                            _own_profile_url, _parse_recommendation_date,
-                                            _parse_relative_age_days, appreciation_lookback_days)
+                                            _mention_actor_name, _own_profile_url,
+                                            _parse_recommendation_date, _parse_relative_age_days,
+                                            appreciation_lookback_days)
     from cqc_lem.utilities.db import has_appreciation_touch
     from cqc_lem.utilities.selenium_util import find_all_first
 
     lookback = appreciation_lookback_days()
 
     def _read(url: str, card_locators, person_locators, age_of, event_type: str,
-              require=None) -> dict:
+              require=None, name_of=None) -> dict:
         driver.get(url)
         sleep(5)
         cards = find_all_first(driver, card_locators)
@@ -990,6 +991,10 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
             if age_days is not None:
                 dated += 1
             person_url, name = _card_person(card, person_locators)
+            # Same fallback production uses, so a blank `name` here means the DM really would say
+            # "Hi there" — not that the probe read the card differently.
+            if not name and name_of is not None:
+                name = name_of(text)
             rows.append({"profile_url": person_url, "name": name,
                          "age_days": None if age_days is None else round(age_days, 2),
                          "in_window": age_days is not None and age_days <= lookback,
@@ -1016,7 +1021,8 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
             "verdict": "own profile URL unresolved — production skips the recommendations scan"}
     report["mentions"] = _read(_MENTIONS_URL, _MENTION_CARD_LOCATORS, _MENTION_ACTOR_LOCATORS,
                                _parse_relative_age_days, "collaboration",
-                               require=lambda t: bool(_MENTION_TEXT_RE.search(t or "")))
+                               require=lambda t: bool(_MENTION_TEXT_RE.search(t or "")),
+                               name_of=_mention_actor_name)
     return report
 
 

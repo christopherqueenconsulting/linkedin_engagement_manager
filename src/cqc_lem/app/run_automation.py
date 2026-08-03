@@ -11,7 +11,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Callable, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from celery_once import QueueOnce
 from cqc_lem.app.my_celery import app as shared_task
@@ -4964,6 +4964,14 @@ _MENTION_ACTOR_LOCATORS = [
 ]
 # A mentions-filtered feed still mixes in "X posted", so the card has to SAY it was a mention.
 _MENTION_TEXT_RE = re.compile(r"\b(mentioned|tagged)\s+you\b", re.IGNORECASE)
+# The actor's name is normally the mention link's own text, but the live grounding run (#968) hit a
+# card whose /in/ link carried NO text while the sentence right beside it read "Utkarsh Tiwari
+# mentioned you in a comment in ...". Read the name back out of that sentence rather than greet a
+# real person as "there". Bounded to the ≤5 punctuation-free words immediately before the verb, so
+# the surrounding notification chrome ("Unread notification.") can never be read as a name.
+_MENTION_ACTOR_NAME_RE = re.compile(
+    r"((?:[^\s\n\r.,;:!?]+[ \t]+){0,4}[^\s\n\r.,;:!?]+)[ \t]+(?:mentioned|tagged)\s+you\b",
+    re.IGNORECASE)
 _RECOMMENDATION_DATE_RE = re.compile(
     r"\b(January|February|March|April|May|June|July|August|September|October|November|December)"
     r"\s+(\d{1,2}),\s*(\d{4})\b")
@@ -5030,6 +5038,15 @@ def _card_person(card: WebElement, locators: list) -> tuple:
     if "/in/" not in href:
         return "", ""
     return _normalize_profile_url(href), clean_person_name(raw_name)
+
+
+def _mention_actor_name(text: str) -> str:
+    """The mentioner's name recovered from the card's own sentence, for when the actor link rendered
+    without text. '' when nothing in it names anybody — the DM then opens with "Hi there", which is
+    a DELIBERATE fallback: a thank-you addressed generically still beats not thanking someone who
+    publicly featured this user."""
+    match = _MENTION_ACTOR_NAME_RE.search(text or "")
+    return clean_person_name(match.group(1)) if match else ""
 
 
 def _card_text(card: WebElement) -> str:
@@ -5127,7 +5144,7 @@ def get_recent_collaborators(driver, wait, user_id: int = None) -> dict[str, str
         url, name = _card_person(card, _MENTION_ACTOR_LOCATORS)
         if not url:
             continue
-        collaborators.setdefault(url, name)
+        collaborators.setdefault(url, name or _mention_actor_name(text))
 
     log_info(f"Found {len(collaborators)} collaboration mention(s) in the last {lookback} day(s)",
              user_id=user_id, action_type="dm")
@@ -7155,12 +7172,15 @@ CATCHUP_REPLY_CHECK_HOURS = int(os.getenv("CATCHUP_REPLY_CHECK_HOURS", "48"))
 
 
 def _normalize_profile_url(url: str) -> str:
-    """Strip query/fragment/trailing slash so the same person can't enter the dedup ledger twice
-    under two URL spellings (LinkedIn appends tracking params to catch-up links)."""
+    """Strip query/fragment/trailing slash and percent-DECODE the path so the same person can't
+    enter a dedup ledger twice under two URL spellings. Two spellings are real: LinkedIn appends
+    tracking params to catch-up links, and SDUI escapes the hyphens of a vanity slug
+    (`/in/jane%2Ddoe%2D1234` — issue #968's grounding run). Encoded and decoded are the SAME person,
+    so the decoded form is the one key everything downstream compares on."""
     if not url:
         return ""
     parsed = urlparse(url.strip())
-    path = (parsed.path or "").rstrip("/")
+    path = unquote(parsed.path or "").rstrip("/")
     if parsed.scheme and parsed.netloc:
         return f"{parsed.scheme}://{parsed.netloc}{path}"
     return path
