@@ -143,7 +143,6 @@ The LinkedIn Engagement Manager currently has **44 test functions** across multi
 
 #### Group 7: Testing & Code Quality
 **Test Requirements:**
-- [ ] Add Jaeger tracing validation tests
 - [ ] Tests for performance metrics collection
 - [ ] Tests for de-duplication logic
 - [ ] Load tests for concurrent task execution
@@ -527,11 +526,7 @@ poetry run pytest -n auto
 **Business Impact**: Code maintainability and debugging  
 
 #### TODO Items:
-1. **Automate tracing** (`src/cqc_lem/utilities/jaeger_tracer_helper.py:6`)
-   - TODO: How can we automate tracing and add performance metrics
-   - Impact: Limited observability
-
-2. **Add de-duplication logic** (`src/cqc_lem/app/run_automation.py:1420`)
+1. **Add de-duplication logic** (`src/cqc_lem/app/run_automation.py:1420`)
    - TODO: If this is still running 4 times then add de-duplication logic
    - Impact: Duplicate task execution
 

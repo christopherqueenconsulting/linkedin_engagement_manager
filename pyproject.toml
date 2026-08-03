@@ -69,9 +69,7 @@ dateparser = "^1.2.0"
 posthog = ">=3.7,<8.0"
 opentelemetry-api = "^1.28.2"
 opentelemetry-sdk = "^1.28.2"
-opentelemetry-instrumentation-celery = "^0.49b2"
 opentelemetry-exporter-otlp = "^1.28.2"
-opentelemetry-instrumentation-fastapi = "^0.49b2"
 
 # --- AWS / payments ---
 boto3 = "^1.36.7"
@@ -161,8 +159,6 @@ omit = [
     "src/cqc_lem/ui/*",
     # Legacy Streamlit UI — not maintained, no reasonable test strategy
     "src/cqc_lem/streamlit/*",
-    # Deprecated Jaeger tracer — replaced by PostHog
-    "src/cqc_lem/utilities/jaeger_tracer_helper.py",
     # Selenium browser driver utilities — E2E only, require Chrome container
     "src/cqc_lem/utilities/selenium_util.py",
     "src/cqc_lem/utilities/linkedin/scrapper.py",

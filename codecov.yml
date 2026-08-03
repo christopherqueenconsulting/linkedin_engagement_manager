@@ -53,8 +53,6 @@ ignore:
   - "src/cqc_lem/aws/"
   # Legacy Streamlit UI — unmaintained, zero coverage
   - "src/cqc_lem/streamlit/"
-  # Deprecated Jaeger tracer — replaced by PostHog
-  - "src/cqc_lem/utilities/jaeger_tracer_helper.py"
   # Selenium browser driver utilities — E2E only
   - "src/cqc_lem/utilities/selenium_util.py"
   - "src/cqc_lem/utilities/linkedin/scrapper.py"

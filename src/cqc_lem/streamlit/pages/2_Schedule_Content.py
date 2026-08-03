@@ -1,12 +1,10 @@
-from contextlib import nullcontext
 from datetime import datetime
 
 import pytz
 import requests
 import streamlit as st
 from cqc_lem.api.main import PostRequest
-from cqc_lem.utilities.env_constants import CODE_TRACING, TZ, API_URL_FINAL
-from cqc_lem.utilities.jaeger_tracer_helper import get_jaeger_tracer
+from cqc_lem.utilities.env_constants import TZ, API_URL_FINAL
 from cqc_lem.utilities.utils import get_best_posting_time, get_12h_format_best_time
 
 st.title("Schedule Your Post")
@@ -48,25 +46,22 @@ utc_time = local_time.astimezone(pytz.utc)
 # Add input for email address
 email = st.text_input("Email Address")
 
-tracer = get_jaeger_tracer("streamlit", __name__) if CODE_TRACING else None
+# Button to submit the form
+if st.button("Schedule Post"):
+    if content and scheduled_datetime and email:
+        try:
+            post_request = PostRequest(content=content, post_type="text", scheduled_datetime=utc_time, email=email)
 
-with (tracer.start_as_current_span("schedule_post") if tracer else nullcontext()):
-    # Button to submit the form
-    if st.button("Schedule Post"):
-        if content and scheduled_datetime and email:
-            try:
-                post_request = PostRequest(content=content, post_type="text", scheduled_datetime=utc_time, email=email)
+            # st.write(str(post_request.post_json))
 
-                # st.write(str(post_request.post_json))
-
-                response = requests.post(f"{API_URL_FINAL}/schedule_post/", json=post_request.post_json)
-                if response.status_code == 200:
-                    st.success("Post scheduled successfully!")
-                    # Clear the content field
-                    st.session_state.content = ''
-                else:
-                    st.error(f"Error ({response.status_code}): {response.json()["detail"]}")
-            except ValueError as ve:
-                st.error(f"Error: {ve}")
-        else:
-            st.error("Please provide content,scheduled time and email address.")
+            response = requests.post(f"{API_URL_FINAL}/schedule_post/", json=post_request.post_json)
+            if response.status_code == 200:
+                st.success("Post scheduled successfully!")
+                # Clear the content field
+                st.session_state.content = ''
+            else:
+                st.error(f"Error ({response.status_code}): {response.json()["detail"]}")
+        except ValueError as ve:
+            st.error(f"Error: {ve}")
+    else:
+        st.error("Please provide content,scheduled time and email address.")
