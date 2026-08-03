@@ -74,6 +74,18 @@ class TestRidingOutARestartingProxy:
                 _chat(_client(transport))
         assert transport.attempts == 2
 
+    def test_one_wait_is_capped_so_a_mistyped_budget_cannot_hang_a_worker(self, monkeypatch):
+        """Attempts is operator-tunable and every wait doubles. Uncapped, `ATTEMPTS=10` would sleep
+        for over an hour inside a Celery task that sets no time limit — the cap keeps the total
+        linear without touching the default 8s/16s schedule."""
+        from openai import APIConnectionError
+        monkeypatch.setenv("LLM_CONNECT_RETRY_ATTEMPTS", "6")
+        transport = _RefusingTransport(refusals=99)
+        with patch("cqc_lem.utilities.ai.client.time.sleep") as sleep:
+            with pytest.raises(APIConnectionError):
+                _chat(_client(transport))
+        assert [call.args[0] for call in sleep.call_args_list] == [8.0, 16.0, 32.0, 60.0, 60.0]
+
     def test_one_attempt_turns_the_wait_off(self, monkeypatch):
         from openai import APIConnectionError
         monkeypatch.setenv("LLM_CONNECT_RETRY_ATTEMPTS", "1")

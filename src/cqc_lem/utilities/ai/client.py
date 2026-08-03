@@ -37,6 +37,11 @@ _CONNECT_RETRY_ATTEMPTS_ENV = "LLM_CONNECT_RETRY_ATTEMPTS"
 _CONNECT_RETRY_BACKOFF_ENV = "LLM_CONNECT_RETRY_BACKOFF_SECONDS"
 _DEFAULT_CONNECT_RETRY_ATTEMPTS = 3
 _DEFAULT_CONNECT_RETRY_BACKOFF = 8.0
+# Attempts is operator-tunable and every wait doubles, so an unbounded exponential turns a mistyped
+# value into a worker that sleeps for hours holding its slot — these Celery tasks set no time limit
+# to cut that short. Capping ONE wait keeps the total linear (~attempts x 60s worst case) and leaves
+# the default schedule (8s, 16s) untouched.
+_MAX_CONNECT_RETRY_DELAY = 60.0
 
 
 def _env_number(name: str, default: Any, cast: Callable[[str], Any]) -> Any:
@@ -190,7 +195,7 @@ class AttributedOpenAI(OpenAI):
             except Exception as exc:
                 if attempt + 1 >= attempts or not _proxy_unreachable(exc):
                     raise
-                delay = backoff * (2 ** attempt)
+                delay = min(backoff * (2 ** attempt), _MAX_CONNECT_RETRY_DELAY)
                 # DEBUG, not a warning: a proxy restart is expected on every deploy, and a blip we
                 # rode out is not a degraded outcome. Exhausting the budget still raises, and the
                 # caller logs THAT at ERROR.
