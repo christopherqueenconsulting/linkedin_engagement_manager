@@ -79,18 +79,15 @@ def _parse_committer_date(date_str: str) -> datetime:
 
 # Branches matching this regex are ALWAYS held, regardless of any other signal. Mirrors
 # `.github/workflows/stale-branches.yml` and `docs/branch-cleanup.md` — keep all three in sync.
+# The 2026-07-28 sweep's historical pins (milestone/*, worktree-agent-*, four named release/pipeline
+# branches) were deleted by hand on 2026-08-03 (owner-approved; all content on main), so they no
+# longer need exempting. Active agent worktrees don't need the worktree-agent pin either: the 48h
+# grace covers a live push, and an orphan (no PR) is held-and-surfaced, never deleted.
 EXEMPT_RE = re.compile(
     r"^(?:"
     r"main|master|develop"
     r"|release-please--branches--main"
     r"|release/.*"
-    r"|feature/release-please-dedup"
-    r"|ci/claude-release-token-split"
-    r"|chore/pipeline-sync-and-release-automerge"
-    r"|fix/release-pipeline-reliability"
-    r"|hotfix/dashboard-stats-month-boundary"
-    r"|milestone/.*"
-    r"|worktree-agent-.*"
     r")$"
 )
 

@@ -34,8 +34,11 @@ jobs:
         with:
           script: |
             // Mirror of `scripts/branch_cleanup.py` EXEMPT_RE + 48h cutoff. Keep them in sync.
-            // Last verified: 2026-07-28.
-            const EXEMPT = /^(?:main|master|develop|release-please--branches--main|release\/.*|feature\/release-please-dedup|ci\/claude-release-token-split|chore\/pipeline-sync-and-release-automerge|fix\/release-pipeline-reliability|hotfix\/dashboard-stats-month-boundary|milestone\/.*|worktree-agent-.*)$/;
+            // Last verified: 2026-08-03 — the historical pins (milestone/*, worktree-agent-*, four
+            // named release/pipeline branches) were deleted by hand that day, so they are no longer
+            // exempted. Orphans (no PR ever) are still surfaced, never deleted, so a live agent
+            // worktree branch only needs the 48h grace.
+            const EXEMPT = /^(?:main|master|develop|release-please--branches--main|release\/.*)$/;
             const GRACE_HOURS = 48;
             const HOUR_MS = 3600 * 1000;
             const cutoff = Date.now() - GRACE_HOURS * HOUR_MS;

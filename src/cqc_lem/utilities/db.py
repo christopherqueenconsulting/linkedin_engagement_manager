@@ -993,7 +993,7 @@ def update_db_post_status(post_id: int, post_status: PostStatus) -> bool:
     connection = get_db_connection()
     cursor = connection.cursor()
 
-    # TODO: Why Enum doesnt work inside this function (have to convert to string first but why) ????
+    # The MySQL connector can't bind a PostStatus enum directly — it binds the .value string.
     status_str = "posted"
     try:
         status_str = post_status.value
