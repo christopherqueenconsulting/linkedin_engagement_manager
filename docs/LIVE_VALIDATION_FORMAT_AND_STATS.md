@@ -218,6 +218,13 @@ It emits one JSON report:
    on that screen) and a one-sentence `verdict`. The probe **never clicks Next**, so only the editor
    screen is ever rendered and `publish` is graded `UNKNOWN` rather than `MISSING` — read
    `editor_ready` for "can newsletter publishing start". See §6.
+5. **`profile_experiences`** *(only with `--profile-experiences <profile-url>`)* — which entity
+   selector resolved on `/details/experience/`, how many of those entities carry a date range, the
+   rebuilt parser's output, and the raw visible lines for the first few entities (plus the
+   `legacy_start_identifier` the pre-#970 positional parser branched on). Read
+   `entities_with_dates`: `0` means the page did not render the experience section at all, while
+   dated entities with an empty `experiences` means the line grammar moved and the sampled `lines`
+   are what the next parser pass is rewritten from.
 
 ```bash
 sudo docker exec -i celery_worker_selenium python - --user-id 1 --article-editor-url \

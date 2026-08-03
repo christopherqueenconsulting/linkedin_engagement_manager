@@ -88,6 +88,25 @@ menu. The dialog's own controls are UNCHANGED: `Add a note` / `Send without a no
 `textarea#custom-message` (0/300), and `Send` (aria `Send invitation`, disabled until input, plus
 a new `Write with AI` button). Success is the dialog's controls being present — never a click
 having landed.
+## Profile experience rows: the a11y twin, not a line index (#970)
+
+`/details/experience/` renders most text **twice** — a visible `span[aria-hidden="true"]` beside a
+`visually-hidden` twin carrying the same string. The pre-SDUI parser never knew that; it split an
+`<li>`'s whole text and branched on the count of leading blank strings
+(`start_identifier_map`: 20 = company, 16 = title, 7 = description), then halved each line
+(`row[si][:len(row[si]) // 2]`) to undo the duplication. Both halves of that are positional: one
+extra wrapper shifts every index, and the parser then emits a confidently-wrong company or title
+rather than nothing. Profile JSON is dumped whole into `synthesize_profile`, so that garbage grounds
+every comment and DM written for the user.
+
+The rebuild (`parse_profile_experiences`) reads the **visible** half only, keeps entity nodes by
+`data-view-name` / `role='listitem'` / `<li>` (outermost wins, so a grouped company stays one unit),
+and anchors a role on its **date-range line** — no date line, no experience, and an entity it does
+not understand yields nothing instead of junk. A grouped company is told from a single role
+STRUCTURALLY (does the entity nest child role entities?), because
+`company / title / dates` and `title / company / dates` are the same three lines in a different
+order. Ground it with `--profile-experiences <profile-url>`; `entities_with_dates` is the number
+that separates "page never rendered" from "line grammar moved".
 
 ## The comment composer has no `<form>`
 
