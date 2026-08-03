@@ -283,19 +283,65 @@ one the browser attaches by itself, so the check belongs where that credential i
 call sites. Refusal is **403 `client_header_required`**, never 401, because the SPA's axios
 interceptor reads any 401 as a dead session and signs the user out.
 
+It applies to **every** state-changing cookie-authenticated `/api` request, not only those four —
+`POST`, `PUT`, `PATCH` and `DELETE` alike. The four are what made the gap visible; covering only
+them would leave the next query-only route uncovered, which is the failure this exists to stop.
+
 Two deliberate exemptions:
 
 - **Reads.** CSRF is a forged write; with no CORS the attacker cannot read the response, and
   requiring a header on GET would break the browser's own credentialed navigations (a plain
   `<a href>` download, an `<img>` src).
 - **A bearer-authenticated caller.** Scripts, Postman and the admin tooling are not browsers and
-  have no ambient credential to forge with. It also makes the rollout breakage-free: an SPA bundle
-  cached from before #950 still sends a bearer and no header. A request with an explicit
-  `session_token` is likewise untouched — the attacker would have to know it, and it is httpOnly.
+  have no ambient credential to forge with. This exemption is for NON-BROWSER callers and is
+  permanent — it is not a rollout shim to retire once caches turn over, though it happens to cover
+  that too: an SPA bundle cached from before #950 still sends a bearer and no header. A request with
+  an explicit `session_token` is likewise untouched — the attacker would have to know it, and it is
+  httpOnly.
+
+### The two assumptions underneath it
+
+Both are load-bearing, both are pinned by a test, and both are the kind of thing an unrelated PR
+could undo in one line:
+
+1. **The SPA is same-origin with the API — by construction, not by deployment.** The axios client's
+   `baseURL` is the RELATIVE `/api`, so every request is same-origin whatever the host (Vite dev
+   server, docker-compose, the prod nginx edge), and a custom header on a same-origin request is
+   never preflighted. An ABSOLUTE `baseURL` would put `X-LEM-Client` behind a CORS preflight the
+   server answers nothing to — breaking every request, not just the writes.
+   Pinned by `the baseURL is relative` in `ui/src/api/client.test.ts`.
+2. **No CORS middleware is installed.** CORS with credentials would let a genuine cross-origin
+   caller ask permission to send this header and reinstate the hole the layer closes.
+   Pinned by `test_no_cors_middleware_is_installed`.
+
+A third, smaller one: the request and the session cookie are stamped onto their ContextVars by the
+SAME middleware block, so a live HTTP request can never carry the cookie without the request. That
+is what makes "no request in scope → no-op" safe rather than a silent bypass, and it is why the
+no-op logs at DEBUG (it is the expected shape for every Celery/direct caller, and warning on an
+expected no-op files a defect for working code). Pinned by
+`test_the_request_and_cookie_contextvars_are_set_together`.
+
+### What is NOT covered by this layer, and why that is fine
+
+`POST /auth/logout` is deliberately outside it — it swallows a failed session resolve so that a
+logout always completes, which is the right call for a sign-out. Forced logout is a real if
+low-severity CSRF target, and what covers it is the JSON-body layer: `LogoutRequest` is a body
+model, so a cross-site form (limited to `text/plain`, `application/x-www-form-urlencoded` and
+`multipart/form-data`) cannot produce a request FastAPI will accept.
+
+### On the SPA side
+
+A bundle cached from before this shipped sends no header and gets 403 `client_header_required` on
+every write. That is a stale bundle, not a dead session, so `ui/src/api/client.ts` routes it into
+the existing stale-chunk guard (`recoverFromChunkError`, issue #743): ONE reload lands on a bundle
+that sends the header, and a second failure inside the cooldown surfaces "a new version was
+released — please refresh" instead of looping. It never signs the user out — that is the 401 branch,
+and is exactly why the refusal is a 403.
 
 `tests/unit/api/test_csrf_client_header.py` is the standing proof, with a refused case per each of
-the four routes; `ui/src/api/client.test.ts` proves the header rides on every request out of the
-one axios client.
+the four routes, per unsafe method, and ahead of the scope check; `ui/src/api/client.test.ts` proves
+the header rides on every request out of the one axios client and that the 403 reloads rather than
+signs out.
 
 **One env var still deletes the other layer.** `_samesite()` accepts `none` (a browser rejects
 anything else, so the resolver has to), and `SESSION_COOKIE_SAMESITE=none` attaches the cookie to

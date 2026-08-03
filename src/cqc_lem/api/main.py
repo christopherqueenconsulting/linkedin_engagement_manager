@@ -457,11 +457,21 @@ def _scope_refusal(scope: str) -> HTTPException:
 #     own credentialed GETs that carry no headers at all: a plain `<a href>` download or an <img> src.
 #   * **A bearer-authenticated caller is exempt.** Scripts, Postman and the admin tooling are not
 #     browsers and have no ambient credential to forge with. It also makes the rollout breakage-free:
-#     an SPA bundle cached from before #950 still sends a bearer and no header.
+#     an SPA bundle cached from before #950 still sends a bearer and no header. This exemption is for
+#     NON-BROWSER callers and outlives the stale-bundle rollout it also happens to cover; it is not a
+#     temporary shim to remove once the caches turn over.
 #
 # Enforced in the ONE resolver, on the cookie branch, for the same reason the scope narrowing is
 # (#905): the credential this defends against is the one the BROWSER attaches by itself, so the check
 # belongs where that credential is read, not at ~150 call sites where it would be forgotten once.
+#
+# The layer depends on the SPA being same-origin with the API, and it is by construction, not by
+# deployment: the axios client's `baseURL` is the RELATIVE `/api`, so every request it makes is same
+# origin whatever the host — dev server, docker-compose, the prod nginx edge — and a custom header
+# on a same-origin request is never preflighted. `test_the_api_client_baseurl_is_relative` in
+# `ui/src/api/client.test.ts` pins that, and `test_no_cors_middleware_is_installed` pins the other
+# half: CORS with credentials would let a real cross-origin caller ask permission for this header and
+# reinstate the hole the layer closes.
 # ---------------------------------------------------------------------------
 
 CLIENT_HEADER_NAME = "X-LEM-Client"
@@ -494,8 +504,14 @@ def _require_client_header() -> None:
     from the SPA. Read-only requests and non-browser bearer callers pass straight through."""
     request = _request_object.get()
     if request is None:
-        # No request in scope means no browser attached anything — a Celery beat or a test calling
-        # the resolver directly. There is no cross-site forgery without a cross-site request.
+        # `session_cookie_middleware` sets this ContextVar and the cookie one in the SAME block, so a
+        # live HTTP request can never carry the cookie without the request (pinned by
+        # `test_the_request_and_cookie_contextvars_are_set_together`). Reaching here therefore means a
+        # caller that resolved a session outside HTTP — a Celery beat, a direct call, a test — and
+        # there is no cross-site forgery without a cross-site request. DEBUG rather than a warning
+        # precisely because that is the EXPECTED shape for every non-HTTP caller.
+        log_debug("Client-header check skipped — no HTTP request in scope",
+                  path=_scope_path(_request_path.get()))
         return
     if request.method.upper() not in _CSRF_UNSAFE_METHODS:
         return
