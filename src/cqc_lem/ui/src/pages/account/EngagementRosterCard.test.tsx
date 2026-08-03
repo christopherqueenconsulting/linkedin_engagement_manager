@@ -172,6 +172,9 @@ describe('EngagementRosterCard — opt-in auto-follow toggle (issue #962)', () =
     await waitFor(() => expect(screen.getByTestId('roster-auto-follow')).toBeTruthy())
     const toggle = screen.getByTestId('roster-auto-follow') as HTMLInputElement
     expect(toggle.checked).toBe(false)
+    // The lane follows EVERY non-terminal roster target, not only the badged ones — an accessible
+    // name that says "blocked" would understate what a screen-reader user is switching on.
+    expect(toggle.getAttribute('aria-label')).toBe('Follow roster accounts automatically')
     expect(screen.getByTestId('engagement-roster').textContent).toContain('3')
     expect(screen.getByTestId('engagement-roster').textContent)
       .toMatch(/connections-only one still needs a connection request/i)

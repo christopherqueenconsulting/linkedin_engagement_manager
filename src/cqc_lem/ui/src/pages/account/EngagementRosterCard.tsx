@@ -268,7 +268,7 @@ export default function EngagementRosterCard() {
         <div className="border-t border-gray-100 pt-3">
           <label className="flex items-start gap-2 text-sm text-gray-700">
             <input type="checkbox" checked={autoFollow} data-testid="roster-auto-follow"
-              aria-label="Follow blocked roster accounts automatically"
+              aria-label="Follow roster accounts automatically"
               onChange={(e) => {
                 setEng({ roster_auto_follow: e.target.checked })
                 setAutoFollowTouched(true)
