@@ -1,9 +1,12 @@
 import os
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from typing import Any, Optional, Tuple
 
-from openai import OpenAI
+import httpx
+from openai import APIConnectionError, OpenAI
 
+from cqc_lem.utilities.logger import log_debug
 from cqc_lem.utilities.routing_policy import SYSTEM_USER_ID
 
 # Only tier aliases are routable AND priced by the proxy, so nothing is attached to a call that
@@ -23,6 +26,37 @@ _PARENT_KEY = "parent_run_id"
 # Mirrors observability.FEATURE_SYSTEM. Kept as a literal so this module never imports observability
 # eagerly — that would drag the DB and PostHog into every `from ...ai.client import client`.
 _SYSTEM_FEATURE = "system"
+
+# The LiteLLM proxy is a container LEM restarts on its own schedule (deploys, image pulls, the host's
+# nightly unattended-upgrade reboot). While it is coming back up every call gets
+# `[Errno 111] Connection refused`, and the OpenAI SDK spends its own two retries inside ~1.5s — far
+# short of a container start — so one blip lost a whole generation and filed a defect for it
+# (issue #986). Defaults ride out ~24s of refused connections on top of the SDK's own retries; set
+# attempts to 1 to turn the wait off.
+_CONNECT_RETRY_ATTEMPTS_ENV = "LLM_CONNECT_RETRY_ATTEMPTS"
+_CONNECT_RETRY_BACKOFF_ENV = "LLM_CONNECT_RETRY_BACKOFF_SECONDS"
+_DEFAULT_CONNECT_RETRY_ATTEMPTS = 3
+_DEFAULT_CONNECT_RETRY_BACKOFF = 8.0
+
+
+def _env_number(name: str, default: Any, cast: Callable[[str], Any]) -> Any:
+    """Read a numeric setting at CALL time (so a restart-free change lands) and fall back to the
+    default on anything unparseable — a typo in `.env` must not take LLM traffic down."""
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return cast(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _proxy_unreachable(exc: BaseException) -> bool:
+    """True only when the TCP connection to the proxy was NEVER ESTABLISHED — it is down or still
+    starting, and nothing was sent, so retrying cannot duplicate provider spend. httpx raises
+    `ConnectError` for exactly that case; a timeout or a read/write error mid-request may already
+    have reached a provider, and a 4xx/5xx is the proxy answering, so none of those are retried."""
+    return isinstance(exc, APIConnectionError) and isinstance(exc.__cause__, httpx.ConnectError)
 
 
 def current_attribution() -> Tuple[Optional[Any], Optional[str]]:
@@ -140,6 +174,29 @@ class AttributedOpenAI(OpenAI):
             except Exception:
                 pass  # observability is never a reason to lose the generation
         return super()._build_request(options, **kwargs)
+
+    def post(self, *args: Any, **kwargs: Any) -> Any:
+        """Ride out a proxy that is not accepting connections (issue #986).
+
+        Every endpoint LEM uses — chat, embeddings, images, speech — is a POST, so this is the one
+        place that covers all of them. Deliberately NOT `request()`: the SDK's own retry re-enters
+        `request()`, so wrapping it there would nest the two retry budgets and multiply them.
+        """
+        attempts = max(1, _env_number(_CONNECT_RETRY_ATTEMPTS_ENV, _DEFAULT_CONNECT_RETRY_ATTEMPTS, int))
+        backoff = max(0.0, _env_number(_CONNECT_RETRY_BACKOFF_ENV, _DEFAULT_CONNECT_RETRY_BACKOFF, float))
+        for attempt in range(attempts):
+            try:
+                return super().post(*args, **kwargs)
+            except Exception as exc:
+                if attempt + 1 >= attempts or not _proxy_unreachable(exc):
+                    raise
+                delay = backoff * (2 ** attempt)
+                # DEBUG, not a warning: a proxy restart is expected on every deploy, and a blip we
+                # rode out is not a degraded outcome. Exhausting the budget still raises, and the
+                # caller logs THAT at ERROR.
+                log_debug(f"LiteLLM proxy is not accepting connections; retrying in {delay:.0f}s",
+                          api_provider="litellm")
+                time.sleep(delay)
 
 
 client = AttributedOpenAI(
