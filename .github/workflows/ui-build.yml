@@ -28,12 +28,35 @@ jobs:
       - name: No LEM-issued shared secret read by the SPA source
         working-directory: src/cqc_lem/ui
         run: |
-          if grep -rn 'VITE_API_TOKEN\|VITE_ADMIN_SECRET' src/; then
+          set -u
+          # What Vite inlines is a READ — `import.meta.env.VITE_X`, bracketed, or destructured off
+          # `import.meta.env` (a bundler's `process.env.VITE_X` counts the same). NAMING one is not
+          # a read: src/api/client.ts documents the retired VITE_API_TOKEN on purpose, and a grep
+          # for the bare name fails on the very comment that records why it is gone.
+          pattern='(import\.meta|process)\.env\.(VITE_API_TOKEN|VITE_ADMIN_SECRET)\b'
+          pattern="$pattern"'|(import\.meta|process)\.env\[[^]]*(VITE_API_TOKEN|VITE_ADMIN_SECRET)'
+          pattern="$pattern"'|\{[^}]*(VITE_API_TOKEN|VITE_ADMIN_SECRET)[^}]*\}[[:space:]]*=[[:space:]]*(import\.meta|process)\.env'
+
+          # Positive control, same reason as the bundle canary's: a narrowed pattern is worth
+          # trusting only once it has been shown to still match what it forbids. One sample per
+          # read form, so dropping a form from the pattern fails here instead of going blind.
+          matched=$(printf '%s\n' \
+            "const t = import.meta.env.VITE_API_TOKEN" \
+            "const s = process.env['VITE_ADMIN_SECRET']" \
+            "const { VITE_API_TOKEN } = import.meta.env" \
+            | grep -cE "$pattern" || true)
+          if [ "$matched" -ne 3 ]; then
+            echo "::error::Positive control failed: the read pattern matched $matched/3 known-bad lines."
+            echo "::error::This check cannot detect anything in this state — fix the pattern before trusting it."
+            exit 1
+          fi
+
+          if grep -rnE "$pattern" src/; then
             echo "::error::The SPA source reads a LEM-issued shared secret (the lines above)."
             echo "::error::A VITE_* is inlined at build time, so it would be a constant in a public bundle — see issue #950."
             exit 1
           fi
-          echo "✓ src/ reads no LEM-issued shared secret"
+          echo "✓ src/ reads no LEM-issued shared secret (positive control present)"
       - name: Unit tests (vitest)
         working-directory: src/cqc_lem/ui
         run: npm test
