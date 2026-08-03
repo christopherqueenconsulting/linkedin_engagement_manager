@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.128.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.127.0...v0.128.0) (2026-08-03)
+
+
+### Features
+
+* **engagement:** flag roster targets LEM can't comment on + opt-in paced auto-follow (closes [#962](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/962)) ([#963](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/963)) ([b9607fd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b9607fde8fccfc807046379fde5404c5295d46b0))
+* **newsletter:** implement blog-align — align_with_blog now reaches the generator (closes [#967](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/967)) ([#981](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/981)) ([766088a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/766088a9a47b71af6e5389fb6c87172c49d73fc2))
+
+
+### Bug Fixes
+
+* **ai:** ride out a LiteLLM proxy that is not accepting connections (closes [#986](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/986)) ([#997](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/997)) ([5447760](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5447760d2c0290ec897a83c5c64620670b3fd9d4))
+* **errors:** a deploy that quits a live browser session is not a defect (closes [#988](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/988)) ([#999](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/999)) ([004cc7c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/004cc7c3d34eef8632f73217f52056da22e71ee4))
+* **errors:** a roster author with no recent post is a no-op, not a warning (closes [#987](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/987)) ([#998](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/998)) ([ead5ea2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ead5ea2b0b4734130ebf381ea61bb2a63ef40815))
+* **errors:** an empty connection-targeting scan is a no-op, not a warning ([f8ae7b7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f8ae7b7c2e136510fba3e386a2a82768772c6068)), closes [#985](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/985)
+* **errors:** an empty connection-targeting scan is a no-op, not a warning (closes [#985](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/985)) ([#994](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/994)) ([f8ae7b7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f8ae7b7c2e136510fba3e386a2a82768772c6068))
+* **errors:** an empty outreach-funnel scan is a no-op, not a warning (closes [#995](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/995)) ([#996](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/996)) ([801d6ee](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/801d6eedcbc0a55701f0d7bcbf280d9307ad39d0))
+* **security:** require X-LEM-Client on cookie-authenticated /api writes — restores the CSRF layer [#950](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/950) removed (closes [#957](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/957)) ([#959](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/959)) ([4e9209e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4e9209e8fd8067ed5da422c92c033dd117fdd3bd))
+
+
+### Documentation
+
+* retire TODO_PROJECT_TIMELINE.md (closes [#975](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/975)) ([#993](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/993)) ([c2bef23](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c2bef238da7cb233968d86eed47e27242e679ca1))
+
 ## [0.127.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.126.1...v0.127.0) (2026-08-03)
 
 
