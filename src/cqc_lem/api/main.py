@@ -3635,7 +3635,11 @@ def auth_second_factor_verify(request: SecondFactorVerifyRequest, http_request: 
 
 @app.get("/auth/linkedin/", response_model=None, include_in_schema=False)
 @router.get("/auth/linkedin/", response_model=None, include_in_schema=False)
-def linkedin_auth_init(email: str = None, session_token: str = None) -> RedirectResponse:
+def linkedin_auth_init(session_token: str = None) -> RedirectResponse:
+    """The `email` parameter is gone (issue #914). It was already dead — the user comes from the
+    `session_token` carried in the OAuth `state` — but it left the last handler in this file whose
+    signature named an account it did not use, and it put the address in a URL (browser history,
+    `Referer`) for nothing. An unused actor parameter is the next author's invitation to use it."""
     client = AuthClient(LI_CLIENT_ID, LI_CLIENT_SECRET, LI_REDIRECT_URL)
     # Embed the session_token in state so the callback can find the right user,
     # even when the LinkedIn account email differs from the login email.

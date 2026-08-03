@@ -10,9 +10,8 @@ import { useStepUp } from '../../hooks/useStepUp'
 const LI_AUTH_URL = '/api/auth/linkedin/'
 
 export default function LinkedInLoginCard() {
-  const { user, sessionToken } = useAuth()
+  const { sessionToken } = useAuth()
   const { guard, stepUpModal } = useStepUp()
-  const email = user?.email ?? ''
   const { data: readiness } = useAccountReadiness()
   const sessionOk = readiness?.items.find((i) => i.key === 'linkedin_session')?.ok ?? false
   const cookieMigrationNeeded = readiness?.cookie_migration_needed ?? false
@@ -148,7 +147,7 @@ export default function LinkedInLoginCard() {
           </p>
 
           <a
-            href={`${LI_AUTH_URL}?email=${encodeURIComponent(email)}&session_token=${encodeURIComponent(sessionToken ?? '')}`}
+            href={`${LI_AUTH_URL}?session_token=${encodeURIComponent(sessionToken ?? '')}`}
             className="inline-block w-full text-center py-2 rounded-lg text-sm font-semibold bg-blue-700 text-white hover:bg-blue-800 cursor-pointer transition-colors"
           >
             {isLinkedInConnected ? 'Reconnect LinkedIn' : 'Connect LinkedIn'}
@@ -166,7 +165,7 @@ export default function LinkedInLoginCard() {
             </span>
           </div>
           <a
-            href={`${LI_AUTH_URL}?email=${encodeURIComponent(email)}&session_token=${encodeURIComponent(sessionToken ?? '')}`}
+            href={`${LI_AUTH_URL}?session_token=${encodeURIComponent(sessionToken ?? '')}`}
             className="text-xs font-semibold text-blue-700 hover:text-blue-800 whitespace-nowrap"
           >
             Reconnect

@@ -404,3 +404,27 @@ class TestAResolvedSessionWithNoAddressIsOurFault:
         assert resp.status_code == 500
         inserted.assert_not_called()
         err.assert_called_once()
+
+
+class TestNoHandlerNamesAnAccountItDoesNotUse:
+    """`/auth/linkedin/` took an `email` it never read — the user comes from the `session_token`
+    carried in the OAuth `state`. Dead, but it was the last signature in the file naming an account
+    as a parameter, and it put the address in a URL (history, `Referer`) for nothing."""
+
+    def test_linkedin_auth_init_takes_no_email(self):
+        import inspect
+        from cqc_lem.api.main import linkedin_auth_init
+
+        assert "email" not in inspect.signature(linkedin_auth_init).parameters
+
+    def test_a_stray_email_parameter_changes_nothing(self, client):
+        """A cached page still linking with `?email=` must redirect exactly as before, not 422."""
+        with patch(f"{_M}.AuthClient") as auth:
+            auth.return_value.generate_member_auth_url.return_value = "https://linkedin.example/oauth"
+            resp = client.get("/api/auth/linkedin/",
+                              params={"session_token": SESSION_TOKEN, "email": _OTHER_EMAIL},
+                              follow_redirects=False)
+        assert resp.status_code == 307
+        state = auth.return_value.generate_member_auth_url.call_args.kwargs["state"]
+        assert state.endswith(SESSION_TOKEN)
+        assert _OTHER_EMAIL not in state
