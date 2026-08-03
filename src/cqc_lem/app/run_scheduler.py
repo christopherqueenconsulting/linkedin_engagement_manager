@@ -1475,14 +1475,19 @@ def auto_sync_brand_account():
     Everything the brand actually DOES — the 30-day content plan, feed commenting, connect targeting,
     appreciation/outreach DMs + follow-ups, the newsletter, company-page invites — already reaches it
     through the same per-active-user beats as any paying customer, under the same caps, 429 backoff
-    and per-user proxy. So this task adds no outreach of its own: it only re-asserts the phase's caps
-    and connect posture onto the brand's engagement preferences, so advancing a phase (or a manual
-    cap edit) can never leave brand outbound running hotter than was signed off on.
+    and per-user proxy. So this task adds no outreach of its own: it only seeds the phase's caps and
+    connect posture onto a brand account that has never saved engagement preferences of its own, and
+    holds every account under the shipped per-user ceilings.
+
+    It deliberately does NOT re-assert the phase over settings the owner saved (issue #952): user 1
+    is his ordinary account too, so the Settings hub is the sign-off, and a nightly re-assertion just
+    reverted what the SPA had recommended to him hours earlier.
 
     The brand user is user 1 by convention (issue #736), so this always has an account to sync — no
-    env var can leave it dormant, and the only reported failure is a failed write.
+    env var can leave it dormant, and the only reported failures are an unreadable row and a failed
+    write.
     """
-    from cqc_lem.utilities.brand_account import brand_user_id, current_launch_phase, \
+    from cqc_lem.utilities.brand_account import CAP_FIELDS, brand_user_id, current_launch_phase, \
         sync_brand_preferences
 
     user_id = brand_user_id()
@@ -1497,11 +1502,24 @@ def auto_sync_brand_account():
         log_warning("Brand account is not active/connected — its automation will not run",
                     user_id=user_id, task_name="auto_sync_brand_account")
 
-    log_info(f"Brand account synced to launch phase {phase}",
-             user_id=user_id, task_name="auto_sync_brand_account")
-    return (f"Brand account {user_id} synced to phase {phase} "
-            f"(comments/day {applied['max_comments_per_day']}, DMs/day {applied['max_dms_per_day']}, "
-            f"invites/day {applied['max_invites_per_day']})")
+    labels = {"max_comments_per_day": "comments/day", "max_dms_per_day": "DMs/day",
+              "max_invites_per_day": "invites/day"}
+    # Only the caps this run actually wrote — an account whose own saved caps are already within
+    # policy has none, and reporting the phase's numbers there would read as an edit that never
+    # happened.
+    caps = ", ".join(f"{labels[f]} {applied[f]}" for f in CAP_FIELDS if f in applied)
+    if caps:
+        summary = f"Brand account {user_id} synced to phase {phase} ({caps})"
+    elif applied:
+        # Caps were left alone but something else was (the content seeding) — "nothing changed"
+        # would be as wrong here as reporting caps this run never wrote.
+        summary = (f"Brand account {user_id} checked against phase {phase} — its own caps stand; "
+                   f"seeded {', '.join(sorted(applied))}")
+    else:
+        summary = (f"Brand account {user_id} checked against phase {phase} — its own caps are "
+                   f"within policy, nothing changed")
+    log_info(summary, user_id=user_id, task_name="auto_sync_brand_account")
+    return summary
 
 
 @shared_task.task

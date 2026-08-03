@@ -51,18 +51,14 @@ PHASE_OUTBOUND_POLICY = {
            "connection_request_mode": "auto_approve", "connection_targeting_mode": "auto_queue"},
 }
 
-# The phase's numeric caps. Since the brand user is also the owner's ORDINARY account (#736), the
-# phase is applied as a CEILING, not as an assignment: it can only ever pull a cap DOWN. A cap the
-# owner tuned lower by hand is stricter than the policy, so honouring it can never widen outbound —
-# and stomping it nightly is exactly the silent overwrite this convention would otherwise introduce.
+# The volume + posture fields the phase owns. Since the brand user is also the owner's ORDINARY
+# account (#736), the phase SEEDS an account that has never saved its own engagement preferences —
+# it is not re-asserted over one that has. Issue #952: re-asserting it nightly pulled the owner's own
+# Settings choice back down before morning (the SPA recommends the "Balanced" preset, 15/10/8 — the
+# P1 numbers — while prod runs LAUNCH_PHASE=P0, so every night put it back to 8/5/5 with nothing in
+# the UI to say why). Saved settings ARE the sign-off; an env var nobody touched is not.
 CAP_FIELDS = ("max_comments_per_day", "max_dms_per_day", "max_invites_per_day")
-
-# Same rule for the approval posture, which has no numeric scale: strictest first. `pre_review` /
-# `off` gate more than the phase does, so a hand-set stricter mode survives the sync.
-MODE_STRICTNESS = {
-    "connection_request_mode": ("pre_review", "auto_approve"),
-    "connection_targeting_mode": ("off", "suggest", "auto_queue"),
-}
+MODE_FIELDS = ("connection_request_mode", "connection_targeting_mode")
 
 
 def current_launch_phase() -> str:
@@ -115,43 +111,48 @@ def is_brand_user(user_id: Any) -> bool:
         return False
 
 
-def _capped(current: Any, ceiling: int) -> int:
-    """`current` held under the phase's ceiling. A missing/unreadable saved value takes the ceiling —
-    "no opinion" is not the same as "the owner asked for less"."""
+def _over_ceiling(current: Any, ceiling: int) -> Optional[int]:
+    """`current` pulled back under `ceiling`, or None when there is nothing to change.
+
+    An unreadable value is also None: a cap this task cannot read is not a cap it may rewrite — the
+    only source for it is `get_engagement_preferences`, which hands back code DEFAULTS when the read
+    failed (issue #639), and rewriting from those is how a fault silently widens outbound.
+    """
     try:
         saved = int(current)
     except (TypeError, ValueError):
-        return ceiling
+        return None
+    if 0 <= saved <= ceiling:
+        return None
     return max(0, min(ceiling, saved))
 
 
-def _strictest(current: Any, phase_value: str, order: tuple) -> str:
-    """Whichever of the saved and phase values gates more (`order` is strictest-first). A saved value
-    outside the known vocabulary is not comparable, so the phase's wins."""
-    if current not in order:
-        return phase_value
-    if phase_value not in order:
-        return str(current)
-    return str(current) if order.index(str(current)) < order.index(phase_value) else phase_value
-
-
-def brand_preference_overrides(existing: Optional[dict] = None, phase: Optional[str] = None) -> dict:
+def brand_preference_overrides(existing: Optional[dict] = None, phase: Optional[str] = None,
+                               configured: bool = False) -> dict:
     """The engagement-preference fields the brand policy owns, given the account's current prefs.
 
-    Caps and approval posture are re-asserted from the phase as a CEILING — that is the volume gate,
-    so a manual edit can never raise brand outbound above what was signed off on, but a value the
-    owner tuned STRICTER survives (the brand user is also his ordinary account, issue #736, and
-    clamping down is the only direction that matters for safety). The seeded content fields (focus
-    topics, business goals) are only filled when empty, so he can retune the brand's messaging
-    without this task stomping it back every night.
+    `configured` is whether the account has SAVED an engagement-preferences row of its own:
+
+    * **Not configured** — the phase seeds the caps and the connect posture, exactly as before.
+    * **Configured** — those values are the OWNER's (the brand user is also his ordinary account,
+      issue #736), so the phase is not re-asserted over them and only `BRAND_CAP_CEILINGS` still
+      binds: a cap above the shipped per-user default is pulled back, everything else is left alone.
+      Re-asserting the phase every night is issue #952 — the product recommended a volume it then
+      silently refused to keep.
+
+    The seeded content fields (focus topics, business goals) are only filled when empty either way,
+    so the brand's messaging can be retuned without this task stomping it back.
     """
     policy = brand_outbound_policy(phase)
     current = existing or {}
-    overrides = dict(policy)
-    for cap in CAP_FIELDS:
-        overrides[cap] = _capped(current.get(cap), policy[cap])
-    for field, order in MODE_STRICTNESS.items():
-        overrides[field] = _strictest(current.get(field), policy[field], order)
+    overrides: dict = {}
+    if configured:
+        for cap in CAP_FIELDS:
+            clamped = _over_ceiling(current.get(cap), BRAND_CAP_CEILINGS[cap])
+            if clamped is not None:
+                overrides[cap] = clamped
+    else:
+        overrides.update({field: policy[field] for field in CAP_FIELDS + MODE_FIELDS})
     if not [t for t in (current.get("focus_topics") or []) if str(t).strip()]:
         overrides["focus_topics"] = list(BRAND_FOCUS_TOPICS)
     # The goal line is read by the content prompts, so the URL in it is the one the brand's posts
@@ -188,18 +189,33 @@ def preference_changes(existing: Optional[dict], overrides: dict) -> dict:
 def sync_brand_preferences(phase: Optional[str] = None) -> Optional[dict]:
     """Push the current phase's outbound policy onto the brand account's engagement preferences.
 
-    Returns the applied overrides, or None when the upsert failed. The whole upsert is one row (the
+    Returns the applied overrides — possibly EMPTY, when the account's own saved settings already
+    sit inside the policy — or None when the sync could not run. The whole upsert is one row (the
     V52 incident), so ONLY the policy fields are sent — voice, tone and targeting the owner set are
     preserved by `update_engagement_preferences`, which merges over the saved row and aborts when it
     can't read it (issue #639). Re-sending `existing` here would defeat that abort: a transient read
     error makes `get_engagement_preferences` return code defaults, and this nightly task would then
     write all 39 of them over the brand account's real settings.
+
+    Whether the account has settings of its own decides how much the phase owns (issue #952), so an
+    UNREADABLE row skips the sync outright rather than reading as "never configured" — seeding the
+    phase over the owner's real caps is the failure being fixed.
     """
     user_id = brand_user_id()
-    from cqc_lem.utilities.db import get_engagement_preferences, update_engagement_preferences
+    from cqc_lem.utilities.db import (engagement_preferences_are_configured,
+                                      get_engagement_preferences, update_engagement_preferences)
     resolved_phase = (phase or current_launch_phase()).strip().upper()
+    configured = engagement_preferences_are_configured(user_id)
+    if configured is None:
+        # The db layer already logged the read fault where it detected it — one condition, one
+        # warning. The caller reports the skipped sync in its own return line.
+        log_debug("Brand account preferences unreadable — skipping this sync", user_id=user_id)
+        return None
     existing = get_engagement_preferences(user_id) or {}
-    overrides = brand_preference_overrides(existing, resolved_phase)
+    overrides = brand_preference_overrides(existing, resolved_phase, configured=configured)
+    if not overrides:
+        log_debug(f"Brand account within phase {resolved_phase} — nothing to apply", user_id=user_id)
+        return overrides
     changes = preference_changes(existing, overrides)
     if not update_engagement_preferences(user_id, overrides):
         log_warning("Could not sync brand account preferences", user_id=user_id)

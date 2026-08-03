@@ -183,6 +183,57 @@ class TestPartialUpdateKeepsTheRest:
                        for c in cursor.execute.call_args_list)
 
 
+class TestEngagementPreferencesAreConfigured:
+    """Three-valued (issue #952): a caller that would otherwise write policy defaults over the
+    user's own settings has to tell "never configured" from "could not read"."""
+
+    def test_true_when_a_row_exists(self):
+        conn, _ = _mock_conn(fetch_row={"tone": "warm"})
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import engagement_preferences_are_configured
+            assert engagement_preferences_are_configured(1) is True
+
+    def test_false_when_the_user_never_saved_one(self):
+        conn, _ = _mock_conn(fetch_row=None)
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import engagement_preferences_are_configured
+            assert engagement_preferences_are_configured(1) is False
+
+    def test_none_and_an_error_when_the_row_cannot_be_read(self):
+        import mysql.connector
+        conn, cursor = _mock_conn()
+        cursor.execute.side_effect = mysql.connector.Error(msg="db down")
+        with patch(f"{_DB}.get_db_connection", return_value=conn), \
+             patch(f"{_DB}.log_error") as err:
+            from cqc_lem.utilities.db import engagement_preferences_are_configured
+            assert engagement_preferences_are_configured(1) is None
+        assert err.call_count == 1
+
+    def test_it_only_asks_whether_the_row_exists(self):
+        """Existence is a `SELECT 1`, not a read of all 41 columns — one query, one semantics, and
+        `has_engagement_preferences` is this same question."""
+        conn, cursor = _mock_conn(fetch_row=(1,))
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import engagement_preferences_are_configured
+            engagement_preferences_are_configured(1)
+        sql = cursor.execute.call_args.args[0]
+        assert "SELECT 1 FROM engagement_preferences" in sql and "LIMIT 1" in sql
+
+    def test_has_engagement_preferences_is_the_two_valued_view(self):
+        """The bool helper folds the unreadable case back into False, exactly as before — but there
+        is only ONE query behind both, so they can never drift apart."""
+        import mysql.connector
+        conn, cursor = _mock_conn(fetch_row=(1,))
+        with patch(f"{_DB}.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import has_engagement_preferences
+            assert has_engagement_preferences(1) is True
+        conn, cursor = _mock_conn()
+        cursor.execute.side_effect = mysql.connector.Error(msg="db down")
+        with patch(f"{_DB}.get_db_connection", return_value=conn), patch(f"{_DB}.log_error"):
+            from cqc_lem.utilities.db import has_engagement_preferences
+            assert has_engagement_preferences(1) is False
+
+
 class TestReplyCheckConfig:
     def test_defaults_include_reply_config(self):
         conn, _ = _mock_conn(fetch_row=None)

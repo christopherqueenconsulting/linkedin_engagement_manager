@@ -283,15 +283,24 @@ self-marketing off. What the brand does:
 self-marketing can never exceed ToS-safe volume. Outbound cadence for the brand is a `risk:product-decision`
 config (daily connect/DM caps) the owner signs off once.
 
-**The collision guard (issue #736).** Because the brand user is *also* the owner's ordinary LEM account, the
-nightly `sync_brand_preferences` applies the phase policy as a **ceiling, not an assignment**: it can only pull
-`max_comments_per_day` / `max_dms_per_day` / `max_invites_per_day` DOWN to the phase's number, and only tighten
-`connection_request_mode` / `connection_targeting_mode` (strictness order `pre_review` > `auto_approve`, `off` >
-`suggest` > `auto_queue`). A value the owner tuned STRICTER by hand survives the sync — honouring it can never
-widen outbound, and stomping it every night is the one real risk this convention introduces. The seeded content
-fields (`focus_topics`, `business_goals`) stay fill-only-when-empty as before, everything else on the row is
-untouched (only the policy fields are sent — issue #639), and any field the sync does change is named
-before → after in one INFO line, so an edit to the owner's own settings is never silent.
+**The collision guard (issues #736, #952).** Because the brand user is *also* the owner's ordinary LEM account,
+the nightly `sync_brand_preferences` **seeds, it does not re-assert**. Which half applies is decided by
+`db.engagement_preferences_are_configured` — three-valued, because "could not read the row" is not "never
+configured" and an unreadable row skips the sync outright:
+
+- **No saved engagement row** → the phase sets `max_comments_per_day` / `max_dms_per_day` /
+  `max_invites_per_day` and `connection_request_mode` / `connection_targeting_mode` outright.
+- **A saved row** → those are the owner's own Settings choices and the phase is not applied to them at all.
+  Only `BRAND_CAP_CEILINGS` still binds: a cap above the shipped per-user default (20 / 20 / 10) is pulled back,
+  so the brand can still never run hotter than a paying user out of the box.
+
+The re-assertion this replaces was the reported bug: the Settings hub recommends the **Balanced** preset
+(15 / 10 / 8 — the P1 numbers) while prod runs `LAUNCH_PHASE=P0`, so the caps the owner picked in the UI were
+back at 8 / 5 / 5 by morning with nothing on screen to say why. Saved settings are the sign-off; an env var
+nobody has touched is not. The seeded content fields (`focus_topics`, `business_goals`) stay fill-only-when-empty
+as before, everything else on the row is untouched (only the policy fields are sent — issue #639), and any field
+the sync does change is named before → after in one INFO line, so an edit to the owner's own settings is never
+silent.
 
 ### C.3 Other automated channels (each agent-run)
 
