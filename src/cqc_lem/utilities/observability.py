@@ -1111,6 +1111,37 @@ def track_company_page_invite_run(user_id: Optional[int], report: Optional[dict]
     )
 
 
+def track_stale_invite_run(user_id: Optional[int], report: Optional[dict] = None,
+                           **extra) -> None:
+    """Emit one stale-invite withdrawal run (issue #969) — EVERY run, including the ones that
+    withdraw nothing.
+
+    This lane replaced a beat that had been a no-op stub while LOOKING operational, so a series that
+    only carried withdrawals would reproduce exactly the problem it was written to fix. `rows_seen`
+    is the tell: zero rows day after day on an account with pending invites means the invitation
+    manager's markup moved, not that the account is clean."""
+    report = dict(report or {})
+    posthog.capture(
+        distinct_id=str(user_id or "system"),
+        event="stale_invite_run",
+        properties={
+            "user_id": user_id,
+            "status": report.get("status"),
+            "withdrawn": int(report.get("withdrawn") or 0),
+            "unverified": int(report.get("unverified") or 0),
+            "budget": int(report.get("budget") or 0),
+            "cap": int(report.get("cap") or 0),
+            "withdrawn_today": int(report.get("withdrawn_today") or 0),
+            "threshold_days": report.get("threshold_days"),
+            "rows_seen": int(report.get("rows_seen") or 0),
+            "stale_seen": int(report.get("stale_seen") or 0),
+            "unreadable": int(report.get("unreadable") or 0),
+            "expansions": int(report.get("expansions") or 0),
+            **extra,
+        },
+    )
+
+
 def track_catchup_run(user_id: Optional[int], report: Optional[dict] = None, **extra) -> None:
     """Emit one LinkedIn Catch-up run (issue #792) — EVERY run of BOTH phases, including the ones
     that drafted or sent nothing.

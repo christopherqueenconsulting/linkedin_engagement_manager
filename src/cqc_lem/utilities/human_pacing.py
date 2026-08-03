@@ -70,6 +70,14 @@ ACTION_AFFILIATE_PROMO = "affiliate_promo"
 # spent its comment/DM/invite envelope stops following too: bounded by the envelope, never adding
 # to it.
 ACTION_FOLLOW = "follow"
+# Withdrawing a stale pending invite (issue #969). Its own key for the same reason ACTION_COMPANY_
+# INVITE has one — it runs on a different cap (`STALE_INVITE_WITHDRAWALS_PER_DAY`) and would
+# otherwise overwrite the connection lane's stored daily draw. Deliberately NOT in ENVELOPE_ACTIONS:
+# `account_envelope` sums every envelope lane's budget, so joining it would ENLARGE a day's outbound
+# allowance — and a withdrawal is housekeeping, not outbound engagement. The caller still passes
+# `caps`, so an account that has spent its envelope stops withdrawing too: bounded by it, never
+# adding to it.
+ACTION_WITHDRAW_INVITE = "withdraw_invite"
 ENGAGEMENT_ACTIONS = (ACTION_COMMENT, ACTION_REPLY, ACTION_DM, ACTION_INVITE)
 
 # Which preference key caps each lane.

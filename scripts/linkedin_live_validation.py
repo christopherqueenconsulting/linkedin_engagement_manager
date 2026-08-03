@@ -1026,6 +1026,67 @@ def probe_appreciation_sources(driver, user_id: int, profile_url: str = "",
     return report
 
 
+def sent_invites_verdict(reading: dict) -> str:
+    """What one invitation-manager reading proves about the #969 withdrawal lane.
+
+    The lane ships OFF and cannot be turned on honestly until this says rows resolved AND their sent
+    dates parsed: production skips every row it cannot age, so "0 rows" and "rows, none dated" both
+    mean the lane would run every night and withdraw nothing — which is the stub it replaced."""
+    reading = dict(reading or {})
+    rows = int(reading.get("rows_seen") or 0)
+    if not rows:
+        return ("no pending-invite rows resolved — either this account has none outstanding, or the "
+                "row anchors (a Withdraw control above an /in/ link) have moved. Check "
+                "`visible_controls` against the page")
+    dated = int(reading.get("dated") or 0)
+    if not dated:
+        return (f"{rows} row(s) resolved but NOT ONE carried a readable 'Sent ... ago' stamp — "
+                f"production ages nothing and withdraws nothing. `sample_text` is what the next "
+                f"parser pass should be written from")
+    stale = int(reading.get("stale_at_threshold") or 0)
+    return (f"{rows} row(s) resolved, {dated} dated, {stale} at/over the {reading.get('threshold_days')}"
+            f"-day threshold — production would attempt that many (bounded by the daily budget)")
+
+
+def probe_sent_invites(driver, threshold_days: Optional[int] = None,
+                       sleep: Callable[[float], None] = time.sleep) -> dict:
+    """#969: open the sent-invitation manager and report which pending rows resolve, what their
+    "Sent ... ago" stamps parse to, and how many the threshold would call stale.
+
+    STRICTLY read-only — it resolves rows and describes them. **Nothing is withdrawn by running
+    this**, which is the point: withdrawing is one-way (LinkedIn blocks re-inviting the same person
+    for weeks), so the clicker must not be switched on before a live run has shown that these
+    anchors find the real rows and that their dates parse."""
+    from cqc_lem.utilities.linkedin.stale_invites import (SENT_INVITATIONS_URL, _load_more_rows,
+                                                          read_pending_invites, stale_after_days)
+
+    threshold = int(threshold_days if threshold_days is not None else stale_after_days())
+    driver.get(SENT_INVITATIONS_URL)
+    sleep(4)
+    expansions = _load_more_rows(driver, sleep=sleep)
+    invites = read_pending_invites(driver)
+    dated = [i for i in invites if i["age_days"] is not None]
+    reading = {"url": getattr(driver, "current_url", SENT_INVITATIONS_URL),
+               "threshold_days": threshold,
+               "expansions": expansions,
+               "rows_seen": len(invites),
+               "dated": len(dated),
+               "unreadable": len(invites) - len(dated),
+               "stale_at_threshold": len([i for i in dated if i["age_days"] >= threshold]),
+               "oldest_days": max((i["age_days"] for i in dated), default=None),
+               # The rows as production read them, plus the raw card text a re-grounding pass would
+               # rewrite the parser from. A bare "not found" is not re-groundable.
+               "rows": [{"name": i["name"], "profile_url": i["profile_url"],
+                         "age_days": i["age_days"],
+                         "control": element_evidence(i["control"]) if i["control"] is not None
+                         else None}
+                        for i in invites[:10]],
+               "sample_text": [i["text"][:240] for i in invites[:3]],
+               "visible_controls": visible_button_labels(driver)}
+    reading["verdict"] = sent_invites_verdict(reading)
+    return reading
+
+
 def probe_message_thread(driver, profile_url: str, person_name: str = "", self_name: str = "",
                          sleep=time.sleep) -> dict:
     """#731: walk the message-thread resolution ladder against a REAL profile and report which route
@@ -1105,6 +1166,13 @@ def main(argv: Optional[list] = None) -> int:
                              "notification feed and report what the appreciation-DM triggers would "
                              "make of them (#968). Read-only: nothing is messaged and no ledger row "
                              "is claimed.")
+    parser.add_argument("--sent-invites", action="store_true",
+                        help="open Manage invitations -> Sent and report which pending rows resolve "
+                             "and how their 'Sent ... ago' stamps parse (#969). Read-only: nothing "
+                             "is withdrawn.")
+    parser.add_argument("--sent-invite-days", type=int, default=None,
+                        help="threshold to grade --sent-invites against (defaults to "
+                             "STALE_INVITE_AGE_DAYS)")
     parser.add_argument("--feed-sort", action="store_true",
                         help="report whether the home feed's 'Sort by -> Recent' control resolves "
                              "and whether the flip sticks (#817)")
@@ -1123,10 +1191,10 @@ def main(argv: Optional[list] = None) -> int:
 
     if not (args.post_url or args.probe_composer or args.comment_outcome_url or args.dm_thread_url
             or args.article_editor_url or args.feed_sort or args.reaction_probe
-            or args.roster_follow or args.appreciation_sources):
+            or args.roster_follow or args.appreciation_sources or args.sent_invites):
         parser.error("nothing to probe — pass --post-url, --comment-outcome-url, --dm-thread-url, "
                      "--article-editor-url, --feed-sort, --reaction-probe, --roster-follow, "
-                     "--appreciation-sources and/or --probe-composer")
+                     "--appreciation-sources, --sent-invites and/or --probe-composer")
 
     from cqc_lem.app.run_automation import get_current_profile
     from cqc_lem.utilities.selenium_util import quit_gracefully
@@ -1159,6 +1227,8 @@ def main(argv: Optional[list] = None) -> int:
         if args.appreciation_sources:
             report["appreciation_sources"] = probe_appreciation_sources(
                 driver, args.user_id, str(getattr(profile, "profile_url", "") or ""))
+        if args.sent_invites:
+            report["sent_invites"] = probe_sent_invites(driver, args.sent_invite_days)
         if args.probe_composer:
             report["composer"] = probe_composer(driver)
         if args.article_editor_url:

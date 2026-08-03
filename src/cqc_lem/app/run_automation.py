@@ -90,6 +90,9 @@ from cqc_lem.utilities.linkedin.message_thread import ThreadState, name_matches,
 from cqc_lem.utilities.linkedin.poster import share_on_linkedin, share_carousel_on_linkedin, \
     share_document_on_linkedin, comment_on_linkedin_post, object_urn_from_post_url
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
+from cqc_lem.utilities.linkedin.stale_invites import plan_withdrawals, withdraw_stale_invites, \
+    WITHDRAW_STATUS_DISABLED, WITHDRAW_STATUS_FAILED, WITHDRAW_STATUS_PAUSED, \
+    WITHDRAW_STATUS_SESSION_FAILED
 from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited, _redis_client, \
     acquire_run_lock, release_run_lock, commenting_hold_reason, is_commenting_held, \
     is_automation_paused, automation_pause_reason, rate_limit_cooldown_remaining
@@ -97,7 +100,7 @@ from cqc_lem.utilities.linkedin_formatter import normalize_public_text
 from cqc_lem.utilities.logger import myprint, log_error, log_info, log_warning, log_debug
 from cqc_lem.utilities.observability import track_post_outcome, track_audience_snapshot, \
     track_comment_outcome, track_golden_hour_report, track_company_page_invite_run, \
-    track_catchup_run, track_feed_scan, attribute_llm_cost, llm_attribution, \
+    track_catchup_run, track_feed_scan, track_stale_invite_run, attribute_llm_cost, llm_attribution, \
     FEATURE_COMMENT, FEATURE_CONTENT, FEATURE_DM
 from cqc_lem.utilities.env_constants import INLINE_REACTIONS_ENABLED, MAX_WAIT_RETRY
 from cqc_lem.utilities.selenium_util import click_element_wait_retry, \
@@ -6149,15 +6152,66 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True}, reject_on_worker_lost=True,
                   rate_limit='2/m', queue='se_outreach')
 def clean_stale_invites(self, user_id: int):
-    """Cleans up stale invites that the user has sent. Not yet implemented — no-op stub.
+    """Withdraw this user's pending connection invites older than the threshold (issue #969).
 
-    Emits an explicit log line and returns a descriptive marker so operators can tell an
-    intentional stub run apart from a real cleanup run in logs/metrics."""
+    The budget is decided BEFORE a browser session is opened: the lane is opt-in and OFF by default,
+    and even switched on most days are paced to zero — a Chrome slot spent discovering that is a slot
+    an engagement lane needed. Returns the run report so a Flower run and the `stale_invite_run`
+    event tell the same story."""
+    task_name = "clean_stale_invites"
 
-    log_info("clean_stale_invites is a no-op stub (not yet implemented) — skipping",
-             user_id=user_id, task_name="clean_stale_invites", action_type="invite")
+    plan = plan_withdrawals(user_id)
+    if plan["allowance"] <= 0:
+        report = {"status": plan["status"], "cap": plan["cap"],
+                  "withdrawn_today": plan["withdrawn_today"],
+                  "threshold_days": plan["threshold_days"]}
+        # DEBUG for the switched-off case: it is the DEFAULT, it repeats for every active user every
+        # night, and it is working behaviour — an INFO line here is one row per user per day saying
+        # nothing happened on purpose.
+        emit = log_debug if plan["status"] == WITHDRAW_STATUS_DISABLED else log_info
+        emit(f"Stale-invite withdrawal skipped — {plan['status']} "
+             f"(cap {plan['cap']}, withdrawn today {plan['withdrawn_today']})",
+             user_id=user_id, task_name=task_name, action_type="invite")
+        track_stale_invite_run(user_id, report)
+        return report
 
-    return {"status": "not_implemented", "cleaned": 0, "user_id": user_id}
+    # Session acquisition is INSIDE the reporting path: "the browser never came up" and "LinkedIn's
+    # markup moved" need different fixes, and an escaping exception would emit nothing at all —
+    # indistinguishable from a day paced down to zero.
+    try:
+        driver, wait = get_driver_wait_pair(session_name='Withdraw Stale Invites', user_id=user_id)
+    except Exception as e:
+        log_error("Could not start a browser session to withdraw stale invites", exc=e,
+                  user_id=user_id, task_name=task_name, action_type="invite")
+        report = {"status": WITHDRAW_STATUS_SESSION_FAILED, "cap": plan["cap"],
+                  "withdrawn_today": plan["withdrawn_today"],
+                  "threshold_days": plan["threshold_days"]}
+        track_stale_invite_run(user_id, report)
+        return report
+
+    try:
+        user_email, user_password = get_user_password_pair_by_id(user_id)
+        login_to_linkedin(driver, wait, user_email, user_password)
+        report = withdraw_stale_invites(driver, wait, user_id, plan=plan)
+    except LinkedInRateLimited as e:
+        # The breaker opened between the plan and the page. Not a failure of this lane — defer.
+        myprint(f"clean_stale_invites deferred (throttled): {e}")
+        report = {"status": WITHDRAW_STATUS_PAUSED, "cap": plan["cap"],
+                  "withdrawn_today": plan["withdrawn_today"],
+                  "threshold_days": plan["threshold_days"]}
+    except Exception as e:
+        log_error("Error while withdrawing stale invites", exc=e, user_id=user_id,
+                  task_name=task_name, action_type="invite")
+        report = {"status": WITHDRAW_STATUS_FAILED, "cap": plan["cap"],
+                  "withdrawn_today": plan["withdrawn_today"],
+                  "threshold_days": plan["threshold_days"]}
+    finally:
+        quit_gracefully(driver)
+
+    track_stale_invite_run(user_id, report)
+    log_info(f"Withdrew {report.get('withdrawn') or 0} stale invite(s) ({report.get('status')})",
+             user_id=user_id, task_name=task_name, action_type="invite")
+    return report
 
 
 def send_dm_now(user_id: int, profile_url: str, message: str) -> bool:

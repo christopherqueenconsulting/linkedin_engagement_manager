@@ -426,6 +426,12 @@ CONNECTION_REQUEST_SENT_MESSAGE = "Connection Request Sent Successfully"
 # counting rows. Keep the "<message>: <n>" shape: that suffix is what the SUM parses.
 COMPANY_PAGE_INVITE_SENT_MESSAGE = "Company page invites sent"
 
+# Marker message logged for every stale pending invite this account WITHDREW (issue #969). Logged on
+# DISPATCH — result SUCCESS when the row was verifiably gone afterwards, FAILURE when it was not —
+# and `count_invite_withdrawals_today` counts BOTH, because the click already reached LinkedIn and a
+# lane whose verification broke must not be free to click every row on the page.
+STALE_INVITE_WITHDRAWN_MESSAGE = "Stale connection invite withdrawn"
+
 # Why a proactive invite was abandoned before it was attempted (issue #623). Stored as the request's
 # failure_reason so the Connections review UI explains a FAILED row instead of just colouring it red.
 ALREADY_CONNECTED_MESSAGE = "Already connected (1st-degree) — no invite to send"
@@ -5926,6 +5932,31 @@ def count_invites_sent_today(user_id: int) -> int:
         return int(r[0]) if r else 0
     except mysql.connector.Error as err:
         myprint(f"Could not count invites for user_id {user_id} | Error: {err}")
+        return 0
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def count_invite_withdrawals_today(user_id: int) -> int:
+    """Stale pending invites this user's account withdrew today (issue #969) — the durable half of
+    the daily cap.
+
+    Counts BOTH result values on purpose: the row is written when the withdrawal is DISPATCHED, and
+    an unverified one still cost LinkedIn an action. Reading it back out of the immutable logs (not
+    Redis) is what keeps a second run the same day, or a worker restart, from re-spending the day's
+    allowance."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM logs WHERE user_id=%s AND action_type=%s AND message=%s "
+            "AND created_at >= CURDATE()",
+            (user_id, LogActionType.ENGAGED.value, STALE_INVITE_WITHDRAWN_MESSAGE))
+        r = cursor.fetchone()
+        return max(0, int(r[0])) if r and r[0] is not None else 0
+    except (mysql.connector.Error, TypeError, ValueError) as err:
+        myprint(f"Could not count invite withdrawals for user_id {user_id} | Error: {err}")
         return 0
     finally:
         cursor.close()
