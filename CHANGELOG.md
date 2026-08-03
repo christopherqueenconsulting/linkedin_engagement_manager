@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.126.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.126.0...v0.126.1) (2026-08-03)
+
+
+### Bug Fixes
+
+* **automation:** catch-up scan finds zero cards — ground card locators on the live SDUI DOM ([#964](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/964)) ([e5db1f1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e5db1f181d5111bb66d3ee42efc971234d78e7b1))
+* **ui:** label the Engagement Roster per-week field (closes [#956](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/956)) ([#960](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/960)) ([8ef5379](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8ef53790b733dcb27e078585feb81bd5b971dffe))
+
 ## [0.126.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.125.1...v0.126.0) (2026-08-03)
 
 
