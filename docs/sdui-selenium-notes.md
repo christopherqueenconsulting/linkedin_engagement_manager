@@ -8,6 +8,20 @@ line.
 The old `urn:`, `feed-shared-*`, and `comments-comment-*` DOM anchors no longer exist. Prefer
 `data-testid` / `aria-label` selectors via `find_first`/`click_first`.
 
+## The Catch-up feed is full SDUI — no `data-view-name`, no `<li>` cards
+
+Live-grounded 2026-08-03 (`/mynetwork/catch-up/all/`, user 1): each card is a
+`div[role='listitem']` (componentkey UUID) inside the LazyColumn
+(`div[data-testid='lazy-column'][role='list']`) under
+`div[data-sdui-screen='com.linkedin.sdui.flagshipnav.mynetwork.CatchUpAll']`. The page renders
+**zero** `data-view-name` attributes and no `<li>` around cards, so the original
+`_CATCHUP_CARD_LOCATORS` chain (data-view-name first, `main li` fallbacks) matched nothing on a
+feed visibly showing ten moments — the scan reported `no_moments` daily while working "correctly".
+Grounded chain now leads with `div[data-sdui-screen*='CatchUp'] div[role='listitem']`. Ads and
+prompts also render as listitems; the profile-link + classifier funnel filters them. The on-card
+"Say congrats" suggestion chips carry no stable anchors either — when the harvest misses, drafting
+falls back to `_CATCHUP_DEFAULT_CONGRATS`, which is working as designed.
+
 ## The comment composer has no `<form>`
 
 "Submit" means clicking the Comment/Post button next to the composer (`_composer_submitted`).

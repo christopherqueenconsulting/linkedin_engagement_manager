@@ -6420,10 +6420,16 @@ CATCHUP_STATUS_DM_CAPPED = "dm_capped"              # the ACCOUNT-wide DM cap, n
 CATCHUP_STATUS_NO_MESSAGE = "no_message"            # approved with an empty body
 CATCHUP_STATUS_NOT_SENDABLE = "not_sendable"        # row missing or no longer approved/sending
 
-# Ordered fallback chain for the catch-up cards. LinkedIn's SDUI ships hashed classes, so we prefer
-# data-view-name, then the semantic list, then any main-content list item that links to a profile.
-# NOTE: needs a supervised live-grounding pass on a real account before broad enablement (see #478).
+# Ordered fallback chain for the catch-up cards. Live-grounded 2026-08-03 on a real session: the
+# surface is full SDUI — every card is a div[role='listitem'] (with a componentkey UUID) inside the
+# LazyColumn under div[data-sdui-screen='com.linkedin.sdui.flagshipnav.mynetwork.CatchUpAll'], and
+# the page carries NO data-view-name attributes and NO <li> elements around cards at all — which is
+# why the pre-grounding chain below it matched zero cards on a feed showing ten. The old anchors
+# stay as fallbacks in case LinkedIn re-ships that vocabulary. Non-person rows (ads, prompts) also
+# render as listitems; the scraper's profile-link + classifier funnel filters them.
 _CATCHUP_CARD_LOCATORS = [
+    (By.CSS_SELECTOR, "div[data-sdui-screen*='CatchUp'] div[role='listitem']"),
+    (By.CSS_SELECTOR, "main div[data-testid='lazy-column'] div[role='listitem']"),
     (By.CSS_SELECTOR, "div[data-view-name='catch-up-card']"),
     (By.CSS_SELECTOR, "li[data-view-name='catch-up-card']"),
     (By.CSS_SELECTOR, "section[data-view-name*='catch-up'] li"),
