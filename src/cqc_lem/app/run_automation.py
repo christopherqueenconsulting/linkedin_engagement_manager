@@ -1401,39 +1401,67 @@ def _roster_activity_url(profile_url: str) -> str:
 # roster pass already opened — there is no dedicated follow session and no extra navigation.
 #
 # The control is resolved by LABEL and by HREF only (never a class name — docs/sdui-selenium-notes),
-# and it is SCOPED to the profile's own top card, because "Follow" affordances also render inside
+# and every accepted label must NAME the page owner, because "Follow" affordances also render inside
 # feed cards, reshare headers and recommendation modules. Clicking one of those follows the wrong
 # account entirely, which is a mistake no amount of retrying undoes.
 #
-# Route A anchors on the target's own /in/<slug> link and takes the nearest ancestor that also holds
-# a follow control. Route B is positional: above the first post on the page. A miss on both returns
-# 'unknown' and NOTHING is clicked — fail closed, exactly like the comment affordance above.
+# Why names and not geometry: the live probe run for PR #963 showed both prior scoping ideas fail on
+# the real page. The target's own /in/<slug> anchor also renders inside OTHER people's cards
+# ("<target> reposted this" attribution), so an unbounded ancestor walk resolved "Follow Greg Hart"
+# on Andrew Ng's activity page; and the first feed card's header (which carries its author's Follow)
+# renders geometrically ABOVE the top-card Follow, so a "top card is above the first post" bound
+# excludes the genuine control. What IS stable: LinkedIn writes the page <title> ("Activity |
+# <Name> | LinkedIn") and every follow control's aria-label ("Follow <Name>") from the same display
+# name — so a control naming the owner follows the intended account wherever it sits, and a label
+# that names anyone else (or nobody) is never clickable. Route A still prefers the control nearest
+# the target's own /in/<slug> anchor (exact path-segment match — a substring also hits
+# /in/<slug>-2b41, a different person); Route B scans the whole page for an owner-named control. A
+# miss on both returns 'unknown' and NOTHING is clicked — fail closed, exactly like the comment
+# affordance above.
 _FOLLOW_CONTROL_JS = r"""
-const SLUG = (arguments[0] || '').toLowerCase(), POST_SEL = arguments[1];
+const SLUG = (arguments[0] || '').toLowerCase(), NAME = (arguments[1] || '')
+  .replace(/\s+/g, ' ').trim().toLowerCase();
 const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
-// aria-label wins over text: LinkedIn labels the top-card control "Follow <Name>" while the visible
-// text is just "Follow", and the name is what proves we are on the right person's card.
+// aria-label wins over text: LinkedIn labels the control "Follow <Name>" while the visible text is
+// just "Follow", and the name is what proves the control belongs to the right person. A bare,
+// nameless label is NEVER accepted — it could belong to anyone on the page.
 const label = (b) => norm(b.getAttribute('aria-label')) || norm(b.textContent);
-const FOLLOW = /^follow(\s|$)/;
-const FOLLOWING = /^(following|unfollow)(\s|$)/;
+const named = (text, verb) => {
+  if (!text.startsWith(verb + ' ')) return false;
+  const rest = text.slice(verb.length + 1).trim();
+  return rest === NAME || rest.startsWith(NAME + ' ');
+};
+const readState = (text) => {
+  if (named(text, 'following') || named(text, 'unfollow')) return 'following';
+  if (named(text, 'follow')) return 'not_following';
+  return null;
+};
 const shown = (el) => { const r = el.getBoundingClientRect(); return !!(r.width && r.height); };
-const top = (el) => el.getBoundingClientRect().top + window.scrollY;
 const controls = (root) => {
   let following = null, follow = null;
   for (const b of root.querySelectorAll("button, [role='button']")) {
     if (!shown(b)) continue;
-    const text = label(b);
-    if (!following && FOLLOWING.test(text)) following = b;
-    else if (!follow && FOLLOW.test(text)) follow = b;
+    const state = readState(label(b));
+    if (!following && state === 'following') following = b;
+    else if (!follow && state === 'not_following') follow = b;
   }
-  // 'Following' wins: a card showing it has already been followed, whatever else is on the page.
+  // 'Following' wins: a control showing it means the account is already followed, whatever else is
+  // on the page.
   return following ? ['following', following] : (follow ? ['not_following', follow] : null);
 };
+// The /in/<slug> path segment, exactly — a substring match also hits a different person's slug that
+// merely starts the same.
+const slugOf = (href) => {
+  const m = (href || '').toLowerCase().match(/\/in\/([^\/?#]+)/);
+  return m ? m[1] : '';
+};
 
-// Route A — the target's own profile anchor, walked up to the card that carries its follow control.
+if (!NAME) return ['unknown', null];  // no owner name = nothing to anchor on = no safe scan
+
+// Route A — the owner-named control nearest the target's own profile anchor.
 if (SLUG) {
   for (const a of document.querySelectorAll("a[href*='/in/']")) {
-    if (!(a.getAttribute('href') || '').toLowerCase().includes('/in/' + SLUG)) continue;
+    if (slugOf(a.getAttribute('href')) !== SLUG) continue;
     let el = a, d = 0;
     while (el && d < 8) {
       const hit = controls(el);
@@ -1443,21 +1471,8 @@ if (SLUG) {
   }
 }
 
-// Route B — positional: the top card is above every post on the page.
-let limit = Infinity;
-for (const box of document.querySelectorAll(POST_SEL)) {
-  if (shown(box)) limit = Math.min(limit, top(box));
-}
-if (limit === Infinity) return ['unknown', null];  // no posts = no bound = no safe scan
-let following = null, follow = null;
-for (const b of document.querySelectorAll("button, [role='button']")) {
-  if (!shown(b) || top(b) >= limit) continue;
-  const text = label(b);
-  if (!following && FOLLOWING.test(text)) following = b;
-  else if (!follow && FOLLOW.test(text)) follow = b;
-}
-if (following) return ['following', following];
-return follow ? ['not_following', follow] : ['unknown', null];
+// Route B — any owner-named control on the page.
+return controls(document) || ['unknown', null];
 """
 
 FOLLOW_STATE_FOLLOWING = "following"
@@ -1465,15 +1480,39 @@ FOLLOW_STATE_NOT_FOLLOWING = "not_following"
 FOLLOW_STATE_UNKNOWN = "unknown"
 
 
-def _resolve_follow_control(driver, profile_url: str) -> tuple:
-    """`(state, element)` for a roster target's top-card follow control on the page already open.
+def _activity_page_owner_name(driver) -> str:
+    """The page owner's display name, read from the activity page's own <title>
+    ("(8) Activity | Arvid Kahl | LinkedIn"). LinkedIn writes the title and the follow controls'
+    aria-labels from the same display name, so this is the one spelling guaranteed to match — a
+    roster row's stored name is only a fallback, because users type those freehand."""
+    try:
+        parts = [p.strip() for p in str(driver.title or "").split("|")]
+    except Exception:
+        return ""
+    if len(parts) >= 2 and parts[-1].lower() == "linkedin" and parts[-2]:
+        return parts[-2]
+    return ""
+
+
+def _resolve_follow_control(driver, profile_url: str, name: str = "") -> tuple:
+    """`(state, element)` for a roster target's follow control on the activity page already open.
+    The control must carry the page owner's name in its label — see `_FOLLOW_CONTROL_JS` for why
+    that, and not top-card geometry, is the scoping rule.
 
     `FOLLOW_STATE_UNKNOWN` means we could not read it, NOT that there is nothing to follow — the
     caller must treat it as "do nothing", never as "click the first Follow you can find"."""
+    owner = _activity_page_owner_name(driver) or str(name or "").strip()
+    if not owner:
+        # Selector-rot breadcrumb (not a warning — plenty of pages legitimately resolve nothing):
+        # a run that keeps landing here means the <title> shape rotated AND no roster name was given.
+        log_debug("Follow control unresolvable — no owner name to anchor the label match on",
+                  action_type="follow", task_name="_resolve_follow_control")
+        return FOLLOW_STATE_UNKNOWN, None
     try:
-        result = driver.execute_script(_FOLLOW_CONTROL_JS, _profile_slug(profile_url),
-                                       _FEED_POST_TEXT_SEL)
-    except Exception:
+        result = driver.execute_script(_FOLLOW_CONTROL_JS, _profile_slug(profile_url), owner)
+    except Exception as e:
+        log_debug(f"Follow control resolution JS failed ({type(e).__name__}: {e})",
+                  action_type="follow", task_name="_resolve_follow_control")
         return FOLLOW_STATE_UNKNOWN, None
     if not isinstance(result, (list, tuple)) or len(result) != 2:
         return FOLLOW_STATE_UNKNOWN, None
@@ -1536,7 +1575,7 @@ def auto_follow_roster_target(driver, user_id: int, target: dict) -> str:
         log_info(f"Roster auto-follow skipped — {hold}", user_id=user_id, action_type="follow",
                  task_name="auto_follow_roster_target")
         return ""
-    state, control = _resolve_follow_control(driver, profile_url)
+    state, control = _resolve_follow_control(driver, profile_url, name=str(target.get("name") or ""))
     if state == FOLLOW_STATE_FOLLOWING:
         set_target_follow_status(user_id, profile_url, "following")
         return "already_following"
@@ -1560,7 +1599,7 @@ def auto_follow_roster_target(driver, user_id: int, target: dict) -> str:
                     task_name="auto_follow_roster_target")
         record_target_follow_failure(user_id, profile_url)
         return "failed"
-    after, _ = _resolve_follow_control(driver, profile_url)
+    after, _ = _resolve_follow_control(driver, profile_url, name=str(target.get("name") or ""))
     if after != FOLLOW_STATE_FOLLOWING:
         # The click landed somewhere but the button never flipped. Recording 'following' here is the
         # one failure that never self-corrects, so an unverified flip counts as a failed attempt.

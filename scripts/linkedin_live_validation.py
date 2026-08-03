@@ -882,8 +882,8 @@ def roster_follow_verdict(reading: dict) -> str:
     """What one activity-page reading proves about the #962 follow lane.
 
     'unknown' is the finding that matters: production treats it as "do nothing", so a run that keeps
-    reporting unknown on accounts you know you do not follow means the top-card control has rotated
-    and the lane has gone quiet — not that the roster is fully followed."""
+    reporting unknown on accounts you know you do not follow means the owner-named control has
+    rotated and the lane has gone quiet — not that the roster is fully followed."""
     reading = dict(reading or {})
     state = reading.get("state")
     if state == "following":
@@ -891,10 +891,14 @@ def roster_follow_verdict(reading: dict) -> str:
     if state == "not_following":
         label = (reading.get("control") or {}).get("aria_label") or (reading.get("control") or {}).get("text")
         return f"Follow control resolved ({label or '?'}) — a click would be attempted"
+    if not reading.get("owner_name"):
+        return ("page owner's name unreadable from the <title>, so there is nothing to anchor the "
+                "label match on — production returns unknown and clicks nothing")
     if not reading.get("posts_on_page"):
-        return ("no posts on the page, so the positional scope has no bound — production returns "
-                "unknown and clicks nothing")
-    return "no follow control resolved — production returns unknown and clicks nothing"
+        return ("no posts rendered — the page may not have loaded — production returns unknown "
+                "and clicks nothing")
+    return ("no control naming the page owner resolved — production returns unknown and clicks "
+            "nothing")
 
 
 def probe_roster_follow(driver, profile_url: str, sleep=time.sleep) -> dict:
@@ -904,8 +908,8 @@ def probe_roster_follow(driver, profile_url: str, sleep=time.sleep) -> dict:
     STRICTLY read-only — it resolves the control and describes it. Nothing is clicked, so no account
     is followed by running this. That is the point: the clicker must not ship before a live run has
     shown that this resolver finds the right button on the real page."""
-    from cqc_lem.app.run_automation import (_FEED_POST_TEXT_SEL, _resolve_follow_control,
-                                            _roster_activity_url)
+    from cqc_lem.app.run_automation import (_FEED_POST_TEXT_SEL, _activity_page_owner_name,
+                                            _resolve_follow_control, _roster_activity_url)
 
     url = _roster_activity_url(profile_url)
     driver.get(url)
@@ -921,6 +925,9 @@ def probe_roster_follow(driver, profile_url: str, sleep=time.sleep) -> dict:
                "activity_url": url,
                "url": getattr(driver, "current_url", url),
                "state": state,
+               # The name the label match anchored on — the resolver only accepts controls that
+               # carry it, so a wrong or empty name here explains an unknown above.
+               "owner_name": _activity_page_owner_name(driver),
                "control": element_evidence(control) if control is not None else None,
                "posts_on_page": posts,
                # The live labels the next locator pass would be written from — a bare "not found"

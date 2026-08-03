@@ -220,11 +220,18 @@ invisible: the user could never learn that following or connecting would unlock 
   Every hard gate applies too (`_follow_hold_reason`: `is_automation_paused` — which the #629
   suppression trip rides — and the 429 breaker), re-read per follow because a breaker can trip
   mid-run.
-- **The control is scoped to the profile's own top card.** LinkedIn renders "Follow" inside feed
-  cards and recommendation modules; clicking one of those follows the wrong account, which no retry
-  undoes. `_resolve_follow_control` resolves by href and label only (never a class name) via two
-  routes — the target's own `/in/<slug>` anchor walked up to the card carrying the control, then a
-  positional scan above the first post. Both missing returns `unknown` and clicks **nothing**.
+- **The control must NAME the page owner.** LinkedIn renders "Follow" inside feed cards and
+  recommendation modules; clicking one of those follows the wrong account, which no retry undoes.
+  The live probe for PR #963 proved neither anchor-walking nor geometry scopes this safely: the
+  target's own `/in/<slug>` anchor also renders inside OTHER people's cards (an unbounded walk
+  resolved "Follow Greg Hart" on Andrew Ng's page), and the first card's header Follow sits
+  geometrically ABOVE the top-card Follow. What is stable is the display name: the page `<title>`
+  ("Activity | \<Name\> | LinkedIn", read by `_activity_page_owner_name`, roster `name` as
+  fallback) and every follow control's aria-label ("Follow \<Name\>") are written from the same
+  string, so `_resolve_follow_control` accepts only owner-named labels (never a class name, never a
+  bare nameless "Follow") — Route A prefers the control nearest the target's own exact-`/in/<slug>`
+  anchor, Route B takes any owner-named control on the page. No owner name, or no owner-named
+  control, returns `unknown` and clicks **nothing**.
 - **`following` is written only after the control confirms it.** An unverified flip counts as a
   failed attempt, because `following` is TERMINAL — recording it on a click that never registered is
   the one failure that never self-corrects. Two failures → `follow_failed`, also terminal, also

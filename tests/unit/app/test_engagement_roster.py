@@ -559,3 +559,83 @@ class TestFollowHoldReason:
         with patch(f"{_RA}.is_automation_paused", return_value=False), \
              patch(f"{_RA}.rate_limit_cooldown_remaining", return_value=0):
             assert ra._follow_hold_reason(1) == ""
+
+
+class TestResolveFollowControl:
+    """The live probe for PR #963 showed the resolver MUST anchor on the page owner's name — the
+    only stable discriminator between the top-card control and a feed card author's Follow."""
+
+    _URL = "https://www.linkedin.com/in/arvidkahl/"
+
+    def _driver(self, title="(8) Activity | Arvid Kahl | LinkedIn", result=None, raises=False):
+        driver = MagicMock()
+        driver.title = title
+        if raises:
+            driver.execute_script.side_effect = RuntimeError("boom")
+        else:
+            driver.execute_script.return_value = result
+        return driver
+
+    def test_owner_name_comes_from_the_page_title(self):
+        from cqc_lem.app import run_automation as ra
+        control = MagicMock()
+        driver = self._driver(result=["not_following", control])
+        assert ra._resolve_follow_control(driver, self._URL) == ("not_following", control)
+        # slug and the title-derived name are what the JS anchors on
+        assert driver.execute_script.call_args[0][1] == "arvidkahl"
+        assert driver.execute_script.call_args[0][2] == "Arvid Kahl"
+
+    def test_title_beats_the_freehand_roster_name(self):
+        # The title and the aria-labels are written from the same display name; a roster row's
+        # stored name is user-typed and may not match, so it is only the fallback.
+        from cqc_lem.app import run_automation as ra
+        driver = self._driver(result=["following", MagicMock()])
+        ra._resolve_follow_control(driver, self._URL, name="Arvid Kahl Verified Profile 1st")
+        assert driver.execute_script.call_args[0][2] == "Arvid Kahl"
+
+    def test_roster_name_is_the_fallback_when_the_title_is_unreadable(self):
+        from cqc_lem.app import run_automation as ra
+        driver = self._driver(title="LinkedIn", result=["following", MagicMock()])
+        ra._resolve_follow_control(driver, self._URL, name="Arvid Kahl")
+        assert driver.execute_script.call_args[0][2] == "Arvid Kahl"
+
+    def test_no_owner_name_is_unknown_and_never_scans(self):
+        # No name = nothing to anchor the label match on = fail closed BEFORE touching the page.
+        from cqc_lem.app import run_automation as ra
+        driver = self._driver(title="LinkedIn")
+        assert ra._resolve_follow_control(driver, self._URL) == ("unknown", None)
+        driver.execute_script.assert_not_called()
+
+    def test_a_js_error_is_unknown(self):
+        from cqc_lem.app import run_automation as ra
+        assert ra._resolve_follow_control(self._driver(raises=True), self._URL) == ("unknown", None)
+
+    def test_a_malformed_result_is_unknown(self):
+        from cqc_lem.app import run_automation as ra
+        assert ra._resolve_follow_control(self._driver(result="following"), self._URL) == ("unknown", None)
+
+    def test_an_unrecognized_state_is_unknown(self):
+        from cqc_lem.app import run_automation as ra
+        driver = self._driver(result=["followed?", MagicMock()])
+        assert ra._resolve_follow_control(driver, self._URL) == ("unknown", None)
+
+
+class TestActivityPageOwnerName:
+    def test_reads_the_middle_segment_of_the_title(self):
+        from cqc_lem.app import run_automation as ra
+        driver = MagicMock()
+        driver.title = "(8) Activity | Arvid Kahl | LinkedIn"
+        assert ra._activity_page_owner_name(driver) == "Arvid Kahl"
+
+    def test_a_rotated_title_shape_reads_as_no_name(self):
+        from cqc_lem.app import run_automation as ra
+        for title in ("LinkedIn", "", "Arvid Kahl", "Activity |  | LinkedIn"):
+            driver = MagicMock()
+            driver.title = title
+            assert ra._activity_page_owner_name(driver) == ""
+
+    def test_an_unreadable_title_reads_as_no_name(self):
+        from cqc_lem.app import run_automation as ra
+        driver = MagicMock()
+        type(driver).title = property(lambda self: (_ for _ in ()).throw(RuntimeError("stale")))
+        assert ra._activity_page_owner_name(driver) == ""
