@@ -85,6 +85,12 @@ Two things follow for anyone writing a call site here:
    readings are identical in the DOM — so it moved to the `--connect-dialog` probe, which reports the
    affordance without grading it (`docs/sdui-probe-coverage.md`). **A miss you cannot attribute
    belongs in a probe, not in a warning.**
+   A **paging loop** is the same test at its most obvious: `_reply_to_comments_on_open_post` clicks
+   'Load more comments' until the control stops resolving, so the miss IS the loop's exit condition
+   and fires on EVERY sweep — a post whose comments fit on one page never renders the control, and
+   one that does stops rendering it once the last page is in. It logged `Selector miss: Load more
+   comments` at WARNING and filed a defect for the loop terminating (issue #1041). **Never warn on
+   the condition you loop until.**
    The rule reads sideways for a **state-setter**: doing what you were asked is not a degraded path,
    however serious the state is. `pause_automation` warned every time it stored the global Selenium
    kill-switch, and maintenance mode sets one on EVERY release, so a routine deploy filed

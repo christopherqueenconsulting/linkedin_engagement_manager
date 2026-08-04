@@ -312,6 +312,39 @@ class TestReplyToCommentsOnOpenPost:
         assert result == {"status": "ok", "summary": "Replied to 1 comments",
                           "comments_found": 1, "replies_sent": 1}
 
+    def test_load_more_miss_never_warns(self):
+        """Issue #1041: the miss IS the expansion loop's exit condition — every sweep ends on one,
+        so warning would escalate to a grouped $exception for working behaviour."""
+        from cqc_lem.app.run_automation import _reply_to_comments_on_open_post
+        driver = MagicMock(); driver.current_url = "x"
+        with patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
+             patch(f"{_RA}.get_post_content", return_value="post body"), \
+             patch(f"{_RA}.click_first", return_value=None) as click, \
+             patch(f"{_RA}._comment_items_from_thread", return_value=[]), \
+             patch(f"{_RA}.get_lead_magnet_settings", return_value={"enabled": False}), \
+             patch(f"{_RA}.get_engagement_preferences", return_value={}), \
+             patch(f"{_RA}.log_warning") as warn:
+            _reply_to_comments_on_open_post(driver, MagicMock(), 1, 9, self._profile(), "synth")
+        click.assert_called_once()                       # the miss breaks the loop, no re-clicking
+        assert click.call_args.args[3] == "Load more comments"
+        assert click.call_args.kwargs["required"] is False
+        assert click.call_args.kwargs["warn_on_miss"] is False
+        warn.assert_not_called()
+
+    def test_load_more_expands_until_the_control_is_gone(self):
+        """Silencing the miss must not silence the expansion: a rendered control still gets clicked
+        until LinkedIn stops rendering it."""
+        from cqc_lem.app.run_automation import _reply_to_comments_on_open_post
+        driver = MagicMock(); driver.current_url = "x"
+        with patch(f"{_RA}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
+             patch(f"{_RA}.get_post_content", return_value="post body"), \
+             patch(f"{_RA}.click_first", side_effect=[MagicMock(), MagicMock(), None]) as click, \
+             patch(f"{_RA}._comment_items_from_thread", return_value=[]), \
+             patch(f"{_RA}.get_lead_magnet_settings", return_value={"enabled": False}), \
+             patch(f"{_RA}.get_engagement_preferences", return_value={}):
+            _reply_to_comments_on_open_post(driver, MagicMock(), 1, 9, self._profile(), "synth")
+        assert click.call_count == 3
+
     def test_skips_already_replied(self):
         from cqc_lem.app.run_automation import _reply_to_comments_on_open_post
         driver = MagicMock(); driver.current_url = "x"
