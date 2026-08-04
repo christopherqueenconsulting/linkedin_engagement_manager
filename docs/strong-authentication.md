@@ -331,9 +331,10 @@ attacker's own.
 - `user_recovery_codes` — argon2id hashes; used rows are kept so the page can say "3 of 10 left".
 - `auth_challenges` — ceremonies in flight. `attempts` is the durable guessing bound, carried across
   handles so it bounds the account and not just one pending login.
-- `sessions.last_verified_at`, `sessions.scope` (`full` / `extension` / `recovery` / `enroll`).
-  `scope` is a `VARCHAR(32)`, so 2c.1 added `enroll` with **no migration** — an ENUM would have
-  needed one.
+- `sessions.last_verified_at`, `sessions.scope` (`full` / `extension` / `recovery` / `enroll` /
+  `agent`). `scope` is a `VARCHAR(32)`, so 2c.1 added `enroll` and #1026 added `agent` with **no
+  migration** — an ENUM would have needed one. The `agent` scope is a headless-automation
+  credential; see [`identity-and-sessions.md`](identity-and-sessions.md) §"The `agent` scope".
 
 ## Environment
 

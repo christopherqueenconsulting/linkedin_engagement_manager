@@ -454,3 +454,60 @@ Phase **2c** shipped: passkeys, TOTP, recovery codes and a step-up gate — see
 - **`/api/user/extension-token` now mints an `extension`-scoped session** and is itself step-up
   gated. That scope is what later lets the extension POST a `li_at` without a WebAuthn ceremony it
   could never run.
+
+## The `agent` scope — a credential a machine can hold (issue #1026)
+
+A scheduled headless agent has no way to hold an identity: the `/api` bearer is deliberately not one
+(above), the email PIN needs a mailbox, a passkey ceremony cannot be run headless, and a TOTP seed
+cannot be re-exported after enrolment. `POST /api/user/agent-token` mirrors the extension token to
+close that gap — minted **once, by a human, in the SPA**, behind the same step-up, then held by a
+machine. `extension_scope_ok` is deliberately NOT passed to `_require_step_up`: a token that could
+mint its successor would never need a human again.
+
+`_AGENT_SESSION_SURFACE` is the list. It reaches the review queues, the settings that decide whether
+queueing is safe (`/user/engagement-preferences`, `/user/automation-status`, `/dashboard/stats`) and
+the create routes. It reaches **no** credential path, **not** the account mover, **not** session
+revocation, and **neither minting endpoint** — a stolen agent token cannot mint its successor or
+lock the owner out.
+
+### An agent may queue work; only a human may approve it
+
+This **cannot** be a path list — saving a draft and approving one are the same `PUT` — so it is
+enforced server-side on the fields that turn a draft into a send. It took three guards, because
+there are three ways a row reaches APPROVED and only the first one says "approve":
+
+| Route shape | Reaches APPROVED via | Guard |
+|---|---|---|
+| the five PUTs (`/dm`, `/connection_request`, `/outreach/target`, `/lead_signal`, `/catchup/touch`) | `action="approve"` | `_refuse_agent_approval` |
+| the creates (`/schedule_dm`, `/connection_request`, `/outreach/target`) | `status="approved"` at insert time — no `action` field anywhere | `_refuse_agent_approved_status` |
+| `POST /connection_request` with no status at all | the account's `connection_request_mode`, which is `auto_approve` **out of the box** | `_agent_scoped()` in the handler |
+
+Guarding only the first left the other two open, and the second is the one that matters most: a
+`POST /schedule_dm` carrying `status="approved"` lands a row `auto_check_scheduled_dms` then **sends
+to a real person**. The third is worse in a quieter way — it is the guarantee broken by the agent
+doing nothing at all, on nearly every account, because the account default is permissive.
+
+**`PUT /user/engagement-preferences` is refused for an agent** (403 `agent_may_not_configure`; the
+read still works). The scope surface matches on PATH, not method, so the entry added so the agent
+could *read* whether automation was safe granted the write along with it — and that write sets the
+approval modes above and every per-day cap. A token that cannot approve one item must not be able to
+configure the account into approving all of them. **This is the general hazard of a path-scoped
+surface: granting a path grants every method on it.** Check the verbs before adding an entry.
+
+### The TTL is fixed at mint, and never slid
+
+`create_session(ttl_hours=...)` grants an agent session a long life (`ttl_days`, default 90) because
+a weekly agent would find a 24h idle session dead every run. That parameter alone was not enough:
+`resolve_session` slides EVERY session to `now + SESSION_IDLE_HOURS`, so the 90-day token was
+rewritten to 24 hours on its **first request** — the same failure, now with a parameter that looked
+like it had fixed it.
+
+So an `agent` session is the one scope whose expiry never slides. Sliding it by the granted TTL
+instead would have been worse: a machine calling on a schedule renews forever, making the credential
+with the widest time window the only one with no ceiling. A fixed expiry is a real deadline that only
+a human ceremony can extend — which is also why `SESSION_ABSOLUTE_MAX_DAYS` is not applied to it, as
+that cap exists to bound a sliding window and there is none to bound. The row stays an ordinary,
+per-device revocable session on the Security card, so a long TTL is not a one-way door.
+
+`sessions.scope` is `VARCHAR(32)` and `auth_audit_log.event` is `VARCHAR(50)`, so `agent` and
+`agent_token_minted` needed **no migration** — an ENUM would have.
