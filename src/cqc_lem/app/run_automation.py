@@ -4160,12 +4160,16 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
 
     # SDUI: expand more replies where available, then collect comment items from the
     # new data-testid comment list (comments are no longer article.comments-comment-entity).
+    # The miss IS this loop's exit condition, so it never warns (utilities/CLAUDE.md): a post whose
+    # comments already fit on one page never renders the control, and one that does stops rendering
+    # it once the last page is in — every sweep ends on a miss by design.
     for _ in range(5):
         more = click_first(driver, wait,
                            [(By.XPATH, "//button[contains(@aria-label,'more comment') or "
                                        "contains(normalize-space(),'Load more') or "
                                        "contains(normalize-space(),'more repl')]")],
-                           "Load more comments", required=False)
+                           "Load more comments", required=False, warn_on_miss=False,
+                           user_id=user_id, post_id=post_id)
         if not more:
             break
         time.sleep(2)
