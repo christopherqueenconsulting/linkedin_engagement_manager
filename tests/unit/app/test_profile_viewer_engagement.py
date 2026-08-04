@@ -5,6 +5,9 @@ The analytics page is SDUI (no <ul>/<li> container, hashed class names): a viewe
 goes stale while the list re-renders. Zero rows with a non-zero "Profile viewers" headline is
 selector drift and must stay loud; zero rows with no headline is nothing-to-do and must stay
 quiet (issue #572 — it must not page the error cron).
+
+The JS read is also what keeps the walk off `get_elements_as_list_wait_stale`, whose unresolvable
+wait is what raised the escalated "Finding Profile Viewers" TimeoutException (issue #1040).
 """
 
 from datetime import datetime, timedelta
@@ -50,12 +53,13 @@ def _driver_scripting(rows_per_round: list[list[dict]], headline_stat=None) -> M
     return driver
 
 
-def _run(driver, **kwargs):
+def _run(driver, render_wait: int = 0, **kwargs):
     with patch(f"{_MOD}.get_current_profile", return_value=_profile_pair(driver)), \
          patch(f"{_MOD}.quit_gracefully") as mock_quit, \
          patch(f"{_MOD}.get_user_id", return_value=1), \
          patch(f"{_MOD}.time.sleep"), \
-         patch(f"{_MOD}._PROFILE_VIEWER_RENDER_WAIT_SECONDS", 0), \
+         patch(f"{_MOD}._PROFILE_VIEWER_RENDER_WAIT_SECONDS", render_wait), \
+         patch(f"{_MOD}.get_elements_as_list_wait_stale") as mock_wait_locator, \
          patch(f"{_MOD}.log_debug") as mock_debug, \
          patch(f"{_MOD}.log_warning") as mock_warning, \
          patch(f"{_MOD}.log_error") as mock_error, \
@@ -65,7 +69,8 @@ def _run(driver, **kwargs):
         result = automate_profile_viewer_engagement.run(user_id=1, **kwargs)
 
     return result, {"quit": mock_quit, "debug": mock_debug, "warning": mock_warning,
-                    "error": mock_error, "engage": mock_engage}
+                    "error": mock_error, "engage": mock_engage,
+                    "wait_locator": mock_wait_locator}
 
 
 def _engaged_urls(mocks) -> list[str]:
@@ -90,6 +95,35 @@ class TestNoViewersFound:
         mocks["warning"].assert_called_once()
         assert "selector drift" in mocks["warning"].call_args.args[0]
         assert "Engaged with 0 viewers" in result
+
+
+class TestNoPollingWaitOnTheViewerList:
+    """Regression guard for the escalated TimeoutException "Finding Profile Viewers" (#1040).
+
+    The walk used to read rows through `get_elements_as_list_wait_stale`, whose wait can only
+    resolve once the locator matches something. Against the SDUI page it never matched, so every
+    run raised TimeoutException, the handler warned, and the repeats escalated into a grouped
+    `$exception`. Rows come from one `execute_script` pass now: a page that has not painted yet is
+    waited out and re-read, never polled into a raised exception.
+    """
+
+    def test_empty_page_never_touches_the_polling_locator(self):
+        _, mocks = _run(_driver_scripting([[]], headline_stat=None))
+
+        mocks["wait_locator"].assert_not_called()
+        mocks["error"].assert_not_called()
+
+    def test_late_painting_page_is_re_read_not_raised(self):
+        rows = [_row("Ada", "ada", "Viewed 1h ago")]
+
+        result, mocks = _run(_driver_scripting([[], rows, rows]), render_wait=30)
+
+        mocks["wait_locator"].assert_not_called()
+        mocks["warning"].assert_not_called()
+        mocks["error"].assert_not_called()
+        mocks["debug"].assert_not_called()
+        assert _engaged_urls(mocks) == ["https://www.linkedin.com/in/ada/"]
+        assert "Engaged with 1 viewers" in result
 
 
 class TestWalkTermination:
