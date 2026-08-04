@@ -2099,7 +2099,8 @@ def roster_connect_verdict(reading: dict) -> str:
         return ("a Pending control resolved — production would advance this target to 'requested' "
                 "for free, and never invite them again")
     if state == "connected":
-        return ("a 1st-degree marker (or an owner-named Message control with no Connect offered) "
+        return ("a 1st-degree marker (or a Message control naming the owner — full name anywhere on "
+                "the page, first name only inside their own card — with no Connect offered) "
                 "resolved — production would finish the ladder at 'connected'")
     if not reading.get("owner_name"):
         return ("page owner's name unreadable from the <title>, so there is nothing to anchor the "

@@ -1806,6 +1806,7 @@ def auto_follow_roster_target(driver: WebDriver, user_id: int, target: dict,
 _CONNECT_STATE_JS = r"""
 const SLUG = (arguments[0] || '').toLowerCase(), NAME = (arguments[1] || '')
   .replace(/\s+/g, ' ').trim().toLowerCase();
+const FIRST = NAME.split(' ')[0] || '';
 const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
 const label = (b) => norm(b.getAttribute('aria-label')) || norm(b.textContent);
 // The owner's name must appear in the label. LinkedIn writes "Message Arvid Kahl",
@@ -1820,12 +1821,42 @@ const slugOf = (href) => {
 
 if (!NAME) return 'unknown';   // no owner name = nothing to anchor on = no safe read
 
+// Is this control inside the owner's OWN card? Grow outward from the control until the subtree
+// holds a profile link: the owner's alone = their card, anyone else's = someone else's module, so
+// stop. This is the ONLY thing that makes a shortened label safe to read (see below), and an
+// unresolvable card is false — which just means the reading stays what it was without it.
+const ownerCard = (el) => {
+  let cur = el.parentElement, d = 0;
+  while (SLUG && cur && d < 8) {
+    let own = false, other = false;
+    for (const a of cur.querySelectorAll("a[href*='/in/']")) {
+      const s = slugOf(a.getAttribute('href'));
+      if (!s) continue;
+      if (s === SLUG) own = true; else other = true;
+    }
+    if (other) return false;
+    if (own) return true;
+    cur = cur.parentElement; d++;
+  }
+  return false;
+};
+// LinkedIn shortens exactly one of these labels to the first name — the top card's "Message
+// Harshal" (grounded 2026-08-03 against a 1st-degree connection, where only the 1st-degree marker
+// carried the reading). A bare "Connect" with no aria-label is the same problem. Both are far too
+// weak to trust page-wide — a "More profiles for you" rail can hold another Harshal — so a
+// shortened label counts ONLY inside the owner's own card, and NEVER for Pending: LinkedIn writes
+// the full name there, and a wrong `requested` freezes the ladder instead of merely stalling it.
+const shortened = (text) =>
+  (!!FIRST && (text === 'message ' + FIRST || text.startsWith('message ' + FIRST + ' '))) ||
+  text === 'connect';
+
 let pending = false, message = false, connect = false;
 for (const b of document.querySelectorAll("button, [role='button'], a[role='link']")) {
   if (!shown(b)) continue;
   const text = label(b);
-  if (!names(text)) continue;
-  if (text.startsWith('pending') || text.includes('awaiting response')) pending = true;
+  const named = names(text);
+  if (!named && !(shortened(text) && ownerCard(b))) continue;
+  if (named && (text.startsWith('pending') || text.includes('awaiting response'))) pending = true;
   else if (text.startsWith('message')) message = true;
   else if (text.includes('to connect') || text.startsWith('connect')) connect = true;
 }

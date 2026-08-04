@@ -478,6 +478,15 @@ and has failed to change anything.
   `_FOLLOW_CONTROL_JS` does: "Connect" and "Message" render all over an activity page. A 1st-degree
   marker counts only inside the target's OWN `/in/<slug>` card, and a Message control counts only
   when LinkedIn is not still offering to Connect — open profiles expose Message to strangers.
+  **One label is SHORTENED and needs the card, not the name:** LinkedIn writes the top card's
+  Message control as "Message *Harshal*" (grounded 2026-08-03 — the full-name matcher missed it and
+  only the 1st-degree marker carried that reading), and can render a bare "Connect" with no
+  aria-label. Those two count ONLY inside the owner's own card (`ownerCard` — grow outward from the
+  control until a profile link resolves; anyone else's link means we've grown into their module),
+  never page-wide, because a "More profiles for you" rail can hold another Harshal. **Pending is
+  always full-name**: LinkedIn writes it that way, and a wrong `requested` freezes the ladder
+  instead of merely stalling it. The shortened path only ever adds a reading where the strict one
+  returned `unknown` — it cannot take one away.
 - **Auto-connect is OFF by default** (`roster_auto_connect`) and INDEPENDENT of `roster_auto_follow`
   — an invite is heavier and less reversible than a follow. It fires only for `needs_connection`
   targets and every hard gate applies (`_outbound_hold_reason`, re-read per target).

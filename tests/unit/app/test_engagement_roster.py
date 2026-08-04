@@ -1178,3 +1178,24 @@ class TestResolveConnectState:
         ra._resolve_connect_state(driver, self._URL, name="Freehand Name")
         assert driver.execute_script.call_args[0][1] == "arvidkahl"
         assert driver.execute_script.call_args[0][2] == "Arvid Kahl"
+
+
+class TestConnectStateShortenedLabels:
+    """The reading itself only runs in a real browser, so what a unit test can hold is the two
+    invariants that make the shortened-label path safe. Both exist because the live run grounded
+    "Message Harshal" — a first name, not the display name the strict matcher wanted."""
+
+    def test_a_shortened_label_is_read_only_inside_the_owner_card(self):
+        from cqc_lem.app.run_automation import _CONNECT_STATE_JS
+        assert "'message ' + FIRST" in _CONNECT_STATE_JS
+        used = [line for line in _CONNECT_STATE_JS.splitlines()
+                if "shortened(" in line and "const shortened" not in line]
+        assert used, "the shortened-label path is gone"
+        for line in used:
+            assert "ownerCard(" in line, f"shortened label read page-wide: {line.strip()}"
+
+    def test_pending_is_never_read_off_a_shortened_label(self):
+        # A wrong `requested` freezes the ladder; a wrong `unknown` only stalls it.
+        from cqc_lem.app.run_automation import _CONNECT_STATE_JS
+        line = next(l for l in _CONNECT_STATE_JS.splitlines() if "pending = true" in l)
+        assert "named &&" in line
