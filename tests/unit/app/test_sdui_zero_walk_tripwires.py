@@ -24,7 +24,6 @@ from selenium.webdriver.common.by import By
 
 _RA = "cqc_lem.app.run_automation"
 _CPI = "cqc_lem.utilities.linkedin.company_page_inviter"
-_SCR = "cqc_lem.utilities.linkedin.scrapper"
 _ZW = "cqc_lem.utilities.linkedin.zero_walk"
 
 # The SDUI profile top card as it renders today: hashed classes, no `dist-value`, and the degree

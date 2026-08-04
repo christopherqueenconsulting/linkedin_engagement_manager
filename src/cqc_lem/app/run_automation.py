@@ -827,7 +827,6 @@ _POST_MARKER_SELECTORS = [_FEED_POST_TEXT_SEL, "button[aria-label^='Hide post by
 _FEED_CARD_CROSSCHECK_SEL = "button[aria-label^='Hide post by']"
 _CATCHUP_CARD_CROSSCHECK_SEL = "main div[role='listitem']"
 
-_page_native_count = _zw.page_native_count
 zero_walk_verdict = _zw.zero_walk_verdict
 _grade_zero_walk = _zw.grade_zero_walk
 _report_zero_walk = _zw.report_zero_walk
