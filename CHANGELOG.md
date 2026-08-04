@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.132.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.132.1...v0.132.2) (2026-08-04)
+
+
+### Bug Fixes
+
+* **errors:** a missing connect-note affordance is a no-op, not a defect (closes [#1039](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1039)) ([#1045](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1045)) ([9ed813d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9ed813d0f48159668b79982e54c98af8657f1ff1))
+* **errors:** never warn on the condition a paging loop loops until (closes [#1041](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1041)) ([#1047](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1047)) ([a2eeb4c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a2eeb4c2ec5677b917543eca4a25b585f8e5c3cf))
+* **errors:** one lost invite must file one issue, not two (closes [#1038](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1038)) ([#1043](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/1043)) ([2d3c949](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2d3c94948e535d342bdf1b4f7038a5bd33dc75b0))
+
 ## [0.132.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.132.0...v0.132.1) (2026-08-04)
 
 
