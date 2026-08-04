@@ -6925,15 +6925,54 @@ def _open_connect_invite_dialog(driver, wait, user_id: int, profile_url: str) ->
     return False
 
 
+# The bare-send control is the dialog's own word for "no note is on offer here": a quota-spent
+# dialog renders it and NO Add-a-note (both labels live-grounded 2026-08-03,
+# docs/sdui-selenium-notes.md). Same `contains` form _submit_connect_invite clicks, so the
+# cross-check below can never disagree with the send that immediately follows it.
+_SEND_WITHOUT_NOTE_XPATH = '//button[contains(@aria-label,"Send without a note")]'
+_CONNECT_BARE_SEND_LOCATORS = [(By.XPATH, _SEND_WITHOUT_NOTE_XPATH)]
+
+_CONNECT_NOTE_BUTTON_LOCATORS = [
+    (By.XPATH, '//button[contains(@aria-label,"Add a note")]'),
+    (By.XPATH, '//button[normalize-space()="Add a note"]'),
+]
+
+
 def _add_connect_note(driver, wait, message: str, user_id: int) -> bool:
     """Type a personalized note into an OPEN Connect dialog. Best-effort by design (issue #573):
     LinkedIn hides the note affordance once a free account's personalized-invite quota is spent, and
-    a note that can't be attached must not cost us the invite — the caller sends it bare instead. So
-    every miss here is a WARNING, and the note is stripped of non-BMP characters first because
-    ChromeDriver's send_keys raises on the emoji an AI-written note routinely carries."""
+    a note that can't be attached must not cost us the invite — the caller sends it bare instead.
+    The note is stripped of non-BMP characters first because ChromeDriver's send_keys raises on the
+    emoji an AI-written note routinely carries.
+
+    A MISSING affordance is not a failure at all (issue #1039). It is the quota-spent no-op this
+    docstring already describes, the fallback is in hand, and warning on it filed a fingerprinted
+    defect for working behaviour once per lost note — so it is DEBUG, and the bare-send control the
+    dialog still shows is what says which no-op it was. A step that fails AFTER the affordance
+    answered is a genuine degraded path and still warns with `exc=`."""
+    if find_first(driver, wait, _CONNECT_NOTE_BUTTON_LOCATORS, "Add a note button",
+                  required=False, warn_on_miss=False, max_try=1, visible_only=True,
+                  user_id=user_id) is None:
+        if find_first(driver, wait, _CONNECT_BARE_SEND_LOCATORS, "Send without a note",
+                      required=False, warn_on_miss=False, max_try=1, visible_only=True,
+                      user_id=user_id) is not None:
+            log_debug("Connect dialog offers no Add-a-note affordance (personalized-invite quota "
+                      "spent) — sending the invite bare", user_id=user_id,
+                      action_type="invite_connect")
+        else:
+            # Not the quota case: the dialog proven open moments ago no longer shows either of its
+            # controls. This is DEBUG too, because the invite it costs us is the ONE thing
+            # _submit_connect_invite is about to log as an error — warning here would file a second
+            # grouped issue for that same lost invite, which is exactly what #1038 fixed.
+            log_debug("Connect dialog is no longer showing its own controls; attaching no note",
+                      user_id=user_id, action_type="invite_connect")
+        return False
+
     try:
-        click_element_wait_retry(driver, wait, '//button[contains(@aria-label,"Add a note")]',
-                                 "Finding Add a Note Button", max_retry=1, use_action_chain=True)
+        # required=True: the affordance answered a moment ago, so failing to click it now is a real
+        # degraded path — it raises into the warning below rather than reading as "not on offer".
+        click_first(driver, wait, _CONNECT_NOTE_BUTTON_LOCATORS, "Add a note button",
+                    max_try=1, use_action_chain=True, user_id=user_id)
 
         message_box = click_element_wait_retry(driver, wait, '//textarea[@id="custom-message"]',
                                                "Finding Message Box", max_retry=1, use_action_chain=True)
@@ -6960,7 +6999,7 @@ def _add_connect_note(driver, wait, message: str, user_id: int) -> bool:
 # The Send button's aria-label differs between the bare dialog and the one carrying a note, and a
 # note attempt can leave the dialog in either state — so both are tried, preferred label first.
 _SEND_INVITE_XPATHS = ('//button[contains(@aria-label,"Send invitation")]',
-                       '//button[contains(@aria-label,"Send without a note")]')
+                       _SEND_WITHOUT_NOTE_XPATH)
 
 
 def _submit_connect_invite(driver, wait, user_id: int, with_note: bool) -> bool:

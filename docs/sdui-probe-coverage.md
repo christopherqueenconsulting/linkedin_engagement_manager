@@ -33,7 +33,7 @@ code is missing from this table.
 | Feed share-box composer | `_post_composer_for_card` | `--probe-composer` | yes | per-card miss is a DEBUG no-op by design (#876) |
 | Profile-views viewer list | `_PROFILE_VIEWER_ROWS_JS` | `--profile-views` | yes | zero rows vs the page's headline stat (#1009) |
 | Profile header scrape + degree badge | `parse_profile_header` / `_profile_is_first_degree` | `--profile-scrape` | yes | **none — see Gaps** |
-| Connect invite dialog | `_open_connect_invite_dialog` | `--connect-dialog` | no (needs a target) | dialog controls must be present before Send (#1012) |
+| Connect invite dialog | `_open_connect_invite_dialog` | `--connect-dialog` | no (needs a target) | dialog controls must be present before Send (#1012); a missing note affordance is graded against the bare-send control, never warned (#1039) |
 | Catch-up moment cards | `_CATCHUP_CARD_LOCATORS` | `--catchup-cards` | yes | zero cards vs `main div[role='listitem']` (#1013) |
 | Group share box / editor | `auto_post_to_group` | `--group-composer` | no (needs a group) | `_unpostable` rotates past the group (#858) |
 | Company-page invite modal | `automate_invitations` | `--company-invite` | yes | **none — see Gaps** |
@@ -111,8 +111,16 @@ composer and close it with Escape without typing.
 
 ## Gaps (tracked, not silent)
 
-Three production paths still lack a zero-result tripwire. They are named here rather than left to
+Four production paths still lack a zero-result tripwire. They are named here rather than left to
 be rediscovered:
+
+- **Connect-dialog note affordance** — a missing `Add a note` button is the expected quota-spent
+  fallback (`_add_connect_note` sends the invite bare and logs DEBUG, #1039) and is also what a
+  rotated label would look like, and production cannot tell them apart: the dialog renders exactly
+  the same way once a free account's personalized invites are spent. Warning on it filed a
+  fingerprinted defect per lost note, so the reading moved here — `--connect-dialog` reports
+  `note_affordance_present` / `bare_send_present` and says so in its verdict. It is deliberately
+  NOT graded `drift`: the probe account's own quota state is not knowable from the page.
 
 - **Profile header scrape** — `parse_profile_header` raises `ProfileUnavailableError` on an error
   page, but a page that renders with no `<h1>` and no usable `<title>` yields no name and no
@@ -124,5 +132,7 @@ be rediscovered:
 - **Own post stats** — `_post_social_counts` scoring every signal 0 is indistinguishable from a post
   with no engagement.
 
-The probes above grade all three today, so the weekly sweep catches them; the tripwires would catch
-them in production, per run, which is stronger.
+The weekly sweep grades the last three, so it catches them there; the tripwires would catch them in
+production, per run, which is stronger. The connect-dialog note affordance is the odd one out and
+deliberately so: `--connect-dialog` needs a target profile, so it is NOT in the weekly sweep, and it
+reports the affordance without grading it. That reading only exists when somebody runs the probe.

@@ -1653,7 +1653,15 @@ def connect_dialog_verdict(reading: Optional[dict]) -> str:
             f"else ({hazards[:3]}) — never click one." if hazards else "")
     state = connect_dialog_state(reading)
     if state == STATE_OK:
-        return f"the custom-invite URL rendered the Connect dialog's own controls.{tail}"
+        # An absent note affordance is NOT drift on its own — a spent personalized-invite quota
+        # hides it, and production treats that as the expected bare-invite fallback (#1039). It is
+        # reported here because this probe is the only place the two readings can be told apart.
+        # `is False` deliberately: a reading that never looked (None) must claim nothing.
+        note = (" NOTE: no Add-a-note control on this dialog — production sends the invite bare and "
+                "logs that at DEBUG (#1039); read it as selector rot only if this account still has "
+                "personalized invites left."
+                if reading.get("note_affordance_present") is False else "")
+        return f"the custom-invite URL rendered the Connect dialog's own controls.{note}{tail}"
     if reading.get("invite_pending"):
         return (f"an invite is already pending for this profile, so no dialog renders — this "
                 f"reading grounds nothing; probe a profile with no outstanding invite.{tail}")
@@ -1671,7 +1679,8 @@ def probe_connect_dialog(driver, profile_url: str, sleep=time.sleep) -> dict:
     STRICTLY read-only — it never clicks Send, never clicks an Invite control, and never opens the
     More menu. That is the whole point: this surface's last drift sent ~20 connection requests to
     strangers, so the probe that grounds it must be incapable of sending one."""
-    from cqc_lem.app.run_automation import (_CONNECT_DIALOG_LOCATORS, _CONNECT_INVITE_URL,
+    from cqc_lem.app.run_automation import (_CONNECT_BARE_SEND_LOCATORS, _CONNECT_DIALOG_LOCATORS,
+                                            _CONNECT_INVITE_URL, _CONNECT_NOTE_BUTTON_LOCATORS,
                                             _PROFILE_MORE_MENU_LOCATORS, _profile_slug)
     from cqc_lem.utilities.selenium_util import find_first
     from selenium.webdriver.support.ui import WebDriverWait
@@ -1688,9 +1697,24 @@ def probe_connect_dialog(driver, profile_url: str, sleep=time.sleep) -> dict:
     sleep(5)
     dialog = find_first(driver, wait, _CONNECT_DIALOG_LOCATORS, "Connect invite dialog",
                         required=False, warn_on_miss=False, max_try=1, visible_only=True)
+    # Which of the dialog's two controls rendered is what tells a spent personalized-invite quota
+    # apart from a rotated note selector — the distinction production cannot make (#1039). Only
+    # asked when a dialog actually rendered: on a page with no dialog at all both would come back
+    # absent, and "no Add-a-note control" is then a note-affordance reading nobody took. None, not
+    # False — and two waits this probe does not have to sit through.
+    note_present = bare_send_present = None
+    if dialog is not None:
+        note_present = find_first(driver, wait, _CONNECT_NOTE_BUTTON_LOCATORS, "Add a note button",
+                                  required=False, warn_on_miss=False, max_try=1,
+                                  visible_only=True) is not None
+        bare_send_present = find_first(driver, wait, _CONNECT_BARE_SEND_LOCATORS,
+                                       "Send without a note", required=False, warn_on_miss=False,
+                                       max_try=1, visible_only=True) is not None
     reading.update({"url": getattr(driver, "current_url", ""),
                     "dialog_present": dialog is not None,
                     "dialog_control": element_evidence(dialog) if dialog is not None else None,
+                    "note_affordance_present": note_present,
+                    "bare_send_present": bare_send_present,
                     "page_text": page_text_sample(driver),
                     "visible_controls": visible_button_labels(driver)})
 

@@ -796,6 +796,59 @@ class TestConnectDialogProbe:
         assert llv.connect_dialog_state(reading) == llv.STATE_OK
         assert "never click one" in llv.connect_dialog_verdict(reading)
 
+    def test_a_dialog_without_the_note_affordance_is_reported_but_never_drift(self):
+        """#1039: production logs that absence at DEBUG because a spent personalized-invite quota
+        hides the control. This probe is the only place the quota reading and selector rot can be
+        told apart, so it says so — without claiming drift it cannot ground."""
+        reading = {"dialog_present": True, "page_text": "x", "bare_send_present": True,
+                   "note_affordance_present": False}
+        assert llv.connect_dialog_state(reading) == llv.STATE_OK
+        assert "no Add-a-note control" in llv.connect_dialog_verdict(reading)
+
+    def test_a_dialog_with_the_note_affordance_says_nothing_extra(self):
+        reading = {"dialog_present": True, "page_text": "x", "note_affordance_present": True,
+                   "bare_send_present": True}
+        assert "Add-a-note" not in llv.connect_dialog_verdict(reading)
+
+    def _probe(self, monkeypatch, present: set[str], page_text: str = "About Experience"):
+        driver = MagicMock()
+        driver.current_url = "https://www.linkedin.com/preload/custom-invite/?vanityName=jane"
+        looked_up: list[str] = []
+
+        def find_first(_d, _w, _locators, label, **_kwargs):
+            looked_up.append(label)
+            return MagicMock() if label in present else None
+
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.find_first", find_first)
+        monkeypatch.setattr(llv, "element_evidence", lambda el: "aria-label=Send without a note")
+        monkeypatch.setattr(llv, "page_text_sample", lambda d, **k: page_text)
+        monkeypatch.setattr(llv, "visible_button_labels", lambda d, **k: [])
+        monkeypatch.setattr(llv, "_page_owner_name", lambda d: "Jane Doe")
+        reading = llv.probe_connect_dialog(driver, "https://www.linkedin.com/in/jane/",
+                                           sleep=lambda *_: None)
+        return reading, looked_up
+
+    def test_the_probe_records_which_of_the_dialogs_controls_rendered(self, monkeypatch):
+        """The verdict tests above build readings by hand, so only this one fails if the probe
+        stops writing the fields the #1039 reading is made of."""
+        reading, _looked_up = self._probe(monkeypatch, {"Connect invite dialog",
+                                                        "Send without a note"})
+        assert reading["dialog_present"] is True
+        assert reading["note_affordance_present"] is False
+        assert reading["bare_send_present"] is True
+        assert reading["state"] == llv.STATE_OK
+        assert "no Add-a-note control" in reading["verdict"]
+
+    def test_a_page_with_no_dialog_reports_no_affordance_reading_at_all(self, monkeypatch):
+        """None, not False: with no dialog on the page there is nothing to read the note affordance
+        against, and 'no Add-a-note control' would be a drift signal nobody observed."""
+        reading, looked_up = self._probe(monkeypatch, set())
+        assert reading["dialog_present"] is False
+        assert reading["note_affordance_present"] is None
+        assert reading["bare_send_present"] is None
+        assert "Add a note button" not in looked_up
+        assert "Add-a-note" not in reading["verdict"]
+
 
 @pytest.mark.unit
 class TestProfileScrapeProbe:
